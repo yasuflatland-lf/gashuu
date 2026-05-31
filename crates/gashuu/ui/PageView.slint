@@ -3,25 +3,51 @@
 // When `single` is false, leading and trailing pages are shown side by side,
 // each filling half the area (contain). In LTR mode (rtl=false) the leading
 // page is on the left; in RTL mode (rtl=true) the leading page is on the right.
+//
+// Zoom/pan plumbing: Rust drives content-x/y/w/h to position/size the content
+// rectangle inside the clip area. Input callbacks relay mouse wheel (zoom-at),
+// drag (begin-pan / pan-to), and viewport size changes (viewport-resized) up to
+// ViewerWindow so main.rs can implement the zoom/pan math.
 export component PageView inherits Rectangle {
     in property <image> leading-page;
     in property <image> trailing-page;
     in property <bool> rtl;
     in property <bool> single;
+    // Rust-computed displayed-content rectangle (placed inside the clip).
+    // Defaults to 0px so the build passes before main.rs sets them.
+    in property <length> content-x: 0px;
+    in property <length> content-y: 0px;
+    in property <length> content-w: 0px;
+    in property <length> content-h: 0px;
+
+    // Input callbacks relayed to ViewerWindow / main.rs.
+    callback zoom-at(length, length, float);     // mouse-x, mouse-y, wheel delta-y
+    callback begin-pan();
+    callback pan-to(length, length);             // cumulative delta from the press point
+    callback viewport-resized(length, length);   // width, height
+
     background: #000000;
+    clip: true;
+
+    init => { root.viewport-resized(self.width, self.height); }
+    changed width => { root.viewport-resized(self.width, self.height); }
+    changed height => { root.viewport-resized(self.width, self.height); }
 
     if root.single : Image {
+        x: root.content-x;
+        y: root.content-y;
+        width: root.content-w;
+        height: root.content-h;
         source: root.leading-page;
         image-fit: contain;
-        width: 100%;
-        height: 100%;
     }
 
     if !root.single : HorizontalLayout {
+        x: root.content-x;
+        y: root.content-y;
+        width: root.content-w;
+        height: root.content-h;
         spacing: 0px;
-        width: 100%;
-        height: 100%;
-
         Image {
             source: root.rtl ? root.trailing-page : root.leading-page;
             image-fit: contain;
@@ -31,6 +57,25 @@ export component PageView inherits Rectangle {
             source: root.rtl ? root.leading-page : root.trailing-page;
             image-fit: contain;
             horizontal-stretch: 1;
+        }
+    }
+
+    // TouchArea is non-focusable and will not steal keyboard focus from the
+    // FocusScope in ViewerWindow. The existing fs.focus() convention is unaffected.
+    TouchArea {
+        scroll-event(e) => {
+            root.zoom-at(self.mouse-x, self.mouse-y, e.delta-y / 1px);
+            return accept;
+        }
+        pointer-event(e) => {
+            if (e.kind == PointerEventKind.down) {
+                root.begin-pan();
+            }
+        }
+        moved => {
+            if (self.pressed) {
+                root.pan-to(self.mouse-x - self.pressed-x, self.mouse-y - self.pressed-y);
+            }
         }
     }
 }
