@@ -141,6 +141,14 @@ fn refresh(ui: &ViewerWindow, state: &ViewerState) {
                     ui.set_single(true);
                 }
             }
+            // A trailing-page decode failure degraded the view to leading-only;
+            // append a marker so the status no longer contradicts the single
+            // page actually shown (overrides the top-of-refresh status_text).
+            if let Some(failed) = spread.trailing_failed {
+                ui.set_status_text(
+                    format!("{}  (page {} unavailable)", state.status_text(), failed + 1).into(),
+                );
+            }
         }
         Some(Err(e)) => {
             tracing::error!(error = %e, "failed to decode page");

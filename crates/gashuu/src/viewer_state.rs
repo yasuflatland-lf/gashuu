@@ -23,6 +23,9 @@ use std::sync::Arc;
 pub struct SpreadImages {
     pub leading: Arc<DecodedImage>,
     pub trailing: Option<Arc<DecodedImage>>,
+    /// `Some(page_index)` when the trailing page failed to decode and the view
+    /// degraded to leading-only; `None` for a normal single- or two-page spread.
+    pub trailing_failed: Option<usize>,
 }
 
 /// Holds the active image cache, the current spread's leading page index, and
@@ -170,21 +173,28 @@ impl ViewerState {
             Ok(img) => img,
             Err(e) => return Some(Err(e)),
         };
-        let trailing = match s.trailing {
+        let (trailing, trailing_failed) = match s.trailing {
             Some(t) => match cache.get(t) {
-                Ok(img) => Some(img),
+                Ok(img) => (Some(img), None),
                 Err(e) => {
                     tracing::warn!(page = t, error = %e, "failed to decode trailing page; showing leading alone");
-                    None
+                    (None, Some(t))
                 }
             },
-            None => None,
+            None => (None, None),
         };
-        Some(Ok(SpreadImages { leading, trailing }))
+        Some(Ok(SpreadImages {
+            leading,
+            trailing,
+            trailing_failed,
+        }))
     }
 
     /// Flip Single <-> Double, then re-normalize the index so the currently
-    /// visible page stays on screen. Returns whether the mode changed.
+    /// visible page stays on screen. Returns `true` when the mode changed; a
+    /// 2-variant toggle always flips, so this is currently always `true`. The
+    /// bool is retained for forward-compatibility with multi-valued modes (e.g.
+    /// a future `SpreadMode::Auto`).
     pub fn toggle_spread(&mut self) -> bool {
         let before = self.spread_mode;
         self.spread_mode = match before {
@@ -196,7 +206,10 @@ impl ViewerState {
     }
 
     /// Flip Standalone <-> Paired cover, then re-normalize the index so the
-    /// currently visible page stays on screen. Returns whether the cover changed.
+    /// currently visible page stays on screen. Returns `true` when the cover
+    /// changed; a 2-variant toggle always flips, so this is currently always
+    /// `true`. The bool is retained for forward-compatibility with multi-valued
+    /// modes (e.g. a future `SpreadMode::Auto`).
     pub fn toggle_cover(&mut self) -> bool {
         let before = self.cover_mode;
         self.cover_mode = match before {
@@ -208,7 +221,10 @@ impl ViewerState {
     }
 
     /// Flip Ltr <-> Rtl. Reading direction only affects placement, not pairing,
-    /// so the index is left untouched. Returns whether the direction changed.
+    /// so the index is left untouched. Returns `true` when the direction changed;
+    /// a 2-variant toggle always flips, so this is currently always `true`. The
+    /// bool is retained for forward-compatibility with multi-valued modes (e.g.
+    /// a future `SpreadMode::Auto`).
     pub fn toggle_reading_direction(&mut self) -> bool {
         let before = self.reading_direction;
         self.reading_direction = match before {
@@ -632,5 +648,99 @@ mod tests {
         state.set_source(mock_with(6));
         state.apply(NavAction::Next);
         assert_eq!(state.status_text(), "2\u{2013}3 / 6  [double \u{00b7} RTL]");
+    }
+
+    // ---- Trailing-page decode failure fallback (FIX 4/5) --------------------
+
+    #[test]
+    fn current_spread_degrades_to_leading_on_trailing_decode_error() {
+        // 3 pages, Double / Standalone: {0}{1,2}. Advancing once lands on the
+        // {1,2} spread, whose trailing index is page 2. Make page 2 fail to
+        // decode and confirm the spread degrades to leading-only with a marker.
+        let mut state = ViewerState::from_settings(&Settings {
+            spread_mode: SpreadMode::Double,
+            ..Default::default()
+        });
+        let mut mock = MockPageSource::new();
+        mock.expect_list_pages().returning(|| {
+            vec![
+                PageEntry {
+                    path: "p".into(),
+                    name: "p".into()
+                };
+                3
+            ]
+        });
+        mock.expect_read_bytes().returning(|idx| {
+            if idx == 2 {
+                Err(CoreError::IndexOutOfRange { index: 2, len: 3 })
+            } else {
+                Ok(tiny_png())
+            }
+        });
+        state.set_source(Arc::new(mock));
+
+        // Advance to the {1,2} spread (leading = 1).
+        assert!(state.apply(NavAction::Next));
+        assert_eq!(state.index(), 1);
+
+        let images = state.current_spread().unwrap().unwrap();
+        assert!(images.trailing.is_none(), "trailing should drop on error");
+        assert_eq!(images.trailing_failed, Some(2));
+        assert_eq!(
+            (images.leading.width(), images.leading.height()),
+            (2, 3),
+            "leading page must still decode"
+        );
+    }
+
+    // ---- Double/Paired navigation honors stored cover_mode (FIX 6) ---------
+
+    #[test]
+    fn double_paired_navigation_steps_by_two_and_clamps() {
+        // 5 pages, Paired cover: {0,1}{2,3}{4}. apply() must honor the stored
+        // cover_mode, stepping leading 0->2->4 forward and 4->2->0 back.
+        let mut state = ViewerState::from_settings(&Settings {
+            spread_mode: SpreadMode::Double,
+            cover_mode: CoverMode::Paired,
+            ..Default::default()
+        });
+        state.set_source(mock_with(5));
+        assert_eq!(state.index(), 0);
+
+        assert!(state.apply(NavAction::Next));
+        assert_eq!(state.index(), 2);
+        assert!(state.apply(NavAction::Next));
+        assert_eq!(state.index(), 4);
+        assert!(!state.apply(NavAction::Next)); // clamp at last even
+        assert_eq!(state.index(), 4);
+
+        assert!(state.apply(NavAction::Prev));
+        assert_eq!(state.index(), 2);
+        assert!(state.apply(NavAction::Prev));
+        assert_eq!(state.index(), 0);
+        assert!(!state.apply(NavAction::Prev)); // clamp at 0
+        assert_eq!(state.index(), 0);
+    }
+
+    // ---- toggle_spread from Double/Paired preserves the visible page (FIX 7)
+
+    #[test]
+    fn toggle_spread_from_double_paired_keeps_index() {
+        // 6 pages, Paired cover. Advance to the {2,3} spread (index 2), then
+        // toggle to Single: the mode flips and the index is unchanged (Single
+        // normalize is identity).
+        let mut state = ViewerState::from_settings(&Settings {
+            spread_mode: SpreadMode::Double,
+            cover_mode: CoverMode::Paired,
+            ..Default::default()
+        });
+        state.set_source(mock_with(6));
+        assert!(state.apply(NavAction::Next));
+        assert_eq!(state.index(), 2);
+
+        assert!(state.toggle_spread());
+        assert_eq!(state.spread_mode(), SpreadMode::Single);
+        assert_eq!(state.index(), 2);
     }
 }

@@ -6,6 +6,8 @@
 use crate::settings::{CoverMode, SpreadMode};
 
 /// One displayed unit: 1–2 page indices in reading order (`leading` first).
+///
+/// Invariant (when produced by this module): `trailing == Some(leading + 1)`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Spread {
     pub leading: usize,

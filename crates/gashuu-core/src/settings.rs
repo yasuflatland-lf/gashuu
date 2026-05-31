@@ -34,9 +34,9 @@ pub enum SpreadMode {
     Double,
 }
 
-/// How the first page (cover) is laid out in two-page modes. `Standalone` shows
-/// the cover alone, then pairs (2-3)(4-5)…; `Paired` pairs from the cover (0-1)(2-3)….
-/// Ignored in `Single` mode.
+/// How the first page (cover) is laid out in two-page modes (0-based page indices).
+/// `Standalone` shows the cover alone (index 0), then pairs from index 1: {1,2}{3,4}…;
+/// `Paired` pairs from the cover: {0,1}{2,3}…. Ignored in `Single` mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CoverMode {
