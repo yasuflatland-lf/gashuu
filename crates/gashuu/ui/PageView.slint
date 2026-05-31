@@ -1,0 +1,11 @@
+// Single page display: the image is fit inside the view, letterboxed on black.
+export component PageView inherits Rectangle {
+    in property <image> source;
+    background: #000000;
+    Image {
+        source: root.source;
+        image-fit: contain;
+        width: 100%;
+        height: 100%;
+    }
+}
