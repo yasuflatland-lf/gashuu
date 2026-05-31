@@ -6,11 +6,14 @@ export component ViewerWindow inherits Window {
     preferred-width: 900px;
     preferred-height: 1200px;
 
-    in property <image> current-page;
+    in property <image> leading-page;
+    in property <image> trailing-page;
+    in property <bool> rtl;
+    in property <bool> single;
     in property <string> status-text: "No folder opened";
 
     callback open-folder();
-    // Forwarded navigation token: "left" | "right" | "space" | "backspace".
+    // Forwarded navigation token: "left" | "right" | "space" | "backspace" | "d" | "r" | "c".
     callback nav(string);
 
     VerticalBox {
@@ -48,10 +51,16 @@ export component ViewerWindow inherits Window {
                     root.nav("backspace");
                     return accept;
                 }
+                if (event.text == "d" || event.text == "D") { root.nav("d"); return accept; }
+                if (event.text == "r" || event.text == "R") { root.nav("r"); return accept; }
+                if (event.text == "c" || event.text == "C") { root.nav("c"); return accept; }
                 return reject;
             }
             PageView {
-                source: root.current-page;
+                leading-page: root.leading-page;
+                trailing-page: root.trailing-page;
+                rtl: root.rtl;
+                single: root.single;
             }
         }
     }
