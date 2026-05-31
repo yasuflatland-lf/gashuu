@@ -2,8 +2,13 @@
 //! reading-direction-agnostic: this module decides WHICH pages form a spread
 //! (in reading order), never how they are placed left/right. Placement (RTL/LTR)
 //! and input (which arrow advances) live in the presentation layer.
+//!
+//! Pairing receives an already-resolved `SpreadLayout` (never `Auto`):
+//! `SpreadMode::Auto` is resolved to `Single`/`Double` at the UI layer (from the
+//! window aspect ratio) before these functions are called, so this module never
+//! sees image/window dimensions.
 
-use crate::settings::{CoverMode, SpreadMode};
+use crate::settings::{CoverMode, SpreadLayout};
 
 /// One displayed unit: 1–2 page indices in reading order (`leading` first).
 ///
@@ -57,15 +62,15 @@ fn last_start_standalone(total: usize) -> usize {
 /// `leading` is clamped into `[0, total - 1]` defensively; callers guarantee
 /// `total > 0`. The returned `trailing` is present only when a partner page
 /// actually exists within `total`.
-pub fn spread_at(total: usize, mode: SpreadMode, cover: CoverMode, leading: usize) -> Spread {
+pub fn spread_at(total: usize, layout: SpreadLayout, cover: CoverMode, leading: usize) -> Spread {
     let lead = clamp_index(total, leading);
 
-    match mode {
-        SpreadMode::Single => Spread {
+    match layout {
+        SpreadLayout::Single => Spread {
             leading: lead,
             trailing: None,
         },
-        SpreadMode::Double => match cover {
+        SpreadLayout::Double => match cover {
             // Pairs start even: {0,1}{2,3}… The cover is paired with page 1.
             CoverMode::Paired => Spread {
                 leading: lead,
@@ -101,12 +106,12 @@ fn pair_trailing(total: usize, leading: usize) -> Option<usize> {
 
 /// Leading index of the next spread in reading order, clamped at the final
 /// spread so repeated "next" at the end is a no-op.
-pub fn next_leading(total: usize, mode: SpreadMode, cover: CoverMode, leading: usize) -> usize {
+pub fn next_leading(total: usize, layout: SpreadLayout, cover: CoverMode, leading: usize) -> usize {
     let lead = clamp_index(total, leading);
 
-    match mode {
-        SpreadMode::Single => lead.saturating_add(1).min(total.saturating_sub(1)),
-        SpreadMode::Double => match cover {
+    match layout {
+        SpreadLayout::Single => lead.saturating_add(1).min(total.saturating_sub(1)),
+        SpreadLayout::Double => match cover {
             CoverMode::Paired => lead.saturating_add(2).min(last_even(total)),
             CoverMode::Standalone => {
                 let last = last_start_standalone(total);
@@ -119,7 +124,7 @@ pub fn next_leading(total: usize, mode: SpreadMode, cover: CoverMode, leading: u
                 } else {
                     // Even (>0) leading shouldn't occur for a valid spread; be
                     // defensive — normalize onto a valid start, then advance.
-                    let norm = normalize_leading(total, mode, cover, lead);
+                    let norm = normalize_leading(total, layout, cover, lead);
                     if norm == 0 {
                         first_pair_start(total)
                     } else {
@@ -133,12 +138,12 @@ pub fn next_leading(total: usize, mode: SpreadMode, cover: CoverMode, leading: u
 
 /// Leading index of the previous spread in reading order, clamped at 0 so
 /// repeated "prev" at the start is a no-op.
-pub fn prev_leading(total: usize, mode: SpreadMode, cover: CoverMode, leading: usize) -> usize {
+pub fn prev_leading(total: usize, layout: SpreadLayout, cover: CoverMode, leading: usize) -> usize {
     let lead = clamp_index(total, leading);
 
-    match mode {
-        SpreadMode::Single => lead.saturating_sub(1),
-        SpreadMode::Double => match cover {
+    match layout {
+        SpreadLayout::Single => lead.saturating_sub(1),
+        SpreadLayout::Double => match cover {
             CoverMode::Paired => lead.saturating_sub(2),
             CoverMode::Standalone => {
                 if lead <= 1 {
@@ -149,7 +154,7 @@ pub fn prev_leading(total: usize, mode: SpreadMode, cover: CoverMode, leading: u
                     lead - 2
                 } else {
                     // Even (>0) shouldn't occur; normalize, then step back.
-                    let norm = normalize_leading(total, mode, cover, lead);
+                    let norm = normalize_leading(total, layout, cover, lead);
                     if norm <= 1 {
                         0
                     } else {
@@ -164,12 +169,17 @@ pub fn prev_leading(total: usize, mode: SpreadMode, cover: CoverMode, leading: u
 /// Leading index of the spread that CONTAINS page `index`. Used after a
 /// mode/cover toggle so the visible page stays on screen. `index` is clamped
 /// into `[0, total - 1]`; callers guarantee `total > 0`.
-pub fn normalize_leading(total: usize, mode: SpreadMode, cover: CoverMode, index: usize) -> usize {
+pub fn normalize_leading(
+    total: usize,
+    layout: SpreadLayout,
+    cover: CoverMode,
+    index: usize,
+) -> usize {
     let idx = clamp_index(total, index);
 
-    match mode {
-        SpreadMode::Single => idx,
-        SpreadMode::Double => match cover {
+    match layout {
+        SpreadLayout::Single => idx,
+        SpreadLayout::Double => match cover {
             // Round down to the even pair start, clamp to the final even start.
             CoverMode::Paired => (idx & !1).min(last_even(total)),
             CoverMode::Standalone => {
@@ -192,7 +202,7 @@ pub fn normalize_leading(total: usize, mode: SpreadMode, cover: CoverMode, index
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::settings::{CoverMode, SpreadMode};
+    use crate::settings::{CoverMode, SpreadLayout};
 
     // ---- helpers -----------------------------------------------------------
 
@@ -202,14 +212,14 @@ mod tests {
 
     /// Assert the visible `index` is one of the pages of the spread reached by
     /// normalizing then materializing it (the core toggle invariant).
-    fn assert_contains(total: usize, mode: SpreadMode, cover: CoverMode, index: usize) {
-        let lead = normalize_leading(total, mode, cover, index);
-        let spread = spread_at(total, mode, cover, lead);
+    fn assert_contains(total: usize, layout: SpreadLayout, cover: CoverMode, index: usize) {
+        let lead = normalize_leading(total, layout, cover, index);
+        let spread = spread_at(total, layout, cover, lead);
         let clamped = index.min(total - 1);
         let contains = spread.leading == clamped || spread.trailing == Some(clamped);
         assert!(
             contains,
-            "index {clamped} not in {spread:?} (total={total}, mode={mode:?}, cover={cover:?})"
+            "index {clamped} not in {spread:?} (total={total}, layout={layout:?}, cover={cover:?})"
         );
     }
 
@@ -220,7 +230,7 @@ mod tests {
         for cover in [CoverMode::Standalone, CoverMode::Paired] {
             for total in 1..=3 {
                 for leading in 0..total {
-                    let s = spread_at(total, SpreadMode::Single, cover, leading);
+                    let s = spread_at(total, SpreadLayout::Single, cover, leading);
                     assert_eq!(s, sp(leading, None));
                 }
             }
@@ -231,14 +241,14 @@ mod tests {
     fn single_spread_at_clamps_oob_leading() {
         // leading past the end clamps to the last page.
         assert_eq!(
-            spread_at(3, SpreadMode::Single, CoverMode::Standalone, 99),
+            spread_at(3, SpreadLayout::Single, CoverMode::Standalone, 99),
             sp(2, None)
         );
     }
 
     #[test]
     fn single_next_clamps_at_end() {
-        let m = SpreadMode::Single;
+        let m = SpreadLayout::Single;
         let c = CoverMode::Standalone;
         assert_eq!(next_leading(1, m, c, 0), 0);
         assert_eq!(next_leading(3, m, c, 0), 1);
@@ -249,7 +259,7 @@ mod tests {
 
     #[test]
     fn single_prev_clamps_at_start() {
-        let m = SpreadMode::Single;
+        let m = SpreadLayout::Single;
         let c = CoverMode::Standalone;
         assert_eq!(prev_leading(3, m, c, 2), 1);
         assert_eq!(prev_leading(3, m, c, 1), 0);
@@ -258,7 +268,7 @@ mod tests {
 
     #[test]
     fn single_normalize_is_identity_with_clamp() {
-        let m = SpreadMode::Single;
+        let m = SpreadLayout::Single;
         let c = CoverMode::Standalone;
         assert_eq!(normalize_leading(3, m, c, 0), 0);
         assert_eq!(normalize_leading(3, m, c, 2), 2);
@@ -267,7 +277,7 @@ mod tests {
 
     #[test]
     fn single_does_not_panic_on_tiny_totals() {
-        let m = SpreadMode::Single;
+        let m = SpreadLayout::Single;
         let c = CoverMode::Standalone;
         // total == 1: every op stays at 0.
         assert_eq!(next_leading(1, m, c, 0), 0);
@@ -283,7 +293,7 @@ mod tests {
 
     #[test]
     fn double_paired_spread_at_full_pairs() {
-        let m = SpreadMode::Double;
+        let m = SpreadLayout::Double;
         let c = CoverMode::Paired;
         // total 4: {0,1}{2,3}
         assert_eq!(spread_at(4, m, c, 0), sp(0, Some(1)));
@@ -292,7 +302,7 @@ mod tests {
 
     #[test]
     fn double_paired_spread_at_last_partial_when_odd_total() {
-        let m = SpreadMode::Double;
+        let m = SpreadLayout::Double;
         let c = CoverMode::Paired;
         // total 5: {0,1}{2,3}{4}
         assert_eq!(spread_at(5, m, c, 4), sp(4, None));
@@ -304,14 +314,14 @@ mod tests {
 
     #[test]
     fn double_paired_spread_at_total2() {
-        let m = SpreadMode::Double;
+        let m = SpreadLayout::Double;
         let c = CoverMode::Paired;
         assert_eq!(spread_at(2, m, c, 0), sp(0, Some(1)));
     }
 
     #[test]
     fn double_paired_next_advances_by_two_and_clamps() {
-        let m = SpreadMode::Double;
+        let m = SpreadLayout::Double;
         let c = CoverMode::Paired;
         // total 5: last_even = 4
         assert_eq!(next_leading(5, m, c, 0), 2);
@@ -328,7 +338,7 @@ mod tests {
 
     #[test]
     fn double_paired_prev_steps_back_by_two_and_clamps() {
-        let m = SpreadMode::Double;
+        let m = SpreadLayout::Double;
         let c = CoverMode::Paired;
         assert_eq!(prev_leading(5, m, c, 4), 2);
         assert_eq!(prev_leading(5, m, c, 2), 0);
@@ -339,7 +349,7 @@ mod tests {
 
     #[test]
     fn double_paired_normalize_rounds_down_to_even() {
-        let m = SpreadMode::Double;
+        let m = SpreadLayout::Double;
         let c = CoverMode::Paired;
         // total 5: last_even = 4
         assert_eq!(normalize_leading(5, m, c, 0), 0);
@@ -354,7 +364,7 @@ mod tests {
 
     #[test]
     fn double_paired_does_not_panic_on_tiny_totals() {
-        let m = SpreadMode::Double;
+        let m = SpreadLayout::Double;
         let c = CoverMode::Paired;
         assert_eq!(next_leading(0, m, c, 0), 0);
         assert_eq!(prev_leading(0, m, c, 0), 0);
@@ -365,7 +375,7 @@ mod tests {
 
     #[test]
     fn double_standalone_spread_at_cover_then_pairs() {
-        let m = SpreadMode::Double;
+        let m = SpreadLayout::Double;
         let c = CoverMode::Standalone;
         // total 6: {0}{1,2}{3,4}{5}
         assert_eq!(spread_at(6, m, c, 0), sp(0, None));
@@ -376,7 +386,7 @@ mod tests {
 
     #[test]
     fn double_standalone_spread_at_small_totals() {
-        let m = SpreadMode::Double;
+        let m = SpreadLayout::Double;
         let c = CoverMode::Standalone;
         // total 1: {0}
         assert_eq!(spread_at(1, m, c, 0), sp(0, None));
@@ -395,7 +405,7 @@ mod tests {
     #[test]
     fn double_standalone_last_start_values() {
         // last_start_standalone via normalize of a large index.
-        let m = SpreadMode::Double;
+        let m = SpreadLayout::Double;
         let c = CoverMode::Standalone;
         assert_eq!(normalize_leading(1, m, c, 99), 0); // total<=1 -> 0
         assert_eq!(normalize_leading(2, m, c, 99), 1); // total-1=1 odd -> 1
@@ -407,7 +417,7 @@ mod tests {
 
     #[test]
     fn double_standalone_next() {
-        let m = SpreadMode::Double;
+        let m = SpreadLayout::Double;
         let c = CoverMode::Standalone;
         // total 6: last_start = 5
         assert_eq!(next_leading(6, m, c, 0), 1); // cover -> first pair
@@ -423,7 +433,7 @@ mod tests {
 
     #[test]
     fn double_standalone_prev() {
-        let m = SpreadMode::Double;
+        let m = SpreadLayout::Double;
         let c = CoverMode::Standalone;
         // total 6
         assert_eq!(prev_leading(6, m, c, 5), 3);
@@ -434,7 +444,7 @@ mod tests {
 
     #[test]
     fn double_standalone_normalize() {
-        let m = SpreadMode::Double;
+        let m = SpreadLayout::Double;
         let c = CoverMode::Standalone;
         // total 6: {0}{1,2}{3,4}{5}; last_start = 5
         assert_eq!(normalize_leading(6, m, c, 0), 0); // cover
@@ -451,7 +461,7 @@ mod tests {
 
     #[test]
     fn double_standalone_next_defensive_even_leading() {
-        let m = SpreadMode::Double;
+        let m = SpreadLayout::Double;
         let c = CoverMode::Standalone;
         // Even leading > 0 is not a valid start; treat as normalize-then-advance.
         // total 6: leading 2 normalizes to 1, next -> 3.
@@ -462,7 +472,7 @@ mod tests {
 
     #[test]
     fn double_standalone_prev_defensive_even_leading() {
-        let m = SpreadMode::Double;
+        let m = SpreadLayout::Double;
         let c = CoverMode::Standalone;
         // total 6: leading 2 normalizes to 1, prev -> 0.
         assert_eq!(prev_leading(6, m, c, 2), 0);
@@ -472,7 +482,7 @@ mod tests {
 
     #[test]
     fn double_standalone_does_not_panic_on_tiny_totals() {
-        let m = SpreadMode::Double;
+        let m = SpreadLayout::Double;
         let c = CoverMode::Standalone;
         assert_eq!(next_leading(0, m, c, 0), 0);
         assert_eq!(prev_leading(0, m, c, 0), 0);
@@ -485,15 +495,15 @@ mod tests {
     fn toggle_boundary_single_index_5() {
         // single index 5 -> normalize under each (mode, cover).
         assert_eq!(
-            normalize_leading(8, SpreadMode::Double, CoverMode::Paired, 5),
+            normalize_leading(8, SpreadLayout::Double, CoverMode::Paired, 5),
             4
         );
         assert_eq!(
-            normalize_leading(8, SpreadMode::Double, CoverMode::Standalone, 5),
+            normalize_leading(8, SpreadLayout::Double, CoverMode::Standalone, 5),
             5
         );
         assert_eq!(
-            normalize_leading(8, SpreadMode::Single, CoverMode::Standalone, 5),
+            normalize_leading(8, SpreadLayout::Single, CoverMode::Standalone, 5),
             5
         );
     }
@@ -502,7 +512,7 @@ mod tests {
     fn toggle_boundary_visible_page_stays_contained() {
         // For a spread of (mode, cover, index) transitions, normalizing then
         // materializing must keep the original page visible.
-        let modes = [SpreadMode::Single, SpreadMode::Double];
+        let modes = [SpreadLayout::Single, SpreadLayout::Double];
         let covers = [CoverMode::Standalone, CoverMode::Paired];
         for total in 1..=8usize {
             for &mode in &modes {
@@ -519,7 +529,7 @@ mod tests {
 
     #[test]
     fn next_prev_round_trip_double_paired() {
-        let m = SpreadMode::Double;
+        let m = SpreadLayout::Double;
         let c = CoverMode::Paired;
         // From 0, next then prev returns to 0 (when total allows advancing).
         let n = next_leading(6, m, c, 0);
@@ -529,7 +539,7 @@ mod tests {
 
     #[test]
     fn next_prev_round_trip_double_standalone() {
-        let m = SpreadMode::Double;
+        let m = SpreadLayout::Double;
         let c = CoverMode::Standalone;
         let n = next_leading(6, m, c, 1);
         assert_eq!(n, 3);
