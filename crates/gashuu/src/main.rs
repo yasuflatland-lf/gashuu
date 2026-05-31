@@ -111,6 +111,14 @@ fn main() -> color_eyre::Result<()> {
                         refresh(&ui, &state.borrow());
                     }
                 }
+                // Zoom/fit commands are declared in the keymap but not yet wired
+                // to a view implementation; ignore them until a later PR adds the
+                // zoom state and UI hooks.
+                KeyCommand::ZoomIn
+                | KeyCommand::ZoomOut
+                | KeyCommand::ResetView
+                | KeyCommand::FitActual
+                | KeyCommand::CycleFit => {}
             }
         });
     }
