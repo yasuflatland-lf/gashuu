@@ -1,0 +1,4 @@
+# Force LF line endings on checkout for all platforms so `cargo fmt --check`
+# (rustfmt.toml: newline_style = "Unix") passes on the Windows CI runner,
+# whose Git defaults to core.autocrlf=true and would otherwise check out CRLF.
+* text=auto eol=lf
