@@ -4,7 +4,8 @@
 //! on Linux, the platform equivalents elsewhere). I/O is exposed both as
 //! path-taking primitives (`load_from`/`save_to`, testable with `tempfile`) and
 //! convenience wrappers (`load`/`save`) that resolve the OS path. This crate stays
-//! logging-free: corrupt-file recovery policy lives in the presentation layer.
+//! logging-free: load-failure recovery (including corrupt files) lives in the
+//! presentation layer.
 
 use crate::cache::{DEFAULT_CAPACITY, DEFAULT_PREFETCH_RADIUS};
 use crate::error::CoreError;
@@ -34,7 +35,8 @@ pub enum SpreadMode {
 }
 
 /// Key tokens (matching the `.slint` FocusScope tokens) bound to each navigation
-/// direction. Persisted in PR3 but not yet consulted by `keymap::map_key`.
+/// direction. Persisted in PR3, but `keymap::map_key` hard-codes these same tokens
+/// rather than reading this struct; user-remappable keys are deferred to a later PR.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct KeyBindings {
     pub next: Vec<String>,
@@ -112,7 +114,8 @@ impl Settings {
         Self::load_from(&Self::config_path()?)
     }
 
-    /// Load from an explicit path. Missing → defaults; corrupt → `Err`.
+    /// Load from an explicit path. Missing → defaults; any other I/O error or
+    /// malformed JSON → `Err`.
     pub fn load_from(path: &Path) -> Result<Self, CoreError> {
         match std::fs::read_to_string(path) {
             Ok(json) => Self::from_json(&json),
@@ -142,13 +145,46 @@ impl Settings {
     /// Parse JSON, migrating older schema versions to the current shape.
     pub fn from_json(json: &str) -> Result<Self, CoreError> {
         let value: serde_json::Value = serde_json::from_str(json)?;
-        let from = value.get("version").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+        if !value.is_object() {
+            // Reject non-object roots (e.g. `5`, `[]`, `"x"`, `true`, `null`): migrate
+            // indexes into the value as a map and would otherwise panic. Surface as a
+            // typed error so the presentation layer's corrupt-file recovery handles it.
+            // We cannot use `from_value::<Self>` here because all fields carry
+            // `#[serde(default)]`, so serde would happily deserialize an array (or other
+            // non-object) into an all-defaults Settings — defeating the safety contract.
+            // Deserializing into a Map forces serde_json to emit an invalid-type error
+            // for anything that is not a JSON object.
+            let _: serde_json::Map<String, serde_json::Value> =
+                serde_json::from_value(value).map_err(CoreError::from)?;
+            // The line above always returns Err for a non-object; this is unreachable.
+            unreachable!("non-object value was accepted as a JSON object map");
+        }
+        // FIX 2: use checked conversion instead of truncating `as u32` cast so that
+        // a crafted future-version value (> u32::MAX) is treated as unknown (0) rather
+        // than silently wrapping and triggering an unexpected migration.
+        let from = value
+            .get("version")
+            .and_then(|v| v.as_u64())
+            .and_then(|n| u32::try_from(n).ok())
+            .unwrap_or(0);
         let value = if from < SETTINGS_VERSION {
             migrate(value, from)
         } else {
             value
         };
-        Ok(serde_json::from_value(value)?)
+        let mut settings: Self = serde_json::from_value(value)?;
+        // FIX 3: normalize invariants that a hand-edited or corrupt file could violate.
+        // A persisted cache_size of 0 would otherwise be returned verbatim to callers
+        // while ImageCache::new silently coerces it via `capacity.max(1)`; normalize
+        // here so the stored value matches the value actually used. (preload_pages is
+        // deliberately NOT clamped: 0 is a valid "prefetch disabled" radius and is not
+        // coerced downstream, so there is no stored-vs-used divergence to fix.)
+        settings.cache_size = settings.cache_size.max(1);
+        // push_recent caps recent_files on write, but a hand-edited file could exceed
+        // MAX_RECENT_FILES and then persist forever (exit-save writes in-memory state);
+        // enforce the cap on the read path too.
+        settings.recent_files.truncate(MAX_RECENT_FILES);
+        Ok(settings)
     }
 
     /// Record `path` as most-recently-opened when tracking is enabled. Dedups
@@ -167,7 +203,9 @@ impl Settings {
 /// Upgrade a raw settings JSON value from `from` to the current schema version.
 /// With only v1 today, the sole step documents the v0→v1 contract (v0 predates
 /// `preload_pages`); `#[serde(default)]` already covers absent fields, so this is
-/// chiefly the hook future schema changes plug into. Always stamps the version.
+/// chiefly the hook future schema changes plug into. Stamps the version with the
+/// final value reached by the migration chain (which is `SETTINGS_VERSION` once all
+/// steps have run).
 fn migrate(mut value: serde_json::Value, from: u32) -> serde_json::Value {
     let mut version = from;
     if version == 0 {
@@ -324,5 +362,94 @@ mod tests {
     #[test]
     fn default_settings_json_snapshot() {
         insta::assert_snapshot!(Settings::default().to_json().unwrap());
+    }
+
+    // ── FIX 1 regression: non-object JSON roots must return Err, never panic ──
+
+    #[test]
+    fn from_json_non_object_root_errors() {
+        for input in &["5", "[]", "\"x\"", "true", "null"] {
+            let result = Settings::from_json(input);
+            assert!(
+                matches!(result, Err(CoreError::Settings(_))),
+                "expected Err(CoreError::Settings(_)) for input {:?}, got {:?}",
+                input,
+                result
+            );
+        }
+    }
+
+    // ── FIX 3 regression: recent_files capped on load ──
+
+    #[test]
+    fn from_json_caps_recent_files_on_load() {
+        let entries: Vec<String> = (0..(MAX_RECENT_FILES + 5))
+            .map(|i| format!("/path/{i}"))
+            .collect();
+        let json = serde_json::json!({
+            "version": SETTINGS_VERSION,
+            "recent_files": entries,
+        })
+        .to_string();
+        let s = Settings::from_json(&json).unwrap();
+        assert_eq!(s.recent_files.len(), MAX_RECENT_FILES);
+    }
+
+    // ── FIX 3 regression: cache_size=0 normalized to 1; preload_pages=0 kept ──
+
+    #[test]
+    fn load_normalizes_zero_cache_size_to_one() {
+        let json = serde_json::json!({
+            "version": SETTINGS_VERSION,
+            "cache_size": 0,
+            "preload_pages": 0,
+        })
+        .to_string();
+        let s = Settings::from_json(&json).unwrap();
+        assert_eq!(s.cache_size, 1, "cache_size=0 must be normalized to 1");
+        assert_eq!(s.preload_pages, 0, "preload_pages=0 must NOT be clamped");
+    }
+
+    // ── push_recent ordering: promote an existing middle entry ──
+
+    #[test]
+    fn push_recent_promotes_existing_middle_entry() {
+        let mut s = Settings {
+            track_recent_files: true,
+            recent_files: vec![
+                PathBuf::from("/a"),
+                PathBuf::from("/b"),
+                PathBuf::from("/c"),
+            ],
+            ..Default::default()
+        };
+        s.push_recent(PathBuf::from("/b"));
+        assert_eq!(
+            s.recent_files,
+            vec![
+                PathBuf::from("/b"),
+                PathBuf::from("/a"),
+                PathBuf::from("/c"),
+            ],
+            "existing middle entry must be moved to front, others shifted back"
+        );
+    }
+
+    // ── migrate guard: present preload_pages must not be overwritten ──
+
+    #[test]
+    fn migrate_preserves_existing_preload_pages() {
+        let value = serde_json::json!({"version": 0, "preload_pages": 99});
+        let migrated = migrate(value, 0);
+        assert_eq!(
+            migrated["preload_pages"].as_u64().unwrap(),
+            99,
+            "migrate must not overwrite a present preload_pages value"
+        );
+        assert_eq!(
+            migrated["version"].as_u64().unwrap() as u32,
+            1,
+            "migrate must stamp version=1 after the v0→v1 step"
+        );
     }
 }
