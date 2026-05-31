@@ -15,7 +15,7 @@ pub use error::CoreError;
 pub use image_ops::{check_pixel_limit, decode, DecodedImage, MAX_PIXELS};
 pub use page_source::{FolderSource, PageEntry, PageSource};
 pub use settings::{
-    CoverMode, KeyBindings, ReadingDirection, Settings, SpreadMode, MAX_RECENT_FILES,
+    CoverMode, FitMode, KeyBindings, ReadingDirection, Settings, SpreadMode, MAX_RECENT_FILES,
     SETTINGS_VERSION,
 };
 pub use spread::{next_leading, normalize_leading, prev_leading, spread_at, Spread};
