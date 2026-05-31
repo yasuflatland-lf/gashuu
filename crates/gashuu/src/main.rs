@@ -72,6 +72,9 @@ fn refresh(ui: &ViewerWindow, state: &ViewerState) {
         Some(Err(e)) => {
             tracing::error!(error = %e, "failed to decode page");
             ui.set_status_text(format!("Decode error: {e}").into());
+            // Clear the stale page so the view matches the error status rather than
+            // showing the previously decoded page.
+            ui.set_current_page(slint::Image::default());
         }
         None => {
             // Source loaded but empty (no decodable page): clear any stale image
