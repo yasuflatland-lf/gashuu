@@ -1,0 +1,10 @@
+[tools]
+# rustfmt/clippy must be requested explicitly or rustup uses the minimal profile.
+# llvm-tools-preview is required by cargo-llvm-cov for source-based coverage.
+rust = { version = "1.96.0", components = "rustfmt,clippy,llvm-tools-preview" }
+"cargo:cargo-nextest" = "0.9.137"
+"cargo:cargo-llvm-cov" = "0.8.7"
+
+[settings]
+# Prefer binary fetch via cargo-binstall when available (faster installs).
+cargo.binstall = true

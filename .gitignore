@@ -1,2 +1,24 @@
 # Superpowers brainstorming / specs (local only)
 docs/superpowers/
+
+# Claude Code plans (local only)
+.claude/plans/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Editor / IDE
+.idea/
+.vscode/
+*.swp
+
+# Rust / Cargo (workspace target at repo root)
+/target/
+
+# Coverage artifacts (lcov from cargo-llvm-cov; uploaded to Codecov in CI)
+/lcov.info
+/coverage/
+
+# mise (local state)
+.mise.local.toml
