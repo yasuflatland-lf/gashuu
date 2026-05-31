@@ -14,6 +14,23 @@ pub struct Spread {
     pub trailing: Option<usize>,
 }
 
+/// Clamp a page/leading index into `[0, total - 1]` (the shared defensive guard
+/// every entry point applies; callers guarantee `total > 0`). Returns 0 when
+/// `total == 0`.
+fn clamp_index(total: usize, index: usize) -> usize {
+    index.min(total.saturating_sub(1))
+}
+
+/// Leading index of the first Standalone pair: page 1 ({1,2}), or 0 (the cover)
+/// when there is no second page to pair with.
+fn first_pair_start(total: usize) -> usize {
+    if total > 1 {
+        1
+    } else {
+        0
+    }
+}
+
 /// Largest even page index `< total` (start of the final even-aligned pair).
 /// Used by Double/Paired. Returns 0 when `total <= 1` (callers guard `total == 0`).
 fn last_even(total: usize) -> usize {
@@ -41,8 +58,7 @@ fn last_start_standalone(total: usize) -> usize {
 /// `total > 0`. The returned `trailing` is present only when a partner page
 /// actually exists within `total`.
 pub fn spread_at(total: usize, mode: SpreadMode, cover: CoverMode, leading: usize) -> Spread {
-    let max_index = total.saturating_sub(1);
-    let lead = leading.min(max_index);
+    let lead = clamp_index(total, leading);
 
     match mode {
         SpreadMode::Single => Spread {
@@ -86,22 +102,17 @@ fn pair_trailing(total: usize, leading: usize) -> Option<usize> {
 /// Leading index of the next spread in reading order, clamped at the final
 /// spread so repeated "next" at the end is a no-op.
 pub fn next_leading(total: usize, mode: SpreadMode, cover: CoverMode, leading: usize) -> usize {
-    let max_index = total.saturating_sub(1);
-    let lead = leading.min(max_index);
+    let lead = clamp_index(total, leading);
 
     match mode {
-        SpreadMode::Single => lead.saturating_add(1).min(max_index),
+        SpreadMode::Single => lead.saturating_add(1).min(total.saturating_sub(1)),
         SpreadMode::Double => match cover {
             CoverMode::Paired => lead.saturating_add(2).min(last_even(total)),
             CoverMode::Standalone => {
                 let last = last_start_standalone(total);
                 if lead == 0 {
                     // Cover → first pair (or stay put when there is no second page).
-                    if total > 1 {
-                        1
-                    } else {
-                        0
-                    }
+                    first_pair_start(total)
                 } else if lead % 2 == 1 {
                     // Odd leading is a valid pair start: advance by two, clamp.
                     lead.saturating_add(2).min(last)
@@ -110,11 +121,7 @@ pub fn next_leading(total: usize, mode: SpreadMode, cover: CoverMode, leading: u
                     // defensive — normalize onto a valid start, then advance.
                     let norm = normalize_leading(total, mode, cover, lead);
                     if norm == 0 {
-                        if total > 1 {
-                            1
-                        } else {
-                            0
-                        }
+                        first_pair_start(total)
                     } else {
                         norm.saturating_add(2).min(last)
                     }
@@ -127,8 +134,7 @@ pub fn next_leading(total: usize, mode: SpreadMode, cover: CoverMode, leading: u
 /// Leading index of the previous spread in reading order, clamped at 0 so
 /// repeated "prev" at the start is a no-op.
 pub fn prev_leading(total: usize, mode: SpreadMode, cover: CoverMode, leading: usize) -> usize {
-    let max_index = total.saturating_sub(1);
-    let lead = leading.min(max_index);
+    let lead = clamp_index(total, leading);
 
     match mode {
         SpreadMode::Single => lead.saturating_sub(1),
@@ -159,8 +165,7 @@ pub fn prev_leading(total: usize, mode: SpreadMode, cover: CoverMode, leading: u
 /// mode/cover toggle so the visible page stays on screen. `index` is clamped
 /// into `[0, total - 1]`; callers guarantee `total > 0`.
 pub fn normalize_leading(total: usize, mode: SpreadMode, cover: CoverMode, index: usize) -> usize {
-    let max_index = total.saturating_sub(1);
-    let idx = index.min(max_index);
+    let idx = clamp_index(total, index);
 
     match mode {
         SpreadMode::Single => idx,

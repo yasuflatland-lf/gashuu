@@ -126,7 +126,7 @@ fn main() -> color_eyre::Result<()> {
 
 /// Push the current spread + status into the UI.
 fn refresh(ui: &ViewerWindow, state: &ViewerState) {
-    ui.set_status_text(state.status_text().into());
+    let status = state.status_text();
     ui.set_rtl(matches!(state.reading_direction(), ReadingDirection::Rtl));
     match state.current_spread() {
         Some(Ok(spread)) => {
@@ -143,11 +143,11 @@ fn refresh(ui: &ViewerWindow, state: &ViewerState) {
             }
             // A trailing-page decode failure degraded the view to leading-only;
             // append a marker so the status no longer contradicts the single
-            // page actually shown (overrides the top-of-refresh status_text).
-            if let Some(failed) = spread.trailing_failed {
-                ui.set_status_text(
-                    format!("{}  (page {} unavailable)", state.status_text(), failed + 1).into(),
-                );
+            // page actually shown.
+            match spread.trailing_failed {
+                Some(failed) => ui
+                    .set_status_text(format!("{status}  (page {} unavailable)", failed + 1).into()),
+                None => ui.set_status_text(status.into()),
             }
         }
         Some(Err(e)) => {
@@ -159,7 +159,9 @@ fn refresh(ui: &ViewerWindow, state: &ViewerState) {
         }
         None => {
             // Source loaded but empty (or no source yet): clear and show single
-            // so the view matches the status text.
+            // so the view matches the status text ("No folder opened" / "Folder
+            // contains no images").
+            ui.set_status_text(status.into());
             ui.set_leading_page(slint::Image::default());
             ui.set_trailing_page(slint::Image::default());
             ui.set_single(true);
