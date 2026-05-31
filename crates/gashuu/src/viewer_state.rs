@@ -14,24 +14,46 @@ pub struct ViewerState {
     cache: Option<ImageCache>,
     page_count: usize,
     index: usize,
+    cache_size: usize,
+    preload_pages: usize,
 }
 
 impl ViewerState {
     pub fn new() -> Self {
+        Self::with_cache_config(DEFAULT_CAPACITY, DEFAULT_PREFETCH_RADIUS)
+    }
+
+    /// Construct with explicit cache config (from persisted `Settings`).
+    pub fn with_cache_config(cache_size: usize, preload_pages: usize) -> Self {
         Self {
             cache: None,
             page_count: 0,
             index: 0,
+            cache_size,
+            preload_pages,
         }
     }
 
     /// Replace the active source (used by `open_folder` and by tests). Wraps the
     /// source in a fresh `ImageCache`, discarding any previously cached pages.
     pub fn set_source(&mut self, source: Arc<dyn PageSource>) {
-        let cache = ImageCache::new(source, DEFAULT_CAPACITY, DEFAULT_PREFETCH_RADIUS);
+        let cache = ImageCache::new(source, self.cache_size, self.preload_pages);
         self.page_count = cache.len();
         self.cache = Some(cache);
         self.index = 0;
+    }
+
+    // Test-only accessors (same #[allow(dead_code)] convention as the existing
+    // page_count()/index() accessors: in a binary crate, pub is not a public API
+    // surface, so -D warnings flags cfg(test)-only callers as dead code).
+    #[allow(dead_code)]
+    pub fn cache_size(&self) -> usize {
+        self.cache_size
+    }
+
+    #[allow(dead_code)]
+    pub fn preload_pages(&self) -> usize {
+        self.preload_pages
     }
 
     /// Open a folder as the active source, resetting to the first page.
@@ -234,5 +256,12 @@ mod tests {
         state.apply(NavAction::Next);
         state.apply(NavAction::Next);
         assert_eq!(state.status_text(), "3 / 3");
+    }
+
+    #[test]
+    fn with_cache_config_stores_values() {
+        let state = ViewerState::with_cache_config(7, 1);
+        assert_eq!(state.cache_size(), 7);
+        assert_eq!(state.preload_pages(), 1);
     }
 }
