@@ -146,21 +146,20 @@ impl Settings {
     pub fn from_json(json: &str) -> Result<Self, CoreError> {
         let value: serde_json::Value = serde_json::from_str(json)?;
         if !value.is_object() {
-            // Reject non-object roots (e.g. `5`, `[]`, `"x"`, `true`, `null`): migrate
+            // Reject non-object roots (e.g. `5`, `[]`, `"x"`, `true`, `null`): `migrate`
             // indexes into the value as a map and would otherwise panic. Surface as a
             // typed error so the presentation layer's corrupt-file recovery handles it.
             // We cannot use `from_value::<Self>` here because all fields carry
             // `#[serde(default)]`, so serde would happily deserialize an array (or other
             // non-object) into an all-defaults Settings — defeating the safety contract.
-            // Deserializing into a Map forces serde_json to emit an invalid-type error
-            // for anything that is not a JSON object.
-            let _: serde_json::Map<String, serde_json::Value> =
-                serde_json::from_value(value).map_err(CoreError::from)?;
-            // The line above always returns Err for a non-object; this is unreachable.
-            unreachable!("non-object value was accepted as a JSON object map");
+            // Deserializing into a Map forces serde_json to emit an invalid-type error,
+            // which is guaranteed for a non-object value, hence `unwrap_err`.
+            let err = serde_json::from_value::<serde_json::Map<String, serde_json::Value>>(value)
+                .unwrap_err();
+            return Err(err.into());
         }
-        // FIX 2: use checked conversion instead of truncating `as u32` cast so that
-        // a crafted future-version value (> u32::MAX) is treated as unknown (0) rather
+        // Use a checked conversion instead of a truncating `as u32` cast so that a
+        // crafted future-version value (> u32::MAX) is treated as unknown (0) rather
         // than silently wrapping and triggering an unexpected migration.
         let from = value
             .get("version")
@@ -173,7 +172,7 @@ impl Settings {
             value
         };
         let mut settings: Self = serde_json::from_value(value)?;
-        // FIX 3: normalize invariants that a hand-edited or corrupt file could violate.
+        // Normalize invariants that a hand-edited or corrupt file could violate.
         // A persisted cache_size of 0 would otherwise be returned verbatim to callers
         // while ImageCache::new silently coerces it via `capacity.max(1)`; normalize
         // here so the stored value matches the value actually used. (preload_pages is
