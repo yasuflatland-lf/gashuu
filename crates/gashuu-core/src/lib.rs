@@ -12,7 +12,7 @@ pub mod spread;
 
 pub use cache::{ImageCache, DEFAULT_CAPACITY, DEFAULT_PREFETCH_RADIUS};
 pub use error::CoreError;
-pub use image_ops::{decode, DecodedImage};
+pub use image_ops::{check_pixel_limit, decode, DecodedImage, MAX_PIXELS};
 pub use page_source::{FolderSource, PageEntry, PageSource};
 pub use settings::{
     CoverMode, KeyBindings, ReadingDirection, Settings, SpreadMode, MAX_RECENT_FILES,

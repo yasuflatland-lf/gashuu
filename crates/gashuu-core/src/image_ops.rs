@@ -3,6 +3,30 @@
 
 use crate::error::CoreError;
 
+/// Maximum allowed pixel count for decoded images.
+///
+/// Aligned with the existing 512 MiB alloc cap: 512 MiB / 4 bytes-per-RGBA-pixel
+/// = 128 Mpx. An explicit pixel-count guard makes the rejection intent testable
+/// without exercising the alloc path.
+pub const MAX_PIXELS: u64 = 128 * 1024 * 1024;
+
+/// Check that a `width × height` image does not exceed [`MAX_PIXELS`].
+///
+/// This is a pure, allocation-free function used as an early guard inside
+/// [`decode`] (before the full decode allocates memory) and directly in tests.
+pub fn check_pixel_limit(width: u32, height: u32) -> Result<(), CoreError> {
+    let pixels = (width as u64) * (height as u64);
+    if pixels > MAX_PIXELS {
+        return Err(CoreError::ImageTooLarge {
+            width,
+            height,
+            pixels,
+            max: MAX_PIXELS,
+        });
+    }
+    Ok(())
+}
+
 /// A decoded image as tightly packed RGBA8 bytes plus its dimensions.
 ///
 /// The invariant `rgba.len() == width * height * 4` is enforced by the only
@@ -53,11 +77,22 @@ impl DecodedImage {
 /// Supports any format recognized by `image::ImageReader` (PNG, JPEG, …). Decoder
 /// limits reject oversize / decompression-bomb images before allocation.
 ///
+/// Defense in depth: a lightweight header-only pre-read via `into_dimensions()`
+/// runs [`check_pixel_limit`] before the full decode allocates any pixel memory.
+/// The existing `image::Limits` alloc cap is kept as a second layer.
+///
 /// `image::Limits` is `#[non_exhaustive]`, so struct-literal init is impossible;
 /// we must use field assignment after `default()`, which triggers
 /// `clippy::field_reassign_with_default`. The allow is scoped to this function only.
 #[allow(clippy::field_reassign_with_default)]
 pub fn decode(bytes: &[u8]) -> Result<DecodedImage, CoreError> {
+    // Pre-read: parse header only (cheap) to check dimensions before allocating.
+    let header_reader =
+        image::ImageReader::new(std::io::Cursor::new(bytes)).with_guessed_format()?;
+    let (w, h) = header_reader.into_dimensions()?;
+    check_pixel_limit(w, h)?;
+
+    // Full decode with the existing Limits-based alloc cap (defense in depth).
     let mut reader = image::ImageReader::new(std::io::Cursor::new(bytes)).with_guessed_format()?;
     let mut limits = image::Limits::default();
     limits.max_image_width = Some(16_384);
@@ -113,5 +148,49 @@ mod tests {
     fn new_accepts_matching_rgba_length() {
         let img = DecodedImage::new(vec![0u8; 16], 2, 2).unwrap();
         assert_eq!((img.width(), img.height(), img.rgba().len()), (2, 2, 16));
+    }
+
+    // --- check_pixel_limit ---
+
+    #[test]
+    fn check_pixel_limit_exact_max_is_ok() {
+        // 16384 * 8192 = 134_217_728 = 128 * 1024 * 1024 = MAX_PIXELS
+        assert_eq!((16_384_u64) * (8_192_u64), MAX_PIXELS);
+        assert!(check_pixel_limit(16_384, 8_192).is_ok());
+    }
+
+    #[test]
+    fn check_pixel_limit_one_over_errors() {
+        // MAX_PIXELS = 134_217_728; u32::MAX = 4_294_967_295 so h = 134_217_729 fits in u32.
+        let h = (MAX_PIXELS + 1) as u32;
+        let err = check_pixel_limit(1, h).unwrap_err();
+        if let CoreError::ImageTooLarge {
+            width,
+            height,
+            pixels,
+            max,
+        } = err
+        {
+            assert_eq!(width, 1);
+            assert_eq!(height, MAX_PIXELS as u32 + 1);
+            assert_eq!(pixels, MAX_PIXELS + 1);
+            assert_eq!(max, MAX_PIXELS);
+        } else {
+            panic!("expected ImageTooLarge, got something else");
+        }
+    }
+
+    #[test]
+    fn check_pixel_limit_small_size_is_ok() {
+        assert!(check_pixel_limit(100, 100).is_ok());
+    }
+
+    #[test]
+    fn decode_small_png_succeeds_through_new_prepath() {
+        // Verifies the new header-pre-read path does not break normal small images.
+        let decoded = decode(&png_bytes(4, 4)).unwrap();
+        assert_eq!(decoded.width(), 4);
+        assert_eq!(decoded.height(), 4);
+        assert_eq!(decoded.rgba().len(), 4 * 4 * 4);
     }
 }

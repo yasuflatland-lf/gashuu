@@ -31,6 +31,15 @@ pub enum CoreError {
     /// The OS did not provide a config directory for settings storage.
     #[error("no config directory available for settings")]
     NoConfigDir,
+
+    /// The image dimensions exceed the maximum allowed pixel count.
+    #[error("image too large: {width}x{height} = {pixels} px exceeds {max}")]
+    ImageTooLarge {
+        width: u32,
+        height: u32,
+        pixels: u64,
+        max: u64,
+    },
 }
 
 #[cfg(test)]
