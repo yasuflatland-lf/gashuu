@@ -18,7 +18,8 @@ export component ViewerWindow inherits Window {
     callback open-folder();
     // Forwarded navigation token: "left" | "right" | "space" | "backspace" | "d" | "r" | "c".
     callback nav(string);
-    // Forwarded window size (px) so Rust can resolve SpreadMode::Auto live.
+    // Forwarded window size (logical pixels, Slint `length` units) so Rust can
+    // resolve SpreadMode::Auto live.
     callback resized(length, length);
 
     VerticalBox {
@@ -73,6 +74,8 @@ export component ViewerWindow inherits Window {
     // Grab keyboard focus on startup so arrow keys work without a click.
     init => {
         fs.focus();
-        root.resized(self.width, self.height);   // push initial size for Auto
+        // Initial window size arrives via the `changed width`/`changed height`
+        // handlers once the window is realized; `viewport_aspect` defaults to 1.0
+        // until then.
     }
 }

@@ -528,7 +528,7 @@ mod tests {
     #[test]
     fn resolve_auto_guards_degenerate_aspect() {
         // Non-finite / non-positive aspects are treated as 1.0 (=> Double); no panic.
-        for aspect in [0.0_f32, -1.0, f32::NAN, f32::INFINITY] {
+        for aspect in [0.0_f32, -1.0, f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
             assert_eq!(SpreadMode::Auto.resolve(aspect), SpreadLayout::Double);
         }
     }

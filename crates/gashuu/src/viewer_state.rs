@@ -194,10 +194,9 @@ impl ViewerState {
         }))
     }
 
-    /// Cycle Single -> Double -> Auto -> Single, then re-normalize the index so
-    /// the currently visible page stays on screen (Auto re-anchors against its
-    /// resolved layout). Always returns `true` (a 3-cycle always changes the
-    /// configured mode).
+    /// Cycle Single -> Double -> Auto -> Single, then re-normalizes the index
+    /// (via the effective layout) so the currently visible page stays on screen.
+    /// Always returns `true` (a 3-cycle always changes the configured mode).
     pub fn toggle_spread(&mut self) -> bool {
         let before = self.spread_mode;
         self.spread_mode = match before {
@@ -212,11 +211,19 @@ impl ViewerState {
     /// Update the window aspect ratio used to resolve `SpreadMode::Auto`. Returns
     /// `true` iff the EFFECTIVE layout changed (only possible in Auto, crossing
     /// the square boundary). On a change, re-normalizes the index so the
-    /// currently visible page stays on screen. A non-positive/non-finite height
-    /// falls back to aspect 1.0. No-op-safe with no folder open (index stays 0).
+    /// currently visible page stays on screen. A degenerate window size — any
+    /// `width`/`height` whose ratio is non-finite or non-positive — falls back to
+    /// aspect `1.0`, so `viewport_aspect` always holds a valid ratio
+    /// (`SpreadMode::resolve` is the standalone safety net but the field itself
+    /// stays sane). No-op-safe with no folder open (index stays 0).
     pub fn set_viewport_size(&mut self, width: f32, height: f32) -> bool {
         let before = self.effective_layout();
-        self.viewport_aspect = if height > 0.0 { width / height } else { 1.0 };
+        let aspect = width / height;
+        self.viewport_aspect = if aspect.is_finite() && aspect > 0.0 {
+            aspect
+        } else {
+            1.0
+        };
         let after = self.effective_layout();
         if before != after {
             self.renormalize_index();
@@ -921,5 +928,86 @@ mod tests {
         state.apply(NavAction::Next);
         assert_eq!(state.index(), 1);
         assert_eq!(state.status_text(), "2 / 6  [auto \u{00b7} LTR]");
+    }
+
+    #[test]
+    fn set_viewport_size_flip_moves_index_via_normalize() {
+        // Auto + Paired cover. Portrait resolves Auto to Single, where index 1 is a
+        // valid leading; flipping to landscape (Double/Paired) makes pairs start
+        // even, so normalize_leading(.., Double, Paired, 1) rounds 1 down to 0 — the
+        // renormalize on flip must MOVE the index, not no-op.
+        let mut state = ViewerState::from_settings(&Settings {
+            spread_mode: SpreadMode::Auto,
+            cover_mode: CoverMode::Paired,
+            ..Default::default()
+        });
+        // Default aspect 1.0 resolves Auto to Double; go portrait => Single (flips).
+        assert!(state.set_viewport_size(900.0, 1200.0));
+        state.set_source(mock_with(6));
+        assert!(state.apply(NavAction::Next));
+        assert_eq!(state.index(), 1);
+
+        // Portrait -> landscape: Single -> Double/Paired flips; index 1 normalizes
+        // to the even pair start 0.
+        assert!(state.set_viewport_size(1600.0, 900.0));
+        assert_eq!(state.index(), 0);
+    }
+
+    #[test]
+    fn toggle_spread_renormalize_moves_index() {
+        // Standalone, Single mode, navigated to index 2. Toggling to Double makes
+        // index 2 (even > 0) an invalid Standalone leading, so normalize_leading
+        // re-anchors it down to the pair start 1 ({1,2}) — the renormalize must
+        // MOVE the index.
+        let mut state = ViewerState::new();
+        state.set_source(mock_with(6));
+        state.apply(NavAction::Next);
+        state.apply(NavAction::Next);
+        assert_eq!(state.index(), 2);
+        assert_eq!(state.spread_mode(), SpreadMode::Single);
+
+        assert!(state.toggle_spread());
+        assert_eq!(state.spread_mode(), SpreadMode::Double);
+        assert_eq!(state.index(), 1);
+    }
+
+    #[test]
+    fn auto_landscape_with_paired_cover_navigates_double() {
+        // Auto + Paired + landscape => Double. 5 pages Paired: {0,1}{2,3}{4};
+        // navigation steps leading 0->2->4.
+        let mut state = ViewerState::from_settings(&Settings {
+            spread_mode: SpreadMode::Auto,
+            cover_mode: CoverMode::Paired,
+            ..Default::default()
+        });
+        state.set_viewport_size(1600.0, 900.0);
+        state.set_source(mock_with(5));
+
+        // Cover paired with page 1: trailing present.
+        assert!(state.current_spread().unwrap().unwrap().trailing.is_some());
+
+        assert!(state.apply(NavAction::Next));
+        assert_eq!(state.index(), 2);
+        assert!(state.current_spread().unwrap().unwrap().trailing.is_some());
+        assert!(state.apply(NavAction::Next));
+        assert_eq!(state.index(), 4);
+        // Last page (4) stands alone.
+        assert!(state.current_spread().unwrap().unwrap().trailing.is_none());
+        assert!(!state.apply(NavAction::Next)); // clamp at last
+        assert_eq!(state.index(), 4);
+    }
+
+    #[test]
+    fn set_viewport_size_degenerate_inputs_do_not_panic() {
+        // Degenerate sizes must not panic and must not flip from the default 1.0
+        // aspect (=> Double); after sanitizing, the stored aspect stays 1.0.
+        let mut state = auto_state();
+        state.set_source(mock_with(6));
+
+        assert!(!state.set_viewport_size(0.0, 0.0));
+        assert!(!state.set_viewport_size(f32::NAN, f32::NAN));
+        // Still resolves to Double (aspect stayed 1.0): a non-cover spread pairs.
+        state.apply(NavAction::Next);
+        assert!(state.current_spread().unwrap().unwrap().trailing.is_some());
     }
 }

@@ -123,7 +123,7 @@ fn main() -> color_eyre::Result<()> {
         let state = Rc::clone(&state);
         ui.on_resized(move |w, h| {
             let Some(ui) = ui_weak.upgrade() else {
-                return;
+                return; // window is being torn down
             };
             if state.borrow_mut().set_viewport_size(w, h) {
                 refresh(&ui, &state.borrow());
