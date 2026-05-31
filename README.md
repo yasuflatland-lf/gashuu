@@ -7,15 +7,30 @@ A cross-platform manga viewer built with Rust and [Slint](https://slint.dev).
 
 ## Status (PR1 — MVP)
 
-Open a folder of PNG/JPG images and browse every page with the keyboard.
+Open a folder of PNG/JPG/JPEG images and browse every page with the keyboard.
 
 - **→ / Space** — next page
 - **← / Backspace** — previous page
 
 ## Develop
 
+First-time setup (the `mise trust` step is required once for a fresh clone):
+
 ```bash
+mise trust                                # trust ./mise.toml before installing
 mise install                              # Rust 1.96.0 + cargo-nextest + cargo-llvm-cov
+```
+
+On Linux, install Slint's system libraries (macOS and Windows need nothing extra):
+
+```bash
+sudo apt-get install -y libfontconfig1-dev libfreetype6-dev libxcb1-dev \
+  libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libxkbcommon-dev
+```
+
+Then:
+
+```bash
 cargo nextest run --workspace             # tests
 cargo clippy --workspace --all-targets -- -D warnings
 RUST_LOG=info cargo run -p gashuu         # run the viewer
