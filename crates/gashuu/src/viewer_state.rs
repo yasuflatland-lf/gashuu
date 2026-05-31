@@ -1,13 +1,17 @@
 //! Presentation-layer view state: which folder is open and the current page.
-//! Decode-on-demand in PR1 (the LRU cache arrives in PR2).
+//! Backed by `ImageCache` (LRU + background prefetch) since PR2.
 
 use crate::keymap::NavAction;
-use gashuu_core::{decode, CoreError, DecodedImage, FolderSource, PageSource};
+use gashuu_core::{
+    CoreError, DecodedImage, FolderSource, ImageCache, PageSource, DEFAULT_CAPACITY,
+    DEFAULT_PREFETCH_RADIUS,
+};
 use std::path::Path;
+use std::sync::Arc;
 
-/// Holds the active page source and the current page index.
+/// Holds the active image cache and the current page index.
 pub struct ViewerState {
-    source: Option<Box<dyn PageSource>>,
+    cache: Option<ImageCache>,
     page_count: usize,
     index: usize,
 }
@@ -15,16 +19,18 @@ pub struct ViewerState {
 impl ViewerState {
     pub fn new() -> Self {
         Self {
-            source: None,
+            cache: None,
             page_count: 0,
             index: 0,
         }
     }
 
-    /// Replace the active source (used by `open_folder` and by tests).
-    pub fn set_source(&mut self, source: Box<dyn PageSource>) {
-        self.page_count = source.list_pages().len();
-        self.source = Some(source);
+    /// Replace the active source (used by `open_folder` and by tests). Wraps the
+    /// source in a fresh `ImageCache`, discarding any previously cached pages.
+    pub fn set_source(&mut self, source: Arc<dyn PageSource>) {
+        let cache = ImageCache::new(source, DEFAULT_CAPACITY, DEFAULT_PREFETCH_RADIUS);
+        self.page_count = cache.len();
+        self.cache = Some(cache);
         self.index = 0;
     }
 
@@ -35,7 +41,7 @@ impl ViewerState {
         if skipped > 0 {
             tracing::warn!(skipped, "skipped unreadable entries while opening folder");
         }
-        self.set_source(Box::new(source));
+        self.set_source(Arc::new(source));
         Ok(())
     }
 
@@ -66,22 +72,20 @@ impl ViewerState {
         moved
     }
 
-    /// Decode the current page on demand. `None` when no pages are loaded.
-    pub fn current_image(&self) -> Option<Result<DecodedImage, CoreError>> {
-        let source = self.source.as_ref()?;
+    /// Return the current page from the cache (decoding on a miss and triggering
+    /// background prefetch). `None` when no pages are loaded. Returns an
+    /// `Arc<DecodedImage>` so a cache hit never copies the RGBA buffer.
+    pub fn current_image(&self) -> Option<Result<Arc<DecodedImage>, CoreError>> {
+        let cache = self.cache.as_ref()?;
         if self.page_count == 0 {
             return None;
         }
-        Some(
-            source
-                .read_bytes(self.index)
-                .and_then(|bytes| decode(&bytes)),
-        )
+        Some(cache.get(self.index))
     }
 
     /// Status line: "No folder opened", "Folder contains no images", or "N / total".
     pub fn status_text(&self) -> String {
-        match (&self.source, self.page_count) {
+        match (&self.cache, self.page_count) {
             (None, _) => "No folder opened".to_string(),
             (Some(_), 0) => "Folder contains no images".to_string(),
             (Some(_), _) => format!("{} / {}", self.index + 1, self.page_count),
@@ -109,7 +113,7 @@ mod tests {
         bytes
     }
 
-    fn mock_with(pages: usize) -> Box<dyn PageSource> {
+    fn mock_with(pages: usize) -> Arc<dyn PageSource> {
         let mut mock = MockPageSource::new();
         mock.expect_list_pages().returning(move || {
             vec![
@@ -121,7 +125,7 @@ mod tests {
             ]
         });
         mock.expect_read_bytes().returning(|_| Ok(tiny_png()));
-        Box::new(mock)
+        Arc::new(mock)
     }
 
     #[test]
@@ -210,7 +214,7 @@ mod tests {
         });
         mock.expect_read_bytes()
             .returning(|_| Err(CoreError::IndexOutOfRange { index: 0, len: 0 }));
-        state.set_source(Box::new(mock));
+        state.set_source(Arc::new(mock));
         assert!(matches!(state.current_image(), Some(Err(_))));
     }
 
