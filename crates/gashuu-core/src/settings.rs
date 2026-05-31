@@ -1,0 +1,328 @@
+//! Persistent user settings, serialized to JSON in the OS config directory.
+//!
+//! Path resolution uses the `directories` crate (`~/.config/gashuu/settings.json`
+//! on Linux, the platform equivalents elsewhere). I/O is exposed both as
+//! path-taking primitives (`load_from`/`save_to`, testable with `tempfile`) and
+//! convenience wrappers (`load`/`save`) that resolve the OS path. This crate stays
+//! logging-free: corrupt-file recovery policy lives in the presentation layer.
+
+use crate::cache::{DEFAULT_CAPACITY, DEFAULT_PREFETCH_RADIUS};
+use crate::error::CoreError;
+use directories::ProjectDirs;
+use serde::{Deserialize, Serialize};
+use std::path::{Path, PathBuf};
+
+/// On-disk schema version. Bump when the shape changes and add a `migrate` step.
+pub const SETTINGS_VERSION: u32 = 1;
+/// Maximum number of recently opened folders retained.
+pub const MAX_RECENT_FILES: usize = 10;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReadingDirection {
+    #[default]
+    Ltr,
+    Rtl,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SpreadMode {
+    #[default]
+    Single,
+    Double,
+}
+
+/// Key tokens (matching the `.slint` FocusScope tokens) bound to each navigation
+/// direction. Persisted in PR3 but not yet consulted by `keymap::map_key`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct KeyBindings {
+    pub next: Vec<String>,
+    pub prev: Vec<String>,
+}
+
+impl Default for KeyBindings {
+    fn default() -> Self {
+        Self {
+            next: vec!["right".into(), "space".into()],
+            prev: vec!["left".into(), "backspace".into()],
+        }
+    }
+}
+
+/// Persistent user settings. Fields are `#[serde(default)]` so older/partial
+/// documents load without error (forward/backward field-add resilience).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Settings {
+    #[serde(default = "default_version")]
+    pub version: u32,
+    #[serde(default)]
+    pub reading_direction: ReadingDirection,
+    #[serde(default)]
+    pub spread_mode: SpreadMode,
+    #[serde(default = "default_cache_size")]
+    pub cache_size: usize,
+    #[serde(default = "default_preload_pages")]
+    pub preload_pages: usize,
+    #[serde(default)]
+    pub key_bindings: KeyBindings,
+    /// Record recently opened folders. Off by default (privacy); recent_files is
+    /// only updated when this is true.
+    #[serde(default)]
+    pub track_recent_files: bool,
+    /// Recently opened folders, most-recent first. Capped at `MAX_RECENT_FILES`.
+    #[serde(default)]
+    pub recent_files: Vec<PathBuf>,
+}
+
+fn default_version() -> u32 {
+    SETTINGS_VERSION
+}
+fn default_cache_size() -> usize {
+    DEFAULT_CAPACITY
+}
+fn default_preload_pages() -> usize {
+    DEFAULT_PREFETCH_RADIUS
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            version: SETTINGS_VERSION,
+            reading_direction: ReadingDirection::default(),
+            spread_mode: SpreadMode::default(),
+            cache_size: DEFAULT_CAPACITY,
+            preload_pages: DEFAULT_PREFETCH_RADIUS,
+            key_bindings: KeyBindings::default(),
+            track_recent_files: false,
+            recent_files: Vec::new(),
+        }
+    }
+}
+
+impl Settings {
+    /// Resolve `settings.json` in the OS config dir (creates nothing).
+    pub fn config_path() -> Result<PathBuf, CoreError> {
+        let dirs = ProjectDirs::from("", "", "gashuu").ok_or(CoreError::NoConfigDir)?;
+        Ok(dirs.config_dir().join("settings.json"))
+    }
+
+    /// Load from the OS config path. Missing file → defaults (first run).
+    pub fn load() -> Result<Self, CoreError> {
+        Self::load_from(&Self::config_path()?)
+    }
+
+    /// Load from an explicit path. Missing → defaults; corrupt → `Err`.
+    pub fn load_from(path: &Path) -> Result<Self, CoreError> {
+        match std::fs::read_to_string(path) {
+            Ok(json) => Self::from_json(&json),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
+            Err(e) => Err(CoreError::from(e)),
+        }
+    }
+
+    /// Save to the OS config path (creating parent dirs as needed).
+    pub fn save(&self) -> Result<(), CoreError> {
+        self.save_to(&Self::config_path()?)
+    }
+
+    pub fn save_to(&self, path: &Path) -> Result<(), CoreError> {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(path, self.to_json()?)?;
+        Ok(())
+    }
+
+    /// Serialize to pretty JSON (also used by the snapshot test).
+    pub fn to_json(&self) -> Result<String, CoreError> {
+        Ok(serde_json::to_string_pretty(self)?)
+    }
+
+    /// Parse JSON, migrating older schema versions to the current shape.
+    pub fn from_json(json: &str) -> Result<Self, CoreError> {
+        let value: serde_json::Value = serde_json::from_str(json)?;
+        let from = value.get("version").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+        let value = if from < SETTINGS_VERSION {
+            migrate(value, from)
+        } else {
+            value
+        };
+        Ok(serde_json::from_value(value)?)
+    }
+
+    /// Record `path` as most-recently-opened when tracking is enabled. Dedups
+    /// (moves an existing entry to the front), caps at `MAX_RECENT_FILES`. No-op
+    /// when `track_recent_files` is false.
+    pub fn push_recent(&mut self, path: PathBuf) {
+        if !self.track_recent_files {
+            return;
+        }
+        self.recent_files.retain(|p| p != &path);
+        self.recent_files.insert(0, path);
+        self.recent_files.truncate(MAX_RECENT_FILES);
+    }
+}
+
+/// Upgrade a raw settings JSON value from `from` to the current schema version.
+/// With only v1 today, the sole step documents the v0→v1 contract (v0 predates
+/// `preload_pages`); `#[serde(default)]` already covers absent fields, so this is
+/// chiefly the hook future schema changes plug into. Always stamps the version.
+fn migrate(mut value: serde_json::Value, from: u32) -> serde_json::Value {
+    let mut version = from;
+    if version == 0 {
+        if value.get("preload_pages").is_none() {
+            value["preload_pages"] = serde_json::json!(DEFAULT_PREFETCH_RADIUS);
+        }
+        version = 1;
+    }
+    value["version"] = serde_json::json!(version);
+    value
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_settings_have_expected_values() {
+        let s = Settings::default();
+        assert_eq!(s.version, 1);
+        assert_eq!(s.reading_direction, ReadingDirection::Ltr);
+        assert_eq!(s.spread_mode, SpreadMode::Single);
+        assert_eq!(s.cache_size, 50);
+        assert_eq!(s.preload_pages, 3);
+        assert_eq!(s.key_bindings.next, vec!["right", "space"]);
+        assert_eq!(s.key_bindings.prev, vec!["left", "backspace"]);
+        assert!(!s.track_recent_files);
+        assert!(s.recent_files.is_empty());
+    }
+
+    fn non_default_settings() -> Settings {
+        Settings {
+            version: SETTINGS_VERSION,
+            reading_direction: ReadingDirection::Rtl,
+            spread_mode: SpreadMode::Double,
+            cache_size: 99,
+            preload_pages: 7,
+            key_bindings: KeyBindings {
+                next: vec!["down".into()],
+                prev: vec!["up".into()],
+            },
+            track_recent_files: true,
+            recent_files: vec![PathBuf::from("/a"), PathBuf::from("/b")],
+        }
+    }
+
+    #[test]
+    fn round_trip_preserves_all_fields() {
+        let original = non_default_settings();
+        let json = original.to_json().unwrap();
+        let parsed = Settings::from_json(&json).unwrap();
+        assert_eq!(original, parsed);
+    }
+
+    #[test]
+    fn save_to_then_load_from_round_trips() {
+        let dir = tempfile::tempdir().unwrap();
+        // Path under a non-existent subdir to verify parent auto-creation.
+        let path = dir.path().join("nested").join("sub").join("settings.json");
+        let original = non_default_settings();
+        original.save_to(&path).unwrap();
+        let loaded = Settings::load_from(&path).unwrap();
+        assert_eq!(original, loaded);
+    }
+
+    #[test]
+    fn load_from_missing_file_returns_defaults() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("does-not-exist.json");
+        let loaded = Settings::load_from(&path).unwrap();
+        assert_eq!(loaded, Settings::default());
+    }
+
+    #[test]
+    fn load_from_corrupt_json_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("corrupt.json");
+        std::fs::write(&path, "not json").unwrap();
+        let err = Settings::load_from(&path).unwrap_err();
+        assert!(matches!(err, CoreError::Settings(_)));
+    }
+
+    #[test]
+    fn migrate_v0_fills_preload_and_bumps_version() {
+        let value = serde_json::json!({"version": 0, "cache_size": 7});
+        let migrated = migrate(value, 0);
+        assert_eq!(
+            migrated["preload_pages"].as_u64().unwrap() as usize,
+            DEFAULT_PREFETCH_RADIUS
+        );
+        assert_eq!(migrated["version"].as_u64().unwrap() as u32, 1);
+    }
+
+    #[test]
+    fn migrate_noop_for_current_version() {
+        let original = non_default_settings();
+        let json = original.to_json().unwrap();
+        let parsed = Settings::from_json(&json).unwrap();
+        assert_eq!(original, parsed);
+    }
+
+    #[test]
+    fn from_json_defaults_missing_fields() {
+        let s = Settings::from_json("{\"version\":1}").unwrap();
+        assert_eq!(s, Settings::default());
+    }
+
+    #[test]
+    fn from_json_empty_document_uses_serde_defaults() {
+        // A `{}` document exercises the `default_*` serde helpers (version absent
+        // triggers migration to v1, while cache_size falls back to its default).
+        let s = Settings::from_json("{}").unwrap();
+        assert_eq!(s, Settings::default());
+    }
+
+    #[test]
+    fn push_recent_disabled_is_noop() {
+        let mut s = Settings::default();
+        assert!(!s.track_recent_files);
+        s.push_recent(PathBuf::from("/some/path"));
+        assert!(s.recent_files.is_empty());
+    }
+
+    #[test]
+    fn push_recent_dedups_moves_to_front_and_caps() {
+        let mut s = Settings {
+            track_recent_files: true,
+            ..Default::default()
+        };
+
+        // Pushing the same path twice dedups to a single entry.
+        s.push_recent(PathBuf::from("/dup"));
+        s.push_recent(PathBuf::from("/dup"));
+        assert_eq!(s.recent_files.len(), 1);
+
+        // Push more than MAX_RECENT_FILES distinct paths; cap is enforced and
+        // the most-recent push is at the front.
+        s.recent_files.clear();
+        for i in 0..(MAX_RECENT_FILES + 5) {
+            s.push_recent(PathBuf::from(format!("/path/{i}")));
+        }
+        assert_eq!(s.recent_files.len(), MAX_RECENT_FILES);
+        let last = MAX_RECENT_FILES + 5 - 1;
+        assert_eq!(s.recent_files[0], PathBuf::from(format!("/path/{last}")));
+    }
+
+    #[test]
+    fn config_path_targets_gashuu_settings_json() {
+        let path = Settings::config_path().unwrap();
+        assert!(path.ends_with("settings.json"));
+        assert!(path.to_string_lossy().contains("gashuu"));
+    }
+
+    #[test]
+    fn default_settings_json_snapshot() {
+        insta::assert_snapshot!(Settings::default().to_json().unwrap());
+    }
+}

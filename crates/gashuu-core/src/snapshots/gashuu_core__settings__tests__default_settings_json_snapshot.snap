@@ -1,0 +1,23 @@
+---
+source: crates/gashuu-core/src/settings.rs
+expression: "Settings::default().to_json().unwrap()"
+---
+{
+  "version": 1,
+  "reading_direction": "ltr",
+  "spread_mode": "single",
+  "cache_size": 50,
+  "preload_pages": 3,
+  "key_bindings": {
+    "next": [
+      "right",
+      "space"
+    ],
+    "prev": [
+      "left",
+      "backspace"
+    ]
+  },
+  "track_recent_files": false,
+  "recent_files": []
+}
