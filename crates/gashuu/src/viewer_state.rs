@@ -209,7 +209,7 @@ impl ViewerState {
     /// currently visible page stays on screen. Returns `true` when the cover
     /// changed; a 2-variant toggle always flips, so this is currently always
     /// `true`. The bool is retained for forward-compatibility with multi-valued
-    /// modes (e.g. a future `SpreadMode::Auto`).
+    /// modes (e.g. a future `CoverMode` variant).
     pub fn toggle_cover(&mut self) -> bool {
         let before = self.cover_mode;
         self.cover_mode = match before {
@@ -224,7 +224,7 @@ impl ViewerState {
     /// so the index is left untouched. Returns `true` when the direction changed;
     /// a 2-variant toggle always flips, so this is currently always `true`. The
     /// bool is retained for forward-compatibility with multi-valued modes (e.g.
-    /// a future `SpreadMode::Auto`).
+    /// a future `ReadingDirection` variant).
     pub fn toggle_reading_direction(&mut self) -> bool {
         let before = self.reading_direction;
         self.reading_direction = match before {
