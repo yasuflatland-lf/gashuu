@@ -20,6 +20,9 @@ export component ViewerWindow inherits Window {
                 text: "Open Folder…";
                 clicked => {
                     root.open-folder();
+                    // Return focus to the page area so keyboard navigation keeps working
+                    // after the picker closes (open-folder is synchronous on the Rust side).
+                    fs.focus();
                 }
             }
             Text {
