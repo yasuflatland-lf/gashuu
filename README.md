@@ -7,7 +7,7 @@ A cross-platform manga viewer built with Rust and [Slint](https://slint.dev).
 
 ## Status (PR2 — Cached viewer)
 
-Open a folder of PNG/JPG images and browse every page with the keyboard. Pages are
+Open a folder of PNG/JPG/JPEG images and browse every page with the keyboard. Pages are
 held in an LRU cache (up to 50 decoded images) and the neighbours of the current
 page are prefetched in the background, so warmed page turns are effectively instant.
 

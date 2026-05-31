@@ -57,7 +57,9 @@ fn main() -> color_eyre::Result<()> {
                 if moved {
                     refresh(&ui, &state.borrow());
                 }
-                // DoD: cache-hit page turns should be <50ms. Observe with RUST_LOG=debug.
+                // Log every page-turn latency (cache hits target <50ms; the first
+                // visit to a page also includes a synchronous decode). Observe with
+                // RUST_LOG=debug.
                 tracing::debug!(
                     elapsed_ms = started.elapsed().as_secs_f64() * 1000.0,
                     moved,
