@@ -1,6 +1,6 @@
 //! Presentation-layer view state: which folder is open and the current spread.
 //! Backed by `ImageCache` (LRU + background prefetch) since PR2; drives a
-//! two-page spread (Single/Double, Standalone/Paired cover, LTR/RTL) since PR4.
+//! two-page spread (Single/Double/Auto, Standalone/Paired cover, LTR/RTL) since PR4/PR4a.
 //!
 //! The pure page-pairing math lives in `gashuu_core::spread` and is
 //! reading-direction-agnostic: it decides WHICH pages form a spread (in reading
@@ -140,7 +140,9 @@ impl ViewerState {
 
     /// Apply a navigation action a spread at a time. Returns true if the leading
     /// index moved. In Single mode this is the old ±1 clamp; in Double mode it
-    /// advances/retreats one spread (skipping the partner page).
+    /// advances/retreats one spread (skipping the partner page). Auto first
+    /// resolves to Single or Double from the current viewport aspect (via
+    /// `effective_layout()`) before the navigation step.
     pub fn apply(&mut self, action: NavAction) -> bool {
         if self.page_count == 0 {
             return false;
