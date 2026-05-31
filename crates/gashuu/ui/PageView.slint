@@ -1,4 +1,5 @@
-// Single page display: the image is fit inside the view, letterboxed on black.
+// Single page display: the image is scaled to fit (contain), with black bars
+// filling the unused space (letterbox for wide pages, pillarbox for tall ones).
 export component PageView inherits Rectangle {
     in property <image> source;
     background: #000000;

@@ -73,14 +73,18 @@ fn refresh(ui: &ViewerWindow, state: &ViewerState) {
             tracing::error!(error = %e, "failed to decode page");
             ui.set_status_text(format!("Decode error: {e}").into());
         }
-        None => {}
+        None => {
+            // Source loaded but empty (no decodable page): clear any stale image
+            // so the view matches the "Folder contains no images" status.
+            ui.set_current_page(slint::Image::default());
+        }
     }
 }
 
 /// Convert core RGBA bytes into a `slint::Image`.
 fn to_slint_image(decoded: &DecodedImage) -> slint::Image {
     let mut buffer =
-        slint::SharedPixelBuffer::<slint::Rgba8Pixel>::new(decoded.width, decoded.height);
-    buffer.make_mut_bytes().copy_from_slice(&decoded.rgba);
+        slint::SharedPixelBuffer::<slint::Rgba8Pixel>::new(decoded.width(), decoded.height());
+    buffer.make_mut_bytes().copy_from_slice(decoded.rgba());
     slint::Image::from_rgba8(buffer)
 }

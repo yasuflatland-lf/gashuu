@@ -31,11 +31,16 @@ impl ViewerState {
     /// Open a folder as the active source, resetting to the first page.
     pub fn open_folder(&mut self, path: &Path) -> Result<(), CoreError> {
         let source = FolderSource::open(path)?;
+        let skipped = source.skipped_count();
+        if skipped > 0 {
+            tracing::warn!(skipped, "skipped unreadable entries while opening folder");
+        }
         self.set_source(Box::new(source));
         Ok(())
     }
 
-    // Read accessors exercised by tests; will be called from the UI layer in a later PR.
+    // Exercised by the unit tests below; dead_code fires only because #[cfg(test)]
+    // callers are invisible to the lint. The UI layer will use these in a later PR.
     #[allow(dead_code)]
     pub fn page_count(&self) -> usize {
         self.page_count
@@ -74,12 +79,12 @@ impl ViewerState {
         )
     }
 
-    /// Status line, e.g. "3 / 100".
+    /// Status line: "No folder opened", "Folder contains no images", or "N / total".
     pub fn status_text(&self) -> String {
-        if self.page_count == 0 {
-            "No folder opened".to_string()
-        } else {
-            format!("{} / {}", self.index + 1, self.page_count)
+        match (&self.source, self.page_count) {
+            (None, _) => "No folder opened".to_string(),
+            (Some(_), 0) => "Folder contains no images".to_string(),
+            (Some(_), _) => format!("{} / {}", self.index + 1, self.page_count),
         }
     }
 }
@@ -129,6 +134,14 @@ mod tests {
     }
 
     #[test]
+    fn empty_folder_status_distinguishes_from_no_folder() {
+        let mut state = ViewerState::new();
+        state.set_source(mock_with(0));
+        assert_eq!(state.status_text(), "Folder contains no images");
+        assert!(state.current_image().is_none());
+    }
+
+    #[test]
     fn next_advances_and_clamps_at_last_page() {
         let mut state = ViewerState::new();
         state.set_source(mock_with(3));
@@ -152,12 +165,53 @@ mod tests {
     }
 
     #[test]
+    fn single_page_clamps_both_directions() {
+        let mut state = ViewerState::new();
+        state.set_source(mock_with(1));
+        assert!(!state.apply(NavAction::Next));
+        assert_eq!(state.index(), 0);
+        assert!(!state.apply(NavAction::Prev));
+        assert_eq!(state.index(), 0);
+    }
+
+    #[test]
+    fn set_source_resets_index_to_zero() {
+        let mut state = ViewerState::new();
+        state.set_source(mock_with(5));
+        state.apply(NavAction::Next);
+        state.apply(NavAction::Next);
+        assert_eq!(state.index(), 2);
+        state.set_source(mock_with(3));
+        assert_eq!(state.index(), 0);
+        assert_eq!(state.page_count(), 3);
+    }
+
+    #[test]
     fn current_image_decodes_current_page() {
         let mut state = ViewerState::new();
         state.set_source(mock_with(2));
         let decoded = state.current_image().unwrap().unwrap();
-        assert_eq!((decoded.width, decoded.height), (2, 3));
-        assert_eq!(decoded.rgba.len(), 2 * 3 * 4);
+        assert_eq!((decoded.width(), decoded.height()), (2, 3));
+        assert_eq!(decoded.rgba().len(), 2 * 3 * 4);
+    }
+
+    #[test]
+    fn current_image_propagates_source_error() {
+        let mut state = ViewerState::new();
+        let mut mock = MockPageSource::new();
+        mock.expect_list_pages().returning(|| {
+            vec![
+                PageEntry {
+                    path: "p".into(),
+                    name: "p".into()
+                };
+                1
+            ]
+        });
+        mock.expect_read_bytes()
+            .returning(|_| Err(CoreError::IndexOutOfRange { index: 0, len: 0 }));
+        state.set_source(Box::new(mock));
+        assert!(matches!(state.current_image(), Some(Err(_))));
     }
 
     #[test]
@@ -167,5 +221,14 @@ mod tests {
         assert_eq!(state.status_text(), "1 / 100");
         state.apply(NavAction::Next);
         assert_eq!(state.status_text(), "2 / 100");
+    }
+
+    #[test]
+    fn status_text_at_last_page() {
+        let mut state = ViewerState::new();
+        state.set_source(mock_with(3));
+        state.apply(NavAction::Next);
+        state.apply(NavAction::Next);
+        assert_eq!(state.status_text(), "3 / 3");
     }
 }
