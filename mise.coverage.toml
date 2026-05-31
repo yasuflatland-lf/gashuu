@@ -1,0 +1,10 @@
+# Coverage-only tooling, loaded ONLY when MISE_ENV=coverage is set (the slint-free
+# `core` CI job). The per-OS `app` jobs run just `cargo nextest`, so they must not
+# install cargo-llvm-cov. Installs as a prebuilt binary via cargo-binstall (see
+# mise.toml). The required `llvm-tools-preview` rust component is added by the core
+# job with `rustup component add` (mise.toml omits it for the same scoping reason).
+#
+# Local coverage runs therefore need the env active, e.g.:
+#   MISE_ENV=coverage mise exec -- cargo llvm-cov nextest -p gashuu-core --profile ci --summary-only
+[tools]
+"cargo:cargo-llvm-cov" = "0.8.7"

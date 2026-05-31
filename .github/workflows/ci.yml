@@ -17,14 +17,19 @@ jobs:
   core:
     name: core (rust, slint-free)
     runs-on: ubuntu-latest
+    # Activate mise.coverage.toml so cargo-llvm-cov is installed here only; the
+    # per-OS app jobs (no MISE_ENV) skip it and stay lean. See mise.coverage.toml.
+    env:
+      MISE_ENV: coverage
     steps:
       - uses: actions/checkout@v6
       - uses: jdx/mise-action@v4
       - uses: Swatinem/rust-cache@v2
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      # Belt and suspenders: ensure components exist even on a cached toolchain.
-      - run: rustup component add rustfmt clippy llvm-tools-preview
+      # cargo-llvm-cov needs the llvm-tools-preview component; mise.toml omits it
+      # (the app jobs don't need it) so add it here on mise's pinned toolchain.
+      - run: rustup component add llvm-tools-preview
       - run: cargo fmt --check
       # `--features testing` so the feature-gated MockPageSource test is linted and run
       # (the old `--workspace` runs got it via feature unification with gashuu's dev-dep).
