@@ -11,8 +11,8 @@
 use crate::keymap::NavAction;
 use gashuu_core::{
     next_leading, normalize_leading, prev_leading, spread_at, CoreError, CoverMode, DecodedImage,
-    FolderSource, ImageCache, PageSource, ReadingDirection, Settings, SpreadMode, DEFAULT_CAPACITY,
-    DEFAULT_PREFETCH_RADIUS,
+    FolderSource, ImageCache, PageSource, ReadingDirection, Settings, SpreadLayout, SpreadMode,
+    DEFAULT_CAPACITY, DEFAULT_PREFETCH_RADIUS,
 };
 use std::path::Path;
 use std::sync::Arc;
@@ -41,6 +41,10 @@ pub struct ViewerState {
     spread_mode: SpreadMode,
     cover_mode: CoverMode,
     reading_direction: ReadingDirection,
+    /// Window aspect ratio (width / height) used to resolve `SpreadMode::Auto`
+    /// into a concrete `SpreadLayout`. Ignored by Single/Double. Defaults to
+    /// `1.0` until the UI pushes the real window size via `set_viewport_size`.
+    viewport_aspect: f32,
 }
 
 impl ViewerState {
@@ -61,6 +65,7 @@ impl ViewerState {
             spread_mode: SpreadMode::Single,
             cover_mode: CoverMode::Standalone,
             reading_direction: ReadingDirection::Ltr,
+            viewport_aspect: 1.0,
         }
     }
 
@@ -76,6 +81,7 @@ impl ViewerState {
             spread_mode: settings.spread_mode,
             cover_mode: settings.cover_mode,
             reading_direction: settings.reading_direction,
+            viewport_aspect: 1.0,
         }
     }
 
@@ -125,6 +131,13 @@ impl ViewerState {
         self.index
     }
 
+    /// Resolve the configured `spread_mode` against the current viewport aspect
+    /// into the concrete `SpreadLayout` the pure `spread::*` math operates on.
+    /// Single/Double are identity; Auto picks Single/Double from the aspect.
+    fn effective_layout(&self) -> SpreadLayout {
+        self.spread_mode.resolve(self.viewport_aspect)
+    }
+
     /// Apply a navigation action a spread at a time. Returns true if the leading
     /// index moved. In Single mode this is the old ±1 clamp; in Double mode it
     /// advances/retreats one spread (skipping the partner page).
@@ -132,19 +145,10 @@ impl ViewerState {
         if self.page_count == 0 {
             return false;
         }
+        let layout = self.effective_layout();
         let next = match action {
-            NavAction::Next => next_leading(
-                self.page_count,
-                self.spread_mode,
-                self.cover_mode,
-                self.index,
-            ),
-            NavAction::Prev => prev_leading(
-                self.page_count,
-                self.spread_mode,
-                self.cover_mode,
-                self.index,
-            ),
+            NavAction::Next => next_leading(self.page_count, layout, self.cover_mode, self.index),
+            NavAction::Prev => prev_leading(self.page_count, layout, self.cover_mode, self.index),
         };
         let moved = next != self.index;
         self.index = next;
@@ -165,7 +169,7 @@ impl ViewerState {
         }
         let s = spread_at(
             self.page_count,
-            self.spread_mode,
+            self.effective_layout(),
             self.cover_mode,
             self.index,
         );
@@ -190,19 +194,41 @@ impl ViewerState {
         }))
     }
 
-    /// Flip Single <-> Double, then re-normalize the index so the currently
-    /// visible page stays on screen. Returns `true` when the mode changed; a
-    /// 2-variant toggle always flips, so this is currently always `true`. The
-    /// bool is retained for forward-compatibility with multi-valued modes (e.g.
-    /// a future `SpreadMode::Auto`).
+    /// Cycle Single -> Double -> Auto -> Single, then re-normalize the index so
+    /// the currently visible page stays on screen (Auto re-anchors against its
+    /// resolved layout). Always returns `true` (a 3-cycle always changes the
+    /// configured mode).
     pub fn toggle_spread(&mut self) -> bool {
         let before = self.spread_mode;
         self.spread_mode = match before {
             SpreadMode::Single => SpreadMode::Double,
-            SpreadMode::Double => SpreadMode::Single,
+            SpreadMode::Double => SpreadMode::Auto,
+            SpreadMode::Auto => SpreadMode::Single,
         };
         self.renormalize_index();
         before != self.spread_mode
+    }
+
+    /// Update the window aspect ratio used to resolve `SpreadMode::Auto`. Returns
+    /// `true` iff the EFFECTIVE layout changed (only possible in Auto, crossing
+    /// the square boundary). On a change, re-normalizes the index so the
+    /// currently visible page stays on screen. A non-positive/non-finite height
+    /// falls back to aspect 1.0. No-op-safe with no folder open (index stays 0).
+    //
+    // dead_code fires only because the main.rs `on_resized` wiring lands
+    // separately; the #[cfg(test)] callers below are invisible to the lint. Same
+    // #[allow(dead_code)] convention as the other test-exercised accessors here.
+    #[allow(dead_code)]
+    pub fn set_viewport_size(&mut self, width: f32, height: f32) -> bool {
+        let before = self.effective_layout();
+        self.viewport_aspect = if height > 0.0 { width / height } else { 1.0 };
+        let after = self.effective_layout();
+        if before != after {
+            self.renormalize_index();
+            true
+        } else {
+            false
+        }
     }
 
     /// Flip Standalone <-> Paired cover, then re-normalize the index so the
@@ -243,7 +269,7 @@ impl ViewerState {
         }
         self.index = normalize_leading(
             self.page_count,
-            self.spread_mode,
+            self.effective_layout(),
             self.cover_mode,
             self.index,
         );
@@ -271,7 +297,7 @@ impl ViewerState {
             (Some(_), _) => {
                 let s = spread_at(
                     self.page_count,
-                    self.spread_mode,
+                    self.effective_layout(),
                     self.cover_mode,
                     self.index,
                 );
@@ -283,6 +309,7 @@ impl ViewerState {
                 let mode_label = match self.spread_mode {
                     SpreadMode::Single => "single",
                     SpreadMode::Double => "double",
+                    SpreadMode::Auto => "auto",
                 };
                 let dir_label = match self.reading_direction {
                     ReadingDirection::Ltr => "LTR",
@@ -558,7 +585,13 @@ mod tests {
         assert_eq!(state.spread_mode(), SpreadMode::Double);
         assert_eq!(state.index(), 5);
 
-        // Flip back to Single.
+        // Cycle to Auto: default viewport aspect is 1.0 -> resolves to Double, so
+        // index 5 is still a valid leading and stays put.
+        assert!(state.toggle_spread());
+        assert_eq!(state.spread_mode(), SpreadMode::Auto);
+        assert_eq!(state.index(), 5);
+
+        // Cycle back to Single.
         assert!(state.toggle_spread());
         assert_eq!(state.spread_mode(), SpreadMode::Single);
         assert_eq!(state.index(), 5);
@@ -728,8 +761,8 @@ mod tests {
     #[test]
     fn toggle_spread_from_double_paired_keeps_index() {
         // 6 pages, Paired cover. Advance to the {2,3} spread (index 2), then
-        // toggle to Single: the mode flips and the index is unchanged (Single
-        // normalize is identity).
+        // toggle to Auto: default viewport aspect 1.0 resolves Auto to Double, so
+        // index 2 ({2,3}) is still a valid Paired leading and stays unchanged.
         let mut state = ViewerState::from_settings(&Settings {
             spread_mode: SpreadMode::Double,
             cover_mode: CoverMode::Paired,
@@ -740,7 +773,158 @@ mod tests {
         assert_eq!(state.index(), 2);
 
         assert!(state.toggle_spread());
-        assert_eq!(state.spread_mode(), SpreadMode::Single);
+        assert_eq!(state.spread_mode(), SpreadMode::Auto);
         assert_eq!(state.index(), 2);
+    }
+
+    // ---- Auto spread mode (PR4a): resolved from viewport aspect -------------
+
+    /// Build an Auto-mode state (Standalone cover, Ltr) via `from_settings`.
+    fn auto_state() -> ViewerState {
+        ViewerState::from_settings(&Settings {
+            spread_mode: SpreadMode::Auto,
+            cover_mode: CoverMode::Standalone,
+            reading_direction: ReadingDirection::Ltr,
+            ..Default::default()
+        })
+    }
+
+    #[test]
+    fn auto_portrait_navigates_single() {
+        // Portrait viewport (aspect < 1) => Auto resolves to Single: every page
+        // stands alone and navigation steps by 1.
+        let mut state = auto_state();
+        state.set_viewport_size(900.0, 1200.0);
+        state.set_source(mock_with(5));
+
+        assert!(state.current_spread().unwrap().unwrap().trailing.is_none());
+
+        assert!(state.apply(NavAction::Next));
+        assert_eq!(state.index(), 1);
+        assert!(state.current_spread().unwrap().unwrap().trailing.is_none());
+        assert!(state.apply(NavAction::Next));
+        assert_eq!(state.index(), 2);
+        assert!(state.current_spread().unwrap().unwrap().trailing.is_none());
+    }
+
+    #[test]
+    fn auto_landscape_navigates_double() {
+        // Landscape viewport (aspect > 1) => Auto resolves to Double. Default
+        // Standalone cover: {0}{1,2}{3,4}{5}; navigation steps 0->1->3->5.
+        let mut state = auto_state();
+        state.set_viewport_size(1600.0, 900.0);
+        state.set_source(mock_with(6));
+
+        // Cover (page 0) stands alone.
+        assert!(state.current_spread().unwrap().unwrap().trailing.is_none());
+
+        assert!(state.apply(NavAction::Next));
+        assert_eq!(state.index(), 1);
+        assert!(state.current_spread().unwrap().unwrap().trailing.is_some());
+        assert!(state.apply(NavAction::Next));
+        assert_eq!(state.index(), 3);
+        assert!(state.current_spread().unwrap().unwrap().trailing.is_some());
+        assert!(state.apply(NavAction::Next));
+        assert_eq!(state.index(), 5);
+        assert!(state.current_spread().unwrap().unwrap().trailing.is_none());
+    }
+
+    #[test]
+    fn set_viewport_size_reports_flip_and_renormalizes() {
+        // Auto, landscape (Double). Advance to the {1,2} spread (index 1), then
+        // go portrait (Single): the layout flips, set_viewport_size returns true,
+        // and the visible page stays on screen (index 1 is a valid Single
+        // leading). Going back landscape flips again and re-anchors to a valid
+        // Double leading.
+        let mut state = auto_state();
+        // Default aspect 1.0 already resolves Auto to Double; widening to
+        // landscape stays Double, so this reports no flip.
+        assert!(!state.set_viewport_size(1600.0, 900.0));
+        state.set_source(mock_with(6));
+        assert!(state.apply(NavAction::Next));
+        assert_eq!(state.index(), 1);
+
+        // Landscape -> portrait: Double -> Single flips.
+        assert!(state.set_viewport_size(900.0, 1200.0));
+        assert_eq!(state.index(), 1); // valid Single leading, page stays visible
+
+        // Portrait -> landscape: Single -> Double flips again; index 1 ({1,2}) is
+        // a valid Standalone Double leading.
+        assert!(state.set_viewport_size(1600.0, 900.0));
+        assert_eq!(state.index(), 1);
+    }
+
+    #[test]
+    fn set_viewport_size_no_flip_when_not_auto() {
+        // Fixed Double mode ignores the viewport aspect: a large aspect change
+        // never flips the effective layout, so set_viewport_size returns false.
+        let mut state = double_state();
+        state.set_source(mock_with(6));
+        state.apply(NavAction::Next);
+        let before = state.index();
+
+        assert!(!state.set_viewport_size(900.0, 1200.0)); // portrait, but mode is Double
+        assert_eq!(state.index(), before);
+        assert!(!state.set_viewport_size(1600.0, 900.0)); // landscape, still Double
+        assert_eq!(state.index(), before);
+    }
+
+    #[test]
+    fn toggle_spread_cycles_single_double_auto() {
+        // Single -> Double -> Auto -> Single, each transition keeps the visible
+        // page on screen (index normalized). Default viewport 1.0 => Auto=Double.
+        let mut state = ViewerState::new();
+        state.set_source(mock_with(6));
+        assert_eq!(state.spread_mode(), SpreadMode::Single);
+
+        assert!(state.toggle_spread());
+        assert_eq!(state.spread_mode(), SpreadMode::Double);
+
+        assert!(state.toggle_spread());
+        assert_eq!(state.spread_mode(), SpreadMode::Auto);
+
+        assert!(state.toggle_spread());
+        assert_eq!(state.spread_mode(), SpreadMode::Single);
+    }
+
+    #[test]
+    fn toggle_into_auto_resolves_with_current_viewport() {
+        // Portrait viewport then cycle into Auto: spread resolves to Single.
+        let mut state = ViewerState::new();
+        state.set_viewport_size(900.0, 1200.0);
+        state.set_source(mock_with(6));
+        state.toggle_spread(); // Single -> Double
+        state.toggle_spread(); // Double -> Auto
+        assert_eq!(state.spread_mode(), SpreadMode::Auto);
+        assert!(state.current_spread().unwrap().unwrap().trailing.is_none());
+
+        // Landscape viewport then cycle into Auto: spread resolves to Double.
+        let mut state = ViewerState::new();
+        state.set_viewport_size(1600.0, 900.0);
+        state.set_source(mock_with(6));
+        state.apply(NavAction::Next); // index 1 ({1,2} once Double)
+        state.toggle_spread(); // Single -> Double
+        state.toggle_spread(); // Double -> Auto
+        assert_eq!(state.spread_mode(), SpreadMode::Auto);
+        assert!(state.current_spread().unwrap().unwrap().trailing.is_some());
+    }
+
+    #[test]
+    fn status_text_auto_label() {
+        // Auto + landscape => "auto" label and a page RANGE (resolved Double).
+        let mut state = auto_state();
+        state.set_viewport_size(1600.0, 900.0);
+        state.set_source(mock_with(6));
+        state.apply(NavAction::Next);
+        assert_eq!(state.index(), 1);
+        assert_eq!(state.status_text(), "2\u{2013}3 / 6  [auto \u{00b7} LTR]");
+
+        // Auto + portrait => "auto" label and a single page number (Single).
+        let mut state = auto_state();
+        state.set_viewport_size(900.0, 1200.0);
+        state.set_source(mock_with(6));
+        state.apply(NavAction::Next);
+        assert_eq!(state.index(), 1);
+        assert_eq!(state.status_text(), "2 / 6  [auto \u{00b7} LTR]");
     }
 }

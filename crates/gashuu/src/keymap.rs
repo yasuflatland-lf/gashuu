@@ -12,7 +12,7 @@
 //! Space → Next, Backspace → Prev.
 //!
 //! ## Mode-toggle keys
-//! `d` toggles spread mode, `r` toggles reading direction (Ltr <-> Rtl), `c`
+//! `d` cycles spread mode (Single → Double → Auto), `r` toggles reading direction (Ltr <-> Rtl), `c`
 //! toggles cover page.
 
 use gashuu_core::ReadingDirection;
