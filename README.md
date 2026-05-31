@@ -5,16 +5,27 @@
 
 A cross-platform manga viewer built with Rust and [Slint](https://slint.dev).
 
-## Status (PR3 — Settings persistence)
+## Status (PR4 — Two-page spread + RTL/LTR binding)
 
 Open a folder of PNG/JPG/JPEG images and browse every page with the keyboard. Pages are
 held in an LRU cache (up to 50 decoded images) and the neighbours of the current
 page are prefetched in the background, so warmed page turns are effectively instant.
-User settings now persist across restarts — gashuu saves your preferences on exit and
-restores them on the next launch.
+You can now read in a two-page spread with right-to-left (manga) or left-to-right
+binding, in addition to single-page browsing. User settings persist across restarts —
+gashuu saves your preferences on exit and restores them on the next launch.
 
-- **→ / Space** — next page
-- **← / Backspace** — previous page
+Arrow keys follow the active reading direction: in LTR mode **→** advances and **←**
+goes back; in RTL mode the arrows are swapped (**←** advances / **→** goes back).
+**Space** and **Backspace** are always next/prev in reading order regardless of
+direction.
+
+- **→ / Space** — next page (or spread)
+- **← / Backspace** — previous page (or spread)
+- **D** — toggle single ↔ two-page (double) spread
+- **R** — toggle reading direction (LTR ↔ RTL)
+- **C** — toggle cover layout (standalone ↔ paired)
+
+Toggle changes are remembered (saved on exit).
 
 Set `RUST_LOG=debug` to see per-turn latency (`page turn elapsed_ms=…`).
 
@@ -31,6 +42,11 @@ default file you can hand-edit; the file is loaded on startup and saved on exit.
 
 **Active settings** (take effect today):
 
+- `reading_direction` — `"ltr"` (default) or `"rtl"` (right-to-left / manga binding).
+- `spread_mode` — `"single"` (default) or `"double"` (two-page spread).
+- `cover_mode` — `"standalone"` (default: cover shown alone, then pages pair up as
+  {1,2}{3,4}…) or `"paired"` (pairing starts from the cover: {0,1}{2,3}…). Only
+  affects `double` mode.
 - `cache_size` — number of decoded images held in the LRU cache (default `50`).
 - `preload_pages` — background prefetch radius around the current page (default `3`).
 - `recent_files` — list of recently opened folders.  Recorded only when
@@ -39,8 +55,6 @@ default file you can hand-edit; the file is loaded on startup and saved on exit.
 
 **Saved for forward-compatibility** (persisted now; wired up in later releases):
 
-- `reading_direction` — right-to-left reading mode is planned.
-- `spread_mode` — two-page spread layout.
 - `key_bindings` — custom keyboard shortcuts.
 
 If the settings file is corrupt or unreadable, gashuu falls back to built-in defaults
