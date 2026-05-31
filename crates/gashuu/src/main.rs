@@ -3,7 +3,7 @@ slint::include_modules!();
 mod keymap;
 mod viewer_state;
 
-use gashuu_core::DecodedImage;
+use gashuu_core::{DecodedImage, Settings};
 use keymap::map_key;
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -15,8 +15,19 @@ fn main() -> color_eyre::Result<()> {
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();
 
+    // Load persisted settings; corrupt/unreadable files fall back to defaults
+    // (the corrupt-file recovery policy lives here in the UI layer, by design).
+    let settings = Settings::load().unwrap_or_else(|e| {
+        tracing::warn!(error = %e, "failed to load settings; using defaults");
+        Settings::default()
+    });
+
     let ui = ViewerWindow::new()?;
-    let state = Rc::new(RefCell::new(ViewerState::new()));
+    let state = Rc::new(RefCell::new(ViewerState::with_cache_config(
+        settings.cache_size,
+        settings.preload_pages,
+    )));
+    let settings = Rc::new(RefCell::new(settings));
 
     ui.set_status_text(state.borrow().status_text().into());
 
@@ -24,6 +35,7 @@ fn main() -> color_eyre::Result<()> {
     {
         let ui_weak = ui.as_weak();
         let state = Rc::clone(&state);
+        let settings = Rc::clone(&settings);
         ui.on_open_folder(move || {
             let Some(ui) = ui_weak.upgrade() else {
                 return;
@@ -32,7 +44,16 @@ fn main() -> color_eyre::Result<()> {
                 return;
             };
             match state.borrow_mut().open_folder(&dir) {
-                Ok(()) => tracing::info!(dir = %dir.display(), "opened folder"),
+                Ok(()) => {
+                    tracing::info!(dir = %dir.display(), "opened folder");
+                    let mut s = settings.borrow_mut();
+                    if s.track_recent_files {
+                        s.push_recent(dir.clone());
+                        if let Err(e) = s.save() {
+                            tracing::error!(error = %e, "failed to save settings");
+                        }
+                    }
+                }
                 Err(e) => {
                     tracing::error!(error = %e, "failed to open folder");
                     ui.set_status_text(format!("Error: {e}").into());
@@ -70,6 +91,11 @@ fn main() -> color_eyre::Result<()> {
     }
 
     ui.run()?;
+    // Persist settings on exit so even a first run writes a file the user can
+    // hand-edit. Save failure is logged, not fatal.
+    if let Err(e) = settings.borrow().save() {
+        tracing::error!(error = %e, "failed to save settings on exit");
+    }
     Ok(())
 }
 
