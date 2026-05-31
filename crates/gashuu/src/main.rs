@@ -2,6 +2,7 @@ slint::include_modules!();
 
 mod keymap;
 mod viewer_state;
+mod viewport;
 
 use gashuu_core::{DecodedImage, ReadingDirection, Settings};
 use keymap::{map_key, KeyCommand};
