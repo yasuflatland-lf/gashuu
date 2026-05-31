@@ -52,10 +52,17 @@ fn main() -> color_eyre::Result<()> {
                 return;
             };
             if let Some(action) = map_key(token.as_str()) {
+                let started = std::time::Instant::now();
                 let moved = state.borrow_mut().apply(action);
                 if moved {
                     refresh(&ui, &state.borrow());
                 }
+                // DoD: cache-hit page turns should be <50ms. Observe with RUST_LOG=debug.
+                tracing::debug!(
+                    elapsed_ms = started.elapsed().as_secs_f64() * 1000.0,
+                    moved,
+                    "page turn"
+                );
             }
         });
     }
