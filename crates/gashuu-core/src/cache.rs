@@ -28,12 +28,19 @@ fn prefetch_indices(center: usize, radius: usize, len: usize) -> Vec<usize> {
         return Vec::new();
     }
     let lo = center.saturating_sub(radius);
-    let hi = (center + radius).min(len - 1);
+    let hi = center.saturating_add(radius).min(len - 1);
     (lo..=hi).filter(|&i| i != center).collect()
 }
 
 /// Shared, thread-safe cache state. Held behind an `Arc` so background prefetch
 /// tasks can outlive the `ImageCache` handle without dangling.
+///
+/// Locking discipline: when both mutexes are held at once, always acquire
+/// `cache` before `in_flight` (`get` only ever takes `cache`); keep this order in
+/// any future code to avoid deadlock. No fallible or user-supplied code runs
+/// while a lock is held — reads and decodes happen lock-free — so the mutexes
+/// cannot be poisoned in practice, and the `lock().unwrap()` calls are an
+/// intentional fail-fast.
 struct Inner {
     source: Arc<dyn PageSource>,
     len: usize,
@@ -41,11 +48,32 @@ struct Inner {
     in_flight: Mutex<HashSet<usize>>,
 }
 
+/// RAII guard that clears the reserved in-flight indices when dropped, so a panic
+/// in the decode/insert section can never permanently leak in-flight markers
+/// (a leaked marker would silently disable prefetch for that page for the cache's
+/// lifetime). The `Drop` recovers a poisoned lock via `into_inner` so it can never
+/// double-panic while unwinding.
+struct InFlightGuard<'a> {
+    in_flight: &'a Mutex<HashSet<usize>>,
+    keys: Vec<usize>,
+}
+
+impl Drop for InFlightGuard<'_> {
+    fn drop(&mut self) {
+        let mut in_flight = self.in_flight.lock().unwrap_or_else(|e| e.into_inner());
+        for k in &self.keys {
+            in_flight.remove(k);
+        }
+    }
+}
+
 impl Inner {
-    /// Synchronously warm every not-yet-cached, not-in-flight neighbour of
-    /// `center`. Reads happen here; decodes run in parallel via rayon. Decode
-    /// failures are dropped (the page simply stays uncached). In-flight markers
-    /// are always cleared, even for pages that failed to decode.
+    /// Warm every not-yet-cached, not-in-flight neighbour of `center`. The
+    /// reservation phase (selecting candidates and marking them in-flight) runs
+    /// synchronously under the locks; the reads and decodes then run in parallel
+    /// via rayon. Decode failures are dropped (the page simply stays uncached).
+    /// In-flight markers are always cleared on return — even for pages that failed
+    /// to decode, and even if the decode/insert section panics (see `InFlightGuard`).
     fn prefetch_blocking(&self, center: usize, radius: usize) {
         // Reserve the work under the locks: pick neighbours that are neither
         // cached nor already being prefetched, and mark them in-flight.
@@ -61,6 +89,12 @@ impl Inner {
             }
             candidates
         };
+        // Clear the reserved markers on every exit path, including a panic in the
+        // parallel decode section below.
+        let _guard = InFlightGuard {
+            in_flight: &self.in_flight,
+            keys: to_fetch.clone(),
+        };
 
         // Read + decode in parallel. Errors are dropped via `ok()`.
         let decoded: Vec<(usize, Arc<DecodedImage>)> = to_fetch
@@ -71,16 +105,11 @@ impl Inner {
             })
             .collect();
 
-        {
-            let mut cache = self.cache.lock().unwrap();
-            for (i, img) in &decoded {
-                cache.put(*i, Arc::clone(img));
-            }
+        let mut cache = self.cache.lock().unwrap();
+        for (i, img) in &decoded {
+            cache.put(*i, Arc::clone(img));
         }
-        let mut in_flight = self.in_flight.lock().unwrap();
-        for i in &to_fetch {
-            in_flight.remove(i);
-        }
+        // `_guard` drops at end of scope, clearing the in-flight markers.
     }
 }
 
@@ -274,6 +303,71 @@ mod tests {
         // 2 is still cached ⇒ no new read.
         cache.get(2).unwrap();
         assert_eq!(reads.load(Ordering::SeqCst), 4);
+    }
+
+    #[test]
+    fn lru_hit_promotes_entry_and_evicts_true_lru() {
+        // Distinguishes LRU from FIFO: a hit on 0 must promote it so a later miss
+        // evicts 1 (the true LRU), not 0.
+        let (src, reads) = counting(5);
+        let cache = ImageCache::new(src, 2, 0); // capacity 2, no prefetch
+        cache.get(0).unwrap(); // [0]
+        cache.get(1).unwrap(); // [0(lru), 1(mru)]
+        cache.get(0).unwrap(); // hit: promotes 0 -> [1(lru), 0(mru)]
+        assert_eq!(reads.load(Ordering::SeqCst), 2, "a hit must not re-read");
+        cache.get(2).unwrap(); // miss: evicts 1 (true LRU), keeps 0
+        assert_eq!(reads.load(Ordering::SeqCst), 3);
+        cache.get(0).unwrap(); // still cached as MRU -> no read
+        assert_eq!(
+            reads.load(Ordering::SeqCst),
+            3,
+            "promoted entry must survive"
+        );
+        cache.get(1).unwrap(); // evicted -> fresh read
+        assert_eq!(
+            reads.load(Ordering::SeqCst),
+            4,
+            "true LRU must have been evicted"
+        );
+    }
+
+    #[test]
+    fn capacity_zero_treated_as_one_does_not_panic() {
+        // `new` documents that capacity 0 is coerced to 1 (the LRU must hold at
+        // least the current page); constructing and reading must not panic.
+        let (src, _reads) = counting(5);
+        let cache = ImageCache::new(src, 0, 0);
+        let img = cache.get(0).unwrap();
+        assert_eq!((img.width(), img.height()), (2, 3));
+        assert!(cache.inner.cache.lock().unwrap().len() <= 1);
+    }
+
+    #[test]
+    fn prefetch_skips_pages_already_in_flight() {
+        // Exercises the `!in_flight.contains(i)` filter branch in isolation:
+        // pages already marked in-flight by another batch are not re-read.
+        let (src, reads) = counting(10);
+        let cache = ImageCache::new(src, 50, 3);
+        {
+            let mut in_flight = cache.inner.in_flight.lock().unwrap();
+            in_flight.insert(1);
+            in_flight.insert(2);
+        }
+        cache.inner.prefetch_blocking(0, 3); // candidates 1,2,3 -> only 3 is fetched
+        assert_eq!(
+            reads.load(Ordering::SeqCst),
+            1,
+            "only the not-in-flight page is read"
+        );
+        let in_flight = cache.inner.in_flight.lock().unwrap();
+        assert!(
+            in_flight.contains(&1) && in_flight.contains(&2),
+            "pre-existing in-flight markers from another batch are left untouched"
+        );
+        assert!(
+            !in_flight.contains(&3),
+            "this batch's own marker is cleared on return"
+        );
     }
 
     #[test]
