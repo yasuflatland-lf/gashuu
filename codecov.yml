@@ -13,7 +13,10 @@ flags:
       - crates/gashuu-core
 
 ignore:
-  - "crates/gashuu"
+  # Trailing /** so this does NOT prefix-match crates/gashuu-core (codecov's
+  # ignore patterns are start-anchored only, so bare "crates/gashuu" would
+  # swallow the measured core crate too and yield 0% / "unknown" coverage).
+  - "crates/gashuu/**"
   - "**/build.rs"
   - "**/tests/**"
 

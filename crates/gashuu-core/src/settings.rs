@@ -34,6 +34,17 @@ pub enum SpreadMode {
     Double,
 }
 
+/// How the first page (cover) is laid out in two-page modes (0-based page indices).
+/// `Standalone` shows the cover alone (index 0), then pairs from index 1: {1,2}{3,4}…;
+/// `Paired` pairs from the cover: {0,1}{2,3}…. Ignored in `Single` mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CoverMode {
+    #[default]
+    Standalone,
+    Paired,
+}
+
 /// Key tokens (matching the `.slint` FocusScope tokens) bound to each navigation
 /// direction. Persisted in PR3, but `keymap::map_key` hard-codes these same tokens
 /// rather than reading this struct; user-remappable keys are deferred to a later PR.
@@ -62,6 +73,8 @@ pub struct Settings {
     pub reading_direction: ReadingDirection,
     #[serde(default)]
     pub spread_mode: SpreadMode,
+    #[serde(default)]
+    pub cover_mode: CoverMode,
     #[serde(default = "default_cache_size")]
     pub cache_size: usize,
     #[serde(default = "default_preload_pages")]
@@ -93,6 +106,7 @@ impl Default for Settings {
             version: SETTINGS_VERSION,
             reading_direction: ReadingDirection::default(),
             spread_mode: SpreadMode::default(),
+            cover_mode: CoverMode::default(),
             cache_size: DEFAULT_CAPACITY,
             preload_pages: DEFAULT_PREFETCH_RADIUS,
             key_bindings: KeyBindings::default(),
@@ -227,6 +241,7 @@ mod tests {
         assert_eq!(s.version, 1);
         assert_eq!(s.reading_direction, ReadingDirection::Ltr);
         assert_eq!(s.spread_mode, SpreadMode::Single);
+        assert_eq!(s.cover_mode, CoverMode::Standalone);
         assert_eq!(s.cache_size, 50);
         assert_eq!(s.preload_pages, 3);
         assert_eq!(s.key_bindings.next, vec!["right", "space"]);
@@ -240,6 +255,7 @@ mod tests {
             version: SETTINGS_VERSION,
             reading_direction: ReadingDirection::Rtl,
             spread_mode: SpreadMode::Double,
+            cover_mode: CoverMode::Paired,
             cache_size: 99,
             preload_pages: 7,
             key_bindings: KeyBindings {
