@@ -117,8 +117,8 @@ impl ViewportState {
         };
         let old_scale = self.scale();
         let new_zoom = vp::clamp_zoom(self.zoom * step);
-        // Recompute the effective scale at the new (clamped) zoom; the fit baseline
-        // is unchanged, so only the clamped factor differs.
+        // Recompute the effective scale at the new zoom; the fit baseline is
+        // unchanged, so only the (already-clamped) `new_zoom` factor differs.
         let fit = vp::fit_scale(
             self.content_size.0,
             self.content_size.1,
@@ -126,7 +126,7 @@ impl ViewportState {
             self.vp_size.1,
             self.fit_mode,
         );
-        let new_scale = vp::clamp_zoom(new_zoom) * fit;
+        let new_scale = new_zoom * fit;
         let (nx, ny) = vp::anchored_zoom(
             anchor_x,
             anchor_y,
@@ -415,6 +415,58 @@ mod tests {
     }
 
     #[test]
+    fn pan_to_on_fitting_content_stays_centered_regardless_of_delta() {
+        // 400x300 content in 200x200 (Whole fit) -> scale 0.5, displayed 200x150;
+        // both axes fit (200 <= 200, 150 <= 200) so clamp_offset takes the
+        // centering branch, which overrides any pan delta.
+        let mut s = state_with(FitMode::Whole);
+        s.begin_pan();
+        s.pan_to(500.0, -500.0);
+        let (ox, oy) = s.offset;
+        assert!(
+            approx(ox, 0.0),
+            "x stays centered (200-200)/2 = 0, got {ox}"
+        );
+        assert!(
+            approx(oy, 25.0),
+            "y stays centered (200-150)/2 = 25, got {oy}"
+        );
+    }
+
+    #[test]
+    fn zoom_in_at_max_leaves_offset_unchanged() {
+        // Square content that overflows once zoomed, so the offset is anchored and
+        // not overridden by the centering branch.
+        let mut s = square_state();
+        for _ in 0..100 {
+            s.zoom_step(true);
+        }
+        assert!(
+            approx(s.zoom, vp::ZOOM_MAX),
+            "precondition: zoom at ZOOM_MAX"
+        );
+        let before = s.geometry();
+        let offset_before = s.offset;
+        // A further zoom-in clamps new_zoom back to ZOOM_MAX (no change), so scale
+        // is unchanged, anchored_zoom is identity, and the offset cannot drift.
+        s.zoom_at(s.vp_size.0 / 2.0, s.vp_size.1 / 2.0, 1.0);
+        assert!(approx(s.zoom, vp::ZOOM_MAX), "zoom stays at ZOOM_MAX");
+        assert!(
+            approx(s.offset.0, offset_before.0) && approx(s.offset.1, offset_before.1),
+            "offset must not drift after a no-op zoom-in: {offset_before:?} vs {:?}",
+            s.offset
+        );
+        let after = s.geometry();
+        assert!(
+            approx(before.0, after.0)
+                && approx(before.1, after.1)
+                && approx(before.2, after.2)
+                && approx(before.3, after.3),
+            "geometry must be unchanged: {before:?} vs {after:?}"
+        );
+    }
+
+    #[test]
     fn pan_to_clamps_at_boundary() {
         // Square content overflowing both axes -> both clamp (never center).
         let mut s = square_state();
@@ -447,6 +499,58 @@ mod tests {
         let (ox2, oy2) = s.offset;
         assert!(approx(ox2, 0.0), "x must clamp to high bound 0, got {ox2}");
         assert!(approx(oy2, 0.0), "y must clamp to high bound 0, got {oy2}");
+    }
+
+    // ---- Width fit vertical overflow ---------------------------------------
+
+    /// A tall page under Width fit: 200x600 content in a 200x200 viewport. Width
+    /// fit baseline = vp_w/c_w = 200/200 = 1.0, so displayed = 200x600. The x axis
+    /// fits exactly (centered to 0); the y axis overflows by 400 and is pannable
+    /// in `[vp - disp, 0] = [-400, 0]`.
+    fn tall_width_state() -> ViewportState {
+        let mut s = ViewportState::from_settings(&Settings {
+            fit_mode: FitMode::Width,
+            ..Default::default()
+        });
+        s.resize(200.0, 200.0);
+        s.set_content(200.0, 600.0);
+        s
+    }
+
+    #[test]
+    fn width_fit_tall_page_initial_geometry_centers_x_and_clamps_y() {
+        let s = tall_width_state();
+        let (ox, oy, dw, dh) = s.geometry();
+        assert!(approx(dw, 200.0)); // 200 * 1.0
+        assert!(approx(dh, 600.0)); // 600 * 1.0
+                                    // x fits (200 <= 200) -> centered (200-200)/2 = 0.
+        assert!(approx(ox, 0.0));
+        // y overflows (600 > 200): centered_offset gives (200-600)/2 = -200, which
+        // is inside [-400, 0] so clamp keeps it.
+        assert!(approx(oy, -200.0));
+    }
+
+    #[test]
+    fn width_fit_tall_page_pan_clamps_to_both_vertical_edges() {
+        let mut s = tall_width_state();
+        // pan_origin = current offset (0, -200). The valid y range is [-400, 0].
+        // A large DOWNWARD drag is positive total_dy: -200 + big > 0 -> high bound 0.
+        s.begin_pan();
+        s.pan_to(0.0, 100000.0);
+        let (_, oy_down, _, _) = s.geometry();
+        assert!(
+            approx(oy_down, 0.0),
+            "downward (positive dy) drag clamps y to high bound 0, got {oy_down}"
+        );
+
+        // A large UPWARD drag is negative total_dy: -200 - big < -400 -> low bound.
+        s.begin_pan();
+        s.pan_to(0.0, -100000.0);
+        let (_, oy_up, _, _) = s.geometry();
+        assert!(
+            approx(oy_up, -400.0),
+            "upward (negative dy) drag clamps y to low bound -400, got {oy_up}"
+        );
     }
 
     // ---- reset -------------------------------------------------------------

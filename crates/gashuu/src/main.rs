@@ -68,10 +68,11 @@ fn main() -> color_eyre::Result<()> {
     }
 
     // Zoom/pan input callbacks forwarded from PageView via ViewerWindow.
-    // Each updates the session-only `ViewportState` and re-pushes geometry.
-    // Borrow scoping rule: never hold a `borrow_mut()` across `apply_viewport`,
-    // which also borrows `viewport`. So mutate in one statement, then apply with
-    // a fresh immutable borrow.
+    // Each updates the `ViewportState` and re-pushes geometry.
+    // Borrow-scoping rule: never hold a `borrow_mut()` while constructing the
+    // `&viewport.borrow()` argument to `apply_viewport`. Mutate in one statement
+    // (the temporary `borrow_mut` drops at the `;`), then take a fresh immutable
+    // borrow for apply.
     {
         let ui_weak = ui.as_weak();
         let viewport = Rc::clone(&viewport);
@@ -167,9 +168,11 @@ fn main() -> color_eyre::Result<()> {
                         refresh(&ui, &state.borrow(), &viewport);
                     }
                 }
-                // Zoom/fit commands operate on the session-only ViewportState.
-                // Each mutates in its own statement, then applies geometry with a
-                // fresh immutable borrow (never hold borrow_mut across apply).
+                // Zoom/fit commands mutate `ViewportState`, then push geometry;
+                // `fit_mode` is reflected into `Settings` below (zoom/pan stay
+                // session-only). Each mutates in its own statement, then applies
+                // geometry with a fresh immutable borrow (never hold borrow_mut
+                // across apply).
                 KeyCommand::ZoomIn => {
                     viewport.borrow_mut().zoom_step(true);
                     apply_viewport(&ui, &viewport.borrow());
@@ -220,6 +223,7 @@ fn refresh(ui: &ViewerWindow, state: &ViewerState, viewport: &Rc<RefCell<Viewpor
             // of the two. Compute before swapping the images so the viewport
             // re-centers for the new spread.
             let (content_w, content_h) = match &spread.trailing {
+                // Layout splits `content-w` into two equal halves, so unequal page sizes letterbox each page within its half-slot (exact for equal-size manga pages).
                 Some(trailing) => (
                     (spread.leading.width() + trailing.width()) as f32,
                     spread.leading.height().max(trailing.height()) as f32,
@@ -249,8 +253,10 @@ fn refresh(ui: &ViewerWindow, state: &ViewerState, viewport: &Rc<RefCell<Viewpor
                 None => ui.set_status_text(status.into()),
             }
             // Re-anchor the viewport to the new content, then push geometry.
-            // Mutate then apply with a fresh immutable borrow (never hold a
-            // borrow_mut across apply_viewport).
+            // Borrow-scoping rule: never hold a `borrow_mut()` while constructing
+            // the `&viewport.borrow()` argument to `apply_viewport`. Mutate in one
+            // statement (the temporary `borrow_mut` drops at the `;`), then take a
+            // fresh immutable borrow for apply.
             viewport.borrow_mut().set_content(content_w, content_h);
             apply_viewport(ui, &viewport.borrow());
         }

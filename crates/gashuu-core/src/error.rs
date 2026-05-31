@@ -74,6 +74,20 @@ mod tests {
     }
 
     #[test]
+    fn image_too_large_displays_dimensions_pixels_and_max() {
+        let err = CoreError::ImageTooLarge {
+            width: 10,
+            height: 20,
+            pixels: 200,
+            max: 100,
+        };
+        assert_eq!(
+            err.to_string(),
+            "image too large: 10x20 = 200 px exceeds 100"
+        );
+    }
+
+    #[test]
     fn settings_displays_with_prefix() {
         let json_err = serde_json::from_str::<serde_json::Value>("not json").unwrap_err();
         let err = CoreError::Settings(json_err);

@@ -193,4 +193,51 @@ mod tests {
         assert_eq!(decoded.height(), 4);
         assert_eq!(decoded.rgba().len(), 4 * 4 * 4);
     }
+
+    /// Standard CRC-32/ISO-HDLC (polynomial 0xEDB88320, the one PNG uses) over a
+    /// byte slice. Used to repair the IHDR chunk CRC after forging its dimensions.
+    fn crc32(data: &[u8]) -> u32 {
+        let mut crc: u32 = 0xFFFF_FFFF;
+        for &byte in data {
+            crc ^= byte as u32;
+            for _ in 0..8 {
+                let mask = (crc & 1).wrapping_neg();
+                crc = (crc >> 1) ^ (0xEDB8_8320 & mask);
+            }
+        }
+        !crc
+    }
+
+    #[test]
+    fn decode_rejects_oversized_header_with_image_too_large() {
+        // Guards the `check_pixel_limit(w, h)?` wiring inside `decode()`: the pure
+        // unit test does NOT — deleting that line would still pass it.
+        //
+        // Build a tiny valid PNG, then forge its IHDR width/height to declare
+        // 1 x (MAX_PIXELS + 1) pixels WITHOUT allocating a giant buffer, repairing
+        // the IHDR CRC so the decoder accepts the header on the dimension pre-read.
+        let mut bytes = png_bytes(1, 1);
+
+        // PNG layout: 8-byte signature, then the IHDR chunk:
+        //   [8..12]  length (always 13 for IHDR)
+        //   [12..16] chunk type ("IHDR")
+        //   [16..20] width (big-endian u32)
+        //   [20..24] height (big-endian u32)
+        //   ... 5 more data bytes (bit depth, color type, etc.)
+        //   [29..33] IHDR CRC over the type + 13 data bytes ([12..29])
+        let forged_w: u32 = 1;
+        let forged_h: u32 = (MAX_PIXELS + 1) as u32;
+        bytes[16..20].copy_from_slice(&forged_w.to_be_bytes());
+        bytes[20..24].copy_from_slice(&forged_h.to_be_bytes());
+
+        // Recompute the IHDR CRC over the chunk-type + data bytes ([12..29]).
+        let new_crc = crc32(&bytes[12..29]);
+        bytes[29..33].copy_from_slice(&new_crc.to_be_bytes());
+
+        let err = decode(&bytes).unwrap_err();
+        assert!(
+            matches!(err, CoreError::ImageTooLarge { .. }),
+            "expected ImageTooLarge, got {err:?}"
+        );
+    }
 }
