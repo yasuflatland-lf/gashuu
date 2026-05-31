@@ -9,6 +9,7 @@ pub mod image_ops;
 pub mod page_source;
 pub mod settings;
 pub mod spread;
+pub mod viewport;
 
 pub use cache::{ImageCache, DEFAULT_CAPACITY, DEFAULT_PREFETCH_RADIUS};
 pub use error::CoreError;
@@ -19,6 +20,9 @@ pub use settings::{
     SETTINGS_VERSION,
 };
 pub use spread::{next_leading, normalize_leading, prev_leading, spread_at, Spread};
+pub use viewport::{
+    anchored_zoom, centered_offset, clamp_offset, clamp_zoom, fit_scale, ZOOM_MAX, ZOOM_MIN,
+};
 
 #[cfg(feature = "testing")]
 pub use page_source::MockPageSource;
