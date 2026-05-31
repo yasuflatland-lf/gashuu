@@ -4,11 +4,12 @@ mod keymap;
 mod viewer_state;
 mod viewport;
 
-use gashuu_core::{DecodedImage, ReadingDirection, Settings};
+use gashuu_core::{DecodedImage, FitMode, ReadingDirection, Settings};
 use keymap::{map_key, KeyCommand};
 use std::cell::RefCell;
 use std::rc::Rc;
 use viewer_state::ViewerState;
+use viewport::ViewportState;
 
 fn main() -> color_eyre::Result<()> {
     color_eyre::install()?;
@@ -25,17 +26,19 @@ fn main() -> color_eyre::Result<()> {
 
     let ui = ViewerWindow::new()?;
     let state = Rc::new(RefCell::new(ViewerState::from_settings(&settings)));
+    let viewport = Rc::new(RefCell::new(ViewportState::from_settings(&settings)));
     let settings = Rc::new(RefCell::new(settings));
 
     // Initial paint so rtl/single/status are all initialized before the first
     // folder is opened (refresh shows "No folder opened" and clears the images).
-    refresh(&ui, &state.borrow());
+    refresh(&ui, &state.borrow(), &viewport);
 
     // Open Folder button: pick a directory, load it, refresh the view.
     {
         let ui_weak = ui.as_weak();
         let state = Rc::clone(&state);
         let settings = Rc::clone(&settings);
+        let viewport = Rc::clone(&viewport);
         ui.on_open_folder(move || {
             let Some(ui) = ui_weak.upgrade() else {
                 return;
@@ -60,7 +63,58 @@ fn main() -> color_eyre::Result<()> {
                     return;
                 }
             }
-            refresh(&ui, &state.borrow());
+            refresh(&ui, &state.borrow(), &viewport);
+        });
+    }
+
+    // Zoom/pan input callbacks forwarded from PageView via ViewerWindow.
+    // Each updates the session-only `ViewportState` and re-pushes geometry.
+    // Borrow scoping rule: never hold a `borrow_mut()` across `apply_viewport`,
+    // which also borrows `viewport`. So mutate in one statement, then apply with
+    // a fresh immutable borrow.
+    {
+        let ui_weak = ui.as_weak();
+        let viewport = Rc::clone(&viewport);
+        ui.on_viewport_resized(move |w, h| {
+            let Some(ui) = ui_weak.upgrade() else {
+                return;
+            };
+            viewport.borrow_mut().resize(w, h);
+            apply_viewport(&ui, &viewport.borrow());
+        });
+    }
+    {
+        let ui_weak = ui.as_weak();
+        let viewport = Rc::clone(&viewport);
+        // `dy` is Slint's wheel `delta-y / 1px` passed straight through; the
+        // zoom-in/out sign convention lives in `ViewportState::zoom_at`
+        // (raw_delta > 0 = zoom in). If manual testing shows the wheel feels
+        // inverted on some platform, flip the sign here (one-liner) rather than
+        // in the pure step.
+        ui.on_zoom_at(move |x, y, dy| {
+            let Some(ui) = ui_weak.upgrade() else {
+                return;
+            };
+            viewport.borrow_mut().zoom_at(x, y, dy);
+            apply_viewport(&ui, &viewport.borrow());
+        });
+    }
+    {
+        let viewport = Rc::clone(&viewport);
+        // Drag start: snapshot the current offset; no geometry change yet.
+        ui.on_begin_pan(move || {
+            viewport.borrow_mut().begin_pan();
+        });
+    }
+    {
+        let ui_weak = ui.as_weak();
+        let viewport = Rc::clone(&viewport);
+        ui.on_pan_to(move |dx, dy| {
+            let Some(ui) = ui_weak.upgrade() else {
+                return;
+            };
+            viewport.borrow_mut().pan_to(dx, dy);
+            apply_viewport(&ui, &viewport.borrow());
         });
     }
 
@@ -69,6 +123,7 @@ fn main() -> color_eyre::Result<()> {
         let ui_weak = ui.as_weak();
         let state = Rc::clone(&state);
         let settings = Rc::clone(&settings);
+        let viewport = Rc::clone(&viewport);
         ui.on_nav(move |token| {
             let Some(ui) = ui_weak.upgrade() else {
                 return;
@@ -82,7 +137,7 @@ fn main() -> color_eyre::Result<()> {
                 KeyCommand::Turn(action) => {
                     let moved = state.borrow_mut().apply(action);
                     if moved {
-                        refresh(&ui, &state.borrow());
+                        refresh(&ui, &state.borrow(), &viewport);
                     }
                     // Log every page-turn latency (cache hits target <50ms; the
                     // first visit to a page also includes a synchronous decode).
@@ -96,30 +151,50 @@ fn main() -> color_eyre::Result<()> {
                 KeyCommand::ToggleSpread => {
                     if state.borrow_mut().toggle_spread() {
                         settings.borrow_mut().spread_mode = state.borrow().spread_mode();
-                        refresh(&ui, &state.borrow());
+                        refresh(&ui, &state.borrow(), &viewport);
                     }
                 }
                 KeyCommand::ToggleReadingDirection => {
                     if state.borrow_mut().toggle_reading_direction() {
                         settings.borrow_mut().reading_direction =
                             state.borrow().reading_direction();
-                        refresh(&ui, &state.borrow());
+                        refresh(&ui, &state.borrow(), &viewport);
                     }
                 }
                 KeyCommand::ToggleCover => {
                     if state.borrow_mut().toggle_cover() {
                         settings.borrow_mut().cover_mode = state.borrow().cover_mode();
-                        refresh(&ui, &state.borrow());
+                        refresh(&ui, &state.borrow(), &viewport);
                     }
                 }
-                // Zoom/fit commands are declared in the keymap but not yet wired
-                // to a view implementation; ignore them until a later PR adds the
-                // zoom state and UI hooks.
-                KeyCommand::ZoomIn
-                | KeyCommand::ZoomOut
-                | KeyCommand::ResetView
-                | KeyCommand::FitActual
-                | KeyCommand::CycleFit => {}
+                // Zoom/fit commands operate on the session-only ViewportState.
+                // Each mutates in its own statement, then applies geometry with a
+                // fresh immutable borrow (never hold borrow_mut across apply).
+                KeyCommand::ZoomIn => {
+                    viewport.borrow_mut().zoom_step(true);
+                    apply_viewport(&ui, &viewport.borrow());
+                }
+                KeyCommand::ZoomOut => {
+                    viewport.borrow_mut().zoom_step(false);
+                    apply_viewport(&ui, &viewport.borrow());
+                }
+                KeyCommand::ResetView => {
+                    viewport.borrow_mut().reset();
+                    apply_viewport(&ui, &viewport.borrow());
+                }
+                // Fit changes reset zoom + re-center; reflect the new fit_mode into
+                // the in-memory Settings so save-on-exit persists it (zoom/pan are
+                // NOT persisted — session-only).
+                KeyCommand::FitActual => {
+                    viewport.borrow_mut().set_fit(FitMode::Actual);
+                    settings.borrow_mut().fit_mode = viewport.borrow().fit_mode();
+                    apply_viewport(&ui, &viewport.borrow());
+                }
+                KeyCommand::CycleFit => {
+                    viewport.borrow_mut().cycle_fit();
+                    settings.borrow_mut().fit_mode = viewport.borrow().fit_mode();
+                    apply_viewport(&ui, &viewport.borrow());
+                }
             }
         });
     }
@@ -133,12 +208,27 @@ fn main() -> color_eyre::Result<()> {
     Ok(())
 }
 
-/// Push the current spread + status into the UI.
-fn refresh(ui: &ViewerWindow, state: &ViewerState) {
+/// Push the current spread + status into the UI, then re-anchor the viewport to
+/// the new content size and push the resulting geometry.
+fn refresh(ui: &ViewerWindow, state: &ViewerState, viewport: &Rc<RefCell<ViewportState>>) {
     let status = state.status_text();
     ui.set_rtl(matches!(state.reading_direction(), ReadingDirection::Rtl));
     match state.current_spread() {
         Some(Ok(spread)) => {
+            // Content pixel size for the viewport: single page = the leading
+            // page; double page = widths summed side-by-side, height = the taller
+            // of the two. Compute before swapping the images so the viewport
+            // re-centers for the new spread.
+            let (content_w, content_h) = match &spread.trailing {
+                Some(trailing) => (
+                    (spread.leading.width() + trailing.width()) as f32,
+                    spread.leading.height().max(trailing.height()) as f32,
+                ),
+                None => (
+                    spread.leading.width() as f32,
+                    spread.leading.height() as f32,
+                ),
+            };
             ui.set_leading_page(to_slint_image(&spread.leading));
             match spread.trailing {
                 Some(trailing) => {
@@ -158,6 +248,11 @@ fn refresh(ui: &ViewerWindow, state: &ViewerState) {
                     .set_status_text(format!("{status}  (page {} unavailable)", failed + 1).into()),
                 None => ui.set_status_text(status.into()),
             }
+            // Re-anchor the viewport to the new content, then push geometry.
+            // Mutate then apply with a fresh immutable borrow (never hold a
+            // borrow_mut across apply_viewport).
+            viewport.borrow_mut().set_content(content_w, content_h);
+            apply_viewport(ui, &viewport.borrow());
         }
         Some(Err(e)) => {
             tracing::error!(error = %e, "failed to decode page");
@@ -165,6 +260,11 @@ fn refresh(ui: &ViewerWindow, state: &ViewerState) {
             ui.set_leading_page(slint::Image::default());
             ui.set_trailing_page(slint::Image::default());
             ui.set_single(true);
+            // No valid content: zero the content size so geometry collapses to an
+            // empty box (the page is already cleared above — keep the view
+            // consistent rather than retaining a stale content rectangle).
+            viewport.borrow_mut().set_content(0.0, 0.0);
+            apply_viewport(ui, &viewport.borrow());
         }
         None => {
             // Source loaded but empty (or no source yet): clear and show single
@@ -174,8 +274,20 @@ fn refresh(ui: &ViewerWindow, state: &ViewerState) {
             ui.set_leading_page(slint::Image::default());
             ui.set_trailing_page(slint::Image::default());
             ui.set_single(true);
+            viewport.borrow_mut().set_content(0.0, 0.0);
+            apply_viewport(ui, &viewport.borrow());
         }
     }
+}
+
+/// Push the viewport's render geometry (content_x/y/w/h, logical px as `f32`)
+/// into the UI properties.
+fn apply_viewport(ui: &ViewerWindow, viewport: &ViewportState) {
+    let (x, y, w, h) = viewport.geometry();
+    ui.set_content_x(x);
+    ui.set_content_y(y);
+    ui.set_content_w(w);
+    ui.set_content_h(h);
 }
 
 /// Convert core RGBA bytes into a `slint::Image`.

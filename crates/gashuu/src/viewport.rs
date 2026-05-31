@@ -19,9 +19,6 @@ const ZOOM_STEP: f32 = 1.1;
 
 /// Live zoom/pan/fit + viewport size for the displayed spread. Holds no geometry
 /// of its own; all clamping and anchoring go through `gashuu_core::viewport`.
-//
-// Wired into main.rs later in PR5; currently exercised by unit tests only.
-#[allow(dead_code)]
 pub struct ViewportState {
     fit_mode: FitMode,
     /// Zoom factor in `[ZOOM_MIN, ZOOM_MAX]`, multiplied onto the fit baseline.
@@ -36,8 +33,6 @@ pub struct ViewportState {
     pan_origin: (f32, f32),
 }
 
-// Wired into main.rs later in PR5; currently exercised by unit tests only.
-#[allow(dead_code)]
 impl ViewportState {
     /// Construct from persisted settings: adopt `fit_mode`, start at `ZOOM_MIN`
     /// (1.0), zero-initialize offset / viewport size / content size / pan origin.
