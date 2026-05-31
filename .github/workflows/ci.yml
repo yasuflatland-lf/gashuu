@@ -30,7 +30,7 @@ jobs:
       # (the old `--workspace` runs got it via feature unification with gashuu's dev-dep).
       - run: cargo clippy -p gashuu-core --all-targets --features testing -- -D warnings
       - run: cargo llvm-cov nextest -p gashuu-core --features testing --profile ci --lcov --output-path lcov.info --ignore-filename-regex 'build\.rs'
-      - uses: codecov/codecov-action@v5
+      - uses: codecov/codecov-action@v6
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: lcov.info

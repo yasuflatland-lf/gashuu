@@ -23,6 +23,14 @@ pub enum CoreError {
     /// A decoded image's RGBA buffer length did not match its dimensions.
     #[error("malformed image: expected {expected} RGBA bytes, got {actual}")]
     MalformedImage { expected: usize, actual: usize },
+
+    /// Settings file could not be (de)serialized.
+    #[error("settings format error: {0}")]
+    Settings(#[from] serde_json::Error),
+
+    /// The OS did not provide a config directory for settings storage.
+    #[error("no config directory available for settings")]
+    NoConfigDir,
 }
 
 #[cfg(test)]
@@ -45,5 +53,21 @@ mod tests {
             err.to_string(),
             "malformed image: expected 16 RGBA bytes, got 3"
         );
+    }
+
+    #[test]
+    fn no_config_dir_displays_message() {
+        let err = CoreError::NoConfigDir;
+        assert_eq!(
+            err.to_string(),
+            "no config directory available for settings"
+        );
+    }
+
+    #[test]
+    fn settings_displays_with_prefix() {
+        let json_err = serde_json::from_str::<serde_json::Value>("not json").unwrap_err();
+        let err = CoreError::Settings(json_err);
+        assert!(err.to_string().starts_with("settings format error: "));
     }
 }
