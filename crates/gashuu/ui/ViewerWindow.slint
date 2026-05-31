@@ -1,0 +1,63 @@
+import { Button, HorizontalBox, VerticalBox } from "std-widgets.slint";
+import { PageView } from "PageView.slint";
+
+export component ViewerWindow inherits Window {
+    title: "gashuu";
+    preferred-width: 900px;
+    preferred-height: 1200px;
+
+    in property <image> current-page;
+    in property <string> status-text: "No folder opened";
+
+    callback open-folder();
+    // Forwarded navigation token: "left" | "right" | "space" | "backspace".
+    callback nav(string);
+
+    VerticalBox {
+        HorizontalBox {
+            height: 40px;
+            Button {
+                text: "Open Folder…";
+                clicked => {
+                    root.open-folder();
+                    // Return focus to the page area so keyboard navigation keeps working
+                    // after the picker closes (open-folder is synchronous on the Rust side).
+                    fs.focus();
+                }
+            }
+            Text {
+                text: root.status-text;
+                vertical-alignment: center;
+            }
+        }
+        fs := FocusScope {
+            key-pressed(event) => {
+                if (event.text == Key.LeftArrow) {
+                    root.nav("left");
+                    return accept;
+                }
+                if (event.text == Key.RightArrow) {
+                    root.nav("right");
+                    return accept;
+                }
+                if (event.text == Key.Space) {
+                    root.nav("space");
+                    return accept;
+                }
+                if (event.text == Key.Backspace) {
+                    root.nav("backspace");
+                    return accept;
+                }
+                return reject;
+            }
+            PageView {
+                source: root.current-page;
+            }
+        }
+    }
+
+    // Grab keyboard focus on startup so arrow keys work without a click.
+    init => {
+        fs.focus();
+    }
+}

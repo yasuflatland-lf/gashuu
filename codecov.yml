@@ -1,0 +1,22 @@
+coverage:
+  status:
+    project:
+      default:
+        informational: true
+    patch:
+      default:
+        informational: true
+
+flags:
+  rust:
+    paths:
+      - crates/gashuu-core
+
+ignore:
+  - "crates/gashuu"
+  - "**/build.rs"
+  - "**/tests/**"
+
+comment:
+  layout: "reach, diff, flags, files"
+  require_changes: false

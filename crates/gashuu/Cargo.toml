@@ -1,0 +1,21 @@
+[package]
+name = "gashuu"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+gashuu-core = { path = "../gashuu-core" }
+slint = "1"
+rfd = "0.15"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+color-eyre = "0.6"
+
+[build-dependencies]
+slint-build = "1"
+
+[dev-dependencies]
+# `testing` feature exposes MockPageSource for ViewerState unit tests;
+# image is used to synthesize tiny PNG bytes in tests (no committed binary fixtures).
+gashuu-core = { path = "../gashuu-core", features = ["testing"] }
+image = "0.25"
