@@ -214,11 +214,6 @@ impl ViewerState {
     /// the square boundary). On a change, re-normalizes the index so the
     /// currently visible page stays on screen. A non-positive/non-finite height
     /// falls back to aspect 1.0. No-op-safe with no folder open (index stays 0).
-    //
-    // dead_code fires only because the main.rs `on_resized` wiring lands
-    // separately; the #[cfg(test)] callers below are invisible to the lint. Same
-    // #[allow(dead_code)] convention as the other test-exercised accessors here.
-    #[allow(dead_code)]
     pub fn set_viewport_size(&mut self, width: f32, height: f32) -> bool {
         let before = self.effective_layout();
         self.viewport_aspect = if height > 0.0 { width / height } else { 1.0 };

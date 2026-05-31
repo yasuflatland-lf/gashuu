@@ -115,6 +115,22 @@ fn main() -> color_eyre::Result<()> {
         });
     }
 
+    // Viewport resize: re-resolve SpreadMode::Auto against the new window aspect;
+    // refresh only when the effective layout actually flipped (no churn while
+    // merely resizing in Single or Double mode).
+    {
+        let ui_weak = ui.as_weak();
+        let state = Rc::clone(&state);
+        ui.on_resized(move |w, h| {
+            let Some(ui) = ui_weak.upgrade() else {
+                return;
+            };
+            if state.borrow_mut().set_viewport_size(w, h) {
+                refresh(&ui, &state.borrow());
+            }
+        });
+    }
+
     ui.run()?;
     // Persist settings on exit so even a first run writes a file the user can
     // hand-edit. Save failure is logged, not fatal.
