@@ -116,10 +116,10 @@ impl PageSource for FolderSource {
     }
 
     fn read_bytes(&self, index: usize) -> Result<Vec<u8>, CoreError> {
-        let entry = self
-            .entries
-            .get(index)
-            .ok_or(CoreError::IndexOutOfRange { index, len: self.entries.len() })?;
+        let entry = self.entries.get(index).ok_or(CoreError::IndexOutOfRange {
+            index,
+            len: self.entries.len(),
+        })?;
         std::fs::read(&entry.path).map_err(CoreError::from)
     }
 }
@@ -170,7 +170,8 @@ mod folder_source_tests {
     fn write_png(path: &std::path::Path) {
         let img = image::RgbaImage::from_pixel(2, 2, image::Rgba([10, 20, 30, 255]));
         let mut bytes = Vec::new();
-        img.write_to(&mut Cursor::new(&mut bytes), image::ImageFormat::Png).unwrap();
+        img.write_to(&mut Cursor::new(&mut bytes), image::ImageFormat::Png)
+            .unwrap();
         fs::write(path, bytes).unwrap();
     }
 
@@ -210,7 +211,10 @@ mod folder_source_tests {
         let source = FolderSource::open(dir.path()).unwrap();
         let err = source.read_bytes(7).unwrap_err();
 
-        assert!(matches!(err, CoreError::IndexOutOfRange { index: 7, len: 1 }));
+        assert!(matches!(
+            err,
+            CoreError::IndexOutOfRange { index: 7, len: 1 }
+        ));
     }
 
     #[test]

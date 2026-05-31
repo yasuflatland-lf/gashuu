@@ -24,7 +24,10 @@ mod tests {
     fn mock_page_source_returns_configured_pages() {
         let mut mock = MockPageSource::new();
         mock.expect_list_pages().returning(|| {
-            vec![PageEntry { path: "a.png".into(), name: "a.png".into() }]
+            vec![PageEntry {
+                path: "a.png".into(),
+                name: "a.png".into(),
+            }]
         });
         mock.expect_read_bytes().returning(|_| Ok(vec![1, 2, 3]));
 

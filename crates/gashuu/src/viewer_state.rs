@@ -14,7 +14,11 @@ pub struct ViewerState {
 
 impl ViewerState {
     pub fn new() -> Self {
-        Self { source: None, page_count: 0, index: 0 }
+        Self {
+            source: None,
+            page_count: 0,
+            index: 0,
+        }
     }
 
     /// Replace the active source (used by `open_folder` and by tests).
@@ -31,10 +35,13 @@ impl ViewerState {
         Ok(())
     }
 
+    // Read accessors exercised by tests; will be called from the UI layer in a later PR.
+    #[allow(dead_code)]
     pub fn page_count(&self) -> usize {
         self.page_count
     }
 
+    #[allow(dead_code)]
     pub fn index(&self) -> usize {
         self.index
     }
@@ -60,7 +67,11 @@ impl ViewerState {
         if self.page_count == 0 {
             return None;
         }
-        Some(source.read_bytes(self.index).and_then(|bytes| decode(&bytes)))
+        Some(
+            source
+                .read_bytes(self.index)
+                .and_then(|bytes| decode(&bytes)),
+        )
     }
 
     /// Status line, e.g. "3 / 100".
@@ -88,14 +99,22 @@ mod tests {
     fn tiny_png() -> Vec<u8> {
         let img = image::RgbaImage::from_pixel(2, 3, image::Rgba([9, 9, 9, 255]));
         let mut bytes = Vec::new();
-        img.write_to(&mut Cursor::new(&mut bytes), image::ImageFormat::Png).unwrap();
+        img.write_to(&mut Cursor::new(&mut bytes), image::ImageFormat::Png)
+            .unwrap();
         bytes
     }
 
     fn mock_with(pages: usize) -> Box<dyn PageSource> {
         let mut mock = MockPageSource::new();
-        mock.expect_list_pages()
-            .returning(move || vec![PageEntry { path: "p".into(), name: "p".into() }; pages]);
+        mock.expect_list_pages().returning(move || {
+            vec![
+                PageEntry {
+                    path: "p".into(),
+                    name: "p".into()
+                };
+                pages
+            ]
+        });
         mock.expect_read_bytes().returning(|_| Ok(tiny_png()));
         Box::new(mock)
     }

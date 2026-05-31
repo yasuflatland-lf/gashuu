@@ -16,7 +16,11 @@ pub struct DecodedImage {
 pub fn decode(bytes: &[u8]) -> Result<DecodedImage, CoreError> {
     let rgba = image::load_from_memory(bytes)?.to_rgba8();
     let (width, height) = rgba.dimensions();
-    Ok(DecodedImage { rgba: rgba.into_raw(), width, height })
+    Ok(DecodedImage {
+        rgba: rgba.into_raw(),
+        width,
+        height,
+    })
 }
 
 #[cfg(test)]
@@ -28,7 +32,8 @@ mod tests {
     fn png_bytes(w: u32, h: u32) -> Vec<u8> {
         let img = image::RgbaImage::from_pixel(w, h, image::Rgba([1, 2, 3, 255]));
         let mut bytes = Vec::new();
-        img.write_to(&mut Cursor::new(&mut bytes), image::ImageFormat::Png).unwrap();
+        img.write_to(&mut Cursor::new(&mut bytes), image::ImageFormat::Png)
+            .unwrap();
         bytes
     }
 
