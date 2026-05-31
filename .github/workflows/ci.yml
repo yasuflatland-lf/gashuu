@@ -5,9 +5,43 @@ on:
     branches: [main]
   pull_request:
 
+# Cancel a superseded run when a new commit lands on the same ref (saves CI minutes).
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  test:
-    name: test (${{ matrix.os }})
+  # The Slint-free pure crate: lint + test + coverage in one fast ubuntu job.
+  # It never links Slint, so the quality gates return quickly instead of waiting
+  # on the GUI build, and gashuu-core is tested/measured exactly once.
+  core:
+    name: core (rust, slint-free)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: jdx/mise-action@v2
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      # Belt and suspenders: ensure components exist even on a cached toolchain.
+      - run: rustup component add rustfmt clippy llvm-tools-preview
+      - run: cargo fmt --check
+      # `--features testing` so the feature-gated MockPageSource test is linted and run
+      # (the old `--workspace` runs got it via feature unification with gashuu's dev-dep).
+      - run: cargo clippy -p gashuu-core --all-targets --features testing -- -D warnings
+      - run: cargo llvm-cov nextest -p gashuu-core --features testing --profile ci --lcov --output-path lcov.info --ignore-filename-regex 'build\.rs'
+      - uses: codecov/codecov-action@v5
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: lcov.info
+          flags: rust
+          fail_ci_if_error: false
+
+  # The Slint presentation crate, built and tested per OS. Only `-p gashuu` runs
+  # here (the core job already covers gashuu-core), and fmt/clippy are not repeated
+  # on every OS. clippy for the UI runs once on Linux.
+  app:
+    name: app (${{ matrix.os }})
     strategy:
       fail-fast: false
       matrix:
@@ -26,26 +60,8 @@ jobs:
           sudo apt-get install -y \
             libfontconfig1-dev libfreetype6-dev libxcb1-dev \
             libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libxkbcommon-dev
-      # Belt and suspenders: ensure components exist even on a cached toolchain.
-      - run: rustup component add rustfmt clippy llvm-tools-preview
-      - run: cargo fmt --check
-      - run: cargo clippy --workspace --all-targets -- -D warnings
-      - run: cargo nextest run --workspace --profile ci
-
-  coverage:
-    name: coverage (core)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: jdx/mise-action@v2
-      - uses: Swatinem/rust-cache@v2
-        with:
-          save-if: ${{ github.ref == 'refs/heads/main' }}
-      - run: rustup component add llvm-tools-preview
-      - run: cargo llvm-cov nextest -p gashuu-core --profile ci --lcov --output-path lcov.info --ignore-filename-regex 'build\.rs'
-      - uses: codecov/codecov-action@v5
-        with:
-          token: ${{ secrets.CODECOV_TOKEN }}
-          files: lcov.info
-          flags: rust
-          fail_ci_if_error: false
+      - run: rustup component add clippy
+      # UI lint once (Linux leg); add per-OS clippy only when cfg(os) code appears.
+      - if: matrix.os == 'ubuntu-latest'
+        run: cargo clippy -p gashuu --all-targets -- -D warnings
+      - run: cargo nextest run -p gashuu --profile ci
