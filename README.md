@@ -5,12 +5,16 @@
 
 A cross-platform manga viewer built with Rust and [Slint](https://slint.dev).
 
-## Status (PR1 — MVP)
+## Status (PR2 — Cached viewer)
 
-Open a folder of PNG/JPG/JPEG images and browse every page with the keyboard.
+Open a folder of PNG/JPG/JPEG images and browse every page with the keyboard. Pages are
+held in an LRU cache (up to 50 decoded images) and the neighbours of the current
+page are prefetched in the background, so warmed page turns are effectively instant.
 
 - **→ / Space** — next page
 - **← / Backspace** — previous page
+
+Set `RUST_LOG=debug` to see per-turn latency (`page turn elapsed_ms=…`).
 
 ## Develop
 
