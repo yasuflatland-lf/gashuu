@@ -15,3 +15,7 @@ rust = { version = "1.96.0", components = "rustfmt,clippy" }
 [settings]
 # Prefer binary fetch via cargo-binstall when available (faster installs).
 cargo.binstall = true
+
+[tasks.check-docs]
+description = "Verify the L1/L2/L3 documentation structure (CLAUDE.md <=35 lines + all doc links resolve)"
+run = "bash scripts/check-docs.sh"
