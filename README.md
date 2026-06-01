@@ -5,9 +5,9 @@
 
 A cross-platform manga viewer built with Rust and [Slint](https://slint.dev).
 
-## Status (PR5 — Zoom/pan + fit modes · PR6 — ZIP/CBZ archive support)
+## Status (PR5 — Zoom/pan + fit modes · PR6 — ZIP/CBZ archive support · PR7 — RAR/CBR archive support)
 
-Open a **folder** of PNG/JPG/JPEG images, or a **CBZ/ZIP comic archive**, and browse
+Open a **folder** of PNG/JPG/JPEG images, or a **CBZ/ZIP/CBR/RAR comic archive**, and browse
 every page with the keyboard. Pages are held in an LRU cache (up to 50 decoded images)
 and the neighbours of the current page are prefetched in the background, so warmed page
 turns are effectively instant. You can read in a two-page spread with right-to-left
@@ -24,10 +24,12 @@ direction.
 **Opening content**
 
 - **Open Folder** button — pick a folder of PNG/JPG/JPEG images.
-- **Open Archive** button — pick a `.cbz` or `.zip` file. Pages inside the archive are
-  read in natural filename order; images nested in subfolders within the archive are
-  included. Archives are extracted in-memory (no files written to disk); unsafe,
-  oversized, or corrupt entries are skipped and the count is shown in the status bar.
+- **Open Archive** button — pick a `.cbz`, `.zip`, `.cbr`, or `.rar` file. Pages inside
+  the archive are read in natural filename order; images nested in subfolders within the
+  archive are included. Archives are extracted in-memory (no files written to disk);
+  unsafe, oversized, or corrupt entries are skipped and the count is shown in the status
+  bar. Dispatch is automatic: gashuu detects the format by extension or magic bytes, so
+  a mis-extensioned archive still opens.
 
 Once a source is open, all navigation, spread, and layout controls work the same
 regardless of whether you opened a folder or an archive.
@@ -122,6 +124,11 @@ sudo apt-get install -y libfontconfig1-dev libfreetype6-dev libxcb1-dev \
   libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libxkbcommon-dev
 ```
 
+The RAR/CBR backend (`unrar` crate) bundles the C++ UnRAR sources and builds them via
+`cc`. A C++ compiler is required at build time — this is standard on all supported
+platforms (Xcode CLT on macOS, MSVC or MinGW on Windows, `build-essential` on Linux)
+and adds nothing beyond the normal development toolchain.
+
 Then:
 
 ```bash
@@ -132,10 +139,14 @@ RUST_LOG=info cargo run -p gashuu         # run the viewer
 
 ## Workspace
 
-- `crates/gashuu-core` — Slint-independent domain + I/O (page sources including folder
-  and ZIP/CBZ archive support, image decode).
+- `crates/gashuu-core` — Slint-independent domain + I/O (page sources including folder,
+  ZIP/CBZ, and RAR/CBR archive support, image decode).
 - `crates/gashuu` — Slint presentation layer.
 
 ## License
 
 MIT — see [LICENSE](LICENSE).
+
+The RAR/CBR backend uses the UnRAR library, which carries RARLAB's non-free license
+(read-only use is permitted; re-creating the RAR compression algorithm is not). See
+[THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md) for the full UnRAR license text.
