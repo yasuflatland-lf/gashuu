@@ -7,8 +7,8 @@
 //! tested here. `main.rs`'s `to_carousel_item` adapter turns each row into a
 //! `CarouselItem` on the UI thread (placeholder cover for PR-C; real covers
 //! stream in via PR-V). This is the SINGLE place the Library → carousel
-//! display mapping lives (the carousel counterpart of
-//! `thumbnail_strip::thumbnail_item`).
+//! display mapping lives (mirrors the "one chokepoint maps domain → display
+//! row" discipline of the private `thumbnail_item` fn in `thumbnail_strip.rs`).
 //!
 //! Progress is `last_page / total` with a `total == 0` guard (an unread or
 //! pageless book reports `0.0`); `current` is the 1-based page for display
@@ -27,8 +27,9 @@ pub struct CarouselData {
     /// (`last_page == 0`) shows `1`.
     pub current: i32,
     /// Total page count for display. Unknown until the book is opened, so the
-    /// Library does not store it — `total` is 0 here and PR-V/PR-R fill the
-    /// real count once the book's page source is resolved.
+    /// Library does not store it — `total` is always 0 at load time. Whichever
+    /// future PR resolves a book's page source and learns its real count owns
+    /// filling this in; this PR intentionally leaves it 0.
     pub total: i32,
     /// Reading progress in `0.0..=1.0` (`last_page / total`, `0.0` when
     /// `total == 0`). Ambient per-cover bar; accent fill, green when `>= 1.0`.
@@ -44,9 +45,9 @@ pub struct CarouselData {
 /// `current = last_page + 1` (1-based display); `progress = last_page / total`
 /// guarded so `total == 0` yields `0.0` (never NaN/inf); `available` is the
 /// derived existence check. `total` is 0 until the book is opened (the Library
-/// does not persist page counts); PR-V/PR-R supply the real total once the
-/// page source is resolved, at which point `current`/`progress` become
-/// meaningful against it.
+/// does not persist page counts); the real total is filled once a book's page
+/// source is resolved (not owned by this PR), at which point `current`/`progress`
+/// become meaningful against it.
 pub fn carousel_data(library: &Library) -> Vec<CarouselData> {
     library
         .books()
@@ -55,11 +56,20 @@ pub fn carousel_data(library: &Library) -> Vec<CarouselData> {
             let last_page = book.last_page();
             let total = 0usize; // Unknown until opened; see doc comment.
             let progress = progress_fraction(last_page, total);
+            // `last_page` is a `usize` page index; saturate the +1 and the i32
+            // cast so a pathological value can never panic in debug.
+            let current = clamp_to_i32(last_page.saturating_add(1));
+            // Pin the documented invariants at the single construction site
+            // (debug-only; matches the codebase's debug_assert discipline):
+            // `current` is 1-based (>= 1) and `progress` is a 0.0..=1.0 fraction.
+            debug_assert!(current >= 1, "current is 1-based and must be >= 1");
+            debug_assert!(
+                (0.0..=1.0).contains(&progress),
+                "progress must be in 0.0..=1.0"
+            );
             CarouselData {
                 title: book.title().to_string(),
-                // `last_page` is a `usize` page index; saturate the +1 and the
-                // i32 cast so a pathological value can never panic in debug.
-                current: clamp_to_i32(last_page.saturating_add(1)),
+                current,
                 total: clamp_to_i32(total),
                 progress,
                 available: Library::is_available(book),
@@ -162,5 +172,61 @@ mod tests {
         let rows = carousel_data(&lib);
         assert_eq!(rows.len(), 1, "unavailable book is NOT auto-removed");
         assert!(!rows[0].available);
+    }
+
+    #[test]
+    fn clamp_to_i32_saturates_at_max() {
+        assert_eq!(clamp_to_i32(0), 0);
+        assert_eq!(clamp_to_i32(i32::MAX as usize), i32::MAX);
+        assert_eq!(clamp_to_i32((i32::MAX as usize) + 1), i32::MAX);
+        assert_eq!(clamp_to_i32(usize::MAX), i32::MAX);
+    }
+
+    #[test]
+    fn carousel_data_preserves_insertion_order() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let mut lib = Library::new();
+        for name in ["alpha", "beta", "gamma"] {
+            let dir = root.path().join(name);
+            std::fs::create_dir(&dir).expect("create subdir");
+            assert!(lib.add(dir));
+        }
+        let rows = carousel_data(&lib);
+        assert_eq!(rows.len(), 3);
+        assert_eq!(rows[0].title, "alpha");
+        assert_eq!(rows[1].title, "beta");
+        assert_eq!(rows[2].title, "gamma");
+    }
+
+    #[test]
+    fn carousel_data_mixed_availability_per_book() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let keep = root.path().join("keep");
+        let gone = root.path().join("gone");
+        std::fs::create_dir(&keep).expect("create keep");
+        std::fs::create_dir(&gone).expect("create gone");
+        let mut lib = Library::new();
+        assert!(lib.add(keep));
+        assert!(lib.add(gone.clone()));
+        std::fs::remove_dir_all(&gone).expect("remove gone"); // now unresolvable
+        let rows = carousel_data(&lib);
+        assert_eq!(
+            rows.len(),
+            2,
+            "both books stay in the shelf (no auto-prune)"
+        );
+        assert!(rows[0].available, "keep dir still resolves");
+        assert!(!rows[1].available, "gone dir no longer resolves");
+    }
+
+    #[test]
+    fn carousel_data_current_reflects_last_page() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut lib = Library::new();
+        assert!(lib.add(dir.path().to_path_buf()));
+        let path = lib.books()[0].path().to_path_buf();
+        assert!(lib.set_last_page(&path, 4));
+        let rows = carousel_data(&lib);
+        assert_eq!(rows[0].current, 5); // 1-based: last_page 4 -> display 5
     }
 }
