@@ -1,12 +1,14 @@
 slint::include_modules!();
 
 mod keymap;
+mod navigation;
 mod thumbnail_strip;
 mod viewer_state;
 mod viewport;
 
 use gashuu_core::{CoverMode, DecodedImage, FitMode, ReadingDirection, Settings, SpreadMode};
 use keymap::{map_key, KeyCommand};
+use navigation::{screen_to_index, NavState};
 use std::cell::RefCell;
 use std::path::Path;
 use std::rc::Rc;
@@ -37,6 +39,13 @@ fn main() -> color_eyre::Result<()> {
     // model into the UI via `set_thumbnails` internally. Wrapped in `Rc` so both
     // open handlers (via `open_and_present`) can share the single controller.
     let thumbs = Rc::new(ThumbnailController::new(&ui));
+
+    // Top-level screen state machine. App boots to Library (the carousel home).
+    // Held in an Rc<RefCell<…>> so the carousel callbacks and the Viewer's
+    // GoToLibrary key arm can all flip it through the seam functions below.
+    let nav = Rc::new(RefCell::new(NavState::new()));
+    // Push the initial screen so the window shows the Library on boot.
+    ui.set_screen(screen_to_index(nav.borrow().screen()));
 
     // Initial paint so rtl/single/status are all initialized before the first
     // folder is opened (refresh shows "No folder opened" and clears the images).
@@ -92,6 +101,43 @@ fn main() -> color_eyre::Result<()> {
                 &file,
                 " (zip-slip or oversized)",
             );
+        });
+    }
+
+    // Carousel: Return on the focused book opens it. STUB for PR-0b — PR-C/PR-R
+    // resolve the focused index to a Library book and open+resume it. For now it
+    // simply transitions to the Viewer so the seam is exercised end-to-end.
+    {
+        let ui_weak = ui.as_weak();
+        let nav = Rc::clone(&nav);
+        ui.on_carousel_open(move |_index| {
+            let Some(ui) = ui_weak.upgrade() else {
+                return;
+            };
+            go_to_viewer(&ui, &nav);
+        });
+    }
+    // Carousel: Left/Right move focus by `delta`. STUB for PR-0b — PR-C owns
+    // focus-index movement against the Library model. No-op for now (the empty
+    // shell has no items to move between).
+    {
+        ui.on_carousel_move(move |_delta| {
+            // PR-C: clamp focused-index within the Library bounds and re-center.
+        });
+    }
+    // Carousel: Down returns to the currently-open book (the Viewer). Only
+    // meaningful when a book is open; with no book open it still flips to the
+    // Viewer screen, which shows the "No folder opened" empty state (consistent
+    // with the existing initial view). PR-R refines the "only when a book is
+    // open" guard.
+    {
+        let ui_weak = ui.as_weak();
+        let nav = Rc::clone(&nav);
+        ui.on_carousel_back(move || {
+            let Some(ui) = ui_weak.upgrade() else {
+                return;
+            };
+            go_to_viewer(&ui, &nav);
         });
     }
 
@@ -372,6 +418,7 @@ fn main() -> color_eyre::Result<()> {
         let ui_weak = ui.as_weak();
         let state = Rc::clone(&state);
         let viewport = Rc::clone(&viewport);
+        let nav = Rc::clone(&nav);
         ui.on_nav(move |token| {
             let Some(ui) = ui_weak.upgrade() else {
                 return;
@@ -448,6 +495,11 @@ fn main() -> color_eyre::Result<()> {
                 // existing `viewport-resized` wiring.
                 KeyCommand::ToggleThumbnails => {
                     ui.set_show_thumbnails(!ui.get_show_thumbnails());
+                }
+                // Up arrow returns to the Library carousel. Direction-independent
+                // (decoded in keymap); the seam flips NavState + syncs `screen`.
+                KeyCommand::GoToLibrary => {
+                    go_to_library(&ui, &nav);
                 }
             }
         });
@@ -643,6 +695,25 @@ fn apply_viewport(ui: &ViewerWindow, viewport: &ViewportState) {
     ui.set_content_y(y);
     ui.set_content_w(w);
     ui.set_content_h(h);
+}
+
+/// Switch the app to the Library carousel and sync the UI's `screen` property.
+/// The single chokepoint for "go to Library" so no caller forgets to push the
+/// new screen into the UI (mirrors the seam-function discipline in `main.rs`).
+fn go_to_library(ui: &ViewerWindow, nav: &Rc<RefCell<NavState>>) {
+    nav.borrow_mut().to_library();
+    ui.set_screen(screen_to_index(nav.borrow().screen()));
+    // Restore keyboard focus to the carousel so its key seams work immediately.
+    ui.invoke_focus_carousel();
+}
+
+/// Switch the app to the Viewer and sync the UI's `screen` property. The single
+/// chokepoint for "go to Viewer"; restores focus to the page area so keyboard
+/// navigation keeps working.
+fn go_to_viewer(ui: &ViewerWindow, nav: &Rc<RefCell<NavState>>) {
+    nav.borrow_mut().to_viewer();
+    ui.set_screen(screen_to_index(nav.borrow().screen()));
+    ui.invoke_focus_pages();
 }
 
 /// Convert core RGBA bytes into a `slint::Image`.
