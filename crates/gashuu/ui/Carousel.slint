@@ -16,6 +16,25 @@
 // Return -> open(focused-index), Down -> back().
 import { Theme } from "Theme.slint";
 
+// Reading-progress bar: a track with an accent fill (green once complete).
+// Shared by the per-cover bar and the focused-book meta bar so the track/fill
+// styling lives in one place. The caller positions/sizes the instance (the
+// per-cover bar sets x/y/width absolutely; the meta bar is laid out by its
+// VerticalLayout); `progress` (0.0..1.0) drives the fill width and color.
+component ProgressBar inherits Rectangle {
+    in property <float> progress;
+    height: 4px;
+    border-radius: 2px;
+    background: Theme.track-prog;
+    Rectangle {
+        x: 0; y: 0;
+        width: parent.width * Math.clamp(root.progress, 0.0, 1.0);
+        height: 100%;
+        border-radius: 2px;
+        background: root.progress >= 1.0 ? Theme.success : Theme.accent;
+    }
+}
+
 // Frozen by PR-0b; populated by PR-C (covers via PR-V). One book in the shelf.
 export struct CarouselItem {
     cover: image,
@@ -181,20 +200,11 @@ export component Carousel inherits Rectangle {
                   }
 
                   // ── Per-cover progress bar (under every cover) ────────────────
-                  Rectangle {
+                  ProgressBar {
                       x: 0;
                       y: parent.height + Theme.space-xs;
                       width: parent.width;
-                      height: 4px;
-                      border-radius: 2px;
-                      background: Theme.track-prog;
-                      Rectangle {
-                          x: 0; y: 0;
-                          width: parent.width * Math.clamp(item.progress, 0.0, 1.0);
-                          height: 100%;
-                          border-radius: 2px;
-                          background: item.progress >= 1.0 ? Theme.success : Theme.accent;
-                      }
+                      progress: item.progress;
                   }
               }
 
@@ -222,17 +232,8 @@ export component Carousel inherits Rectangle {
                       font-size: Theme.font-label;
                       horizontal-alignment: center;
                   }
-                  Rectangle {
-                      height: 4px;
-                      border-radius: 2px;
-                      background: Theme.track-prog;
-                      Rectangle {
-                          x: 0; y: 0;
-                          width: parent.width * Math.clamp(root.items[root.focused-index].progress, 0.0, 1.0);
-                          height: 100%;
-                          border-radius: 2px;
-                          background: root.items[root.focused-index].progress >= 1.0 ? Theme.success : Theme.accent;
-                      }
+                  ProgressBar {
+                      progress: root.items[root.focused-index].progress;
                   }
               }
           }
