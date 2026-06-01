@@ -137,9 +137,8 @@ impl PageSource for ZipSource {
         self.entries
             .iter()
             .map(|m| PageEntry {
-                // ZIP entries have no real filesystem path; the flattened entry
-                // name doubles as both the identity path and the display name.
-                path: PathBuf::from(&m.name),
+                // ZIP entries have no filesystem path; the flattened entry name is
+                // the page's identity. Bytes are retrieved via `read_bytes(index)`.
                 name: m.name.clone(),
             })
             .collect()
