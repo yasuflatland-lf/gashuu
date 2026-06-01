@@ -72,7 +72,7 @@ fn main() -> color_eyre::Result<()> {
         });
     }
 
-    // Open Archive button: pick a CBZ/ZIP file, load it, refresh the view.
+    // Open Archive button: pick a CBZ/ZIP/CBR/RAR file, load it, refresh the view.
     {
         let ui_weak = ui.as_weak();
         let state = Rc::clone(&state);

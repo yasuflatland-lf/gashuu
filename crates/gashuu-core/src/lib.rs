@@ -10,6 +10,8 @@ pub mod image_ops;
 pub mod page_source;
 pub mod settings;
 pub mod spread;
+#[cfg(test)]
+mod test_fixtures;
 pub mod viewport;
 
 pub use archive_loader::ArchiveLoader;
