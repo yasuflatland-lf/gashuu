@@ -93,10 +93,13 @@ pub struct ViewerState {
     /// successful open unchanged.
     last_open_skipped: usize,
     /// Canonical path of the most recently successfully opened source. `None`
-    /// until `open_path` completes `Ok(())`; set to `None` by `set_source`
-    /// directly (no path supplied). Used by `main.rs` to form the write-back
-    /// tuple `(path, state.index())` at every leave point without needing to
-    /// hold a concurrent borrow on both `state` and `library`.
+    /// until `open_path` completes `Ok(())`; reset to `None` only by a
+    /// subsequent `set_source` call (including the one the next successful
+    /// `open_path` makes before re-setting it). A failed `open_path` returns
+    /// early via `?` before `set_source`, so it leaves this field unchanged.
+    /// Used by `main.rs` to form the write-back tuple `(path, state.index())`
+    /// at every leave point without holding a concurrent borrow on both
+    /// `state` and `library`.
     open_file: Option<PathBuf>,
 }
 
@@ -246,10 +249,11 @@ impl ViewerState {
         self.last_open_skipped
     }
 
-    /// The canonical path of the currently open source, or `None` when no
-    /// source has been opened via `open_path` (i.e. after construction, a
-    /// failed `open_path`, or a direct `set_source` call). Used by `main.rs`
-    /// to write the reading position back to the `Library` at leave points.
+    /// The canonical path of the currently open source, or `None` after
+    /// construction or a direct `set_source` call. Set on a successful
+    /// `open_path`; a failed `open_path` leaves the previous value unchanged
+    /// (it returns early before `set_source`). Used by `main.rs` to write the
+    /// reading position back to the `Library` at leave points.
     pub fn open_file(&self) -> Option<&Path> {
         self.open_file.as_deref()
     }
@@ -1324,7 +1328,7 @@ mod tests {
     }
 
     #[test]
-    fn open_file_is_some_after_set_source_via_open_path_with_mock() {
+    fn open_file_stays_none_after_direct_set_source() {
         // set_source itself does not have a path; open_file tracks the path given
         // to open_path. After set_source directly, open_file stays None (no path
         // was supplied).
@@ -1334,6 +1338,33 @@ mod tests {
             state.open_file().is_none(),
             "set_source without a path must leave open_file as None"
         );
+    }
+
+    #[test]
+    fn open_file_is_some_canonical_after_successful_open_path() {
+        // The linchpin invariant of the whole write-back chain: a SUCCESSFUL
+        // open_path sets open_file to Some(canonical). Exercised here with a
+        // real on-disk directory (a valid FolderSource), no archive fixture.
+        let dir = std::env::temp_dir().join(format!("gashuu_prR_openfile_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+        // An empty directory opens successfully as a FolderSource (confirmed by
+        // gashuu-core's archive_loader tests), so no image file is needed here.
+
+        let mut state = ViewerState::new();
+        state
+            .open_path(&dir)
+            .expect("open_path on a real directory must succeed");
+
+        let stored = state
+            .open_file()
+            .expect("open_file must be Some after a successful open_path");
+        assert_eq!(
+            stored,
+            dir.canonicalize().expect("canonicalize temp dir"),
+            "open_file must hold the canonical path"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     // ---- jump_to() (PR8a) ---------------------------------------------------
@@ -1495,9 +1526,11 @@ mod tests {
     #[test]
     fn open_read_leave_sequence_state_invariants() {
         // Simulates the open → read → leave sequence that write_back_position
-        // depends on. After open_path succeeds (mocked here via set_source +
-        // manual open_file tracking via a stub path), navigating pages and
-        // then calling index() returns the correct page. This pins the
+        // depends on. After a real open the source is set (mocked here via
+        // set_source, which leaves open_file as None since no path is passed;
+        // the happy path that sets open_file is covered by
+        // open_file_is_some_canonical_after_successful_open_path), navigating
+        // pages and then calling index() returns the correct page. This pins the
         // invariants that write_back_position(state, library) relies on:
         //   - state.open_file() is Some after a successful open
         //   - state.index() reflects navigation after set_source
@@ -1509,9 +1542,10 @@ mod tests {
         // also sets open_file (tested separately). We use set_source + manual
         // assertion on the fields we control in tests.
         state.set_source(mock_with(10));
-        // After set_source directly, open_file is None (no path was given).
-        // The real open_path call in main.rs sets open_file — confirmed by Task 1
-        // tests. For this sequence test, verify index tracking.
+        // After set_source directly, open_file is None (no path was given). The
+        // happy path that sets open_file is covered by
+        // open_file_is_some_canonical_after_successful_open_path; here we verify
+        // index tracking and the read-shape.
         assert_eq!(state.index(), 0, "fresh after set_source: index is 0");
 
         // Read two pages (two spreads in Single mode).
