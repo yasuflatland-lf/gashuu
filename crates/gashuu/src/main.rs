@@ -725,11 +725,23 @@ fn open_and_present(
             return;
         }
     }
-    // Resume at the stored reading position. `library.last_page(path)` returns 0
-    // for an unknown book (no-op via jump_to's "did it move" guard). Borrow
-    // discipline: `state.borrow_mut()` drops at the `;`; `library.borrow()` is
-    // a fresh borrow that cannot conflict (distinct RefCells).
-    let resume_page = library.borrow().last_page(path);
+    // Register the freshly opened book in the Library so its reading position
+    // has a persistent home. `add` is idempotent (dedup by canonical path) and
+    // returns false for a book already present, so re-opening keeps its stored
+    // last_page. This is what makes write-back/resume observable for books
+    // opened via Open Folder / Open Archive (carousel-opened books are already
+    // present, so `add` is a no-op there).
+    library.borrow_mut().add(path.to_path_buf());
+    // Resume at the stored reading position. Look up `last_page` with the
+    // CANONICAL key that `open_path`/`add` store (read from `open_file`), not
+    // the raw `path` argument, which may be a non-canonical dialog path — using
+    // the raw path would miss the stored book and silently resume at page 0.
+    // `last_page` returns 0 for an unknown book (no-op via jump_to's guard).
+    // Borrow discipline: the `state.borrow()` for the canonical path drops at
+    // its `;`; `library.borrow()` and `state.borrow_mut()` are later, separate
+    // borrows that cannot conflict (distinct RefCells, single statements).
+    let canonical = state.borrow().open_file().map(Path::to_path_buf);
+    let resume_page = canonical.map_or(0, |p| library.borrow().last_page(&p));
     state.borrow_mut().jump_to(resume_page);
     refresh(ui, &state.borrow(), viewport);
     let skipped = state.borrow().last_open_skipped();
@@ -1033,19 +1045,20 @@ fn position_to_write_back(
 /// Write the current reading position back to the Library and persist.
 ///
 /// Called at every leave point: ↑ to Library, opening a different book,
-/// and app exit. `set_last_page` is idempotent when the value is unchanged
-/// (returns `false`), so calling it on exit after a no-page-turn session
-/// is a no-op on the save side — but we always attempt the save to keep
-/// the code simple (the cost is one short JSON write at most).
+/// and app exit. `set_last_page` returns `false` when the path is absent or
+/// the value is unchanged (idempotent). We do not guard `save()` on that
+/// return value — we always persist for simplicity (one short JSON write at
+/// most, and the result is idempotent on disk).
 ///
 /// Borrow discipline: `state` and `library` are distinct `RefCell`s, so
-/// the `state.borrow()` and `library.borrow_mut()` in the same expression
-/// is safe. Each borrow is a short-lived temporary confined to its
-/// statement and drops at the `;`, following the one-statement borrow rule
-/// documented in `docs/patterns.md`.
+/// borrowing one never affects the other. The opening `let` evaluates two
+/// shared borrows of `state` at once (`open_file()` and `index()`); that is
+/// safe because both are non-exclusive `borrow()`s. Each statement's borrows
+/// drop before the next statement acquires a different borrow, following the
+/// one-statement rule in `docs/patterns.md`.
 fn write_back_position(state: &Rc<RefCell<ViewerState>>, library: &Rc<RefCell<Library>>) {
-    // Extract the (path, page) tuple from the viewer state in a single
-    // statement; the borrow of `state` drops here at the `;`.
+    // Extract the (path, page) tuple from the viewer state; the two shared
+    // borrows of `state` drop here at the `;`.
     let Some((path, page)) =
         position_to_write_back(state.borrow().open_file(), state.borrow().index())
     else {
