@@ -64,12 +64,11 @@ fn main() -> color_eyre::Result<()> {
     let covers = Rc::new(cover_loader::CoverController::new());
 
     // Seed the carousel model from the persisted library so the home screen shows
-    // the saved books on boot. `build_carousel_model` builds AND binds the model
-    // into the UI via `set_carousel_items` internally, returning the `Rc<VecModel>`
-    // held for PR-V (cover streaming) to mutate the SAME model in place; PR-L's
-    // add path rebuilds+rebinds via the same helper. Underscore-bound to satisfy
-    // -D warnings until PR-V uses it. Covers are placeholder until PR-V streams
-    // them in.
+    // the saved books on boot. The carousel model is bound into the UI inside
+    // build_carousel_model; the CoverController re-fetches it through the
+    // window's Weak handle inside each event-loop closure, so the returned Rc
+    // is not needed here. The `_` prefix permanently suppresses the
+    // unused-variable warning.
     let _carousel_model = build_carousel_model(&ui, &library.borrow());
 
     // Kick off cover loading for the initial library (cache hits paint now; misses
@@ -990,10 +989,10 @@ fn to_slint_image(decoded: &DecodedImage) -> slint::Image {
 }
 
 /// Adapt a pure `CarouselData` row into the Slint `CarouselItem` the carousel
-/// renders. Runs on the UI thread (it builds a `slint::Image`). The cover is a
-/// PLACEHOLDER (`slint::Image::default()`) this PR; PR-V streams real covers
-/// into the same `VecModel<CarouselItem>` via the PR8a `invoke_from_event_loop`
-/// pattern, so the carousel shows a neutral placeholder until then.
+/// renders. Runs on the UI thread (it builds a `slint::Image`). The cover field
+/// starts as a placeholder (`slint::Image::default()`); `CoverController` fills
+/// it in asynchronously via `invoke_from_event_loop` (a cache hit paints
+/// immediately; a miss streams in after a background decode).
 fn to_carousel_item(data: &CarouselData) -> CarouselItem {
     CarouselItem {
         cover: slint::Image::default(),
