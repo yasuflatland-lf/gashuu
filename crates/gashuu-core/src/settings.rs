@@ -399,6 +399,24 @@ mod tests {
     }
 
     #[test]
+    fn from_json_unknown_fit_mode_value_errors() {
+        // An unknown fit_mode variant (e.g. "auto") is not covered by #[serde(default)],
+        // which only supplies a default when the key is absent. serde rejects an
+        // unrecognised variant, so from_json must return Err(CoreError::Settings(_)).
+        let json = serde_json::json!({
+            "version": SETTINGS_VERSION,
+            "fit_mode": "auto",
+        })
+        .to_string();
+        let result = Settings::from_json(&json);
+        assert!(
+            matches!(result, Err(CoreError::Settings(_))),
+            "expected Err(CoreError::Settings(_)) for unknown fit_mode value, got {:?}",
+            result
+        );
+    }
+
+    #[test]
     fn push_recent_disabled_is_noop() {
         let mut s = Settings::default();
         assert!(!s.track_recent_files);

@@ -223,7 +223,9 @@ fn refresh(ui: &ViewerWindow, state: &ViewerState, viewport: &Rc<RefCell<Viewpor
             // of the two. Compute before swapping the images so the viewport
             // re-centers for the new spread.
             let (content_w, content_h) = match &spread.trailing {
-                // Layout splits `content-w` into two equal halves, so unequal page sizes letterbox each page within its half-slot (exact for equal-size manga pages).
+                // Each page gets an equal half of content-w (horizontal-stretch 1:1 in PageView.slint);
+                // contain-fit within that half-slot letterboxes a wide page or pillarboxes a tall one.
+                // Exact for equal-size manga pages.
                 Some(trailing) => (
                     (spread.leading.width() + trailing.width()) as f32,
                     spread.leading.height().max(trailing.height()) as f32,
