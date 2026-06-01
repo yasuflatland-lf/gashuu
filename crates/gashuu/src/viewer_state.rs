@@ -250,7 +250,6 @@ impl ViewerState {
     /// source has been opened via `open_path` (i.e. after construction, a
     /// failed `open_path`, or a direct `set_source` call). Used by `main.rs`
     /// to write the reading position back to the `Library` at leave points.
-    #[allow(dead_code)]
     pub fn open_file(&self) -> Option<&Path> {
         self.open_file.as_deref()
     }

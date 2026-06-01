@@ -6,7 +6,7 @@ mod thumbnail_strip;
 mod viewer_state;
 mod viewport;
 
-use gashuu_core::{CoverMode, DecodedImage, FitMode, ReadingDirection, Settings, SpreadMode};
+use gashuu_core::{CoverMode, DecodedImage, FitMode, Library, ReadingDirection, Settings, SpreadMode};
 use keymap::{map_key, KeyCommand};
 use navigation::{screen_to_index, NavState};
 use std::cell::RefCell;
@@ -28,6 +28,14 @@ fn main() -> color_eyre::Result<()> {
         tracing::warn!(error = %e, "failed to load settings; using defaults");
         Settings::default()
     });
+
+    // Load the persistent library; corrupt/unreadable files fall back to an
+    // empty shelf (the same corrupt-file recovery policy as Settings).
+    let library = Library::load().unwrap_or_else(|e| {
+        tracing::warn!(error = %e, "failed to load library; starting with empty shelf");
+        Library::new()
+    });
+    let library = Rc::new(RefCell::new(library));
 
     let ui = ViewerWindow::new()?;
     let state = Rc::new(RefCell::new(ViewerState::from_settings(&settings)));
@@ -969,6 +977,39 @@ fn position_to_write_back(
     page: usize,
 ) -> Option<(std::path::PathBuf, usize)> {
     open_file.map(|p| (p.to_path_buf(), page))
+}
+
+/// Write the current reading position back to the Library and persist.
+///
+/// Called at every leave point: ↑ to Library, opening a different book,
+/// and app exit. `set_last_page` is idempotent when the value is unchanged
+/// (returns `false`), so calling it on exit after a no-page-turn session
+/// is a no-op on the save side — but we always attempt the save to keep
+/// the code simple (the cost is one short JSON write at most).
+///
+/// Borrow discipline: `state` and `library` are distinct `RefCell`s, so
+/// the `state.borrow()` and `library.borrow_mut()` in the same expression
+/// is safe. Each borrow is a short-lived temporary confined to its
+/// statement and drops at the `;`, following the one-statement borrow rule
+/// documented in `docs/patterns.md`.
+fn write_back_position(
+    state: &Rc<RefCell<ViewerState>>,
+    library: &Rc<RefCell<Library>>,
+) {
+    // Extract the (path, page) tuple from the viewer state in a single
+    // statement; the borrow of `state` drops here at the `;`.
+    let Some((path, page)) = position_to_write_back(
+        state.borrow().open_file(),
+        state.borrow().index(),
+    ) else {
+        return; // no book open — nothing to write back
+    };
+    // `set_last_page` returns false when absent or unchanged; we persist
+    // unconditionally for simplicity (short JSON write, idempotent on disk).
+    library.borrow_mut().set_last_page(&path, page);
+    if let Err(e) = library.borrow().save() {
+        tracing::error!(error = %e, "failed to save library on position write-back");
+    }
 }
 
 #[cfg(test)]
