@@ -48,6 +48,28 @@ pub fn generate_thumbnails<F>(
     });
 }
 
+/// Generate the cover thumbnail for `source`: a thumbnail of page index 0 whose
+/// longer edge is at most `max_side` px.
+///
+/// Returns `Err(CoreError::IndexOutOfRange { index: 0, len: 0 })` when the source
+/// has no pages — a sourceless book has no cover. This reuses the same error the
+/// `PageSource` contract already produces for an out-of-range read, so callers
+/// match one variant for "no page 0".
+///
+/// Synchronous and headless: the caller (the UI cover controller) runs this on a
+/// background rayon job and streams the result to the carousel.
+pub fn generate_cover(
+    source: Arc<dyn PageSource>,
+    max_side: u32,
+) -> Result<DecodedImage, CoreError> {
+    let n = source.list_pages().len();
+    if n == 0 {
+        return Err(CoreError::IndexOutOfRange { index: 0, len: 0 });
+    }
+    let bytes = source.read_bytes(0)?;
+    decode_thumbnail(&bytes, max_side)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -280,6 +302,44 @@ mod tests {
             *call_count.lock().unwrap(),
             0,
             "on_ready must not be called when cancelled is set between decode and callback"
+        );
+    }
+
+    /// `generate_cover` returns a thumbnail of PAGE 0, downscaled within `max_side`,
+    /// ignoring any later pages. Page 0 is 200x100, page 1 is 8x8; the cover must
+    /// reflect the 200x100 page 0 (longer edge clamped to max_side=64), proving it
+    /// reads index 0 and not some other page.
+    #[test]
+    fn generate_cover_returns_page0_thumbnail_within_max_side() {
+        let page0 = {
+            let img = image::RgbaImage::from_pixel(200, 100, image::Rgba([10, 20, 30, 255]));
+            let mut buf = Vec::new();
+            img.write_to(&mut Cursor::new(&mut buf), image::ImageFormat::Png)
+                .unwrap();
+            buf
+        };
+        let pages = vec![Some(page0), Some(tiny_png(8, 8))];
+        let source: Arc<dyn PageSource> = Arc::new(CountingSource::new(pages));
+
+        let cover = generate_cover(source, 64).expect("page 0 cover should generate");
+        assert!(cover.width() <= 64, "cover width {} > 64", cover.width());
+        assert!(cover.height() <= 64, "cover height {} > 64", cover.height());
+        // 200x100 → longer edge clamped to 64 → width should be 64, height ~32.
+        assert_eq!(cover.width(), 64, "page-0 longer edge should clamp to 64");
+    }
+
+    /// An empty source (0 pages) has no cover: `generate_cover` returns
+    /// `Err(CoreError::IndexOutOfRange { index: 0, len: 0 })` rather than reading
+    /// page 0 (which would itself error) — the empty check short-circuits first.
+    #[test]
+    fn generate_cover_empty_source_errors() {
+        let source: Arc<dyn PageSource> = Arc::new(CountingSource::new(vec![]));
+        let Err(err) = generate_cover(source, 64) else {
+            panic!("expected Err for a 0-page source");
+        };
+        assert!(
+            matches!(err, CoreError::IndexOutOfRange { index: 0, len: 0 }),
+            "expected IndexOutOfRange {{ index: 0, len: 0 }}, got {err:?}"
         );
     }
 }
