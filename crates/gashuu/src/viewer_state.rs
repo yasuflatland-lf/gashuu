@@ -34,6 +34,10 @@ pub struct SpreadImages {
 /// via `next_leading`/`prev_leading`, and re-normalized after a mode toggle.
 pub struct ViewerState {
     cache: Option<ImageCache>,
+    /// The currently open `PageSource`, retained separately from `ImageCache`
+    /// (which does not expose its source) so the UI can launch background
+    /// thumbnail generation. `None` until a source is successfully opened.
+    source: Option<Arc<dyn PageSource>>,
     page_count: usize,
     index: usize,
     cache_size: usize,
@@ -64,6 +68,7 @@ impl ViewerState {
     pub fn with_cache_config(cache_size: usize, preload_pages: usize) -> Self {
         Self {
             cache: None,
+            source: None,
             page_count: 0,
             index: 0,
             cache_size,
@@ -81,6 +86,7 @@ impl ViewerState {
     pub fn from_settings(settings: &Settings) -> Self {
         Self {
             cache: None,
+            source: None,
             page_count: 0,
             index: 0,
             cache_size: settings.cache_size,
@@ -95,12 +101,41 @@ impl ViewerState {
 
     /// Replace the active source (used by `open_folder` and by tests). Wraps the
     /// source in a fresh `ImageCache`, discarding any previously cached pages and
-    /// resetting to the first page.
+    /// resetting to the first page. Stores a clone of the source so
+    /// `current_source()` can return it without going through `ImageCache`.
     pub fn set_source(&mut self, source: Arc<dyn PageSource>) {
+        self.source = Some(Arc::clone(&source));
         let cache = ImageCache::new(source, self.cache_size, self.preload_pages);
         self.page_count = cache.len();
         self.cache = Some(cache);
         self.index = 0;
+    }
+
+    /// Returns the currently opened page source, if any. Used by the UI to
+    /// launch background thumbnail generation (`ImageCache` does not expose its
+    /// source). Returns `None` before a source is successfully opened.
+    pub fn current_source(&self) -> Option<Arc<dyn PageSource>> {
+        self.source.clone()
+    }
+
+    /// Jump to the spread containing `page`. The target is normalized to a valid
+    /// spread leading for the current modes (clicking a trailing member lands on
+    /// its spread start), so `index` stays a valid leading. No-op (returns
+    /// `false`) when no source is loaded or the resolved leading equals the
+    /// current index. Out-of-range `page` is clamped.
+    pub fn jump_to(&mut self, page: usize) -> bool {
+        if self.page_count == 0 {
+            return false;
+        }
+        let target = normalize_leading(
+            self.page_count,
+            self.effective_layout(),
+            self.cover_mode,
+            page.min(self.page_count - 1),
+        );
+        let moved = target != self.index;
+        self.index = target;
+        moved
     }
 
     // Test-only accessors (same #[allow(dead_code)] convention as the existing
@@ -147,14 +182,16 @@ impl ViewerState {
         self.open_path(path)
     }
 
-    // Exercised by the unit tests below; dead_code fires only because #[cfg(test)]
-    // callers are invisible to the lint. The UI layer will use these in a later PR.
-    #[allow(dead_code)]
+    /// Total page count of the current source (0 when none is open). Used by the
+    /// thumbnail-strip wiring in `main.rs` to size the placeholder model, and by
+    /// the unit tests below.
     pub fn page_count(&self) -> usize {
         self.page_count
     }
 
-    #[allow(dead_code)]
+    /// The current spread's leading page index. Used by the highlight wiring in
+    /// `main.rs` (`refresh` pushes it into `current-index`), and by the unit
+    /// tests below.
     pub fn index(&self) -> usize {
         self.index
     }
@@ -1125,5 +1162,149 @@ mod tests {
             0,
             "last_open_skipped must not update on error"
         );
+    }
+
+    // ---- current_source() (PR8a) ---------------------------------------------
+
+    #[test]
+    fn current_source_is_none_before_open() {
+        // A freshly constructed ViewerState has no source installed yet.
+        let state = ViewerState::new();
+        assert!(
+            state.current_source().is_none(),
+            "current_source must be None before any open"
+        );
+    }
+
+    #[test]
+    fn current_source_is_some_after_set_source() {
+        // After set_source the Arc is retained and current_source returns Some.
+        let mut state = ViewerState::new();
+        state.set_source(mock_with(3));
+        assert!(
+            state.current_source().is_some(),
+            "current_source must be Some after set_source"
+        );
+    }
+
+    #[test]
+    fn current_source_is_none_after_failed_open_path() {
+        // A failed open_path must NOT install a source; current_source stays None.
+        let mut state = ViewerState::new();
+        let _ = state.open_path(std::path::Path::new("/nonexistent_pr8a_source"));
+        assert!(
+            state.current_source().is_none(),
+            "current_source must remain None after a failed open_path"
+        );
+    }
+
+    // ---- jump_to() (PR8a) ---------------------------------------------------
+
+    #[test]
+    fn jump_to_no_source_returns_false() {
+        // With no source loaded jump_to must be a no-op.
+        let mut state = ViewerState::new();
+        assert!(
+            !state.jump_to(0),
+            "jump_to must return false with no source"
+        );
+        assert_eq!(state.index(), 0);
+    }
+
+    #[test]
+    fn jump_to_current_leading_returns_false() {
+        // Jumping to the page already at the current leading is a no-op.
+        let mut state = ViewerState::new();
+        state.set_source(mock_with(5));
+        // Default: Single mode, index 0 is the leading.
+        assert!(
+            !state.jump_to(0),
+            "jump_to current leading must return false"
+        );
+        assert_eq!(state.index(), 0);
+    }
+
+    #[test]
+    fn jump_to_out_of_range_clamps() {
+        // An out-of-range page is clamped to a valid leading without panic.
+        let mut state = ViewerState::new();
+        state.set_source(mock_with(4));
+        // Single mode: every page is its own leading; page_count - 1 = 3.
+        // Jumping to page_count + 5 = 9 must clamp to the last page (3).
+        let moved = state.jump_to(9);
+        assert!(moved, "jump_to out-of-range must move when index differs");
+        assert_eq!(state.index(), 3, "clamped to last valid single leading");
+    }
+
+    #[test]
+    fn jump_to_single_mode_lands_on_exact_page() {
+        // In Single mode every page is its own leading; jump_to should land there.
+        let mut state = ViewerState::new();
+        state.set_source(mock_with(6));
+        assert!(state.jump_to(4));
+        assert_eq!(state.index(), 4);
+    }
+
+    #[test]
+    fn jump_to_double_standalone_trailing_normalizes_to_leading() {
+        // Double / Standalone: {0}{1,2}{3,4}{5}.
+        // Clicking page 2 (trailing of the {1,2} spread) should land on leading 1.
+        let mut state = double_state();
+        state.set_source(mock_with(6));
+        let moved = state.jump_to(2);
+        assert!(moved, "jump_to trailing must move from cover (index 0)");
+        assert_eq!(
+            state.index(),
+            1,
+            "trailing page 2 must normalize to leading 1"
+        );
+    }
+
+    #[test]
+    fn jump_to_double_standalone_trailing_page4_normalizes_to_leading3() {
+        // Double / Standalone: {0}{1,2}{3,4}{5}.
+        // Clicking page 4 (trailing of {3,4}) should land on leading 3.
+        let mut state = double_state();
+        state.set_source(mock_with(6));
+        assert!(state.jump_to(4));
+        assert_eq!(state.index(), 3);
+    }
+
+    #[test]
+    fn jump_to_double_paired_trailing_normalizes_to_leading() {
+        // Double / Paired cover: {0,1}{2,3}{4,5}.
+        // Clicking page 1 (trailing of {0,1}) should land on leading 0.
+        let mut state = ViewerState::from_settings(&Settings {
+            spread_mode: SpreadMode::Double,
+            cover_mode: CoverMode::Paired,
+            reading_direction: ReadingDirection::Ltr,
+            ..Default::default()
+        });
+        state.set_source(mock_with(6));
+        // index starts at 0; jump_to(1) should normalize to 0 => no move.
+        assert!(
+            !state.jump_to(1),
+            "trailing page 1 normalizes to leading 0, no move from current 0"
+        );
+        assert_eq!(state.index(), 0);
+
+        // Now jump_to the trailing page 3 of spread {2,3} -> leading 2.
+        assert!(state.jump_to(3));
+        assert_eq!(state.index(), 2);
+    }
+
+    #[test]
+    fn jump_to_double_paired_trailing_page5_normalizes_to_leading4() {
+        // Double / Paired cover on 6 pages: {0,1}{2,3}{4,5}.
+        // Clicking page 5 (trailing of {4,5}) should land on leading 4.
+        let mut state = ViewerState::from_settings(&Settings {
+            spread_mode: SpreadMode::Double,
+            cover_mode: CoverMode::Paired,
+            reading_direction: ReadingDirection::Ltr,
+            ..Default::default()
+        });
+        state.set_source(mock_with(6));
+        assert!(state.jump_to(5));
+        assert_eq!(state.index(), 4);
     }
 }
