@@ -47,16 +47,21 @@ impl ViewportState {
         }
     }
 
+    /// Fit baseline scale for the current content/viewport/fit mode (the zoom
+    /// factor 1.0 scale). The effective scale multiplies this by the zoom factor.
+    fn fit(&self) -> f32 {
+        vp::fit_scale(
+            self.content_size.0,
+            self.content_size.1,
+            self.vp_size.0,
+            self.vp_size.1,
+            self.fit_mode,
+        )
+    }
+
     /// Effective scale = clamped zoom factor times the fit baseline.
     fn scale(&self) -> f32 {
-        vp::clamp_zoom(self.zoom)
-            * vp::fit_scale(
-                self.content_size.0,
-                self.content_size.1,
-                self.vp_size.0,
-                self.vp_size.1,
-                self.fit_mode,
-            )
+        vp::clamp_zoom(self.zoom) * self.fit()
     }
 
     /// Displayed content box `(content * scale)` for the current scale.
@@ -119,14 +124,7 @@ impl ViewportState {
         let new_zoom = vp::clamp_zoom(self.zoom * step);
         // Recompute the effective scale at the new zoom; the fit baseline is
         // unchanged, so only the (already-clamped) `new_zoom` factor differs.
-        let fit = vp::fit_scale(
-            self.content_size.0,
-            self.content_size.1,
-            self.vp_size.0,
-            self.vp_size.1,
-            self.fit_mode,
-        );
-        let new_scale = new_zoom * fit;
+        let new_scale = new_zoom * self.fit();
         let (nx, ny) = vp::anchored_zoom(
             anchor_x,
             anchor_y,
