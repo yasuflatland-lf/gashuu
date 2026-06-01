@@ -97,4 +97,49 @@ mod tests {
 
         assert!(lib.books().is_empty());
     }
+
+    #[test]
+    fn from_json_non_object_root_errors() {
+        for input in &["5", "[]", "\"x\"", "true", "null"] {
+            let result = Library::from_json(input);
+            assert!(
+                matches!(result, Err(CoreError::Library(_))),
+                "expected Err(CoreError::Library(_)) for input {:?}, got {:?}",
+                input,
+                result
+            );
+        }
+    }
+
+    #[test]
+    fn from_json_corrupt_text_errors() {
+        let result = Library::from_json("not json");
+
+        assert!(
+            matches!(result, Err(CoreError::Library(_))),
+            "expected Err(CoreError::Library(_)), got {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn from_json_huge_version_is_treated_as_unknown_and_migrates() {
+        let json = serde_json::json!({
+            "version": u64::from(u32::MAX) + 1,
+        })
+        .to_string();
+
+        let lib = Library::from_json(&json).unwrap();
+
+        assert!(lib.books().is_empty());
+    }
+
+    #[test]
+    fn from_json_migrates_v0_to_current_version() {
+        let value = serde_json::json!({"version": 0});
+        let migrated = migrate(value, 0);
+
+        assert_eq!(migrated["version"].as_u64(), Some(u64::from(LIBRARY_VERSION)));
+        assert_eq!(migrated["books"].as_array().unwrap().len(), 0);
+    }
 }
