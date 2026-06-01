@@ -27,9 +27,13 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      # cargo-llvm-cov needs the llvm-tools-preview component; mise.toml omits it
-      # (the app jobs don't need it) so add it here on mise's pinned toolchain.
-      - run: rustup component add llvm-tools-preview
+      # Install all three components explicitly on mise's pinned toolchain:
+      # llvm-tools-preview (for cargo-llvm-cov; mise.toml omits it) plus rustfmt and
+      # clippy. rustfmt/clippy ARE declared in mise.toml, but on a mise cache hit
+      # jdx/mise-action restores symlinks WITHOUT re-running `rustup component add`,
+      # so they can be missing from ~/.rustup on the runner — keep them here or
+      # `cargo fmt --check`/clippy fail in this (coverage) job. Do not drop as "redundant".
+      - run: rustup component add rustfmt clippy llvm-tools-preview
       - run: cargo fmt --check
       # `--features testing` so the feature-gated MockPageSource test is linted and run
       # (the old `--workspace` runs got it via feature unification with gashuu's dev-dep).

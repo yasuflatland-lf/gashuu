@@ -32,6 +32,43 @@ pub enum SpreadMode {
     #[default]
     Single,
     Double,
+    Auto, // resolved to Single/Double from window aspect at the UI layer
+}
+
+/// A resolved two-page layout decision: exactly Single or Double. `SpreadMode::Auto`
+/// is resolved to one of these (via `SpreadMode::resolve`) BEFORE pairing, so the
+/// pure `spread::*` functions never see `Auto`. This type carries that invariant
+/// in the type system rather than in prose.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SpreadLayout {
+    Single,
+    Double,
+}
+
+impl SpreadMode {
+    /// Resolve to a concrete `SpreadLayout`. `Single`/`Double` ignore `aspect`
+    /// (identity); `Auto` picks `Double` for a landscape-or-square window
+    /// (`aspect >= 1.0`) and `Single` for a portrait window. A non-finite or
+    /// non-positive `aspect` is treated as `1.0` (=> Double) so a degenerate
+    /// window size can never panic or pick a surprising layout.
+    pub fn resolve(self, aspect: f32) -> SpreadLayout {
+        match self {
+            SpreadMode::Single => SpreadLayout::Single,
+            SpreadMode::Double => SpreadLayout::Double,
+            SpreadMode::Auto => {
+                let a = if aspect.is_finite() && aspect > 0.0 {
+                    aspect
+                } else {
+                    1.0
+                };
+                if a >= 1.0 {
+                    SpreadLayout::Double
+                } else {
+                    SpreadLayout::Single
+                }
+            }
+        }
+    }
 }
 
 /// How the first page (cover) is laid out in two-page modes (0-based page indices).
@@ -546,5 +583,41 @@ mod tests {
             1,
             "migrate must stamp version=1 after the v0→v1 step"
         );
+    }
+
+    // ── SpreadMode::resolve → SpreadLayout (PR4a) ──
+
+    #[test]
+    fn resolve_single_double_are_identity() {
+        for aspect in [0.5_f32, 1.0, 2.0, f32::NAN, f32::INFINITY] {
+            assert_eq!(SpreadMode::Single.resolve(aspect), SpreadLayout::Single);
+            assert_eq!(SpreadMode::Double.resolve(aspect), SpreadLayout::Double);
+        }
+    }
+
+    #[test]
+    fn resolve_auto_threshold() {
+        // Square or wider => Double; portrait => Single.
+        assert_eq!(SpreadMode::Auto.resolve(1.0), SpreadLayout::Double);
+        assert_eq!(SpreadMode::Auto.resolve(1.01), SpreadLayout::Double);
+        assert_eq!(SpreadMode::Auto.resolve(2.0), SpreadLayout::Double);
+        assert_eq!(SpreadMode::Auto.resolve(0.99), SpreadLayout::Single);
+        assert_eq!(SpreadMode::Auto.resolve(0.5), SpreadLayout::Single);
+    }
+
+    #[test]
+    fn resolve_auto_guards_degenerate_aspect() {
+        // Non-finite / non-positive aspects are treated as 1.0 (=> Double); no panic.
+        for aspect in [0.0_f32, -1.0, f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            assert_eq!(SpreadMode::Auto.resolve(aspect), SpreadLayout::Double);
+        }
+    }
+
+    #[test]
+    fn spread_mode_auto_round_trips() {
+        let json = serde_json::to_string(&SpreadMode::Auto).unwrap();
+        assert!(json.contains("auto"), "serialized form was {json:?}");
+        let parsed: SpreadMode = serde_json::from_str("\"auto\"").unwrap();
+        assert_eq!(parsed, SpreadMode::Auto);
     }
 }
