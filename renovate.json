@@ -2,5 +2,52 @@
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "extends": [
     "config:recommended"
+  ],
+  "minimumReleaseAge": "7 days",
+  "internalChecksFilter": "strict",
+  "packageRules": [
+    {
+      "description": "Supply-chain: only adopt releases that are at least 7 days old",
+      "matchManagers": [
+        "cargo",
+        "github-actions",
+        "mise",
+        "npm"
+      ],
+      "minimumReleaseAge": "7 days"
+    },
+    {
+      "description": "Group Rust crates and the Rust toolchain / cargo tools",
+      "matchManagers": [
+        "cargo",
+        "mise"
+      ],
+      "groupName": "rust"
+    },
+    {
+      "description": "Group CI dependencies (GitHub Actions)",
+      "matchManagers": [
+        "github-actions"
+      ],
+      "groupName": "ci"
+    },
+    {
+      "description": "Group TypeScript / npm dependencies",
+      "matchManagers": [
+        "npm"
+      ],
+      "groupName": "typescript"
+    },
+    {
+      "description": "Group linters and formatters (overrides ecosystem groups above)",
+      "matchPackageNames": [
+        "/eslint/",
+        "/prettier/",
+        "/biome/",
+        "/stylelint/",
+        "/^dprint/"
+      ],
+      "groupName": "lint"
+    }
   ]
 }
