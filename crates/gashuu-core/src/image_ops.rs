@@ -72,20 +72,15 @@ impl DecodedImage {
     }
 }
 
-/// Decode encoded image bytes into RGBA8 using the `image` crate.
-///
-/// Supports any format recognized by `image::ImageReader` (PNG, JPEG, …). Decoder
-/// limits reject oversize / decompression-bomb images before allocation.
-///
-/// Defense in depth: a lightweight header-only pre-read via `into_dimensions()`
-/// runs [`check_pixel_limit`] before the full decode allocates any pixel memory.
-/// The existing `image::Limits` alloc cap is kept as a second layer.
+/// Shared two-layer image-bomb guard: header pre-read + `check_pixel_limit` +
+/// `Limits`-bounded full decode. Returns the decoded [`image::DynamicImage`] so
+/// callers can choose the final pixel format without duplicating the guard logic.
 ///
 /// `image::Limits` is `#[non_exhaustive]`, so struct-literal init is impossible;
 /// we must use field assignment after `default()`, which triggers
 /// `clippy::field_reassign_with_default`. The allow is scoped to this function only.
 #[allow(clippy::field_reassign_with_default)]
-pub fn decode(bytes: &[u8]) -> Result<DecodedImage, CoreError> {
+fn decode_dynamic(bytes: &[u8]) -> Result<image::DynamicImage, CoreError> {
     // Pre-read: parse header only (cheap) to check dimensions before allocating.
     let header_reader =
         image::ImageReader::new(std::io::Cursor::new(bytes)).with_guessed_format()?;
@@ -99,9 +94,43 @@ pub fn decode(bytes: &[u8]) -> Result<DecodedImage, CoreError> {
     limits.max_image_height = Some(16_384);
     limits.max_alloc = Some(512 * 1024 * 1024);
     reader.limits(limits);
-    let rgba = reader.decode()?.to_rgba8();
+    Ok(reader.decode()?)
+}
+
+/// Decode encoded image bytes into RGBA8 using the `image` crate.
+///
+/// Supports any format recognized by `image::ImageReader` (PNG, JPEG, …). Decoder
+/// limits reject oversize / decompression-bomb images before allocation.
+///
+/// Defense in depth: a lightweight header-only pre-read via `into_dimensions()`
+/// runs [`check_pixel_limit`] before the full decode allocates any pixel memory.
+/// The existing `image::Limits` alloc cap is kept as a second layer.
+pub fn decode(bytes: &[u8]) -> Result<DecodedImage, CoreError> {
+    let img = decode_dynamic(bytes)?;
+    let rgba = img.to_rgba8();
     let (width, height) = rgba.dimensions();
     DecodedImage::new(rgba.into_raw(), width, height)
+}
+
+/// Decode `bytes` and downscale to a thumbnail whose longer edge is at most
+/// `max_side` px, preserving aspect ratio. Reuses the same two-layer bomb guard
+/// as `decode` (header pre-read + check_pixel_limit + Limits-bounded full decode)
+/// via the shared `decode_dynamic`: the source page is fully decoded before
+/// downscaling (no format supports arbitrary scaled decode), so peak RAM per call
+/// is one full-res page — the same as `decode`, which bounds memory under the
+/// rayon pool's parallelism.
+pub fn decode_thumbnail(bytes: &[u8], max_side: u32) -> Result<DecodedImage, CoreError> {
+    let img = decode_dynamic(bytes)?;
+    // Only downscale: if the image already fits within max_side × max_side, return
+    // it as-is. `DynamicImage::thumbnail` scales to fill the given bounds (which
+    // means it upscales small images), so we guard explicitly here.
+    let rgba = if img.width() > max_side || img.height() > max_side {
+        img.thumbnail(max_side, max_side).to_rgba8()
+    } else {
+        img.to_rgba8()
+    };
+    let (w, h) = rgba.dimensions();
+    DecodedImage::new(rgba.into_raw(), w, h)
 }
 
 #[cfg(test)]
@@ -235,6 +264,121 @@ mod tests {
         bytes[29..33].copy_from_slice(&new_crc.to_be_bytes());
 
         let err = decode(&bytes).unwrap_err();
+        assert!(
+            matches!(err, CoreError::ImageTooLarge { .. }),
+            "expected ImageTooLarge, got {err:?}"
+        );
+    }
+
+    // --- decode_thumbnail ---
+
+    #[test]
+    fn decode_thumbnail_wide_image_fits_max_side() {
+        // 200x100: longer edge is width=200. With max_side=64, width should become 64
+        // and height should be 32 (aspect ratio 2:1 preserved within ±1px).
+        let bytes = png_bytes(200, 100);
+        let thumb = decode_thumbnail(&bytes, 64).unwrap();
+        assert!(thumb.width() <= 64, "width {} > max_side 64", thumb.width());
+        assert!(
+            thumb.height() <= 64,
+            "height {} > max_side 64",
+            thumb.height()
+        );
+        // Aspect ratio check: width should be roughly 2x height (within ±1px tolerance).
+        let expected_height = thumb.width() / 2;
+        let diff = (thumb.height() as i64 - expected_height as i64).unsigned_abs();
+        assert!(
+            diff <= 1,
+            "aspect ratio not preserved: w={} h={} expected_h~={}",
+            thumb.width(),
+            thumb.height(),
+            expected_height
+        );
+    }
+
+    #[test]
+    fn decode_thumbnail_tall_image_fits_max_side() {
+        // 100x200: longer edge is height=200. With max_side=64, height should become 64
+        // and width should be 32 (aspect ratio 1:2 preserved within ±1px).
+        let bytes = png_bytes(100, 200);
+        let thumb = decode_thumbnail(&bytes, 64).unwrap();
+        assert!(thumb.width() <= 64, "width {} > max_side 64", thumb.width());
+        assert!(
+            thumb.height() <= 64,
+            "height {} > max_side 64",
+            thumb.height()
+        );
+        // Aspect ratio check: height should be roughly 2x width (within ±1px tolerance).
+        let expected_width = thumb.height() / 2;
+        let diff = (thumb.width() as i64 - expected_width as i64).unsigned_abs();
+        assert!(
+            diff <= 1,
+            "aspect ratio not preserved: w={} h={} expected_w~={}",
+            thumb.width(),
+            thumb.height(),
+            expected_width
+        );
+    }
+
+    #[test]
+    fn decode_thumbnail_square_image_fits_max_side() {
+        // 100x100: square. With max_side=64, both sides should be 64.
+        let bytes = png_bytes(100, 100);
+        let thumb = decode_thumbnail(&bytes, 64).unwrap();
+        assert!(thumb.width() <= 64, "width {} > max_side 64", thumb.width());
+        assert!(
+            thumb.height() <= 64,
+            "height {} > max_side 64",
+            thumb.height()
+        );
+    }
+
+    #[test]
+    fn decode_thumbnail_does_not_upscale() {
+        // Source 20x10 is smaller than max_side=64. thumbnail() is downscale-only,
+        // so the returned image must have the original dimensions (20x10).
+        let bytes = png_bytes(20, 10);
+        let thumb = decode_thumbnail(&bytes, 64).unwrap();
+        assert_eq!(
+            thumb.width(),
+            20,
+            "thumbnail upscaled width: got {}",
+            thumb.width()
+        );
+        assert_eq!(
+            thumb.height(),
+            10,
+            "thumbnail upscaled height: got {}",
+            thumb.height()
+        );
+    }
+
+    #[test]
+    fn decode_thumbnail_invalid_bytes_errors() {
+        let err = decode_thumbnail(b"not an image", 64).unwrap_err();
+        assert!(
+            matches!(err, CoreError::Decode(_)),
+            "expected Decode error, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn decode_thumbnail_rejects_oversized_ihdr_with_image_too_large() {
+        // Verifies that decode_thumbnail routes through decode_dynamic and therefore
+        // hits the same check_pixel_limit early guard as decode().
+        // Uses the same IHDR-forge + CRC-32 recompute technique as
+        // decode_rejects_oversized_header_with_image_too_large.
+        let mut bytes = png_bytes(1, 1);
+
+        let forged_w: u32 = 1;
+        let forged_h: u32 = (MAX_PIXELS + 1) as u32;
+        bytes[16..20].copy_from_slice(&forged_w.to_be_bytes());
+        bytes[20..24].copy_from_slice(&forged_h.to_be_bytes());
+
+        let new_crc = crc32(&bytes[12..29]);
+        bytes[29..33].copy_from_slice(&new_crc.to_be_bytes());
+
+        let err = decode_thumbnail(&bytes, 64).unwrap_err();
         assert!(
             matches!(err, CoreError::ImageTooLarge { .. }),
             "expected ImageTooLarge, got {err:?}"

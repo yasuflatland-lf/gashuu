@@ -1,0 +1,223 @@
+//! Parallel thumbnail generation over a [`PageSource`].
+//!
+//! This module is headless: no slint, no tracing.
+
+use crate::error::CoreError;
+use crate::image_ops::{decode_thumbnail, DecodedImage};
+use crate::page_source::PageSource;
+use rayon::prelude::*;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+
+/// Default longer-edge size for generated thumbnails.
+pub const DEFAULT_THUMB_MAX_SIDE: u32 = 160;
+
+/// Generate a thumbnail for every page of `source` in parallel, invoking
+/// `on_ready(index, result)` as each page completes (in arbitrary order).
+///
+/// This function **blocks** until all pages finish or `cancelled` flips true.
+/// The caller is expected to run it on a background thread so that opening a
+/// book returns immediately in the UI.
+///
+/// `cancelled` is polled before the read AND before the callback so that a
+/// superseded generation (e.g. the user opened a different book) stops promptly
+/// and never delivers stale results to the previous callback.
+///
+/// A per-page read/decode failure is delivered as `Err` to `on_ready` — never
+/// a panic. The UI is expected to render a placeholder cell for that index.
+pub fn generate_thumbnails<F>(
+    source: Arc<dyn PageSource>,
+    max_side: u32,
+    cancelled: Arc<AtomicBool>,
+    on_ready: F,
+) where
+    F: Fn(usize, Result<DecodedImage, CoreError>) + Send + Sync,
+{
+    let n = source.list_pages().len();
+    (0..n).into_par_iter().for_each(|i| {
+        if cancelled.load(Ordering::Relaxed) {
+            return;
+        }
+        let res = source
+            .read_bytes(i)
+            .and_then(|b| decode_thumbnail(&b, max_side));
+        if cancelled.load(Ordering::Relaxed) {
+            return;
+        }
+        on_ready(i, res);
+    });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::page_source::PageEntry;
+    use std::io::Cursor;
+    use std::sync::atomic::AtomicBool;
+    use std::sync::{Arc, Mutex};
+
+    // ---------------------------------------------------------------------------
+    // Test fixture helpers
+    // ---------------------------------------------------------------------------
+
+    /// Encode a tiny solid-color PNG into bytes using the `image` crate.
+    fn tiny_png(w: u32, h: u32) -> Vec<u8> {
+        let img = image::RgbaImage::from_pixel(w, h, image::Rgba([200, 100, 50, 255]));
+        let mut buf = Vec::new();
+        img.write_to(&mut Cursor::new(&mut buf), image::ImageFormat::Png)
+            .unwrap();
+        buf
+    }
+
+    // ---------------------------------------------------------------------------
+    // A minimal in-process PageSource for tests
+    // ---------------------------------------------------------------------------
+
+    /// Holds a fixed list of pre-encoded page byte-vecs. Pages whose bytes are
+    /// `None` simulate a read failure (returns `CoreError::IndexOutOfRange`).
+    struct CountingSource {
+        pages: Vec<Option<Vec<u8>>>,
+    }
+
+    impl CountingSource {
+        fn new(pages: Vec<Option<Vec<u8>>>) -> Self {
+            Self { pages }
+        }
+    }
+
+    impl PageSource for CountingSource {
+        fn list_pages(&self) -> Vec<PageEntry> {
+            self.pages
+                .iter()
+                .enumerate()
+                .map(|(i, _)| PageEntry {
+                    path: format!("page{i}.png").into(),
+                    name: format!("page{i}.png"),
+                })
+                .collect()
+        }
+
+        fn read_bytes(&self, index: usize) -> Result<Vec<u8>, CoreError> {
+            match self.pages.get(index) {
+                Some(Some(bytes)) => Ok(bytes.clone()),
+                Some(None) => Err(CoreError::IndexOutOfRange {
+                    index,
+                    len: self.pages.len(),
+                }),
+                None => Err(CoreError::IndexOutOfRange {
+                    index,
+                    len: self.pages.len(),
+                }),
+            }
+        }
+        // skipped_count() default 0 is sufficient.
+    }
+
+    // ---------------------------------------------------------------------------
+    // Tests
+    // ---------------------------------------------------------------------------
+
+    /// Every page index 0..N is delivered to `on_ready` exactly once.
+    #[test]
+    fn all_pages_delivered_exactly_once() {
+        const N: usize = 5;
+        let pages: Vec<Option<Vec<u8>>> = (0..N).map(|_| Some(tiny_png(8, 8))).collect();
+        let source: Arc<dyn PageSource> = Arc::new(CountingSource::new(pages));
+        let cancelled = Arc::new(AtomicBool::new(false));
+
+        // A slot per page: starts as false, set to true on first delivery.
+        let delivered: Arc<Mutex<Vec<bool>>> = Arc::new(Mutex::new(vec![false; N]));
+        let delivered_clone = Arc::clone(&delivered);
+
+        generate_thumbnails(source, DEFAULT_THUMB_MAX_SIDE, cancelled, move |i, res| {
+            assert!(res.is_ok(), "page {i} should decode successfully");
+            let mut guard = delivered_clone.lock().unwrap();
+            assert!(!guard[i], "page {i} delivered more than once");
+            guard[i] = true;
+        });
+
+        let guard = delivered.lock().unwrap();
+        for (i, &seen) in guard.iter().enumerate() {
+            assert!(seen, "page {i} was never delivered");
+        }
+    }
+
+    /// When `cancelled` is already true before the call, `on_ready` is never invoked.
+    #[test]
+    fn cancelled_flag_suppresses_all_callbacks() {
+        const N: usize = 4;
+        let pages: Vec<Option<Vec<u8>>> = (0..N).map(|_| Some(tiny_png(4, 4))).collect();
+        let source: Arc<dyn PageSource> = Arc::new(CountingSource::new(pages));
+        let cancelled = Arc::new(AtomicBool::new(true)); // pre-cancelled
+
+        let call_count = Arc::new(Mutex::new(0usize));
+        let call_count_clone = Arc::clone(&call_count);
+
+        generate_thumbnails(source, DEFAULT_THUMB_MAX_SIDE, cancelled, move |_, _| {
+            *call_count_clone.lock().unwrap() += 1;
+        });
+
+        assert_eq!(
+            *call_count.lock().unwrap(),
+            0,
+            "on_ready should not be called when cancelled"
+        );
+    }
+
+    /// A page whose bytes are invalid produces `Err` for that index; all valid
+    /// pages still produce `Ok`. No panic occurs.
+    #[test]
+    fn invalid_page_bytes_yield_err_others_yield_ok() {
+        const N: usize = 3;
+        const BAD: usize = 1; // index 1 has corrupt bytes
+        let pages: Vec<Option<Vec<u8>>> = (0..N)
+            .map(|i| {
+                if i == BAD {
+                    Some(b"not-a-valid-image".to_vec())
+                } else {
+                    Some(tiny_png(6, 6))
+                }
+            })
+            .collect();
+        let source: Arc<dyn PageSource> = Arc::new(CountingSource::new(pages));
+        let cancelled = Arc::new(AtomicBool::new(false));
+
+        // results[i] = Some(true) → Ok, Some(false) → Err, None → not delivered.
+        let results: Arc<Mutex<Vec<Option<bool>>>> = Arc::new(Mutex::new(vec![None; N]));
+        let results_clone = Arc::clone(&results);
+
+        generate_thumbnails(source, DEFAULT_THUMB_MAX_SIDE, cancelled, move |i, res| {
+            let mut guard = results_clone.lock().unwrap();
+            guard[i] = Some(res.is_ok());
+        });
+
+        let guard = results.lock().unwrap();
+        for (i, &slot) in guard.iter().enumerate() {
+            let got_ok = slot.expect("page {i} was not delivered");
+            if i == BAD {
+                assert!(!got_ok, "page {BAD} (invalid bytes) should produce Err");
+            } else {
+                assert!(got_ok, "page {i} (valid bytes) should produce Ok");
+            }
+        }
+    }
+
+    /// A 0-page source: `on_ready` is never called and the function returns
+    /// without panic.
+    #[test]
+    fn zero_page_source_is_noop() {
+        let source: Arc<dyn PageSource> = Arc::new(CountingSource::new(vec![]));
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let called = Arc::new(Mutex::new(false));
+        let called_clone = Arc::clone(&called);
+
+        generate_thumbnails(source, DEFAULT_THUMB_MAX_SIDE, cancelled, move |_, _| {
+            *called_clone.lock().unwrap() = true;
+        });
+
+        assert!(
+            !*called.lock().unwrap(),
+            "on_ready must not be called for a 0-page source"
+        );
+    }
+}
