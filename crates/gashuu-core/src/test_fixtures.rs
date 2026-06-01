@@ -14,13 +14,20 @@ use base64::Engine;
 use std::io::Write;
 use tempfile::{Builder, NamedTempFile};
 
-/// Fixture A (560 bytes): six entries in archive/insertion order — `1.png`(2x2),
-/// `2.png`(2x3), `10.png`(3x2), `notes.txt`(non-image), an explicit `sub/`
-/// DIRECTORY header (`is_directory() == true`), and `sub/3.png`(4x4). Through
-/// `RarSource` the image pages are `["1.png","2.png","10.png","sub/3.png"]`
-/// (natural order — `sub/3.png` sorts LAST) and `skipped_count() == 0`. The
-/// distinct PNG dimensions let a read→decode prove the exact index→entry mapping.
-pub(crate) const SAMPLE_CBR_B64: &str = "UmFyIRoHAM+QcwAADQAAAAAAAACrzHQAgCUASQAAAEkAAAADhbZecAAAoU4UMAUAIAAAADEucG5niVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAAEElEQVR42mP4z8AARAwQCgAf7gP9Y167WwAAAABJRU5ErkJggqHydACAJQBJAAAASQAAAAOrJnVyAAChThQwBQAgAAAAMi5wbmeJUE5HDQoaCgAAAA1JSERSAAAAAgAAAAMIAgAAADaISdYAAAAQSURBVHjaY/jPwABEDCgUAETQBftMznEPAAAAAElFTkSuQmCCSnN0AIAmAEkAAABJAAAAAxi2XFQAAKFOFDAGACAAAAAxMC5wbmeJUE5HDQoaCgAAAA1JSERSAAAAAwAAAAIIAgAAABIW8U0AAAAQSURBVHjaY/jPwABBDHAWAEHSBftv8RbHAAAAAElFTkSuQmCCBmd0AIApAAwAAAAMAAAAAy/dsscAAKFOFDAJACAAAABub3Rlcy50eHRub3QgYW4gaW1hZ2VJZXTgACMAAAAAAAAAAAADAAAAAAAAoU4UMAMAEAAAAHN1YqlhdACAKQBJAAAASQAAAAPdJU2pAAChThQwCQAgAAAAc3ViLzMucG5niVBORw0KGgoAAAANSUhEUgAAAAQAAAAECAIAAAAmkwkpAAAAEElEQVR42mP4z8AARwzEcQCukw/xOF6MEQAAAABJRU5ErkJgggSwewAABwA=";
+/// Fixture A (560 bytes): six entries whose PHYSICAL (archive/insertion) order is
+/// DELIBERATELY SCRAMBLED — `2.png`(2x3), `10.png`(3x2), `1.png`(2x2),
+/// `notes.txt`(non-image), an explicit `sub/` DIRECTORY header
+/// (`is_directory() == true`), and `sub/3.png`(4x4). Through `RarSource` the image
+/// pages natural-sort to `["1.png","2.png","10.png","sub/3.png"]` (`sub/3.png`
+/// sorts LAST) and `skipped_count() == 0`. Because the physical order differs from
+/// the natural order, every top-level page maps to a DIFFERENT archive position
+/// than its page index (page->seq_index = {0->2, 1->0, 2->1, 3->5}); the scramble
+/// forces natural-sort to reorder the entries so the round-trip test genuinely
+/// exercises the `seq_index` read walk. The distinct PNG dimensions let a
+/// read→decode prove the exact page_index → entry mapping: a regression that read
+/// `page_index` directly would return the wrong page (page 0 → `2.png`'s 2x3
+/// instead of `1.png`'s 2x2) and fail.
+pub(crate) const SAMPLE_CBR_B64: &str = "UmFyIRoHAM+QcwAADQAAAAAAAACh8nQAgCUASQAAAEkAAAADqyZ1cgAAoU4UMAUAIAAAADIucG5niVBORw0KGgoAAAANSUhEUgAAAAIAAAADCAIAAAA2iEnWAAAAEElEQVR42mP4z8AARAwoFABE0AX7TM5xDwAAAABJRU5ErkJggkpzdACAJgBJAAAASQAAAAMYtlxUAAChThQwBgAgAAAAMTAucG5niVBORw0KGgoAAAANSUhEUgAAAAMAAAACCAIAAAASFvFNAAAAEElEQVR42mP4z8AAQQxwFgBB0gX7b/EWxwAAAABJRU5ErkJggqvMdACAJQBJAAAASQAAAAOFtl5wAAChThQwBQAgAAAAMS5wbmeJUE5HDQoaCgAAAA1JSERSAAAAAgAAAAIIAgAAAP3UmnMAAAAQSURBVHjaY/jPwABEDBAKAB/uA/1jXrtbAAAAAElFTkSuQmCCBmd0AIApAAwAAAAMAAAAAy/dsscAAKFOFDAJACAAAABub3Rlcy50eHRub3QgYW4gaW1hZ2VJZXTgACMAAAAAAAAAAAADAAAAAAAAoU4UMAMAEAAAAHN1YqlhdACAKQBJAAAASQAAAAPdJU2pAAChThQwCQAgAAAAc3ViLzMucG5niVBORw0KGgoAAAANSUhEUgAAAAQAAAAECAIAAAAmkwkpAAAAEElEQVR42mP4z8AARwzEcQCukw/xOF6MEQAAAABJRU5ErkJgggSwewAABwA=";
 
 /// Fixture B (310 bytes): one safe `1.png`(2x2) plus two `..` traversal entries —
 /// `../evil.png` (image-looking → COUNTED as skipped) and `../readme.txt`
