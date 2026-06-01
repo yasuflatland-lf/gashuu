@@ -15,6 +15,10 @@
 //! `d` emits `ToggleSpread` (the configured spread mode then cycles single →
 //! double → auto in `ViewerState::toggle_spread`), `r` toggles reading direction
 //! (Ltr <-> Rtl), `c` toggles cover page.
+//!
+//! ## Screen-navigation keys
+//! `Up` emits `GoToLibrary` (direction-independent like the zoom/fit keys); it
+//! returns the app to the Library screen and is only acted on in the Viewer.
 
 use gashuu_core::ReadingDirection;
 
@@ -44,6 +48,10 @@ pub enum KeyCommand {
     FitActual,
     /// Cycle fit mode: Whole -> Width -> Actual -> Whole.
     CycleFit,
+    /// Return to the Library screen. Only meaningful in the Viewer screen
+    /// (the screen gate lives in `main.rs`); direction-independent like the
+    /// zoom/fit keys (Up has no reading-order meaning).
+    GoToLibrary,
 }
 
 /// Map a UI key token to a command. Arrow keys depend on `reading_direction`
@@ -70,6 +78,7 @@ pub fn map_key(token: &str, dir: ReadingDirection) -> Option<KeyCommand> {
         "0" => Some(KeyCommand::ResetView),
         "1" => Some(KeyCommand::FitActual),
         "f" => Some(KeyCommand::CycleFit),
+        "up" => Some(KeyCommand::GoToLibrary),
         _ => None,
     }
 }
@@ -268,6 +277,20 @@ mod tests {
         assert_eq!(
             map_key("f", ReadingDirection::Rtl),
             Some(KeyCommand::CycleFit)
+        );
+    }
+
+    // --- Screen navigation keys: direction-independent ---
+
+    #[test]
+    fn up_maps_to_go_to_library() {
+        assert_eq!(
+            map_key("up", ReadingDirection::Ltr),
+            Some(KeyCommand::GoToLibrary)
+        );
+        assert_eq!(
+            map_key("up", ReadingDirection::Rtl),
+            Some(KeyCommand::GoToLibrary)
         );
     }
 
