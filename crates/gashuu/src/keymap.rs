@@ -15,6 +15,12 @@
 //! `d` emits `ToggleSpread` (the configured spread mode then cycles single →
 //! double → auto in `ViewerState::toggle_spread`), `r` toggles reading direction
 //! (Ltr <-> Rtl), `c` toggles cover page.
+//!
+//! ## Chrome reveal (PR-S)
+//! The page scrubber's auto-hiding chrome reveals on arrow / page-turn keys, but
+//! that reveal is a UI side effect handled in `main.rs`'s `on_nav` handler — NOT
+//! here. `map_key` stays a pure token -> `KeyCommand` function with no UI
+//! awareness, so do not add a reveal command or side effect to this module.
 
 use gashuu_core::ReadingDirection;
 
