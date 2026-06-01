@@ -11,6 +11,7 @@
 // `focus-pages()` recovery rule). The key handler forwards the navigation
 // seams so downstream PRs only fill the Rust side:
 //   Left/Right -> move(-1 / +1)   Return -> open(focused-index)   Down -> back()
+import { Button } from "std-widgets.slint";
 import { Theme } from "Theme.slint";
 
 // Frozen by PR-0b; populated by PR-C (covers via PR-V). One book in the shelf.
@@ -27,9 +28,11 @@ export component Carousel inherits Rectangle {
     // ── Frozen public contract ────────────────────────────────────────────────
     in property <[CarouselItem]> items;
     in-out property <int> focused-index;
-    callback open(int);   // index — Return on the focused book
-    callback move(int);   // delta (-1 / +1) — Left / Right
-    callback back();      // Down — return to the currently-open book
+    callback open(int);       // index — Return on the focused book
+    callback move(int);       // delta (-1 / +1) — Left / Right
+    callback back();          // Down — return to the currently-open book
+    callback add-files();     // PR-L: open file picker (rfd)
+    callback add-folder();    // PR-L: open folder picker (rfd)
 
     // FocusScope focus recovery (mirrors ViewerWindow's focus-pages() rule).
     public function focus-self() { fs.focus(); }
@@ -41,6 +44,33 @@ export component Carousel inherits Rectangle {
         width: 100%;
         height: 100%;
         background: @linear-gradient(180deg, Theme.stage-top 0%, Theme.canvas 100%);
+    }
+
+    // ── Toolbar: "Add files…" / "Add folder…" (PR-L) ──────────────────────────
+    // Always-visible strip anchored to the top of the carousel. Clicking either
+    // button fires the matching callback (Rust wires rfd later) then restores
+    // keyboard focus to the carousel's FocusScope so arrow / Return keys still
+    // work after the picker closes. Spacing uses Theme tokens; no inline hex.
+    HorizontalLayout {
+        x: 0;
+        y: 0;
+        width: parent.width;
+        height: 40px;
+        alignment: start;
+        spacing: Theme.space-sm;
+        padding-left: Theme.space-md;
+        padding-right: Theme.space-md;
+        padding-top: Theme.space-xs;
+        padding-bottom: Theme.space-xs;
+
+        Button {
+            text: "Add files…";
+            clicked => { root.add-files(); root.focus-self(); }
+        }
+        Button {
+            text: "Add folder…";
+            clicked => { root.add-folder(); root.focus-self(); }
+        }
     }
 
     // ── Keyboard seams ──────────────────────────────────────────────────────
@@ -91,9 +121,10 @@ export component Carousel inherits Rectangle {
                     font-size: Theme.font-micro;
                     horizontal-alignment: center;
                 }
-                // Placeholder CTA. PR-L gives this an `add()` callback + rfd
-                // picker; for PR-0b it is a non-interactive visual placeholder
-                // so the shell shows the intended affordance.
+                // CTA button (PR-L: now interactive). Fires add-files() on click
+                // and restores keyboard focus to the carousel. Uses Theme tokens
+                // only — no inline hex. Background accent, text white, rounded
+                // corners via radius-md, helper text via text-faint + font-micro.
                 Rectangle {
                     height: 34px;
                     background: Theme.accent;
@@ -105,6 +136,9 @@ export component Carousel inherits Rectangle {
                         font-weight: 500;
                         horizontal-alignment: center;
                         vertical-alignment: center;
+                    }
+                    TouchArea {
+                        clicked => { root.add-files(); }
                     }
                 }
             }

@@ -95,6 +95,9 @@ export component ViewerWindow inherits Window {
     callback carousel-open(int);
     callback carousel-move(int);
     callback carousel-back();
+    // PR-L: file/folder picker triggers forwarded from the Carousel toolbar/CTA.
+    callback add-files();
+    callback add-folder();
     public function focus-carousel() { carousel.focus-self(); }
     // Forwarded navigation token: "left" | "right" | "space" | "backspace" |
     // "d" | "r" | "c" | "+" | "=" | "-" | "0" | "1" | "f".
@@ -134,6 +137,8 @@ export component ViewerWindow inherits Window {
         open(i) => { root.carousel-open(i); }
         move(delta) => { root.carousel-move(delta); }
         back() => { root.carousel-back(); }
+        add-files() => { root.add-files(); }
+        add-folder() => { root.add-folder(); }
     }
 
     // ── Viewer screen (existing content) ───────────────────────────────────────
