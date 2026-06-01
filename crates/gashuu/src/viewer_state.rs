@@ -14,7 +14,7 @@ use gashuu_core::{
     DecodedImage, ImageCache, PageSource, ReadingDirection, Settings, SpreadLayout, SpreadMode,
     DEFAULT_CAPACITY, DEFAULT_PREFETCH_RADIUS,
 };
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 /// One displayed unit: the leading image and, in two-page modes, an optional
@@ -92,6 +92,12 @@ pub struct ViewerState {
     /// `Ok(())` returns; an error return leaves the value from the previous
     /// successful open unchanged.
     last_open_skipped: usize,
+    /// Canonical path of the most recently successfully opened source. `None`
+    /// until `open_path` completes `Ok(())`; set to `None` by `set_source`
+    /// directly (no path supplied). Used by `main.rs` to form the write-back
+    /// tuple `(path, state.index())` at every leave point without needing to
+    /// hold a concurrent borrow on both `state` and `library`.
+    open_file: Option<PathBuf>,
 }
 
 impl ViewerState {
@@ -115,6 +121,7 @@ impl ViewerState {
             reading_direction: ReadingDirection::Ltr,
             viewport_aspect: 1.0,
             last_open_skipped: 0,
+            open_file: None,
         }
     }
 
@@ -133,6 +140,7 @@ impl ViewerState {
             reading_direction: settings.reading_direction,
             viewport_aspect: 1.0,
             last_open_skipped: 0,
+            open_file: None,
         }
     }
 
@@ -142,6 +150,7 @@ impl ViewerState {
     /// `current_source()` can return it without going through `ImageCache`.
     pub fn set_source(&mut self, source: Arc<dyn PageSource>) {
         self.source = Some(Arc::clone(&source));
+        self.open_file = None;
         let cache = ImageCache::new(source, self.cache_size, self.preload_pages);
         self.page_count = cache.len();
         self.cache = Some(cache);
@@ -222,6 +231,10 @@ impl ViewerState {
         }
         self.last_open_skipped = skipped;
         self.set_source(source);
+        // Canonicalize best-effort; fall back to the verbatim path on error
+        // (same policy as Library::add — identity is the canonical form when
+        // available, verbatim otherwise).
+        self.open_file = Some(path.canonicalize().unwrap_or_else(|_| path.to_path_buf()));
         Ok(())
     }
 
@@ -231,6 +244,15 @@ impl ViewerState {
     /// an error return leaves the value from the previous successful open.
     pub fn last_open_skipped(&self) -> usize {
         self.last_open_skipped
+    }
+
+    /// The canonical path of the currently open source, or `None` when no
+    /// source has been opened via `open_path` (i.e. after construction, a
+    /// failed `open_path`, or a direct `set_source` call). Used by `main.rs`
+    /// to write the reading position back to the `Library` at leave points.
+    #[allow(dead_code)]
+    pub fn open_file(&self) -> Option<&Path> {
+        self.open_file.as_deref()
     }
 
     /// Open a folder as the active source, resetting to the first page.
@@ -1278,6 +1300,37 @@ mod tests {
         assert!(
             state.current_source().is_none(),
             "current_source must remain None after a failed open_path"
+        );
+    }
+
+    // ---- open_file() (PR-R) --------------------------------------------------
+
+    #[test]
+    fn open_file_is_none_before_open() {
+        let state = ViewerState::new();
+        assert!(state.open_file().is_none(), "open_file must be None before any open");
+    }
+
+    #[test]
+    fn open_file_is_none_after_failed_open_path() {
+        let mut state = ViewerState::new();
+        let _ = state.open_path(std::path::Path::new("/nonexistent_prR_open_file"));
+        assert!(
+            state.open_file().is_none(),
+            "open_file must stay None after a failed open_path"
+        );
+    }
+
+    #[test]
+    fn open_file_is_some_after_set_source_via_open_path_with_mock() {
+        // set_source itself does not have a path; open_file tracks the path given
+        // to open_path. After set_source directly, open_file stays None (no path
+        // was supplied).
+        let mut state = ViewerState::new();
+        state.set_source(mock_with(3));
+        assert!(
+            state.open_file().is_none(),
+            "set_source without a path must leave open_file as None"
         );
     }
 
