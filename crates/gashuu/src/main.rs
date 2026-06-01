@@ -509,6 +509,7 @@ fn main() -> color_eyre::Result<()> {
         let state = Rc::clone(&state);
         let viewport = Rc::clone(&viewport);
         let nav = Rc::clone(&nav);
+        let library = Rc::clone(&library);
         ui.on_nav(move |token| {
             let Some(ui) = ui_weak.upgrade() else {
                 return;
@@ -591,6 +592,11 @@ fn main() -> color_eyre::Result<()> {
                 // Up arrow returns to the Library carousel. Direction-independent
                 // (decoded in keymap); the seam flips NavState + syncs `screen`.
                 KeyCommand::GoToLibrary => {
+                    // Write the current position back before leaving the viewer.
+                    // Borrow discipline: write_back_position takes &Rc<RefCell<…>>
+                    // and confines each borrow to a single statement; drops before
+                    // go_to_library borrows the UI.
+                    write_back_position(&state, &library);
                     go_to_library(&ui, &nav);
                 }
             }
@@ -615,6 +621,10 @@ fn main() -> color_eyre::Result<()> {
     }
 
     ui.run()?;
+    // Write the current reading position back to the library before exit.
+    // The `state` and `library` RefCells are no longer borrowed (the event
+    // loop has exited), so there is no borrow conflict here.
+    write_back_position(&state, &library);
     // Reconcile runtime display modes into Settings, then persist on exit so even a
     // first run writes a file the user can hand-edit. The `reconcile_settings`
     // call's `settings.borrow_mut()` drops at the `;`, so `save()`'s fresh
@@ -657,6 +667,10 @@ fn open_and_present(
     path: &Path,
     skipped_detail: &str, // "" for folders, " (zip-slip or oversized)" for archives
 ) {
+    // Write back the position for the book that is currently open (if any)
+    // before we replace the source. `open_file()` is None when no book was
+    // open, so write_back_position is a no-op in that case.
+    write_back_position(state, library);
     // Bind the result first so the `state.borrow_mut()` temporary drops before the
     // `Ok` arm reads `state` again (a borrow held across the match would
     // double-borrow-panic at the `reconcile_settings(&state.borrow(), ..)` below).
