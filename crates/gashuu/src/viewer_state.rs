@@ -1443,6 +1443,46 @@ mod tests {
         assert_eq!(state.index(), 4);
     }
 
+    // ---- jump_to resume behavior (PR-R) -----------------------------------
+
+    #[test]
+    fn jump_to_zero_is_noop_from_fresh_open() {
+        // Library returns 0 for an unknown book; jump_to(0) on a freshly
+        // set_source must NOT report a move (the viewer is already at index 0).
+        let mut state = ViewerState::new();
+        state.set_source(mock_with(5));
+        assert_eq!(state.index(), 0);
+        assert!(
+            !state.jump_to(0),
+            "jump_to(0) on a book just opened (index=0) must be a no-op"
+        );
+        assert_eq!(state.index(), 0);
+    }
+
+    #[test]
+    fn jump_to_stored_page_resumes_correctly() {
+        // Simulates opening a book where last_page = 3. Single mode: every page
+        // is its own leading. jump_to(3) must move and land at index 3.
+        let mut state = ViewerState::new();
+        state.set_source(mock_with(10));
+        let moved = state.jump_to(3);
+        assert!(moved, "jump_to must return true when moving from index 0 to 3");
+        assert_eq!(state.index(), 3);
+    }
+
+    #[test]
+    fn jump_to_stored_trailing_normalizes_to_leading_on_resume() {
+        // Double / Standalone: {0}{1,2}{3,4}{5}. If last_page stored was 2
+        // (trailing of {1,2}), jump_to(2) normalizes to leading 1.
+        let mut state = double_state();
+        state.set_source(mock_with(6));
+        assert!(state.jump_to(2));
+        assert_eq!(
+            state.index(), 1,
+            "stored trailing page must normalize to spread leading on resume"
+        );
+    }
+
     // ---- scrub_fraction_to_page() (PR-S): pure fraction -> raw page ----------
 
     #[test]

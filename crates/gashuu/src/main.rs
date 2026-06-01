@@ -72,6 +72,7 @@ fn main() -> color_eyre::Result<()> {
         let settings = Rc::clone(&settings);
         let viewport = Rc::clone(&viewport);
         let thumbs = Rc::clone(&thumbs);
+        let library = Rc::clone(&library);
         ui.on_open_folder(move || {
             let Some(ui) = ui_weak.upgrade() else {
                 return;
@@ -79,7 +80,7 @@ fn main() -> color_eyre::Result<()> {
             let Some(dir) = rfd::FileDialog::new().pick_folder() else {
                 return;
             };
-            open_and_present(&ui, &state, &settings, &viewport, &thumbs, &dir, "");
+            open_and_present(&ui, &state, &settings, &viewport, &thumbs, &library, &dir, "");
         });
     }
 
@@ -90,6 +91,7 @@ fn main() -> color_eyre::Result<()> {
         let settings = Rc::clone(&settings);
         let viewport = Rc::clone(&viewport);
         let thumbs = Rc::clone(&thumbs);
+        let library = Rc::clone(&library);
         ui.on_open_archive(move || {
             let Some(ui) = ui_weak.upgrade() else {
                 return;
@@ -106,6 +108,7 @@ fn main() -> color_eyre::Result<()> {
                 &settings,
                 &viewport,
                 &thumbs,
+                &library,
                 &file,
                 " (zip-slip or oversized)",
             );
@@ -650,6 +653,7 @@ fn open_and_present(
     settings: &Rc<RefCell<Settings>>,
     viewport: &Rc<RefCell<ViewportState>>,
     thumbs: &ThumbnailController,
+    library: &Rc<RefCell<Library>>,
     path: &Path,
     skipped_detail: &str, // "" for folders, " (zip-slip or oversized)" for archives
 ) {
@@ -680,6 +684,12 @@ fn open_and_present(
             return;
         }
     }
+    // Resume at the stored reading position. `library.last_page(path)` returns 0
+    // for an unknown book (no-op via jump_to's "did it move" guard). Borrow
+    // discipline: `state.borrow_mut()` drops at the `;`; `library.borrow()` is
+    // a fresh borrow that cannot conflict (distinct RefCells).
+    let resume_page = library.borrow().last_page(path);
+    state.borrow_mut().jump_to(resume_page);
     refresh(ui, &state.borrow(), viewport);
     let skipped = state.borrow().last_open_skipped();
     if skipped > 0 {
