@@ -3,17 +3,32 @@
 use crate::error::CoreError;
 use crate::image_ops::DecodedImage;
 use directories::ProjectDirs;
-use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 
 // Build a stable cache key from the source path and thumbnail parameters.
+//
+// Uses FNV-1a (a fixed algorithm) instead of `std::hash::DefaultHasher`, whose
+// hash output is not guaranteed stable across Rust versions. A stable key keeps
+// thumbnails cached by a prior build reachable after a toolchain upgrade rather
+// than being silently orphaned. The path is hashed via its platform-native
+// `OsStr` bytes, which is deterministic on a given platform (the cache is local).
 pub fn cache_key(path: &Path, mtime_secs: i64, max_side: u32) -> String {
-    let mut hasher = DefaultHasher::new();
-    path.hash(&mut hasher);
-    mtime_secs.hash(&mut hasher);
-    max_side.hash(&mut hasher);
-    format!("{:016x}", hasher.finish())
+    let mut hash = FNV_OFFSET_BASIS;
+    fnv1a(&mut hash, path.as_os_str().as_encoded_bytes());
+    fnv1a(&mut hash, &mtime_secs.to_le_bytes());
+    fnv1a(&mut hash, &max_side.to_le_bytes());
+    format!("{hash:016x}")
+}
+
+const FNV_OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
+const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
+
+// Fold `bytes` into `hash` using the FNV-1a step (xor then multiply).
+fn fnv1a(hash: &mut u64, bytes: &[u8]) {
+    for &byte in bytes {
+        *hash ^= u64::from(byte);
+        *hash = hash.wrapping_mul(FNV_PRIME);
+    }
 }
 
 /// Persistent thumbnail cache directory handle.
