@@ -36,7 +36,7 @@ fn main() -> color_eyre::Result<()> {
 
     // Load the persisted shelf; an unreadable/corrupt library.json falls back
     // to an empty library (the corrupt-file recovery policy lives here in the
-    // UI layer, mirroring the Settings load above — see _contracts.md).
+    // UI layer, mirroring the Settings load above).
     let library = Library::load().unwrap_or_else(|e| {
         tracing::warn!(error = %e, "failed to load library; starting empty");
         Library::new()

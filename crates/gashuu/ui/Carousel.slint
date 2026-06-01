@@ -1,16 +1,19 @@
-// Library cover-flow carousel — EMPTY SHELL (PR-0b).
+// Library cover-flow carousel.
 //
-// This PR freezes the public contract (struct + component + callbacks + the
-// focus-self() recovery function) and renders only a placeholder / empty
-// state on the DESIGN.md stage. PR-C fills the real cover-flow rendering from
-// the Library model; PR-L fills the "add books" action. Styling references
-// Theme tokens only — NO inline hex (see DESIGN.md rule 2).
+// Renders a full cover-flow row built from the `Library` model: a centered
+// focused cover (accent ring), dimmed neighbors, a per-cover progress bar, a
+// centered focused-book meta block, and a grayed broken-cover placeholder for
+// unavailable books. Falls back to an empty-state CTA when there are 0 books.
 //
-// Focus: the component owns its own FocusScope. `focus-self()` restores
-// keyboard focus to it (the carousel counterpart of ViewerWindow's
-// `focus-pages()` recovery rule). The key handler forwards the navigation
-// seams so downstream PRs only fill the Rust side:
-//   Left/Right -> move(-1 / +1)   Return -> open(focused-index)   Down -> back()
+// The public contract — the `CarouselItem` struct, the `Carousel` component,
+// its `items`/`focused-index` properties, the `open(int)`/`move(int)`/`back()`
+// callbacks, and `focus-self()` — was frozen by PR-0b and MUST NOT change here.
+// PR-L wires the empty-state CTA to the folder/file picker; PR-V streams real
+// cover images into the model (covers are placeholders until then).
+//
+// Styling references `Theme.*` tokens only — NO inline brand hex (DESIGN.md).
+// Key seams (handled in the FocusScope): Left/Right -> move(-1/+1),
+// Return -> open(focused-index), Down -> back().
 import { Theme } from "Theme.slint";
 
 // Frozen by PR-0b; populated by PR-C (covers via PR-V). One book in the shelf.
@@ -150,14 +153,15 @@ export component Carousel inherits Rectangle {
                       border-color: Theme.accent;
 
                       // Cover image (placeholder until PR-V streams real covers).
+                      // DESIGN.md components.cover calls for slight neighbor desaturation, but a
+                      // per-Image `colorize` is NOT applied here: it would need the focused state,
+                      // and at this nesting `parent` is the inner cover Rectangle (no `focused`
+                      // property — that lives on the outer for-row Rectangle). The recede cue is
+                      // carried by the for-row's `opacity: 0.45` (root.neighbor-opacity) instead.
                       if item.available : Image {
                           x: 0; y: 0; width: 100%; height: 100%;
                           source: item.cover;
                           image-fit: contain;
-                          // Neighbor recede is carried by the item's `opacity: 0.45`
-                          // (set on the parent for-row Rectangle); a per-Image
-                          // `colorize` is not used here (the cover Rectangle is not
-                          // a focus-bearing element).
                       }
 
                       // ── Unavailable: grayed card + broken-cover glyph ──────────
