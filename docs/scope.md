@@ -61,6 +61,10 @@ RAR requires a C++ compiler on every OS (see [docs/toolchain.md](toolchain.md)).
 - A first-run guide shows once, gated by `Settings::seen_guide`.
 - No new deps.
 
+### Thumbnail disk cache (PR-T)
+
+`ThumbnailCache` (gashuu-core) persists thumbnails/covers as PNG files under the OS cache directory, keyed by a version-stable FNV-1a hash of (path, mtime, max-side). `put` writes atomically (temp-file-then-rename); `get` returns `None` on miss/corrupt. This is the storage primitive; the cover carousel that consumes it is PR-V. Concurrent same-key write safety is deferred (see docs/patterns.md).
+
 ---
 
 ## Deferred (intentionally out of scope)
@@ -69,7 +73,6 @@ RAR requires a C++ compiler on every OS (see [docs/toolchain.md](toolchain.md)).
 - PR8a thumbnail-strip follow-ups:
   - RTL strip ordering (8a ships ascending order + current-page highlight only).
   - Lazy/on-demand thumbnail generation (8a eagerly generates all).
-  - Thumbnail disk cache.
   - Virtual scroll for huge archives.
 - Nested archives.
 - `ComicInfo.xml` metadata.
