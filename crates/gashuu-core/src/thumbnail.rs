@@ -98,13 +98,11 @@ mod tests {
         }
 
         fn read_bytes(&self, index: usize) -> Result<Vec<u8>, CoreError> {
+            // `Some(None)` (simulated read failure) and `None` (out-of-range) both
+            // surface as IndexOutOfRange.
             match self.pages.get(index) {
                 Some(Some(bytes)) => Ok(bytes.clone()),
-                Some(None) => Err(CoreError::IndexOutOfRange {
-                    index,
-                    len: self.pages.len(),
-                }),
-                None => Err(CoreError::IndexOutOfRange {
+                Some(None) | None => Err(CoreError::IndexOutOfRange {
                     index,
                     len: self.pages.len(),
                 }),

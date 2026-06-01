@@ -237,31 +237,35 @@ mod tests {
         !crc
     }
 
-    #[test]
-    fn decode_rejects_oversized_header_with_image_too_large() {
-        // Guards the `check_pixel_limit(w, h)?` wiring inside `decode()`: the pure
-        // unit test does NOT — deleting that line would still pass it.
-        //
-        // Build a tiny valid PNG, then forge its IHDR width/height to declare
-        // 1 x (MAX_PIXELS + 1) pixels WITHOUT allocating a giant buffer, repairing
-        // the IHDR CRC so the decoder accepts the header on the dimension pre-read.
+    /// Build a tiny valid PNG, then forge its IHDR width/height to `(w, h)`
+    /// WITHOUT allocating a giant buffer, repairing the IHDR CRC so the decoder
+    /// accepts the header on the dimension pre-read. Used to drive the early
+    /// `check_pixel_limit` guard from a tiny fixture. The byte-offset literals for
+    /// the IHDR chunk live here, in ONE place.
+    ///
+    /// PNG layout: 8-byte signature, then the IHDR chunk:
+    ///   [8..12]  length (always 13 for IHDR)
+    ///   [12..16] chunk type ("IHDR")
+    ///   [16..20] width (big-endian u32)
+    ///   [20..24] height (big-endian u32)
+    ///   ... 5 more data bytes (bit depth, color type, etc.)
+    ///   [29..33] IHDR CRC over the type + 13 data bytes ([12..29])
+    fn forge_oversized_ihdr(w: u32, h: u32) -> Vec<u8> {
         let mut bytes = png_bytes(1, 1);
-
-        // PNG layout: 8-byte signature, then the IHDR chunk:
-        //   [8..12]  length (always 13 for IHDR)
-        //   [12..16] chunk type ("IHDR")
-        //   [16..20] width (big-endian u32)
-        //   [20..24] height (big-endian u32)
-        //   ... 5 more data bytes (bit depth, color type, etc.)
-        //   [29..33] IHDR CRC over the type + 13 data bytes ([12..29])
-        let forged_w: u32 = 1;
-        let forged_h: u32 = (MAX_PIXELS + 1) as u32;
-        bytes[16..20].copy_from_slice(&forged_w.to_be_bytes());
-        bytes[20..24].copy_from_slice(&forged_h.to_be_bytes());
-
+        bytes[16..20].copy_from_slice(&w.to_be_bytes());
+        bytes[20..24].copy_from_slice(&h.to_be_bytes());
         // Recompute the IHDR CRC over the chunk-type + data bytes ([12..29]).
         let new_crc = crc32(&bytes[12..29]);
         bytes[29..33].copy_from_slice(&new_crc.to_be_bytes());
+        bytes
+    }
+
+    #[test]
+    fn decode_rejects_oversized_header_with_image_too_large() {
+        // Guards the `check_pixel_limit(w, h)?` wiring inside `decode()`: the pure
+        // unit test does NOT — deleting that line would still pass it. The forged
+        // header declares 1 x (MAX_PIXELS + 1) pixels.
+        let bytes = forge_oversized_ihdr(1, (MAX_PIXELS + 1) as u32);
 
         let err = decode(&bytes).unwrap_err();
         assert!(
@@ -366,18 +370,9 @@ mod tests {
     #[test]
     fn decode_thumbnail_rejects_oversized_ihdr_with_image_too_large() {
         // Verifies that decode_thumbnail routes through decode_dynamic and therefore
-        // hits the same check_pixel_limit early guard as decode().
-        // Uses the same IHDR-forge + CRC-32 recompute technique as
-        // decode_rejects_oversized_header_with_image_too_large.
-        let mut bytes = png_bytes(1, 1);
-
-        let forged_w: u32 = 1;
-        let forged_h: u32 = (MAX_PIXELS + 1) as u32;
-        bytes[16..20].copy_from_slice(&forged_w.to_be_bytes());
-        bytes[20..24].copy_from_slice(&forged_h.to_be_bytes());
-
-        let new_crc = crc32(&bytes[12..29]);
-        bytes[29..33].copy_from_slice(&new_crc.to_be_bytes());
+        // hits the same check_pixel_limit early guard as decode(). Uses the shared
+        // forge_oversized_ihdr harness (same IHDR-forge + CRC-32 recompute).
+        let bytes = forge_oversized_ihdr(1, (MAX_PIXELS + 1) as u32);
 
         let err = decode_thumbnail(&bytes, 64).unwrap_err();
         assert!(

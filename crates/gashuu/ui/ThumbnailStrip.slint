@@ -29,8 +29,6 @@ export component ThumbnailStrip inherits Rectangle {
     callback thumbnail-clicked(int);
 
     // ── Sizing constants ───────────────────────────────────────────────────────
-    // Keep these in sync with any Rust-side cell-width assumption if the strip
-    // height or auto-scroll logic is ever driven from Rust.
     private property <length> cell-width: 110px;
     private property <length> cell-height: 130px;
     private property <length> cell-spacing: 6px;
@@ -43,8 +41,8 @@ export component ThumbnailStrip inherits Rectangle {
     // Strip background matches the viewer's black aesthetic.
     background: #1a1a1a;
 
-    // Fixed strip height so it does not stretch vertically.
-    height: root.cell-height + 2 * 8px; // cell + top/bottom padding
+    // The strip height is set by the parent (ViewerWindow), which is the single
+    // source of truth; cells fit within whatever height it provides.
 
     // ── Scrollable content ─────────────────────────────────────────────────────
     Flickable {
