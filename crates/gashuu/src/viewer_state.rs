@@ -458,15 +458,8 @@ mod tests {
 
     fn mock_with(pages: usize) -> Arc<dyn PageSource> {
         let mut mock = MockPageSource::new();
-        mock.expect_list_pages().returning(move || {
-            vec![
-                PageEntry {
-                    path: "p".into(),
-                    name: "p".into()
-                };
-                pages
-            ]
-        });
+        mock.expect_list_pages()
+            .returning(move || vec![PageEntry { name: "p".into() }; pages]);
         mock.expect_read_bytes().returning(|_| Ok(tiny_png()));
         Arc::new(mock)
     }
@@ -560,15 +553,8 @@ mod tests {
     fn current_spread_propagates_source_error() {
         let mut state = ViewerState::new();
         let mut mock = MockPageSource::new();
-        mock.expect_list_pages().returning(|| {
-            vec![
-                PageEntry {
-                    path: "p".into(),
-                    name: "p".into()
-                };
-                1
-            ]
-        });
+        mock.expect_list_pages()
+            .returning(|| vec![PageEntry { name: "p".into() }; 1]);
         mock.expect_read_bytes()
             .returning(|_| Err(CoreError::IndexOutOfRange { index: 0, len: 0 }));
         state.set_source(Arc::new(mock));
@@ -810,15 +796,8 @@ mod tests {
             ..Default::default()
         });
         let mut mock = MockPageSource::new();
-        mock.expect_list_pages().returning(|| {
-            vec![
-                PageEntry {
-                    path: "p".into(),
-                    name: "p".into()
-                };
-                3
-            ]
-        });
+        mock.expect_list_pages()
+            .returning(|| vec![PageEntry { name: "p".into() }; 3]);
         mock.expect_read_bytes().returning(|idx| {
             if idx == 2 {
                 Err(CoreError::IndexOutOfRange { index: 2, len: 3 })

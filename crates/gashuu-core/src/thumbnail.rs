@@ -91,7 +91,6 @@ mod tests {
                 .iter()
                 .enumerate()
                 .map(|(i, _)| PageEntry {
-                    path: format!("page{i}.png").into(),
                     name: format!("page{i}.png"),
                 })
                 .collect()
@@ -242,7 +241,6 @@ mod tests {
     impl PageSource for CancelOnReadSource {
         fn list_pages(&self) -> Vec<PageEntry> {
             vec![PageEntry {
-                path: "page0.png".into(),
                 name: "page0.png".to_string(),
             }]
         }

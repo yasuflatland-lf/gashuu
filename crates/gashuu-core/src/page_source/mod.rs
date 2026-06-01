@@ -7,16 +7,14 @@ pub use rar::RarSource;
 pub use zip::ZipSource;
 
 use crate::error::CoreError;
-use std::path::PathBuf;
 
-/// A single page in a source: its filesystem path and display name.
+/// A single page in a source: a display/identity name only. Bytes are ALWAYS
+/// retrieved via `read_bytes(index)`; the public abstraction deliberately carries
+/// no filesystem path, because archive entries have none. `FolderSource` keeps the
+/// real path internally and never exposes it through this struct.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PageEntry {
-    /// Source-specific page identifier. For filesystem sources this is a real,
-    /// readable path; for archive sources it is a logical entry name used only
-    /// for display and identity — bytes are always retrieved via `read_bytes(index)`.
-    pub path: PathBuf,
-    /// Display name (typically the file name).
+    /// Display/identity name (typically the file name or flattened archive entry name).
     pub name: String,
 }
 
@@ -53,7 +51,6 @@ mod tests {
         let mut mock = MockPageSource::new();
         mock.expect_list_pages().returning(|| {
             vec![PageEntry {
-                path: "a.png".into(),
                 name: "a.png".into(),
             }]
         });
@@ -61,6 +58,15 @@ mod tests {
 
         assert_eq!(mock.list_pages().len(), 1);
         assert_eq!(mock.read_bytes(0).unwrap(), vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn page_entry_carries_name_only() {
+        // The abstraction exposes a name and nothing else; bytes come from
+        // `read_bytes(index)`, never from a path on the entry. This pins the
+        // contract so a filesystem path can never leak back into the struct.
+        let entry = PageEntry { name: "x".into() };
+        assert_eq!(entry.name, "x");
     }
 }
 

@@ -2,15 +2,25 @@ use super::naming::{has_image_ext, natural_cmp};
 use super::{PageEntry, PageSource};
 use crate::error::CoreError;
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
+
+/// Internal pairing of a page's real filesystem path with its display name.
+///
+/// The path is an implementation detail of `FolderSource` (used by `read_bytes`)
+/// and is deliberately NOT part of the public [`PageEntry`], which carries the
+/// name only — archive sources have no path to expose.
+struct FolderEntry {
+    path: PathBuf,
+    name: String,
+}
 
 /// A page source backed by a single directory of image files.
 ///
 /// PR1 walks the top level only (no recursion) and orders pages by natural
 /// filename comparison so `2.png` precedes `10.png`.
 pub struct FolderSource {
-    entries: Vec<PageEntry>,
+    entries: Vec<FolderEntry>,
     skipped: usize,
 }
 
@@ -21,12 +31,12 @@ impl FolderSource {
     /// broken symlinks) are counted in [`PageSource::skipped_count`] rather than
     /// silently dropped, so the presentation layer can log them.
     pub fn open(root: impl AsRef<Path>) -> Result<Self, CoreError> {
-        let mut entries: Vec<PageEntry> = Vec::new();
+        let mut entries: Vec<FolderEntry> = Vec::new();
         let mut skipped = 0usize;
         for result in WalkDir::new(root.as_ref()).min_depth(1).max_depth(1) {
             match result {
                 Ok(e) if e.file_type().is_file() && has_image_ext(e.path()) => {
-                    entries.push(PageEntry {
+                    entries.push(FolderEntry {
                         name: e.file_name().to_string_lossy().into_owned(),
                         path: e.path().to_path_buf(),
                     });
@@ -44,7 +54,12 @@ impl FolderSource {
 
 impl PageSource for FolderSource {
     fn list_pages(&self) -> Vec<PageEntry> {
-        self.entries.clone()
+        self.entries
+            .iter()
+            .map(|e| PageEntry {
+                name: e.name.clone(),
+            })
+            .collect()
     }
 
     fn read_bytes(&self, index: usize) -> Result<Vec<u8>, CoreError> {
