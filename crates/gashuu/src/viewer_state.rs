@@ -1444,11 +1444,14 @@ mod tests {
     #[test]
     fn scrub_fraction_is_total_function_no_nan_panic() {
         // A non-finite fraction (defensive: a degenerate Slint length ratio) must
-        // not panic and must land in range; NaN clamps to 0 via the finite guard.
+        // not panic and must produce the exact page mandated by the spec:
+        //   NaN  (LTR, 8 pages): non-finite → f=0.0 → floor(0.0*7+0.5)=0  → page 0.
+        //   +Inf (RTL, 8 pages): non-finite → f=0.0 → RTL inverts to 1.0
+        //                        → floor(1.0*7+0.5)=7 (truncate 7.5)        → page 7.
         let p = scrub_fraction_to_page(f32::NAN, 8, false);
-        assert!(p < 8);
+        assert_eq!(p, 0);
         let p2 = scrub_fraction_to_page(f32::INFINITY, 8, true);
-        assert!(p2 < 8);
+        assert_eq!(p2, 7);
     }
 
     #[test]
@@ -1478,6 +1481,32 @@ mod tests {
         state.set_source(mock_with(6));
         assert!(!state.preview_is_double(0));
         assert!(!state.preview_is_double(3));
+    }
+
+    #[test]
+    fn preview_is_double_paired_cover_is_double() {
+        // Double + Paired, 6 pages: spreads {0,1}{2,3}{4,5}. Unlike Standalone,
+        // the cover (page 0) pairs with page 1, so it is a DOUBLE spread.
+        let mut state = ViewerState::from_settings(&Settings {
+            spread_mode: SpreadMode::Double,
+            cover_mode: CoverMode::Paired,
+            ..Default::default()
+        });
+        state.set_source(mock_with(6));
+        assert!(state.preview_is_double(0)); // cover {0,1} -> double in Paired
+        assert!(state.preview_is_double(1)); // page 1 normalizes to leading 0 -> {0,1}
+        assert!(state.preview_is_double(4)); // {4,5}
+        assert_eq!(state.index(), 0, "preview must not move the index");
+
+        // 5 pages, Double + Paired: {0,1}{2,3}{4}. The lone last page is single.
+        let mut state = ViewerState::from_settings(&Settings {
+            spread_mode: SpreadMode::Double,
+            cover_mode: CoverMode::Paired,
+            ..Default::default()
+        });
+        state.set_source(mock_with(5));
+        assert!(state.preview_is_double(0)); // {0,1}
+        assert!(!state.preview_is_double(4)); // {4} lone last -> single
     }
 
     #[test]
