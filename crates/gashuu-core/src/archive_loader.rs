@@ -1,21 +1,33 @@
 //! Dispatch a path to the right `PageSource`: directory -> FolderSource,
-//! CBZ/ZIP (by extension, else magic bytes) -> ZipSource.
+//! CBZ/ZIP (by extension, else magic bytes) -> ZipSource,
+//! CBR/RAR (by extension, else magic bytes) -> RarSource.
 
 use crate::error::CoreError;
-use crate::page_source::{FolderSource, PageSource, ZipSource};
+use crate::page_source::{FolderSource, PageSource, RarSource, ZipSource};
 use std::io::{ErrorKind, Read};
 use std::path::Path;
 use std::sync::Arc;
 
-/// ZIP local-file, end-of-central-directory, and data-descriptor signatures.
+/// ZIP local-file, end-of-central-directory, and data-descriptor signatures (4 bytes each).
 const ZIP_MAGICS: &[&[u8]] = &[b"PK\x03\x04", b"PK\x05\x06", b"PK\x07\x08"];
+
+/// RAR magic prefix shared by RAR4 (`Rar!\x1A\x07\x00`) and RAR5 (`Rar!\x1A\x07\x01\x00`).
+/// Only the first 6 bytes are tested since RAR4 and RAR5 share these.
+const RAR_MAGIC: &[u8] = b"Rar!\x1A\x07";
+
+/// Discriminator returned by the extension and magic probes.
+#[cfg_attr(test, derive(Debug, PartialEq))]
+enum Kind {
+    Zip,
+    Rar,
+}
 
 /// Opens any supported source by path, returning a type-erased `Arc<dyn PageSource>`.
 ///
 /// Resolution order:
 /// 1. If the path is a directory: [`FolderSource`].
-/// 2. If the file extension is `cbz` or `zip` (case-insensitive): [`ZipSource`].
-/// 3. If the first 4 bytes match a ZIP signature: [`ZipSource`].
+/// 2. Extension check (cheap, no I/O): `cbz`/`zip` → [`ZipSource`]; `cbr`/`rar` → [`RarSource`].
+/// 3. Magic-byte sniff (first bytes of the file): ZIP signatures → [`ZipSource`]; RAR prefix → [`RarSource`].
 /// 4. Otherwise: [`CoreError::UnsupportedFormat`].
 pub struct ArchiveLoader;
 
@@ -23,48 +35,105 @@ impl ArchiveLoader {
     /// Open `path` as the most appropriate [`PageSource`].
     ///
     /// Returns `Err(CoreError::UnsupportedFormat)` when the path is a file that
-    /// is neither a recognized archive extension nor starts with ZIP magic bytes.
+    /// is neither a recognized archive extension nor matches ZIP/RAR magic bytes.
     pub fn open(path: impl AsRef<Path>) -> Result<Arc<dyn PageSource>, CoreError> {
         let path = path.as_ref();
         if path.is_dir() {
             return Ok(Arc::new(FolderSource::open(path)?));
         }
-        if is_zip(path)? {
-            return Ok(Arc::new(ZipSource::open(path)?));
+        let kind = match ext_kind(path) {
+            Some(k) => Some(k),
+            None => magic_kind(path)?,
+        };
+        match kind {
+            Some(Kind::Zip) => Ok(Arc::new(ZipSource::open(path)?)),
+            Some(Kind::Rar) => Ok(Arc::new(RarSource::open(path)?)),
+            None => Err(CoreError::UnsupportedFormat {
+                path: path.display().to_string(),
+            }),
         }
-        Err(CoreError::UnsupportedFormat {
-            path: path.display().to_string(),
-        })
     }
 }
 
-/// Return `true` when `path` looks like a ZIP archive.
+/// Classify `path` by its file extension alone (no I/O).
 ///
-/// Extension check is tried first (cheap, no I/O). If the extension is absent
-/// or unrecognised the first 4 bytes are read and compared against the three
-/// ZIP signatures (`PK\x03\x04`, `PK\x05\x06`, `PK\x07\x08`).
-fn is_zip(path: &Path) -> Result<bool, CoreError> {
-    let ext_is_zip = path
-        .extension()
-        .and_then(|e| e.to_str())
-        .is_some_and(|ext| ext.eq_ignore_ascii_case("cbz") || ext.eq_ignore_ascii_case("zip"));
-    if ext_is_zip {
-        return Ok(true);
+/// Returns `None` when the extension is absent or not a recognised archive type.
+fn ext_kind(path: &Path) -> Option<Kind> {
+    let ext = path.extension().and_then(|e| e.to_str())?;
+    if ext.eq_ignore_ascii_case("cbz") || ext.eq_ignore_ascii_case("zip") {
+        Some(Kind::Zip)
+    } else if ext.eq_ignore_ascii_case("cbr") || ext.eq_ignore_ascii_case("rar") {
+        Some(Kind::Rar)
+    } else {
+        None
     }
-    let mut head = [0u8; 4];
+}
+
+/// Classify `path` by reading its leading magic bytes (fallback when extension is unknown).
+///
+/// Reads up to 6 bytes (`RAR_MAGIC` length). A file shorter than the buffer is not
+/// an error: `UnexpectedEof` maps to "no match" (`None`). Any other I/O error
+/// propagates so the caller can surface it.
+///
+/// ZIP signatures are 4 bytes (`ZIP_MAGICS`); RAR uses the 6-byte `RAR_MAGIC` prefix.
+/// The buffer is sized to the larger of the two so a single read covers both checks.
+fn magic_kind(path: &Path) -> Result<Option<Kind>, CoreError> {
+    // Buffer sized to cover the longest magic we test (RAR_MAGIC = 6 bytes).
+    let mut head = [0u8; 6];
     let mut f = std::fs::File::open(path)?;
-    match f.read_exact(&mut head) {
-        Ok(()) => Ok(ZIP_MAGICS.iter().any(|m| *m == &head[..])),
-        Err(e) if e.kind() == ErrorKind::UnexpectedEof => Ok(false),
-        Err(e) => Err(e.into()),
+    let n = match f.read(&mut head) {
+        Ok(n) => n,
+        Err(e) if e.kind() == ErrorKind::UnexpectedEof => 0,
+        Err(e) => return Err(e.into()),
+    };
+    let filled = &head[..n];
+    // ZIP: 4-byte signatures — check first.
+    if filled.len() >= 4 && ZIP_MAGICS.iter().any(|m| *m == &filled[..4]) {
+        return Ok(Some(Kind::Zip));
     }
+    // RAR: 6-byte prefix (`Rar!\x1A\x07`).
+    if filled.len() >= RAR_MAGIC.len() && filled[..RAR_MAGIC.len()] == *RAR_MAGIC {
+        return Ok(Some(Kind::Rar));
+    }
+    Ok(None)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use base64::Engine;
     use image::RgbaImage;
     use std::io::{Cursor, Write};
+
+    /// Canonical RAR4 store-format `.cbr` fixture (529 bytes), generated by a
+    /// hand-written RAR4 store generator and verified against the real `unrar`
+    /// crate (0.5.8). RAR has no Rust encoder, so this committed *text* mirrors
+    /// the insta `.snap` "committed text, not a binary fixture" exception.
+    ///
+    /// NOTE: this const is intentionally duplicated from `page_source::rar` tests
+    /// to keep `archive_loader` tests self-contained. A later simplifier pass may
+    /// consider extracting it to a shared test-only module.
+    ///
+    /// Entries in archive/insertion order: `1.png`(74B), `2.png`(74B),
+    /// `10.png`(74B), `notes.txt`(12B), `sub/3.png`(74B). The four PNGs are valid
+    /// 2x2 images; `notes.txt` is the non-image ASCII string "not an image".
+    /// Provenance: `.claude/plans/pr7-fixture.md`.
+    const SAMPLE_CBR_B64: &str = "UmFyIRoHAM+QcwAADQAAAAAAAABZOHQAgCUASgAAAEoAAAADEUpj3gAAoU4UMAUAIAAAADEucG5niVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAAEUlEQVR42mP4z8DA8B+MgBgAHfAD/a4/4jgAAAAASUVORK5CYIKJQnQAgCUASgAAAEoAAAADEUpj3gAAoU4UMAUAIAAAADIucG5niVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAAEUlEQVR42mP4z8DA8B+MgBgAHfAD/a4/4jgAAAAASUVORK5CYIK6h3QAgCYASgAAAEoAAAADEUpj3gAAoU4UMAYAIAAAADEwLnBuZ4lQTkcNChoKAAAADUlIRFIAAAACAAAAAggCAAAA/dSacwAAABFJREFUeNpj+M/AwPAfjIAYAB3wA/2uP+I4AAAAAElFTkSuQmCCBmd0AIApAAwAAAAMAAAAAy/dsscAAKFOFDAJACAAAABub3Rlcy50eHRub3QgYW4gaW1hZ2UqM3QAgCkASgAAAEoAAAADEUpj3gAAoU4UMAkAIAAAAHN1Yi8zLnBuZ4lQTkcNChoKAAAADUlIRFIAAAACAAAAAggCAAAA/dSacwAAABFJREFUeNpj+M/AwPAfjIAYAB3wA/2uP+I4AAAAAElFTkSuQmCCBLB7AAAHAA==";
+
+    /// Decode the base64 CBR fixture and write it to a tempfile with `suffix`.
+    fn sample_cbr_with_suffix(suffix: &str) -> tempfile::NamedTempFile {
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(SAMPLE_CBR_B64)
+            .expect("fixture base64 must decode");
+        let tmp = tempfile::Builder::new()
+            .suffix(suffix)
+            .tempfile()
+            .expect("tempfile");
+        let mut file = tmp.reopen().expect("reopen");
+        file.write_all(&bytes).expect("write cbr bytes");
+        file.flush().expect("flush");
+        tmp
+    }
 
     /// Build a minimal valid 2x2 PNG in memory.
     fn tiny_png() -> Vec<u8> {
@@ -91,6 +160,119 @@ mod tests {
             zw.finish().expect("finish zip");
         }
         buf
+    }
+
+    // ------------------------------------------------------------------
+    // ext_kind unit tests
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn ext_kind_cbr_lowercase_is_rar() {
+        assert_eq!(ext_kind(Path::new("x.cbr")), Some(Kind::Rar));
+    }
+
+    #[test]
+    fn ext_kind_rar_lowercase_is_rar() {
+        assert_eq!(ext_kind(Path::new("x.rar")), Some(Kind::Rar));
+    }
+
+    #[test]
+    fn ext_kind_cbr_uppercase_is_rar() {
+        assert_eq!(ext_kind(Path::new("x.CBR")), Some(Kind::Rar));
+    }
+
+    #[test]
+    fn ext_kind_cbz_lowercase_is_zip() {
+        assert_eq!(ext_kind(Path::new("x.cbz")), Some(Kind::Zip));
+    }
+
+    #[test]
+    fn ext_kind_zip_lowercase_is_zip() {
+        assert_eq!(ext_kind(Path::new("x.zip")), Some(Kind::Zip));
+    }
+
+    #[test]
+    fn ext_kind_txt_is_none() {
+        assert_eq!(ext_kind(Path::new("x.txt")), None);
+    }
+
+    #[test]
+    fn ext_kind_no_extension_is_none() {
+        assert_eq!(ext_kind(Path::new("noext")), None);
+    }
+
+    // ------------------------------------------------------------------
+    // magic_kind unit tests
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn magic_kind_rar_bytes_in_txt_file_resolves_to_rar() {
+        // A file whose content starts with the RAR magic but whose extension is
+        // `.txt` must resolve to `Kind::Rar` through the magic-byte path.
+        let mut f = tempfile::Builder::new()
+            .suffix(".txt")
+            .tempfile()
+            .expect("tempfile");
+        // Write RAR4 magic prefix followed by padding bytes.
+        f.write_all(b"Rar!\x1A\x07\x00\x00\x00\x00")
+            .expect("write rar magic");
+        f.flush().expect("flush");
+
+        assert_eq!(
+            magic_kind(f.path()).expect("magic_kind must not error"),
+            Some(Kind::Rar)
+        );
+    }
+
+    #[test]
+    fn magic_kind_zip_bytes_in_txt_file_resolves_to_zip() {
+        // A file whose content starts with `PK\x03\x04` (ZIP local-file header)
+        // and whose extension is `.txt` must resolve to `Kind::Zip`.
+        let mut f = tempfile::Builder::new()
+            .suffix(".txt")
+            .tempfile()
+            .expect("tempfile");
+        f.write_all(&tiny_zip_bytes()).expect("write zip bytes");
+        f.flush().expect("flush");
+
+        assert_eq!(
+            magic_kind(f.path()).expect("magic_kind must not error"),
+            Some(Kind::Zip)
+        );
+    }
+
+    #[test]
+    fn magic_kind_plaintext_is_none() {
+        let mut f = tempfile::Builder::new()
+            .suffix(".bin")
+            .tempfile()
+            .expect("tempfile");
+        f.write_all(b"RIFF\x00\x00\x00\x00AVI ")
+            .expect("write non-archive bytes");
+        f.flush().expect("flush");
+
+        assert_eq!(
+            magic_kind(f.path()).expect("magic_kind must not error"),
+            None
+        );
+    }
+
+    #[test]
+    fn magic_kind_too_short_file_is_none_not_error() {
+        // A 2-byte file with an unknown extension must produce None (UnsupportedFormat
+        // at the dispatch level), not an I/O error. This preserves the "short file
+        // maps UnexpectedEof → not a match" contract documented in CLAUDE.md.
+        let mut f = tempfile::Builder::new()
+            .suffix(".bin")
+            .tempfile()
+            .expect("tempfile");
+        f.write_all(b"AB").expect("write 2 bytes");
+        f.flush().expect("flush");
+
+        assert_eq!(
+            magic_kind(f.path()).expect("magic_kind must not error on a short file"),
+            None
+        );
     }
 
     // ------------------------------------------------------------------
@@ -234,6 +416,56 @@ mod tests {
     }
 
     // ------------------------------------------------------------------
+    // RarSource path — extension-based detection
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn cbr_extension_opens_rar_source() {
+        let cbr = sample_cbr_with_suffix(".cbr");
+        let source = ArchiveLoader::open(cbr.path()).expect("open .cbr");
+        assert!(
+            !source.list_pages().is_empty(),
+            "RarSource should list pages from the CBR fixture"
+        );
+    }
+
+    #[test]
+    fn rar_extension_opens_rar_source() {
+        let cbr = sample_cbr_with_suffix(".rar");
+        let source = ArchiveLoader::open(cbr.path()).expect("open .rar");
+        assert!(
+            !source.list_pages().is_empty(),
+            "RarSource should list pages from a .rar file"
+        );
+    }
+
+    #[test]
+    fn cbr_extension_uppercase_opens_rar_source() {
+        let cbr = sample_cbr_with_suffix(".CBR");
+        let source = ArchiveLoader::open(cbr.path()).expect("open .CBR");
+        assert!(
+            !source.list_pages().is_empty(),
+            "RarSource dispatch must be case-insensitive for .CBR"
+        );
+    }
+
+    // ------------------------------------------------------------------
+    // RarSource path — magic-byte fallback (unknown extension)
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn spoofed_txt_extension_with_rar_magic_opens_rar_source() {
+        // A file named *.txt whose first bytes are the RAR magic must be
+        // dispatched to RarSource via the magic-byte fallback.
+        let cbr = sample_cbr_with_suffix(".txt");
+        let source = ArchiveLoader::open(cbr.path()).expect("open .txt with rar magic");
+        assert!(
+            !source.list_pages().is_empty(),
+            "magic-byte RAR fallback should yield RarSource pages for .txt with Rar! header"
+        );
+    }
+
+    // ------------------------------------------------------------------
     // UnsupportedFormat path
     // ------------------------------------------------------------------
 
@@ -297,6 +529,27 @@ mod tests {
         assert!(
             err.to_string().contains(&path_str),
             "error message should mention the path"
+        );
+    }
+
+    #[test]
+    fn too_short_file_unknown_extension_returns_unsupported_format() {
+        // A 2-byte file with an unknown extension must result in UnsupportedFormat,
+        // NOT an I/O error — the short-file guard in magic_kind treats
+        // partial reads as "no match" rather than an error.
+        let mut f = tempfile::Builder::new()
+            .suffix(".bin")
+            .tempfile()
+            .expect("tempfile");
+        f.write_all(b"AB").expect("write 2 bytes");
+        f.flush().expect("flush");
+
+        let Err(err) = ArchiveLoader::open(f.path()) else {
+            panic!("expected UnsupportedFormat for a too-short file");
+        };
+        assert!(
+            matches!(err, CoreError::UnsupportedFormat { .. }),
+            "expected UnsupportedFormat, got: {err:?}"
         );
     }
 }
