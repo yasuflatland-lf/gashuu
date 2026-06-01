@@ -139,6 +139,10 @@ pub struct Settings {
     /// Recently opened folders, most-recent first. Capped at `MAX_RECENT_FILES`.
     #[serde(default)]
     pub recent_files: Vec<PathBuf>,
+    /// Set to `true` after the first-run guide has been shown. Default `false` so
+    /// a fresh install shows the guide exactly once.
+    #[serde(default)]
+    pub seen_guide: bool,
 }
 
 fn default_version() -> u32 {
@@ -164,6 +168,7 @@ impl Default for Settings {
             key_bindings: KeyBindings::default(),
             track_recent_files: false,
             recent_files: Vec::new(),
+            seen_guide: false,
         }
     }
 }
@@ -318,6 +323,7 @@ mod tests {
             },
             track_recent_files: true,
             recent_files: vec![PathBuf::from("/a"), PathBuf::from("/b")],
+            seen_guide: true,
         }
     }
 
@@ -619,5 +625,34 @@ mod tests {
         assert!(json.contains("auto"), "serialized form was {json:?}");
         let parsed: SpreadMode = serde_json::from_str("\"auto\"").unwrap();
         assert_eq!(parsed, SpreadMode::Auto);
+    }
+
+    // ── seen_guide tests ──
+
+    #[test]
+    fn seen_guide_defaults_to_false() {
+        assert!(!Settings::default().seen_guide);
+    }
+
+    #[test]
+    fn seen_guide_round_trips() {
+        let s = Settings {
+            seen_guide: true,
+            ..Default::default()
+        };
+        let json = s.to_json().unwrap();
+        let parsed = Settings::from_json(&json).unwrap();
+        assert!(parsed.seen_guide);
+    }
+
+    #[test]
+    fn from_json_missing_seen_guide_defaults_to_false() {
+        // A JSON object that omits `seen_guide` must produce `false` via
+        // `#[serde(default)]`, identical to how `cover_mode`/`fit_mode` were added.
+        let s = Settings::from_json(r#"{"version":1}"#).unwrap();
+        assert!(
+            !s.seen_guide,
+            "seen_guide must default to false when absent from JSON"
+        );
     }
 }
