@@ -90,7 +90,7 @@ if [ "$doc_md_count" -eq 0 ]; then
   fail "no docs/*.md found (docs/ layer is empty)"
 fi
 
-for f in "${file_list[@]}"; do
+for f in "${file_list[@]+"${file_list[@]}"}"; do
   # Fail loudly on unreadable files rather than silently skipping their links.
   if [ ! -r "$f" ]; then
     fail "Cannot read $f"
