@@ -143,7 +143,7 @@ impl CoverController {
     /// now) or fires a rayon worker (miss). Call after the carousel model is built
     /// or refreshed (initial library load + every add/remove).
     pub fn start(&self, ui_weak: slint::Weak<ViewerWindow>, requests: Vec<CoverRequest>) {
-        // Supersede the previous generation and take this one's fresh cancel flag.
+        // 1. Supersede the previous generation and take this one's fresh cancel flag.
         let cancel_flag = self.rotate_cancel();
 
         // 2. Tag this generation so superseded callbacks are dropped.

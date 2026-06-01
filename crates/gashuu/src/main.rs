@@ -1024,7 +1024,7 @@ fn build_carousel_model(ui: &ViewerWindow, library: &Library) -> Rc<VecModel<Car
 /// order, per the `Library` contract). The cover controller resolves each book's
 /// cache key from its path + mtime and either serves a cached cover or generates
 /// one in the background.
-fn cover_requests(library: &gashuu_core::Library) -> Vec<cover_loader::CoverRequest> {
+fn cover_requests(library: &Library) -> Vec<cover_loader::CoverRequest> {
     library
         .books()
         .iter()
