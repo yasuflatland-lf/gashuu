@@ -11,6 +11,7 @@ use gashuu_core::{
 use keymap::{map_key, KeyCommand};
 use slint::{Model, ModelRc, VecModel};
 use std::cell::RefCell;
+use std::path::Path;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering::Relaxed};
 use std::sync::Arc;
@@ -173,7 +174,7 @@ fn main() -> color_eyre::Result<()> {
             });
         }
     };
-    // Wrap so both open handlers can share the single generator closure.
+    // Wrap in Rc so open_and_present can share the closure across both open handlers.
     let start_thumbnails = Rc::new(start_thumbnails);
 
     // Initial paint so rtl/single/status are all initialized before the first
@@ -186,7 +187,7 @@ fn main() -> color_eyre::Result<()> {
         ui.set_show_guide(true);
     }
 
-    // Open Folder button: pick a directory, load it, refresh the view.
+    // Open Folder button: pick a directory, open it, refresh the view, and start thumbnail generation.
     {
         let ui_weak = ui.as_weak();
         let state = Rc::clone(&state);
@@ -200,35 +201,19 @@ fn main() -> color_eyre::Result<()> {
             let Some(dir) = rfd::FileDialog::new().pick_folder() else {
                 return;
             };
-            match state.borrow_mut().open_folder(&dir) {
-                Ok(()) => {
-                    tracing::info!(dir = %dir.display(), "opened folder");
-                    let mut s = settings.borrow_mut();
-                    if s.track_recent_files {
-                        s.push_recent(dir.clone());
-                        if let Err(e) = s.save() {
-                            tracing::error!(error = %e, "failed to save settings");
-                        }
-                    }
-                }
-                Err(e) => {
-                    tracing::error!(error = %e, "failed to open folder");
-                    ui.set_status_text(format!("Error: {e}").into());
-                    return;
-                }
-            }
-            refresh(&ui, &state.borrow(), &viewport);
-            let skipped = state.borrow().last_open_skipped();
-            if skipped > 0 {
-                let base = ui.get_status_text().to_string();
-                ui.set_status_text(format!("{base} \u{2014} {skipped} entries skipped").into());
-            }
-            // Kick off parallel thumbnail generation for the newly opened source.
-            start_thumbnails();
+            open_and_present(
+                &ui,
+                &state,
+                &settings,
+                &viewport,
+                &*start_thumbnails,
+                &dir,
+                "",
+            );
         });
     }
 
-    // Open Archive button: pick a CBZ/ZIP/CBR/RAR file, load it, refresh the view.
+    // Open Archive button: pick a CBZ/ZIP/CBR/RAR file, open it, refresh the view, and start thumbnail generation.
     {
         let ui_weak = ui.as_weak();
         let state = Rc::clone(&state);
@@ -245,34 +230,15 @@ fn main() -> color_eyre::Result<()> {
             else {
                 return;
             };
-            match state.borrow_mut().open_path(&file) {
-                Ok(()) => {
-                    tracing::info!(path = %file.display(), "opened archive");
-                    let mut s = settings.borrow_mut();
-                    if s.track_recent_files {
-                        s.push_recent(file.clone());
-                        if let Err(e) = s.save() {
-                            tracing::error!(error = %e, "failed to save settings");
-                        }
-                    }
-                }
-                Err(e) => {
-                    tracing::error!(error = %e, "failed to open archive");
-                    ui.set_status_text(format!("Error: {e}").into());
-                    return;
-                }
-            }
-            refresh(&ui, &state.borrow(), &viewport);
-            let skipped = state.borrow().last_open_skipped();
-            if skipped > 0 {
-                let base = ui.get_status_text().to_string();
-                ui.set_status_text(
-                    format!("{base} \u{2014} {skipped} entries skipped (zip-slip or oversized)")
-                        .into(),
-                );
-            }
-            // Kick off parallel thumbnail generation for the newly opened source.
-            start_thumbnails();
+            open_and_present(
+                &ui,
+                &state,
+                &settings,
+                &viewport,
+                &*start_thumbnails,
+                &file,
+                " (zip-slip or oversized)",
+            );
         });
     }
 
@@ -649,6 +615,56 @@ fn main() -> color_eyre::Result<()> {
         tracing::error!(error = %e, "failed to save settings on exit");
     }
     Ok(())
+}
+
+/// Open `path`, record it in recent files (when enabled), refresh the view,
+/// surface any skipped-entry count, and launch thumbnail generation. Shared by
+/// the Open Folder and Open Archive handlers so the "open a book" use-case lives
+/// in exactly one place.
+///
+/// Both directories and archives are opened via `ViewerState::open_folder`, which
+/// delegates to `open_path` (dispatching by format through `ArchiveLoader`). Using
+/// `open_folder` preserves the directory-open API path and also keeps the method a
+/// live runtime caller (avoiding a dead-code warning in a binary crate).
+/// `skipped_detail` is appended to the "N entries skipped" status note: `""` for
+/// folders, and for archives the archive-specific skip reasons (zip-slip /
+/// path-traversal entries and entries exceeding the per-entry size ceiling; see
+/// `naming.rs`).
+fn open_and_present(
+    ui: &ViewerWindow,
+    state: &Rc<RefCell<ViewerState>>,
+    settings: &Rc<RefCell<Settings>>,
+    viewport: &Rc<RefCell<ViewportState>>,
+    start_thumbnails: &impl Fn(),
+    path: &Path,
+    skipped_detail: &str, // "" for folders, " (zip-slip or oversized)" for archives
+) {
+    match state.borrow_mut().open_folder(path) {
+        Ok(()) => {
+            tracing::info!(path = %path.display(), "opened source");
+            let mut s = settings.borrow_mut();
+            if s.track_recent_files {
+                s.push_recent(path.to_path_buf());
+                if let Err(e) = s.save() {
+                    tracing::error!(error = %e, "failed to save settings");
+                }
+            }
+        }
+        Err(e) => {
+            tracing::error!(error = %e, "failed to open source");
+            ui.set_status_text(format!("Error: {e}").into());
+            return;
+        }
+    }
+    refresh(ui, &state.borrow(), viewport);
+    let skipped = state.borrow().last_open_skipped();
+    if skipped > 0 {
+        let base = ui.get_status_text().to_string();
+        ui.set_status_text(
+            format!("{base} \u{2014} {skipped} entries skipped{skipped_detail}").into(),
+        );
+    }
+    start_thumbnails();
 }
 
 /// Push the current spread + status into the UI, then re-anchor the viewport to
