@@ -204,7 +204,10 @@ mod tests {
         let mut lib = Library::new();
         assert!(lib.add(folder.join(".")));
         assert_eq!(lib.books().len(), 1);
-        assert_eq!(lib.books()[0].path(), folder.canonicalize().unwrap().as_path());
+        assert_eq!(
+            lib.books()[0].path(),
+            folder.canonicalize().unwrap().as_path()
+        );
         assert_eq!(lib.books()[0].title(), "Series.1997");
     }
 

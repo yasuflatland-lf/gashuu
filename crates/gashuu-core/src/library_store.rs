@@ -174,7 +174,10 @@ mod tests {
         let value = serde_json::json!({"version": 0});
         let migrated = migrate(value, 0);
 
-        assert_eq!(migrated["version"].as_u64(), Some(u64::from(LIBRARY_VERSION)));
+        assert_eq!(
+            migrated["version"].as_u64(),
+            Some(u64::from(LIBRARY_VERSION))
+        );
         assert_eq!(migrated["books"].as_array().unwrap().len(), 0);
     }
 
