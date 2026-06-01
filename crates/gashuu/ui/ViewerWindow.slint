@@ -32,8 +32,11 @@ export component ViewerWindow inherits Window {
     // the page body must NOT change) and with the page to commit on release.
     callback scrub-preview(int);
     callback scrub-commit(int);
-    // Fired whenever the user shows intent (mouse-move / drag). Rust re-arms the
-    // idle timer and sets chrome-shown = true. (Arrow reveal piggybacks on `nav`.)
+    // Fired whenever the user shows intent (mouse-move over the page / scrubber
+    // drag). Rust's `on_reveal_chrome` handler delegates straight back to the
+    // Slint `reveal-chrome-now()` function, which sets chrome-shown and restarts
+    // the idle timer. (Arrow / page-turn keys call `invoke_reveal_chrome_now()`
+    // directly in the `nav` handler, bypassing this callback.)
     callback reveal-chrome();
 
     in property <image> leading-page;
@@ -67,8 +70,10 @@ export component ViewerWindow inherits Window {
 
     public function focus-pages() { fs.focus(); }
 
-    // Re-arm the idle-fade countdown: show the chrome and restart the timer.
-    // Called by Rust on every reveal (mouse-move / arrow / drag).
+    // Re-arm the idle-fade countdown: show the chrome, then stop+restart the timer
+    // so a full interval elapses from THIS reveal (not from whenever it last
+    // started). Called via invoke_reveal_chrome_now() from Rust on every reveal
+    // (mouse-move, arrow / page-turn key, or scrubber drag).
     public function reveal-chrome-now() {
         root.chrome-shown = true;
         idle-timer.running = true;
@@ -140,11 +145,11 @@ export component ViewerWindow inherits Window {
                 vertical-alignment: center;
             }
         }
-        // Viewer stage: the page, a hover detector (reveals chrome on mouse-move),
-        // and the auto-hiding chrome (counter chip + scrubber) stacked on top.
-        // This Rectangle takes the FocusScope's former layout cell in the
-        // VerticalBox; the chrome positions itself with absolute x/y relative
-        // to this Rectangle.
+        // Viewer stage: the page and the auto-hiding chrome (counter chip +
+        // scrubber) stacked on top. PageView's TouchArea reveals the chrome on
+        // pointer movement via its `reveal()` callback. This Rectangle takes the
+        // FocusScope's former layout cell in the VerticalBox; the chrome positions
+        // itself with absolute x/y relative to this Rectangle.
         Rectangle {
             // The FocusScope + PageView are unchanged; only wrapped so the chrome
             // can be absolutely positioned over them.
@@ -193,12 +198,8 @@ export component ViewerWindow inherits Window {
                     begin-pan() => { root.begin-pan(); }
                     pan-to(dx, dy) => { root.pan-to(dx, dy); }
                     viewport-resized(w, h) => { root.viewport-resized(w, h); }
+                    reveal() => { root.reveal-chrome(); }
                 }
-            }
-
-            // Mouse-move reveal detector. Listens only for `moved` to signal intent.
-            hover := TouchArea {
-                moved => { root.reveal-chrome(); }
             }
 
             // Page-counter chip (top-right), part of the auto-hide chrome.
@@ -237,8 +238,10 @@ export component ViewerWindow inherits Window {
                 commit(p) => { root.scrub-commit(p); }
             }
 
-            // Idle fade timer. Re-armed by Rust (stop+start) on every reveal; when
-            // it fires, the chrome hides. interval is the idle timeout.
+            // Idle fade timer. The `running: root.chrome-shown` binding starts it
+            // for any reveal that flips chrome-shown true (via reveal-chrome-now()),
+            // which also does an explicit stop+restart so a full interval elapses
+            // from the latest reveal. When it fires, the chrome hides.
             idle-timer := Timer {
                 interval: 2500ms;
                 running: root.chrome-shown;
