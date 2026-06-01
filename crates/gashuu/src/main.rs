@@ -174,7 +174,7 @@ fn main() -> color_eyre::Result<()> {
             });
         }
     };
-    // Wrap so both open handlers can share the single generator closure.
+    // Wrap in Rc so open_and_present can share the closure across both open handlers.
     let start_thumbnails = Rc::new(start_thumbnails);
 
     // Initial paint so rtl/single/status are all initialized before the first
@@ -622,13 +622,14 @@ fn main() -> color_eyre::Result<()> {
 /// the Open Folder and Open Archive handlers so the "open a book" use-case lives
 /// in exactly one place.
 ///
-/// Both directories and archives are opened via `ViewerState::open_folder`, a
-/// one-line delegate to `open_path` (which dispatches by format through
-/// `ArchiveLoader`); routing through the wrapper keeps `open_folder` a live
-/// runtime caller so it is not flagged as dead code. `skipped_detail` is appended
-/// to the "N entries skipped" status note: `""` for folders, and for archives the
-/// two archive-specific skip reasons (path-traversal / zip-slip, and entries over
-/// the per-entry size ceiling; see `naming.rs`).
+/// Both directories and archives are opened via `ViewerState::open_folder`, which
+/// delegates to `open_path` (dispatching by format through `ArchiveLoader`). Using
+/// `open_folder` preserves the directory-open API path and also keeps the method a
+/// live runtime caller (avoiding a dead-code warning in a binary crate).
+/// `skipped_detail` is appended to the "N entries skipped" status note: `""` for
+/// folders, and for archives the archive-specific skip reasons (zip-slip /
+/// path-traversal entries and entries exceeding the per-entry size ceiling; see
+/// `naming.rs`).
 fn open_and_present(
     ui: &ViewerWindow,
     state: &Rc<RefCell<ViewerState>>,
