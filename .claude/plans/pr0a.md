@@ -81,7 +81,7 @@ Progress: DONE 2026-06-02 - CoreError::Library/NoDataDir added; focused nextest 
 - Modify: `crates/gashuu-core/src/lib.rs`
 - Test: `crates/gashuu-core/src/library.rs` (inline tests)
 
-- [ ] **2.1 Write failing test.** Create `crates/gashuu-core/src/library.rs` with ONLY the test module first so it fails to compile against the not-yet-written `Book`:
+- [x] **2.1 Write failing test.** Create `crates/gashuu-core/src/library.rs` with ONLY the test module first so it fails to compile against the not-yet-written `Book`:
 ```rust
 //! Library domain model: an ordered, de-duplicated shelf of books.
 //!
@@ -118,13 +118,13 @@ mod tests {
     }
 }
 ```
-- [ ] **2.2 Run it (expect FAIL):** `mise exec -- cargo nextest run -p gashuu-core book_derives_title_from_file_stem`
+- [x] **2.2 Run it (expect FAIL):** `mise exec -- cargo nextest run -p gashuu-core book_derives_title_from_file_stem`
   - Expected FAIL: `module 'library' not found` / `cannot find function 'Book' / type 'Book'` — `library.rs` is not yet declared in `lib.rs` and `Book` does not exist.
-- [ ] **2.3 Minimal impl (part A: declare the module).** In `crates/gashuu-core/src/lib.rs`, add a `pub mod library;` declaration. Insert it alphabetically after `pub mod image_ops;`:
+- [x] **2.3 Minimal impl (part A: declare the module).** In `crates/gashuu-core/src/lib.rs`, add a `pub mod library;` declaration. Insert it alphabetically after `pub mod image_ops;`:
 ```rust
 pub mod library;
 ```
-- [ ] **2.4 Minimal impl (part B: write `Book`).** Insert this above the `#[cfg(test)] mod tests` block in `crates/gashuu-core/src/library.rs`:
+- [x] **2.4 Minimal impl (part B: write `Book`).** Insert this above the `#[cfg(test)] mod tests` block in `crates/gashuu-core/src/library.rs`:
 ```rust
 use serde::{Deserialize, Serialize};
 
@@ -177,9 +177,11 @@ impl Book {
     }
 }
 ```
-- [ ] **2.5 Run it (expect PASS):** `mise exec -- cargo nextest run -p gashuu-core book_derives_title`
+- [x] **2.5 Run it (expect PASS):** `mise exec -- cargo nextest run -p gashuu-core book_derives_title`
   - Expected PASS: all three `book_*` tests pass. (`file_stem` on `My Folder Book` yields `My Folder Book`; on `/` yields `None` → lossy path string fallback.)
-- [ ] **2.6 Commit:** `git commit -m "feat(core): add Book type with derived title to library module"`
+- [x] **2.6 Commit:** `git commit -m "feat(core): add Book type with derived title to library module"`
+
+Progress: DONE 2026-06-02 - Book type and library module wiring added; focused nextest passed; title fallback regression covered.
 
 ---
 

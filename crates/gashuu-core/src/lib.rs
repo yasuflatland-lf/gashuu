@@ -7,6 +7,7 @@ pub mod archive_loader;
 pub mod cache;
 pub mod error;
 pub mod image_ops;
+pub mod library;
 pub mod page_source;
 pub mod settings;
 pub mod spread;
