@@ -3,8 +3,8 @@
 // This PR freezes the public contract (struct + component + callbacks + the
 // focus-self() recovery function) and renders only a placeholder / empty
 // state on the DESIGN.md stage. PR-C fills the real cover-flow rendering from
-// the Library model; PR-L fills the "add books" action. Styling references
-// Theme tokens only — NO inline hex (see DESIGN.md rule 2).
+// the Library model; PR-L wired the "add books" action (toolbar + CTA).
+// Styling references Theme tokens only — NO inline hex (see DESIGN.md rule 2).
 //
 // Focus: the component owns its own FocusScope. `focus-self()` restores
 // keyboard focus to it (the carousel counterpart of ViewerWindow's
@@ -89,9 +89,9 @@ export component Carousel inherits Rectangle {
         }
 
         // ── Empty state (placeholder) ───────────────────────────────────────
-        // PR-C replaces this with the cover-flow row built from `items`; PR-L
-        // wires the CTA to the rfd picker. For PR-0b it is a static, centered
-        // call-to-action on a sunken panel (DESIGN.md "Empty Library").
+        // The CTA button fires add-files() via a TouchArea (wired in PR-L). PR-C
+        // replaces this with the cover-flow row built from `items`. For PR-0b it
+        // is a centered call-to-action on a sunken panel (DESIGN.md "Empty Library").
         Rectangle {
             width: 360px;
             height: 200px;

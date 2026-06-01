@@ -136,29 +136,7 @@ fn main() -> color_eyre::Result<()> {
             else {
                 return;
             };
-            let added = add_paths(&mut library.borrow_mut(), files);
-            if added == 0 {
-                // Everything picked was already in the library: nothing to persist or rebuild.
-                ui.set_status_text("Already in library \u{2014} no new books added.".into());
-                ui.invoke_focus_carousel();
-                return;
-            }
-            // Rebuild from the in-memory state even if the save fails, so the newly added
-            // books are visible; the save error is then surfaced (not just traced).
-            let save_result = library.borrow().save();
-            ui.set_carousel_items(build_carousel_model(&library.borrow()));
-            match save_result {
-                Err(e) => {
-                    tracing::error!(error = %e, "failed to save library after add-files");
-                    ui.set_status_text(
-                        format!("Added {added} book(s), but could not save library: {e}").into(),
-                    );
-                }
-                Ok(()) => {
-                    ui.set_status_text(format!("Added {added} book(s)").into());
-                }
-            }
-            ui.invoke_focus_carousel();
+            add_books_and_refresh(&ui, &library, files, "add-files");
         });
     }
 
@@ -175,29 +153,7 @@ fn main() -> color_eyre::Result<()> {
             let Some(folder) = rfd::FileDialog::new().pick_folder() else {
                 return;
             };
-            let added = add_paths(&mut library.borrow_mut(), vec![folder]);
-            if added == 0 {
-                // Everything picked was already in the library: nothing to persist or rebuild.
-                ui.set_status_text("Already in library \u{2014} no new books added.".into());
-                ui.invoke_focus_carousel();
-                return;
-            }
-            // Rebuild from the in-memory state even if the save fails, so the newly added
-            // books are visible; the save error is then surfaced (not just traced).
-            let save_result = library.borrow().save();
-            ui.set_carousel_items(build_carousel_model(&library.borrow()));
-            match save_result {
-                Err(e) => {
-                    tracing::error!(error = %e, "failed to save library after add-folder");
-                    ui.set_status_text(
-                        format!("Added {added} book(s), but could not save library: {e}").into(),
-                    );
-                }
-                Ok(()) => {
-                    ui.set_status_text(format!("Added {added} book(s)").into());
-                }
-            }
-            ui.invoke_focus_carousel();
+            add_books_and_refresh(&ui, &library, vec![folder], "add-folder");
         });
     }
 
@@ -1057,9 +1013,47 @@ fn reconcile_settings(state: &ViewerState, viewport: &ViewportState, settings: &
 
 /// Add every path in `paths` to `lib`, skipping duplicates.
 /// Returns the count of books actually inserted (new books only).
-/// Dedup is handled by `Library::add` (returns `false` when already present).
+/// Dedup is handled by `Library::add` (returns `false` when already present),
+/// covering both books already in the library and duplicates within `paths`.
 fn add_paths(lib: &mut Library, paths: Vec<std::path::PathBuf>) -> usize {
     paths.into_iter().filter(|p| lib.add(p.clone())).count()
+}
+
+/// Add `paths` to the library, persist, rebuild the carousel, and surface the
+/// outcome on the status line, restoring carousel focus in every case.
+///
+/// Shared by the Add Files and Add Folder handlers; `op` distinguishes the two
+/// only in the save-failure trace message. When nothing new is added there is
+/// nothing to persist or rebuild, so it short-circuits after the status update.
+fn add_books_and_refresh(
+    ui: &ViewerWindow,
+    library: &Rc<RefCell<Library>>,
+    paths: Vec<std::path::PathBuf>,
+    op: &'static str,
+) {
+    let added = add_paths(&mut library.borrow_mut(), paths);
+    if added == 0 {
+        // Everything picked was already in the library: nothing to persist or rebuild.
+        ui.set_status_text("Already in library \u{2014} no new books added.".into());
+        ui.invoke_focus_carousel();
+        return;
+    }
+    // Rebuild from the in-memory state even if the save fails, so the newly added
+    // books are visible; the save error is then surfaced (not just traced).
+    let save_result = library.borrow().save();
+    ui.set_carousel_items(build_carousel_model(&library.borrow()));
+    match save_result {
+        Err(e) => {
+            tracing::error!(error = %e, "failed to save library after {op}");
+            ui.set_status_text(
+                format!("Added {added} book(s), but could not save library: {e}").into(),
+            );
+        }
+        Ok(()) => {
+            ui.set_status_text(format!("Added {added} book(s)").into());
+        }
+    }
+    ui.invoke_focus_carousel();
 }
 
 /// Rebuild the carousel model from the current library state.
