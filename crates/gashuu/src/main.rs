@@ -158,6 +158,85 @@ fn main() -> color_eyre::Result<()> {
         });
     }
 
+    // Reveal the auto-hiding chrome and re-arm its idle-fade countdown. Fired on
+    // mouse-move over the page and on a scrubber drag (arrow turns reveal via the
+    // `nav` handler below).
+    {
+        let ui_weak = ui.as_weak();
+        ui.on_reveal_chrome(move || {
+            let Some(ui) = ui_weak.upgrade() else {
+                return;
+            };
+            ui.invoke_reveal_chrome_now();
+        });
+    }
+
+    // Drag preview: update ONLY the popover thumbnails + counter for the page
+    // under the knob. The page body is unchanged until commit (spec decision 11).
+    // Thumbnails are pulled from the EXISTING PR8a VecModel<ThumbnailItem> by page
+    // index — no new decode, UI thread only (the Rc model is never crossed).
+    {
+        let ui_weak = ui.as_weak();
+        let state = Rc::clone(&state);
+        ui.on_scrub_preview(move |page| {
+            let Some(ui) = ui_weak.upgrade() else {
+                return;
+            };
+            let total = state.borrow().page_count();
+            if total == 0 {
+                return;
+            }
+            let lead = (page.max(0) as usize).min(total - 1);
+            // Decide whether this previewed spread is double using the SAME layout
+            // resolution the body uses, so the popover shows 1 vs 2 thumbs
+            // correctly (the pure helper carries no layout; ViewerState owns it).
+            let is_double = state.borrow().preview_is_double(lead);
+            ui.set_scrubber_double(is_double);
+            // Trailing page of the previewed spread (clamped to the last page),
+            // present only for a double spread.
+            let trail = if is_double {
+                Some((lead + 1).min(total - 1))
+            } else {
+                None
+            };
+            // Pull thumbnail images from the existing model (no decode).
+            let model = ui.get_thumbnails();
+            ui.set_scrubber_preview_a(thumb_image_at(&model, lead));
+            ui.set_scrubber_preview_b(match trail {
+                Some(trail) => thumb_image_at(&model, trail),
+                None => slint::Image::default(),
+            });
+            // Update the counter to the previewed page (1-based).
+            let counter = match trail {
+                Some(trail) => format!("{}\u{2013}{} / {}", lead + 1, trail + 1, total),
+                None => format!("{} / {}", lead + 1, total),
+            };
+            ui.set_page_counter_text(counter.into());
+            // Keep the chrome visible during the drag.
+            ui.invoke_reveal_chrome_now();
+        });
+    }
+
+    // Commit on release: jump to the spread containing the released page, then
+    // refresh (which re-seeds the scrubber + counter to the committed spread).
+    {
+        let ui_weak = ui.as_weak();
+        let state = Rc::clone(&state);
+        let viewport = Rc::clone(&viewport);
+        ui.on_scrub_commit(move |page| {
+            let Some(ui) = ui_weak.upgrade() else {
+                return;
+            };
+            // borrow_mut() temporary drops at the `;` before refresh borrows state.
+            // Refresh unconditionally — unlike the nav handler, a scrub commit always
+            // re-seeds the scrubber knob + counter to the committed spread, even when
+            // the resolved leading equals the current index (a no-op jump).
+            let _moved = state.borrow_mut().jump_to(page.max(0) as usize);
+            refresh(&ui, &state.borrow(), &viewport);
+            ui.invoke_focus_pages();
+        });
+    }
+
     // Toggle the thumbnail strip's visibility. No refresh needed: showing/hiding
     // the strip changes PageView's height, which fires the existing
     // `viewport-resized` wiring automatically.
@@ -442,6 +521,8 @@ fn main() -> color_eyre::Result<()> {
                         moved,
                         "page turn"
                     );
+                    // Reveal the auto-hiding chrome on a page-turn key (spec §5).
+                    ui.invoke_reveal_chrome_now();
                 }
                 // Runtime state is the single source of truth for these modes;
                 // `reconcile_settings` mirrors them into `Settings` at the next
@@ -685,6 +766,33 @@ fn refresh(ui: &ViewerWindow, state: &ViewerState, viewport: &Rc<RefCell<Viewpor
     // Keep the thumbnail-strip highlight in sync with the current spread's
     // leading page after every navigation/refresh.
     ui.set_current_index(state.index() as i32);
+
+    // Seed the scrubber + page-counter chrome from the current spread. The
+    // counter uses 1-based numbers; `double` mirrors whether the current spread
+    // has a trailing page. These are display-only and do NOT change the page body.
+    let total = state.page_count();
+    let current_1based = if total == 0 { 0 } else { state.index() + 1 };
+    ui.set_scrubber_total_pages(total as i32);
+    ui.set_scrubber_current_page(current_1based as i32);
+    // `preview_is_double` resolves the trailing page using the SAME layout as the
+    // body (and is decode-free), so it is the exact "current spread has a trailing
+    // page" predicate without re-running `current_spread`'s decode.
+    let is_double = state.preview_is_double(state.index());
+    ui.set_scrubber_double(is_double);
+    // Counter text: "X / N" single, "X\u{2013}Y / N" double, "0 / 0" when empty.
+    let counter = if total == 0 {
+        "0 / 0".to_string()
+    } else if is_double {
+        format!(
+            "{}\u{2013}{} / {}",
+            state.index() + 1,
+            state.index() + 2,
+            total
+        )
+    } else {
+        format!("{} / {}", state.index() + 1, total)
+    };
+    ui.set_page_counter_text(counter.into());
 }
 
 /// Push the viewport's render geometry (content_x/y/w/h, logical px as `f32`)
@@ -722,6 +830,29 @@ fn to_slint_image(decoded: &DecodedImage) -> slint::Image {
         slint::SharedPixelBuffer::<slint::Rgba8Pixel>::new(decoded.width(), decoded.height());
     buffer.make_mut_bytes().copy_from_slice(decoded.rgba());
     slint::Image::from_rgba8(buffer)
+}
+
+/// Fetch the thumbnail image for a 0-based page from the strip's existing
+/// `VecModel<ThumbnailItem>` (the PR8a model). Returns the cell's image when the
+/// row exists and is loaded; otherwise a default (empty) image. UI-thread only —
+/// the `Rc` model is never crossed between threads. No new decode is performed.
+fn thumb_image_at(model: &slint::ModelRc<ThumbnailItem>, page: usize) -> slint::Image {
+    use slint::Model;
+    match model.row_data(page) {
+        Some(item) if item.loaded => item.image,
+        Some(_) => slint::Image::default(), // still loading: normal, stay silent
+        None => {
+            // `page` is outside the thumbnail model — strip and page_count are out
+            // of sync (the model is built to exactly page_count rows). Not fatal:
+            // show a blank preview, but log so the desync is diagnosable.
+            tracing::warn!(
+                page,
+                row_count = model.row_count(),
+                "thumb_image_at: page outside thumbnail model (strip/page_count desync)"
+            );
+            slint::Image::default()
+        }
+    }
 }
 
 /// Concise key-bindings reference shown read-only in the settings dialog. Keep in

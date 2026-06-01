@@ -32,6 +32,9 @@ export global Theme {
     out property <color> text-dim: #7c8bab;
     out property <color> text-faint: #67748f;
 
+    // ── Shadows ───────────────────────────────────────────────────────────────
+    out property <color> shadow-popover: #00000080;   // 50%-black drop shadow for floating popovers (PR-S)
+
     // ── Spacing (8px base, denser sub-steps for chrome) ───────────────────────
     out property <length> space-xxs: 4px;
     out property <length> space-xs: 6px;
@@ -49,9 +52,14 @@ export global Theme {
     out property <length> radius-lg: 10px;
     out property <length> radius-pill: 9999px;
 
+    // ── Component sizes (PR-S scrubber) ───────────────────────────────────────
+    out property <length> scrubber-track-height: 6px;
+    out property <length> scrubber-knob-size: 16px;
+
     // ── Typography sizes (system font; no custom typeface) ────────────────────
     out property <length> font-title: 15px;
     out property <length> font-body: 13px;
     out property <length> font-label: 12px;
     out property <length> font-micro: 11px;
+    out property <length> font-numeric: 13px;   // page counters (tabular figures) (PR-S)
 }

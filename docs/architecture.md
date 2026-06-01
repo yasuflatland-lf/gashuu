@@ -152,6 +152,15 @@ NEXT open (the dialog's cache/preload edits would otherwise only take effect aft
 the fields are seeded once at `from_settings` and `set_source` reads ViewerState's own fields, not
 live `Settings`).
 
+PR-S added two pure scrubber-support helpers:
+
+- `scrub_fraction_to_page(fraction, page_count, rtl)` — pure, total, RTL-aware mapping of a
+  `0..1` knob fraction to a raw 0-based page index (clamped, non-finite-safe); the unit-tested
+  authoritative spec that is mirrored by `Scrubber.slint`'s `drag-page` expression.
+- `preview_is_double(page)` — returns whether a previewed page would land on a 2-page spread
+  (using the same layout resolution the body uses) WITHOUT advancing the index; used by the
+  scrubber preview to choose 1 vs 2 popover thumbnails.
+
 ### ViewportState
 
 `viewport.rs`. UI-layer mutable zoom/pan/fit + viewport size; delegates ALL clamping to core pure
@@ -205,13 +214,30 @@ bookkeeping inline.
 **`FirstRunGuide.slint`** (PR8b, NEW): dismissable once-only overlay; a local `GuideLine`
 component dedupes the key-reference rows.
 
+**`Theme.slint`** (PR-S, NEW): a single Slint `global Theme` that centralises all visual design
+tokens — colors, corner radii, spacing, font sizes, component sizes, and shadow colors —
+sourced from `/DESIGN.md`; referenced by the new viewer chrome so inline hex literals do not
+proliferate across `.slint` files.
+
+**`PageView.slint`**: the page canvas; hosts pan/zoom via a single `TouchArea`. Predates PR-S.
+PR-S added a `reveal()` callback, fired on `changed mouse-x` / `changed mouse-y` (pointer-move),
+which triggers the auto-hiding viewer chrome.
+
+**`Scrubber.slint`** (PR-S, NEW): bottom auto-hiding page-scrubber with a drag-time thumbnail
+preview popover. Frozen public surface: `in` properties `current-page` / `total-pages` / `rtl` /
+`double` / `preview-a` / `preview-b` / `chrome-shown`; callbacks `preview(int)` / `commit(int)`.
+Drag fires `preview` only; pointer-release fires `commit`.
+
 **`ViewerWindow.slint`**: extended in PR8b with the two `if root.show-X : Component` overlays
 (last children = front), a "Settings…" toolbar button, the in/in-out properties + setter
 callbacks, and a FocusScope key-guard. `main.rs` gained the dialog/guide wiring + 8 enum↔index
 helper fns + `KEY_BINDINGS_HELP`. Extended in PR-0b with a two-screen model: `in property <int>
-screen` gates the Library `Carousel` (screen 0) vs the existing Viewer body (screen 1) via
+screen` gates the Library `Carousel` (screen 0) vs the Viewer body (screen 1) via
 `visible: root.screen == N` (not `if` — see [patterns.md](patterns.md) for the Slint id-scoping
-reason). Settings/Guide overlays remain viewer-scoped.
+reason); Settings/Guide overlays remain viewer-scoped. Extended again in PR-S to mount the
+`Scrubber` + a top-right page-counter chip as auto-hiding chrome inside the screen-1 viewer,
+driven by a `chrome-shown` bool + an idle `Timer`; chrome is revealed on pointer-move (via
+`PageView.reveal()`), arrow-key presses, and scrubber drag.
 
 ### rfd file/folder picker
 

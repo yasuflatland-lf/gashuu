@@ -25,6 +25,11 @@ spreads, right-to-left binding, zoom/pan, a thumbnail strip, and persistent sett
 - **Thumbnail strip** — previews of every page, generated in parallel so the strip fills
   in while you read. Click a thumbnail to jump; the current page is highlighted; a
   thumbnail that fails to generate shows a red ✕.
+- **Page scrubber & counter** — a bottom scrub bar and a top-right page-counter chip
+  appear on mouse-move, arrow-key press, or scrubber drag, then fade after idle. Drag the
+  knob to scrub; a thumbnail preview (one or two pages for single/double spreads) pops up
+  during the drag and the page only changes on release. RTL-aware: in manga mode dragging
+  left advances pages.
 - **Settings dialog & first-run guide** — change every active option from the toolbar
   without hand-editing config, and a one-time welcome overlay summarises the controls.
 - **Safe decoding** — oversized images and decompression bombs are rejected before
@@ -77,6 +82,11 @@ Open content from the toolbar — **Open Folder…** (PNG/JPG/JPEG) or **Open Ar
 
 Arrows follow the reading direction (LTR: `→` = next; RTL: `←` = next). `Space` and
 `Backspace` are always next/previous in reading order. Mode changes are saved on exit.
+
+The **page scrubber** (bottom bar) and **page-counter chip** (top-right) appear on
+mouse-move, arrow-key press, or scrubber drag, then fade after idle. Drag the knob to
+preview pages without turning; the page changes on release. In RTL mode dragging left
+advances pages.
 
 **Zoom & fit** (direction-independent)
 

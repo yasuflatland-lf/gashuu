@@ -25,6 +25,12 @@ export component PageView inherits Rectangle {
     callback begin-pan();
     callback pan-to(length, length);             // cumulative delta from the press point
     callback viewport-resized(length, length);   // width, height
+    // Fired on ANY pointer movement over the page (pressed or not). The viewer
+    // uses this to reveal its auto-hiding chrome. `changed mouse-x/mouse-y` fire
+    // on unpressed hover (mouse-x/y update before the press check in Slint), so
+    // this works where a `moved` handler — which fires only while pressed — would
+    // not, and without a second TouchArea that would steal the pan press.
+    callback reveal();
 
     background: #000000;
     clip: true;
@@ -77,5 +83,7 @@ export component PageView inherits Rectangle {
                 root.pan-to(self.mouse-x - self.pressed-x, self.mouse-y - self.pressed-y);
             }
         }
+        changed mouse-x => { root.reveal(); }
+        changed mouse-y => { root.reveal(); }
     }
 }
