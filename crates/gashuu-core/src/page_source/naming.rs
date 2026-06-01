@@ -89,6 +89,27 @@ pub(crate) fn has_image_ext(path: &std::path::Path) -> bool {
         })
 }
 
+/// Resolve a relative, traversal-free path or reject it. Returns `None` when the
+/// entry name is absolute, has a root/prefix component, or contains any `..`
+/// component (path traversal). Mirrors `zip::read::ZipFile::enclosed_name`
+/// semantics so RAR entries get the same zip-slip protection as ZIP entries.
+pub(crate) fn enclosed_name(path: &std::path::Path) -> Option<std::path::PathBuf> {
+    use std::path::Component;
+    if path.is_absolute() {
+        return None;
+    }
+    let mut out = std::path::PathBuf::new();
+    for comp in path.components() {
+        match comp {
+            Component::Normal(p) => out.push(p),
+            Component::CurDir => {}
+            Component::ParentDir => return None,
+            Component::RootDir | Component::Prefix(_) => return None,
+        }
+    }
+    Some(out)
+}
+
 #[cfg(test)]
 mod natural_cmp_tests {
     use super::natural_cmp;
@@ -155,5 +176,42 @@ mod image_ext_tests {
         assert!(!has_image_ext(Path::new("notes.txt")));
         assert!(!has_image_ext(Path::new("archive.zip")));
         assert!(!has_image_ext(Path::new("noextension")));
+    }
+}
+
+#[cfg(test)]
+mod enclosed_name_tests {
+    use super::enclosed_name;
+    use std::path::{Path, PathBuf};
+
+    #[test]
+    fn nested_relative_path_is_allowed() {
+        assert_eq!(
+            enclosed_name(Path::new("a/b.png")),
+            Some(PathBuf::from("a/b.png"))
+        );
+    }
+
+    #[test]
+    fn cur_dir_component_is_stripped() {
+        assert_eq!(
+            enclosed_name(Path::new("./a.png")),
+            Some(PathBuf::from("a.png"))
+        );
+    }
+
+    #[test]
+    fn parent_dir_traversal_is_rejected() {
+        assert_eq!(enclosed_name(Path::new("../evil.png")), None);
+    }
+
+    #[test]
+    fn absolute_path_is_rejected() {
+        assert_eq!(enclosed_name(Path::new("/abs/x.png")), None);
+    }
+
+    #[test]
+    fn interior_parent_dir_is_rejected() {
+        assert_eq!(enclosed_name(Path::new("a/../b.png")), None);
     }
 }
