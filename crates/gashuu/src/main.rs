@@ -125,11 +125,15 @@ fn main() -> color_eyre::Result<()> {
         });
     }
 
-    // Open the settings dialog: push the current persisted values into the
-    // dialog's in-out properties, then show it. A single immutable borrow of
-    // `settings` covers all reads (avoids a double-borrow).
+    // Open the settings dialog: push the current values into the dialog's in-out
+    // properties, then show it. Display modes are read from the RUNTIME source of
+    // truth (`ViewerState` for direction/spread/cover, `ViewportState` for fit) so
+    // the dialog can never show a stale value; cache/preload/track come from
+    // `Settings`. `state`, `settings`, and `viewport` are distinct RefCells, so the
+    // named borrows `s`/`st` and the temporary `viewport.borrow()` cannot conflict.
     {
         let ui_weak = ui.as_weak();
+        let state = Rc::clone(&state);
         let settings = Rc::clone(&settings);
         let viewport = Rc::clone(&viewport);
         ui.on_open_settings(move || {
@@ -137,12 +141,11 @@ fn main() -> color_eyre::Result<()> {
                 return;
             };
             let s = settings.borrow();
-            ui.set_reading_direction_index(reading_direction_to_index(s.reading_direction));
-            ui.set_spread_mode_index(spread_mode_to_index(s.spread_mode));
-            ui.set_cover_mode_index(cover_mode_to_index(s.cover_mode));
-            // Fit mode is owned by the viewport at runtime; the persisted value in
-            // `settings` mirrors it (kept in sync by the fit handlers), so read it
-            // from the live viewport to be authoritative.
+            let st = state.borrow();
+            ui.set_reading_direction_index(reading_direction_to_index(st.reading_direction()));
+            ui.set_spread_mode_index(spread_mode_to_index(st.spread_mode()));
+            ui.set_cover_mode_index(cover_mode_to_index(st.cover_mode()));
+            // Fit mode is owned by the viewport at runtime.
             ui.set_fit_mode_index(fit_mode_to_index(viewport.borrow().fit_mode()));
             ui.set_cache_size(s.cache_size as i32);
             ui.set_preload_pages(s.preload_pages as i32);
@@ -152,16 +155,25 @@ fn main() -> color_eyre::Result<()> {
         });
     }
 
-    // Close the settings dialog: hide it, persist settings, then restore focus to
-    // the page area so keyboard navigation keeps working.
+    // Close the settings dialog: hide it, reconcile runtime modes into Settings,
+    // persist, then restore focus to the page area so keyboard navigation keeps
+    // working. The `reconcile_settings` call's `settings.borrow_mut()` drops at its
+    // `;`, so `save()`'s fresh `settings.borrow()` cannot double-borrow.
     {
         let ui_weak = ui.as_weak();
+        let state = Rc::clone(&state);
         let settings = Rc::clone(&settings);
+        let viewport = Rc::clone(&viewport);
         ui.on_close_settings(move || {
             let Some(ui) = ui_weak.upgrade() else {
                 return;
             };
             ui.set_show_settings(false);
+            reconcile_settings(
+                &state.borrow(),
+                &viewport.borrow(),
+                &mut settings.borrow_mut(),
+            );
             if let Err(e) = settings.borrow().save() {
                 tracing::error!(error = %e, "failed to save settings from dialog");
                 ui.set_status_text(format!("Could not save settings: {e}").into());
@@ -199,15 +211,15 @@ fn main() -> color_eyre::Result<()> {
     {
         let ui_weak = ui.as_weak();
         let state = Rc::clone(&state);
-        let settings = Rc::clone(&settings);
         let viewport = Rc::clone(&viewport);
         ui.on_set_reading_direction(move |i| {
             let Some(ui) = ui_weak.upgrade() else {
                 return;
             };
             let dir = index_to_reading_direction(i);
+            // Runtime state is the single source of truth; `reconcile_settings`
+            // mirrors it into `Settings` at the next save.
             if state.borrow_mut().set_reading_direction(dir) {
-                settings.borrow_mut().reading_direction = dir;
                 refresh(&ui, &state.borrow(), &viewport);
             }
         });
@@ -215,15 +227,15 @@ fn main() -> color_eyre::Result<()> {
     {
         let ui_weak = ui.as_weak();
         let state = Rc::clone(&state);
-        let settings = Rc::clone(&settings);
         let viewport = Rc::clone(&viewport);
         ui.on_set_spread_mode(move |i| {
             let Some(ui) = ui_weak.upgrade() else {
                 return;
             };
             let mode = index_to_spread_mode(i);
+            // Runtime state is the single source of truth; `reconcile_settings`
+            // mirrors it into `Settings` at the next save.
             if state.borrow_mut().set_spread_mode(mode) {
-                settings.borrow_mut().spread_mode = mode;
                 refresh(&ui, &state.borrow(), &viewport);
             }
         });
@@ -231,15 +243,15 @@ fn main() -> color_eyre::Result<()> {
     {
         let ui_weak = ui.as_weak();
         let state = Rc::clone(&state);
-        let settings = Rc::clone(&settings);
         let viewport = Rc::clone(&viewport);
         ui.on_set_cover_mode(move |i| {
             let Some(ui) = ui_weak.upgrade() else {
                 return;
             };
             let mode = index_to_cover_mode(i);
+            // Runtime state is the single source of truth; `reconcile_settings`
+            // mirrors it into `Settings` at the next save.
             if state.borrow_mut().set_cover_mode(mode) {
-                settings.borrow_mut().cover_mode = mode;
                 refresh(&ui, &state.borrow(), &viewport);
             }
         });
@@ -247,7 +259,6 @@ fn main() -> color_eyre::Result<()> {
     {
         let ui_weak = ui.as_weak();
         let state = Rc::clone(&state);
-        let settings = Rc::clone(&settings);
         let viewport = Rc::clone(&viewport);
         ui.on_set_fit_mode(move |i| {
             let Some(ui) = ui_weak.upgrade() else {
@@ -257,9 +268,10 @@ fn main() -> color_eyre::Result<()> {
             // Equality guard (the viewport setter is not idempotent-by-return).
             // Compare in one borrow, mutate in a separate `borrow_mut()` that
             // drops at the `;`, then `refresh` (which borrows viewport internally).
+            // The viewport owns `fit_mode` at runtime; `reconcile_settings`
+            // mirrors it into `Settings` at the next save.
             if viewport.borrow().fit_mode() != mode {
                 viewport.borrow_mut().set_fit(mode);
-                settings.borrow_mut().fit_mode = mode;
                 refresh(&ui, &state.borrow(), &viewport);
             }
         });
@@ -359,7 +371,6 @@ fn main() -> color_eyre::Result<()> {
     {
         let ui_weak = ui.as_weak();
         let state = Rc::clone(&state);
-        let settings = Rc::clone(&settings);
         let viewport = Rc::clone(&viewport);
         ui.on_nav(move |token| {
             let Some(ui) = ui_weak.upgrade() else {
@@ -385,27 +396,27 @@ fn main() -> color_eyre::Result<()> {
                         "page turn"
                     );
                 }
+                // Runtime state is the single source of truth for these modes;
+                // `reconcile_settings` mirrors them into `Settings` at the next
+                // save (no per-key Settings write).
                 KeyCommand::ToggleSpread => {
                     if state.borrow_mut().toggle_spread() {
-                        settings.borrow_mut().spread_mode = state.borrow().spread_mode();
                         refresh(&ui, &state.borrow(), &viewport);
                     }
                 }
                 KeyCommand::ToggleReadingDirection => {
                     if state.borrow_mut().toggle_reading_direction() {
-                        settings.borrow_mut().reading_direction =
-                            state.borrow().reading_direction();
                         refresh(&ui, &state.borrow(), &viewport);
                     }
                 }
                 KeyCommand::ToggleCover => {
                     if state.borrow_mut().toggle_cover() {
-                        settings.borrow_mut().cover_mode = state.borrow().cover_mode();
                         refresh(&ui, &state.borrow(), &viewport);
                     }
                 }
-                // Zoom/fit commands mutate `ViewportState`, then push geometry;
-                // `fit_mode` is reflected into `Settings` below (zoom/pan stay
+                // Zoom/fit commands mutate `ViewportState`, then push geometry.
+                // The viewport owns `fit_mode` at runtime; `reconcile_settings`
+                // mirrors it into `Settings` at the next save (zoom/pan stay
                 // session-only). Each mutates in its own statement, then applies
                 // geometry with a fresh immutable borrow (never hold borrow_mut
                 // across apply).
@@ -421,17 +432,15 @@ fn main() -> color_eyre::Result<()> {
                     viewport.borrow_mut().reset();
                     apply_viewport(&ui, &viewport.borrow());
                 }
-                // Fit changes reset zoom + re-center; reflect the new fit_mode into
-                // the in-memory Settings so save-on-exit persists it (zoom/pan are
+                // Fit changes reset zoom + re-center. The viewport owns `fit_mode`;
+                // `reconcile_settings` persists it at the next save (zoom/pan are
                 // NOT persisted — session-only).
                 KeyCommand::FitActual => {
                     viewport.borrow_mut().set_fit(FitMode::Actual);
-                    settings.borrow_mut().fit_mode = viewport.borrow().fit_mode();
                     apply_viewport(&ui, &viewport.borrow());
                 }
                 KeyCommand::CycleFit => {
                     viewport.borrow_mut().cycle_fit();
-                    settings.borrow_mut().fit_mode = viewport.borrow().fit_mode();
                     apply_viewport(&ui, &viewport.borrow());
                 }
                 // Toggle the thumbnail strip. No refresh needed: the strip's
@@ -462,8 +471,15 @@ fn main() -> color_eyre::Result<()> {
     }
 
     ui.run()?;
-    // Persist settings on exit so even a first run writes a file the user can
-    // hand-edit. Save failure is logged, not fatal.
+    // Reconcile runtime display modes into Settings, then persist on exit so even a
+    // first run writes a file the user can hand-edit. The `reconcile_settings`
+    // call's `settings.borrow_mut()` drops at the `;`, so `save()`'s fresh
+    // `settings.borrow()` cannot double-borrow. Save failure is logged, not fatal.
+    reconcile_settings(
+        &state.borrow(),
+        &viewport.borrow(),
+        &mut settings.borrow_mut(),
+    );
     if let Err(e) = settings.borrow().save() {
         tracing::error!(error = %e, "failed to save settings on exit");
     }
@@ -496,14 +512,24 @@ fn open_and_present(
     path: &Path,
     skipped_detail: &str, // "" for folders, " (zip-slip or oversized)" for archives
 ) {
-    match state.borrow_mut().open_folder(path) {
+    // Bind the result first so the `state.borrow_mut()` temporary drops before the
+    // `Ok` arm reads `state` again (a borrow held across the match would
+    // double-borrow-panic at the `reconcile_settings(&state.borrow(), ..)` below).
+    let opened = state.borrow_mut().open_folder(path);
+    match opened {
         Ok(()) => {
             tracing::info!(path = %path.display(), "opened source");
             let mut s = settings.borrow_mut();
             if s.track_recent_files {
+                // Reconcile runtime display modes into Settings just before this
+                // open-time save (the only save on this path), reusing the mutable
+                // borrow `s`. `state`/`viewport` are distinct RefCells, so their
+                // immutable borrows can't conflict with `s` (and the `borrow_mut()`
+                // from `open_folder` above already dropped via the `opened` binding).
+                reconcile_settings(&state.borrow(), &viewport.borrow(), &mut s);
                 s.push_recent(path.to_path_buf());
                 if let Err(e) = s.save() {
-                    tracing::error!(error = %e, "failed to save settings");
+                    tracing::error!(error = %e, "failed to save settings on open");
                 }
             }
         }
@@ -715,6 +741,18 @@ fn index_to_fit_mode(i: i32) -> FitMode {
     }
 }
 
+/// Copy the runtime-owned display settings into the persisted `Settings` just
+/// before saving. This is the SINGLE place `reading_direction`, `spread_mode`,
+/// `cover_mode`, and `fit_mode` are written back to `Settings`, so a new
+/// mode-mutation site can never "forget to mirror" — it only changes runtime
+/// state, and the next save reconciles automatically.
+fn reconcile_settings(state: &ViewerState, viewport: &ViewportState, settings: &mut Settings) {
+    settings.reading_direction = state.reading_direction();
+    settings.spread_mode = state.spread_mode();
+    settings.cover_mode = state.cover_mode();
+    settings.fit_mode = viewport.fit_mode();
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -755,5 +793,42 @@ mod tests {
             assert_eq!(index_to_cover_mode(bad), CoverMode::Standalone);
             assert_eq!(index_to_fit_mode(bad), FitMode::Whole);
         }
+    }
+
+    #[test]
+    fn reconcile_writes_runtime_modes_into_settings() {
+        // Runtime state is the single source of truth: set the three ViewerState
+        // modes and the viewport's fit to NON-default values...
+        let mut state = ViewerState::new();
+        let _ = state.set_reading_direction(ReadingDirection::Rtl);
+        let _ = state.set_spread_mode(SpreadMode::Double);
+        let _ = state.set_cover_mode(CoverMode::Paired);
+        let mut viewport = ViewportState::from_settings(&Settings::default());
+        viewport.set_fit(FitMode::Actual);
+
+        // ...start from a Settings whose NON-mirrored fields hold NON-default values
+        // (use struct-update syntax to avoid clippy::field_reassign_with_default),
+        // so we can prove reconcile touches ONLY the four display-mode fields.
+        let mut settings = Settings {
+            cache_size: 99,
+            preload_pages: 7,
+            track_recent_files: true,
+            seen_guide: true,
+            ..Settings::default()
+        };
+        reconcile_settings(&state, &viewport, &mut settings);
+
+        // The four mirrored fields now match the runtime (defaults Ltr/Single/
+        // Standalone/Whole all DIFFER from the values set above, so this can't pass
+        // vacuously)...
+        assert_eq!(settings.reading_direction, ReadingDirection::Rtl);
+        assert_eq!(settings.spread_mode, SpreadMode::Double);
+        assert_eq!(settings.cover_mode, CoverMode::Paired);
+        assert_eq!(settings.fit_mode, FitMode::Actual);
+        // ...and the unrelated persisted fields are left untouched.
+        assert_eq!(settings.cache_size, 99);
+        assert_eq!(settings.preload_pages, 7);
+        assert!(settings.track_recent_files);
+        assert!(settings.seen_guide);
     }
 }
