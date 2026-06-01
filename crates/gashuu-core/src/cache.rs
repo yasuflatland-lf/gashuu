@@ -201,13 +201,7 @@ mod tests {
 
     impl PageSource for CountingSource {
         fn list_pages(&self) -> Vec<PageEntry> {
-            vec![
-                PageEntry {
-                    path: "p".into(),
-                    name: "p".into()
-                };
-                self.pages
-            ]
+            vec![PageEntry { name: "p".into() }; self.pages]
         }
         fn read_bytes(&self, index: usize) -> Result<Vec<u8>, CoreError> {
             if index >= self.pages {

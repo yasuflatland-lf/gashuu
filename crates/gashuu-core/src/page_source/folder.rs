@@ -2,15 +2,25 @@ use super::naming::{has_image_ext, natural_cmp};
 use super::{PageEntry, PageSource};
 use crate::error::CoreError;
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
+
+/// Internal pairing of a page's real filesystem path with its display name.
+///
+/// The path is an implementation detail of `FolderSource` (used by `read_bytes`)
+/// and is deliberately NOT part of the public [`PageEntry`], which carries the
+/// name only — archive sources have no path to expose.
+struct FolderEntry {
+    path: PathBuf,
+    name: String,
+}
 
 /// A page source backed by a single directory of image files.
 ///
 /// PR1 walks the top level only (no recursion) and orders pages by natural
 /// filename comparison so `2.png` precedes `10.png`.
 pub struct FolderSource {
-    entries: Vec<PageEntry>,
+    entries: Vec<FolderEntry>,
     skipped: usize,
 }
 
@@ -21,12 +31,12 @@ impl FolderSource {
     /// broken symlinks) are counted in [`PageSource::skipped_count`] rather than
     /// silently dropped, so the presentation layer can log them.
     pub fn open(root: impl AsRef<Path>) -> Result<Self, CoreError> {
-        let mut entries: Vec<PageEntry> = Vec::new();
+        let mut entries: Vec<FolderEntry> = Vec::new();
         let mut skipped = 0usize;
         for result in WalkDir::new(root.as_ref()).min_depth(1).max_depth(1) {
             match result {
                 Ok(e) if e.file_type().is_file() && has_image_ext(e.path()) => {
-                    entries.push(PageEntry {
+                    entries.push(FolderEntry {
                         name: e.file_name().to_string_lossy().into_owned(),
                         path: e.path().to_path_buf(),
                     });
@@ -44,7 +54,12 @@ impl FolderSource {
 
 impl PageSource for FolderSource {
     fn list_pages(&self) -> Vec<PageEntry> {
-        self.entries.clone()
+        self.entries
+            .iter()
+            .map(|e| PageEntry {
+                name: e.name.clone(),
+            })
+            .collect()
     }
 
     fn read_bytes(&self, index: usize) -> Result<Vec<u8>, CoreError> {
@@ -152,5 +167,51 @@ mod folder_source_tests {
         let names: Vec<String> = source.list_pages().into_iter().map(|e| e.name).collect();
 
         assert_eq!(names, vec!["1.png"]);
+    }
+
+    /// Pins the load-bearing invariant of the refactor: after the natural-sort,
+    /// `read_bytes(i)` returns the bytes of the file whose `name` sits at position
+    /// `i` in `list_pages()`. WalkDir enumeration order is filesystem-dependent and
+    /// differs from sorted order, so this test uses three files (`"2.png"`,
+    /// `"10.png"`, `"1.png"`) whose natural order (`1, 2, 10`) diverges from their
+    /// creation order. Each file has DISTINCT dimensions so identical bytes cannot
+    /// mask a path/name pairing bug. Guards against a future list_pages filter or
+    /// reorder that drifts out of sync with the internal `FolderEntry` ordering.
+    #[test]
+    fn read_bytes_matches_list_pages_after_natural_sort() {
+        // Write a tiny PNG with a unique pixel dimension for each file so the encoded
+        // bytes differ and a wrong-index read will produce a mismatch.
+        fn write_sized_png(path: &std::path::Path, w: u32, h: u32) {
+            let img = image::RgbaImage::from_pixel(w, h, image::Rgba([10, 20, 30, 255]));
+            let mut bytes = Vec::new();
+            img.write_to(&mut Cursor::new(&mut bytes), image::ImageFormat::Png)
+                .unwrap();
+            fs::write(path, bytes).unwrap();
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        // Create files in a non-natural order so WalkDir enumeration ≠ sorted order.
+        write_sized_png(&dir.path().join("2.png"), 2, 2);
+        write_sized_png(&dir.path().join("10.png"), 10, 10);
+        write_sized_png(&dir.path().join("1.png"), 1, 1);
+
+        let source = FolderSource::open(dir.path()).unwrap();
+        let pages = source.list_pages();
+
+        // Confirm the natural-sort order first.
+        let names: Vec<&str> = pages.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(names, vec!["1.png", "2.png", "10.png"]);
+
+        // For every position i, read_bytes(i) must equal the bytes of the file
+        // identified by pages[i].name — this is the core path↔name pairing contract.
+        for (i, entry) in pages.iter().enumerate() {
+            let expected = fs::read(dir.path().join(&entry.name)).unwrap();
+            let actual = source.read_bytes(i).unwrap();
+            assert_eq!(
+                actual, expected,
+                "read_bytes({i}) returned bytes for the wrong file (expected {:?})",
+                entry.name,
+            );
+        }
     }
 }
