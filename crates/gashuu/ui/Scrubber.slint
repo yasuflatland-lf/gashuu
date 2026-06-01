@@ -1,0 +1,159 @@
+// Bottom page scrubber for the viewer. Frozen public surface per
+// .claude/plans/_contracts.md — do NOT change prop/callback signatures.
+//
+// Behavior (spec §5, decision 11):
+//   - The knob reflects `current-page` (1-based) when idle.
+//   - While dragging, the knob follows the pointer; the component computes the
+//     0-based page under the knob and fires `preview(page)` (preview ONLY — the
+//     page body must NOT change). A floating popover above the knob shows 1
+//     thumbnail (single) or 2 (double) plus "p.X / N" (or "p.X-Y / N").
+//   - On release it fires `commit(page)` exactly once.
+//   - RTL (manga): dragging LEFT advances (the screen-left end = last page).
+//   - Visibility is owned by the parent via `chrome-shown` (auto-hide).
+import { Theme } from "Theme.slint";
+
+export component Scrubber inherits Rectangle {
+    in property <int> current-page;     // 1-based current spread leading
+    in property <int> total-pages;
+    in property <bool> rtl;             // RTL: dragging left advances
+    in property <bool> double;          // 2 preview thumbs vs 1
+    in property <image> preview-a;      // leading preview thumb
+    in property <image> preview-b;      // trailing preview thumb (double only)
+    in property <bool> chrome-shown;    // auto-hide state (parent-driven)
+    callback preview(int);   // 0-based page under the knob DURING drag
+    callback commit(int);    // 0-based page to jump_to ON RELEASE
+
+    // Whole component fades with the chrome; no hit area when hidden so a hidden
+    // scrubber can't intercept clicks meant for the page.
+    opacity: root.chrome-shown ? 1.0 : 0.0;
+    visible: root.chrome-shown;
+    animate opacity { duration: 180ms; }
+
+    // ── Geometry ────────────────────────────────────────────────────────────
+    // The rail spans the component width minus symmetric edge insets.
+    private property <length> inset: Theme.space-huge;
+    private property <length> rail-x: root.inset;
+    private property <length> rail-w: root.width - 2 * root.inset;
+    // Last 0-based index; -1 guard keeps the span non-negative when empty.
+    private property <int> last-index: max(root.total-pages - 1, 0);
+
+    // Drag bookkeeping.
+    private property <bool> dragging: ta.pressed;
+    // Pointer fraction along the rail (screen-left 0 -> right 1), clamped.
+    private property <float> drag-frac:
+        root.rail-w > 0px
+            ? clamp((ta.mouse-x - root.rail-x) / root.rail-w, 0.0, 1.0)
+            : 0.0;
+    // 0-based page under the knob while dragging (mirrors the Rust pure helper:
+    // RTL inverts the fraction; round-half-up via +0.5 floor).
+    private property <int> drag-page:
+        root.rtl
+            ? root.last-index - floor(root.drag-frac * root.last-index + 0.5)
+            : floor(root.drag-frac * root.last-index + 0.5);
+    // Idle fraction derived from current-page (1-based) so the knob sits at the
+    // current spread when not dragging. RTL mirrors the position.
+    private property <float> idle-frac:
+        root.last-index > 0
+            ? (root.rtl
+                ? 1.0 - (root.current-page - 1) / root.last-index
+                : (root.current-page - 1) / root.last-index)
+            : 0.0;
+    // The fraction actually drawn: pointer while dragging, else the idle anchor.
+    private property <float> knob-frac: root.dragging ? root.drag-frac : root.idle-frac;
+    private property <length> knob-cx: root.rail-x + root.knob-frac * root.rail-w;
+
+    height: 40px;
+
+    // ── Rail ──────────────────────────────────────────────────────────────────
+    Rectangle {
+        x: root.rail-x;
+        width: root.rail-w;
+        height: Theme.scrubber-track-height;
+        y: (root.height - self.height) / 2;
+        background: Theme.track;
+        border-radius: Theme.rounded-xs;
+    }
+
+    // ── Knob ────────────────────────────────────────────────────────────────────
+    Rectangle {
+        width: Theme.scrubber-knob-size;
+        height: Theme.scrubber-knob-size;
+        x: root.knob-cx - self.width / 2;
+        y: (root.height - self.height) / 2;
+        background: Theme.accent;
+        border-radius: Theme.rounded-pill;
+        // 4px accent-glow ring (the only glow in the system).
+        drop-shadow-color: Theme.accent-glow;
+        drop-shadow-blur: 4px;
+    }
+
+    // ── Hit area spanning the full rail width ─────────────────────────────────
+    ta := TouchArea {
+        x: root.rail-x;
+        width: root.rail-w;
+        height: root.height;
+        y: 0;
+        // Live preview while dragging — body must NOT change (Rust updates only
+        // the popover + counter from `preview`).
+        moved => {
+            if (self.pressed) { root.preview(root.drag-page); }
+        }
+        pointer-event(e) => {
+            if (e.kind == PointerEventKind.down) {
+                // Fire an initial preview on press so the popover appears
+                // immediately at the press point.
+                root.preview(root.drag-page);
+            }
+            if (e.kind == PointerEventKind.up) {
+                // Commit exactly once on release.
+                root.commit(root.drag-page);
+            }
+        }
+    }
+
+    // ── Drag preview popover (only while dragging) ────────────────────────────
+    if root.dragging : Rectangle {
+        // Clamp horizontally so the popover never clips at the window edges.
+        private property <length> pop-w: root.double ? 168px : 92px;
+        private property <length> pop-h: 132px;
+        x: clamp(root.knob-cx - self.pop-w / 2, root.inset, root.width - root.inset - self.pop-w);
+        y: -(self.pop-h) - Theme.space-sm;
+        width: self.pop-w;
+        height: self.pop-h;
+        background: Theme.surface-float;
+        border-color: Theme.hairline-float;
+        border-width: 1px;
+        border-radius: Theme.rounded-md;
+        drop-shadow-color: #00000080;
+        drop-shadow-blur: 30px;
+
+        VerticalLayout {
+            padding: Theme.space-sm;
+            spacing: Theme.space-xs;
+
+            HorizontalLayout {
+                spacing: Theme.space-xs;
+                Image {
+                    source: root.preview-a;
+                    image-fit: contain;
+                    horizontal-stretch: 1;
+                }
+                if root.double : Image {
+                    source: root.preview-b;
+                    image-fit: contain;
+                    horizontal-stretch: 1;
+                }
+            }
+            // "p.X / N" single, "p.X-Y / N" double. drag-page is 0-based; +1 for
+            // display. Tabular numerals so the count doesn't jitter while scrubbing.
+            Text {
+                text: root.double
+                    ? "p." + (root.drag-page + 1) + "\u{2013}" + (root.drag-page + 2) + " / " + root.total-pages
+                    : "p." + (root.drag-page + 1) + " / " + root.total-pages;
+                color: Theme.text-mid;
+                font-size: Theme.font-numeric;
+                horizontal-alignment: center;
+            }
+        }
+    }
+}
