@@ -342,4 +342,24 @@ mod tests {
             "expected IndexOutOfRange {{ index: 0, len: 0 }}, got {err:?}"
         );
     }
+
+    /// `generate_cover` propagates a decode error from page 0 rather than
+    /// swallowing it: a single page whose bytes are not a valid image must yield
+    /// the decode `Err`, proving the `?` on the page-0 read+decode is load-bearing
+    /// (a future refactor that dropped it would make this test fail).
+    #[test]
+    fn generate_cover_propagates_decode_error_on_corrupt_page0() {
+        let source: Arc<dyn PageSource> = Arc::new(CountingSource::new(vec![Some(
+            b"not-a-valid-image".to_vec(),
+        )]));
+        let Err(err) = generate_cover(source, 64) else {
+            panic!("expected Err for undecodable page-0 bytes");
+        };
+        // Match the variant the codebase produces for undecodable bytes — align
+        // with the existing invalid-bytes test in this module.
+        assert!(
+            matches!(err, CoreError::Decode(_)),
+            "expected a decode error, got {err:?}"
+        );
+    }
 }
