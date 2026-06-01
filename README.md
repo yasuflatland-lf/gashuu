@@ -78,6 +78,7 @@ Open content from the toolbar — **Open Folder…** (PNG/JPG/JPEG) or **Open Ar
 | `R` | Toggle reading direction (LTR ↔ RTL) |
 | `C` | Toggle cover layout (standalone ↔ paired) |
 | `T` | Toggle the thumbnail strip |
+| `↑` | Return to the Library |
 
 Arrows follow the reading direction (LTR: `→` = next; RTL: `←` = next). `Space` and
 `Backspace` are always next/previous in reading order. Mode changes are saved on exit.

@@ -67,6 +67,10 @@ a `settings.json` written by this build (`spread_mode:"auto"`) cannot be read by
 
 PR4 activated the spread settings and rewrote `keymap::map_key` to take a `dir: ReadingDirection` and emit a `KeyCommand` (arrows resolve against the active direction). PR4a added `SpreadMode::Auto`, resolved via `SpreadMode::resolve(window aspect)` at the UI layer (`ViewerState::effective_layout()`) into a `SpreadLayout` before every pairing call; pairing functions take `SpreadLayout` so `Auto` is unreachable in pairing by type. PR5 wired `fit_mode` to real behavior (persisted, forward-compat like `cover_mode`). `key_bindings` is still saved for forward-compat only: `KeyBindings`'s default tokens match what `map_key` hard-codes, but `map_key` does NOT read the struct — user-remappable keys remain deferred.
 
+### A new/changed key binding must be updated in BOTH places that describe keys (PR-0b)
+
+`keymap::map_key` decodes the token to a `KeyCommand`, and `main.rs`'s `KEY_BINDINGS_HELP` const is the in-app/settings key reference shown to the user. They must stay in sync (the const's own doc says so). Adding a binding in only one place leaves the user-facing help contradicting real behavior.
+
 ### Separate pairing / placement / input
 
 `spread.rs` decides WHICH pages pair (reading order) and holds NO `reading_direction` and NO `NavAction` (no core→UI type leak) — so the decision table doesn't double over direction. Pairing functions receive an already-resolved `SpreadLayout` (never `SpreadMode`/`Auto`); the only `SpreadMode → SpreadLayout` conversion is `SpreadMode::resolve`. Placement (RTL = `HorizontalLayout` slot reversal in `PageView.slint`) and input (which arrow advances, resolved by `reading_direction` in `keymap::map_key`) live in the UI. `NavAction {Next,Prev}` stays reading-order as the single source of truth.
@@ -270,6 +274,14 @@ uses a Slint `public function focus-pages() { fs.focus(); }` called from Rust as
 ### Scrubber drag is preview-on-move, commit-on-release (PR-S)
 
 During a scrubber drag, ONLY the preview popover + page-counter update: `preview(int)` pulls thumbnails from the existing `VecModel<ThumbnailItem>` and sets the counter text — it must NEVER call `jump_to`/`refresh`. The page body changes ONLY on knob release via `commit(int)` → `jump_to` → `refresh`. Keep all decode/navigation side effects on the commit path; preview is display-only and UI-thread-only (the `Rc`/`!Send` thumbnail model is never crossed).
+
+### `if`-gated element ids are NOT reachable from the parent's `public function`s / `init` — gate with `visible:` when an id must be parent-reachable (PR-0b)
+
+Slint scopes an id declared inside an `if`/`for` branch to a child the enclosing component cannot name, so a parent-level Rust-invoked seam like `focus-pages()`/`focus-carousel()` (or `init`) CANNOT `.focus()` an element under `if cond : Foo { ... }`. When a screen/region must be referenced by id from a parent function or `init`, gate it with `visible: <cond>` (keeps the id at root scope) instead of `if <cond>`. Trade-off: `visible:` keeps every branch instantiated (both screens live in the tree, toggled by visibility) — accepted here; focus is driven explicitly by the Rust seam functions on each transition. PR-0b's `ViewerWindow.slint` gates the Carousel (screen 0) and the Viewer body (screen 1) with `visible: root.screen == N` precisely so `focus-carousel()`/`focus-pages()` can reach `carousel`/`fs`.
+
+### The cargo gates do NOT exercise Slint markup behavior — verify `.slint` logic against the spec by hand (PR-0b)
+
+fmt/clippy/nextest cover Rust only; Slint key handlers, bindings, and visibility live in `.slint` markup that compiles via `build.rs` but has NO automated behavioral test (the project does not unit-test Slint visuals). After editing a `.slint` `FocusScope` key handler or property binding, explicitly check it against the spec — a missing key arm compiles and passes ALL three gates silently. Concrete PR-0b miss: the `Key.UpArrow -> nav("up")` arm (the entire point of the GoToLibrary feature) was initially omitted from the viewer `FocusScope` yet every gate stayed green; it was caught only by spec re-reading.
 
 ### Showing the thumbnail strip shrinks the `PageView` height, which auto-fires the existing `viewport-resized` wiring
 

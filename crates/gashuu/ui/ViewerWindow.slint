@@ -3,6 +3,7 @@ import { PageView } from "PageView.slint";
 import { ThumbnailStrip, ThumbnailItem } from "ThumbnailStrip.slint";
 import { SettingsDialog } from "SettingsDialog.slint";
 import { FirstRunGuide } from "FirstRunGuide.slint";
+import { Carousel, CarouselItem } from "Carousel.slint";
 import { Theme } from "Theme.slint";
 import { Scrubber } from "Scrubber.slint";
 
@@ -10,6 +11,13 @@ export component ViewerWindow inherits Window {
     title: "gashuu";
     preferred-width: 900px;
     preferred-height: 1200px;
+
+    // Top-level screen: 0 = Library (Carousel), 1 = Viewer. Pushed by main.rs
+    // from NavState; app boots to Library (0).
+    in property <int> screen: 0;
+    // Carousel model + focus index (filled by PR-C; empty shell for now).
+    in property <[CarouselItem]> carousel-items;
+    in-out property <int> carousel-focused-index;
 
     in property <[ThumbnailItem]> thumbnails;
     in property <int> current-index;
@@ -83,6 +91,11 @@ export component ViewerWindow inherits Window {
 
     callback open-folder();
     callback open-archive();
+    // Carousel navigation seams (Library screen). Forwarded to main.rs.
+    callback carousel-open(int);
+    callback carousel-move(int);
+    callback carousel-back();
+    public function focus-carousel() { carousel.focus-self(); }
     // Forwarded navigation token: "left" | "right" | "space" | "backspace" |
     // "d" | "r" | "c" | "+" | "=" | "-" | "0" | "1" | "f".
     callback nav(string);
@@ -107,7 +120,27 @@ export component ViewerWindow inherits Window {
     callback set-preload-pages(int);
     callback set-track-recent(bool);
 
+    // ── Library screen ────────────────────────────────────────────────────────
+    // Both screens are always instantiated and toggled with `visible` (rather
+    // than `if`) so their FocusScope ids (`carousel`'s internal scope and `fs`)
+    // stay at root scope and remain reachable from the public focus functions
+    // and `init`. Slint's `if` puts ids in a child scope the parent cannot name.
+    carousel := Carousel {
+        visible: root.screen == 0;
+        width: root.width;
+        height: root.height;
+        items: root.carousel-items;
+        focused-index <=> root.carousel-focused-index;
+        open(i) => { root.carousel-open(i); }
+        move(delta) => { root.carousel-move(delta); }
+        back() => { root.carousel-back(); }
+    }
+
+    // ── Viewer screen (existing content) ───────────────────────────────────────
+    // `visible`-gated (not `if`) so the inner `fs` FocusScope id stays reachable
+    // from `focus-pages()` and `init` (see the note on the carousel above).
     VerticalBox {
+        visible: root.screen == 1;
         HorizontalBox {
             height: 40px;
             Button {
@@ -165,6 +198,10 @@ export component ViewerWindow inherits Window {
                         root.nav("right");
                         return accept;
                     }
+                    if (event.text == Key.UpArrow) {
+                        root.nav("up");
+                        return accept;
+                    }
                     if (event.text == Key.Space) {
                         root.nav("space");
                         return accept;
@@ -209,7 +246,7 @@ export component ViewerWindow inherits Window {
                 width: counter-label.preferred-width + 2 * Theme.space-md;
                 height: counter-label.preferred-height + 2 * Theme.space-xs;
                 background: Theme.chip;
-                border-radius: Theme.rounded-pill;
+                border-radius: Theme.radius-pill;
                 opacity: root.chrome-shown ? 1.0 : 0.0;
                 visible: root.chrome-shown;
                 animate opacity { duration: 180ms; }
@@ -287,9 +324,9 @@ export component ViewerWindow inherits Window {
 
     // Grab keyboard focus on startup so arrow keys work without a click.
     init => {
-        fs.focus();
-        // Initial window size arrives via the `changed width`/`changed height`
-        // handlers once the window is realized; `viewport_aspect` defaults to 1.0
-        // until then.
+        // App boots to Library; focus the carousel so its key seams work
+        // without a click. When Rust switches to the Viewer it calls
+        // focus-pages() to move focus there.
+        if (root.screen == 0) { carousel.focus-self(); } else { fs.focus(); }
     }
 }

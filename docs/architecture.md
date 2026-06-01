@@ -172,7 +172,29 @@ Direction-aware key token → `KeyCommand` — page turns, D/R/C mode toggles, p
 direction-independent zoom/fit commands and PR8a's `ToggleThumbnails` on `"t"`,
 direction-INDEPENDENT like the zoom/fit keys.
 
+### navigation
+
+PR-0b, `navigation.rs`. Top-level screen state machine: `Screen { Library, Viewer }` enum +
+`NavState` (private `screen` field, intent-named `to_library`/`to_viewer` transitions, boots to
+`Library`; same private-field+intent-method convention as `ViewportState`). Free fns
+`screen_to_index`/`index_to_screen` map the enum to/from the Slint `ViewerWindow.screen` int
+property — contract: Library = 0, Viewer = 1. `screen_to_index` is an exhaustive match (a new
+variant is a compile error); `index_to_screen` clamps out-of-range to `Library`.
+
+`main.rs` holds the single `NavState` in `Rc<RefCell<…>>`; `go_to_library`/`go_to_viewer` seam
+functions are the single chokepoints that flip `NavState`, push `screen` to the UI, and restore
+focus. The Up arrow (`KeyCommand::GoToLibrary`, direction-independent) and the carousel
+`open`/`move`/`back` callbacks route through them.
+
 ### Slint UI files
+
+**`Carousel.slint`** (PR-0b, NEW): Library cover-flow carousel — currently an EMPTY SHELL with a
+frozen public contract: `CarouselItem` struct + `Carousel` component with `items`, `focused-index`,
+callbacks `open(int)`/`move(int)`/`back()`, and `public function focus-self()`. Real cover-flow
+rendering is deferred to a downstream PR.
+
+**`Theme.slint`** (PR-0b, NEW): single `global Theme` of visual tokens (colors, spacing, radii,
+font sizes); components reference `Theme.<token>` instead of inline hex literals.
 
 **`ThumbnailStrip.slint`** (PR8a, NEW): horizontal `Flickable` + `HorizontalLayout` + `for` over a
 `VecModel` — the FIRST `VecModel`/`Repeater` use in the codebase since `ListView` is
@@ -209,10 +231,13 @@ Drag fires `preview` only; pointer-release fires `commit`.
 **`ViewerWindow.slint`**: extended in PR8b with the two `if root.show-X : Component` overlays
 (last children = front), a "Settings…" toolbar button, the in/in-out properties + setter
 callbacks, and a FocusScope key-guard. `main.rs` gained the dialog/guide wiring + 8 enum↔index
-helper fns + `KEY_BINDINGS_HELP`. Extended again in PR-S to mount the `Scrubber` and a top-right
-page-counter chip as auto-hiding chrome, driven by a `chrome-shown` bool + an idle `Timer`;
-chrome is revealed on pointer-move (via `PageView.reveal()`), arrow-key presses, and scrubber
-drag.
+helper fns + `KEY_BINDINGS_HELP`. Extended in PR-0b with a two-screen model: `in property <int>
+screen` gates the Library `Carousel` (screen 0) vs the Viewer body (screen 1) via
+`visible: root.screen == N` (not `if` — see [patterns.md](patterns.md) for the Slint id-scoping
+reason); Settings/Guide overlays remain viewer-scoped. Extended again in PR-S to mount the
+`Scrubber` + a top-right page-counter chip as auto-hiding chrome inside the screen-1 viewer,
+driven by a `chrome-shown` bool + an idle `Timer`; chrome is revealed on pointer-move (via
+`PageView.reveal()`), arrow-key presses, and scrubber drag.
 
 ### rfd file/folder picker
 
