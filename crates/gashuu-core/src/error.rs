@@ -45,6 +45,15 @@ pub enum CoreError {
     /// The path is neither a directory nor a recognized archive.
     #[error("unsupported format: {path}")]
     UnsupportedFormat { path: String },
+
+    /// The image dimensions exceed the maximum allowed pixel count.
+    #[error("image too large: {width}x{height} = {pixels} px exceeds {max}")]
+    ImageTooLarge {
+        width: u32,
+        height: u32,
+        pixels: u64,
+        max: u64,
+    },
 }
 
 #[cfg(test)]
@@ -75,6 +84,20 @@ mod tests {
         assert_eq!(
             err.to_string(),
             "no config directory available for settings"
+        );
+    }
+
+    #[test]
+    fn image_too_large_displays_dimensions_pixels_and_max() {
+        let err = CoreError::ImageTooLarge {
+            width: 10,
+            height: 20,
+            pixels: 200,
+            max: 100,
+        };
+        assert_eq!(
+            err.to_string(),
+            "image too large: 10x20 = 200 px exceeds 100"
         );
     }
 

@@ -10,17 +10,21 @@ pub mod image_ops;
 pub mod page_source;
 pub mod settings;
 pub mod spread;
+pub mod viewport;
 
 pub use archive_loader::ArchiveLoader;
 pub use cache::{ImageCache, DEFAULT_CAPACITY, DEFAULT_PREFETCH_RADIUS};
 pub use error::CoreError;
-pub use image_ops::{decode, DecodedImage};
+pub use image_ops::{check_pixel_limit, decode, DecodedImage, MAX_PIXELS};
 pub use page_source::{FolderSource, PageEntry, PageSource, ZipSource};
 pub use settings::{
-    CoverMode, KeyBindings, ReadingDirection, Settings, SpreadLayout, SpreadMode, MAX_RECENT_FILES,
-    SETTINGS_VERSION,
+    CoverMode, FitMode, KeyBindings, ReadingDirection, Settings, SpreadLayout, SpreadMode,
+    MAX_RECENT_FILES, SETTINGS_VERSION,
 };
 pub use spread::{next_leading, normalize_leading, prev_leading, spread_at, Spread};
+pub use viewport::{
+    anchored_zoom, centered_offset, clamp_offset, clamp_zoom, fit_scale, ZOOM_MAX, ZOOM_MIN,
+};
 
 #[cfg(feature = "testing")]
 pub use page_source::MockPageSource;
