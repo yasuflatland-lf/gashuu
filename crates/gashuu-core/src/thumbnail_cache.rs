@@ -5,13 +5,13 @@ use crate::image_ops::DecodedImage;
 use directories::ProjectDirs;
 use std::path::{Path, PathBuf};
 
-// Build a stable cache key from the source path and thumbnail parameters.
-//
-// Uses FNV-1a (a fixed algorithm) instead of `std::hash::DefaultHasher`, whose
-// hash output is not guaranteed stable across Rust versions. A stable key keeps
-// thumbnails cached by a prior build reachable after a toolchain upgrade rather
-// than being silently orphaned. The path is hashed via its platform-native
-// `OsStr` bytes, which is deterministic on a given platform (the cache is local).
+/// Build a stable cache key from the source path and thumbnail parameters.
+///
+/// Uses FNV-1a (a fixed algorithm) instead of `std::hash::DefaultHasher`, whose
+/// hash output is not guaranteed stable across Rust versions. A stable key keeps
+/// thumbnails cached by a prior build reachable after a toolchain upgrade rather
+/// than being silently orphaned. The path is hashed via its platform-native
+/// `OsStr` bytes, which is deterministic on a given platform (the cache is local).
 pub fn cache_key(path: &Path, mtime_secs: i64, max_side: u32) -> String {
     let mut hash = FNV_OFFSET_BASIS;
     fnv1a(&mut hash, path.as_os_str().as_encoded_bytes());
