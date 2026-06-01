@@ -6,7 +6,9 @@ mod thumbnail_strip;
 mod viewer_state;
 mod viewport;
 
-use gashuu_core::{CoverMode, DecodedImage, FitMode, Library, ReadingDirection, Settings, SpreadMode};
+use gashuu_core::{
+    CoverMode, DecodedImage, FitMode, Library, ReadingDirection, Settings, SpreadMode,
+};
 use keymap::{map_key, KeyCommand};
 use navigation::{screen_to_index, NavState};
 use std::cell::RefCell;
@@ -80,7 +82,9 @@ fn main() -> color_eyre::Result<()> {
             let Some(dir) = rfd::FileDialog::new().pick_folder() else {
                 return;
             };
-            open_and_present(&ui, &state, &settings, &viewport, &thumbs, &library, &dir, "");
+            open_and_present(
+                &ui, &state, &settings, &viewport, &thumbs, &library, &dir, "",
+            );
         });
     }
 
@@ -679,6 +683,7 @@ fn main() -> color_eyre::Result<()> {
 /// Thumbnail regeneration is delegated to the shared `ThumbnailController`, which
 /// owns the strip's model and the epoch + cancel double-guard; `start` cancels any
 /// in-flight generation for the previous book before launching this one.
+#[allow(clippy::too_many_arguments)]
 fn open_and_present(
     ui: &ViewerWindow,
     state: &Rc<RefCell<ViewerState>>,
@@ -1038,16 +1043,12 @@ fn position_to_write_back(
 /// is safe. Each borrow is a short-lived temporary confined to its
 /// statement and drops at the `;`, following the one-statement borrow rule
 /// documented in `docs/patterns.md`.
-fn write_back_position(
-    state: &Rc<RefCell<ViewerState>>,
-    library: &Rc<RefCell<Library>>,
-) {
+fn write_back_position(state: &Rc<RefCell<ViewerState>>, library: &Rc<RefCell<Library>>) {
     // Extract the (path, page) tuple from the viewer state in a single
     // statement; the borrow of `state` drops here at the `;`.
-    let Some((path, page)) = position_to_write_back(
-        state.borrow().open_file(),
-        state.borrow().index(),
-    ) else {
+    let Some((path, page)) =
+        position_to_write_back(state.borrow().open_file(), state.borrow().index())
+    else {
         return; // no book open — nothing to write back
     };
     // `set_last_page` returns false when absent or unchanged; we persist

@@ -1307,7 +1307,10 @@ mod tests {
     #[test]
     fn open_file_is_none_before_open() {
         let state = ViewerState::new();
-        assert!(state.open_file().is_none(), "open_file must be None before any open");
+        assert!(
+            state.open_file().is_none(),
+            "open_file must be None before any open"
+        );
     }
 
     #[test]
@@ -1466,7 +1469,10 @@ mod tests {
         let mut state = ViewerState::new();
         state.set_source(mock_with(10));
         let moved = state.jump_to(3);
-        assert!(moved, "jump_to must return true when moving from index 0 to 3");
+        assert!(
+            moved,
+            "jump_to must return true when moving from index 0 to 3"
+        );
         assert_eq!(state.index(), 3);
     }
 
@@ -1478,7 +1484,8 @@ mod tests {
         state.set_source(mock_with(6));
         assert!(state.jump_to(2));
         assert_eq!(
-            state.index(), 1,
+            state.index(),
+            1,
             "stored trailing page must normalize to spread leading on resume"
         );
     }
@@ -1520,10 +1527,10 @@ mod tests {
         // not conflict when called in sequence (distinct immutable borrows
         // on the same value, which is trivially safe; this test pins the
         // shape of the reads).
-        let _page = state.index();     // what write_back_position calls
-        // open_file() is None here (set_source path), but the call must not panic.
+        let _page = state.index(); // what write_back_position calls
+                                   // open_file() is None here (set_source path), but the call must not panic.
         let _path = state.open_file(); // what write_back_position calls
-        // No panic reached: the sequence is safe.
+                                       // No panic reached: the sequence is safe.
 
         // Simulate opening a second book (write_back fires for the first, then
         // set_source resets the state).
