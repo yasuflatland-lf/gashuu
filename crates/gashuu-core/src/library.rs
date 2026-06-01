@@ -129,3 +129,45 @@ mod tests {
         let book = Book::from_path(PathBuf::from("/"));
         assert!(!book.title().is_empty());
     }
+
+    #[test]
+    fn new_library_is_empty() {
+        let lib = Library::new();
+        assert!(lib.books().is_empty());
+    }
+
+    #[test]
+    fn add_appends_in_insertion_order() {
+        // Non-existent paths exercise the best-effort canonicalize fallback
+        // (canonicalize fails - path is used verbatim).
+        let mut lib = Library::new();
+        assert!(lib.add(PathBuf::from("/manga/a.cbz")));
+        assert!(lib.add(PathBuf::from("/manga/b.cbz")));
+        let titles: Vec<&str> = lib.books().iter().map(|b| b.title()).collect();
+        assert_eq!(titles, vec!["a", "b"], "insertion order must be preserved");
+    }
+
+    #[test]
+    fn add_dedups_by_path_and_returns_false() {
+        let mut lib = Library::new();
+        assert!(lib.add(PathBuf::from("/manga/a.cbz")));
+        assert!(
+            !lib.add(PathBuf::from("/manga/a.cbz")),
+            "adding an existing path must be a no-op returning false"
+        );
+        assert_eq!(lib.books().len(), 1);
+    }
+
+    #[test]
+    fn add_canonicalizes_existing_path_for_identity() {
+        let dir = tempfile::tempdir().unwrap();
+        let folder = dir.path().join("Series.1997");
+        std::fs::create_dir(&folder).unwrap();
+
+        let mut lib = Library::new();
+        assert!(lib.add(folder.join(".")));
+        assert_eq!(lib.books().len(), 1);
+        assert_eq!(lib.books()[0].path(), folder.canonicalize().unwrap().as_path());
+        assert_eq!(lib.books()[0].title(), "Series.1997");
+    }
+}

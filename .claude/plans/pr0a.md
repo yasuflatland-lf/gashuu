@@ -191,7 +191,7 @@ Progress: DONE 2026-06-02 - Book type and library module wiring added; focused n
 - Modify: `crates/gashuu-core/src/library.rs`
 - Test: `crates/gashuu-core/src/library.rs` (inline tests)
 
-- [ ] **3.1 Write failing test.** Add these tests inside the `#[cfg(test)] mod tests` block in `crates/gashuu-core/src/library.rs`:
+- [x] **3.1 Write failing test.** Add these tests inside the `#[cfg(test)] mod tests` block in `crates/gashuu-core/src/library.rs`:
 ```rust
     #[test]
     fn new_library_is_empty() {
@@ -242,9 +242,9 @@ Progress: DONE 2026-06-02 - Book type and library module wiring added; focused n
         assert_eq!(lib.books()[0].path(), file.canonicalize().unwrap());
     }
 ```
-- [ ] **3.2 Run it (expect FAIL):** `mise exec -- cargo nextest run -p gashuu-core new_library_is_empty add_appends_in_insertion_order add_dedups_by_path_and_returns_false add_canonicalizes_existing_path_for_identity`
+- [x] **3.2 Run it (expect FAIL):** `mise exec -- cargo nextest run -p gashuu-core new_library_is_empty add_appends_in_insertion_order add_dedups_by_path_and_returns_false add_canonicalizes_existing_path_for_identity`
   - Expected FAIL: `cannot find type 'Library'` / `no method named 'add'` — `Library` does not exist yet.
-- [ ] **3.3 Minimal impl.** Insert the `Library` type below `impl Book` (above the test module) in `crates/gashuu-core/src/library.rs`:
+- [x] **3.3 Minimal impl.** Insert the `Library` type below `impl Book` (above the test module) in `crates/gashuu-core/src/library.rs`:
 ```rust
 /// An ordered, de-duplicated shelf of books. Insertion order is the carousel
 /// order. Identity / dedup is on the canonical path (best-effort canonicalized at
@@ -280,9 +280,11 @@ impl Library {
     }
 }
 ```
-- [ ] **3.4 Run it (expect PASS):** `mise exec -- cargo nextest run -p gashuu-core new_library_is_empty add_appends_in_insertion_order add_dedups_by_path_and_returns_false add_canonicalizes_existing_path_for_identity`
+- [x] **3.4 Run it (expect PASS):** `mise exec -- cargo nextest run -p gashuu-core new_library_is_empty add_appends_insertion_order add_dedups_by_path_and_returns_false add_canonicalizes_existing_path_for_identity`
   - Expected PASS: all four tests pass (canonicalize fallback for missing paths; dedup after canonicalization for the real file).
-- [ ] **3.5 Commit:** `git commit -m "feat(core): add Library::new/books/add with canonicalize and dedup"`
+- [x] **3.5 Commit:** `git commit -m "feat(core): add Library::new/books/add with canonicalize and dedup"`
+
+Progress: DONE 2026-06-02 - Library new/books/add implemented with canonicalize fallback, dedup, and insertion order; focused nextest passed.
 
 ---
 
