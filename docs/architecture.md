@@ -162,6 +162,12 @@ NEXT open (the dialog's cache/preload edits would otherwise only take effect aft
 the fields are seeded once at `from_settings` and `set_source` reads ViewerState's own fields, not
 live `Settings`).
 
+PR-R added `open_file() -> Option<&Path>`: the CANONICAL path of the most recently successful
+`open_path` (set via `path.canonicalize().unwrap_or(verbatim)`, matching `Library::add`'s policy;
+`None` until the first `Ok`, reset by `set_source`, unchanged by a failed `open_path`). `main.rs`
+reads it to form the write-back tuple `(canonical_path, index())` for the `Library` at every leave
+point — see the resume/write-back scope entry and `docs/patterns.md`.
+
 PR-S added two pure scrubber-support helpers:
 
 - `scrub_fraction_to_page(fraction, page_count, rtl)` — pure, total, RTL-aware mapping of a

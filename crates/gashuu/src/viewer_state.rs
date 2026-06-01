@@ -14,7 +14,7 @@ use gashuu_core::{
     DecodedImage, ImageCache, PageSource, ReadingDirection, Settings, SpreadLayout, SpreadMode,
     DEFAULT_CAPACITY, DEFAULT_PREFETCH_RADIUS,
 };
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 /// One displayed unit: the leading image and, in two-page modes, an optional
@@ -92,6 +92,15 @@ pub struct ViewerState {
     /// `Ok(())` returns; an error return leaves the value from the previous
     /// successful open unchanged.
     last_open_skipped: usize,
+    /// Canonical path of the most recently successfully opened source. `None`
+    /// until `open_path` completes `Ok(())`; reset to `None` only by a
+    /// subsequent `set_source` call (including the one the next successful
+    /// `open_path` makes before re-setting it). A failed `open_path` returns
+    /// early via `?` before `set_source`, so it leaves this field unchanged.
+    /// Used by `main.rs` to form the write-back tuple `(path, state.index())`
+    /// at every leave point without holding a concurrent borrow on both
+    /// `state` and `library`.
+    open_file: Option<PathBuf>,
 }
 
 impl ViewerState {
@@ -115,6 +124,7 @@ impl ViewerState {
             reading_direction: ReadingDirection::Ltr,
             viewport_aspect: 1.0,
             last_open_skipped: 0,
+            open_file: None,
         }
     }
 
@@ -133,6 +143,7 @@ impl ViewerState {
             reading_direction: settings.reading_direction,
             viewport_aspect: 1.0,
             last_open_skipped: 0,
+            open_file: None,
         }
     }
 
@@ -142,6 +153,7 @@ impl ViewerState {
     /// `current_source()` can return it without going through `ImageCache`.
     pub fn set_source(&mut self, source: Arc<dyn PageSource>) {
         self.source = Some(Arc::clone(&source));
+        self.open_file = None;
         let cache = ImageCache::new(source, self.cache_size, self.preload_pages);
         self.page_count = cache.len();
         self.cache = Some(cache);
@@ -222,6 +234,10 @@ impl ViewerState {
         }
         self.last_open_skipped = skipped;
         self.set_source(source);
+        // Canonicalize best-effort; fall back to the verbatim path on error
+        // (same policy as Library::add — identity is the canonical form when
+        // available, verbatim otherwise).
+        self.open_file = Some(path.canonicalize().unwrap_or_else(|_| path.to_path_buf()));
         Ok(())
     }
 
@@ -231,6 +247,15 @@ impl ViewerState {
     /// an error return leaves the value from the previous successful open.
     pub fn last_open_skipped(&self) -> usize {
         self.last_open_skipped
+    }
+
+    /// The canonical path of the currently open source, or `None` after
+    /// construction or a direct `set_source` call. Set on a successful
+    /// `open_path`; a failed `open_path` leaves the previous value unchanged
+    /// (it returns early before `set_source`). Used by `main.rs` to write the
+    /// reading position back to the `Library` at leave points.
+    pub fn open_file(&self) -> Option<&Path> {
+        self.open_file.as_deref()
     }
 
     /// Open a folder as the active source, resetting to the first page.
@@ -1281,6 +1306,67 @@ mod tests {
         );
     }
 
+    // ---- open_file() (PR-R) --------------------------------------------------
+
+    #[test]
+    fn open_file_is_none_before_open() {
+        let state = ViewerState::new();
+        assert!(
+            state.open_file().is_none(),
+            "open_file must be None before any open"
+        );
+    }
+
+    #[test]
+    fn open_file_is_none_after_failed_open_path() {
+        let mut state = ViewerState::new();
+        let _ = state.open_path(std::path::Path::new("/nonexistent_prR_open_file"));
+        assert!(
+            state.open_file().is_none(),
+            "open_file must stay None after a failed open_path"
+        );
+    }
+
+    #[test]
+    fn open_file_stays_none_after_direct_set_source() {
+        // set_source itself does not have a path; open_file tracks the path given
+        // to open_path. After set_source directly, open_file stays None (no path
+        // was supplied).
+        let mut state = ViewerState::new();
+        state.set_source(mock_with(3));
+        assert!(
+            state.open_file().is_none(),
+            "set_source without a path must leave open_file as None"
+        );
+    }
+
+    #[test]
+    fn open_file_is_some_canonical_after_successful_open_path() {
+        // The linchpin invariant of the whole write-back chain: a SUCCESSFUL
+        // open_path sets open_file to Some(canonical). Exercised here with a
+        // real on-disk directory (a valid FolderSource), no archive fixture.
+        let dir = std::env::temp_dir().join(format!("gashuu_prR_openfile_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+        // An empty directory opens successfully as a FolderSource (confirmed by
+        // gashuu-core's archive_loader tests), so no image file is needed here.
+
+        let mut state = ViewerState::new();
+        state
+            .open_path(&dir)
+            .expect("open_path on a real directory must succeed");
+
+        let stored = state
+            .open_file()
+            .expect("open_file must be Some after a successful open_path");
+        assert_eq!(
+            stored,
+            dir.canonicalize().expect("canonicalize temp dir"),
+            "open_file must hold the canonical path"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     // ---- jump_to() (PR8a) ---------------------------------------------------
 
     #[test]
@@ -1389,6 +1475,105 @@ mod tests {
         state.set_source(mock_with(6));
         assert!(state.jump_to(5));
         assert_eq!(state.index(), 4);
+    }
+
+    // ---- jump_to resume behavior (PR-R) -----------------------------------
+
+    #[test]
+    fn jump_to_zero_is_noop_from_fresh_open() {
+        // Library returns 0 for an unknown book; jump_to(0) on a freshly
+        // set_source must NOT report a move (the viewer is already at index 0).
+        let mut state = ViewerState::new();
+        state.set_source(mock_with(5));
+        assert_eq!(state.index(), 0);
+        assert!(
+            !state.jump_to(0),
+            "jump_to(0) on a book just opened (index=0) must be a no-op"
+        );
+        assert_eq!(state.index(), 0);
+    }
+
+    #[test]
+    fn jump_to_stored_page_resumes_correctly() {
+        // Simulates opening a book where last_page = 3. Single mode: every page
+        // is its own leading. jump_to(3) must move and land at index 3.
+        let mut state = ViewerState::new();
+        state.set_source(mock_with(10));
+        let moved = state.jump_to(3);
+        assert!(
+            moved,
+            "jump_to must return true when moving from index 0 to 3"
+        );
+        assert_eq!(state.index(), 3);
+    }
+
+    #[test]
+    fn jump_to_stored_trailing_normalizes_to_leading_on_resume() {
+        // Double / Standalone: {0}{1,2}{3,4}{5}. If last_page stored was 2
+        // (trailing of {1,2}), jump_to(2) normalizes to leading 1.
+        let mut state = double_state();
+        state.set_source(mock_with(6));
+        assert!(state.jump_to(2));
+        assert_eq!(
+            state.index(),
+            1,
+            "stored trailing page must normalize to spread leading on resume"
+        );
+    }
+
+    // ---- open → read → leave sequence (PR-R borrow regression) -------------
+
+    #[test]
+    fn open_read_leave_sequence_state_invariants() {
+        // Simulates the open → read → leave sequence that write_back_position
+        // depends on. After a real open the source is set (mocked here via
+        // set_source, which leaves open_file as None since no path is passed;
+        // the happy path that sets open_file is covered by
+        // open_file_is_some_canonical_after_successful_open_path), navigating
+        // pages and then calling index() returns the correct page. This pins the
+        // invariants that write_back_position(state, library) relies on:
+        //   - state.open_file() is Some after a successful open
+        //   - state.index() reflects navigation after set_source
+        //   - these two can be read in separate statements without conflict
+
+        let mut state = ViewerState::new();
+
+        // Simulate open_path success: set_source sets the cache; open_path
+        // also sets open_file (tested separately). We use set_source + manual
+        // assertion on the fields we control in tests.
+        state.set_source(mock_with(10));
+        // After set_source directly, open_file is None (no path was given). The
+        // happy path that sets open_file is covered by
+        // open_file_is_some_canonical_after_successful_open_path; here we verify
+        // index tracking and the read-shape.
+        assert_eq!(state.index(), 0, "fresh after set_source: index is 0");
+
+        // Read two pages (two spreads in Single mode).
+        assert!(state.apply(NavAction::Next));
+        assert!(state.apply(NavAction::Next));
+        assert_eq!(state.index(), 2, "after two nexts: index is 2");
+
+        // jump_to can be used for a scrubber seek too.
+        assert!(state.jump_to(7));
+        assert_eq!(state.index(), 7, "after jump_to(7): index is 7");
+
+        // The position that write_back_position reads — these two calls must
+        // not conflict when called in sequence (distinct immutable borrows
+        // on the same value, which is trivially safe; this test pins the
+        // shape of the reads).
+        let _page = state.index(); // what write_back_position calls
+                                   // open_file() is None here (set_source path), but the call must not panic.
+        let _path = state.open_file(); // what write_back_position calls
+                                       // No panic reached: the sequence is safe.
+
+        // Simulate opening a second book (write_back fires for the first, then
+        // set_source resets the state).
+        state.set_source(mock_with(5));
+        assert_eq!(state.index(), 0, "set_source resets index to 0");
+        assert!(
+            state.open_file().is_none(),
+            "set_source without path leaves open_file None"
+        );
     }
 
     // ---- scrub_fraction_to_page() (PR-S): pure fraction -> raw page ----------

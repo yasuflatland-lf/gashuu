@@ -325,9 +325,31 @@ Routing the outcome to a status property is only half the fix: a bound, VISIBLE 
 
 `ViewerState` owns `reading_direction`/`spread_mode`/`cover_mode`; `ViewportState` owns `fit_mode`. `reconcile_settings(&ViewerState, &ViewportState, &mut Settings)` (a pure fn in `main.rs`) copies those four into `Settings` immediately before EACH `save()` — exit, settings-dialog close, and the open-time save (now INSIDE the `if track_recent_files` gate in `open_and_present`, the only save on that path). Mode-mutation sites (D/R/C/`f` keys + the dialog setters) now ONLY mutate runtime state + `refresh`; the ~9 per-mutation `settings.borrow_mut().X = …` mirror lines are GONE, killing the "a new mutation site forgets to mirror → setting silently not persisted" bug class (neither types nor tests caught it before). The guide-dismiss save writes only `seen_guide` and intentionally SKIPS reconcile (not a runtime-mirrored field). EXCEPTION: `cache_size`/`preload_pages`/`track_recent_files` keep `Settings` as their source (one-way `Settings → ViewerState` via `set_cache_config` — see that bullet above); they are NOT reconciled back. `on_open_settings` reads the dialog's initial mode values from the RUNTIME (`state`/`viewport`), never `Settings`, so a lagging mirror can't make the dialog show a stale value.
 
+### Key `Library` by the CANONICAL path, never the raw dialog path (PR-R)
+
+Any code that keys into `Library` by path (`last_page`/`set_last_page`/`add`) MUST use the
+**canonical** path form. `ViewerState::open_path` stores `path.canonicalize().unwrap_or(verbatim)`
+in `open_file`, and `Library::add` applies the identical policy to the same input, so the keys
+match. Resume/write-back therefore read the key from `state.open_file()`, NEVER the raw `path`
+argument (which may carry `..`/symlinks/case differences). This is a SILENT-failure trap: a raw-path
+lookup "succeeds" returning `last_page` = 0, so the bug presents as resuming at page 0 rather than an
+error.
+
+### Mirror the recents save-on-open convention when registering into another persisted store (PR-R)
+
+When an open should register the item in a persisted store, follow the existing recents
+`push_recent` + immediate `save()` on-open pattern so the stores stay consistent after a crash.
+PR-R added `Library::add` + an immediate library `save()` on open precisely so a book can't appear
+in recents but be missing from the shelf. Persistence-failure policy stays log-only
+`tracing::error!`, consistent with the settings/recents save sites (a `tracing` line is invisible in
+a GUI run, so genuinely user-facing failures additionally surface to the status bar — see the
+dialog-save bullet).
+
 ### Borrow discipline for reconcile-before-save (PR-D)
 
 Each `reconcile_settings(&state.borrow(), &viewport.borrow(), &mut settings.borrow_mut())` is ONE statement: the three temporaries (distinct RefCells) drop at the `;`, so the following fresh `settings.borrow().save()` cannot double-borrow. In `open_and_present`, bind `let opened = state.borrow_mut().open_folder(path);` FIRST (the `borrow_mut` drops at the `;`) so the `Ok` arm can read `&state.borrow()` in reconcile — a `borrow_mut` held across the `match` would double-borrow-panic. Inside `if s.track_recent_files`, reconcile REUSES the already-held `&mut s` (`s: RefMut<Settings>`) rather than taking a second `settings.borrow_mut()`. Pass `&mut s`, NOT `&mut *s` — `RefMut` deref-coerces to `&mut Settings` and clippy's `explicit_auto_deref` (`-D warnings`) rejects the explicit `*`. The `reconcile_settings` unit test pins BOTH directions: the four mirrored fields ARE written AND the non-mirrored fields (`cache_size`/`preload_pages`/`track_recent_files`/`seen_guide`) are left untouched (built via struct-update syntax to dodge `clippy::field_reassign_with_default`).
+
+NUANCE (PR-R, `write_back_position`): to read MULTIPLE fields from one `RefCell` in a single expression, take ONE `let s = state.borrow();` block and read all fields from it (e.g. `position_to_write_back(s.open_file(), s.index())`) rather than `state.borrow()` twice in the same expression; let that `Ref` drop at the `;` before the later `borrow_mut()` (e.g. `set_last_page`) — and keep that `borrow_mut()` in its own statement, never held across a following `borrow()` (e.g. the subsequent `save()`).
 
 ### Persistent cache keys must use a version-stable hash, not `DefaultHasher` (PR-T)
 

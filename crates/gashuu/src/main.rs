@@ -91,6 +91,7 @@ fn main() -> color_eyre::Result<()> {
         let settings = Rc::clone(&settings);
         let viewport = Rc::clone(&viewport);
         let thumbs = Rc::clone(&thumbs);
+        let library = Rc::clone(&library);
         ui.on_open_folder(move || {
             let Some(ui) = ui_weak.upgrade() else {
                 return;
@@ -98,7 +99,9 @@ fn main() -> color_eyre::Result<()> {
             let Some(dir) = rfd::FileDialog::new().pick_folder() else {
                 return;
             };
-            open_and_present(&ui, &state, &settings, &viewport, &thumbs, &dir, "");
+            open_and_present(
+                &ui, &state, &settings, &viewport, &thumbs, &library, &dir, "",
+            );
         });
     }
 
@@ -109,6 +112,7 @@ fn main() -> color_eyre::Result<()> {
         let settings = Rc::clone(&settings);
         let viewport = Rc::clone(&viewport);
         let thumbs = Rc::clone(&thumbs);
+        let library = Rc::clone(&library);
         ui.on_open_archive(move || {
             let Some(ui) = ui_weak.upgrade() else {
                 return;
@@ -125,6 +129,7 @@ fn main() -> color_eyre::Result<()> {
                 &settings,
                 &viewport,
                 &thumbs,
+                &library,
                 &file,
                 " (zip-slip or oversized)",
             );
@@ -168,17 +173,38 @@ fn main() -> color_eyre::Result<()> {
         });
     }
 
-    // Carousel: Return on the focused book opens it. PR-C delivers the correct
-    // focused index (the move clamp keeps it in shelf bounds); resolving that
-    // index to a Library book + opening/resuming its source is PR-R/PR-V. For
-    // now it transitions to the Viewer so the seam is exercised end-to-end.
+    // Carousel: Return on the focused book opens it, resumes its last-read
+    // page (via open_and_present → jump_to), and transitions to the Viewer.
     {
         let ui_weak = ui.as_weak();
+        let state = Rc::clone(&state);
+        let settings = Rc::clone(&settings);
+        let viewport = Rc::clone(&viewport);
+        let thumbs = Rc::clone(&thumbs);
+        let library = Rc::clone(&library);
         let nav = Rc::clone(&nav);
-        ui.on_carousel_open(move |_index| {
+        ui.on_carousel_open(move |index| {
             let Some(ui) = ui_weak.upgrade() else {
                 return;
             };
+            // Resolve the focused carousel index to a Library book path.
+            // Borrow discipline: `library.borrow()` drops at the `;`.
+            let path = {
+                let lib = library.borrow();
+                lib.books()
+                    .get(index as usize)
+                    .map(|b| b.path().to_path_buf())
+            };
+            let Some(path) = path else {
+                // Index out of range (carousel and library out of sync) — no-op.
+                tracing::warn!(index, "carousel-open: no book at index");
+                return;
+            };
+            // open_and_present writes back the OLD book's position first,
+            // then opens the new path and resumes its stored position.
+            open_and_present(
+                &ui, &state, &settings, &viewport, &thumbs, &library, &path, "",
+            );
             go_to_viewer(&ui, &nav);
         });
     }
@@ -576,6 +602,7 @@ fn main() -> color_eyre::Result<()> {
         let state = Rc::clone(&state);
         let viewport = Rc::clone(&viewport);
         let nav = Rc::clone(&nav);
+        let library = Rc::clone(&library);
         ui.on_nav(move |token| {
             let Some(ui) = ui_weak.upgrade() else {
                 return;
@@ -658,6 +685,11 @@ fn main() -> color_eyre::Result<()> {
                 // Up arrow returns to the Library carousel. Direction-independent
                 // (decoded in keymap); the seam flips NavState + syncs `screen`.
                 KeyCommand::GoToLibrary => {
+                    // Write the current position back before leaving the viewer.
+                    // Borrow discipline: write_back_position takes &Rc<RefCell<…>>
+                    // and confines each borrow to a single statement; drops before
+                    // go_to_library borrows the UI.
+                    write_back_position(&state, &library);
                     go_to_library(&ui, &nav);
                 }
             }
@@ -682,6 +714,10 @@ fn main() -> color_eyre::Result<()> {
     }
 
     ui.run()?;
+    // Write the current reading position back to the library before exit.
+    // The `state` and `library` RefCells are no longer borrowed (the event
+    // loop has exited), so there is no borrow conflict here.
+    write_back_position(&state, &library);
     // Reconcile runtime display modes into Settings, then persist on exit so even a
     // first run writes a file the user can hand-edit. The `reconcile_settings`
     // call's `settings.borrow_mut()` drops at the `;`, so `save()`'s fresh
@@ -714,15 +750,21 @@ fn main() -> color_eyre::Result<()> {
 /// Thumbnail regeneration is delegated to the shared `ThumbnailController`, which
 /// owns the strip's model and the epoch + cancel double-guard; `start` cancels any
 /// in-flight generation for the previous book before launching this one.
+#[allow(clippy::too_many_arguments)]
 fn open_and_present(
     ui: &ViewerWindow,
     state: &Rc<RefCell<ViewerState>>,
     settings: &Rc<RefCell<Settings>>,
     viewport: &Rc<RefCell<ViewportState>>,
     thumbs: &ThumbnailController,
+    library: &Rc<RefCell<Library>>,
     path: &Path,
     skipped_detail: &str, // "" for folders, " (zip-slip or oversized)" for archives
 ) {
+    // Write back the position for the book that is currently open (if any)
+    // before we replace the source. `open_file()` is None when no book was
+    // open, so write_back_position is a no-op in that case.
+    write_back_position(state, library);
     // Bind the result first so the `state.borrow_mut()` temporary drops before the
     // `Ok` arm reads `state` again (a borrow held across the match would
     // double-borrow-panic at the `reconcile_settings(&state.borrow(), ..)` below).
@@ -750,6 +792,31 @@ fn open_and_present(
             return;
         }
     }
+    // Register the freshly opened book in the Library so its reading position
+    // has a persistent home. `add` is idempotent (dedup by canonical path) and
+    // returns false for a book already present, so re-opening keeps its stored
+    // last_page. This is what makes write-back/resume observable for books
+    // opened via Open Folder / Open Archive (carousel-opened books are already
+    // present, so `add` is a no-op there).
+    library.borrow_mut().add(path.to_path_buf());
+    // Persist the newly registered book immediately, mirroring the recents
+    // save-on-open above, so the library shelf stays consistent with recents
+    // even if the app exits before the next leave point. Borrow discipline:
+    // `add`'s borrow_mut dropped at its `;`; this is a fresh, separate borrow.
+    if let Err(e) = library.borrow().save() {
+        tracing::error!(error = %e, "failed to save library on open");
+    }
+    // Resume at the stored reading position. Look up `last_page` with the
+    // CANONICAL key that `open_path`/`add` store (read from `open_file`), not
+    // the raw `path` argument, which may be a non-canonical dialog path — using
+    // the raw path would miss the stored book and silently resume at page 0.
+    // `last_page` returns 0 for an unknown book (no-op via jump_to's guard).
+    // Borrow discipline: the `state.borrow()` for the canonical path drops at
+    // its `;`; `library.borrow()` and `state.borrow_mut()` are later, separate
+    // borrows that cannot conflict (distinct RefCells, single statements).
+    let canonical = state.borrow().open_file().map(Path::to_path_buf);
+    let resume_page = canonical.map_or(0, |p| library.borrow().last_page(&p));
+    state.borrow_mut().jump_to(resume_page);
     refresh(ui, &state.borrow(), viewport);
     let skipped = state.borrow().last_open_skipped();
     if skipped > 0 {
@@ -1068,6 +1135,50 @@ fn reconcile_settings(state: &ViewerState, viewport: &ViewportState, settings: &
     settings.fit_mode = viewport.fit_mode();
 }
 
+/// Pure helper: decide if and what to write back to the Library.
+///
+/// Returns `Some((canonical_path, page_index))` when a write-back should be
+/// performed (a book is open), `None` otherwise. Extracted for table-testing
+/// so the predicate can be verified independently of the effectful
+/// `write_back_position` that actually calls `library.set_last_page`.
+fn position_to_write_back(
+    open_file: Option<&std::path::Path>,
+    page: usize,
+) -> Option<(std::path::PathBuf, usize)> {
+    open_file.map(|p| (p.to_path_buf(), page))
+}
+
+/// Write the current reading position back to the Library and persist.
+///
+/// Called at every leave point: ↑ to Library, opening a different book,
+/// and app exit. `set_last_page` returns `false` when the path is absent or
+/// the value is unchanged (idempotent). We do not guard `save()` on that
+/// return value — we always persist for simplicity (one short JSON write at
+/// most, and the result is idempotent on disk).
+///
+/// Borrow discipline: `state` and `library` are distinct `RefCell`s, so
+/// borrowing one never affects the other. The opening `let` takes a single
+/// shared borrow of `state` and reads both fields from it; that `Ref` drops at
+/// the end of the statement, before `library` is borrowed. Each statement's
+/// borrows drop before the next statement acquires a different borrow,
+/// following the one-statement rule in `docs/patterns.md`.
+fn write_back_position(state: &Rc<RefCell<ViewerState>>, library: &Rc<RefCell<Library>>) {
+    // Extract the (path, page) tuple from the viewer state under one shared
+    // borrow; the `Ref` drops at the `;` before `library` is borrowed.
+    let Some((path, page)) = ({
+        let s = state.borrow();
+        position_to_write_back(s.open_file(), s.index())
+    }) else {
+        return; // no book open — nothing to write back
+    };
+    // `set_last_page` returns false when absent or unchanged; we persist
+    // unconditionally for simplicity (short JSON write, idempotent on disk).
+    library.borrow_mut().set_last_page(&path, page);
+    if let Err(e) = library.borrow().save() {
+        tracing::error!(error = %e, "failed to save library on position write-back");
+    }
+}
+
 /// Add every path in `paths` to `lib`, skipping duplicates.
 /// Returns the count of books actually inserted (new books only).
 /// Dedup is handled by `Library::add` (returns `false` when already present),
@@ -1193,6 +1304,37 @@ mod tests {
         assert_eq!(settings.preload_pages, 7);
         assert!(settings.track_recent_files);
         assert!(settings.seen_guide);
+    }
+
+    // ---- position_to_write_back (PR-R) ------------------------------------
+
+    #[test]
+    fn position_to_write_back_none_when_no_open_file() {
+        assert!(
+            position_to_write_back(None, 5).is_none(),
+            "no open file => no write-back"
+        );
+    }
+
+    #[test]
+    fn position_to_write_back_some_when_file_open() {
+        use std::path::PathBuf;
+        let path = PathBuf::from("/some/book.cbz");
+        let result = position_to_write_back(Some(path.as_path()), 7);
+        assert!(result.is_some(), "open file => write-back tuple");
+        let (p, pg) = result.unwrap();
+        assert_eq!(p, path);
+        assert_eq!(pg, 7);
+    }
+
+    #[test]
+    fn position_to_write_back_zero_page() {
+        use std::path::PathBuf;
+        let path = PathBuf::from("/some/book.cbz");
+        let result = position_to_write_back(Some(path.as_path()), 0);
+        assert!(result.is_some());
+        let (_, pg) = result.unwrap();
+        assert_eq!(pg, 0, "page 0 is a valid write-back (start of book)");
     }
 
     #[test]
