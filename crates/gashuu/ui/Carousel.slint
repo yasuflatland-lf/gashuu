@@ -1,0 +1,111 @@
+// Library cover-flow carousel — EMPTY SHELL (PR-0b).
+//
+// This PR freezes the public contract (struct + component + callbacks + the
+// focus-self() recovery function) and renders only a placeholder / empty
+// state on the DESIGN.md stage. PR-C fills the real cover-flow rendering from
+// the Library model; PR-L fills the "add books" action. Styling references
+// Theme tokens only — NO inline hex (see DESIGN.md rule 2).
+//
+// Focus: the component owns its own FocusScope. `focus-self()` restores
+// keyboard focus to it (the carousel counterpart of ViewerWindow's
+// `focus-pages()` recovery rule). The key handler forwards the navigation
+// seams so downstream PRs only fill the Rust side:
+//   Left/Right -> move(-1 / +1)   Return -> open(focused-index)   Down -> back()
+import { Theme } from "Theme.slint";
+
+// Frozen by PR-0b; populated by PR-C (covers via PR-V). One book in the shelf.
+export struct CarouselItem {
+    cover: image,
+    title: string,
+    current: int,     // 1-based current page for display (last_page + 1)
+    total: int,
+    progress: float,  // 0.0 .. 1.0
+    available: bool,
+}
+
+export component Carousel inherits Rectangle {
+    // ── Frozen public contract ────────────────────────────────────────────────
+    in property <[CarouselItem]> items;
+    in-out property <int> focused-index;
+    callback open(int);   // index — Return on the focused book
+    callback move(int);   // delta (-1 / +1) — Left / Right
+    callback back();      // Down — return to the currently-open book
+
+    // FocusScope focus recovery (mirrors ViewerWindow's focus-pages() rule).
+    public function focus-self() { fs.focus(); }
+
+    // ── Stage background: stage-top -> canvas vertical gradient (DESIGN.md
+    //    "Layout / Two screens"; Slint uses @linear-gradient, not radial). ─────
+    background: transparent;
+    Rectangle {
+        width: 100%;
+        height: 100%;
+        background: @linear-gradient(180deg, Theme.stage-top 0%, Theme.canvas 100%);
+    }
+
+    // ── Keyboard seams ──────────────────────────────────────────────────────
+    // The carousel is the focused screen on the Library route, so it owns key
+    // input here. Left/Right move focus, Return opens the focused book, Down
+    // returns to the currently-open book. Up is handled by ViewerWindow's
+    // FocusScope (GoToLibrary) and is a no-op while already in the Library.
+    fs := FocusScope {
+        key-pressed(event) => {
+            if (event.text == Key.LeftArrow) { root.move(-1); return accept; }
+            if (event.text == Key.RightArrow) { root.move(1); return accept; }
+            if (event.text == Key.Return) { root.open(root.focused-index); return accept; }
+            if (event.text == Key.DownArrow) { root.back(); return accept; }
+            return reject;
+        }
+
+        // ── Empty state (placeholder) ───────────────────────────────────────
+        // PR-C replaces this with the cover-flow row built from `items`; PR-L
+        // wires the CTA to the rfd picker. For PR-0b it is a static, centered
+        // call-to-action on a sunken panel (DESIGN.md "Empty Library").
+        Rectangle {
+            width: 360px;
+            height: 200px;
+            x: (parent.width - self.width) / 2;
+            y: (parent.height - self.height) / 2;
+            background: Theme.surface-sunken;
+            border-radius: Theme.radius-lg;
+            border-width: 1px;
+            border-color: Theme.hairline;
+
+            VerticalLayout {
+                alignment: center;
+                spacing: Theme.space-md;
+                padding: Theme.space-xl;
+
+                Text {
+                    text: "Your library is empty";
+                    color: Theme.text;
+                    font-size: Theme.font-title;
+                    font-weight: 700;
+                    horizontal-alignment: center;
+                }
+                Text {
+                    text: "Add books to start your shelf.";
+                    color: Theme.text-muted;
+                    font-size: Theme.font-micro;
+                    horizontal-alignment: center;
+                }
+                // Placeholder CTA. PR-L gives this an `add()` callback + rfd
+                // picker; for PR-0b it is a non-interactive visual placeholder
+                // so the shell shows the intended affordance.
+                Rectangle {
+                    height: 34px;
+                    background: Theme.accent;
+                    border-radius: Theme.radius-md;
+                    Text {
+                        text: "Select folders / files to add";
+                        color: Theme.text;
+                        font-size: Theme.font-label;
+                        font-weight: 500;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                }
+            }
+        }
+    }
+}
