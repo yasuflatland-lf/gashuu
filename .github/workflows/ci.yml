@@ -46,6 +46,16 @@ jobs:
           flags: rust
           fail_ci_if_error: false
 
+  # Doc-structure harness: enforces the L1 (CLAUDE.md <=35 lines) + link integrity
+  # invariants. Pure bash, no toolchain — runs the same script as the local
+  # `mise run check-docs` task.
+  docs:
+    name: docs (structure check)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - run: bash scripts/check-docs.sh
+
   # The Slint presentation crate, built and tested per OS. Only `-p gashuu` runs
   # here (the core job already covers gashuu-core), and fmt/clippy are not repeated
   # on every OS. clippy for the UI runs once on Linux.

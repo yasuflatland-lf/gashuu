@@ -3,138 +3,42 @@
 [![CI](https://img.shields.io/github/actions/workflow/status/yasuflatland-lf/gashuu/ci.yml?branch=main&label=CI&logo=github)](https://github.com/yasuflatland-lf/gashuu/actions/workflows/ci.yml)
 [![coverage](https://img.shields.io/codecov/c/github/yasuflatland-lf/gashuu?flag=rust&label=coverage&logo=codecov)](https://codecov.io/gh/yasuflatland-lf/gashuu)
 
-A cross-platform manga viewer built with Rust and [Slint](https://slint.dev).
+A cross-platform manga / comic viewer built with Rust and [Slint](https://slint.dev).
+Open a folder of images or a comic archive and read with the keyboard — two-page
+spreads, right-to-left binding, zoom/pan, a thumbnail strip, and persistent settings.
 
-## Status (PR5 — Zoom/pan + fit modes · PR6 — ZIP/CBZ archive support · PR7 — RAR/CBR archive support · PR8a — Thumbnail strip · PR8b — Settings dialog + first-run guide)
+## Features
 
-Open a **folder** of PNG/JPG/JPEG images, or a **CBZ/ZIP/CBR/RAR comic archive**, and browse
-every page with the keyboard. Pages are held in an LRU cache (up to 50 decoded images)
-and the neighbours of the current page are prefetched in the background, so warmed page
-turns are effectively instant. You can read in a two-page spread with right-to-left
-(manga) or left-to-right binding, in addition to single-page browsing. An **auto**
-spread mode picks single or double from the window's aspect ratio and follows resizes
-live. User settings persist across restarts — gashuu saves your preferences on exit and
-restores them on the next launch. A **thumbnail strip** shows a preview of every page;
-thumbnails are generated in parallel in the background so the strip fills in
-progressively while you read and opening a book is never blocked. Press **T** (or click
-the **Thumbnails** toolbar button) to toggle the strip, click any thumbnail to jump
-directly to that page, and see at a glance which page is current (highlighted). A
-thumbnail that fails to generate shows a red ✕ error marker rather than a blank cell.
+- **Sources** — a folder of PNG/JPG/JPEG images, or a `.cbz`/`.zip`/`.cbr`/`.rar`
+  archive. The format is detected by extension or magic bytes, so a mis-named archive
+  still opens.
+- **Archives** — pages are read in natural filename order and images nested in
+  subfolders are included. Extraction is in-memory (nothing is written to disk); unsafe,
+  oversized, or corrupt entries are skipped and counted in the status bar.
+- **Spreads** — single page, two-page spread, or **auto** (picks single/double from the
+  window aspect ratio and follows resizes live). Right-to-left (manga) or left-to-right
+  binding, with a standalone or paired cover layout.
+- **Zoom & pan** — the wheel zooms at the cursor and drag pans; fit modes are Whole /
+  Width / Actual. Zoom and pan are session-only; the fit mode is saved.
+- **Fast page turns** — pages are held in an LRU cache and neighbours are prefetched in
+  the background, so warmed turns are effectively instant.
+- **Thumbnail strip** — previews of every page, generated in parallel so the strip fills
+  in while you read. Click a thumbnail to jump; the current page is highlighted; a
+  thumbnail that fails to generate shows a red ✕.
+- **Settings dialog & first-run guide** — change every active option from the toolbar
+  without hand-editing config, and a one-time welcome overlay summarises the controls.
+- **Safe decoding** — oversized images and decompression bombs are rejected before
+  allocating memory (16 384×16 384 px / 512 MiB / ~128 Mpx limits), with a clear error
+  in the status bar instead of an out-of-memory crash.
 
-On first launch a **welcome overlay** summarises how to open files, turn pages, switch
-modes, zoom and fit, and use the thumbnail strip. Dismiss it with **Got it** — it won't
-appear again. The in-app **Settings dialog** (toolbar **Settings…** button) lets you
-change all active options without hand-editing the config file; display-mode changes
-apply immediately, while cache size and preload radius take effect when you open the next
-book. The dialog also lists all keyboard shortcuts for quick reference.
+## Getting Started
 
-Arrow keys follow the active reading direction: in LTR mode **→** advances and **←**
-goes back; in RTL mode the arrows are swapped (**←** advances / **→** goes back).
-**Space** and **Backspace** are always next/prev in reading order regardless of
-direction.
-
-**Opening content**
-
-- **Open Folder** button — pick a folder of PNG/JPG/JPEG images.
-- **Open Archive** button — pick a `.cbz`, `.zip`, `.cbr`, or `.rar` file. Pages inside
-  the archive are read in natural filename order; images nested in subfolders within the
-  archive are included. Archives are extracted in-memory (no files written to disk);
-  unsafe, oversized, or corrupt entries are skipped and the count is shown in the status
-  bar. Dispatch is automatic: gashuu detects the format by extension or magic bytes, so
-  a mis-extensioned archive still opens.
-
-Once a source is open, all navigation, spread, and layout controls work the same
-regardless of whether you opened a folder or an archive.
-
-You can also zoom and pan any page (or two-page spread). Zoom and pan apply to the whole
-viewport — in two-page spread mode both pages zoom and pan together. Page turns keep
-the current zoom and fit; only the pan position re-centers. Zoom/pan are GPU texture
-transforms (no re-decode), designed for 60 fps at 4K. The zoom level and pan position
-are session-only and are not saved; the fit mode is persisted.
-
-**Page navigation**
-
-- **→ / Space** — next page (or spread)
-- **← / Backspace** — previous page (or spread)
-- **D** — cycle spread mode: single → double → auto
-- **R** — toggle reading direction (LTR ↔ RTL)
-- **C** — toggle cover layout (standalone ↔ paired)
-- **T** — toggle thumbnail strip (click a thumbnail to jump to that page)
-
-Toggle changes are remembered (saved on exit).
-
-**Zoom & pan** (direction-independent)
-
-- **Mouse wheel** — zoom in/out, centered at the cursor position. Zoom range: 1.0×–8.0× relative to the fit baseline.
-- **Click-drag** — pan the viewport.
-- **`+` / `=`** — zoom in
-- **`-`** — zoom out
-- **`0`** — reset view (zoom 1.0 × fit baseline, re-center)
-- **`1`** — actual size (1:1 pixels, equivalent to `Actual` fit mode)
-- **`f`** — cycle fit mode (`Whole` → `Width` → `Actual`)
-
-Set `RUST_LOG=debug` to see per-turn latency (`page turn elapsed_ms=…`).
-
-## Settings
-
-The easiest way to change settings is the **Settings dialog**: click the **Settings…**
-button in the toolbar. Every active option is available there — reading direction,
-spread mode, cover layout, fit mode, cache size, preload radius, and the recent-files
-toggle. Display-mode changes (reading direction, spread, cover, fit) apply immediately;
-cache size and preload radius take effect when you open the next book. The dialog lists
-all keyboard shortcuts for reference (remapping is not yet supported).
-
-Settings are also stored as JSON in the OS config directory and can be hand-edited; the
-file is loaded on startup and saved on exit.
-
-| Platform | Path |
-|----------|------|
-| Linux    | `~/.config/gashuu/settings.json` |
-| macOS    | `~/Library/Application Support/gashuu/settings.json` |
-| Windows  | `%APPDATA%\gashuu\settings.json` |
-
-**Active settings** (take effect today):
-
-- `reading_direction` — `"ltr"` (default) or `"rtl"` (right-to-left / manga binding).
-- `spread_mode` — `"single"` (default), `"double"` (two-page spread), or `"auto"`
-  (chooses single or double from the window aspect ratio: landscape/square → double,
-  portrait → single; follows window resizes live; composes with RTL/LTR and cover mode).
-- `cover_mode` — `"standalone"` (default: cover shown alone, then pages pair up as
-  {1,2}{3,4}…) or `"paired"` (pairing starts from the cover: {0,1}{2,3}…). Only
-  affects double (or auto-resolved double) mode.
-- `fit_mode` — initial fit applied when a page is displayed: `"whole"` (default, fit
-  the whole page letterboxed), `"width"` (fill the viewport width; page may overflow
-  vertically and be pannable), or `"actual"` (1:1 pixels). Cycle at runtime with **`f`**
-  or jump to actual size with **`1`**. Zoom level and pan position are session-only and
-  not saved.
-- `cache_size` — number of decoded images held in the LRU cache (default `50`).
-- `preload_pages` — background prefetch radius around the current page (default `3`).
-- `recent_files` — list of recently opened folders and archives.  Recorded only when
-  `track_recent_files` is `true`; it is **off by default** for privacy.  Enable it in
-  the Settings dialog or by editing the JSON file directly.
-
-**Saved for forward-compatibility** (persisted now; wired up in later releases):
-
-- `key_bindings` — custom keyboard shortcuts.
-
-If the settings file is corrupt or unreadable, gashuu falls back to built-in defaults
-and keeps running.
-
-## Safety
-
-gashuu rejects oversized images before allocating memory. In addition to the existing
-16 384×16 384 pixel / 512 MiB per-image limits, any image whose total pixel count
-exceeds ~128 megapixels is refused at decode time. Files that exceed either limit
-surface a clear "image too large" error in the status bar instead of risking an
-out-of-memory crash (defense-in-depth against decompression bombs).
-
-## Develop
-
-First-time setup (the `mise trust` step is required once for a fresh clone):
+Toolchain and tools are managed by [mise](https://mise.jdx.dev) (Rust 1.96.0 +
+cargo-nextest + cargo-llvm-cov):
 
 ```bash
-mise trust                                # trust ./mise.toml before installing
-mise install                              # Rust 1.96.0 + cargo-nextest + cargo-llvm-cov
+mise trust      # trust ./mise.toml (once per fresh clone)
+mise install
 ```
 
 On Linux, install Slint's system libraries (macOS and Windows need nothing extra):
@@ -144,29 +48,101 @@ sudo apt-get install -y libfontconfig1-dev libfreetype6-dev libxcb1-dev \
   libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libxkbcommon-dev
 ```
 
-The RAR/CBR backend (`unrar` crate) bundles the C++ UnRAR sources and builds them via
-`cc`. A C++ compiler is required at build time — this is standard on all supported
-platforms (Xcode CLT on macOS, MSVC or MinGW on Windows, `build-essential` on Linux)
-and adds nothing beyond the normal development toolchain.
+A C++ compiler is also required — the RAR/CBR backend bundles the C++ UnRAR sources and
+builds them via `cc`. This is standard on every platform (Xcode CLT on macOS, MSVC or
+MinGW on Windows, `build-essential` on Linux) and adds nothing beyond the usual toolchain.
 
-Then:
+Then run the viewer and open a folder or archive from the toolbar:
 
 ```bash
-cargo nextest run --workspace             # tests
-cargo clippy --workspace --all-targets -- -D warnings
-RUST_LOG=info cargo run -p gashuu         # run the viewer
+cargo run -p gashuu
 ```
 
-## Workspace
+## Usage
 
-- `crates/gashuu-core` — Slint-independent domain + I/O (page sources including folder,
-  ZIP/CBZ, and RAR/CBR archive support, image decode).
-- `crates/gashuu` — Slint presentation layer.
+Open content from the toolbar — **Open Folder…** (PNG/JPG/JPEG) or **Open Archive…**
+(`.cbz`/`.zip`/`.cbr`/`.rar`). Navigation works the same for folders and archives.
+
+**Navigation**
+
+| Key | Action |
+|-----|--------|
+| `→` / `Space` | Next page or spread |
+| `←` / `Backspace` | Previous page or spread |
+| `D` | Cycle spread mode: single → double → auto |
+| `R` | Toggle reading direction (LTR ↔ RTL) |
+| `C` | Toggle cover layout (standalone ↔ paired) |
+| `T` | Toggle the thumbnail strip |
+
+Arrows follow the reading direction (LTR: `→` = next; RTL: `←` = next). `Space` and
+`Backspace` are always next/previous in reading order. Mode changes are saved on exit.
+
+**Zoom & fit** (direction-independent)
+
+| Input | Action |
+|-------|--------|
+| Mouse wheel | Zoom at the cursor (1.0×–8.0× of the fit baseline) |
+| Click-drag | Pan the viewport |
+| `+` / `=` | Zoom in |
+| `-` | Zoom out |
+| `0` | Reset view (fit baseline, re-centered) |
+| `1` | Actual size (1:1 pixels) |
+| `f` | Cycle fit mode (Whole → Width → Actual) |
+
+Zoom and pan apply to the whole viewport (both pages in a spread move together). Page
+turns keep the current zoom and fit and only re-center the pan. Set `RUST_LOG=debug` to
+log per-turn latency.
+
+**Settings dialog** — click **Settings…** to change reading direction, spread mode,
+cover layout, fit mode, cache size, preload radius, and the recent-files toggle.
+Display-mode changes apply immediately; cache size and preload radius take effect on the
+next book you open. The dialog also lists the keyboard shortcuts (remapping is not yet
+supported).
+
+## Settings
+
+Settings are stored as JSON in the OS config directory, loaded on startup and saved on
+exit. The Settings dialog is the easiest way to change them, but the file can be
+hand-edited:
+
+| Platform | Path |
+|----------|------|
+| Linux    | `~/.config/gashuu/settings.json` |
+| macOS    | `~/Library/Application Support/gashuu/settings.json` |
+| Windows  | `%APPDATA%\gashuu\settings.json` |
+
+| Key | Values | Notes |
+|-----|--------|-------|
+| `reading_direction` | `"ltr"` (default) / `"rtl"` | Right-to-left = manga binding |
+| `spread_mode` | `"single"` (default) / `"double"` / `"auto"` | Auto chooses from the window aspect ratio |
+| `cover_mode` | `"standalone"` (default) / `"paired"` | Applies to double mode only |
+| `fit_mode` | `"whole"` (default) / `"width"` / `"actual"` | Initial fit; cycle with `f` |
+| `cache_size` | int (default `50`) | LRU decoded-image cache; applies to the next book |
+| `preload_pages` | int (default `3`) | Background prefetch radius; applies to the next book |
+| `track_recent_files` | bool (default `false`) | Off for privacy; gates `recent_files` |
+| `recent_files` | list | Recorded only when tracking is on |
+| `key_bindings` | — | Persisted for forward-compatibility; not yet wired up |
+
+If the settings file is corrupt or unreadable, gashuu falls back to built-in defaults
+and keeps running.
+
+## Project layout
+
+- `crates/gashuu-core` — Slint-independent domain + I/O: folder, ZIP/CBZ, and RAR/CBR
+  page sources, image decode, LRU cache + prefetch, thumbnails, and settings.
+- `crates/gashuu` — Slint presentation layer (windows, dialogs, input, rendering).
+
+## Development
+
+```bash
+cargo fmt --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo nextest run --workspace
+```
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
-
-The RAR/CBR backend uses the UnRAR library, which carries RARLAB's non-free license
-(read-only use is permitted; re-creating the RAR compression algorithm is not). See
-[THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md) for the full UnRAR license text.
+MIT — see [LICENSE](LICENSE). The RAR/CBR backend uses the UnRAR library, which carries
+RARLAB's non-free license (read-only use is permitted; re-creating the RAR compression
+algorithm is not). See [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md) for the full
+UnRAR license text.
