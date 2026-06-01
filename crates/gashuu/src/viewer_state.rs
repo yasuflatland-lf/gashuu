@@ -353,6 +353,17 @@ impl ViewerState {
         true
     }
 
+    /// Update the cache configuration used the NEXT time a book is opened.
+    ///
+    /// This deliberately does NOT rebuild the current book's cache — the new
+    /// values are consumed by `set_source` on the next open, matching the
+    /// "applies to newly opened books" contract surfaced in the settings
+    /// dialog. (Immediate runtime rebuild of the current cache is deferred.)
+    pub fn set_cache_config(&mut self, cache_size: usize, preload_pages: usize) {
+        self.cache_size = cache_size;
+        self.preload_pages = preload_pages;
+    }
+
     /// Set the reading direction to an exact value (vs. `toggle_reading_direction`'s
     /// flip). Reading direction only affects placement, not pairing, so the index
     /// is left untouched. Idempotent: returns `false` (no change) when already set.
@@ -1455,5 +1466,84 @@ mod tests {
         assert!(!state.set_reading_direction(ReadingDirection::Ltr));
         assert_eq!(state.reading_direction(), ReadingDirection::Ltr);
         assert_eq!(state.index(), 1);
+    }
+
+    // ---- set_cache_config (PR8b) ---------------------------------------------
+
+    #[test]
+    fn set_spread_mode_to_auto_landscape_renormalizes_like_double() {
+        // Single mode at index 2 of 6. Landscape viewport (aspect > 1) means
+        // Auto resolves to Double. Switching from Single to Auto triggers
+        // renormalize_index under Double/Standalone semantics: index 2 (even > 0)
+        // is NOT a valid Standalone Double leading, so it re-anchors to the pair
+        // start 1 ({1,2}). set_spread_mode returns true (Single != Auto).
+        let mut state = ViewerState::new();
+        state.set_source(mock_with(6));
+        state.apply(NavAction::Next);
+        state.apply(NavAction::Next);
+        assert_eq!(state.index(), 2);
+        assert_eq!(state.spread_mode(), SpreadMode::Single);
+
+        // Landscape viewport: Auto resolves to Double.
+        state.set_viewport_size(1600.0, 900.0);
+
+        assert!(state.set_spread_mode(SpreadMode::Auto));
+        assert_eq!(state.spread_mode(), SpreadMode::Auto);
+        // Index 2 normalized to valid Standalone Double leading 1 ({1,2}).
+        assert_eq!(state.index(), 1);
+    }
+
+    #[test]
+    fn set_spread_mode_to_auto_portrait_preserves_index() {
+        // Single mode at index 2 of 6. Portrait viewport (aspect < 1) means
+        // Auto resolves to Single, where every page is its own valid leading.
+        // Switching from Single to Auto still returns true (different enum
+        // values), triggers renormalize_index, but index 2 is already a valid
+        // Single leading so it stays unchanged.
+        let mut state = ViewerState::new();
+        state.set_source(mock_with(6));
+        state.apply(NavAction::Next);
+        state.apply(NavAction::Next);
+        assert_eq!(state.index(), 2);
+        assert_eq!(state.spread_mode(), SpreadMode::Single);
+
+        // Portrait viewport: Auto resolves to Single.
+        state.set_viewport_size(900.0, 1200.0);
+
+        assert!(state.set_spread_mode(SpreadMode::Auto));
+        assert_eq!(state.spread_mode(), SpreadMode::Auto);
+        // Index 2 is a valid Single leading; renormalize is idempotent here.
+        assert_eq!(state.index(), 2);
+    }
+
+    #[test]
+    fn set_cover_mode_preserves_valid_leading() {
+        // Double / Standalone at index 0 (the cover). Switching to Paired: in
+        // Paired, pairs are {0,1}{2,3}{4,5}, so index 0 is already a valid
+        // Paired leading. set_cover_mode returns true (mode changed) but index
+        // stays 0 (renormalize is idempotent on an already-valid leading).
+        // This complements the existing cover test that shows index DOES move
+        // when the old index is not a valid leading under the new mode.
+        let mut state = double_state();
+        state.set_source(mock_with(6));
+        assert_eq!(state.index(), 0);
+        assert_eq!(state.cover_mode(), CoverMode::Standalone);
+
+        assert!(state.set_cover_mode(CoverMode::Paired));
+        assert_eq!(state.cover_mode(), CoverMode::Paired);
+        // Index 0 is a valid Paired leading; renormalize must leave it at 0.
+        assert_eq!(state.index(), 0);
+    }
+
+    #[test]
+    fn set_cache_config_updates_fields() {
+        // Calling set_cache_config must update the fields that set_source reads
+        // on the next open. This pins that a settings dialog can store new
+        // cache/preload values in the ViewerState so a subsequently opened book
+        // picks them up without requiring an app relaunch.
+        let mut state = ViewerState::new();
+        state.set_cache_config(99, 7);
+        assert_eq!(state.cache_size(), 99);
+        assert_eq!(state.preload_pages(), 7);
     }
 }

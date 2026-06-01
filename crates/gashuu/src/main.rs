@@ -344,7 +344,8 @@ fn main() -> color_eyre::Result<()> {
             };
             ui.set_show_settings(false);
             if let Err(e) = settings.borrow().save() {
-                tracing::warn!(error = %e, "failed to save settings");
+                tracing::error!(error = %e, "failed to save settings from dialog");
+                ui.set_status_text(format!("Could not save settings: {e}").into());
             }
             ui.invoke_focus_pages();
         });
@@ -360,9 +361,11 @@ fn main() -> color_eyre::Result<()> {
             let Some(ui) = ui_weak.upgrade() else {
                 return;
             };
+            // Persist immediately; a persistent save failure here is non-fatal — the
+            // guide simply re-shows next launch (seen_guide is also saved on exit).
             settings.borrow_mut().seen_guide = true;
             if let Err(e) = settings.borrow().save() {
-                tracing::warn!(error = %e, "failed to save settings");
+                tracing::error!(error = %e, "failed to save settings on guide dismiss");
             }
             ui.set_show_guide(false);
             ui.invoke_focus_pages();
@@ -443,18 +446,35 @@ fn main() -> color_eyre::Result<()> {
         });
     }
     {
+        let state = Rc::clone(&state);
         let settings = Rc::clone(&settings);
         // Cache size applies to newly opened books; no refresh of the current view.
         ui.on_set_cache_size(move |v| {
-            settings.borrow_mut().cache_size = (v.max(1)) as usize;
+            let v = (v.max(1)) as usize;
+            // Read the current preload while writing cache_size, then mirror both
+            // into ViewerState so the next opened book picks up the change this
+            // session.
+            let preload = {
+                let mut s = settings.borrow_mut();
+                s.cache_size = v;
+                s.preload_pages
+            };
+            state.borrow_mut().set_cache_config(v, preload);
         });
     }
     {
+        let state = Rc::clone(&state);
         let settings = Rc::clone(&settings);
         // Preload radius applies to newly opened books; no refresh. 0 is a valid
         // "prefetch disabled" radius, so only clamp the negative tail.
         ui.on_set_preload_pages(move |v| {
-            settings.borrow_mut().preload_pages = v.max(0) as usize;
+            let v = (v.max(0)) as usize;
+            let cache_size = {
+                let mut s = settings.borrow_mut();
+                s.preload_pages = v;
+                s.cache_size
+            };
+            state.borrow_mut().set_cache_config(cache_size, v);
         });
     }
     {

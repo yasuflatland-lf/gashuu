@@ -1,7 +1,9 @@
 // Modal settings overlay for gashuu.
 // Rendered as a full-area semi-transparent backdrop with a centered panel.
-// All setting changes fire a callback so Rust can apply them immediately;
-// idempotency (no-op on equal values) is the Rust side's responsibility.
+// Each setting change fires a callback so Rust can react. Display modes apply
+// immediately; cache size and preload radius apply to newly opened books.
+// Idempotency (no-op on equal values) is enforced on the Rust side to absorb
+// ComboBox self-fire.
 import { Button, ComboBox, SpinBox, CheckBox, VerticalBox, HorizontalBox } from "std-widgets.slint";
 
 export component SettingsDialog inherits Rectangle {
@@ -34,7 +36,7 @@ export component SettingsDialog inherits Rectangle {
     callback set-cache-size(int);
     callback set-preload-pages(int);
     callback set-track-recent(bool);
-    // Fired when the user clicks Close or presses the backdrop outside the panel.
+    // Fired when the user clicks the Close button.
     callback close-settings();
 
     // ── Centered panel ────────────────────────────────────────────────────────
