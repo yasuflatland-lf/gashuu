@@ -27,20 +27,30 @@ fn main() -> color_eyre::Result<()> {
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();
 
-    // Load persisted settings; corrupt/unreadable files fall back to defaults
-    // (the corrupt-file recovery policy lives here in the UI layer, by design).
-    let settings = Settings::load().unwrap_or_else(|e| {
-        tracing::warn!(error = %e, "failed to load settings; using defaults");
-        Settings::default()
-    });
-
-    // Load the persisted shelf; an unreadable/corrupt library.json falls back
-    // to an empty library (the corrupt-file recovery policy lives here in the
-    // UI layer, mirroring the Settings load above).
-    let library = Library::load().unwrap_or_else(|e| {
-        tracing::warn!(error = %e, "failed to load library; starting empty");
-        Library::new()
-    });
+    // Load persisted settings and library; corrupt/unreadable files fall back
+    // to defaults (the corrupt-file recovery policy lives here in the UI layer,
+    // by design). Missing files return Ok(default) from Settings::load /
+    // Library::load, so the Err arm fires only on a GENUINE failure (corrupt
+    // data, I/O error, NoDataDir). Errors are collected and surfaced on the
+    // home screen after the initial refresh, which itself overwrites
+    // status-text, so the notice must be set after that call.
+    let mut load_errs: Vec<String> = Vec::new();
+    let settings = match Settings::load() {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::warn!(error = %e, "failed to load settings; using defaults");
+            load_errs.push(format!("settings ({e})"));
+            Settings::default()
+        }
+    };
+    let library = match Library::load() {
+        Ok(l) => l,
+        Err(e) => {
+            tracing::warn!(error = %e, "failed to load library; starting empty");
+            load_errs.push(format!("library ({e})"));
+            Library::new()
+        }
+    };
 
     let ui = ViewerWindow::new()?;
     let state = Rc::new(RefCell::new(ViewerState::from_settings(&settings)));
@@ -77,6 +87,20 @@ fn main() -> color_eyre::Result<()> {
     // Initial paint so rtl/single/status are all initialized before the first
     // folder is opened (refresh shows "No folder opened" and clears the images).
     refresh(&ui, &state.borrow(), &viewport);
+
+    // Surface any load failures AFTER the initial refresh, which overwrites
+    // status-text with "No folder opened". The carousel/home screen is visible
+    // at this point, so the user sees the notice immediately. Missing files
+    // return Ok(default), so this fires only on genuine failures.
+    if !load_errs.is_empty() {
+        ui.set_status_text(
+            format!(
+                "Could not load {}; starting fresh.",
+                load_errs.join(" and ")
+            )
+            .into(),
+        );
+    }
 
     // First-run guide: show the overlay exactly once. `seen_guide` is flipped and
     // persisted when the user dismisses it (see `on_dismiss_guide`).
