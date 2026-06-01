@@ -5,8 +5,8 @@ mod viewer_state;
 mod viewport;
 
 use gashuu_core::{
-    generate_thumbnails, CoreError, DecodedImage, FitMode, ReadingDirection, Settings,
-    DEFAULT_THUMB_MAX_SIDE,
+    generate_thumbnails, CoreError, CoverMode, DecodedImage, FitMode, ReadingDirection, Settings,
+    SpreadMode, DEFAULT_THUMB_MAX_SIDE,
 };
 use keymap::{map_key, KeyCommand};
 use slint::{Model, ModelRc, VecModel};
@@ -180,6 +180,12 @@ fn main() -> color_eyre::Result<()> {
     // folder is opened (refresh shows "No folder opened" and clears the images).
     refresh(&ui, &state.borrow(), &viewport);
 
+    // First-run guide: show the overlay exactly once. `seen_guide` is flipped and
+    // persisted when the user dismisses it (see `on_dismiss_guide`).
+    if !settings.borrow().seen_guide {
+        ui.set_show_guide(true);
+    }
+
     // Open Folder button: pick a directory, load it, refresh the view.
     {
         let ui_weak = ui.as_weak();
@@ -297,6 +303,164 @@ fn main() -> color_eyre::Result<()> {
                 return;
             };
             ui.set_show_thumbnails(!ui.get_show_thumbnails());
+        });
+    }
+
+    // Open the settings dialog: push the current persisted values into the
+    // dialog's in-out properties, then show it. A single immutable borrow of
+    // `settings` covers all reads (avoids a double-borrow).
+    {
+        let ui_weak = ui.as_weak();
+        let settings = Rc::clone(&settings);
+        let viewport = Rc::clone(&viewport);
+        ui.on_open_settings(move || {
+            let Some(ui) = ui_weak.upgrade() else {
+                return;
+            };
+            let s = settings.borrow();
+            ui.set_reading_direction_index(reading_direction_to_index(s.reading_direction));
+            ui.set_spread_mode_index(spread_mode_to_index(s.spread_mode));
+            ui.set_cover_mode_index(cover_mode_to_index(s.cover_mode));
+            // Fit mode is owned by the viewport at runtime; the persisted value in
+            // `settings` mirrors it (kept in sync by the fit handlers), so read it
+            // from the live viewport to be authoritative.
+            ui.set_fit_mode_index(fit_mode_to_index(viewport.borrow().fit_mode()));
+            ui.set_cache_size(s.cache_size as i32);
+            ui.set_preload_pages(s.preload_pages as i32);
+            ui.set_track_recent(s.track_recent_files);
+            ui.set_key_bindings_text(KEY_BINDINGS_HELP.into());
+            ui.set_show_settings(true);
+        });
+    }
+
+    // Close the settings dialog: hide it, persist settings, then restore focus to
+    // the page area so keyboard navigation keeps working.
+    {
+        let ui_weak = ui.as_weak();
+        let settings = Rc::clone(&settings);
+        ui.on_close_settings(move || {
+            let Some(ui) = ui_weak.upgrade() else {
+                return;
+            };
+            ui.set_show_settings(false);
+            if let Err(e) = settings.borrow().save() {
+                tracing::warn!(error = %e, "failed to save settings");
+            }
+            ui.invoke_focus_pages();
+        });
+    }
+
+    // Dismiss the first-run guide: mark it seen, persist, hide it, restore focus.
+    // Two-statement RefCell discipline: the `borrow_mut()` drops at the `;` before
+    // the immutable `borrow()` for `save`.
+    {
+        let ui_weak = ui.as_weak();
+        let settings = Rc::clone(&settings);
+        ui.on_dismiss_guide(move || {
+            let Some(ui) = ui_weak.upgrade() else {
+                return;
+            };
+            settings.borrow_mut().seen_guide = true;
+            if let Err(e) = settings.borrow().save() {
+                tracing::warn!(error = %e, "failed to save settings");
+            }
+            ui.set_show_guide(false);
+            ui.invoke_focus_pages();
+        });
+    }
+
+    // Settings setters (one per dialog control). Mode/cover/direction are made
+    // idempotent by their `ViewerState` value setters returning a "changed" bool;
+    // fit uses an explicit equality guard. The borrow discipline mirrors the
+    // `ToggleSpread` handler: the temporary `borrow_mut()` in the `if` condition
+    // drops before the block runs, so `refresh(&ui, &state.borrow(), ..)` is safe.
+    {
+        let ui_weak = ui.as_weak();
+        let state = Rc::clone(&state);
+        let settings = Rc::clone(&settings);
+        let viewport = Rc::clone(&viewport);
+        ui.on_set_reading_direction(move |i| {
+            let Some(ui) = ui_weak.upgrade() else {
+                return;
+            };
+            let dir = index_to_reading_direction(i);
+            if state.borrow_mut().set_reading_direction(dir) {
+                settings.borrow_mut().reading_direction = dir;
+                refresh(&ui, &state.borrow(), &viewport);
+            }
+        });
+    }
+    {
+        let ui_weak = ui.as_weak();
+        let state = Rc::clone(&state);
+        let settings = Rc::clone(&settings);
+        let viewport = Rc::clone(&viewport);
+        ui.on_set_spread_mode(move |i| {
+            let Some(ui) = ui_weak.upgrade() else {
+                return;
+            };
+            let mode = index_to_spread_mode(i);
+            if state.borrow_mut().set_spread_mode(mode) {
+                settings.borrow_mut().spread_mode = mode;
+                refresh(&ui, &state.borrow(), &viewport);
+            }
+        });
+    }
+    {
+        let ui_weak = ui.as_weak();
+        let state = Rc::clone(&state);
+        let settings = Rc::clone(&settings);
+        let viewport = Rc::clone(&viewport);
+        ui.on_set_cover_mode(move |i| {
+            let Some(ui) = ui_weak.upgrade() else {
+                return;
+            };
+            let mode = index_to_cover_mode(i);
+            if state.borrow_mut().set_cover_mode(mode) {
+                settings.borrow_mut().cover_mode = mode;
+                refresh(&ui, &state.borrow(), &viewport);
+            }
+        });
+    }
+    {
+        let ui_weak = ui.as_weak();
+        let state = Rc::clone(&state);
+        let settings = Rc::clone(&settings);
+        let viewport = Rc::clone(&viewport);
+        ui.on_set_fit_mode(move |i| {
+            let Some(ui) = ui_weak.upgrade() else {
+                return;
+            };
+            let mode = index_to_fit_mode(i);
+            // Equality guard (the viewport setter is not idempotent-by-return).
+            // Compare in one borrow, mutate in a separate `borrow_mut()` that
+            // drops at the `;`, then `refresh` (which borrows viewport internally).
+            if viewport.borrow().fit_mode() != mode {
+                viewport.borrow_mut().set_fit(mode);
+                settings.borrow_mut().fit_mode = mode;
+                refresh(&ui, &state.borrow(), &viewport);
+            }
+        });
+    }
+    {
+        let settings = Rc::clone(&settings);
+        // Cache size applies to newly opened books; no refresh of the current view.
+        ui.on_set_cache_size(move |v| {
+            settings.borrow_mut().cache_size = (v.max(1)) as usize;
+        });
+    }
+    {
+        let settings = Rc::clone(&settings);
+        // Preload radius applies to newly opened books; no refresh. 0 is a valid
+        // "prefetch disabled" radius, so only clamp the negative tail.
+        ui.on_set_preload_pages(move |v| {
+            settings.borrow_mut().preload_pages = v.max(0) as usize;
+        });
+    }
+    {
+        let settings = Rc::clone(&settings);
+        ui.on_set_track_recent(move |b| {
+            settings.borrow_mut().track_recent_files = b;
         });
     }
 
@@ -563,4 +727,135 @@ fn to_slint_image(decoded: &DecodedImage) -> slint::Image {
         slint::SharedPixelBuffer::<slint::Rgba8Pixel>::new(decoded.width(), decoded.height());
     buffer.make_mut_bytes().copy_from_slice(decoded.rgba());
     slint::Image::from_rgba8(buffer)
+}
+
+/// Concise key-bindings reference shown read-only in the settings dialog. Keep in
+/// sync with `keymap::map_key`.
+const KEY_BINDINGS_HELP: &str = "\
+Navigation:
+  Space = next page    Backspace = previous page
+  Arrows follow the reading direction (LTR: \u{2192} next; RTL: \u{2190} next)
+
+Modes:
+  D = spread (single \u{2192} double \u{2192} auto)
+  R = reading direction (LTR / RTL)
+  C = cover layout (standalone / paired)
+
+Zoom & fit:
+  + / - = zoom in / out    0 = reset view    1 = actual size    f = cycle fit
+
+View:
+  T = toggle thumbnail strip";
+
+// Enum <-> ComboBox index conversions. `*_to_index` use exhaustive matches so a
+// new enum variant becomes a compile error; `index_to_*` default to the first
+// variant for any out-of-range index Slint may send (the index is a raw i32).
+// The ordering is authoritative and MUST match the ComboBox model order in
+// SettingsDialog.slint:
+//   ReadingDirection: Ltr=0, Rtl=1
+//   SpreadMode:       Single=0, Double=1, Auto=2
+//   CoverMode:        Standalone=0, Paired=1
+//   FitMode:          Whole=0, Width=1, Actual=2
+
+fn reading_direction_to_index(d: ReadingDirection) -> i32 {
+    match d {
+        ReadingDirection::Ltr => 0,
+        ReadingDirection::Rtl => 1,
+    }
+}
+
+fn index_to_reading_direction(i: i32) -> ReadingDirection {
+    match i {
+        1 => ReadingDirection::Rtl,
+        _ => ReadingDirection::Ltr,
+    }
+}
+
+fn spread_mode_to_index(m: SpreadMode) -> i32 {
+    match m {
+        SpreadMode::Single => 0,
+        SpreadMode::Double => 1,
+        SpreadMode::Auto => 2,
+    }
+}
+
+fn index_to_spread_mode(i: i32) -> SpreadMode {
+    match i {
+        1 => SpreadMode::Double,
+        2 => SpreadMode::Auto,
+        _ => SpreadMode::Single,
+    }
+}
+
+fn cover_mode_to_index(m: CoverMode) -> i32 {
+    match m {
+        CoverMode::Standalone => 0,
+        CoverMode::Paired => 1,
+    }
+}
+
+fn index_to_cover_mode(i: i32) -> CoverMode {
+    match i {
+        1 => CoverMode::Paired,
+        _ => CoverMode::Standalone,
+    }
+}
+
+fn fit_mode_to_index(m: FitMode) -> i32 {
+    match m {
+        FitMode::Whole => 0,
+        FitMode::Width => 1,
+        FitMode::Actual => 2,
+    }
+}
+
+fn index_to_fit_mode(i: i32) -> FitMode {
+    match i {
+        1 => FitMode::Width,
+        2 => FitMode::Actual,
+        _ => FitMode::Whole,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reading_direction_index_round_trips() {
+        for d in [ReadingDirection::Ltr, ReadingDirection::Rtl] {
+            assert_eq!(index_to_reading_direction(reading_direction_to_index(d)), d);
+        }
+    }
+
+    #[test]
+    fn spread_mode_index_round_trips() {
+        for m in [SpreadMode::Single, SpreadMode::Double, SpreadMode::Auto] {
+            assert_eq!(index_to_spread_mode(spread_mode_to_index(m)), m);
+        }
+    }
+
+    #[test]
+    fn cover_mode_index_round_trips() {
+        for m in [CoverMode::Standalone, CoverMode::Paired] {
+            assert_eq!(index_to_cover_mode(cover_mode_to_index(m)), m);
+        }
+    }
+
+    #[test]
+    fn fit_mode_index_round_trips() {
+        for m in [FitMode::Whole, FitMode::Width, FitMode::Actual] {
+            assert_eq!(index_to_fit_mode(fit_mode_to_index(m)), m);
+        }
+    }
+
+    #[test]
+    fn out_of_range_indices_clamp_to_first_variant() {
+        for bad in [-1, 3, 99, i32::MIN, i32::MAX] {
+            assert_eq!(index_to_reading_direction(bad), ReadingDirection::Ltr);
+            assert_eq!(index_to_spread_mode(bad), SpreadMode::Single);
+            assert_eq!(index_to_cover_mode(bad), CoverMode::Standalone);
+            assert_eq!(index_to_fit_mode(bad), FitMode::Whole);
+        }
+    }
 }
