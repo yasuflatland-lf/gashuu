@@ -5,7 +5,7 @@ This file is the authoritative record of what has shipped and what is intentiona
 
 ## Baseline (shipped)
 
-Shipped across PR1 + PR2 + PR3 + PR4 + PR4a + PR5 + PR6 + PR7 + PR8a + PR8b.
+Shipped across PR1 + PR2 + PR3 + PR4 + PR4a + PR5 + PR6 + PR7 + PR8a + PR8b + PR-T + PR-L.
 
 ### Page sources
 
@@ -66,7 +66,18 @@ RAR requires a C++ compiler on every OS (see [docs/toolchain.md](toolchain.md)).
 - The Library screen (the PR-0b two-screen shell) now RENDERS the cover-flow carousel from the `Library` model: focused cover with accent ring, scaled/dimmed neighbors, per-cover + focused-meta reading-progress bars, a grayed broken-cover placeholder for unavailable books, and the 0-book empty-state CTA. Built from the pure `library_model::carousel_data` mapping via the `to_carousel_item` UI-thread adapter (covers via `slint::Image::default()` for now). No new deps.
 - **Covers are PLACEHOLDERS** — real cover images stream in via PR-V (into the same `VecModel<CarouselItem>`, using the PR8a `invoke_from_event_loop` pattern).
 - **Per-book page `total` is 0** — the Library does not persist page counts, so `total` (and therefore the meaningful `current / total` + progress fraction) stays 0 until whichever PR resolves a book's page source and learns its real count.
-- The empty-state CTA is wired to the file/folder picker in PR-L (PR-C ships it as a non-interactive placeholder).
+- The empty-state CTA is wired to the file/folder picker by PR-L (see below).
+
+### Thumbnail disk cache (PR-T)
+
+`ThumbnailCache` (gashuu-core) persists thumbnails/covers as PNG files under the OS cache directory, keyed by a version-stable FNV-1a hash of (path, mtime, max-side). `put` writes atomically (temp-file-then-rename); `get` returns `None` on miss/corrupt. This is the storage primitive; the cover carousel that consumes it is PR-V. Concurrent same-key write safety is deferred (see docs/patterns.md).
+
+### Multi-file loading via picker (PR-L)
+
+- **Add files** (`rfd` `pick_files`, filtered cbz/zip/cbr/rar) and **Add folder** (`pick_folder`, folder-as-one-book) toolbar buttons on the Library screen, plus an interactive empty-state CTA that fires the file picker.
+- Adds route through `add_paths` (dedup via `Library::add`, skipping books already present and duplicates within the batch), then persist the library, rebuild the carousel model (`build_carousel_model`), and surface the outcome on a Library-screen status line.
+- Library is loaded at startup (corrupt/unreadable → empty library, same UI-layer recovery policy as `Settings`) and the carousel is seeded from it on boot.
+- No new deps (reuses `rfd`).
 
 ---
 
@@ -76,7 +87,6 @@ RAR requires a C++ compiler on every OS (see [docs/toolchain.md](toolchain.md)).
 - PR8a thumbnail-strip follow-ups:
   - RTL strip ordering (8a ships ascending order + current-page highlight only).
   - Lazy/on-demand thumbnail generation (8a eagerly generates all).
-  - Thumbnail disk cache.
   - Virtual scroll for huge archives.
 - Nested archives.
 - `ComicInfo.xml` metadata.
@@ -87,5 +97,9 @@ RAR requires a C++ compiler on every OS (see [docs/toolchain.md](toolchain.md)).
 - User-remappable keys (`key_bindings` stays persisted-but-inactive; the PR8b dialog shows a read-only reference).
 - Immediate runtime rebuild of the CURRENT book's cache (`ViewerState::rebuild_cache` — PR8b's `set_cache_config` only affects newly opened books).
 - `recent_files`-management / theme settings UI.
+- PR-L follow-ups:
+  - Library LOAD failure is recovered silently (tracing only, no on-screen notice) — same gap as Settings load; the add/save FAILURE path does surface to the status bar.
+  - `library_store.rs::to_json` uses `unwrap_or`/`unwrap_or_else` fallbacks that can silently discard a serialization error on save.
+  - Carousel `total`/`progress` are placeholders (`total = 0`) — page-count back-fill is not yet owned by any PR; covers stream in via PR-V.
 - Backdrop-click / Esc dialog dismissal (PR8b dialogs close via their own button only).
 - PR5 non-goals: touch/pinch, rotation/minimap/scrollbar, click-to-turn, per-page independent zoom in Double mode, and 60fps is NOT CI-asserted (manual/telemetry only).

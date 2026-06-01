@@ -4,16 +4,23 @@
 // focused cover (accent ring), dimmed neighbors, a per-cover progress bar, a
 // centered focused-book meta block, and a grayed broken-cover placeholder for
 // unavailable books. Falls back to an empty-state CTA when there are 0 books.
+// PR-L added the always-visible "Add files… / Add folder…" toolbar and wired
+// the empty-state CTA to the folder/file picker (via add-files()).
 //
 // The public contract — the `CarouselItem` struct, the `Carousel` component,
 // its `items`/`focused-index` properties, the `open(int)`/`move(int)`/`back()`
-// callbacks, and `focus-self()` — was frozen by PR-0b and MUST NOT change here.
-// PR-L wires the empty-state CTA to the folder/file picker; PR-V streams real
-// cover images into the model (covers are placeholders until then).
+// callbacks (plus PR-L's `add-files()`/`add-folder()`), and `focus-self()` —
+// is frozen and MUST NOT change here. PR-V streams real cover images into the
+// model (covers are placeholders until then).
+//
+// Focus: the component owns its own FocusScope. `focus-self()` restores
+// keyboard focus to it (the carousel counterpart of ViewerWindow's
+// `focus-pages()` recovery rule).
 //
 // Styling references `Theme.*` tokens only — NO inline brand hex (DESIGN.md).
 // Key seams (handled in the FocusScope): Left/Right -> move(-1/+1),
 // Return -> open(focused-index), Down -> back().
+import { Button } from "std-widgets.slint";
 import { Theme } from "Theme.slint";
 
 // Reading-progress bar: a track with an accent fill (green once complete).
@@ -49,9 +56,11 @@ export component Carousel inherits Rectangle {
     // ── Frozen public contract ────────────────────────────────────────────────
     in property <[CarouselItem]> items;
     in-out property <int> focused-index;
-    callback open(int);   // index — Return on the focused book
-    callback move(int);   // delta (-1 / +1) — Left / Right
-    callback back();      // Down — return to the currently-open book
+    callback open(int);       // index — Return on the focused book
+    callback move(int);       // delta (-1 / +1) — Left / Right
+    callback back();          // Down — return to the currently-open book
+    callback add-files();     // opens a file picker (rfd); wired to on_add_files in main.rs
+    callback add-folder();    // opens a folder picker (rfd); wired to on_add_folder in main.rs
 
     // FocusScope focus recovery (mirrors ViewerWindow's focus-pages() rule).
     public function focus-self() { fs.focus(); }
@@ -78,6 +87,32 @@ export component Carousel inherits Rectangle {
         background: @linear-gradient(180deg, Theme.stage-top 0%, Theme.canvas 100%);
     }
 
+    // ── Toolbar: "Add files…" / "Add folder…" ────────────────────────────────
+    // Always-visible strip at the top of the carousel. Clicking either button fires
+    // the matching callback (wired to the rfd file/folder pickers in main.rs), then
+    // restores keyboard focus to the carousel's FocusScope.
+    HorizontalLayout {
+        x: 0;
+        y: 0;
+        width: parent.width;
+        height: 40px;
+        alignment: start;
+        spacing: Theme.space-sm;
+        padding-left: Theme.space-md;
+        padding-right: Theme.space-md;
+        padding-top: Theme.space-xs;
+        padding-bottom: Theme.space-xs;
+
+        Button {
+            text: "Add files…";
+            clicked => { root.add-files(); root.focus-self(); }
+        }
+        Button {
+            text: "Add folder…";
+            clicked => { root.add-folder(); root.focus-self(); }
+        }
+    }
+
     // ── Keyboard seams ──────────────────────────────────────────────────────
     // The carousel is the focused screen on the Library route, so it owns key
     // input here. Left/Right move focus, Return opens the focused book, Down
@@ -95,8 +130,8 @@ export component Carousel inherits Rectangle {
         }
 
           // ── Empty state (0 books): the picker call-to-action (DESIGN.md
-          //    "Empty Library"). PR-L wires the CTA to the rfd picker; here it is
-          //    the same non-interactive placeholder PR-0b shipped. ───────────────
+          //    "Empty Library"). The CTA button fires add-files() via a TouchArea
+          //    (wired in PR-L) and restores keyboard focus to the carousel. ──────
           if root.items.length == 0 : Rectangle {
               width: 360px;
               height: 200px;
@@ -123,6 +158,9 @@ export component Carousel inherits Rectangle {
                       font-size: Theme.font-micro;
                       horizontal-alignment: center;
                   }
+                  // CTA button: fires add-files() on click and restores keyboard
+                  // focus to the carousel. Background Theme.accent, label text
+                  // Theme.text at Theme.font-label, corners Theme.radius-md.
                   Rectangle {
                       height: 34px;
                       background: Theme.accent;
@@ -134,6 +172,9 @@ export component Carousel inherits Rectangle {
                           font-weight: 500;
                           horizontal-alignment: center;
                           vertical-alignment: center;
+                      }
+                      TouchArea {
+                          clicked => { root.add-files(); root.focus-self(); }
                       }
                   }
               }

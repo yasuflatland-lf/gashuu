@@ -79,6 +79,16 @@ page: before read AND before callback); per-page failure is delivered as `Err` (
 `DEFAULT_THUMB_MAX_SIDE`=160; headless (no slint/tracing), same "testable synchronous core; UI
 owns the fire-and-forget spawn" philosophy as `ImageCache`.
 
+### thumbnail_cache
+
+PR-T, `thumbnail_cache.rs`. On-disk PNG cache for page/cover thumbnails under the OS cache dir
+(`ProjectDirs("", "", "gashuu").cache_dir()/covers`); `with_dir(PathBuf)` is the tempfile-testable
+seam. `put(key, &DecodedImage)` PNG-encodes the RGBA at exact dimensions and writes atomically
+(temp-file-then-rename); `get(key) -> Option<DecodedImage>` reads `<dir>/<key>.png` and decodes,
+returning `None` on any missing/unreadable/corrupt file (a cache miss, never panics). `cache_key(path,
+mtime_secs, max_side)` derives a stable 16-hex-char filename via FNV-1a (NOT `DefaultHasher`; see
+docs/patterns.md). Headless (no slint/tracing). The cover carousel that consumes it is PR-V.
+
 ### cache::ImageCache
 
 LRU of `Arc<DecodedImage>` up to `DEFAULT_CAPACITY`=50 + background ±`DEFAULT_PREFETCH_RADIUS`=3
@@ -200,14 +210,16 @@ so PR-V/PR-L mutate the same model. `total` is intentionally 0 until a book's pa
 
 ### Slint UI files
 
-**`Carousel.slint`** (PR-0b shell; PR-C rendering): Library cover-flow carousel. PR-0b froze the
-public contract (`CarouselItem` struct + `Carousel` component with `items`, `focused-index`, callbacks
-`open(int)`/`move(int)`/`back()`, `public function focus-self()`); PR-C filled in the rendering against
-that UNCHANGED contract: centered focused cover (accent ring) + scaled/dimmed neighbors, a per-cover
-`ProgressBar` (a local shared private sub-component reused for the focused-meta bar), a centered
-focused-book meta block, a grayed broken-cover placeholder for unavailable books, and the 0-book
-empty-state CTA. Covers are PLACEHOLDERS (`slint::Image::default()`) until PR-V streams real cover
-images into the same model; the empty-state CTA is wired to the picker in PR-L.
+**`Carousel.slint`** (PR-0b shell; PR-C rendering; PR-L toolbar/CTA): Library cover-flow carousel.
+PR-0b froze the public contract (`CarouselItem` struct + `Carousel` component with `items`,
+`focused-index`, callbacks `open(int)`/`move(int)`/`back()`, `public function focus-self()`); PR-C
+filled in the rendering against that UNCHANGED contract: centered focused cover (accent ring) +
+scaled/dimmed neighbors, a per-cover `ProgressBar` (a local shared private sub-component reused for the
+focused-meta bar), a centered focused-book meta block, a grayed broken-cover placeholder for
+unavailable books, and the 0-book empty-state CTA. Covers are PLACEHOLDERS (`slint::Image::default()`)
+until PR-V streams real cover images into the same model. PR-L added an always-visible
+"Add files…"/"Add folder…" toolbar + the `add-files()`/`add-folder()` callbacks and wired the
+empty-state CTA to `add-files()` (each restores focus via `focus-self()` after firing).
 
 **`Theme.slint`** (PR-0b, NEW): single `global Theme` of visual tokens (colors, spacing, radii,
 font sizes); components reference `Theme.<token>` instead of inline hex literals.
@@ -260,6 +272,14 @@ driven by a `chrome-shown` bool + an idle `Timer`; chrome is revealed on pointer
 PR6 `on_open_archive` → `rfd` `pick_file` filtered to cbz/zip. PR7 extended the filter to
 cbz/zip/cbr/rar — the ONLY UI change in PR7 since `open_path` already dispatched via
 `ArchiveLoader`. "Open Archive" button lives in `ViewerWindow.slint`.
+
+PR-L added Library-side pickers: `on_add_files` (`pick_files`, filtered cbz/zip/cbr/rar) and
+`on_add_folder` (`pick_folder`, folder-as-one-book). `main.rs` owns the library-add seam — `add_paths`
+(dedup-aware insert, returns the count of NEW books), `build_carousel_model` (Library → `ModelRc<CarouselItem>`,
+0-based `last_page` → 1-based `current`, placeholder cover/total/progress), and the shared
+`add_books_and_refresh` handler (insert → save → rebuild carousel → status line → restore carousel
+focus; short-circuits when nothing new was added). The persisted `Library` lives in `main.rs` as
+`Rc<RefCell<Library>>`, loaded at startup and seeded into `carousel-items` on boot.
 
 ### RGBA conversion
 

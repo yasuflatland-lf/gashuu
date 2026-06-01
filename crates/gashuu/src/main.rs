@@ -57,9 +57,13 @@ fn main() -> color_eyre::Result<()> {
     // open handlers (via `open_and_present`) can share the single controller.
     let thumbs = Rc::new(ThumbnailController::new(&ui));
 
-    // Held for PR-V (cover streaming) / PR-L (refresh after add) to mutate the
-    // SAME model; not mutated by PR-C after the initial build. Underscore-bound
-    // to satisfy -D warnings until those PRs use it.
+    // Seed the carousel model from the persisted library so the home screen shows
+    // the saved books on boot. `build_carousel_model` builds AND binds the model
+    // into the UI via `set_carousel_items` internally, returning the `Rc<VecModel>`
+    // held for PR-V (cover streaming) to mutate the SAME model in place; PR-L's
+    // add path rebuilds+rebinds via the same helper. Underscore-bound to satisfy
+    // -D warnings until PR-V uses it. Covers are placeholder until PR-V streams
+    // them in.
     let _carousel_model = build_carousel_model(&ui, &library.borrow());
     ui.set_carousel_focused_index(0);
 
@@ -124,6 +128,43 @@ fn main() -> color_eyre::Result<()> {
                 &file,
                 " (zip-slip or oversized)",
             );
+        });
+    }
+
+    // Add Files button: pick one or more comic-archive files and add them to the
+    // library. Skips duplicates (via `add_paths`), persists, rebuilds the carousel
+    // model, and restores keyboard focus to the carousel.
+    {
+        let ui_weak = ui.as_weak();
+        let library = Rc::clone(&library);
+        ui.on_add_files(move || {
+            let Some(ui) = ui_weak.upgrade() else {
+                return;
+            };
+            let Some(files) = rfd::FileDialog::new()
+                .add_filter("Comic archive", &["cbz", "zip", "cbr", "rar"])
+                .pick_files()
+            else {
+                return;
+            };
+            add_books_and_refresh(&ui, &library, files, "add-files");
+        });
+    }
+
+    // Add Folder button: pick a single folder and add it as one book to the
+    // library. Wraps the folder in a `vec![]` so the same dedup/save/rebuild
+    // path as `on_add_files` is used. Persists and restores carousel focus.
+    {
+        let ui_weak = ui.as_weak();
+        let library = Rc::clone(&library);
+        ui.on_add_folder(move || {
+            let Some(ui) = ui_weak.upgrade() else {
+                return;
+            };
+            let Some(folder) = rfd::FileDialog::new().pick_folder() else {
+                return;
+            };
+            add_books_and_refresh(&ui, &library, vec![folder], "add-folder");
         });
     }
 
@@ -1027,6 +1068,54 @@ fn reconcile_settings(state: &ViewerState, viewport: &ViewportState, settings: &
     settings.fit_mode = viewport.fit_mode();
 }
 
+/// Add every path in `paths` to `lib`, skipping duplicates.
+/// Returns the count of books actually inserted (new books only).
+/// Dedup is handled by `Library::add` (returns `false` when already present),
+/// covering both books already in the library and duplicates within `paths`.
+fn add_paths(lib: &mut Library, paths: Vec<std::path::PathBuf>) -> usize {
+    paths.into_iter().filter(|p| lib.add(p.clone())).count()
+}
+
+/// Add `paths` to the library, persist, rebuild the carousel, and surface the
+/// outcome on the status line, restoring carousel focus in every case.
+///
+/// Shared by the Add Files and Add Folder handlers; `op` distinguishes the two
+/// only in the save-failure trace message. When nothing new is added there is
+/// nothing to persist or rebuild, so it short-circuits after the status update.
+fn add_books_and_refresh(
+    ui: &ViewerWindow,
+    library: &Rc<RefCell<Library>>,
+    paths: Vec<std::path::PathBuf>,
+    op: &'static str,
+) {
+    let added = add_paths(&mut library.borrow_mut(), paths);
+    if added == 0 {
+        // Everything picked was already in the library: nothing to persist or rebuild.
+        ui.set_status_text("Already in library \u{2014} no new books added.".into());
+        ui.invoke_focus_carousel();
+        return;
+    }
+    // Rebuild from the in-memory state even if the save fails, so the newly added
+    // books are visible; the save error is then surfaced (not just traced).
+    // `build_carousel_model` rebuilds AND rebinds the model into the UI internally
+    // (the returned `Rc<VecModel>` is held by PR-V for cover streaming; the add
+    // path does not need it, so the return value is dropped).
+    let save_result = library.borrow().save();
+    build_carousel_model(ui, &library.borrow());
+    match save_result {
+        Err(e) => {
+            tracing::error!(error = %e, "failed to save library after {op}");
+            ui.set_status_text(
+                format!("Added {added} book(s), but could not save library: {e}").into(),
+            );
+        }
+        Ok(()) => {
+            ui.set_status_text(format!("Added {added} book(s)").into());
+        }
+    }
+    ui.invoke_focus_carousel();
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1105,4 +1194,90 @@ mod tests {
         assert!(settings.track_recent_files);
         assert!(settings.seen_guide);
     }
+
+    #[test]
+    fn add_paths_empty_vec_returns_zero() {
+        let mut lib = gashuu_core::Library::new();
+        let added = add_paths(&mut lib, vec![]);
+        assert_eq!(added, 0);
+        assert_eq!(lib.books().len(), 0);
+    }
+
+    #[test]
+    fn add_paths_new_paths_counted() {
+        let mut lib = gashuu_core::Library::new();
+        let paths = vec![
+            std::path::PathBuf::from("nonexistent/vol1.cbz"),
+            std::path::PathBuf::from("nonexistent/vol2.cbz"),
+        ];
+        let added = add_paths(&mut lib, paths);
+        assert_eq!(added, 2);
+        assert_eq!(lib.books().len(), 2);
+    }
+
+    #[test]
+    fn add_paths_dedup_within_batch() {
+        let mut lib = gashuu_core::Library::new();
+        let paths = vec![
+            std::path::PathBuf::from("nonexistent/vol1.cbz"),
+            std::path::PathBuf::from("nonexistent/vol1.cbz"),
+        ];
+        let added = add_paths(&mut lib, paths);
+        assert_eq!(
+            added, 1,
+            "duplicate within the batch must not be double-counted"
+        );
+        assert_eq!(lib.books().len(), 1);
+    }
+
+    #[test]
+    fn add_paths_dedup_against_existing() {
+        let mut lib = gashuu_core::Library::new();
+        lib.add(std::path::PathBuf::from("nonexistent/vol1.cbz"));
+        let paths = vec![
+            std::path::PathBuf::from("nonexistent/vol1.cbz"),
+            std::path::PathBuf::from("nonexistent/vol2.cbz"),
+        ];
+        let added = add_paths(&mut lib, paths);
+        assert_eq!(
+            added, 1,
+            "a path already in the library must not be counted"
+        );
+        assert_eq!(lib.books().len(), 2);
+    }
+
+    #[test]
+    fn add_paths_preserves_insertion_order() {
+        let mut lib = gashuu_core::Library::new();
+        let paths: Vec<_> = (0..5)
+            .map(|i| std::path::PathBuf::from(format!("nonexistent/vol{i}.cbz")))
+            .collect();
+        let added = add_paths(&mut lib, paths);
+        assert_eq!(added, 5);
+        let titles: Vec<&str> = lib.books().iter().map(|b| b.title()).collect();
+        assert_eq!(titles, ["vol0", "vol1", "vol2", "vol3", "vol4"]);
+    }
+
+    #[test]
+    fn add_paths_all_existing_returns_zero() {
+        let mut lib = gashuu_core::Library::new();
+        lib.add(std::path::PathBuf::from("nonexistent/vol1.cbz"));
+        lib.add(std::path::PathBuf::from("nonexistent/vol2.cbz"));
+        let before = lib.books().len();
+        let added = add_paths(
+            &mut lib,
+            vec![
+                std::path::PathBuf::from("nonexistent/vol1.cbz"),
+                std::path::PathBuf::from("nonexistent/vol2.cbz"),
+            ],
+        );
+        assert_eq!(added, 0, "all-duplicate batch must return 0");
+        assert_eq!(lib.books().len(), before, "books count must not change");
+    }
+
+    // Note: `build_carousel_model` now takes a `&ViewerWindow` (it builds AND
+    // binds the Slint model), so it cannot be unit-tested headless. The
+    // Library -> carousel row mapping invariants (length, 1-based `current`,
+    // availability, insertion order) are covered by `library_model::tests`
+    // against the pure `carousel_data` helper that this builder delegates to.
 }

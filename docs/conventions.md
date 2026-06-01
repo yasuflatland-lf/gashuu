@@ -6,6 +6,8 @@ This document captures key project conventions migrated from the CLAUDE.md "Conv
 
 All comments and identifiers in **English**.
 
+Rust string literals use the `\u{2014}` escape for an em-dash, never a literal `—` (e.g. status text like `"Already in library \u{2014} no new books added."`). Keeps source ASCII and consistent across the codebase.
+
 ### TDD and keeping the crate compiling
 
 TDD: keep the crate compiling at every save (write test + implementation so each saved state builds — important when several changes land together or in parallel).
