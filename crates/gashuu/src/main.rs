@@ -958,6 +958,19 @@ fn reconcile_settings(state: &ViewerState, viewport: &ViewportState, settings: &
     settings.fit_mode = viewport.fit_mode();
 }
 
+/// Pure helper: decide if and what to write back to the Library.
+///
+/// Returns `Some((canonical_path, page_index))` when a write-back should be
+/// performed (a book is open), `None` otherwise. Extracted for table-testing
+/// so the predicate can be verified independently of the effectful
+/// `write_back_position` that actually calls `library.set_last_page`.
+fn position_to_write_back(
+    open_file: Option<&std::path::Path>,
+    page: usize,
+) -> Option<(std::path::PathBuf, usize)> {
+    open_file.map(|p| (p.to_path_buf(), page))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1035,5 +1048,36 @@ mod tests {
         assert_eq!(settings.preload_pages, 7);
         assert!(settings.track_recent_files);
         assert!(settings.seen_guide);
+    }
+
+    // ---- position_to_write_back (PR-R) ------------------------------------
+
+    #[test]
+    fn position_to_write_back_none_when_no_open_file() {
+        assert!(
+            position_to_write_back(None, 5).is_none(),
+            "no open file => no write-back"
+        );
+    }
+
+    #[test]
+    fn position_to_write_back_some_when_file_open() {
+        use std::path::PathBuf;
+        let path = PathBuf::from("/some/book.cbz");
+        let result = position_to_write_back(Some(path.as_path()), 7);
+        assert!(result.is_some(), "open file => write-back tuple");
+        let (p, pg) = result.unwrap();
+        assert_eq!(p, path);
+        assert_eq!(pg, 7);
+    }
+
+    #[test]
+    fn position_to_write_back_zero_page() {
+        use std::path::PathBuf;
+        let path = PathBuf::from("/some/book.cbz");
+        let result = position_to_write_back(Some(path.as_path()), 0);
+        assert!(result.is_some());
+        let (_, pg) = result.unwrap();
+        assert_eq!(pg, 0, "page 0 is a valid write-back (start of book)");
     }
 }
