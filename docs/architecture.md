@@ -211,8 +211,9 @@ keeps the derivation (1-based `current = last_page + 1`; `progress = last_page /
 `total == 0` → `0.0`; `available` via `Library::is_available`) table-testable without a display
 backend. `main.rs`'s `to_carousel_item` adapter builds the `!Send` `slint::Image` (placeholder this
 PR) on the UI thread; `build_carousel_model` is the build+bind chokepoint returning the `Rc<VecModel>`
-so PR-V/PR-L mutate the same model. `total` is intentionally 0 until a book's page source is resolved
-(the Library does not persist page counts).
+so PR-V/PR-L mutate the same model. `total` comes from the persisted `Book::page_count` (PR-La):
+`0` until the book has been opened at least once (`progress` guarded to `0.0`), the real saved count
+afterwards. The `total: clamp_to_i32(total)` saturating cast is unchanged.
 
 ### Slint UI files
 
@@ -282,7 +283,8 @@ cbz/zip/cbr/rar — the ONLY UI change in PR7 since `open_path` already dispatch
 PR-L added Library-side pickers: `on_add_files` (`pick_files`, filtered cbz/zip/cbr/rar) and
 `on_add_folder` (`pick_folder`, folder-as-one-book). `main.rs` owns the library-add seam — `add_paths`
 (dedup-aware insert, returns the count of NEW books), `build_carousel_model` (Library → `ModelRc<CarouselItem>`,
-0-based `last_page` → 1-based `current`, placeholder cover/total/progress), and the shared
+0-based `last_page` → 1-based `current`, real `total`/`progress` from persisted `Book::page_count` (PR-La),
+placeholder cover), and the shared
 `add_books_and_refresh` handler (insert → save → rebuild carousel → status line → restore carousel
 focus; short-circuits when nothing new was added). The persisted `Library` lives in `main.rs` as
 `Rc<RefCell<Library>>`, loaded at startup and seeded into `carousel-items` on boot.
