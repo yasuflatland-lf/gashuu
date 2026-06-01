@@ -28,6 +28,43 @@ pub struct SpreadImages {
     pub trailing_failed: Option<usize>,
 }
 
+/// Map a scrub fraction (knob position along the track, 0.0 = screen-left edge,
+/// 1.0 = screen-right edge) to a 0-based RAW page index. Pure and total: clamps
+/// the fraction to `[0, 1]` (a non-finite input clamps to 0), guards
+/// `page_count == 0` (returns 0), and rounds to the nearest page using the last
+/// index (`page_count - 1`) as the span so BOTH ends are reachable.
+///
+/// `rtl` inverts the fraction: in right-to-left (manga) reading, dragging the
+/// knob LEFT advances the page, so the screen-left edge maps to the LAST page
+/// and the screen-right edge to the FIRST (spec §5 / decision 11). The returned
+/// index is RAW; the caller normalizes it to a valid spread leading via
+/// `ViewerState::jump_to` (which respects single/double + cover mode), so this
+/// helper carries NO layout awareness — only direction and clamping.
+//
+// Test-only in this PR: the Slint scrubber resolves the knob fraction to a page
+// in the UI and passes an already-resolved page to `on_scrub_commit`, so this
+// pure helper is currently exercised only by the unit tests below. Same
+// `#[allow(dead_code)]` convention as the test-only accessors above (in a binary
+// crate, `pub` is not a public API surface, so `-D warnings` flags it).
+#[allow(dead_code)]
+pub fn scrub_fraction_to_page(fraction: f32, page_count: usize, rtl: bool) -> usize {
+    if page_count == 0 {
+        return 0;
+    }
+    // Clamp; a non-finite fraction (NaN/inf) collapses to 0 first.
+    let f = if fraction.is_finite() {
+        fraction.clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    let f = if rtl { 1.0 - f } else { f };
+    let last = page_count - 1;
+    // Round half-up: +0.5 then floor (via `as usize` truncation on a non-negative
+    // value). `last` fits f32 exactly for any realistic page count.
+    let scaled = (f * last as f32 + 0.5) as usize;
+    scaled.min(last)
+}
+
 /// Holds the active image cache, the current spread's leading page index, and
 /// the display modes. `index` is ALWAYS a valid leading page for the current
 /// `(spread_mode, cover_mode)`: it is reset to 0 on `set_source`, advanced only
@@ -136,6 +173,27 @@ impl ViewerState {
         let moved = target != self.index;
         self.index = target;
         moved
+    }
+
+    /// Whether a hypothetical jump to `page` would land on a double-page spread
+    /// (used by the scrubber preview to show 1 vs 2 thumbnails WITHOUT changing
+    /// the current index). Normalizes `page` to its spread leading for the
+    /// current modes, then asks the pure `spread_at` whether that spread has a
+    /// trailing page. Returns `false` when no source is loaded.
+    pub fn preview_is_double(&self, page: usize) -> bool {
+        if self.page_count == 0 {
+            return false;
+        }
+        let layout = self.effective_layout();
+        let lead = normalize_leading(
+            self.page_count,
+            layout,
+            self.cover_mode,
+            page.min(self.page_count - 1),
+        );
+        spread_at(self.page_count, layout, self.cover_mode, lead)
+            .trailing
+            .is_some()
     }
 
     // Test-only accessors (same #[allow(dead_code)] convention as the existing
@@ -1331,6 +1389,121 @@ mod tests {
         state.set_source(mock_with(6));
         assert!(state.jump_to(5));
         assert_eq!(state.index(), 4);
+    }
+
+    // ---- scrub_fraction_to_page() (PR-S): pure fraction -> raw page ----------
+
+    #[test]
+    fn scrub_fraction_zero_count_is_zero_guard() {
+        // No pages loaded: any fraction maps to page 0 and never divides by zero.
+        assert_eq!(scrub_fraction_to_page(0.0, 0, false), 0);
+        assert_eq!(scrub_fraction_to_page(0.5, 0, false), 0);
+        assert_eq!(scrub_fraction_to_page(1.0, 0, true), 0);
+    }
+
+    #[test]
+    fn scrub_fraction_ltr_maps_ends_and_midpoint() {
+        // 10 pages, LTR: f=0 -> first page (0), f=1 -> last page (9),
+        // f=0.5 -> the middle page. Mapping uses the last index (count-1) as the
+        // span so both ends are reachable.
+        assert_eq!(scrub_fraction_to_page(0.0, 10, false), 0);
+        assert_eq!(scrub_fraction_to_page(1.0, 10, false), 9);
+        // round(0.5 * 9) = round(4.5) = 5 (round-half-up via +0.5 floor).
+        assert_eq!(scrub_fraction_to_page(0.5, 10, false), 5);
+    }
+
+    #[test]
+    fn scrub_fraction_rtl_inverts_fraction() {
+        // RTL (manga): dragging LEFT advances, so the screen-left end (f=0) is the
+        // LAST page and the screen-right end (f=1) is the FIRST page.
+        assert_eq!(scrub_fraction_to_page(0.0, 10, true), 9);
+        assert_eq!(scrub_fraction_to_page(1.0, 10, true), 0);
+        // Midpoint is symmetric: round((1-0.5)*9) = round(4.5) = 5.
+        assert_eq!(scrub_fraction_to_page(0.5, 10, true), 5);
+    }
+
+    #[test]
+    fn scrub_fraction_clamps_out_of_range_input() {
+        // A knob dragged past either edge (Slint can report mouse_x outside the
+        // track) clamps to [0,1] before mapping, so the page stays in range.
+        assert_eq!(scrub_fraction_to_page(-0.4, 5, false), 0);
+        assert_eq!(scrub_fraction_to_page(1.7, 5, false), 4);
+        assert_eq!(scrub_fraction_to_page(-0.4, 5, true), 4); // RTL: under-left = last
+        assert_eq!(scrub_fraction_to_page(1.7, 5, true), 0); // RTL: over-right = first
+    }
+
+    #[test]
+    fn scrub_fraction_single_page_is_always_zero() {
+        // A 1-page book: the only valid index is 0 regardless of fraction/dir
+        // (count-1 == 0 span; f * 0 == 0).
+        assert_eq!(scrub_fraction_to_page(0.0, 1, false), 0);
+        assert_eq!(scrub_fraction_to_page(1.0, 1, false), 0);
+        assert_eq!(scrub_fraction_to_page(0.3, 1, true), 0);
+    }
+
+    #[test]
+    fn scrub_fraction_is_total_function_no_nan_panic() {
+        // A non-finite fraction (defensive: a degenerate Slint length ratio) must
+        // not panic and must land in range; NaN clamps to 0 via the finite guard.
+        let p = scrub_fraction_to_page(f32::NAN, 8, false);
+        assert!(p < 8);
+        let p2 = scrub_fraction_to_page(f32::INFINITY, 8, true);
+        assert!(p2 < 8);
+    }
+
+    #[test]
+    fn preview_is_double_matches_spread_layout() {
+        // Double / Standalone on 6 pages: {0}{1,2}{3,4}{5}. Cover (0) and last
+        // odd (5) are single; the inner pairs are double. preview_is_double must
+        // report this WITHOUT moving the index.
+        let mut state = double_state();
+        state.set_source(mock_with(6));
+        assert!(!state.preview_is_double(0)); // cover stands alone
+        assert!(state.preview_is_double(1)); // {1,2}
+        assert!(state.preview_is_double(2)); // page 2 normalizes to leading 1 -> double
+        assert!(state.preview_is_double(3)); // {3,4}
+        assert!(!state.preview_is_double(5)); // last odd stands alone
+        assert_eq!(state.index(), 0, "preview must not move the index");
+    }
+
+    #[test]
+    fn preview_is_double_false_with_no_source() {
+        let state = ViewerState::new();
+        assert!(!state.preview_is_double(0));
+    }
+
+    #[test]
+    fn preview_is_double_single_mode_always_false() {
+        let mut state = ViewerState::new(); // Single by default
+        state.set_source(mock_with(6));
+        assert!(!state.preview_is_double(0));
+        assert!(!state.preview_is_double(3));
+    }
+
+    #[test]
+    fn scrub_commit_path_jumps_via_jump_to() {
+        // The commit seam computes a page (RTL-resolved by the Slint side, mirrored
+        // by scrub_fraction_to_page) and calls jump_to. Verify the end-to-end map:
+        // a screen-right release in LTR (fraction 1.0) -> last page -> jump_to lands
+        // on the last single leading.
+        let mut state = ViewerState::new();
+        state.set_source(mock_with(8));
+        let page = scrub_fraction_to_page(1.0, state.page_count(), false);
+        assert_eq!(page, 7);
+        assert!(state.jump_to(page));
+        assert_eq!(state.index(), 7);
+
+        // RTL: screen-left release (fraction 0.0) -> last page in reading order.
+        let mut state = ViewerState::from_settings(&Settings {
+            reading_direction: ReadingDirection::Rtl,
+            ..Default::default()
+        });
+        state.set_source(mock_with(8));
+        let rtl = matches!(state.reading_direction(), ReadingDirection::Rtl);
+        let page = scrub_fraction_to_page(0.0, state.page_count(), rtl);
+        assert_eq!(page, 7);
+        assert!(state.jump_to(page));
+        assert_eq!(state.index(), 7);
     }
 
     // ---- set_spread_mode (PR8b) ---------------------------------------------
