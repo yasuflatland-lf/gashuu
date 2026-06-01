@@ -31,15 +31,18 @@ pub(crate) fn natural_cmp(a: &str, b: &str) -> Ordering {
                         ord => return ord,
                     }
                 } else {
-                    match ca.to_ascii_lowercase().cmp(&cb.to_ascii_lowercase()) {
-                        Ordering::Equal => match ca.cmp(&cb) {
-                            Ordering::Equal => {
-                                ai.next();
-                                bi.next();
-                            }
-                            ord => return ord,
-                        },
-                        ord => return ord,
+                    // Compare case-insensitively, falling back to the raw chars
+                    // as a stable tiebreaker so the order is total.
+                    let ord = ca
+                        .to_ascii_lowercase()
+                        .cmp(&cb.to_ascii_lowercase())
+                        .then_with(|| ca.cmp(&cb));
+                    match ord {
+                        Ordering::Equal => {
+                            ai.next();
+                            bi.next();
+                        }
+                        other => return other,
                     }
                 }
             }
@@ -67,21 +70,23 @@ pub(crate) fn take_digits(it: &mut Peekable<Chars<'_>>) -> String {
 pub(crate) fn cmp_numeric(a: &str, b: &str) -> Ordering {
     let ta = a.trim_start_matches('0');
     let tb = b.trim_start_matches('0');
-    match ta.len().cmp(&tb.len()) {
-        Ordering::Equal => match ta.cmp(tb) {
-            Ordering::Equal => a.cmp(b),
-            ord => ord,
-        },
-        ord => ord,
-    }
+    // Compare by magnitude (fewer significant digits = smaller), then lexically
+    // among equal-length runs, then by the raw runs so padding stays deterministic.
+    ta.len()
+        .cmp(&tb.len())
+        .then_with(|| ta.cmp(tb))
+        .then_with(|| a.cmp(b))
 }
 
 /// True when `path` has a recognized image extension (ASCII case-insensitive).
 pub(crate) fn has_image_ext(path: &std::path::Path) -> bool {
-    matches!(
-        path.extension().and_then(|e| e.to_str()),
-        Some(ext) if IMAGE_EXTS.iter().any(|known| ext.eq_ignore_ascii_case(known))
-    )
+    path.extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|ext| {
+            IMAGE_EXTS
+                .iter()
+                .any(|known| ext.eq_ignore_ascii_case(known))
+        })
 }
 
 #[cfg(test)]

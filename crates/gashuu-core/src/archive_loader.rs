@@ -44,10 +44,12 @@ impl ArchiveLoader {
 /// or unrecognised the first 4 bytes are read and compared against the three
 /// ZIP signatures (`PK\x03\x04`, `PK\x05\x06`, `PK\x07\x08`).
 fn is_zip(path: &Path) -> Result<bool, CoreError> {
-    if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
-        if ext.eq_ignore_ascii_case("cbz") || ext.eq_ignore_ascii_case("zip") {
-            return Ok(true);
-        }
+    let ext_is_zip = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("cbz") || ext.eq_ignore_ascii_case("zip"));
+    if ext_is_zip {
+        return Ok(true);
     }
     let mut head = [0u8; 4];
     let mut f = std::fs::File::open(path)?;
