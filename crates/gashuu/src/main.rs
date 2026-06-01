@@ -1,20 +1,16 @@
 slint::include_modules!();
 
 mod keymap;
+mod thumbnail_strip;
 mod viewer_state;
 mod viewport;
 
-use gashuu_core::{
-    generate_thumbnails, CoreError, CoverMode, DecodedImage, FitMode, ReadingDirection, Settings,
-    SpreadMode, DEFAULT_THUMB_MAX_SIDE,
-};
+use gashuu_core::{CoverMode, DecodedImage, FitMode, ReadingDirection, Settings, SpreadMode};
 use keymap::{map_key, KeyCommand};
-use slint::{Model, ModelRc, VecModel};
 use std::cell::RefCell;
 use std::path::Path;
 use std::rc::Rc;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering::Relaxed};
-use std::sync::Arc;
+use thumbnail_strip::ThumbnailController;
 use viewer_state::ViewerState;
 use viewport::ViewportState;
 
@@ -36,146 +32,11 @@ fn main() -> color_eyre::Result<()> {
     let viewport = Rc::new(RefCell::new(ViewportState::from_settings(&settings)));
     let settings = Rc::new(RefCell::new(settings));
 
-    // Thumbnail-strip model + generation bookkeeping. The model is the live
-    // backing store for the strip (placeholders first, filled in as decodes
-    // complete on a background thread). `thumb_epoch` tags each generation so a
-    // superseded book's late callbacks are dropped; `thumb_cancel` lets us flip
-    // the previous generation's cancel flag the instant a new book opens.
-    let thumb_model = Rc::new(VecModel::<ThumbnailItem>::default());
-    ui.set_thumbnails(ModelRc::from(thumb_model.clone()));
-    let thumb_epoch = Arc::new(AtomicUsize::new(0));
-    let thumb_cancel = Rc::new(RefCell::new(Arc::new(AtomicBool::new(false))));
-
-    // Launch a fresh parallel thumbnail generation for the currently open
-    // source. Runs on the UI thread: it cancels the previous generation, resets
-    // the model to N placeholders, then spawns a worker that streams decoded
-    // thumbnails back via `invoke_from_event_loop`. Invoked after every
-    // successful open.
-    let start_thumbnails = {
-        let ui_weak = ui.as_weak();
-        let state = Rc::clone(&state);
-        let thumb_cancel = Rc::clone(&thumb_cancel);
-        let thumb_epoch = Arc::clone(&thumb_epoch);
-        let thumb_model = Rc::clone(&thumb_model);
-        move || {
-            // 1. Cancel any in-flight generation, then install a fresh flag.
-            //    Two-statement borrow discipline: the temporary `borrow()` drops
-            //    at the `;` before we take `borrow_mut()`.
-            thumb_cancel.borrow().store(true, Relaxed);
-            *thumb_cancel.borrow_mut() = Arc::new(AtomicBool::new(false));
-            let cancel_flag = Arc::clone(&thumb_cancel.borrow());
-
-            // 2. Tag this generation so superseded callbacks can be dropped.
-            let my_epoch = thumb_epoch.fetch_add(1, Relaxed) + 1;
-
-            // 3. Rebuild the model with N gray placeholders (loaded = false).
-            let page_count = state.borrow().page_count();
-            let placeholders: Vec<ThumbnailItem> = (0..page_count)
-                .map(|i| ThumbnailItem {
-                    image: Default::default(),
-                    page: i as i32,
-                    loaded: false,
-                    failed: false,
-                })
-                .collect();
-            thumb_model.set_vec(placeholders);
-
-            // 4. Grab the source (None => nothing to generate).
-            let source = match state.borrow().current_source() {
-                Some(s) => s,
-                None => return,
-            };
-
-            // 5. Spawn the worker. `on_ready` may capture only Send values: the
-            //    Weak (Send+Sync), the epoch Arc, and the epoch usize. It must
-            //    NOT capture the Rc model nor build a slint::Image off-thread
-            //    (both non-Send) — the cell is built inside the event loop.
-            let weak = ui_weak.clone();
-            let epoch = Arc::clone(&thumb_epoch);
-            let on_ready = move |i: usize, res: Result<DecodedImage, CoreError>| {
-                let img = match res {
-                    Ok(img) => img,
-                    Err(e) => {
-                        // Log the error on the worker thread before marshaling so
-                        // CoreError never crosses the thread boundary.
-                        tracing::warn!(page = i, error = %e, "thumbnail generation failed");
-                        // Marshal a failed-cell update to the UI thread so the
-                        // cell shows a distinct red placeholder instead of the
-                        // indistinguishable gray loading state.
-                        let weak = weak.clone();
-                        let epoch = Arc::clone(&epoch);
-                        if let Err(e) = slint::invoke_from_event_loop(move || {
-                            // Drop results from a superseded generation.
-                            if epoch.load(Relaxed) != my_epoch {
-                                return;
-                            }
-                            let Some(ui) = weak.upgrade() else {
-                                return;
-                            };
-                            let model = ui.get_thumbnails();
-                            let Some(vm) = model.as_any().downcast_ref::<VecModel<ThumbnailItem>>()
-                            else {
-                                return;
-                            };
-                            if i < vm.row_count() {
-                                vm.set_row_data(
-                                    i,
-                                    ThumbnailItem {
-                                        image: Default::default(),
-                                        page: i as i32,
-                                        loaded: false,
-                                        failed: true,
-                                    },
-                                );
-                            }
-                        }) {
-                            tracing::debug!(
-                                page = i,
-                                error = %e,
-                                "dropped failed-thumbnail update; event loop gone"
-                            );
-                        }
-                        return;
-                    }
-                };
-                let weak = weak.clone();
-                let epoch = Arc::clone(&epoch);
-                if let Err(e) = slint::invoke_from_event_loop(move || {
-                    // Drop results from a superseded generation.
-                    if epoch.load(Relaxed) != my_epoch {
-                        return;
-                    }
-                    let Some(ui) = weak.upgrade() else {
-                        return;
-                    };
-                    // Re-fetch the model on the UI thread (never move the Rc
-                    // across threads); convert to slint::Image here (non-Send).
-                    let model = ui.get_thumbnails();
-                    let Some(vm) = model.as_any().downcast_ref::<VecModel<ThumbnailItem>>() else {
-                        return;
-                    };
-                    if i < vm.row_count() {
-                        vm.set_row_data(
-                            i,
-                            ThumbnailItem {
-                                image: to_slint_image(&img),
-                                page: i as i32,
-                                loaded: true,
-                                failed: false,
-                            },
-                        );
-                    }
-                }) {
-                    tracing::debug!(page = i, error = %e, "dropped thumbnail update; event loop gone");
-                }
-            };
-            std::thread::spawn(move || {
-                generate_thumbnails(source, DEFAULT_THUMB_MAX_SIDE, cancel_flag, on_ready);
-            });
-        }
-    };
-    // Wrap in Rc so open_and_present can share the closure across both open handlers.
-    let start_thumbnails = Rc::new(start_thumbnails);
+    // Thumbnail-strip controller. Owns the strip's backing model and the
+    // generation bookkeeping (epoch + cancel double-guard); its `new` binds the
+    // model into the UI via `set_thumbnails` internally. Wrapped in `Rc` so both
+    // open handlers (via `open_and_present`) can share the single controller.
+    let thumbs = Rc::new(ThumbnailController::new(&ui));
 
     // Initial paint so rtl/single/status are all initialized before the first
     // folder is opened (refresh shows "No folder opened" and clears the images).
@@ -193,7 +54,7 @@ fn main() -> color_eyre::Result<()> {
         let state = Rc::clone(&state);
         let settings = Rc::clone(&settings);
         let viewport = Rc::clone(&viewport);
-        let start_thumbnails = Rc::clone(&start_thumbnails);
+        let thumbs = Rc::clone(&thumbs);
         ui.on_open_folder(move || {
             let Some(ui) = ui_weak.upgrade() else {
                 return;
@@ -201,15 +62,7 @@ fn main() -> color_eyre::Result<()> {
             let Some(dir) = rfd::FileDialog::new().pick_folder() else {
                 return;
             };
-            open_and_present(
-                &ui,
-                &state,
-                &settings,
-                &viewport,
-                &*start_thumbnails,
-                &dir,
-                "",
-            );
+            open_and_present(&ui, &state, &settings, &viewport, &thumbs, &dir, "");
         });
     }
 
@@ -219,7 +72,7 @@ fn main() -> color_eyre::Result<()> {
         let state = Rc::clone(&state);
         let settings = Rc::clone(&settings);
         let viewport = Rc::clone(&viewport);
-        let start_thumbnails = Rc::clone(&start_thumbnails);
+        let thumbs = Rc::clone(&thumbs);
         ui.on_open_archive(move || {
             let Some(ui) = ui_weak.upgrade() else {
                 return;
@@ -235,7 +88,7 @@ fn main() -> color_eyre::Result<()> {
                 &state,
                 &settings,
                 &viewport,
-                &*start_thumbnails,
+                &thumbs,
                 &file,
                 " (zip-slip or oversized)",
             );
@@ -630,12 +483,16 @@ fn main() -> color_eyre::Result<()> {
 /// folders, and for archives the archive-specific skip reasons (zip-slip /
 /// path-traversal entries and entries exceeding the per-entry size ceiling; see
 /// `naming.rs`).
+///
+/// Thumbnail regeneration is delegated to the shared `ThumbnailController`, which
+/// owns the strip's model and the epoch + cancel double-guard; `start` cancels any
+/// in-flight generation for the previous book before launching this one.
 fn open_and_present(
     ui: &ViewerWindow,
     state: &Rc<RefCell<ViewerState>>,
     settings: &Rc<RefCell<Settings>>,
     viewport: &Rc<RefCell<ViewportState>>,
-    start_thumbnails: &impl Fn(),
+    thumbs: &ThumbnailController,
     path: &Path,
     skipped_detail: &str, // "" for folders, " (zip-slip or oversized)" for archives
 ) {
@@ -664,7 +521,12 @@ fn open_and_present(
             format!("{base} \u{2014} {skipped} entries skipped{skipped_detail}").into(),
         );
     }
-    start_thumbnails();
+    // Kick off parallel thumbnail generation for the newly opened source.
+    thumbs.start(
+        ui.as_weak(),
+        state.borrow().current_source(),
+        state.borrow().page_count(),
+    );
 }
 
 /// Push the current spread + status into the UI, then re-anchor the viewport to
