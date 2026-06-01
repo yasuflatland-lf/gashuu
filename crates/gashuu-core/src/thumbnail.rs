@@ -220,4 +220,70 @@ mod tests {
             "on_ready must not be called for a 0-page source"
         );
     }
+
+    // ---------------------------------------------------------------------------
+    // Post-decode cancel-check guard
+    // ---------------------------------------------------------------------------
+
+    /// A single-page source whose `read_bytes` flips `cancelled` as a side effect.
+    /// This lets us exercise the SECOND cancel check (line 44, between decode and
+    /// `on_ready`) deterministically without any rayon races: the flag is still
+    /// `false` at the FIRST check (so we enter read+decode), then `read_bytes`
+    /// sets it to `true`, and by the time `generate_thumbnails` reaches the
+    /// post-decode check the flag is already set — suppressing the callback.
+    ///
+    /// Contrast with flipping the flag *inside* `on_ready`: with a multi-page
+    /// source other rayon workers may have already passed the second check, making
+    /// the suppression count non-deterministic. The read-side-effect approach
+    /// keeps the test single-page and fully deterministic.
+    struct CancelOnReadSource {
+        cancelled: Arc<AtomicBool>,
+        bytes: Vec<u8>,
+    }
+
+    impl PageSource for CancelOnReadSource {
+        fn list_pages(&self) -> Vec<PageEntry> {
+            vec![PageEntry {
+                path: "page0.png".into(),
+                name: "page0.png".to_string(),
+            }]
+        }
+
+        fn read_bytes(&self, _index: usize) -> Result<Vec<u8>, CoreError> {
+            // Flip the cancel flag so the post-decode check sees `true`.
+            self.cancelled.store(true, Ordering::Relaxed);
+            Ok(self.bytes.clone())
+        }
+        // skipped_count() default 0 is sufficient.
+    }
+
+    /// Guards the post-decode (second) cancel check in `generate_thumbnails`.
+    ///
+    /// Page 0 passes the first `cancelled` check (flag is still `false`),
+    /// `read_bytes` flips the flag to `true` as a side effect, decode completes,
+    /// then the second check suppresses `on_ready`. The callback count must be 0.
+    ///
+    /// If the second check (line 44) were deleted, decode would still succeed and
+    /// `on_ready` would be called once — making this test fail and exposing the gap.
+    #[test]
+    fn post_decode_cancel_check_suppresses_callback() {
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let source: Arc<dyn PageSource> = Arc::new(CancelOnReadSource {
+            cancelled: Arc::clone(&cancelled),
+            bytes: tiny_png(4, 4),
+        });
+
+        let call_count = Arc::new(Mutex::new(0usize));
+        let call_count_clone = Arc::clone(&call_count);
+
+        generate_thumbnails(source, DEFAULT_THUMB_MAX_SIDE, cancelled, move |_, _| {
+            *call_count_clone.lock().unwrap() += 1;
+        });
+
+        assert_eq!(
+            *call_count.lock().unwrap(),
+            0,
+            "on_ready must not be called when cancelled is set between decode and callback"
+        );
+    }
 }

@@ -74,6 +74,7 @@ fn main() -> color_eyre::Result<()> {
                     image: Default::default(),
                     page: i as i32,
                     loaded: false,
+                    failed: false,
                 })
                 .collect();
             thumb_model.set_vec(placeholders);
@@ -94,15 +95,51 @@ fn main() -> color_eyre::Result<()> {
                 let img = match res {
                     Ok(img) => img,
                     Err(e) => {
-                        // Leave the placeholder in place; do not marshal the
-                        // error across threads (keeps CoreError off the boundary).
+                        // Log the error on the worker thread before marshaling so
+                        // CoreError never crosses the thread boundary.
                         tracing::warn!(page = i, error = %e, "thumbnail generation failed");
+                        // Marshal a failed-cell update to the UI thread so the
+                        // cell shows a distinct red placeholder instead of the
+                        // indistinguishable gray loading state.
+                        let weak = weak.clone();
+                        let epoch = Arc::clone(&epoch);
+                        if let Err(e) = slint::invoke_from_event_loop(move || {
+                            // Drop results from a superseded generation.
+                            if epoch.load(Relaxed) != my_epoch {
+                                return;
+                            }
+                            let Some(ui) = weak.upgrade() else {
+                                return;
+                            };
+                            let model = ui.get_thumbnails();
+                            let Some(vm) = model.as_any().downcast_ref::<VecModel<ThumbnailItem>>()
+                            else {
+                                return;
+                            };
+                            if i < vm.row_count() {
+                                vm.set_row_data(
+                                    i,
+                                    ThumbnailItem {
+                                        image: Default::default(),
+                                        page: i as i32,
+                                        loaded: false,
+                                        failed: true,
+                                    },
+                                );
+                            }
+                        }) {
+                            tracing::debug!(
+                                page = i,
+                                error = %e,
+                                "dropped failed-thumbnail update; event loop gone"
+                            );
+                        }
                         return;
                     }
                 };
                 let weak = weak.clone();
                 let epoch = Arc::clone(&epoch);
-                let _ = slint::invoke_from_event_loop(move || {
+                if let Err(e) = slint::invoke_from_event_loop(move || {
                     // Drop results from a superseded generation.
                     if epoch.load(Relaxed) != my_epoch {
                         return;
@@ -123,10 +160,13 @@ fn main() -> color_eyre::Result<()> {
                                 image: to_slint_image(&img),
                                 page: i as i32,
                                 loaded: true,
+                                failed: false,
                             },
                         );
                     }
-                });
+                }) {
+                    tracing::debug!(page = i, error = %e, "dropped thumbnail update; event loop gone");
+                }
             };
             std::thread::spawn(move || {
                 generate_thumbnails(source, DEFAULT_THUMB_MAX_SIDE, cancel_flag, on_ready);

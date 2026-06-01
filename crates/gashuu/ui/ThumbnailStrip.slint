@@ -13,6 +13,9 @@ export struct ThumbnailItem {
     page: int,
     // false while the thumbnail is still being decoded; shows a gray placeholder.
     loaded: bool,
+    // true when decoding failed; shows a distinct red-tinted placeholder.
+    // Only meaningful when loaded == false.
+    failed: bool,
 }
 
 export component ThumbnailStrip inherits Rectangle {
@@ -73,6 +76,10 @@ export component ThumbnailStrip inherits Rectangle {
                 background: #2a2a2a;
 
                 // ── Image or placeholder ───────────────────────────────────────
+                // Three mutually-exclusive states:
+                //   loaded              → real thumbnail image
+                //   !loaded && !failed  → gray "still loading" placeholder
+                //   !loaded && failed   → red-tinted "decode failed" placeholder
                 if item.loaded : Image {
                     x: root.border-highlight;
                     y: root.border-highlight;
@@ -82,13 +89,34 @@ export component ThumbnailStrip inherits Rectangle {
                     image-fit: contain;
                 }
 
-                if !item.loaded : Rectangle {
+                if !item.loaded && !item.failed : Rectangle {
                     x: root.border-highlight;
                     y: root.border-highlight;
                     width: root.cell-width - 2 * root.border-highlight;
                     height: root.image-area-height - root.border-highlight;
                     background: #555555;
                     border-radius: 2px;
+                }
+
+                if !item.loaded && item.failed : Rectangle {
+                    x: root.border-highlight;
+                    y: root.border-highlight;
+                    width: root.cell-width - 2 * root.border-highlight;
+                    height: root.image-area-height - root.border-highlight;
+                    background: #5a2222;
+                    border-color: #cc4444;
+                    border-width: 1px;
+                    border-radius: 2px;
+
+                    Text {
+                        width: parent.width;
+                        height: parent.height;
+                        text: "✕";
+                        color: #ff6666;
+                        font-size: 20px;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
                 }
 
                 // ── Page number label ──────────────────────────────────────────

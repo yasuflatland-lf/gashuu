@@ -335,8 +335,9 @@ mod tests {
 
     #[test]
     fn decode_thumbnail_does_not_upscale() {
-        // Source 20x10 is smaller than max_side=64. thumbnail() is downscale-only,
-        // so the returned image must have the original dimensions (20x10).
+        // Source 20x10 already fits within max_side=64, so decode_thumbnail's explicit
+        // downscale-only guard returns it unchanged. (DynamicImage::thumbnail would
+        // otherwise upscale small images to fill the bounds, hence the guard.)
         let bytes = png_bytes(20, 10);
         let thumb = decode_thumbnail(&bytes, 64).unwrap();
         assert_eq!(
