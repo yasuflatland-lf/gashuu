@@ -61,6 +61,13 @@ RAR requires a C++ compiler on every OS (see [docs/toolchain.md](toolchain.md)).
 - A first-run guide shows once, gated by `Settings::seen_guide`.
 - No new deps.
 
+### Library cover-flow carousel rendering (PR-C)
+
+- The Library screen (the PR-0b two-screen shell) now RENDERS the cover-flow carousel from the `Library` model: focused cover with accent ring, scaled/dimmed neighbors, per-cover + focused-meta reading-progress bars, a grayed broken-cover placeholder for unavailable books, and the 0-book empty-state CTA. Built from the pure `library_model::carousel_data` mapping via the `to_carousel_item` UI-thread adapter (covers via `slint::Image::default()` for now). No new deps.
+- **Covers are PLACEHOLDERS** — real cover images stream in via PR-V (into the same `VecModel<CarouselItem>`, using the PR8a `invoke_from_event_loop` pattern).
+- **Per-book page `total` is 0** — the Library does not persist page counts, so `total` (and therefore the meaningful `current / total` + progress fraction) stays 0 until whichever PR resolves a book's page source and learns its real count.
+- The empty-state CTA is wired to the file/folder picker in PR-L (PR-C ships it as a non-interactive placeholder).
+
 ---
 
 ## Deferred (intentionally out of scope)
