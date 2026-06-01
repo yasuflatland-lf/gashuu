@@ -1,0 +1,38 @@
+// Single source of truth for gashuu's visual tokens, per /DESIGN.md.
+// PR-S introduces this global carrying only the tokens the scrubber + page
+// counter need; later UI PRs extend it. NEVER paste raw hex into components —
+// reference Theme.<token> instead (DESIGN.md "reference tokens, not raw hex").
+export global Theme {
+    // Colors (DESIGN.md front-matter).
+    out property <color> accent: #5b8cff;
+    out property <color> accent-glow: #5b8cff40;   // rgba(91,140,255,0.25) -> 0x40 alpha
+    out property <color> canvas: #0b0e15;
+    out property <color> surface-float: #10141f;
+    out property <color> hairline-float: #2f3850;
+    out property <color> track: #2a3243;
+    out property <color> chip: #222a3a;
+    out property <color> text: #ffffff;
+    out property <color> text-mid: #cdd8ef;
+
+    // Border radii.
+    out property <length> rounded-xs: 3px;   // scrubber rail, thumbnail cells
+    out property <length> rounded-md: 8px;    // preview popover
+    out property <length> rounded-pill: 9999px;
+
+    // Spacing.
+    out property <length> space-xxs: 4px;
+    out property <length> space-xs: 6px;
+    out property <length> space-sm: 8px;
+    out property <length> space-md: 10px;
+    out property <length> space-lg: 14px;
+    out property <length> space-xl: 18px;
+    out property <length> space-huge: 26px;
+
+    // Component sizes (DESIGN.md components.scrubber-*).
+    out property <length> scrubber-track-height: 6px;
+    out property <length> scrubber-knob-size: 16px;
+
+    // Type sizes.
+    out property <length> font-label: 12px;    // chip / chrome labels
+    out property <length> font-numeric: 13px;   // page counters (tabular figures)
+}
