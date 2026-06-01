@@ -34,6 +34,17 @@ pub enum CoreError {
     #[error("no config directory available for settings")]
     NoConfigDir,
 
+    /// Library file could not be (de)serialized. NOTE: deliberately NOT
+    /// `#[from] serde_json::Error` - `CoreError::Settings` already owns that
+    /// `From` impl, and a type can have only one. Construct explicitly via
+    /// `.map_err(CoreError::Library)`.
+    #[error("library format error: {0}")]
+    Library(serde_json::Error),
+
+    /// The OS did not provide a data directory for library storage.
+    #[error("no data directory available for library")]
+    NoDataDir,
+
     /// The archive backend failed to open the container or read an entry.
     #[error("archive error: {0}")]
     Zip(#[from] ::zip::result::ZipError),
@@ -136,5 +147,18 @@ mod tests {
             path: "/x.txt".into(),
         };
         assert_eq!(err.to_string(), "unsupported format: /x.txt");
+    }
+
+    #[test]
+    fn library_displays_with_prefix() {
+        let json_err = serde_json::from_str::<serde_json::Value>("not json").unwrap_err();
+        let err = CoreError::Library(json_err);
+        assert!(err.to_string().starts_with("library format error: "));
+    }
+
+    #[test]
+    fn no_data_dir_displays_message() {
+        let err = CoreError::NoDataDir;
+        assert_eq!(err.to_string(), "no data directory available for library");
     }
 }

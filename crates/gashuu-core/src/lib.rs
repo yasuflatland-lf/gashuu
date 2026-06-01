@@ -7,18 +7,23 @@ pub mod archive_loader;
 pub mod cache;
 pub mod error;
 pub mod image_ops;
+pub mod library;
+pub mod library_store;
 pub mod page_source;
 pub mod settings;
 pub mod spread;
 #[cfg(test)]
 mod test_fixtures;
 pub mod thumbnail;
+pub mod thumbnail_cache;
 pub mod viewport;
 
 pub use archive_loader::ArchiveLoader;
 pub use cache::{ImageCache, DEFAULT_CAPACITY, DEFAULT_PREFETCH_RADIUS};
 pub use error::CoreError;
 pub use image_ops::{check_pixel_limit, decode, decode_thumbnail, DecodedImage, MAX_PIXELS};
+pub use library::{Book, Library};
+pub use library_store::LIBRARY_VERSION;
 pub use page_source::{FolderSource, PageEntry, PageSource, RarSource, ZipSource};
 pub use settings::{
     CoverMode, FitMode, KeyBindings, ReadingDirection, Settings, SpreadLayout, SpreadMode,
@@ -26,6 +31,7 @@ pub use settings::{
 };
 pub use spread::{next_leading, normalize_leading, prev_leading, spread_at, Spread};
 pub use thumbnail::{generate_thumbnails, DEFAULT_THUMB_MAX_SIDE};
+pub use thumbnail_cache::{cache_key, ThumbnailCache};
 pub use viewport::{
     anchored_zoom, centered_offset, clamp_offset, clamp_zoom, fit_scale, ZOOM_MAX, ZOOM_MIN,
 };

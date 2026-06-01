@@ -22,3 +22,4 @@ Thumbs.db
 
 # mise (local state)
 .mise.local.toml
+.superpowers
