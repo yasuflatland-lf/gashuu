@@ -79,6 +79,16 @@ page: before read AND before callback); per-page failure is delivered as `Err` (
 `DEFAULT_THUMB_MAX_SIDE`=160; headless (no slint/tracing), same "testable synchronous core; UI
 owns the fire-and-forget spawn" philosophy as `ImageCache`.
 
+### thumbnail_cache
+
+PR-T, `thumbnail_cache.rs`. On-disk PNG cache for page/cover thumbnails under the OS cache dir
+(`ProjectDirs("", "", "gashuu").cache_dir()/covers`); `with_dir(PathBuf)` is the tempfile-testable
+seam. `put(key, &DecodedImage)` PNG-encodes the RGBA at exact dimensions and writes atomically
+(temp-file-then-rename); `get(key) -> Option<DecodedImage>` reads `<dir>/<key>.png` and decodes,
+returning `None` on any missing/unreadable/corrupt file (a cache miss, never panics). `cache_key(path,
+mtime_secs, max_side)` derives a stable 16-hex-char filename via FNV-1a (NOT `DefaultHasher`; see
+docs/patterns.md). Headless (no slint/tracing). The cover carousel that consumes it is PR-V.
+
 ### cache::ImageCache
 
 LRU of `Arc<DecodedImage>` up to `DEFAULT_CAPACITY`=50 + background ±`DEFAULT_PREFETCH_RADIUS`=3
