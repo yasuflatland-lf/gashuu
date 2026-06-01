@@ -28,6 +28,7 @@ pub use settings::{
 };
 pub use spread::{next_leading, normalize_leading, prev_leading, spread_at, Spread};
 pub use thumbnail::{generate_thumbnails, DEFAULT_THUMB_MAX_SIDE};
+pub use thumbnail_cache::{cache_key, ThumbnailCache};
 pub use viewport::{
     anchored_zoom, centered_offset, clamp_offset, clamp_zoom, fit_scale, ZOOM_MAX, ZOOM_MIN,
 };

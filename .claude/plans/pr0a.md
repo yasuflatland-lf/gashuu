@@ -858,7 +858,7 @@ Progress: DONE 2026-06-02 - Pure thumbnail cache_key implemented and thumbnail_c
 - Modify: `crates/gashuu-core/src/lib.rs`
 - Test: `crates/gashuu-core/src/thumbnail_cache.rs` (inline tests)
 
-- [ ] **9.1 Write failing test.** Add these tests inside the `#[cfg(test)] mod tests` block in `crates/gashuu-core/src/thumbnail_cache.rs`:
+- [x] **9.1 Write failing test.** Add these tests inside the `#[cfg(test)] mod tests` block in `crates/gashuu-core/src/thumbnail_cache.rs`:
 ```rust
     #[test]
     fn with_dir_constructs_and_get_returns_none_skeleton() {
@@ -889,9 +889,9 @@ Progress: DONE 2026-06-02 - Pure thumbnail cache_key implemented and thumbnail_c
         );
     }
 ```
-- [ ] **9.2 Run it (expect FAIL):** `mise exec -- cargo nextest run -p gashuu-core with_dir_constructs_and_get_returns_none_skeleton put_is_noop_skeleton_and_writes_nothing`
+- [x] **9.2 Run it (expect FAIL):** `mise exec -- cargo nextest run -p gashuu-core with_dir_constructs_and_get_returns_none_skeleton put_is_noop_skeleton_and_writes_nothing`
   - Expected FAIL: `cannot find type 'ThumbnailCache'` / `no method named 'with_dir' / 'get' / 'put'` — the struct does not exist yet.
-- [ ] **9.3 Minimal impl.** Insert this `ThumbnailCache` struct + impl ABOVE the `cache_key` fn (or directly below it) in `crates/gashuu-core/src/thumbnail_cache.rs`:
+- [x] **9.3 Minimal impl.** Insert this `ThumbnailCache` struct + impl ABOVE the `cache_key` fn (or directly below it) in `crates/gashuu-core/src/thumbnail_cache.rs`:
 ```rust
 /// A disk cache for book cover thumbnails living under the OS cache directory.
 ///
@@ -934,13 +934,15 @@ impl ThumbnailCache {
 ```
   - **NOTE on `#[allow(dead_code)]`:** the `dir` field is set by both constructors but unread by the skeleton `get`/`put`; `clippy -D warnings` (and even `cargo build` for an unused field) would otherwise flag it. The `#[allow(dead_code)]` is intentional and documented in place, matching the project's "test-only / future-use accessor" convention in `docs/patterns.md`. PR-T removes the allow when it reads `dir`.
   - **NOTE on `new()` error variant:** the contract's skeleton signature returns `CoreError`. There is no dedicated "no cache dir" variant; reuse `CoreError::NoDataDir` (the closest existing "OS dir unavailable" variant added in Task 1) rather than introducing a third dir-error variant. `new()` is not exercised by a unit test (it depends on the live OS cache dir); it is covered for compilation only, with `with_dir` carrying the testable behavior — matching how `Settings::config_path` is the only OS-path test and the rest use `_from` seams.
-- [ ] **9.4 Add re-exports to `lib.rs`.** In `crates/gashuu-core/src/lib.rs`, add the thumbnail-cache re-export (place after the existing `pub use thumbnail::{...};` line):
+- [x] **9.4 Add re-exports to `lib.rs`.** In `crates/gashuu-core/src/lib.rs`, add the thumbnail-cache re-export (place after the existing `pub use thumbnail::{...};` line):
 ```rust
 pub use thumbnail_cache::{cache_key, ThumbnailCache};
 ```
-- [ ] **9.5 Run it (expect PASS):** `mise exec -- cargo nextest run -p gashuu-core with_dir_constructs_and_get_returns_none_skeleton put_is_noop_skeleton_and_writes_nothing`
+- [x] **9.5 Run it (expect PASS):** `mise exec -- cargo nextest run -p gashuu-core with_dir_constructs_and_get_returns_none_skeleton put_is_noop_skeleton_and_writes_nothing`
   - Expected PASS: both tests pass; `with_dir` constructs, `get` → `None`, `put` → `Ok` and writes nothing.
-- [ ] **9.6 Commit:** `git commit -m "feat(core): add ThumbnailCache skeleton (struct + new/with_dir + no-op get/put)"`
+- [x] **9.6 Commit:** `git commit -m "feat(core): add ThumbnailCache skeleton (struct + new/with_dir + no-op get/put)"`
+
+Progress: DONE 2026-06-02 - ThumbnailCache skeleton implemented with frozen get/put API; focused nextest and cargo check passed without warnings.
 
 ---
 
