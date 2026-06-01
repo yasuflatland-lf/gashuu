@@ -6,9 +6,12 @@ mod thumbnail_strip;
 mod viewer_state;
 mod viewport;
 
-use gashuu_core::{CoverMode, DecodedImage, FitMode, ReadingDirection, Settings, SpreadMode};
+use gashuu_core::{
+    CoverMode, DecodedImage, FitMode, Library, ReadingDirection, Settings, SpreadMode,
+};
 use keymap::{map_key, KeyCommand};
 use navigation::{screen_to_index, NavState};
+use slint::{ModelRc, VecModel};
 use std::cell::RefCell;
 use std::path::Path;
 use std::rc::Rc;
@@ -29,6 +32,14 @@ fn main() -> color_eyre::Result<()> {
         Settings::default()
     });
 
+    // Load the persisted library; corrupt/unreadable files fall back to an empty
+    // library (same corrupt-file recovery policy as settings, kept in the UI layer).
+    let library = Library::load().unwrap_or_else(|e| {
+        tracing::warn!(error = %e, "failed to load library; using empty library");
+        Library::new()
+    });
+    let library = Rc::new(RefCell::new(library));
+
     let ui = ViewerWindow::new()?;
     let state = Rc::new(RefCell::new(ViewerState::from_settings(&settings)));
     let viewport = Rc::new(RefCell::new(ViewportState::from_settings(&settings)));
@@ -46,6 +57,11 @@ fn main() -> color_eyre::Result<()> {
     let nav = Rc::new(RefCell::new(NavState::new()));
     // Push the initial screen so the window shows the Library on boot.
     ui.set_screen(screen_to_index(nav.borrow().screen()));
+
+    // Seed the carousel model from the persisted library so the home screen shows
+    // the saved books on boot. Cover images are placeholder until PR-V streams them
+    // in; the model is rebuilt by `build_carousel_model` after every add/remove.
+    ui.set_carousel_items(build_carousel_model(&library.borrow()));
 
     // Initial paint so rtl/single/status are all initialized before the first
     // folder is opened (refresh shows "No folder opened" and clears the images).
@@ -958,6 +974,39 @@ fn reconcile_settings(state: &ViewerState, viewport: &ViewportState, settings: &
     settings.fit_mode = viewport.fit_mode();
 }
 
+/// Add every path in `paths` to `lib`, skipping duplicates.
+/// Returns the count of books actually inserted (new books only).
+/// Dedup is handled by `Library::add` (returns `false` when already present).
+// Wired into the rfd `add-files`/`add-folder` handlers by a later task; only the
+// unit tests exercise it for now (same #[allow(dead_code)] convention used by the
+// not-yet-wired helpers in navigation.rs / viewer_state.rs).
+#[allow(dead_code)]
+fn add_paths(lib: &mut Library, paths: Vec<std::path::PathBuf>) -> usize {
+    paths.into_iter().filter(|p| lib.add(p.clone())).count()
+}
+
+/// Rebuild the carousel model from the current library state.
+/// Called after every add/remove to keep the model in sync.
+/// Cover images are placeholder (transparent) until PR-V streams them in.
+fn build_carousel_model(lib: &Library) -> ModelRc<CarouselItem> {
+    let items: Vec<CarouselItem> = lib
+        .books()
+        .iter()
+        .map(|b| {
+            let last = b.last_page();
+            CarouselItem {
+                cover: slint::Image::default(),
+                title: b.title().into(),
+                current: (last + 1) as i32,
+                total: 0,
+                progress: 0.0,
+                available: Library::is_available(b),
+            }
+        })
+        .collect();
+    ModelRc::new(VecModel::from(items))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1035,5 +1084,67 @@ mod tests {
         assert_eq!(settings.preload_pages, 7);
         assert!(settings.track_recent_files);
         assert!(settings.seen_guide);
+    }
+
+    #[test]
+    fn add_paths_empty_vec_returns_zero() {
+        let mut lib = gashuu_core::Library::new();
+        let added = add_paths(&mut lib, vec![]);
+        assert_eq!(added, 0);
+        assert_eq!(lib.books().len(), 0);
+    }
+
+    #[test]
+    fn add_paths_new_paths_counted() {
+        let mut lib = gashuu_core::Library::new();
+        let paths = vec![
+            std::path::PathBuf::from("nonexistent/vol1.cbz"),
+            std::path::PathBuf::from("nonexistent/vol2.cbz"),
+        ];
+        let added = add_paths(&mut lib, paths);
+        assert_eq!(added, 2);
+        assert_eq!(lib.books().len(), 2);
+    }
+
+    #[test]
+    fn add_paths_dedup_within_batch() {
+        let mut lib = gashuu_core::Library::new();
+        let paths = vec![
+            std::path::PathBuf::from("nonexistent/vol1.cbz"),
+            std::path::PathBuf::from("nonexistent/vol1.cbz"),
+        ];
+        let added = add_paths(&mut lib, paths);
+        assert_eq!(
+            added, 1,
+            "duplicate within the batch must not be double-counted"
+        );
+        assert_eq!(lib.books().len(), 1);
+    }
+
+    #[test]
+    fn add_paths_dedup_against_existing() {
+        let mut lib = gashuu_core::Library::new();
+        lib.add(std::path::PathBuf::from("nonexistent/vol1.cbz"));
+        let paths = vec![
+            std::path::PathBuf::from("nonexistent/vol1.cbz"),
+            std::path::PathBuf::from("nonexistent/vol2.cbz"),
+        ];
+        let added = add_paths(&mut lib, paths);
+        assert_eq!(
+            added, 1,
+            "a path already in the library must not be counted"
+        );
+        assert_eq!(lib.books().len(), 2);
+    }
+
+    #[test]
+    fn add_paths_preserves_insertion_order() {
+        let mut lib = gashuu_core::Library::new();
+        let paths: Vec<_> = (0..5)
+            .map(|i| std::path::PathBuf::from(format!("nonexistent/vol{i}.cbz")))
+            .collect();
+        add_paths(&mut lib, paths);
+        let titles: Vec<&str> = lib.books().iter().map(|b| b.title()).collect();
+        assert_eq!(titles, ["vol0", "vol1", "vol2", "vol3", "vol4"]);
     }
 }
