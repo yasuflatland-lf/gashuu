@@ -14,6 +14,7 @@ pub mod spread;
 #[cfg(test)]
 mod test_fixtures;
 pub mod thumbnail;
+pub mod thumbnail_cache;
 pub mod viewport;
 
 pub use archive_loader::ArchiveLoader;

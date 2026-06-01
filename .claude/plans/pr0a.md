@@ -752,7 +752,7 @@ pub use library_store::LIBRARY_VERSION;
 - Modify: `crates/gashuu-core/src/lib.rs`
 - Test: `crates/gashuu-core/src/thumbnail_cache.rs` (inline tests)
 
-- [ ] **8.1 Write failing test.** Create `crates/gashuu-core/src/thumbnail_cache.rs` with the header + the test module first:
+- [x] **8.1 Write failing test.** Create `crates/gashuu-core/src/thumbnail_cache.rs` with the header + the test module first:
 ```rust
 //! Disk cache for book cover thumbnails, keyed by `(path, mtime, max_side)`.
 //!
@@ -817,13 +817,13 @@ mod tests {
     }
 }
 ```
-- [ ] **8.2 Run it (expect FAIL):** `mise exec -- cargo nextest run -p gashuu-core cache_key_is_stable_for_same_inputs`
+- [x] **8.2 Run it (expect FAIL):** `mise exec -- cargo nextest run -p gashuu-core cache_key_is_stable_for_same_inputs`
   - Expected FAIL: `module 'thumbnail_cache' not found` / `cannot find function 'cache_key'` — undeclared module and missing fn.
-- [ ] **8.3 Minimal impl (part A: declare the module).** In `crates/gashuu-core/src/lib.rs`, add `pub mod thumbnail_cache;`. Place it after the existing `pub mod thumbnail;` line (alphabetical: `thumbnail` then `thumbnail_cache`):
+- [x] **8.3 Minimal impl (part A: declare the module).** In `crates/gashuu-core/src/lib.rs`, add `pub mod thumbnail_cache;`. Place it after the existing `pub mod thumbnail;` line (alphabetical: `thumbnail` then `thumbnail_cache`):
 ```rust
 pub mod thumbnail_cache;
 ```
-- [ ] **8.4 Minimal impl (part B: write `cache_key`).** Insert this ABOVE the `#[cfg(test)] mod tests` block in `crates/gashuu-core/src/thumbnail_cache.rs`:
+- [x] **8.4 Minimal impl (part B: write `cache_key`).** Insert this ABOVE the `#[cfg(test)] mod tests` block in `crates/gashuu-core/src/thumbnail_cache.rs`:
 ```rust
 /// Pure key derivation for a cover thumbnail: a stable lowercase-hex filename
 /// stem from `(path, mtime_secs, max_side)`.
@@ -843,9 +843,11 @@ pub fn cache_key(path: &Path, mtime_secs: i64, max_side: u32) -> String {
     format!("{:016x}", hasher.finish())
 }
 ```
-- [ ] **8.5 Run it (expect PASS):** `mise exec -- cargo nextest run -p gashuu-core cache_key_is_stable_for_same_inputs cache_key_differs_on_mtime cache_key_differs_on_max_side cache_key_differs_on_path`
+- [x] **8.5 Run it (expect PASS):** `mise exec -- cargo nextest run -p gashuu-core cache_key_is_stable_for_same_inputs cache_key_differs_on_mtime cache_key_differs_on_max_side cache_key_differs_on_path`
   - Expected PASS: all four tests pass (stable + hex; differs on mtime/max_side/path).
-- [ ] **8.6 Commit:** `git commit -m "feat(core): add pure thumbnail cache_key derivation"`
+- [x] **8.6 Commit:** `git commit -m "feat(core): add pure thumbnail cache_key derivation"`
+
+Progress: DONE 2026-06-02 - Pure thumbnail cache_key implemented and thumbnail_cache module wired; focused nextest passed. Task 9 will consume the temporary forward imports.
 
 ---
 
