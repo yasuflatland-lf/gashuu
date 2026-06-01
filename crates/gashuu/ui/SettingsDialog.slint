@@ -1,0 +1,215 @@
+// Modal settings overlay for gashuu.
+// Rendered as a full-area semi-transparent backdrop with a centered panel.
+// Each setting change fires a callback so Rust can react. Display modes apply
+// immediately; cache size and preload radius apply to newly opened books.
+// Idempotency (no-op on equal values) is enforced on the Rust side to absorb
+// ComboBox self-fire.
+import { Button, ComboBox, SpinBox, CheckBox, VerticalBox, HorizontalBox } from "std-widgets.slint";
+
+export component SettingsDialog inherits Rectangle {
+    // ── Full-area semi-transparent backdrop ──────────────────────────────────
+    background: #000000a0;
+
+    // ── In-out properties (two-way bound to UI controls) ─────────────────────
+    // Index into ["Left to Right", "Right to Left"].
+    in-out property <int> reading-direction-index;
+    // Index into ["Single", "Double", "Auto"].
+    in-out property <int> spread-mode-index;
+    // Index into ["Standalone", "Paired"].
+    in-out property <int> cover-mode-index;
+    // Index into ["Whole", "Width", "Actual"].
+    in-out property <int> fit-mode-index;
+    // LRU cache size in pages (>=1).
+    in-out property <int> cache-size;
+    // Background prefetch radius in pages (0 = disabled).
+    in-out property <int> preload-pages;
+    // Whether recent-files tracking is enabled.
+    in-out property <bool> track-recent;
+    // Read-only reference text listing keyboard shortcuts (display only).
+    in property <string> key-bindings-text;
+
+    // ── Callbacks fired when the user changes a setting ───────────────────────
+    callback set-reading-direction(int);
+    callback set-spread-mode(int);
+    callback set-cover-mode(int);
+    callback set-fit-mode(int);
+    callback set-cache-size(int);
+    callback set-preload-pages(int);
+    callback set-track-recent(bool);
+    // Fired when the user clicks the Close button.
+    callback close-settings();
+
+    // ── Centered panel ────────────────────────────────────────────────────────
+    Rectangle {
+        width: 480px;
+        // Height is determined by content; anchor the panel at center.
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        background: #2b2b2b;
+        border-radius: 8px;
+        border-color: #444444;
+        border-width: 1px;
+
+        VerticalBox {
+            padding: 20px;
+            spacing: 12px;
+
+            // ── Title ─────────────────────────────────────────────────────────
+            Text {
+                text: "Settings";
+                font-size: 20px;
+                color: #eeeeee;
+                horizontal-alignment: left;
+            }
+
+            // ── Reading direction ─────────────────────────────────────────────
+            HorizontalBox {
+                spacing: 8px;
+                Text {
+                    text: "Reading direction";
+                    color: #cccccc;
+                    font-size: 13px;
+                    vertical-alignment: center;
+                    horizontal-stretch: 1;
+                }
+                ComboBox {
+                    model: ["Left to Right", "Right to Left"];
+                    current-index <=> root.reading-direction-index;
+                    selected => { root.set-reading-direction(self.current-index); }
+                    horizontal-stretch: 1;
+                }
+            }
+
+            // ── Spread mode ───────────────────────────────────────────────────
+            HorizontalBox {
+                spacing: 8px;
+                Text {
+                    text: "Spread";
+                    color: #cccccc;
+                    font-size: 13px;
+                    vertical-alignment: center;
+                    horizontal-stretch: 1;
+                }
+                ComboBox {
+                    model: ["Single", "Double", "Auto"];
+                    current-index <=> root.spread-mode-index;
+                    selected => { root.set-spread-mode(self.current-index); }
+                    horizontal-stretch: 1;
+                }
+            }
+
+            // ── Cover mode ────────────────────────────────────────────────────
+            HorizontalBox {
+                spacing: 8px;
+                Text {
+                    text: "Cover";
+                    color: #cccccc;
+                    font-size: 13px;
+                    vertical-alignment: center;
+                    horizontal-stretch: 1;
+                }
+                ComboBox {
+                    model: ["Standalone", "Paired"];
+                    current-index <=> root.cover-mode-index;
+                    selected => { root.set-cover-mode(self.current-index); }
+                    horizontal-stretch: 1;
+                }
+            }
+
+            // ── Fit mode ──────────────────────────────────────────────────────
+            HorizontalBox {
+                spacing: 8px;
+                Text {
+                    text: "Fit";
+                    color: #cccccc;
+                    font-size: 13px;
+                    vertical-alignment: center;
+                    horizontal-stretch: 1;
+                }
+                ComboBox {
+                    model: ["Whole", "Width", "Actual"];
+                    current-index <=> root.fit-mode-index;
+                    selected => { root.set-fit-mode(self.current-index); }
+                    horizontal-stretch: 1;
+                }
+            }
+
+            // ── Cache size ────────────────────────────────────────────────────
+            HorizontalBox {
+                spacing: 8px;
+                Text {
+                    text: "Cache size (pages)";
+                    color: #cccccc;
+                    font-size: 13px;
+                    vertical-alignment: center;
+                    horizontal-stretch: 1;
+                }
+                SpinBox {
+                    value <=> root.cache-size;
+                    minimum: 1;
+                    maximum: 9999;
+                    edited(v) => { root.set-cache-size(v); }
+                    horizontal-stretch: 1;
+                }
+            }
+
+            // ── Preload radius ────────────────────────────────────────────────
+            HorizontalBox {
+                spacing: 8px;
+                Text {
+                    text: "Preload radius";
+                    color: #cccccc;
+                    font-size: 13px;
+                    vertical-alignment: center;
+                    horizontal-stretch: 1;
+                }
+                SpinBox {
+                    value <=> root.preload-pages;
+                    minimum: 0;
+                    maximum: 99;
+                    edited(v) => { root.set-preload-pages(v); }
+                    horizontal-stretch: 1;
+                }
+            }
+
+            // ── Cache/preload note ────────────────────────────────────────────
+            Text {
+                text: "Cache & preload apply to newly opened books.";
+                font-size: 11px;
+                color: #aaaaaa;
+                horizontal-alignment: left;
+            }
+
+            // ── Track recent files ────────────────────────────────────────────
+            CheckBox {
+                text: "Track recent files";
+                checked <=> root.track-recent;
+                toggled => { root.set-track-recent(self.checked); }
+            }
+
+            // ── Keyboard shortcuts reference (read-only) ──────────────────────
+            Text {
+                text: "Keyboard shortcuts (reference)";
+                font-size: 13px;
+                color: #cccccc;
+                horizontal-alignment: left;
+            }
+            Text {
+                text: root.key-bindings-text;
+                font-size: 12px;
+                color: #aaaaaa;
+                horizontal-alignment: left;
+                wrap: word-wrap;
+            }
+
+            // ── Close button ──────────────────────────────────────────────────
+            HorizontalBox {
+                alignment: end;
+                Button {
+                    text: "Close";
+                    clicked => { root.close-settings(); }
+                }
+            }
+        }
+    }
+}

@@ -21,5 +21,6 @@ expression: "Settings::default().to_json().unwrap()"
     ]
   },
   "track_recent_files": false,
-  "recent_files": []
+  "recent_files": [],
+  "seen_guide": false
 }

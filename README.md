@@ -5,7 +5,7 @@
 
 A cross-platform manga viewer built with Rust and [Slint](https://slint.dev).
 
-## Status (PR5 — Zoom/pan + fit modes · PR6 — ZIP/CBZ archive support · PR7 — RAR/CBR archive support · PR8a — Thumbnail strip)
+## Status (PR5 — Zoom/pan + fit modes · PR6 — ZIP/CBZ archive support · PR7 — RAR/CBR archive support · PR8a — Thumbnail strip · PR8b — Settings dialog + first-run guide)
 
 Open a **folder** of PNG/JPG/JPEG images, or a **CBZ/ZIP/CBR/RAR comic archive**, and browse
 every page with the keyboard. Pages are held in an LRU cache (up to 50 decoded images)
@@ -20,6 +20,13 @@ progressively while you read and opening a book is never blocked. Press **T** (o
 the **Thumbnails** toolbar button) to toggle the strip, click any thumbnail to jump
 directly to that page, and see at a glance which page is current (highlighted). A
 thumbnail that fails to generate shows a red ✕ error marker rather than a blank cell.
+
+On first launch a **welcome overlay** summarises how to open files, turn pages, switch
+modes, zoom and fit, and use the thumbnail strip. Dismiss it with **Got it** — it won't
+appear again. The in-app **Settings dialog** (toolbar **Settings…** button) lets you
+change all active options without hand-editing the config file; display-mode changes
+apply immediately, while cache size and preload radius take effect when you open the next
+book. The dialog also lists all keyboard shortcuts for quick reference.
 
 Arrow keys follow the active reading direction: in LTR mode **→** advances and **←**
 goes back; in RTL mode the arrows are swapped (**←** advances / **→** goes back).
@@ -70,8 +77,15 @@ Set `RUST_LOG=debug` to see per-turn latency (`page turn elapsed_ms=…`).
 
 ## Settings
 
-Settings are stored as JSON in the OS config directory. On first run gashuu writes a
-default file you can hand-edit; the file is loaded on startup and saved on exit.
+The easiest way to change settings is the **Settings dialog**: click the **Settings…**
+button in the toolbar. Every active option is available there — reading direction,
+spread mode, cover layout, fit mode, cache size, preload radius, and the recent-files
+toggle. Display-mode changes (reading direction, spread, cover, fit) apply immediately;
+cache size and preload radius take effect when you open the next book. The dialog lists
+all keyboard shortcuts for reference (remapping is not yet supported).
+
+Settings are also stored as JSON in the OS config directory and can be hand-edited; the
+file is loaded on startup and saved on exit.
 
 | Platform | Path |
 |----------|------|
@@ -96,8 +110,8 @@ default file you can hand-edit; the file is loaded on startup and saved on exit.
 - `cache_size` — number of decoded images held in the LRU cache (default `50`).
 - `preload_pages` — background prefetch radius around the current page (default `3`).
 - `recent_files` — list of recently opened folders and archives.  Recorded only when
-  `track_recent_files` is `true`; it is **off by default** for privacy.  To enable,
-  open the file and change `"track_recent_files": false` to `true`.
+  `track_recent_files` is `true`; it is **off by default** for privacy.  Enable it in
+  the Settings dialog or by editing the JSON file directly.
 
 **Saved for forward-compatibility** (persisted now; wired up in later releases):
 

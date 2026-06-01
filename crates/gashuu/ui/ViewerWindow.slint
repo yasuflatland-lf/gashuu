@@ -1,6 +1,8 @@
 import { Button, HorizontalBox, VerticalBox } from "std-widgets.slint";
 import { PageView } from "PageView.slint";
 import { ThumbnailStrip, ThumbnailItem } from "ThumbnailStrip.slint";
+import { SettingsDialog } from "SettingsDialog.slint";
+import { FirstRunGuide } from "FirstRunGuide.slint";
 
 export component ViewerWindow inherits Window {
     title: "gashuu";
@@ -21,6 +23,18 @@ export component ViewerWindow inherits Window {
     in property <length> content-y: 0px;
     in property <length> content-w: 0px;
     in property <length> content-h: 0px;
+
+    // Settings dialog visibility and state.
+    in property <bool> show-settings: false;
+    in property <bool> show-guide: false;
+    in-out property <int> reading-direction-index;
+    in-out property <int> spread-mode-index;
+    in-out property <int> cover-mode-index;
+    in-out property <int> fit-mode-index;
+    in-out property <int> cache-size;
+    in-out property <int> preload-pages;
+    in-out property <bool> track-recent;
+    in property <string> key-bindings-text;
 
     changed width  => { root.resized(self.width, self.height); }
     changed height => { root.resized(self.width, self.height); }
@@ -43,6 +57,18 @@ export component ViewerWindow inherits Window {
     // Forwarded window size (logical pixels, Slint `length` units) so Rust can
     // resolve SpreadMode::Auto live.
     callback resized(length, length);
+
+    // Settings dialog callbacks.
+    callback open-settings();
+    callback close-settings();
+    callback dismiss-guide();
+    callback set-reading-direction(int);
+    callback set-spread-mode(int);
+    callback set-cover-mode(int);
+    callback set-fit-mode(int);
+    callback set-cache-size(int);
+    callback set-preload-pages(int);
+    callback set-track-recent(bool);
 
     VerticalBox {
         HorizontalBox {
@@ -72,6 +98,11 @@ export component ViewerWindow inherits Window {
                     fs.focus();
                 }
             }
+            // Settings button: do NOT call fs.focus() so the dialog stays interactive.
+            Button {
+                text: "Settings…";
+                clicked => { root.open-settings(); }
+            }
             Text {
                 text: root.status-text;
                 vertical-alignment: center;
@@ -79,6 +110,8 @@ export component ViewerWindow inherits Window {
         }
         fs := FocusScope {
             key-pressed(event) => {
+                // Suppress background navigation while a modal overlay is open.
+                if (root.show-settings || root.show-guide) { return reject; }
                 if (event.text == Key.LeftArrow) {
                     root.nav("left");
                     return accept;
@@ -128,6 +161,35 @@ export component ViewerWindow inherits Window {
             current-index: root.current-index;
             thumbnail-clicked(page) => { root.thumbnail-clicked(page); }
         }
+    }
+
+    // Modal overlays rendered as siblings of the VerticalBox so they stack on
+    // top of all page content. Window stacks children front-to-back in
+    // declaration order; explicit width/height fill the window surface.
+    if root.show-settings : SettingsDialog {
+        width: root.width;
+        height: root.height;
+        reading-direction-index <=> root.reading-direction-index;
+        spread-mode-index <=> root.spread-mode-index;
+        cover-mode-index <=> root.cover-mode-index;
+        fit-mode-index <=> root.fit-mode-index;
+        cache-size <=> root.cache-size;
+        preload-pages <=> root.preload-pages;
+        track-recent <=> root.track-recent;
+        key-bindings-text: root.key-bindings-text;
+        set-reading-direction(i) => { root.set-reading-direction(i); }
+        set-spread-mode(i) => { root.set-spread-mode(i); }
+        set-cover-mode(i) => { root.set-cover-mode(i); }
+        set-fit-mode(i) => { root.set-fit-mode(i); }
+        set-cache-size(v) => { root.set-cache-size(v); }
+        set-preload-pages(v) => { root.set-preload-pages(v); }
+        set-track-recent(b) => { root.set-track-recent(b); }
+        close-settings() => { root.close-settings(); }
+    }
+    if root.show-guide : FirstRunGuide {
+        width: root.width;
+        height: root.height;
+        dismiss-guide() => { root.dismiss-guide(); }
     }
 
     // Grab keyboard focus on startup so arrow keys work without a click.
