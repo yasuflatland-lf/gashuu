@@ -120,6 +120,63 @@ fn main() -> color_eyre::Result<()> {
         });
     }
 
+    // Add Files button: pick one or more comic-archive files and add them to the
+    // library. Skips duplicates (via `add_paths`), persists, rebuilds the carousel
+    // model, and restores keyboard focus to the carousel.
+    {
+        let ui_weak = ui.as_weak();
+        let library = Rc::clone(&library);
+        ui.on_add_files(move || {
+            let Some(ui) = ui_weak.upgrade() else {
+                return;
+            };
+            let Some(files) = rfd::FileDialog::new()
+                .add_filter("Comic archive", &["cbz", "zip", "cbr", "rar"])
+                .pick_files()
+            else {
+                return;
+            };
+            let added = add_paths(&mut library.borrow_mut(), files);
+            if let Err(e) = library.borrow().save() {
+                tracing::error!(error = %e, "failed to save library after add-files");
+                ui.set_status_text(format!("Could not save library: {e}").into());
+                return;
+            }
+            ui.set_carousel_items(build_carousel_model(&library.borrow()));
+            if added > 0 {
+                ui.set_status_text(format!("Added {added} book(s)").into());
+            }
+            ui.invoke_focus_carousel();
+        });
+    }
+
+    // Add Folder button: pick a single folder and add it as one book to the
+    // library. Wraps the folder in a `vec![]` so the same dedup/save/rebuild
+    // path as `on_add_files` is used. Persists and restores carousel focus.
+    {
+        let ui_weak = ui.as_weak();
+        let library = Rc::clone(&library);
+        ui.on_add_folder(move || {
+            let Some(ui) = ui_weak.upgrade() else {
+                return;
+            };
+            let Some(folder) = rfd::FileDialog::new().pick_folder() else {
+                return;
+            };
+            let added = add_paths(&mut library.borrow_mut(), vec![folder]);
+            if let Err(e) = library.borrow().save() {
+                tracing::error!(error = %e, "failed to save library after add-folder");
+                ui.set_status_text(format!("Could not save library: {e}").into());
+                return;
+            }
+            ui.set_carousel_items(build_carousel_model(&library.borrow()));
+            if added > 0 {
+                ui.set_status_text(format!("Added {added} book(s)").into());
+            }
+            ui.invoke_focus_carousel();
+        });
+    }
+
     // Carousel: Return on the focused book opens it. STUB for PR-0b — PR-C/PR-R
     // resolve the focused index to a Library book and open+resume it. For now it
     // simply transitions to the Viewer so the seam is exercised end-to-end.
@@ -977,10 +1034,6 @@ fn reconcile_settings(state: &ViewerState, viewport: &ViewportState, settings: &
 /// Add every path in `paths` to `lib`, skipping duplicates.
 /// Returns the count of books actually inserted (new books only).
 /// Dedup is handled by `Library::add` (returns `false` when already present).
-// Wired into the rfd `add-files`/`add-folder` handlers by a later task; only the
-// unit tests exercise it for now (same #[allow(dead_code)] convention used by the
-// not-yet-wired helpers in navigation.rs / viewer_state.rs).
-#[allow(dead_code)]
 fn add_paths(lib: &mut Library, paths: Vec<std::path::PathBuf>) -> usize {
     paths.into_iter().filter(|p| lib.add(p.clone())).count()
 }
