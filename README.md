@@ -5,19 +5,27 @@
 
 A cross-platform manga viewer built with Rust and [Slint](https://slint.dev).
 
-## Status (PR4 — Two-page spread + RTL/LTR binding)
+## Status (PR5 — Zoom/pan + fit modes)
 
 Open a folder of PNG/JPG/JPEG images and browse every page with the keyboard. Pages are
 held in an LRU cache (up to 50 decoded images) and the neighbours of the current
 page are prefetched in the background, so warmed page turns are effectively instant.
-You can now read in a two-page spread with right-to-left (manga) or left-to-right
-binding, in addition to single-page browsing. User settings persist across restarts —
-gashuu saves your preferences on exit and restores them on the next launch.
+You can read in a two-page spread with right-to-left (manga) or left-to-right binding,
+in addition to single-page browsing. User settings persist across restarts — gashuu
+saves your preferences on exit and restores them on the next launch.
 
 Arrow keys follow the active reading direction: in LTR mode **→** advances and **←**
 goes back; in RTL mode the arrows are swapped (**←** advances / **→** goes back).
 **Space** and **Backspace** are always next/prev in reading order regardless of
 direction.
+
+You can now zoom and pan any page (or two-page spread). Zoom and pan apply to the whole
+viewport — in two-page spread mode both pages zoom and pan together. Page turns keep
+the current zoom and fit; only the pan position re-centers. Zoom/pan are GPU texture
+transforms (no re-decode), designed for 60 fps at 4K. The zoom level and pan position
+are session-only and are not saved; the fit mode is persisted.
+
+**Page navigation**
 
 - **→ / Space** — next page (or spread)
 - **← / Backspace** — previous page (or spread)
@@ -26,6 +34,16 @@ direction.
 - **C** — toggle cover layout (standalone ↔ paired)
 
 Toggle changes are remembered (saved on exit).
+
+**Zoom & pan** (direction-independent)
+
+- **Mouse wheel** — zoom in/out, centered at the cursor position. Zoom range: 1.0×–8.0× relative to the fit baseline.
+- **Click-drag** — pan the viewport.
+- **`+` / `=`** — zoom in
+- **`-`** — zoom out
+- **`0`** — reset view (zoom 1.0 × fit baseline, re-center)
+- **`1`** — actual size (1:1 pixels, equivalent to `Actual` fit mode)
+- **`f`** — cycle fit mode (`Whole` → `Width` → `Actual`)
 
 Set `RUST_LOG=debug` to see per-turn latency (`page turn elapsed_ms=…`).
 
@@ -47,6 +65,11 @@ default file you can hand-edit; the file is loaded on startup and saved on exit.
 - `cover_mode` — `"standalone"` (default: cover shown alone, then pages pair up as
   {1,2}{3,4}…) or `"paired"` (pairing starts from the cover: {0,1}{2,3}…). Only
   affects `double` mode.
+- `fit_mode` — initial fit applied when a page is displayed: `"whole"` (default, fit
+  the whole page letterboxed), `"width"` (fill the viewport width; page may overflow
+  vertically and be pannable), or `"actual"` (1:1 pixels). Cycle at runtime with **`f`**
+  or jump to actual size with **`1`**. Zoom level and pan position are session-only and
+  not saved.
 - `cache_size` — number of decoded images held in the LRU cache (default `50`).
 - `preload_pages` — background prefetch radius around the current page (default `3`).
 - `recent_files` — list of recently opened folders.  Recorded only when
@@ -59,6 +82,14 @@ default file you can hand-edit; the file is loaded on startup and saved on exit.
 
 If the settings file is corrupt or unreadable, gashuu falls back to built-in defaults
 and keeps running.
+
+## Safety
+
+gashuu rejects oversized images before allocating memory. In addition to the existing
+16 384×16 384 pixel / 512 MiB per-image limits, any image whose total pixel count
+exceeds ~128 megapixels is refused at decode time. Files that exceed either limit
+surface a clear "image too large" error in the status bar instead of risking an
+out-of-memory crash (defense-in-depth against decompression bombs).
 
 ## Develop
 
