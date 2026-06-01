@@ -1483,6 +1483,58 @@ mod tests {
         );
     }
 
+    // ---- open → read → leave sequence (PR-R borrow regression) -------------
+
+    #[test]
+    fn open_read_leave_sequence_state_invariants() {
+        // Simulates the open → read → leave sequence that write_back_position
+        // depends on. After open_path succeeds (mocked here via set_source +
+        // manual open_file tracking via a stub path), navigating pages and
+        // then calling index() returns the correct page. This pins the
+        // invariants that write_back_position(state, library) relies on:
+        //   - state.open_file() is Some after a successful open
+        //   - state.index() reflects navigation after set_source
+        //   - these two can be read in separate statements without conflict
+
+        let mut state = ViewerState::new();
+
+        // Simulate open_path success: set_source sets the cache; open_path
+        // also sets open_file (tested separately). We use set_source + manual
+        // assertion on the fields we control in tests.
+        state.set_source(mock_with(10));
+        // After set_source directly, open_file is None (no path was given).
+        // The real open_path call in main.rs sets open_file — confirmed by Task 1
+        // tests. For this sequence test, verify index tracking.
+        assert_eq!(state.index(), 0, "fresh after set_source: index is 0");
+
+        // Read two pages (two spreads in Single mode).
+        assert!(state.apply(NavAction::Next));
+        assert!(state.apply(NavAction::Next));
+        assert_eq!(state.index(), 2, "after two nexts: index is 2");
+
+        // jump_to can be used for a scrubber seek too.
+        assert!(state.jump_to(7));
+        assert_eq!(state.index(), 7, "after jump_to(7): index is 7");
+
+        // The position that write_back_position reads — these two calls must
+        // not conflict when called in sequence (distinct immutable borrows
+        // on the same value, which is trivially safe; this test pins the
+        // shape of the reads).
+        let _page = state.index();     // what write_back_position calls
+        // open_file() is None here (set_source path), but the call must not panic.
+        let _path = state.open_file(); // what write_back_position calls
+        // No panic reached: the sequence is safe.
+
+        // Simulate opening a second book (write_back fires for the first, then
+        // set_source resets the state).
+        state.set_source(mock_with(5));
+        assert_eq!(state.index(), 0, "set_source resets index to 0");
+        assert!(
+            state.open_file().is_none(),
+            "set_source without path leaves open_file None"
+        );
+    }
+
     // ---- scrub_fraction_to_page() (PR-S): pure fraction -> raw page ----------
 
     #[test]
