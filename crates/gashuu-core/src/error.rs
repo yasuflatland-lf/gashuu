@@ -54,6 +54,10 @@ pub enum CoreError {
         pixels: u64,
         max: u64,
     },
+
+    /// The RAR backend failed to open the container or read an entry.
+    #[error("rar archive error: {0}")]
+    Rar(#[from] ::unrar::error::UnrarError),
 }
 
 #[cfg(test)]

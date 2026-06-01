@@ -1,7 +1,9 @@
 mod folder;
 mod naming;
+mod rar;
 mod zip;
 pub use folder::FolderSource;
+pub use rar::RarSource;
 pub use zip::ZipSource;
 
 use crate::error::CoreError;
@@ -75,6 +77,7 @@ mod send_sync_tests {
         // they can become `Arc<dyn PageSource>` shared with rayon.
         assert_send_sync::<FolderSource>();
         assert_send_sync::<ZipSource>();
+        assert_send_sync::<RarSource>();
         assert_send_sync::<MockPageSource>();
         // And the trait object itself must be Send + Sync.
         fn _accepts(_: Arc<dyn PageSource>) {}

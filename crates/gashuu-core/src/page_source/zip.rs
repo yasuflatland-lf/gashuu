@@ -11,16 +11,11 @@
 //! local module is also named `zip`; an unqualified `zip::` would resolve to
 //! this module, not the crate.
 
-use super::naming::{has_image_ext, natural_cmp};
+use super::naming::{has_image_ext, natural_cmp, MAX_ENTRY_BYTES};
 use super::{PageEntry, PageSource};
 use crate::error::CoreError;
 use std::io::{BufReader, Read};
 use std::path::{Path, PathBuf};
-
-/// Per-file uncompressed ceiling. Entries declaring more are skipped at open;
-/// reads are also capped to this many bytes to defend against size-spoofing
-/// zip bombs (CBZ pages are images, far under this in practice).
-pub const MAX_ENTRY_BYTES: u64 = 500 * 1024 * 1024;
 
 /// Metadata for one image page resolved from the archive's central directory.
 struct EntryMeta {
