@@ -3,6 +3,7 @@
 //! This crate never depends on `slint`; it returns raw RGBA bytes + dimensions
 //! so the presentation layer can convert them to `slint::Image`.
 
+pub mod archive_loader;
 pub mod cache;
 pub mod error;
 pub mod image_ops;
@@ -11,10 +12,11 @@ pub mod settings;
 pub mod spread;
 pub mod viewport;
 
+pub use archive_loader::ArchiveLoader;
 pub use cache::{ImageCache, DEFAULT_CAPACITY, DEFAULT_PREFETCH_RADIUS};
 pub use error::CoreError;
 pub use image_ops::{check_pixel_limit, decode, DecodedImage, MAX_PIXELS};
-pub use page_source::{FolderSource, PageEntry, PageSource};
+pub use page_source::{FolderSource, PageEntry, PageSource, ZipSource};
 pub use settings::{
     CoverMode, FitMode, KeyBindings, ReadingDirection, Settings, SpreadLayout, SpreadMode,
     MAX_RECENT_FILES, SETTINGS_VERSION,

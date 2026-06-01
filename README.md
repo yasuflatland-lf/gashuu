@@ -5,15 +5,15 @@
 
 A cross-platform manga viewer built with Rust and [Slint](https://slint.dev).
 
-## Status (PR4a — Auto spread mode · PR5 — Zoom/pan + fit modes)
+## Status (PR5 — Zoom/pan + fit modes · PR6 — ZIP/CBZ archive support)
 
-Open a folder of PNG/JPG/JPEG images and browse every page with the keyboard. Pages are
-held in an LRU cache (up to 50 decoded images) and the neighbours of the current
-page are prefetched in the background, so warmed page turns are effectively instant.
-You can read in a two-page spread with right-to-left (manga) or left-to-right
-binding, in addition to single-page browsing. A new **auto** spread mode picks
-single or double from the window's aspect ratio and follows resizes live. User
-settings persist across restarts — gashuu saves your preferences on exit and
+Open a **folder** of PNG/JPG/JPEG images, or a **CBZ/ZIP comic archive**, and browse
+every page with the keyboard. Pages are held in an LRU cache (up to 50 decoded images)
+and the neighbours of the current page are prefetched in the background, so warmed page
+turns are effectively instant. You can read in a two-page spread with right-to-left
+(manga) or left-to-right binding, in addition to single-page browsing. An **auto**
+spread mode picks single or double from the window's aspect ratio and follows resizes
+live. User settings persist across restarts — gashuu saves your preferences on exit and
 restores them on the next launch.
 
 Arrow keys follow the active reading direction: in LTR mode **→** advances and **←**
@@ -21,7 +21,18 @@ goes back; in RTL mode the arrows are swapped (**←** advances / **→** goes b
 **Space** and **Backspace** are always next/prev in reading order regardless of
 direction.
 
-You can now zoom and pan any page (or two-page spread). Zoom and pan apply to the whole
+**Opening content**
+
+- **Open Folder** button — pick a folder of PNG/JPG/JPEG images.
+- **Open Archive** button — pick a `.cbz` or `.zip` file. Pages inside the archive are
+  read in natural filename order; images nested in subfolders within the archive are
+  included. Archives are extracted in-memory (no files written to disk); unsafe,
+  oversized, or corrupt entries are skipped and the count is shown in the status bar.
+
+Once a source is open, all navigation, spread, and layout controls work the same
+regardless of whether you opened a folder or an archive.
+
+You can also zoom and pan any page (or two-page spread). Zoom and pan apply to the whole
 viewport — in two-page spread mode both pages zoom and pan together. Page turns keep
 the current zoom and fit; only the pan position re-centers. Zoom/pan are GPU texture
 transforms (no re-decode), designed for 60 fps at 4K. The zoom level and pan position
@@ -76,7 +87,7 @@ default file you can hand-edit; the file is loaded on startup and saved on exit.
   not saved.
 - `cache_size` — number of decoded images held in the LRU cache (default `50`).
 - `preload_pages` — background prefetch radius around the current page (default `3`).
-- `recent_files` — list of recently opened folders.  Recorded only when
+- `recent_files` — list of recently opened folders and archives.  Recorded only when
   `track_recent_files` is `true`; it is **off by default** for privacy.  To enable,
   open the file and change `"track_recent_files": false` to `true`.
 
@@ -121,7 +132,8 @@ RUST_LOG=info cargo run -p gashuu         # run the viewer
 
 ## Workspace
 
-- `crates/gashuu-core` — Slint-independent domain + I/O (page sources, image decode).
+- `crates/gashuu-core` — Slint-independent domain + I/O (page sources including folder
+  and ZIP/CBZ archive support, image decode).
 - `crates/gashuu` — Slint presentation layer.
 
 ## License

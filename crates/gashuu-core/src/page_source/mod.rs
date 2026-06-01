@@ -1,5 +1,8 @@
 mod folder;
+mod naming;
+mod zip;
 pub use folder::FolderSource;
+pub use zip::ZipSource;
 
 use crate::error::CoreError;
 use std::path::PathBuf;
@@ -7,7 +10,9 @@ use std::path::PathBuf;
 /// A single page in a source: its filesystem path and display name.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PageEntry {
-    /// Absolute or source-relative path used to read the page bytes.
+    /// Source-specific page identifier. For filesystem sources this is a real,
+    /// readable path; for archive sources it is a logical entry name used only
+    /// for display and identity — bytes are always retrieved via `read_bytes(index)`.
     pub path: PathBuf,
     /// Display name (typically the file name).
     pub name: String,
@@ -28,6 +33,13 @@ pub trait PageSource: Send + Sync {
     fn list_pages(&self) -> Vec<PageEntry>;
     /// Read the raw, still-encoded bytes of the page at `index`.
     fn read_bytes(&self, index: usize) -> Result<Vec<u8>, CoreError>;
+    /// Entries silently dropped during `open`. Implementations increment this
+    /// for entries they cannot safely include — e.g. unreadable directory
+    /// entries in `FolderSource`; zip-slip, oversized, or corrupt entries in
+    /// `ZipSource`. Default 0; concrete sources override.
+    fn skipped_count(&self) -> usize {
+        0
+    }
 }
 
 #[cfg(all(test, feature = "testing"))]
@@ -62,6 +74,7 @@ mod send_sync_tests {
         // FolderSource and the generated mock must both satisfy the supertrait so
         // they can become `Arc<dyn PageSource>` shared with rayon.
         assert_send_sync::<FolderSource>();
+        assert_send_sync::<ZipSource>();
         assert_send_sync::<MockPageSource>();
         // And the trait object itself must be Send + Sync.
         fn _accepts(_: Arc<dyn PageSource>) {}
