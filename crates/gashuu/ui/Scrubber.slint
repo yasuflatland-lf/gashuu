@@ -44,11 +44,13 @@ export component Scrubber inherits Rectangle {
         root.rail-w > 0px
             ? clamp((ta.mouse-x - root.rail-x) / root.rail-w, 0.0, 1.0)
             : 0.0;
-    // 0-based page under the knob while dragging (mirrors the Rust pure helper:
-    // RTL inverts the fraction; round-half-up via +0.5 floor).
+    // 0-based page under the knob while dragging. Mirrors `scrub_fraction_to_page`
+    // in Rust exactly: RTL inverts the fraction first (1.0 - frac), then applies
+    // round-half-up (+0.5 floor); LTR maps the fraction directly. drag-frac is
+    // already clamped to [0,1] above, mirroring the Rust clamp.
     private property <int> drag-page:
         root.rtl
-            ? root.last-index - floor(root.drag-frac * root.last-index + 0.5)
+            ? floor((1.0 - root.drag-frac) * root.last-index + 0.5)
             : floor(root.drag-frac * root.last-index + 0.5);
     // Idle fraction derived from current-page (1-based) so the knob sits at the
     // current spread when not dragging. RTL mirrors the position.
@@ -144,11 +146,13 @@ export component Scrubber inherits Rectangle {
                     horizontal-stretch: 1;
                 }
             }
-            // "p.X / N" single, "p.X-Y / N" double. drag-page is 0-based; +1 for
-            // display. Tabular numerals so the count doesn't jitter while scrubbing.
+            // "p.X / N" single, "p.X–Y / N" double. drag-page is 0-based; +1 for
+            // display. Trailing page is clamped to the last page (mirrors Rust
+            // chip: trail = (lead + 1).min(total - 1)). Tabular numerals so the
+            // count doesn't jitter while scrubbing.
             Text {
                 text: root.double
-                    ? "p." + (root.drag-page + 1) + "\u{2013}" + (root.drag-page + 2) + " / " + root.total-pages
+                    ? "p." + (root.drag-page + 1) + "\u{2013}" + (min(root.drag-page + 1, root.total-pages - 1) + 1) + " / " + root.total-pages
                     : "p." + (root.drag-page + 1) + " / " + root.total-pages;
                 color: Theme.text-mid;
                 font-size: Theme.font-numeric;
