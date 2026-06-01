@@ -6,6 +6,15 @@
 // Rust can persist the "guide shown" flag and hide the component.
 import { Button, VerticalBox } from "std-widgets.slint";
 
+// One line of the controls reference. Factors out the styling shared by every
+// reference row so each call site only supplies its text.
+component GuideLine inherits Text {
+    color: #bbbbbb;
+    font-size: 13px;
+    horizontal-alignment: left;
+    wrap: word-wrap;
+}
+
 export component FirstRunGuide inherits Rectangle {
     // ── Callback ───────────────────────────────────────────────────────────────
     // Fired when the user clicks "Got it".  Rust should hide this component and
@@ -50,52 +59,28 @@ export component FirstRunGuide inherits Rectangle {
             }
 
             // ── Controls reference ─────────────────────────────────────────────
-            Text {
+            GuideLine {
                 text: "Open: use the toolbar buttons — Open Folder… / Open Archive… (CBZ/ZIP/CBR/RAR).";
-                color: #bbbbbb;
-                font-size: 13px;
-                horizontal-alignment: left;
-                wrap: word-wrap;
             }
 
-            Text {
+            GuideLine {
                 text: "Turn pages: Space = next, Backspace = previous. Arrow keys follow the reading direction.";
-                color: #bbbbbb;
-                font-size: 13px;
-                horizontal-alignment: left;
-                wrap: word-wrap;
             }
 
-            Text {
+            GuideLine {
                 text: "Modes: D = spread (single → double → auto), R = reading direction (LTR/RTL), C = cover layout.";
-                color: #bbbbbb;
-                font-size: 13px;
-                horizontal-alignment: left;
-                wrap: word-wrap;
             }
 
-            Text {
+            GuideLine {
                 text: "Zoom & fit: + / - to zoom, 0 to reset, 1 for actual size, f to cycle fit mode. Wheel zooms at the cursor; drag to pan.";
-                color: #bbbbbb;
-                font-size: 13px;
-                horizontal-alignment: left;
-                wrap: word-wrap;
             }
 
-            Text {
+            GuideLine {
                 text: "Thumbnails: T toggles the thumbnail strip; click a thumbnail to jump to that page.";
-                color: #bbbbbb;
-                font-size: 13px;
-                horizontal-alignment: left;
-                wrap: word-wrap;
             }
 
-            Text {
+            GuideLine {
                 text: "Settings: open the Settings dialog from the toolbar to change these options anytime.";
-                color: #bbbbbb;
-                font-size: 13px;
-                horizontal-alignment: left;
-                wrap: word-wrap;
             }
 
             // ── Dismiss button ─────────────────────────────────────────────────
