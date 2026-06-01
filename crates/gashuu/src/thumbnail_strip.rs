@@ -49,11 +49,54 @@ fn thumbnail_item(page: usize, cell: ThumbCell) -> ThumbnailItem {
         ThumbCell::Loaded(image) => (image, true, false),
         ThumbCell::Failed => (Default::default(), false, true),
     };
+    // The (loaded, failed) pair is mutually exclusive by construction above; this
+    // guards a future hand-edit to the match arms (mirrors the codebase's
+    // load-bearing-invariant `debug_assert` philosophy — see `seq_index`).
+    debug_assert!(
+        !(loaded && failed),
+        "thumbnail cell cannot be both loaded and failed"
+    );
     ThumbnailItem {
         image,
         page: page as i32,
         loaded,
         failed,
+    }
+}
+
+/// Marshal a single thumbnail-cell update onto the UI thread, applying the
+/// epoch + upgrade + model-downcast + bounds preamble shared by the success and
+/// failure paths. `make_cell` is evaluated INSIDE the event-loop closure (i.e.
+/// on the UI thread), so a `!Send` value such as `slint::Image` may be built
+/// there even though it could not cross the thread boundary as a capture; the
+/// closure stays `Send` because only its captures must be `Send` (the `!Send`
+/// `ThumbCell::Loaded` it returns does not affect that).
+fn marshal_cell(
+    weak: slint::Weak<ViewerWindow>,
+    epoch: Arc<AtomicUsize>,
+    my_epoch: usize,
+    i: usize,
+    make_cell: impl FnOnce() -> ThumbCell + Send + 'static,
+) {
+    if let Err(e) = slint::invoke_from_event_loop(move || {
+        // Drop results from a superseded generation.
+        if epoch.load(Relaxed) != my_epoch {
+            return;
+        }
+        let Some(ui) = weak.upgrade() else {
+            return;
+        };
+        // Re-fetch the model on the UI thread (never move the Rc across threads);
+        // any non-Send cell payload (e.g. a slint::Image) is built here.
+        let model = ui.get_thumbnails();
+        let Some(vm) = model.as_any().downcast_ref::<VecModel<ThumbnailItem>>() else {
+            return;
+        };
+        if i < vm.row_count() {
+            vm.set_row_data(i, thumbnail_item(i, make_cell()));
+        }
+    }) {
+        tracing::debug!(page = i, error = %e, "dropped thumbnail update; event loop gone");
     }
 }
 
@@ -124,68 +167,21 @@ impl ThumbnailController {
         //    and `source` (both Send) into the worker thread.
         let weak = ui_weak.clone();
         let epoch = Arc::clone(&self.epoch);
-        let on_ready = move |i: usize, res: Result<DecodedImage, CoreError>| {
-            let img = match res {
-                Ok(img) => img,
-                Err(e) => {
-                    // Log the error on the worker thread before marshaling so
-                    // CoreError never crosses the thread boundary.
-                    tracing::warn!(page = i, error = %e, "thumbnail generation failed");
-                    // Marshal a failed-cell update to the UI thread so the
-                    // cell shows a distinct red placeholder instead of the
-                    // indistinguishable gray loading state.
-                    let weak = weak.clone();
-                    let epoch = Arc::clone(&epoch);
-                    if let Err(e) = slint::invoke_from_event_loop(move || {
-                        // Drop results from a superseded generation.
-                        if epoch.load(Relaxed) != my_epoch {
-                            return;
-                        }
-                        let Some(ui) = weak.upgrade() else {
-                            return;
-                        };
-                        let model = ui.get_thumbnails();
-                        let Some(vm) = model.as_any().downcast_ref::<VecModel<ThumbnailItem>>()
-                        else {
-                            return;
-                        };
-                        if i < vm.row_count() {
-                            vm.set_row_data(i, thumbnail_item(i, ThumbCell::Failed));
-                        }
-                    }) {
-                        tracing::debug!(
-                            page = i,
-                            error = %e,
-                            "dropped failed-thumbnail update; event loop gone"
-                        );
-                    }
-                    return;
-                }
-            };
-            let weak = weak.clone();
-            let epoch = Arc::clone(&epoch);
-            if let Err(e) = slint::invoke_from_event_loop(move || {
-                // Drop results from a superseded generation.
-                if epoch.load(Relaxed) != my_epoch {
-                    return;
-                }
-                let Some(ui) = weak.upgrade() else {
-                    return;
-                };
-                // Re-fetch the model on the UI thread (never move the Rc
-                // across threads); convert to slint::Image here (non-Send).
-                let model = ui.get_thumbnails();
-                let Some(vm) = model.as_any().downcast_ref::<VecModel<ThumbnailItem>>() else {
-                    return;
-                };
-                if i < vm.row_count() {
-                    vm.set_row_data(
-                        i,
-                        thumbnail_item(i, ThumbCell::Loaded(to_slint_image(&img))),
-                    );
-                }
-            }) {
-                tracing::debug!(page = i, error = %e, "dropped thumbnail update; event loop gone");
+        let on_ready = move |i: usize, res: Result<DecodedImage, CoreError>| match res {
+            // Build the slint::Image INSIDE the marshalled closure (UI thread);
+            // `img` (Send) is captured, the `!Send` image is produced there.
+            Ok(img) => marshal_cell(weak.clone(), Arc::clone(&epoch), my_epoch, i, move || {
+                ThumbCell::Loaded(to_slint_image(&img))
+            }),
+            Err(e) => {
+                // Log the error on the worker thread before marshaling so the
+                // CoreError never crosses the thread boundary. The marshalled
+                // failed cell shows a distinct red placeholder instead of the
+                // indistinguishable gray loading state.
+                tracing::warn!(page = i, error = %e, "thumbnail generation failed");
+                marshal_cell(weak.clone(), Arc::clone(&epoch), my_epoch, i, || {
+                    ThumbCell::Failed
+                });
             }
         };
         std::thread::spawn(move || {
