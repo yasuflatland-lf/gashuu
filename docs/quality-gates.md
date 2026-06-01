@@ -27,6 +27,8 @@ Coverage is `gashuu-core` only (the UI needs a display server): `MISE_ENV=covera
 
 UI interaction and timing/positioning behavior — auto-hide chrome fade timing, scrubber popover positioning, live drag-preview — is coverage-exempt and verified by manual observation (same policy as dialogs and the thumbnail strip). Only the headless logic behind such UI (e.g. `scrub_fraction_to_page`, `preview_is_double`) is unit-tested; pure mapping/decision functions are extracted specifically so they can be tested without a display server.
 
+A function returning `ModelRc<T>` is ALSO headlessly testable, not "untestable UI": use `slint::Image::default()` for `image` fields (constructs with no backend) and assert via the `slint::Model` trait — `row_count()` and `row_data(i)`. So model-mapping logic (e.g. `build_carousel_model`'s 0-based `last_page` → 1-based `current` conversion) gets unit tests, not a coverage exemption. Precedent: `crates/gashuu/src/thumbnail_strip.rs`.
+
 ### Exercise a real successful `open_path` in UI tests without an archive fixture (PR-R)
 
 `ArchiveLoader::open` succeeds on an EMPTY on-disk directory (it becomes a valid `FolderSource`), so

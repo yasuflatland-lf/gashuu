@@ -11,6 +11,7 @@ use gashuu_core::{
 };
 use keymap::{map_key, KeyCommand};
 use navigation::{screen_to_index, NavState};
+use slint::{ModelRc, VecModel};
 use std::cell::RefCell;
 use std::path::Path;
 use std::rc::Rc;
@@ -31,10 +32,10 @@ fn main() -> color_eyre::Result<()> {
         Settings::default()
     });
 
-    // Load the persistent library; corrupt/unreadable files fall back to an
-    // empty shelf (the same corrupt-file recovery policy as Settings).
+    // Load the persisted library; corrupt/unreadable files fall back to an empty
+    // library (same corrupt-file recovery policy as settings, kept in the UI layer).
     let library = Library::load().unwrap_or_else(|e| {
-        tracing::warn!(error = %e, "failed to load library; starting with empty shelf");
+        tracing::warn!(error = %e, "failed to load library; using empty library");
         Library::new()
     });
     let library = Rc::new(RefCell::new(library));
@@ -56,6 +57,11 @@ fn main() -> color_eyre::Result<()> {
     let nav = Rc::new(RefCell::new(NavState::new()));
     // Push the initial screen so the window shows the Library on boot.
     ui.set_screen(screen_to_index(nav.borrow().screen()));
+
+    // Seed the carousel model from the persisted library so the home screen shows
+    // the saved books on boot. Cover images are placeholder until PR-V streams them
+    // in; the model is rebuilt by `build_carousel_model` after every add/remove.
+    ui.set_carousel_items(build_carousel_model(&library.borrow()));
 
     // Initial paint so rtl/single/status are all initialized before the first
     // folder is opened (refresh shows "No folder opened" and clears the images).
@@ -116,6 +122,43 @@ fn main() -> color_eyre::Result<()> {
                 &file,
                 " (zip-slip or oversized)",
             );
+        });
+    }
+
+    // Add Files button: pick one or more comic-archive files and add them to the
+    // library. Skips duplicates (via `add_paths`), persists, rebuilds the carousel
+    // model, and restores keyboard focus to the carousel.
+    {
+        let ui_weak = ui.as_weak();
+        let library = Rc::clone(&library);
+        ui.on_add_files(move || {
+            let Some(ui) = ui_weak.upgrade() else {
+                return;
+            };
+            let Some(files) = rfd::FileDialog::new()
+                .add_filter("Comic archive", &["cbz", "zip", "cbr", "rar"])
+                .pick_files()
+            else {
+                return;
+            };
+            add_books_and_refresh(&ui, &library, files, "add-files");
+        });
+    }
+
+    // Add Folder button: pick a single folder and add it as one book to the
+    // library. Wraps the folder in a `vec![]` so the same dedup/save/rebuild
+    // path as `on_add_files` is used. Persists and restores carousel focus.
+    {
+        let ui_weak = ui.as_weak();
+        let library = Rc::clone(&library);
+        ui.on_add_folder(move || {
+            let Some(ui) = ui_weak.upgrade() else {
+                return;
+            };
+            let Some(folder) = rfd::FileDialog::new().pick_folder() else {
+                return;
+            };
+            add_books_and_refresh(&ui, &library, vec![folder], "add-folder");
         });
     }
 
@@ -1080,6 +1123,80 @@ fn write_back_position(state: &Rc<RefCell<ViewerState>>, library: &Rc<RefCell<Li
     }
 }
 
+/// Add every path in `paths` to `lib`, skipping duplicates.
+/// Returns the count of books actually inserted (new books only).
+/// Dedup is handled by `Library::add` (returns `false` when already present),
+/// covering both books already in the library and duplicates within `paths`.
+fn add_paths(lib: &mut Library, paths: Vec<std::path::PathBuf>) -> usize {
+    paths.into_iter().filter(|p| lib.add(p.clone())).count()
+}
+
+/// Add `paths` to the library, persist, rebuild the carousel, and surface the
+/// outcome on the status line, restoring carousel focus in every case.
+///
+/// Shared by the Add Files and Add Folder handlers; `op` distinguishes the two
+/// only in the save-failure trace message. When nothing new is added there is
+/// nothing to persist or rebuild, so it short-circuits after the status update.
+fn add_books_and_refresh(
+    ui: &ViewerWindow,
+    library: &Rc<RefCell<Library>>,
+    paths: Vec<std::path::PathBuf>,
+    op: &'static str,
+) {
+    let added = add_paths(&mut library.borrow_mut(), paths);
+    if added == 0 {
+        // Everything picked was already in the library: nothing to persist or rebuild.
+        ui.set_status_text("Already in library \u{2014} no new books added.".into());
+        ui.invoke_focus_carousel();
+        return;
+    }
+    // Rebuild from the in-memory state even if the save fails, so the newly added
+    // books are visible; the save error is then surfaced (not just traced).
+    let save_result = library.borrow().save();
+    ui.set_carousel_items(build_carousel_model(&library.borrow()));
+    match save_result {
+        Err(e) => {
+            tracing::error!(error = %e, "failed to save library after {op}");
+            ui.set_status_text(
+                format!("Added {added} book(s), but could not save library: {e}").into(),
+            );
+        }
+        Ok(()) => {
+            ui.set_status_text(format!("Added {added} book(s)").into());
+        }
+    }
+    ui.invoke_focus_carousel();
+}
+
+/// Rebuild the carousel model from the current library state.
+/// Called after every add/remove and at startup to keep the model in sync.
+///
+/// Placeholder fields (filled by later work):
+///   - `cover`: transparent (`slint::Image::default()`) until PR-V streams real covers.
+///   - `total`: 0 — the page count is unknown until a book is opened; no PR currently
+///     owns back-filling it (tracked as a follow-up).
+///   - `progress`: 0.0 — it would derive from `last_page`/`total`, but `total` is 0.
+///
+/// `current` is the 1-based page position (`last_page + 1`).
+fn build_carousel_model(lib: &Library) -> ModelRc<CarouselItem> {
+    let items: Vec<CarouselItem> = lib
+        .books()
+        .iter()
+        .map(|b| {
+            let last = b.last_page();
+            CarouselItem {
+                cover: slint::Image::default(),
+                title: b.title().into(),
+                current: (last + 1) as i32,
+                total: 0,
+                progress: 0.0,
+                available: Library::is_available(b),
+            }
+        })
+        .collect();
+    ModelRc::new(VecModel::from(items))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1188,5 +1305,107 @@ mod tests {
         assert!(result.is_some());
         let (_, pg) = result.unwrap();
         assert_eq!(pg, 0, "page 0 is a valid write-back (start of book)");
+    }
+
+    #[test]
+    fn add_paths_empty_vec_returns_zero() {
+        let mut lib = gashuu_core::Library::new();
+        let added = add_paths(&mut lib, vec![]);
+        assert_eq!(added, 0);
+        assert_eq!(lib.books().len(), 0);
+    }
+
+    #[test]
+    fn add_paths_new_paths_counted() {
+        let mut lib = gashuu_core::Library::new();
+        let paths = vec![
+            std::path::PathBuf::from("nonexistent/vol1.cbz"),
+            std::path::PathBuf::from("nonexistent/vol2.cbz"),
+        ];
+        let added = add_paths(&mut lib, paths);
+        assert_eq!(added, 2);
+        assert_eq!(lib.books().len(), 2);
+    }
+
+    #[test]
+    fn add_paths_dedup_within_batch() {
+        let mut lib = gashuu_core::Library::new();
+        let paths = vec![
+            std::path::PathBuf::from("nonexistent/vol1.cbz"),
+            std::path::PathBuf::from("nonexistent/vol1.cbz"),
+        ];
+        let added = add_paths(&mut lib, paths);
+        assert_eq!(
+            added, 1,
+            "duplicate within the batch must not be double-counted"
+        );
+        assert_eq!(lib.books().len(), 1);
+    }
+
+    #[test]
+    fn add_paths_dedup_against_existing() {
+        let mut lib = gashuu_core::Library::new();
+        lib.add(std::path::PathBuf::from("nonexistent/vol1.cbz"));
+        let paths = vec![
+            std::path::PathBuf::from("nonexistent/vol1.cbz"),
+            std::path::PathBuf::from("nonexistent/vol2.cbz"),
+        ];
+        let added = add_paths(&mut lib, paths);
+        assert_eq!(
+            added, 1,
+            "a path already in the library must not be counted"
+        );
+        assert_eq!(lib.books().len(), 2);
+    }
+
+    #[test]
+    fn add_paths_preserves_insertion_order() {
+        let mut lib = gashuu_core::Library::new();
+        let paths: Vec<_> = (0..5)
+            .map(|i| std::path::PathBuf::from(format!("nonexistent/vol{i}.cbz")))
+            .collect();
+        let added = add_paths(&mut lib, paths);
+        assert_eq!(added, 5);
+        let titles: Vec<&str> = lib.books().iter().map(|b| b.title()).collect();
+        assert_eq!(titles, ["vol0", "vol1", "vol2", "vol3", "vol4"]);
+    }
+
+    #[test]
+    fn add_paths_all_existing_returns_zero() {
+        let mut lib = gashuu_core::Library::new();
+        lib.add(std::path::PathBuf::from("nonexistent/vol1.cbz"));
+        lib.add(std::path::PathBuf::from("nonexistent/vol2.cbz"));
+        let before = lib.books().len();
+        let added = add_paths(
+            &mut lib,
+            vec![
+                std::path::PathBuf::from("nonexistent/vol1.cbz"),
+                std::path::PathBuf::from("nonexistent/vol2.cbz"),
+            ],
+        );
+        assert_eq!(added, 0, "all-duplicate batch must return 0");
+        assert_eq!(lib.books().len(), before, "books count must not change");
+    }
+
+    #[test]
+    fn build_carousel_model_length_matches_library() {
+        use slint::Model;
+        let mut lib = gashuu_core::Library::new();
+        lib.add(std::path::PathBuf::from("nonexistent/vol1.cbz"));
+        lib.add(std::path::PathBuf::from("nonexistent/vol2.cbz"));
+        let model = build_carousel_model(&lib);
+        assert_eq!(model.row_count(), 2);
+    }
+
+    #[test]
+    fn build_carousel_model_current_is_one_based() {
+        use slint::Model;
+        let mut lib = gashuu_core::Library::new();
+        lib.add(std::path::PathBuf::from("nonexistent/vol1.cbz"));
+        let model = build_carousel_model(&lib);
+        let item = model.row_data(0).unwrap();
+        assert_eq!(item.current, 1, "current must be last_page + 1 (1-based)");
+        assert_eq!(item.title.as_str(), "vol1");
+        assert!(!item.available, "nonexistent path must be unavailable");
     }
 }
