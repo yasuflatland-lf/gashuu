@@ -137,14 +137,26 @@ fn main() -> color_eyre::Result<()> {
                 return;
             };
             let added = add_paths(&mut library.borrow_mut(), files);
-            if let Err(e) = library.borrow().save() {
-                tracing::error!(error = %e, "failed to save library after add-files");
-                ui.set_status_text(format!("Could not save library: {e}").into());
+            if added == 0 {
+                // Everything picked was already in the library: nothing to persist or rebuild.
+                ui.set_status_text("Already in library \u{2014} no new books added.".into());
+                ui.invoke_focus_carousel();
                 return;
             }
+            // Rebuild from the in-memory state even if the save fails, so the newly added
+            // books are visible; the save error is then surfaced (not just traced).
+            let save_result = library.borrow().save();
             ui.set_carousel_items(build_carousel_model(&library.borrow()));
-            if added > 0 {
-                ui.set_status_text(format!("Added {added} book(s)").into());
+            match save_result {
+                Err(e) => {
+                    tracing::error!(error = %e, "failed to save library after add-files");
+                    ui.set_status_text(
+                        format!("Added {added} book(s), but could not save library: {e}").into(),
+                    );
+                }
+                Ok(()) => {
+                    ui.set_status_text(format!("Added {added} book(s)").into());
+                }
             }
             ui.invoke_focus_carousel();
         });
@@ -164,14 +176,26 @@ fn main() -> color_eyre::Result<()> {
                 return;
             };
             let added = add_paths(&mut library.borrow_mut(), vec![folder]);
-            if let Err(e) = library.borrow().save() {
-                tracing::error!(error = %e, "failed to save library after add-folder");
-                ui.set_status_text(format!("Could not save library: {e}").into());
+            if added == 0 {
+                // Everything picked was already in the library: nothing to persist or rebuild.
+                ui.set_status_text("Already in library \u{2014} no new books added.".into());
+                ui.invoke_focus_carousel();
                 return;
             }
+            // Rebuild from the in-memory state even if the save fails, so the newly added
+            // books are visible; the save error is then surfaced (not just traced).
+            let save_result = library.borrow().save();
             ui.set_carousel_items(build_carousel_model(&library.borrow()));
-            if added > 0 {
-                ui.set_status_text(format!("Added {added} book(s)").into());
+            match save_result {
+                Err(e) => {
+                    tracing::error!(error = %e, "failed to save library after add-folder");
+                    ui.set_status_text(
+                        format!("Added {added} book(s), but could not save library: {e}").into(),
+                    );
+                }
+                Ok(()) => {
+                    ui.set_status_text(format!("Added {added} book(s)").into());
+                }
             }
             ui.invoke_focus_carousel();
         });
@@ -1039,8 +1063,15 @@ fn add_paths(lib: &mut Library, paths: Vec<std::path::PathBuf>) -> usize {
 }
 
 /// Rebuild the carousel model from the current library state.
-/// Called after every add/remove to keep the model in sync.
-/// Cover images are placeholder (transparent) until PR-V streams them in.
+/// Called after every add/remove and at startup to keep the model in sync.
+///
+/// Placeholder fields (filled by later work):
+///   - `cover`: transparent (`slint::Image::default()`) until PR-V streams real covers.
+///   - `total`: 0 — the page count is unknown until a book is opened; no PR currently
+///     owns back-filling it (tracked as a follow-up).
+///   - `progress`: 0.0 — it would derive from `last_page`/`total`, but `total` is 0.
+///
+/// `current` is the 1-based page position (`last_page + 1`).
 fn build_carousel_model(lib: &Library) -> ModelRc<CarouselItem> {
     let items: Vec<CarouselItem> = lib
         .books()
@@ -1196,8 +1227,48 @@ mod tests {
         let paths: Vec<_> = (0..5)
             .map(|i| std::path::PathBuf::from(format!("nonexistent/vol{i}.cbz")))
             .collect();
-        add_paths(&mut lib, paths);
+        let added = add_paths(&mut lib, paths);
+        assert_eq!(added, 5);
         let titles: Vec<&str> = lib.books().iter().map(|b| b.title()).collect();
         assert_eq!(titles, ["vol0", "vol1", "vol2", "vol3", "vol4"]);
+    }
+
+    #[test]
+    fn add_paths_all_existing_returns_zero() {
+        let mut lib = gashuu_core::Library::new();
+        lib.add(std::path::PathBuf::from("nonexistent/vol1.cbz"));
+        lib.add(std::path::PathBuf::from("nonexistent/vol2.cbz"));
+        let before = lib.books().len();
+        let added = add_paths(
+            &mut lib,
+            vec![
+                std::path::PathBuf::from("nonexistent/vol1.cbz"),
+                std::path::PathBuf::from("nonexistent/vol2.cbz"),
+            ],
+        );
+        assert_eq!(added, 0, "all-duplicate batch must return 0");
+        assert_eq!(lib.books().len(), before, "books count must not change");
+    }
+
+    #[test]
+    fn build_carousel_model_length_matches_library() {
+        use slint::Model;
+        let mut lib = gashuu_core::Library::new();
+        lib.add(std::path::PathBuf::from("nonexistent/vol1.cbz"));
+        lib.add(std::path::PathBuf::from("nonexistent/vol2.cbz"));
+        let model = build_carousel_model(&lib);
+        assert_eq!(model.row_count(), 2);
+    }
+
+    #[test]
+    fn build_carousel_model_current_is_one_based() {
+        use slint::Model;
+        let mut lib = gashuu_core::Library::new();
+        lib.add(std::path::PathBuf::from("nonexistent/vol1.cbz"));
+        let model = build_carousel_model(&lib);
+        let item = model.row_data(0).unwrap();
+        assert_eq!(item.current, 1, "current must be last_page + 1 (1-based)");
+        assert_eq!(item.title.as_str(), "vol1");
+        assert!(!item.available, "nonexistent path must be unavailable");
     }
 }
