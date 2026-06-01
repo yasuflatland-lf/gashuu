@@ -216,7 +216,7 @@ export component Carousel inherits Rectangle {
                   }
                   Text {
                       // 1-based "current / total" (total is 0 until the book is
-                      // opened; PR-V/PR-R supply the real count).
+                      // opened; the real count is filled when a book's page source is resolved).
                       text: root.items[root.focused-index].current + " / " + root.items[root.focused-index].total;
                       color: Theme.text-muted;
                       font-size: Theme.font-label;
