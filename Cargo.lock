@@ -1650,6 +1650,7 @@ dependencies = [
  "color-eyre",
  "gashuu-core",
  "image",
+ "rayon",
  "rfd",
  "slint",
  "slint-build",
