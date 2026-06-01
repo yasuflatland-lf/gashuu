@@ -1,14 +1,19 @@
 slint::include_modules!();
 
 mod keymap;
+mod library_model;
 mod navigation;
 mod thumbnail_strip;
 mod viewer_state;
 mod viewport;
 
-use gashuu_core::{CoverMode, DecodedImage, FitMode, ReadingDirection, Settings, SpreadMode};
+use gashuu_core::{
+    CoverMode, DecodedImage, FitMode, Library, ReadingDirection, Settings, SpreadMode,
+};
 use keymap::{map_key, KeyCommand};
+use library_model::{carousel_data, CarouselData};
 use navigation::{screen_to_index, NavState};
+use slint::{ModelRc, VecModel};
 use std::cell::RefCell;
 use std::path::Path;
 use std::rc::Rc;
@@ -29,16 +34,34 @@ fn main() -> color_eyre::Result<()> {
         Settings::default()
     });
 
+    // Load the persisted shelf; an unreadable/corrupt library.json falls back
+    // to an empty library (the corrupt-file recovery policy lives here in the
+    // UI layer, mirroring the Settings load above — see _contracts.md).
+    let library = Library::load().unwrap_or_else(|e| {
+        tracing::warn!(error = %e, "failed to load library; starting empty");
+        Library::new()
+    });
+
     let ui = ViewerWindow::new()?;
     let state = Rc::new(RefCell::new(ViewerState::from_settings(&settings)));
     let viewport = Rc::new(RefCell::new(ViewportState::from_settings(&settings)));
     let settings = Rc::new(RefCell::new(settings));
+
+    // The persisted shelf, shared so the carousel model build, the focused-index
+    // clamp, and later PR-L's add / PR-R's position write-back can all reach it.
+    let library = Rc::new(RefCell::new(library));
 
     // Thumbnail-strip controller. Owns the strip's backing model and the
     // generation bookkeeping (epoch + cancel double-guard); its `new` binds the
     // model into the UI via `set_thumbnails` internally. Wrapped in `Rc` so both
     // open handlers (via `open_and_present`) can share the single controller.
     let thumbs = Rc::new(ThumbnailController::new(&ui));
+
+    // Held for PR-V (cover streaming) / PR-L (refresh after add) to mutate the
+    // SAME model; not mutated by PR-C after the initial build. Underscore-bound
+    // to satisfy -D warnings until those PRs use it.
+    let _carousel_model = build_carousel_model(&ui, &library.borrow());
+    ui.set_carousel_focused_index(0);
 
     // Top-level screen state machine. App boots to Library (the carousel home).
     // Held in an Rc<RefCell<…>> so the carousel callbacks and the Viewer's
@@ -104,9 +127,10 @@ fn main() -> color_eyre::Result<()> {
         });
     }
 
-    // Carousel: Return on the focused book opens it. STUB for PR-0b — PR-C/PR-R
-    // resolve the focused index to a Library book and open+resume it. For now it
-    // simply transitions to the Viewer so the seam is exercised end-to-end.
+    // Carousel: Return on the focused book opens it. PR-C delivers the correct
+    // focused index (the move clamp keeps it in shelf bounds); resolving that
+    // index to a Library book + opening/resuming its source is PR-R/PR-V. For
+    // now it transitions to the Viewer so the seam is exercised end-to-end.
     {
         let ui_weak = ui.as_weak();
         let nav = Rc::clone(&nav);
@@ -117,12 +141,25 @@ fn main() -> color_eyre::Result<()> {
             go_to_viewer(&ui, &nav);
         });
     }
-    // Carousel: Left/Right move focus by `delta`. STUB for PR-0b — PR-C owns
-    // focus-index movement against the Library model. No-op for now (the empty
-    // shell has no items to move between).
+    // Carousel: Left/Right move the focused cover by `delta` (-1 / +1). Clamp
+    // into the shelf bounds — the row ends are hard stops (no wrap), so Left on
+    // the first book and Right on the last are inert. An empty shelf is a no-op
+    // (no books to move between). focused-index is the single source of truth
+    // for which cover is centered + which book Return opens.
     {
-        ui.on_carousel_move(move |_delta| {
-            // PR-C: clamp focused-index within the Library bounds and re-center.
+        let ui_weak = ui.as_weak();
+        let library = Rc::clone(&library);
+        ui.on_carousel_move(move |delta| {
+            let Some(ui) = ui_weak.upgrade() else {
+                return;
+            };
+            let count = library.borrow().books().len();
+            if count == 0 {
+                return; // empty shelf: nothing to move
+            }
+            let last = (count - 1) as i32;
+            let next = (ui.get_carousel_focused_index() + delta).clamp(0, last);
+            ui.set_carousel_focused_index(next);
         });
     }
     // Carousel: Down returns to the currently-open book (the Viewer). Only
@@ -830,6 +867,38 @@ fn to_slint_image(decoded: &DecodedImage) -> slint::Image {
         slint::SharedPixelBuffer::<slint::Rgba8Pixel>::new(decoded.width(), decoded.height());
     buffer.make_mut_bytes().copy_from_slice(decoded.rgba());
     slint::Image::from_rgba8(buffer)
+}
+
+/// Adapt a pure `CarouselData` row into the Slint `CarouselItem` the carousel
+/// renders. Runs on the UI thread (it builds a `slint::Image`). The cover is a
+/// PLACEHOLDER (`slint::Image::default()`) this PR; PR-V streams real covers
+/// into the same `VecModel<CarouselItem>` via the PR8a `invoke_from_event_loop`
+/// pattern, so the carousel shows a neutral placeholder until then.
+fn to_carousel_item(data: &CarouselData) -> CarouselItem {
+    CarouselItem {
+        cover: slint::Image::default(),
+        title: data.title.as_str().into(),
+        current: data.current,
+        total: data.total,
+        progress: data.progress,
+        available: data.available,
+    }
+}
+
+/// Build the carousel's backing model from the current `Library`, in shelf
+/// order, and bind it to the UI's `carousel-items`. Returns the `Rc<VecModel>`
+/// so callers (PR-V cover streaming; PR-L refresh-after-add) can mutate the
+/// SAME model rather than rebuilding/rebinding. Centralizes the build + bind so
+/// the Library → carousel surface lives in ONE place (mirrors
+/// `ThumbnailController::new`).
+fn build_carousel_model(ui: &ViewerWindow, library: &Library) -> Rc<VecModel<CarouselItem>> {
+    let items: Vec<CarouselItem> = carousel_data(library)
+        .iter()
+        .map(to_carousel_item)
+        .collect();
+    let model = Rc::new(VecModel::from(items));
+    ui.set_carousel_items(ModelRc::from(model.clone()));
+    model
 }
 
 /// Fetch the thumbnail image for a 0-based page from the strip's existing
