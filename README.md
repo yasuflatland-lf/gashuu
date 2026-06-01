@@ -5,14 +5,16 @@
 
 A cross-platform manga viewer built with Rust and [Slint](https://slint.dev).
 
-## Status (PR4 — Two-page spread + RTL/LTR binding)
+## Status (PR4a — Auto spread mode)
 
 Open a folder of PNG/JPG/JPEG images and browse every page with the keyboard. Pages are
 held in an LRU cache (up to 50 decoded images) and the neighbours of the current
 page are prefetched in the background, so warmed page turns are effectively instant.
 You can now read in a two-page spread with right-to-left (manga) or left-to-right
-binding, in addition to single-page browsing. User settings persist across restarts —
-gashuu saves your preferences on exit and restores them on the next launch.
+binding, in addition to single-page browsing. A new **auto** spread mode picks
+single or double from the window's aspect ratio and follows resizes live. User
+settings persist across restarts — gashuu saves your preferences on exit and
+restores them on the next launch.
 
 Arrow keys follow the active reading direction: in LTR mode **→** advances and **←**
 goes back; in RTL mode the arrows are swapped (**←** advances / **→** goes back).
@@ -21,7 +23,7 @@ direction.
 
 - **→ / Space** — next page (or spread)
 - **← / Backspace** — previous page (or spread)
-- **D** — toggle single ↔ two-page (double) spread
+- **D** — cycle spread mode: single → double → auto
 - **R** — toggle reading direction (LTR ↔ RTL)
 - **C** — toggle cover layout (standalone ↔ paired)
 
@@ -43,10 +45,12 @@ default file you can hand-edit; the file is loaded on startup and saved on exit.
 **Active settings** (take effect today):
 
 - `reading_direction` — `"ltr"` (default) or `"rtl"` (right-to-left / manga binding).
-- `spread_mode` — `"single"` (default) or `"double"` (two-page spread).
+- `spread_mode` — `"single"` (default), `"double"` (two-page spread), or `"auto"`
+  (chooses single or double from the window aspect ratio: landscape/square → double,
+  portrait → single; follows window resizes live; composes with RTL/LTR and cover mode).
 - `cover_mode` — `"standalone"` (default: cover shown alone, then pages pair up as
   {1,2}{3,4}…) or `"paired"` (pairing starts from the cover: {0,1}{2,3}…). Only
-  affects `double` mode.
+  affects double (or auto-resolved double) mode.
 - `cache_size` — number of decoded images held in the LRU cache (default `50`).
 - `preload_pages` — background prefetch radius around the current page (default `3`).
 - `recent_files` — list of recently opened folders.  Recorded only when
