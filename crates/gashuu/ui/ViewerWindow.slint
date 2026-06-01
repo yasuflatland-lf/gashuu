@@ -95,7 +95,7 @@ export component ViewerWindow inherits Window {
     callback carousel-open(int);
     callback carousel-move(int);
     callback carousel-back();
-    // PR-L: file/folder picker triggers forwarded from the Carousel toolbar/CTA.
+    // File/folder picker triggers forwarded from the Carousel toolbar and CTA.
     callback add-files();
     callback add-folder();
     public function focus-carousel() { carousel.focus-self(); }
@@ -139,6 +139,22 @@ export component ViewerWindow inherits Window {
         back() => { root.carousel-back(); }
         add-files() => { root.add-files(); }
         add-folder() => { root.add-folder(); }
+    }
+
+    // ── Library-screen status notice ─────────────────────────────────────────
+    // Shows add/save feedback (e.g. "Added 3 book(s)", "Already in library…")
+    // from the Carousel toolbar and CTA. Shares the same `status-text` property
+    // as the Viewer toolbar; visible only on the Library screen (screen == 0).
+    // Positioned as a bottom strip so it does not overlap the carousel toolbar.
+    Text {
+        visible: root.screen == 0;
+        x: 0;
+        y: root.height - self.preferred-height - Theme.space-md;
+        width: root.width;
+        text: root.status-text;
+        color: Theme.text-muted;
+        font-size: Theme.font-micro;
+        horizontal-alignment: center;
     }
 
     // ── Viewer screen (existing content) ───────────────────────────────────────

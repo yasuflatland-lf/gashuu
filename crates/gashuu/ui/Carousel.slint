@@ -31,8 +31,8 @@ export component Carousel inherits Rectangle {
     callback open(int);       // index — Return on the focused book
     callback move(int);       // delta (-1 / +1) — Left / Right
     callback back();          // Down — return to the currently-open book
-    callback add-files();     // PR-L: open file picker (rfd)
-    callback add-folder();    // PR-L: open folder picker (rfd)
+    callback add-files();     // opens a file picker (rfd); wired to on_add_files in main.rs
+    callback add-folder();    // opens a folder picker (rfd); wired to on_add_folder in main.rs
 
     // FocusScope focus recovery (mirrors ViewerWindow's focus-pages() rule).
     public function focus-self() { fs.focus(); }
@@ -46,11 +46,10 @@ export component Carousel inherits Rectangle {
         background: @linear-gradient(180deg, Theme.stage-top 0%, Theme.canvas 100%);
     }
 
-    // ── Toolbar: "Add files…" / "Add folder…" (PR-L) ──────────────────────────
-    // Always-visible strip anchored to the top of the carousel. Clicking either
-    // button fires the matching callback (Rust wires rfd later) then restores
-    // keyboard focus to the carousel's FocusScope so arrow / Return keys still
-    // work after the picker closes. Spacing uses Theme tokens; no inline hex.
+    // ── Toolbar: "Add files…" / "Add folder…" ────────────────────────────────
+    // Always-visible strip at the top of the carousel. Clicking either button fires
+    // the matching callback (wired to the rfd file/folder pickers in main.rs), then
+    // restores keyboard focus to the carousel's FocusScope.
     HorizontalLayout {
         x: 0;
         y: 0;
@@ -121,10 +120,10 @@ export component Carousel inherits Rectangle {
                     font-size: Theme.font-micro;
                     horizontal-alignment: center;
                 }
-                // CTA button (PR-L: now interactive). Fires add-files() on click
-                // and restores keyboard focus to the carousel. Uses Theme tokens
-                // only — no inline hex. Background accent, text white, rounded
-                // corners via radius-md, helper text via text-faint + font-micro.
+                // CTA button: fires add-files() on click and restores keyboard focus
+                // to the carousel. Background Theme.accent, label text Theme.text
+                // (white) at Theme.font-label (12px), corners Theme.radius-md.
+                // The subtitle line above uses Theme.text-muted + Theme.font-micro.
                 Rectangle {
                     height: 34px;
                     background: Theme.accent;
@@ -138,7 +137,7 @@ export component Carousel inherits Rectangle {
                         vertical-alignment: center;
                     }
                     TouchArea {
-                        clicked => { root.add-files(); }
+                        clicked => { root.add-files(); root.focus-self(); }
                     }
                 }
             }
