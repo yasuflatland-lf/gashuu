@@ -1,18 +1,46 @@
-// Library cover-flow carousel — EMPTY SHELL (PR-0b).
+// Library cover-flow carousel.
 //
-// This PR freezes the public contract (struct + component + callbacks + the
-// focus-self() recovery function) and renders only a placeholder / empty
-// state on the DESIGN.md stage. PR-C fills the real cover-flow rendering from
-// the Library model; PR-L wired the "add books" action (toolbar + CTA).
-// Styling references Theme tokens only — NO inline hex (see DESIGN.md rule 2).
+// Renders a full cover-flow row built from the `Library` model: a centered
+// focused cover (accent ring), dimmed neighbors, a per-cover progress bar, a
+// centered focused-book meta block, and a grayed broken-cover placeholder for
+// unavailable books. Falls back to an empty-state CTA when there are 0 books.
+// PR-L added the always-visible "Add files… / Add folder…" toolbar and wired
+// the empty-state CTA to the folder/file picker (via add-files()).
+//
+// The public contract — the `CarouselItem` struct, the `Carousel` component,
+// its `items`/`focused-index` properties, the `open(int)`/`move(int)`/`back()`
+// callbacks (plus PR-L's `add-files()`/`add-folder()`), and `focus-self()` —
+// is frozen and MUST NOT change here. PR-V streams real cover images into the
+// model (covers are placeholders until then).
 //
 // Focus: the component owns its own FocusScope. `focus-self()` restores
 // keyboard focus to it (the carousel counterpart of ViewerWindow's
-// `focus-pages()` recovery rule). The key handler forwards the navigation
-// seams so downstream PRs only fill the Rust side:
-//   Left/Right -> move(-1 / +1)   Return -> open(focused-index)   Down -> back()
+// `focus-pages()` recovery rule).
+//
+// Styling references `Theme.*` tokens only — NO inline brand hex (DESIGN.md).
+// Key seams (handled in the FocusScope): Left/Right -> move(-1/+1),
+// Return -> open(focused-index), Down -> back().
 import { Button } from "std-widgets.slint";
 import { Theme } from "Theme.slint";
+
+// Reading-progress bar: a track with an accent fill (green once complete).
+// Shared by the per-cover bar and the focused-book meta bar so the track/fill
+// styling lives in one place. The caller positions/sizes the instance (the
+// per-cover bar sets x/y/width absolutely; the meta bar is laid out by its
+// VerticalLayout); `progress` (0.0..1.0) drives the fill width and color.
+component ProgressBar inherits Rectangle {
+    in property <float> progress;
+    height: 4px;
+    border-radius: 2px;
+    background: Theme.track-prog;
+    Rectangle {
+        x: 0; y: 0;
+        width: parent.width * Math.clamp(root.progress, 0.0, 1.0);
+        height: 100%;
+        border-radius: 2px;
+        background: root.progress >= 1.0 ? Theme.success : Theme.accent;
+    }
+}
 
 // Frozen by PR-0b; populated by PR-C (covers via PR-V). One book in the shelf.
 export struct CarouselItem {
@@ -36,6 +64,19 @@ export component Carousel inherits Rectangle {
 
     // FocusScope focus recovery (mirrors ViewerWindow's focus-pages() rule).
     public function focus-self() { fs.focus(); }
+
+    // ── Cover-flow geometry (local tunables; colors/spacing come from Theme) ──
+    // Covers are laid out centered on `focused-index`; each cover's horizontal
+    // offset from the focused one drives its position, scale, and opacity.
+    private property <length> cover-w: 200px;          // focused cover width
+    private property <length> cover-h: 280px;          // focused cover height (≈7:10 manga cover)
+    private property <length> cover-gap: Theme.space-lg; // 14px inter-cover gap (DESIGN.md)
+    private property <float> neighbor-scale: 0.78;     // side covers shrink
+    private property <float> neighbor-opacity: 0.45;   // DESIGN.md components.cover.sideOpacity
+    // Step between adjacent cover centers (focused width * a tightening factor
+    // so neighbors tuck partly behind — the cover-flow overlap).
+    private property <length> cover-step: root.cover-w * 0.62 + root.cover-gap;
+    private property <length> ring-width: 3px;         // DESIGN.md cover.focusOutline 3px
 
     // ── Stage background: stage-top -> canvas vertical gradient (DESIGN.md
     //    "Layout / Two screens"; Slint uses @linear-gradient, not radial). ─────
@@ -88,59 +129,154 @@ export component Carousel inherits Rectangle {
             return reject;
         }
 
-        // ── Empty state (placeholder) ───────────────────────────────────────
-        // The CTA button fires add-files() via a TouchArea (wired in PR-L). PR-C
-        // replaces this with the cover-flow row built from `items`. For PR-0b it
-        // is a centered call-to-action on a sunken panel (DESIGN.md "Empty Library").
-        Rectangle {
-            width: 360px;
-            height: 200px;
-            x: (parent.width - self.width) / 2;
-            y: (parent.height - self.height) / 2;
-            background: Theme.surface-sunken;
-            border-radius: Theme.radius-lg;
-            border-width: 1px;
-            border-color: Theme.hairline;
+          // ── Empty state (0 books): the picker call-to-action (DESIGN.md
+          //    "Empty Library"). The CTA button fires add-files() via a TouchArea
+          //    (wired in PR-L) and restores keyboard focus to the carousel. ──────
+          if root.items.length == 0 : Rectangle {
+              width: 360px;
+              height: 200px;
+              x: (parent.width - self.width) / 2;
+              y: (parent.height - self.height) / 2;
+              background: Theme.surface-sunken;
+              border-radius: Theme.radius-lg;
+              border-width: 1px;
+              border-color: Theme.hairline;
+              VerticalLayout {
+                  alignment: center;
+                  spacing: Theme.space-md;
+                  padding: Theme.space-xl;
+                  Text {
+                      text: "Your library is empty";
+                      color: Theme.text;
+                      font-size: Theme.font-title;
+                      font-weight: 700;
+                      horizontal-alignment: center;
+                  }
+                  Text {
+                      text: "Add books to start your shelf.";
+                      color: Theme.text-muted;
+                      font-size: Theme.font-micro;
+                      horizontal-alignment: center;
+                  }
+                  // CTA button: fires add-files() on click and restores keyboard
+                  // focus to the carousel. Background Theme.accent, label text
+                  // Theme.text at Theme.font-label, corners Theme.radius-md.
+                  Rectangle {
+                      height: 34px;
+                      background: Theme.accent;
+                      border-radius: Theme.radius-md;
+                      Text {
+                          text: "Select folders / files to add";
+                          color: Theme.text;
+                          font-size: Theme.font-label;
+                          font-weight: 500;
+                          horizontal-alignment: center;
+                          vertical-alignment: center;
+                      }
+                      TouchArea {
+                          clicked => { root.add-files(); root.focus-self(); }
+                      }
+                  }
+              }
+          }
 
-            VerticalLayout {
-                alignment: center;
-                spacing: Theme.space-md;
-                padding: Theme.space-xl;
+          // ── Cover-flow row (>= 1 book) ───────────────────────────────────────
+          if root.items.length > 0 : Rectangle {
+              width: 100%;
+              height: 100%;
 
-                Text {
-                    text: "Your library is empty";
-                    color: Theme.text;
-                    font-size: Theme.font-title;
-                    font-weight: 700;
-                    horizontal-alignment: center;
-                }
-                Text {
-                    text: "Add books to start your shelf.";
-                    color: Theme.text-muted;
-                    font-size: Theme.font-micro;
-                    horizontal-alignment: center;
-                }
-                // CTA button: fires add-files() on click and restores keyboard focus
-                // to the carousel. Background Theme.accent, label text Theme.text
-                // (white) at Theme.font-label (12px), corners Theme.radius-md.
-                // The subtitle line above uses Theme.text-muted + Theme.font-micro.
-                Rectangle {
-                    height: 34px;
-                    background: Theme.accent;
-                    border-radius: Theme.radius-md;
-                    Text {
-                        text: "Select folders / files to add";
-                        color: Theme.text;
-                        font-size: Theme.font-label;
-                        font-weight: 500;
-                        horizontal-alignment: center;
-                        vertical-alignment: center;
-                    }
-                    TouchArea {
-                        clicked => { root.add-files(); root.focus-self(); }
-                    }
-                }
-            }
-        }
+              // Vertical anchor for the cover row (leaves room for the meta block
+              // below). Covers are centered horizontally on focused-index.
+              property <length> row-cy: parent.height / 2 - 28px;
+
+              for item[idx] in root.items : Rectangle {
+                  // Signed distance from the focused cover (… -2 -1 0 +1 +2 …).
+                  property <int> delta: idx - root.focused-index;
+                  property <bool> focused: self.delta == 0;
+                  // Horizontal center: focused at parent center, neighbors stepped.
+                  x: parent.width / 2 + self.delta * root.cover-step - self.width / 2;
+                  y: parent.row-cy - self.height / 2;
+                  width: self.focused ? root.cover-w : root.cover-w * root.neighbor-scale;
+                  height: self.focused ? root.cover-h : root.cover-h * root.neighbor-scale;
+                  opacity: self.focused ? 1.0 : root.neighbor-opacity;
+
+                  // The cover card: rounded, card shadow, accent focus ring.
+                  cover := Rectangle {
+                      width: 100%;
+                      height: 100%;
+                      border-radius: Theme.radius-sm;               // DESIGN.md covers 6px
+                      background: Theme.surface-raised;             // placeholder backing
+                      drop-shadow-blur: 22px;                       // DESIGN.md elevation.card
+                      drop-shadow-color: Theme.shadow-card;
+                      // Focus ring: 3px accent outline on the focused cover only.
+                      border-width: parent.focused ? root.ring-width : 0px;
+                      border-color: Theme.accent;
+
+                      // Cover image (placeholder until PR-V streams real covers).
+                      // DESIGN.md components.cover calls for slight neighbor desaturation, but a
+                      // per-Image `colorize` is NOT applied here: it would need the focused state,
+                      // and at this nesting `parent` is the inner cover Rectangle (no `focused`
+                      // property — that lives on the outer for-row Rectangle). The recede cue is
+                      // carried by the for-row's `opacity: 0.45` (root.neighbor-opacity) instead.
+                      if item.available : Image {
+                          x: 0; y: 0; width: 100%; height: 100%;
+                          source: item.cover;
+                          image-fit: contain;
+                      }
+
+                      // ── Unavailable: grayed card + broken-cover glyph ──────────
+                      if !item.available : Rectangle {
+                          x: 0; y: 0; width: 100%; height: 100%;
+                          border-radius: Theme.radius-sm;
+                          background: Theme.surface-sunken;
+                          Text {
+                              width: 100%; height: 100%;
+                              text: "⛌";
+                              color: Theme.text-faint;
+                              font-size: 48px;
+                              horizontal-alignment: center;
+                              vertical-alignment: center;
+                          }
+                      }
+                  }
+
+                  // ── Per-cover progress bar (under every cover) ────────────────
+                  ProgressBar {
+                      x: 0;
+                      y: parent.height + Theme.space-xs;
+                      width: parent.width;
+                      progress: item.progress;
+                  }
+              }
+
+              // ── Focused-book meta block (centered, below the cover row) ───────
+              if root.focused-index >= 0 && root.focused-index < root.items.length : VerticalLayout {
+                  x: (parent.width - self.width) / 2;
+                  y: parent.height / 2 + root.cover-h / 2 - 8px;
+                  width: 320px;
+                  spacing: Theme.space-xs;
+                  alignment: start;
+
+                  Text {
+                      text: root.items[root.focused-index].title;
+                      color: Theme.text;
+                      font-size: Theme.font-title;
+                      font-weight: 700;
+                      horizontal-alignment: center;
+                      overflow: elide;
+                  }
+                  Text {
+                      // 1-based "current / total" (total is 0 until the book is
+                      // opened; the real count is filled when a book's page source is resolved).
+                      text: root.items[root.focused-index].current + " / " + root.items[root.focused-index].total;
+                      color: Theme.text-muted;
+                      font-size: Theme.font-label;
+                      horizontal-alignment: center;
+                  }
+                  ProgressBar {
+                      progress: root.items[root.focused-index].progress;
+                  }
+              }
+          }
     }
 }
