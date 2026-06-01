@@ -66,6 +66,7 @@ impl Book {
 /// invariants.
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct Library {
+    #[serde(default)]
     books: Vec<Book>,
 }
 
