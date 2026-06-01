@@ -180,6 +180,9 @@ fn main() -> color_eyre::Result<()> {
                 return;
             };
             // borrow_mut() temporary drops at the `;` before refresh borrows state.
+            // Refresh unconditionally — unlike the nav handler, a scrub commit always
+            // re-seeds the scrubber knob + counter to the committed spread, even when
+            // the resolved leading equals the current index (a no-op jump).
             let _moved = state.borrow_mut().jump_to(page.max(0) as usize);
             refresh(&ui, &state.borrow(), &viewport);
             ui.invoke_focus_pages();
@@ -722,7 +725,7 @@ fn refresh(ui: &ViewerWindow, state: &ViewerState, viewport: &Rc<RefCell<Viewpor
     // page" predicate without re-running `current_spread`'s decode.
     let is_double = state.preview_is_double(state.index());
     ui.set_scrubber_double(is_double);
-    // Counter text: "X / N" single, "X-Y / N" double, "0 / 0" when empty.
+    // Counter text: "X / N" single, "X\u{2013}Y / N" double, "0 / 0" when empty.
     let counter = if total == 0 {
         "0 / 0".to_string()
     } else if is_double {
@@ -762,12 +765,21 @@ fn to_slint_image(decoded: &DecodedImage) -> slint::Image {
 /// the `Rc` model is never crossed between threads. No new decode is performed.
 fn thumb_image_at(model: &slint::ModelRc<ThumbnailItem>, page: usize) -> slint::Image {
     use slint::Model;
-    if let Some(item) = model.row_data(page) {
-        if item.loaded {
-            return item.image;
+    match model.row_data(page) {
+        Some(item) if item.loaded => item.image,
+        Some(_) => slint::Image::default(), // still loading: normal, stay silent
+        None => {
+            // `page` is outside the thumbnail model — strip and page_count are out
+            // of sync (the model is built to exactly page_count rows). Not fatal:
+            // show a blank preview, but log so the desync is diagnosable.
+            tracing::warn!(
+                page,
+                row_count = model.row_count(),
+                "thumb_image_at: page outside thumbnail model (strip/page_count desync)"
+            );
+            slint::Image::default()
         }
     }
-    slint::Image::default()
 }
 
 /// Concise key-bindings reference shown read-only in the settings dialog. Keep in
