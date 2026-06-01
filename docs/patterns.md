@@ -155,9 +155,9 @@ the local module is also named `zip`, so the extern-prelude name is shadowed; th
 
 (matches `FolderSource`, and `Arc<dyn PageSource>` is not `Debug` either) — so error-path tests assert via `let Err(..) = .. else { panic!() }`, not `unwrap_err()`/`expect_err()`.
 
-### `PageEntry::path` for `ZipSource` is a LOGICAL archive entry name
+### `PageEntry::name` for `ZipSource` is a LOGICAL archive entry name
 
-(e.g. `sub/3.png`), not a real FS path — display/identity only. Bytes are retrieved via `read_bytes(index)` keyed on the `zip_index`, never by opening the path.
+(e.g. `sub/3.png`), not a real FS path — display/identity only. `PageEntry` carries `name` only; it has NO `path` field (PR-C / issue #31 removed it). `FolderSource` keeps real FS paths in a private internal `FolderEntry { path, name }`, used only by its own `read_bytes`. Bytes are always retrieved via `read_bytes(index)` keyed on the `zip_index`, never by opening a path.
 
 ### Test the two-tier size ceiling via private seams, not a 500 MB fixture
 
@@ -249,7 +249,7 @@ Re-opening a book (a) `cancel.store(true)` on the prior generation's flag (stops
 
 ### Per-page thumbnail failure → distinct FAILED cell, not a silent/ambiguous placeholder
 
-`generate_thumbnails` delivers the failure as `Err` (no panic). The UI worker logs `tracing::warn!(page, error)` (capturing the real `CoreError` WITHOUT crossing the thread boundary), then marshals a `ThumbnailItem { loaded:false, failed:true }` rendered distinctly (red ✕) so a permanent failure is visually separable from a still-loading gray cell (upholds the "view must match status" rule). `ThumbnailItem`'s `loaded`/`failed` invariant (Slint structs can't express sum types) is enforced procedurally at the three construction sites: placeholder=false/false, success=true/false, failure=false/true. `invoke_from_event_loop` errors are logged at `debug!` (not `let _`-swallowed) — the realistic trigger is an event-loop-gone race at teardown.
+`generate_thumbnails` delivers the failure as `Err` (no panic). The worker logs `tracing::warn!(page, error)` (capturing the real `CoreError` WITHOUT crossing the thread boundary), then marshals a failed cell rendered distinctly (red ✕) so a permanent failure is visually separable from a still-loading gray cell (upholds the "view must match status" rule). `ThumbnailItem`'s `(loaded, failed)` pair is enforced through a private `enum ThumbCell { Loading, Loaded(slint::Image), Failed }` sum type (PR-B / issue #30): the single `fn thumbnail_item(page, cell) -> ThumbnailItem` chokepoint maps each variant to the correct boolean triple, eliminating the former three-site procedural enforcement; a `debug_assert!(!(loaded && failed))` inside `thumbnail_item` guards against any future hand-edit to the match arms (same `debug_assert` philosophy as `seq_index`). `ThumbCell::Loaded(slint::Image)` is `!Send`, so only the UI thread can construct it — the thread-boundary rule is type-enforced, not comment-only. The shared `invoke_from_event_loop` preamble (epoch-mismatch guard → `weak.upgrade()` → `get_thumbnails()` → downcast → row-count bound check) is centralized in `marshal_cell`, called by both the success and failure paths. `invoke_from_event_loop` errors are logged at `debug!` (not `let _`-swallowed) — the realistic trigger is an event-loop-gone race at teardown.
 
 ### The post-decode cancel check is tested deterministically, not racily
 

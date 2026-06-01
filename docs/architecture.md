@@ -167,9 +167,14 @@ direction-INDEPENDENT like the zoom/fit keys.
 
 **`ThumbnailStrip.slint`** (PR8a, NEW): horizontal `Flickable` + `HorizontalLayout` + `for` over a
 `VecModel` — the FIRST `VecModel`/`Repeater` use in the codebase since `ListView` is
-vertical-only — over `struct ThumbnailItem { image, page, loaded, failed }`. `main.rs` drives it
-with a background `std::thread::spawn(generate_thumbnails(...))`, an `Rc<VecModel<ThumbnailItem>>`,
-an epoch+cancel double-guard, and a `slint::invoke_from_event_loop` marshal.
+vertical-only — over `struct ThumbnailItem { image, page, loaded, failed }`.
+
+**`thumbnail_strip.rs`** (`ThumbnailController`, PR-B / issue #30): owns the strip's
+`Rc<VecModel<ThumbnailItem>>`, the epoch counter, and the cancel flag; `new(&ui)` builds and binds the
+model via `ui.set_thumbnails`; `start(&self, ui_weak, source, page_count)` cancels any in-flight
+generation, resets the model to `page_count` placeholders, and spawns the background worker. `main.rs`
+constructs the controller once and calls `thumbs.start(...)` in every open handler, with no thumbnail
+bookkeeping inline.
 
 **`SettingsDialog.slint`** (PR8b, NEW): modal overlay editing active settings via std-widgets
 `ComboBox`/`SpinBox`/`CheckBox`; two-way `current-index <=> in-out-prop` +
