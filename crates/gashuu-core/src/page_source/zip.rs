@@ -1,6 +1,11 @@
 //! A `PageSource` backed by a ZIP/CBZ archive. Lock-free across reads (each
 //! `read_bytes` opens its own file + `ZipArchive`), so rayon prefetch threads
-//! decompress entries fully in parallel and resident memory stays one page.
+//! decompress entries fully in parallel.
+//!
+//! `ZipSource` holds NO archive-wide buffer: each `read_bytes` allocates only
+//! the one entry it reads. Under concurrent rayon prefetch, multiple reads can
+//! be in flight at once, each holding its own independent buffer (so resident
+//! memory is not bounded to a single page while prefetch is running).
 //!
 //! The external `zip` crate is referenced as `::zip::` throughout because this
 //! local module is also named `zip`; an unqualified `zip::` would resolve to
@@ -30,6 +35,7 @@ struct EntryMeta {
 /// A `PageSource` over a ZIP/CBZ file: the archive is scanned once at `open`
 /// to build a stable, naturally ordered list of image entries; each read
 /// re-opens the file so reads never contend on a shared handle.
+// Intentionally does NOT derive `Debug` (tests rely on this; matches `FolderSource`).
 pub struct ZipSource {
     path: PathBuf,
     entries: Vec<EntryMeta>,
@@ -54,7 +60,16 @@ impl ZipSource {
         let mut entries = Vec::new();
         let mut skipped = 0usize;
         for i in 0..archive.len() {
-            let entry = archive.by_index(i)?;
+            let entry = match archive.by_index(i) {
+                Ok(e) => e,
+                Err(_) => {
+                    // A corrupt central-directory entry shouldn't doom the whole
+                    // archive; skip it and surface the count (consistent with the
+                    // zip-slip / oversized skip policy). core stays logging-free.
+                    skipped += 1;
+                    continue;
+                }
+            };
             // `enclosed_name` == None => the name escapes the base dir (zip-slip),
             // is absolute, or otherwise unsafe to materialize as a path.
             let Some(safe) = entry.enclosed_name() else {
@@ -100,8 +115,13 @@ impl ZipSource {
         let file = std::fs::File::open(&self.path)?;
         let mut archive = ::zip::ZipArchive::new(BufReader::new(file))?;
         let mut entry = archive.by_index(meta.zip_index)?;
-        // Pre-size the buffer to the smaller of the declared size and the cap so
-        // a spoofed huge declared size cannot force a huge up-front allocation.
+        // Pre-size the buffer to the smaller of the declared size and the cap
+        // purely as a growth hint to avoid reallocations. This is NOT the size
+        // defense: `open_with_limit` already skipped any entry whose declared
+        // `size()` exceeds `max`, so by the time we read, the only remaining
+        // threat is a header that lies about its size. That is caught below by
+        // the `take(max + 1)` truncation plus the `buf.len() > max` check — the
+        // actual security cap.
         let cap = entry.size().min(max) as usize;
         let mut buf = Vec::with_capacity(cap);
         // Read at most max+1 so an over-limit (spoofed) entry is detectable: if
@@ -245,7 +265,44 @@ mod tests {
         let listed = names(&src);
         assert!(!listed.iter().any(|n| n.contains("evil")));
         assert_eq!(listed, vec!["1.png".to_string()]);
-        assert!(src.skipped_count() >= 1);
+        // The fixture has exactly one unsafe image entry.
+        assert_eq!(src.skipped_count(), 1);
+    }
+
+    #[test]
+    fn unsafe_non_image_entry_is_not_counted_as_skipped() {
+        // Only image-looking malicious entries inflate `skipped_count()`. A
+        // zip-slip entry that is NOT an image (e.g. a stray text file) is
+        // expected noise: it is silently ignored, not surfaced as a skip.
+        let png = tiny_png();
+        let cbz = write_cbz(&[("1.png", png), ("../secrets.txt", b"top secret".to_vec())]);
+        let src = ZipSource::open(cbz.path()).unwrap();
+
+        assert_eq!(names(&src), vec!["1.png".to_string()]);
+        assert_eq!(src.skipped_count(), 0);
+    }
+
+    #[test]
+    fn open_size_boundary_is_inclusive() {
+        // Open-time mirror of `read_entry_size_boundary_is_inclusive`: an image
+        // entry of EXACTLY `max` declared bytes is kept (the check is `> max`),
+        // while `max + 1` is skipped. Use `.png`-named Stored entries padded to
+        // a predictable byte length so the entry passes the image filter and the
+        // ONLY reason to skip is the declared-size tier. With Stored compression
+        // the entry's declared `size()` equals the buffer length.
+        const MAX: u64 = 64;
+
+        // Exactly `max` bytes → kept, not counted as skipped.
+        let exact_cbz = write_cbz(&[("1.png", vec![0u8; MAX as usize])]);
+        let exact = ZipSource::open_with_limit(exact_cbz.path(), MAX).unwrap();
+        assert_eq!(exact.list_pages().len(), 1);
+        assert_eq!(exact.skipped_count(), 0);
+
+        // `max + 1` bytes → skipped at open.
+        let over_cbz = write_cbz(&[("1.png", vec![0u8; MAX as usize + 1])]);
+        let over = ZipSource::open_with_limit(over_cbz.path(), MAX).unwrap();
+        assert!(over.list_pages().is_empty());
+        assert_eq!(over.skipped_count(), 1);
     }
 
     #[test]

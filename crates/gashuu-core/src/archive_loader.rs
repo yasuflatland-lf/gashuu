@@ -3,7 +3,7 @@
 
 use crate::error::CoreError;
 use crate::page_source::{FolderSource, PageSource, ZipSource};
-use std::io::Read;
+use std::io::{ErrorKind, Read};
 use std::path::Path;
 use std::sync::Arc;
 
@@ -50,8 +50,12 @@ fn is_zip(path: &Path) -> Result<bool, CoreError> {
         }
     }
     let mut head = [0u8; 4];
-    let n = std::fs::File::open(path)?.read(&mut head)?;
-    Ok(n == 4 && ZIP_MAGICS.iter().any(|m| *m == &head[..]))
+    let mut f = std::fs::File::open(path)?;
+    match f.read_exact(&mut head) {
+        Ok(()) => Ok(ZIP_MAGICS.iter().any(|m| *m == &head[..])),
+        Err(e) if e.kind() == ErrorKind::UnexpectedEof => Ok(false),
+        Err(e) => Err(e.into()),
+    }
 }
 
 #[cfg(test)]
@@ -198,6 +202,32 @@ mod tests {
         assert!(
             !source.list_pages().is_empty(),
             "magic-byte fallback should yield ZipSource pages for .txt with PK header"
+        );
+    }
+
+    #[test]
+    fn eocd_magic_no_extension_opens_zip_source_with_empty_pages() {
+        // A 22-byte minimal end-of-central-directory record starts with
+        // PK\x05\x06 — the second ZIP_MAGICS entry. Written to a file with no
+        // zip extension, it must be detected via the magic-byte fallback and
+        // opened as a ZipSource (not UnsupportedFormat). The `zip` crate accepts
+        // a bare EOCD as a valid empty archive, so list_pages() must return [].
+        let mut f = tempfile::Builder::new()
+            .prefix("eocd_only_")
+            .tempfile()
+            .expect("tempfile");
+        // 22-byte minimal EOCD: signature (4) + 18 zero bytes
+        let mut eocd = [0u8; 22];
+        eocd[0..4].copy_from_slice(b"PK\x05\x06");
+        f.write_all(&eocd).expect("write EOCD");
+        f.flush().expect("flush");
+
+        let Ok(src) = ArchiveLoader::open(f.path()) else {
+            panic!("expected ZipSource for bare EOCD file, got UnsupportedFormat");
+        };
+        assert!(
+            src.list_pages().is_empty(),
+            "empty ZIP (EOCD only) should yield no pages"
         );
     }
 

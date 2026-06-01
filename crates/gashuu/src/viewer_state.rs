@@ -45,6 +45,12 @@ pub struct ViewerState {
     /// into a concrete `SpreadLayout`. Ignored by Single/Double. Defaults to
     /// `1.0` until the UI pushes the real window size via `set_viewport_size`.
     viewport_aspect: f32,
+    /// Number of entries skipped during the most recent successful `open_path`
+    /// call (unreadable or filtered-out entries). Zero when no path has been
+    /// opened yet or when the last open skipped nothing. Only updated on
+    /// `Ok(())` returns; an error return leaves the value from the previous
+    /// successful open unchanged.
+    last_open_skipped: usize,
 }
 
 impl ViewerState {
@@ -66,6 +72,7 @@ impl ViewerState {
             cover_mode: CoverMode::Standalone,
             reading_direction: ReadingDirection::Ltr,
             viewport_aspect: 1.0,
+            last_open_skipped: 0,
         }
     }
 
@@ -82,6 +89,7 @@ impl ViewerState {
             cover_mode: settings.cover_mode,
             reading_direction: settings.reading_direction,
             viewport_aspect: 1.0,
+            last_open_skipped: 0,
         }
     }
 
@@ -119,8 +127,17 @@ impl ViewerState {
         if skipped > 0 {
             tracing::warn!(skipped, path = %path.display(), "entries skipped while opening path");
         }
+        self.last_open_skipped = skipped;
         self.set_source(source);
         Ok(())
+    }
+
+    /// Number of entries skipped during the most recent successful `open_path`
+    /// (or `open_folder`) call. Zero until a path has been successfully opened
+    /// or when the last open skipped nothing. Only meaningful after `Ok(())`;
+    /// an error return leaves the value from the previous successful open.
+    pub fn last_open_skipped(&self) -> usize {
+        self.last_open_skipped
     }
 
     /// Open a folder as the active source, resetting to the first page.
@@ -1058,5 +1075,25 @@ mod tests {
         assert!(r_a.is_err());
         assert!(r_b.is_err());
         assert_eq!(state_a.page_count(), state_b.page_count());
+    }
+
+    #[test]
+    fn last_open_skipped_is_zero_on_fresh_state() {
+        // A freshly constructed ViewerState has no open in progress, so
+        // last_open_skipped must start at zero.
+        assert_eq!(ViewerState::new().last_open_skipped(), 0);
+        assert_eq!(ViewerState::with_cache_config(10, 2).last_open_skipped(), 0);
+        assert_eq!(
+            ViewerState::from_settings(&Settings::default()).last_open_skipped(),
+            0
+        );
+    }
+
+    #[test]
+    fn last_open_skipped_stays_zero_on_open_error() {
+        // An open_path error must not update last_open_skipped; it stays 0.
+        let mut state = ViewerState::new();
+        let _ = state.open_path(std::path::Path::new("/nonexistent_path_pr6_skip"));
+        assert_eq!(state.last_open_skipped(), 0);
     }
 }

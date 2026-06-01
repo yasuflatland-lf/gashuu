@@ -3,8 +3,10 @@
 
 /// Errors produced by gashuu-core I/O and decoding.
 ///
-/// Marked `#[non_exhaustive]` so later PRs (archive sources, caching) can add
-/// variants without breaking downstream `match` arms.
+/// Marked `#[non_exhaustive]` so variants can be added without breaking
+/// downstream `match` arms. PR6 added the archive variants (`Zip`,
+/// `EntryTooLarge`, `UnsupportedFormat`); later work (e.g. caching) may add
+/// more.
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum CoreError {

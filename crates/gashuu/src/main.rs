@@ -60,6 +60,11 @@ fn main() -> color_eyre::Result<()> {
                 }
             }
             refresh(&ui, &state.borrow());
+            let skipped = state.borrow().last_open_skipped();
+            if skipped > 0 {
+                let base = ui.get_status_text().to_string();
+                ui.set_status_text(format!("{base} \u{2014} {skipped} entries skipped").into());
+            }
         });
     }
 
@@ -96,6 +101,14 @@ fn main() -> color_eyre::Result<()> {
                 }
             }
             refresh(&ui, &state.borrow());
+            let skipped = state.borrow().last_open_skipped();
+            if skipped > 0 {
+                let base = ui.get_status_text().to_string();
+                ui.set_status_text(
+                    format!("{base} \u{2014} {skipped} entries skipped (zip-slip or oversized)")
+                        .into(),
+                );
+            }
         });
     }
 

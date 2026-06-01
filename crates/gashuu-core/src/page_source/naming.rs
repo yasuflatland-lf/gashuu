@@ -1,9 +1,8 @@
 //! Shared helpers for natural-sort ordering and image-extension detection.
 //!
-//! These utilities are used by both `FolderSource` (top-level directory walk)
-//! and the upcoming `ZipSource` / `CbzSource` (ZIP/CBZ archive entries) so
-//! that all page sources sort filenames identically and recognise the same set
-//! of image formats.
+//! These helpers are shared by `FolderSource` (directory walk) and `ZipSource`
+//! (ZIP/CBZ archive entries) so that all page sources sort filenames and
+//! recognize image extensions identically.
 
 use std::cmp::Ordering;
 use std::iter::Peekable;
