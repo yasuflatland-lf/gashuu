@@ -187,7 +187,7 @@ fn main() -> color_eyre::Result<()> {
         ui.set_show_guide(true);
     }
 
-    // Open Folder button: pick a directory, load it, refresh the view.
+    // Open Folder button: pick a directory, open it, refresh the view, and start thumbnail generation.
     {
         let ui_weak = ui.as_weak();
         let state = Rc::clone(&state);
@@ -213,7 +213,7 @@ fn main() -> color_eyre::Result<()> {
         });
     }
 
-    // Open Archive button: pick a CBZ/ZIP/CBR/RAR file, load it, refresh the view.
+    // Open Archive button: pick a CBZ/ZIP/CBR/RAR file, open it, refresh the view, and start thumbnail generation.
     {
         let ui_weak = ui.as_weak();
         let state = Rc::clone(&state);
@@ -620,9 +620,15 @@ fn main() -> color_eyre::Result<()> {
 /// Open `path`, record it in recent files (when enabled), refresh the view,
 /// surface any skipped-entry count, and launch thumbnail generation. Shared by
 /// the Open Folder and Open Archive handlers so the "open a book" use-case lives
-/// in exactly one place. The open goes through `ViewerState::open_folder`, which
-/// is itself a thin wrapper over `open_path` — so directories and archives share
-/// one dispatch path and the wrapper keeps a single runtime caller.
+/// in exactly one place.
+///
+/// Both directories and archives are opened via `ViewerState::open_folder`, a
+/// one-line delegate to `open_path` (which dispatches by format through
+/// `ArchiveLoader`); routing through the wrapper keeps `open_folder` a live
+/// runtime caller so it is not flagged as dead code. `skipped_detail` is appended
+/// to the "N entries skipped" status note: `""` for folders, and for archives the
+/// two archive-specific skip reasons (path-traversal / zip-slip, and entries over
+/// the per-entry size ceiling; see `naming.rs`).
 fn open_and_present(
     ui: &ViewerWindow,
     state: &Rc<RefCell<ViewerState>>,
