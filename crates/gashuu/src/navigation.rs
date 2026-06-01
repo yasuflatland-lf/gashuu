@@ -5,8 +5,9 @@
 //! intent-named transitions `to_library`/`to_viewer` (mirroring the private
 //! fields + intent-named methods convention used by `ViewportState`). The app
 //! boots to `Library` (the carousel is home, even when empty — see the design
-//! spec §5). Mapping the enum to/from the Slint `screen` int property lives in
-//! `screen_to_index`/`index_to_screen`, which stay in lock-step with the
+//! doc DESIGN.md, "Layout / Two screens"). Mapping the enum to/from the Slint
+//! `screen` int property lives in `screen_to_index`/`index_to_screen`, which
+//! stay in lock-step with the
 //! `ViewerWindow.screen` contract (0 = Library, 1 = Viewer).
 
 /// One of the two top-level screens.
@@ -117,6 +118,12 @@ mod tests {
         for s in [Screen::Library, Screen::Viewer] {
             assert_eq!(index_to_screen(screen_to_index(s)), s);
         }
+    }
+
+    #[test]
+    fn screen_to_index_matches_slint_contract() {
+        assert_eq!(screen_to_index(Screen::Library), 0);
+        assert_eq!(screen_to_index(Screen::Viewer), 1);
     }
 
     #[test]

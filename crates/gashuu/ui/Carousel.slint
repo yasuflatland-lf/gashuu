@@ -17,7 +17,7 @@ import { Theme } from "Theme.slint";
 export struct CarouselItem {
     cover: image,
     title: string,
-    current: int,     // 1-based current page for display (last_page + 1)
+    current: int,     // 1-based current page for display (= 0-based index + 1)
     total: int,
     progress: float,  // 0.0 .. 1.0
     available: bool,
@@ -46,8 +46,10 @@ export component Carousel inherits Rectangle {
     // ── Keyboard seams ──────────────────────────────────────────────────────
     // The carousel is the focused screen on the Library route, so it owns key
     // input here. Left/Right move focus, Return opens the focused book, Down
-    // returns to the currently-open book. Up is handled by ViewerWindow's
-    // FocusScope (GoToLibrary) and is a no-op while already in the Library.
+    // returns to the currently-open book. Up is a no-op in the Library: the
+    // carousel's FocusScope rejects it and no ancestor handles it. In the
+    // Viewer screen, ViewerWindow's own FocusScope catches Up and fires
+    // GoToLibrary.
     fs := FocusScope {
         key-pressed(event) => {
             if (event.text == Key.LeftArrow) { root.move(-1); return accept; }

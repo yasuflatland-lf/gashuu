@@ -698,8 +698,8 @@ fn apply_viewport(ui: &ViewerWindow, viewport: &ViewportState) {
 }
 
 /// Switch the app to the Library carousel and sync the UI's `screen` property.
-/// The single chokepoint for "go to Library" so no caller forgets to push the
-/// new screen into the UI (mirrors the seam-function discipline in `main.rs`).
+/// The single chokepoint for "go to Library" so no caller forgets to sync the
+/// UI's `screen` property and restore carousel focus (mirrors `go_to_viewer`).
 fn go_to_library(ui: &ViewerWindow, nav: &Rc<RefCell<NavState>>) {
     nav.borrow_mut().to_library();
     ui.set_screen(screen_to_index(nav.borrow().screen()));
@@ -740,7 +740,10 @@ Zoom & fit:
   + / - = zoom in / out    0 = reset view    1 = actual size    f = cycle fit
 
 View:
-  T = toggle thumbnail strip";
+  T = toggle thumbnail strip
+
+Library:
+  Up = return to the library";
 
 // Enum <-> ComboBox index conversions. `*_to_index` use exhaustive matches so a
 // new enum variant becomes a compile error; `index_to_*` default to the first
