@@ -1096,4 +1096,34 @@ mod tests {
         let _ = state.open_path(std::path::Path::new("/nonexistent_path_pr6_skip"));
         assert_eq!(state.last_open_skipped(), 0);
     }
+
+    // ---- open_path CBR/RAR dispatch (PR7) -----------------------------------
+
+    #[test]
+    fn open_path_nonexistent_cbr_returns_err_and_leaves_clean_state() {
+        // A .cbr path that does not exist must propagate an error through
+        // ArchiveLoader::open and leave ViewerState in its default (no-source)
+        // state — no panic, no partial initialization. This locks in that the
+        // .cbr extension routes through the same graceful error-handling path as
+        // .cbz/.zip (tested above). Real CBR/RarSource extraction correctness is
+        // owned by gashuu-core's rar.rs/archive_loader.rs tests; this crate
+        // deliberately carries no tempfile/zip/rar dev-dependency.
+        let mut state = ViewerState::new();
+        let result = state.open_path(std::path::Path::new("/nonexistent_path_pr7_cbr_test.cbr"));
+        assert!(
+            result.is_err(),
+            "open_path must return Err for a missing .cbr path"
+        );
+        assert_eq!(state.page_count(), 0, "page_count must stay 0 after error");
+        assert_eq!(state.index(), 0, "index must stay 0 after error");
+        assert!(
+            state.current_spread().is_none(),
+            "current_spread must be None after error"
+        );
+        assert_eq!(
+            state.last_open_skipped(),
+            0,
+            "last_open_skipped must not update on error"
+        );
+    }
 }
