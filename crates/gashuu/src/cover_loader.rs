@@ -13,7 +13,7 @@
 //! `AtomicUsize` epoch (so a late `invoke_from_event_loop` whose captured
 //! `my_epoch` mismatches the current epoch is dropped) AND flips the previous
 //! generation's `AtomicBool` cancel flag (so a worker that has not yet started
-//! its heavy decode stops promptly). Either guard alone is insufficient.
+//! its heavy open+decode stops promptly). Either guard alone is insufficient.
 //!
 //! Thread-boundary rule (identical to the thumbnail strip): only `Send` values
 //! cross into the rayon job and the event-loop closure — `slint::Weak` (Send+Sync),
@@ -33,10 +33,10 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering::Relaxed};
 use std::sync::Arc;
 
-/// Longer-edge size for generated covers. Reuses the strip thumbnail size so a
-/// page-0 thumbnail and a cover share cache geometry; if the carousel later wants
-/// larger covers, change this single constant (it is part of the cache key, so
-/// changing it transparently invalidates old entries).
+/// Longer-edge size for generated covers. Reuses `DEFAULT_THUMB_MAX_SIDE` to keep
+/// cover dimensions consistent with the strip's thumbnails and avoid a second size
+/// constant to track. It is part of the cache key, so changing it transparently
+/// invalidates stale cover entries.
 const COVER_MAX_SIDE: u32 = DEFAULT_THUMB_MAX_SIDE;
 
 /// One book the controller must load a cover for: its carousel row index and its
@@ -127,17 +127,24 @@ impl CoverController {
         }
     }
 
+    /// Supersede the previous generation's cancel flag and install a fresh one,
+    /// returning a clone of the new flag for the just-started generation. Each
+    /// `RefCell` borrow is confined to its own statement (dropped at the `;`) so no
+    /// two overlap — collapsing these into one expression would compile but panic
+    /// at runtime with a double borrow. Shared shape with `ThumbnailController`.
+    fn rotate_cancel(&self) -> Arc<AtomicBool> {
+        self.cancel.borrow().store(true, Relaxed);
+        *self.cancel.borrow_mut() = Arc::new(AtomicBool::new(false));
+        Arc::clone(&self.cancel.borrow())
+    }
+
     /// (Re)load covers for the given books. Cancels any in-flight generation,
     /// bumps the epoch, then for each request tries the cache (hit → set the row
     /// now) or fires a rayon worker (miss). Call after the carousel model is built
     /// or refreshed (initial library load + every add/remove).
     pub fn start(&self, ui_weak: slint::Weak<ViewerWindow>, requests: Vec<CoverRequest>) {
-        // 1. Cancel the previous generation, install a fresh flag. Each borrow is
-        //    confined to its own statement and drops at the `;` — mirrors
-        //    ThumbnailController to avoid a double-borrow panic.
-        self.cancel.borrow().store(true, Relaxed);
-        *self.cancel.borrow_mut() = Arc::new(AtomicBool::new(false));
-        let cancel_flag = Arc::clone(&self.cancel.borrow());
+        // Supersede the previous generation and take this one's fresh cancel flag.
+        let cancel_flag = self.rotate_cancel();
 
         // 2. Tag this generation so superseded callbacks are dropped.
         let my_epoch = self.epoch.fetch_add(1, Relaxed) + 1;

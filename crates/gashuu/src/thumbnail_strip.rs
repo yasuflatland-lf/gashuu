@@ -125,6 +125,17 @@ impl ThumbnailController {
         }
     }
 
+    /// Supersede the previous generation's cancel flag and install a fresh one,
+    /// returning a clone of the new flag for the just-started generation. Each
+    /// `RefCell` borrow is confined to its own statement (dropped at the `;`) so no
+    /// two overlap — collapsing these into one expression would compile but panic
+    /// at runtime with a double borrow. Shared shape with `CoverController`.
+    fn rotate_cancel(&self) -> Arc<AtomicBool> {
+        self.cancel.borrow().store(true, Relaxed);
+        *self.cancel.borrow_mut() = Arc::new(AtomicBool::new(false));
+        Arc::clone(&self.cancel.borrow())
+    }
+
     /// Launch a fresh parallel thumbnail generation for the given source. Runs on
     /// the UI thread: cancels the previous generation, resets the model to
     /// `page_count` unloaded placeholders (`loaded = false`), then (when `source`
@@ -136,13 +147,8 @@ impl ThumbnailController {
         source: Option<Arc<dyn PageSource>>,
         page_count: usize,
     ) {
-        // 1. Cancel any in-flight generation, then install a fresh flag.
-        //    Each borrow is confined to its own statement and drops at the `;`,
-        //    so no borrow is held across the next — avoiding a double-borrow
-        //    panic.
-        self.cancel.borrow().store(true, Relaxed);
-        *self.cancel.borrow_mut() = Arc::new(AtomicBool::new(false));
-        let cancel_flag = Arc::clone(&self.cancel.borrow());
+        // 1. Supersede the previous generation and take this one's fresh cancel flag.
+        let cancel_flag = self.rotate_cancel();
 
         // 2. Tag this generation so superseded callbacks can be dropped.
         let my_epoch = self.epoch.fetch_add(1, Relaxed) + 1;
