@@ -92,6 +92,42 @@ impl Library {
         self.books.push(Book::from_path(canonical));
         true
     }
+
+    /// Remove the book identified by `path`. Returns `false` when absent.
+    pub fn remove(&mut self, path: &Path) -> bool {
+        let before = self.books.len();
+        self.books.retain(|b| b.path() != path);
+        self.books.len() != before
+    }
+
+    /// The last-viewed leading page index for `path` (0 when unknown).
+    pub fn last_page(&self, path: &Path) -> usize {
+        self.books
+            .iter()
+            .find(|b| b.path() == path)
+            .map(Book::last_page)
+            .unwrap_or(0)
+    }
+
+    /// Record `page` as the last-viewed leading page index for `path`. Returns
+    /// `false` when the path is absent OR the value is unchanged (mirrors the
+    /// `jump_to` "did it actually move" convention, so callers can skip a save).
+    pub fn set_last_page(&mut self, path: &Path, page: usize) -> bool {
+        match self.books.iter_mut().find(|b| b.path() == path) {
+            Some(book) if book.last_page != page => {
+                book.last_page = page;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Derived availability: whether the book's path currently resolves on disk.
+    /// This is NOT stored - an unavailable book is kept (its reading position is
+    /// preserved); removal is an explicit user action.
+    pub fn is_available(book: &Book) -> bool {
+        book.path().exists()
+    }
 }
 
 #[cfg(test)]
@@ -169,5 +205,61 @@ mod tests {
         assert_eq!(lib.books().len(), 1);
         assert_eq!(lib.books()[0].path(), folder.canonicalize().unwrap().as_path());
         assert_eq!(lib.books()[0].title(), "Series.1997");
+    }
+
+    #[test]
+    fn remove_existing_returns_true_and_drops_book() {
+        let mut lib = Library::new();
+        let path = PathBuf::from("/manga/a.cbz");
+        assert!(lib.add(path.clone()));
+        assert!(lib.remove(&path));
+        assert!(lib.books().is_empty());
+    }
+
+    #[test]
+    fn remove_absent_returns_false() {
+        let mut lib = Library::new();
+        assert!(!lib.remove(Path::new("/manga/missing.cbz")));
+    }
+
+    #[test]
+    fn last_page_is_zero_for_unknown_path() {
+        let lib = Library::new();
+        assert_eq!(lib.last_page(Path::new("/manga/missing.cbz")), 0);
+    }
+
+    #[test]
+    fn set_last_page_updates_and_round_trips() {
+        let mut lib = Library::new();
+        let path = PathBuf::from("/manga/a.cbz");
+        assert!(lib.add(path.clone()));
+        assert!(lib.set_last_page(&path, 42));
+        assert_eq!(lib.last_page(&path), 42);
+    }
+
+    #[test]
+    fn set_last_page_false_when_absent() {
+        let mut lib = Library::new();
+        assert!(!lib.set_last_page(Path::new("/manga/missing.cbz"), 12));
+    }
+
+    #[test]
+    fn set_last_page_false_when_unchanged() {
+        let mut lib = Library::new();
+        let path = PathBuf::from("/manga/a.cbz");
+        assert!(lib.add(path.clone()));
+        assert!(lib.set_last_page(&path, 3));
+        assert!(!lib.set_last_page(&path, 3));
+    }
+
+    #[test]
+    fn is_available_reflects_path_existence() {
+        let dir = tempfile::tempdir().unwrap();
+        let folder = dir.path().join("Series.1997");
+        std::fs::create_dir(&folder).unwrap();
+        let present = Book::from_path(folder.clone());
+        let missing = Book::from_path(PathBuf::from("/manga/missing.cbz"));
+        assert!(Library::is_available(&present));
+        assert!(!Library::is_available(&missing));
     }
 }

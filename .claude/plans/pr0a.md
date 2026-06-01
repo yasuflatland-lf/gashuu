@@ -294,7 +294,7 @@ Progress: DONE 2026-06-02 - Library new/books/add implemented with canonicalize 
 - Modify: `crates/gashuu-core/src/library.rs`
 - Test: `crates/gashuu-core/src/library.rs` (inline tests)
 
-- [ ] **4.1 Write failing test.** Add these tests inside the `#[cfg(test)] mod tests` block in `crates/gashuu-core/src/library.rs`:
+- [x] **4.1 Write failing test.** Add these tests inside the `#[cfg(test)] mod tests` block in `crates/gashuu-core/src/library.rs`:
 ```rust
     #[test]
     fn remove_existing_returns_true_and_drops_book() {
@@ -370,9 +370,9 @@ Progress: DONE 2026-06-02 - Library new/books/add implemented with canonicalize 
         );
     }
 ```
-- [ ] **4.2 Run it (expect FAIL):** `mise exec -- cargo nextest run -p gashuu-core remove_existing_returns_true_and_drops_book set_last_page_false_when_unchanged is_available_reflects_path_existence`
+- [x] **4.2 Run it (expect FAIL):** `mise exec -- cargo nextest run -p gashuu-core remove_existing_returns_true_and_drops_book set_last_page_false_when_unchanged is_available_reflects_path_existence`
   - Expected FAIL: `no method named 'remove' / 'last_page' / 'set_last_page' / 'is_available'` — the methods do not exist yet.
-- [ ] **4.3 Minimal impl.** Add these methods to the `impl Library` block in `crates/gashuu-core/src/library.rs` (after `add`, before the closing brace):
+- [x] **4.3 Minimal impl.** Add these methods to the `impl Library` block in `crates/gashuu-core/src/library.rs` (after `add`, before the closing brace):
 ```rust
     /// Remove the book identified by `path`. Returns `false` when absent.
     pub fn remove(&mut self, path: &Path) -> bool {
@@ -410,9 +410,11 @@ Progress: DONE 2026-06-02 - Library new/books/add implemented with canonicalize 
         book.path().exists()
     }
 ```
-- [ ] **4.4 Run it (expect PASS):** `mise exec -- cargo nextest run -p gashuu-core remove_existing_returns_true_and_drops_book remove_absent_returns_false last_page_is_zero_for_unknown_path set_last_page_updates_and_round_trips set_last_page_false_when_absent set_last_page_false_when_unchanged is_available_reflects_path_existence`
+- [x] **4.4 Run it (expect PASS):** `mise exec -- cargo nextest run -p gashuu-core remove_existing_returns_true_and_drops_book remove_absent_returns_false last_page_is_zero_for_unknown_path set_last_page_updates_and_round_trips set_last_page_false_when_absent set_last_page_false_when_unchanged is_available_reflects_path_existence`
   - Expected PASS: all seven tests pass.
-- [ ] **4.5 Commit:** `git commit -m "feat(core): add Library remove/last_page/set_last_page/is_available"`
+- [x] **4.5 Commit:** `git commit -m "feat(core): add Library remove/last_page/set_last_page/is_available"`
+
+Progress: DONE 2026-06-02 - Library remove/last_page/set_last_page/is_available implemented; focused nextest passed and review approved.
 
 ---
 
