@@ -5,7 +5,7 @@ This file is the authoritative record of what has shipped and what is intentiona
 
 ## Baseline (shipped)
 
-Shipped across PR1 + PR2 + PR3 + PR4 + PR4a + PR5 + PR6 + PR7 + PR8a + PR8b + PR-T + PR-L.
+Shipped across PR1 + PR2 + PR3 + PR4 + PR4a + PR5 + PR6 + PR7 + PR8a + PR8b + PR-T + PR-L + PR-V.
 
 ### Page sources
 
@@ -71,13 +71,19 @@ RAR requires a C++ compiler on every OS (see [docs/toolchain.md](toolchain.md)).
 ### Library cover-flow carousel rendering (PR-C)
 
 - The Library screen (the PR-0b two-screen shell) now RENDERS the cover-flow carousel from the `Library` model: focused cover with accent ring, scaled/dimmed neighbors, per-cover + focused-meta reading-progress bars, a grayed broken-cover placeholder for unavailable books, and the 0-book empty-state CTA. Built from the pure `library_model::carousel_data` mapping via the `to_carousel_item` UI-thread adapter (covers via `slint::Image::default()` for now). No new deps.
-- **Covers are PLACEHOLDERS** — real cover images stream in via PR-V (into the same `VecModel<CarouselItem>`, using the PR8a `invoke_from_event_loop` pattern).
+- **Covers start as placeholders** — PR-V (below) streams the real cover images in (into the same `VecModel<CarouselItem>`, using the PR8a `invoke_from_event_loop` pattern).
 - **Per-book page `total` is 0** — the Library does not persist page counts, so `total` (and therefore the meaningful `current / total` + progress fraction) stays 0 until whichever PR resolves a book's page source and learns its real count.
 - The empty-state CTA is wired to the file/folder picker by PR-L (see below).
 
 ### Thumbnail disk cache (PR-T)
 
-`ThumbnailCache` (gashuu-core) persists thumbnails/covers as PNG files under the OS cache directory, keyed by a version-stable FNV-1a hash of (path, mtime, max-side). `put` writes atomically (temp-file-then-rename); `get` returns `None` on miss/corrupt. This is the storage primitive; the cover carousel that consumes it is PR-V. Concurrent same-key write safety is deferred (see docs/patterns.md).
+`ThumbnailCache` (gashuu-core) persists thumbnails/covers as PNG files under the OS cache directory, keyed by a version-stable FNV-1a hash of (path, mtime, max-side). `put` writes atomically (temp-file-then-rename); `get` returns `None` on miss/corrupt. This is the storage primitive; the cover carousel that consumes it is PR-V (below). Concurrent same-key write safety is deferred (see docs/patterns.md) and is not exercised by PR-V (one distinct key per book).
+
+### Library carousel covers (PR-V)
+
+- The Library carousel now shows each book's REAL cover (the thumbnail of its page 0), streamed in row-by-row rather than the PR-C placeholders. Core gained `generate_cover(source, max_side) -> Result<DecodedImage, CoreError>` (page-0 thumbnail; errors on a 0-page source); the UI's new `cover_loader.rs` (`CoverController`, a twin of the `thumbnail_strip.rs` controller) tries the `ThumbnailCache` first, else fires a `rayon::spawn` worker that opens via `ArchiveLoader`, calls `generate_cover`, caches the result, and marshals it into the shared `VecModel<CarouselItem>` via `invoke_from_event_loop` — under the same epoch + cancel double-guard as the thumbnail strip (see docs/patterns.md).
+- `rayon` became a direct dep of the `gashuu` UI crate (no new lockfile entry — see docs/toolchain.md).
+- No new lockfile dependencies. Core `generate_cover` is unit-tested (page-0 selection, empty-source error, decode-error propagation); the UI streaming path in `cover_loader.rs` is coverage-exempt like the thumbnail strip (see docs/quality-gates.md).
 
 ### Multi-file loading via picker (PR-L)
 
@@ -107,6 +113,6 @@ RAR requires a C++ compiler on every OS (see [docs/toolchain.md](toolchain.md)).
 - PR-L follow-ups:
   - Library LOAD failure is recovered silently (tracing only, no on-screen notice) — same gap as Settings load; the add/save FAILURE path does surface to the status bar.
   - `library_store.rs::to_json` uses `unwrap_or`/`unwrap_or_else` fallbacks that can silently discard a serialization error on save.
-  - Carousel `total`/`progress` are placeholders (`total = 0`) — page-count back-fill is not yet owned by any PR; covers stream in via PR-V.
+  - Carousel `total`/`progress` are placeholders (`total = 0`) — page-count back-fill is not yet owned by any PR (covers themselves now stream in via PR-V, but it does not resolve page counts).
 - Backdrop-click / Esc dialog dismissal (PR8b dialogs close via their own button only).
 - PR5 non-goals: touch/pinch, rotation/minimap/scrollbar, click-to-turn, per-page independent zoom in Double mode, and 60fps is NOT CI-asserted (manual/telemetry only).
