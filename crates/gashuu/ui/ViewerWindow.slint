@@ -16,6 +16,7 @@ export component ViewerWindow inherits Window {
     changed height => { root.resized(self.width, self.height); }
 
     callback open-folder();
+    callback open-archive();
     // Forwarded navigation token: "left" | "right" | "space" | "backspace" | "d" | "r" | "c".
     callback nav(string);
     // Forwarded window size (logical pixels, Slint `length` units) so Rust can
@@ -31,6 +32,15 @@ export component ViewerWindow inherits Window {
                     root.open-folder();
                     // Return focus to the page area so keyboard navigation keeps working
                     // after the picker closes (open-folder is synchronous on the Rust side).
+                    fs.focus();
+                }
+            }
+            Button {
+                text: "Open Archive…";
+                clicked => {
+                    root.open-archive();
+                    // Return focus to the page area so keyboard navigation keeps working
+                    // after the picker closes (open-archive is synchronous on the Rust side).
                     fs.focus();
                 }
             }

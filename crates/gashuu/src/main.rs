@@ -63,6 +63,42 @@ fn main() -> color_eyre::Result<()> {
         });
     }
 
+    // Open Archive button: pick a CBZ/ZIP file, load it, refresh the view.
+    {
+        let ui_weak = ui.as_weak();
+        let state = Rc::clone(&state);
+        let settings = Rc::clone(&settings);
+        ui.on_open_archive(move || {
+            let Some(ui) = ui_weak.upgrade() else {
+                return;
+            };
+            let Some(file) = rfd::FileDialog::new()
+                .add_filter("Comic archive", &["cbz", "zip"])
+                .pick_file()
+            else {
+                return;
+            };
+            match state.borrow_mut().open_path(&file) {
+                Ok(()) => {
+                    tracing::info!(path = %file.display(), "opened archive");
+                    let mut s = settings.borrow_mut();
+                    if s.track_recent_files {
+                        s.push_recent(file.clone());
+                        if let Err(e) = s.save() {
+                            tracing::error!(error = %e, "failed to save settings");
+                        }
+                    }
+                }
+                Err(e) => {
+                    tracing::error!(error = %e, "failed to open archive");
+                    ui.set_status_text(format!("Error: {e}").into());
+                    return;
+                }
+            }
+            refresh(&ui, &state.borrow());
+        });
+    }
+
     // Keyboard navigation forwarded from the FocusScope.
     {
         let ui_weak = ui.as_weak();

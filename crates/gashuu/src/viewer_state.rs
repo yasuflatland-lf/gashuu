@@ -10,8 +10,8 @@
 
 use crate::keymap::NavAction;
 use gashuu_core::{
-    next_leading, normalize_leading, prev_leading, spread_at, CoreError, CoverMode, DecodedImage,
-    FolderSource, ImageCache, PageSource, ReadingDirection, Settings, SpreadLayout, SpreadMode,
+    next_leading, normalize_leading, prev_leading, spread_at, ArchiveLoader, CoreError, CoverMode,
+    DecodedImage, ImageCache, PageSource, ReadingDirection, Settings, SpreadLayout, SpreadMode,
     DEFAULT_CAPACITY, DEFAULT_PREFETCH_RADIUS,
 };
 use std::path::Path;
@@ -108,15 +108,26 @@ impl ViewerState {
         self.preload_pages
     }
 
-    /// Open a folder as the active source, resetting to the first page.
-    pub fn open_folder(&mut self, path: &Path) -> Result<(), CoreError> {
-        let source = FolderSource::open(path)?;
+    /// Open any supported path (directory or CBZ/ZIP archive) as the active
+    /// source, resetting to the first page. Dispatches to the appropriate
+    /// `PageSource` implementation via `ArchiveLoader`. Unreadable entries are
+    /// counted and logged at WARN level; the caller receives `Ok(())` as long
+    /// as the source itself opened successfully.
+    pub fn open_path(&mut self, path: &Path) -> Result<(), CoreError> {
+        let source = ArchiveLoader::open(path)?;
         let skipped = source.skipped_count();
         if skipped > 0 {
-            tracing::warn!(skipped, "skipped unreadable entries while opening folder");
+            tracing::warn!(skipped, path = %path.display(), "entries skipped while opening path");
         }
-        self.set_source(Arc::new(source));
+        self.set_source(source);
         Ok(())
+    }
+
+    /// Open a folder as the active source, resetting to the first page.
+    /// Delegates to `open_path` so both directories and archives share a single
+    /// dispatch + skipped-warn path.
+    pub fn open_folder(&mut self, path: &Path) -> Result<(), CoreError> {
+        self.open_path(path)
     }
 
     // Exercised by the unit tests below; dead_code fires only because #[cfg(test)]
@@ -1011,5 +1022,41 @@ mod tests {
         // Still resolves to Double (aspect stayed 1.0): a non-cover spread pairs.
         state.apply(NavAction::Next);
         assert!(state.current_spread().unwrap().unwrap().trailing.is_some());
+    }
+
+    // ---- open_path / open_folder dispatch (PR6) -----------------------------
+
+    #[test]
+    fn open_path_nonexistent_returns_err() {
+        // ArchiveLoader::open must propagate an Err for a path that does not
+        // exist. This exercises the dispatch pathway and error propagation
+        // without requiring tempfile or zip dev-dependencies in this crate.
+        // CBZ/ZipSource correctness is covered by gashuu-core's archive_loader
+        // and zip source tests.
+        let mut state = ViewerState::new();
+        let result = state.open_path(std::path::Path::new("/nonexistent_path_pr6_test"));
+        assert!(
+            result.is_err(),
+            "open_path must return Err for a missing path"
+        );
+        // State must stay clean (no source installed) when open_path errors.
+        assert_eq!(state.page_count(), 0);
+        assert_eq!(state.index(), 0);
+        assert!(state.current_spread().is_none());
+    }
+
+    #[test]
+    fn open_folder_delegates_to_open_path() {
+        // open_folder is a thin delegation wrapper; it must behave identically
+        // to open_path on the same input. A nonexistent path should return Err
+        // from both, leaving the state unchanged.
+        let mut state_a = ViewerState::new();
+        let mut state_b = ViewerState::new();
+        let bad = std::path::Path::new("/nonexistent_path_pr6_delegation");
+        let r_a = state_a.open_path(bad);
+        let r_b = state_b.open_folder(bad);
+        assert!(r_a.is_err());
+        assert!(r_b.is_err());
+        assert_eq!(state_a.page_count(), state_b.page_count());
     }
 }
