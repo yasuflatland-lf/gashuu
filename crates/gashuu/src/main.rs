@@ -1058,17 +1058,18 @@ fn position_to_write_back(
 /// most, and the result is idempotent on disk).
 ///
 /// Borrow discipline: `state` and `library` are distinct `RefCell`s, so
-/// borrowing one never affects the other. The opening `let` evaluates two
-/// shared borrows of `state` at once (`open_file()` and `index()`); that is
-/// safe because both are non-exclusive `borrow()`s. Each statement's borrows
-/// drop before the next statement acquires a different borrow, following the
-/// one-statement rule in `docs/patterns.md`.
+/// borrowing one never affects the other. The opening `let` takes a single
+/// shared borrow of `state` and reads both fields from it; that `Ref` drops at
+/// the end of the statement, before `library` is borrowed. Each statement's
+/// borrows drop before the next statement acquires a different borrow,
+/// following the one-statement rule in `docs/patterns.md`.
 fn write_back_position(state: &Rc<RefCell<ViewerState>>, library: &Rc<RefCell<Library>>) {
-    // Extract the (path, page) tuple from the viewer state; the two shared
-    // borrows of `state` drop here at the `;`.
-    let Some((path, page)) =
-        position_to_write_back(state.borrow().open_file(), state.borrow().index())
-    else {
+    // Extract the (path, page) tuple from the viewer state under one shared
+    // borrow; the `Ref` drops at the `;` before `library` is borrowed.
+    let Some((path, page)) = ({
+        let s = state.borrow();
+        position_to_write_back(s.open_file(), s.index())
+    }) else {
         return; // no book open — nothing to write back
     };
     // `set_last_page` returns false when absent or unchanged; we persist
