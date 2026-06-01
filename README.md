@@ -5,7 +5,7 @@
 
 A cross-platform manga viewer built with Rust and [Slint](https://slint.dev).
 
-## Status (PR5 — Zoom/pan + fit modes · PR6 — ZIP/CBZ archive support · PR7 — RAR/CBR archive support)
+## Status (PR5 — Zoom/pan + fit modes · PR6 — ZIP/CBZ archive support · PR7 — RAR/CBR archive support · PR8a — Thumbnail strip)
 
 Open a **folder** of PNG/JPG/JPEG images, or a **CBZ/ZIP/CBR/RAR comic archive**, and browse
 every page with the keyboard. Pages are held in an LRU cache (up to 50 decoded images)
@@ -14,7 +14,12 @@ turns are effectively instant. You can read in a two-page spread with right-to-l
 (manga) or left-to-right binding, in addition to single-page browsing. An **auto**
 spread mode picks single or double from the window's aspect ratio and follows resizes
 live. User settings persist across restarts — gashuu saves your preferences on exit and
-restores them on the next launch.
+restores them on the next launch. A **thumbnail strip** shows a preview of every page;
+thumbnails are generated in parallel in the background so the strip fills in
+progressively while you read and opening a book is never blocked. Press **T** (or click
+the **Thumbnails** toolbar button) to toggle the strip, click any thumbnail to jump
+directly to that page, and see at a glance which page is current (highlighted). A
+thumbnail that fails to generate shows a red ✕ error marker rather than a blank cell.
 
 Arrow keys follow the active reading direction: in LTR mode **→** advances and **←**
 goes back; in RTL mode the arrows are swapped (**←** advances / **→** goes back).
@@ -47,6 +52,7 @@ are session-only and are not saved; the fit mode is persisted.
 - **D** — cycle spread mode: single → double → auto
 - **R** — toggle reading direction (LTR ↔ RTL)
 - **C** — toggle cover layout (standalone ↔ paired)
+- **T** — toggle thumbnail strip (click a thumbnail to jump to that page)
 
 Toggle changes are remembered (saved on exit).
 
