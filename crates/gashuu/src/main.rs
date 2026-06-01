@@ -1,5 +1,6 @@
 slint::include_modules!();
 
+mod cover_loader;
 mod keymap;
 mod library_model;
 mod navigation;
@@ -57,6 +58,11 @@ fn main() -> color_eyre::Result<()> {
     // open handlers (via `open_and_present`) can share the single controller.
     let thumbs = Rc::new(ThumbnailController::new(&ui));
 
+    // Cover controller for the library carousel. Owns the epoch + cancel
+    // double-guard; `start` is called after the carousel model is (re)built so a
+    // library refresh supersedes any covers still streaming from the prior view.
+    let covers = Rc::new(cover_loader::CoverController::new());
+
     // Seed the carousel model from the persisted library so the home screen shows
     // the saved books on boot. `build_carousel_model` builds AND binds the model
     // into the UI via `set_carousel_items` internally, returning the `Rc<VecModel>`
@@ -65,6 +71,10 @@ fn main() -> color_eyre::Result<()> {
     // -D warnings until PR-V uses it. Covers are placeholder until PR-V streams
     // them in.
     let _carousel_model = build_carousel_model(&ui, &library.borrow());
+
+    // Kick off cover loading for the initial library (cache hits paint now; misses
+    // stream in from rayon workers).
+    covers.start(ui.as_weak(), cover_requests(&library.borrow()));
     ui.set_carousel_focused_index(0);
 
     // Top-level screen state machine. App boots to Library (the carousel home).
@@ -142,6 +152,7 @@ fn main() -> color_eyre::Result<()> {
     {
         let ui_weak = ui.as_weak();
         let library = Rc::clone(&library);
+        let covers = Rc::clone(&covers);
         ui.on_add_files(move || {
             let Some(ui) = ui_weak.upgrade() else {
                 return;
@@ -152,7 +163,7 @@ fn main() -> color_eyre::Result<()> {
             else {
                 return;
             };
-            add_books_and_refresh(&ui, &library, files, "add-files");
+            add_books_and_refresh(&ui, &library, &covers, files, "add-files");
         });
     }
 
@@ -162,6 +173,7 @@ fn main() -> color_eyre::Result<()> {
     {
         let ui_weak = ui.as_weak();
         let library = Rc::clone(&library);
+        let covers = Rc::clone(&covers);
         ui.on_add_folder(move || {
             let Some(ui) = ui_weak.upgrade() else {
                 return;
@@ -169,7 +181,7 @@ fn main() -> color_eyre::Result<()> {
             let Some(folder) = rfd::FileDialog::new().pick_folder() else {
                 return;
             };
-            add_books_and_refresh(&ui, &library, vec![folder], "add-folder");
+            add_books_and_refresh(&ui, &library, &covers, vec![folder], "add-folder");
         });
     }
 
@@ -1009,6 +1021,22 @@ fn build_carousel_model(ui: &ViewerWindow, library: &Library) -> Rc<VecModel<Car
     model
 }
 
+/// Build one `CoverRequest` per book, row index == carousel order (insertion
+/// order, per the `Library` contract). The cover controller resolves each book's
+/// cache key from its path + mtime and either serves a cached cover or generates
+/// one in the background.
+fn cover_requests(library: &gashuu_core::Library) -> Vec<cover_loader::CoverRequest> {
+    library
+        .books()
+        .iter()
+        .enumerate()
+        .map(|(row, book)| cover_loader::CoverRequest {
+            row,
+            path: book.path().to_path_buf(),
+        })
+        .collect()
+}
+
 /// Fetch the thumbnail image for a 0-based page from the strip's existing
 /// `VecModel<ThumbnailItem>` (the PR8a model). Returns the cell's image when the
 /// row exists and is loaded; otherwise a default (empty) image. UI-thread only —
@@ -1196,6 +1224,7 @@ fn add_paths(lib: &mut Library, paths: Vec<std::path::PathBuf>) -> usize {
 fn add_books_and_refresh(
     ui: &ViewerWindow,
     library: &Rc<RefCell<Library>>,
+    covers: &cover_loader::CoverController,
     paths: Vec<std::path::PathBuf>,
     op: &'static str,
 ) {
@@ -1213,6 +1242,9 @@ fn add_books_and_refresh(
     // path does not need it, so the return value is dropped).
     let save_result = library.borrow().save();
     build_carousel_model(ui, &library.borrow());
+    // Refresh covers for the new library state; the epoch bump cancels any covers
+    // still streaming from the pre-refresh view.
+    covers.start(ui.as_weak(), cover_requests(&library.borrow()));
     match save_result {
         Err(e) => {
             tracing::error!(error = %e, "failed to save library after {op}");
