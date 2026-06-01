@@ -115,16 +115,38 @@ fn main() -> color_eyre::Result<()> {
         });
     }
 
-    // Carousel: Return on the focused book opens it. STUB for PR-0b — PR-C/PR-R
-    // resolve the focused index to a Library book and open+resume it. For now it
-    // simply transitions to the Viewer so the seam is exercised end-to-end.
+    // Carousel: Return on the focused book opens it, resumes its last-read
+    // page (via open_and_present → jump_to), and transitions to the Viewer.
     {
         let ui_weak = ui.as_weak();
+        let state = Rc::clone(&state);
+        let settings = Rc::clone(&settings);
+        let viewport = Rc::clone(&viewport);
+        let thumbs = Rc::clone(&thumbs);
+        let library = Rc::clone(&library);
         let nav = Rc::clone(&nav);
-        ui.on_carousel_open(move |_index| {
+        ui.on_carousel_open(move |index| {
             let Some(ui) = ui_weak.upgrade() else {
                 return;
             };
+            // Resolve the focused carousel index to a Library book path.
+            // Borrow discipline: `library.borrow()` drops at the `;`.
+            let path = {
+                let lib = library.borrow();
+                lib.books()
+                    .get(index as usize)
+                    .map(|b| b.path().to_path_buf())
+            };
+            let Some(path) = path else {
+                // Index out of range (carousel and library out of sync) — no-op.
+                tracing::warn!(index, "carousel-open: no book at index");
+                return;
+            };
+            // open_and_present writes back the OLD book's position first,
+            // then opens the new path and resumes its stored position.
+            open_and_present(
+                &ui, &state, &settings, &viewport, &thumbs, &library, &path, "",
+            );
             go_to_viewer(&ui, &nav);
         });
     }
