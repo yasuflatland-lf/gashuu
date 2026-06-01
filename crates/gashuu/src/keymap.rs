@@ -35,6 +35,7 @@ pub enum KeyCommand {
     ToggleSpread,
     ToggleReadingDirection,
     ToggleCover,
+    ToggleThumbnails,
     ZoomIn,
     ZoomOut,
     /// Reset zoom to 1.0 and center the pan position.
@@ -63,6 +64,7 @@ pub fn map_key(token: &str, dir: ReadingDirection) -> Option<KeyCommand> {
         "d" => Some(KeyCommand::ToggleSpread),
         "r" => Some(KeyCommand::ToggleReadingDirection),
         "c" => Some(KeyCommand::ToggleCover),
+        "t" => Some(KeyCommand::ToggleThumbnails),
         "+" | "=" => Some(KeyCommand::ZoomIn),
         "-" => Some(KeyCommand::ZoomOut),
         "0" => Some(KeyCommand::ResetView),
@@ -180,6 +182,18 @@ mod tests {
         assert_eq!(
             map_key("c", ReadingDirection::Rtl),
             Some(KeyCommand::ToggleCover)
+        );
+    }
+
+    #[test]
+    fn t_maps_to_toggle_thumbnails() {
+        assert_eq!(
+            map_key("t", ReadingDirection::Ltr),
+            Some(KeyCommand::ToggleThumbnails)
+        );
+        assert_eq!(
+            map_key("t", ReadingDirection::Rtl),
+            Some(KeyCommand::ToggleThumbnails)
         );
     }
 

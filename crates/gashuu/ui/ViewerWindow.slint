@@ -1,10 +1,15 @@
 import { Button, HorizontalBox, VerticalBox } from "std-widgets.slint";
 import { PageView } from "PageView.slint";
+import { ThumbnailStrip, ThumbnailItem } from "ThumbnailStrip.slint";
 
 export component ViewerWindow inherits Window {
     title: "gashuu";
     preferred-width: 900px;
     preferred-height: 1200px;
+
+    in property <[ThumbnailItem]> thumbnails;
+    in property <int> current-index;
+    in property <bool> show-thumbnails: false;
 
     in property <image> leading-page;
     in property <image> trailing-page;
@@ -19,6 +24,11 @@ export component ViewerWindow inherits Window {
 
     changed width  => { root.resized(self.width, self.height); }
     changed height => { root.resized(self.width, self.height); }
+
+    callback thumbnail-clicked(int);
+    callback toggle-thumbnails();
+
+    public function focus-pages() { fs.focus(); }
 
     callback open-folder();
     callback open-archive();
@@ -55,6 +65,13 @@ export component ViewerWindow inherits Window {
                     fs.focus();
                 }
             }
+            Button {
+                text: "Thumbnails";
+                clicked => {
+                    root.toggle-thumbnails();
+                    fs.focus();
+                }
+            }
             Text {
                 text: root.status-text;
                 vertical-alignment: center;
@@ -87,6 +104,7 @@ export component ViewerWindow inherits Window {
                 if (event.text == "0") { root.nav("0"); return accept; }
                 if (event.text == "1") { root.nav("1"); return accept; }
                 if (event.text == "f" || event.text == "F") { root.nav("f"); return accept; }
+                if (event.text == "t" || event.text == "T") { root.nav("t"); return accept; }
                 return reject;
             }
             PageView {
@@ -103,6 +121,12 @@ export component ViewerWindow inherits Window {
                 pan-to(dx, dy) => { root.pan-to(dx, dy); }
                 viewport-resized(w, h) => { root.viewport-resized(w, h); }
             }
+        }
+        if root.show-thumbnails : ThumbnailStrip {
+            height: 150px;
+            thumbnails: root.thumbnails;
+            current-index: root.current-index;
+            thumbnail-clicked(page) => { root.thumbnail-clicked(page); }
         }
     }
 

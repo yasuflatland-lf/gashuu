@@ -1,0 +1,117 @@
+// Horizontal thumbnail strip shown below the main page view.
+// Each cell displays a small preview of one page; the cell whose `page` matches
+// `current-index` receives an accent highlight border.  Clicking a cell fires
+// `thumbnail-clicked` with the page index so Rust can navigate there.
+//
+// Layout: Flickable (horizontal scroll) → HorizontalLayout → repeated cells.
+// TouchArea is non-focusable and does NOT steal keyboard focus from the
+// FocusScope in ViewerWindow (same convention as PageView.slint).
+
+export struct ThumbnailItem {
+    image: image,
+    // 0-based page index (matches the index used by ViewerState/ImageCache).
+    page: int,
+    // false while the thumbnail is still being decoded; shows a gray placeholder.
+    loaded: bool,
+}
+
+export component ThumbnailStrip inherits Rectangle {
+    // ── In-properties ──────────────────────────────────────────────────────────
+    in property <[ThumbnailItem]> thumbnails;
+    // The page index that should receive the highlight border.
+    in property <int> current-index;
+
+    // ── Callback ───────────────────────────────────────────────────────────────
+    // Fired with the 0-based page index when the user clicks a thumbnail cell.
+    callback thumbnail-clicked(int);
+
+    // ── Sizing constants ───────────────────────────────────────────────────────
+    // Keep these in sync with any Rust-side cell-width assumption if the strip
+    // height or auto-scroll logic is ever driven from Rust.
+    private property <length> cell-width: 110px;
+    private property <length> cell-height: 130px;
+    private property <length> cell-spacing: 6px;
+    private property <length> image-area-height: 100px;
+    // Border widths: highlighted cell vs neutral cell.
+    private property <length> border-highlight: 3px;
+    private property <length> border-neutral: 1px;
+
+    // ── Colors ─────────────────────────────────────────────────────────────────
+    // Strip background matches the viewer's black aesthetic.
+    background: #1a1a1a;
+
+    // Fixed strip height so it does not stretch vertically.
+    height: root.cell-height + 2 * 8px; // cell + top/bottom padding
+
+    // ── Scrollable content ─────────────────────────────────────────────────────
+    Flickable {
+        x: 0;
+        y: 0;
+        width: root.width;
+        height: root.height;
+        // Allow horizontal-only scrolling; viewport width is computed from
+        // the number of cells so Slint knows the scrollable extent.
+        viewport-width: (root.cell-width + root.cell-spacing) * root.thumbnails.length + root.cell-spacing;
+        viewport-height: root.height;
+
+        HorizontalLayout {
+            x: root.cell-spacing;
+            y: 8px;
+            spacing: root.cell-spacing;
+
+            for item[idx] in root.thumbnails : Rectangle {
+                width: root.cell-width;
+                height: root.cell-height;
+
+                // Highlight border: accent color for the current page, subtle
+                // neutral border otherwise.
+                border-color: item.page == root.current-index ? #5599ff : #444444;
+                border-width: item.page == root.current-index
+                    ? root.border-highlight
+                    : root.border-neutral;
+                border-radius: 3px;
+                background: #2a2a2a;
+
+                // ── Image or placeholder ───────────────────────────────────────
+                if item.loaded : Image {
+                    x: root.border-highlight;
+                    y: root.border-highlight;
+                    width: root.cell-width - 2 * root.border-highlight;
+                    height: root.image-area-height - root.border-highlight;
+                    source: item.image;
+                    image-fit: contain;
+                }
+
+                if !item.loaded : Rectangle {
+                    x: root.border-highlight;
+                    y: root.border-highlight;
+                    width: root.cell-width - 2 * root.border-highlight;
+                    height: root.image-area-height - root.border-highlight;
+                    background: #555555;
+                    border-radius: 2px;
+                }
+
+                // ── Page number label ──────────────────────────────────────────
+                // 1-based display (item.page is 0-based internally).
+                Text {
+                    x: 0;
+                    y: root.image-area-height + 4px;
+                    width: root.cell-width;
+                    height: root.cell-height - root.image-area-height - 4px;
+                    text: item.page + 1;
+                    color: item.page == root.current-index ? #5599ff : #cccccc;
+                    font-size: 11px;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+
+                // ── Click target ───────────────────────────────────────────────
+                // TouchArea is non-focusable in Slint and will not steal keyboard
+                // focus from the FocusScope in ViewerWindow.
+                TouchArea {
+                    clicked => { root.thumbnail-clicked(item.page); }
+                }
+            }
+        }
+    }
+}
