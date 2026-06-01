@@ -82,6 +82,18 @@ pub enum CoverMode {
     Paired,
 }
 
+/// How a page is scaled to fit the viewport at zoom 1.0. `Whole` contains the
+/// whole page (letterboxed); `Width` fills the viewport width (may overflow
+/// vertically -> pannable); `Actual` shows pixels 1:1.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FitMode {
+    #[default]
+    Whole,
+    Width,
+    Actual,
+}
+
 /// Key tokens (matching the `.slint` FocusScope tokens) bound to each navigation
 /// direction. Persisted in PR3, but `keymap::map_key` hard-codes these same tokens
 /// rather than reading this struct; user-remappable keys are deferred to a later PR.
@@ -112,6 +124,8 @@ pub struct Settings {
     pub spread_mode: SpreadMode,
     #[serde(default)]
     pub cover_mode: CoverMode,
+    #[serde(default)]
+    pub fit_mode: FitMode,
     #[serde(default = "default_cache_size")]
     pub cache_size: usize,
     #[serde(default = "default_preload_pages")]
@@ -144,6 +158,7 @@ impl Default for Settings {
             reading_direction: ReadingDirection::default(),
             spread_mode: SpreadMode::default(),
             cover_mode: CoverMode::default(),
+            fit_mode: FitMode::default(),
             cache_size: DEFAULT_CAPACITY,
             preload_pages: DEFAULT_PREFETCH_RADIUS,
             key_bindings: KeyBindings::default(),
@@ -279,6 +294,7 @@ mod tests {
         assert_eq!(s.reading_direction, ReadingDirection::Ltr);
         assert_eq!(s.spread_mode, SpreadMode::Single);
         assert_eq!(s.cover_mode, CoverMode::Standalone);
+        assert_eq!(s.fit_mode, FitMode::Whole);
         assert_eq!(s.cache_size, 50);
         assert_eq!(s.preload_pages, 3);
         assert_eq!(s.key_bindings.next, vec!["right", "space"]);
@@ -293,6 +309,7 @@ mod tests {
             reading_direction: ReadingDirection::Rtl,
             spread_mode: SpreadMode::Double,
             cover_mode: CoverMode::Paired,
+            fit_mode: FitMode::Width,
             cache_size: 99,
             preload_pages: 7,
             key_bindings: KeyBindings {
@@ -371,6 +388,69 @@ mod tests {
         // triggers migration to v1, while cache_size falls back to its default).
         let s = Settings::from_json("{}").unwrap();
         assert_eq!(s, Settings::default());
+    }
+
+    // ── fit_mode tests ──
+
+    #[test]
+    fn fit_mode_defaults_to_whole() {
+        assert_eq!(FitMode::default(), FitMode::Whole);
+        assert_eq!(Settings::default().fit_mode, FitMode::Whole);
+    }
+
+    #[test]
+    fn fit_mode_round_trip() {
+        let s = Settings {
+            fit_mode: FitMode::Width,
+            ..Default::default()
+        };
+        let json = s.to_json().unwrap();
+        let parsed = Settings::from_json(&json).unwrap();
+        assert_eq!(parsed.fit_mode, FitMode::Width);
+
+        let s = Settings {
+            fit_mode: FitMode::Actual,
+            ..Default::default()
+        };
+        let json = s.to_json().unwrap();
+        let parsed = Settings::from_json(&json).unwrap();
+        assert_eq!(parsed.fit_mode, FitMode::Actual);
+    }
+
+    #[test]
+    fn from_json_missing_fit_mode_defaults_to_whole() {
+        // JSON without fit_mode must produce FitMode::Whole via #[serde(default)].
+        let json = serde_json::json!({
+            "version": SETTINGS_VERSION,
+            "reading_direction": "ltr",
+            "spread_mode": "single",
+            "cover_mode": "standalone",
+        })
+        .to_string();
+        let s = Settings::from_json(&json).unwrap();
+        assert_eq!(s.fit_mode, FitMode::Whole);
+        // Other fields must be unaffected.
+        assert_eq!(s.reading_direction, ReadingDirection::Ltr);
+        assert_eq!(s.spread_mode, SpreadMode::Single);
+        assert_eq!(s.cover_mode, CoverMode::Standalone);
+    }
+
+    #[test]
+    fn from_json_unknown_fit_mode_value_errors() {
+        // An unknown fit_mode variant (e.g. "auto") is not covered by #[serde(default)],
+        // which only supplies a default when the key is absent. serde rejects an
+        // unrecognised variant, so from_json must return Err(CoreError::Settings(_)).
+        let json = serde_json::json!({
+            "version": SETTINGS_VERSION,
+            "fit_mode": "auto",
+        })
+        .to_string();
+        let result = Settings::from_json(&json);
+        assert!(
+            matches!(result, Err(CoreError::Settings(_))),
+            "expected Err(CoreError::Settings(_)) for unknown fit_mode value, got {:?}",
+            result
+        );
     }
 
     #[test]

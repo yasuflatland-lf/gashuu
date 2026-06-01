@@ -27,13 +27,22 @@ pub enum NavAction {
     Prev,
 }
 
-/// A decoded UI command: a page turn (in reading order) or a mode toggle.
+/// A decoded UI command: a page turn (in reading order), a mode toggle, or a
+/// zoom/fit action.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KeyCommand {
     Turn(NavAction),
     ToggleSpread,
     ToggleReadingDirection,
     ToggleCover,
+    ZoomIn,
+    ZoomOut,
+    /// Reset zoom to 1.0 and center the pan position.
+    ResetView,
+    /// Set fit mode to Actual (1:1 pixel mapping).
+    FitActual,
+    /// Cycle fit mode: Whole -> Width -> Actual -> Whole.
+    CycleFit,
 }
 
 /// Map a UI key token to a command. Arrow keys depend on `reading_direction`
@@ -54,6 +63,11 @@ pub fn map_key(token: &str, dir: ReadingDirection) -> Option<KeyCommand> {
         "d" => Some(KeyCommand::ToggleSpread),
         "r" => Some(KeyCommand::ToggleReadingDirection),
         "c" => Some(KeyCommand::ToggleCover),
+        "+" | "=" => Some(KeyCommand::ZoomIn),
+        "-" => Some(KeyCommand::ZoomOut),
+        "0" => Some(KeyCommand::ResetView),
+        "1" => Some(KeyCommand::FitActual),
+        "f" => Some(KeyCommand::CycleFit),
         _ => None,
     }
 }
@@ -166,6 +180,80 @@ mod tests {
         assert_eq!(
             map_key("c", ReadingDirection::Rtl),
             Some(KeyCommand::ToggleCover)
+        );
+    }
+
+    // --- Zoom / fit keys: direction-independent ---
+
+    #[test]
+    fn plus_maps_to_zoom_in() {
+        assert_eq!(
+            map_key("+", ReadingDirection::Ltr),
+            Some(KeyCommand::ZoomIn)
+        );
+        assert_eq!(
+            map_key("+", ReadingDirection::Rtl),
+            Some(KeyCommand::ZoomIn)
+        );
+    }
+
+    #[test]
+    fn equals_maps_to_zoom_in() {
+        assert_eq!(
+            map_key("=", ReadingDirection::Ltr),
+            Some(KeyCommand::ZoomIn)
+        );
+        assert_eq!(
+            map_key("=", ReadingDirection::Rtl),
+            Some(KeyCommand::ZoomIn)
+        );
+    }
+
+    #[test]
+    fn minus_maps_to_zoom_out() {
+        assert_eq!(
+            map_key("-", ReadingDirection::Ltr),
+            Some(KeyCommand::ZoomOut)
+        );
+        assert_eq!(
+            map_key("-", ReadingDirection::Rtl),
+            Some(KeyCommand::ZoomOut)
+        );
+    }
+
+    #[test]
+    fn zero_maps_to_reset_view() {
+        assert_eq!(
+            map_key("0", ReadingDirection::Ltr),
+            Some(KeyCommand::ResetView)
+        );
+        assert_eq!(
+            map_key("0", ReadingDirection::Rtl),
+            Some(KeyCommand::ResetView)
+        );
+    }
+
+    #[test]
+    fn one_maps_to_fit_actual() {
+        assert_eq!(
+            map_key("1", ReadingDirection::Ltr),
+            Some(KeyCommand::FitActual)
+        );
+        assert_eq!(
+            map_key("1", ReadingDirection::Rtl),
+            Some(KeyCommand::FitActual)
+        );
+    }
+
+    #[test]
+    fn f_maps_to_cycle_fit() {
+        assert_eq!(
+            map_key("f", ReadingDirection::Ltr),
+            Some(KeyCommand::CycleFit)
+        );
+        assert_eq!(
+            map_key("f", ReadingDirection::Rtl),
+            Some(KeyCommand::CycleFit)
         );
     }
 

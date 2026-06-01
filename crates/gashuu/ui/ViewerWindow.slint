@@ -11,13 +11,24 @@ export component ViewerWindow inherits Window {
     in property <bool> rtl;
     in property <bool> single;
     in property <string> status-text: "No folder opened";
+    // Rust-computed content rectangle forwarded to PageView.
+    in property <length> content-x: 0px;
+    in property <length> content-y: 0px;
+    in property <length> content-w: 0px;
+    in property <length> content-h: 0px;
 
     changed width  => { root.resized(self.width, self.height); }
     changed height => { root.resized(self.width, self.height); }
 
     callback open-folder();
-    // Forwarded navigation token: "left" | "right" | "space" | "backspace" | "d" | "r" | "c".
+    // Forwarded navigation token: "left" | "right" | "space" | "backspace" |
+    // "d" | "r" | "c" | "+" | "=" | "-" | "0" | "1" | "f".
     callback nav(string);
+    // Zoom/pan callbacks forwarded from PageView so main.rs can connect them.
+    callback zoom-at(length, length, float);
+    callback begin-pan();
+    callback pan-to(length, length);
+    callback viewport-resized(length, length);
     // Forwarded window size (logical pixels, Slint `length` units) so Rust can
     // resolve SpreadMode::Auto live.
     callback resized(length, length);
@@ -60,6 +71,12 @@ export component ViewerWindow inherits Window {
                 if (event.text == "d" || event.text == "D") { root.nav("d"); return accept; }
                 if (event.text == "r" || event.text == "R") { root.nav("r"); return accept; }
                 if (event.text == "c" || event.text == "C") { root.nav("c"); return accept; }
+                if (event.text == "+") { root.nav("+"); return accept; }
+                if (event.text == "=") { root.nav("="); return accept; }
+                if (event.text == "-") { root.nav("-"); return accept; }
+                if (event.text == "0") { root.nav("0"); return accept; }
+                if (event.text == "1") { root.nav("1"); return accept; }
+                if (event.text == "f" || event.text == "F") { root.nav("f"); return accept; }
                 return reject;
             }
             PageView {
@@ -67,6 +84,14 @@ export component ViewerWindow inherits Window {
                 trailing-page: root.trailing-page;
                 rtl: root.rtl;
                 single: root.single;
+                content-x: root.content-x;
+                content-y: root.content-y;
+                content-w: root.content-w;
+                content-h: root.content-h;
+                zoom-at(mx, my, dy) => { root.zoom-at(mx, my, dy); }
+                begin-pan() => { root.begin-pan(); }
+                pan-to(dx, dy) => { root.pan-to(dx, dy); }
+                viewport-resized(w, h) => { root.viewport-resized(w, h); }
             }
         }
     }
