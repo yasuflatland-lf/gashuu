@@ -146,22 +146,24 @@ fn main() -> color_eyre::Result<()> {
             // correctly (the pure helper carries no layout; ViewerState owns it).
             let is_double = state.borrow().preview_is_double(lead);
             ui.set_scrubber_double(is_double);
+            // Trailing page of the previewed spread (clamped to the last page),
+            // present only for a double spread.
+            let trail = if is_double {
+                Some((lead + 1).min(total - 1))
+            } else {
+                None
+            };
             // Pull thumbnail images from the existing model (no decode).
             let model = ui.get_thumbnails();
-            let preview_a = thumb_image_at(&model, lead);
-            ui.set_scrubber_preview_a(preview_a);
-            if is_double {
-                let trail = (lead + 1).min(total - 1);
-                ui.set_scrubber_preview_b(thumb_image_at(&model, trail));
-            } else {
-                ui.set_scrubber_preview_b(slint::Image::default());
-            }
+            ui.set_scrubber_preview_a(thumb_image_at(&model, lead));
+            ui.set_scrubber_preview_b(match trail {
+                Some(trail) => thumb_image_at(&model, trail),
+                None => slint::Image::default(),
+            });
             // Update the counter to the previewed page (1-based).
-            let counter = if is_double {
-                let trail = (lead + 1).min(total - 1);
-                format!("{}\u{2013}{} / {}", lead + 1, trail + 1, total)
-            } else {
-                format!("{} / {}", lead + 1, total)
+            let counter = match trail {
+                Some(trail) => format!("{}\u{2013}{} / {}", lead + 1, trail + 1, total),
+                None => format!("{} / {}", lead + 1, total),
             };
             ui.set_page_counter_text(counter.into());
             // Keep the chrome visible during the drag.
