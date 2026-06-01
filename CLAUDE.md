@@ -23,7 +23,7 @@ This file is the L1 entry point; detailed conventions and hard-won gotchas live 
 
 - Run every cargo command through the pin: `mise exec -- cargo <...>`.
 - A change is not done until all three gates are green (see docs/quality-gates.md):
-  `cargo fmt --check` · `cargo clippy --workspace --all-targets -- -D warnings` · `cargo nextest run --workspace --profile ci`.
+  `mise exec -- cargo fmt --check` · `mise exec -- cargo clippy --workspace --all-targets -- -D warnings` · `mise exec -- cargo nextest run --workspace --profile ci`.
 - All comments, identifiers, and docs in **English**.
 - `gashuu-core` stays headless — no `slint`, no `tracing`; the core↔UI boundary is RGBA bytes + dimensions.
 - TDD; keep the crate compiling at every save; keep a PR ≤ ~1000 production LOC.

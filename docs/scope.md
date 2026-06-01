@@ -17,8 +17,8 @@ Shipped across PR1 + PR2 + PR3 + PR4 + PR4a + PR5 + PR6 + PR7 + PR8a + PR8b.
 
 **Intentional deviation from the Issue:** PR6's Issue specified `async_zip` + `tokio` and PR7's plan specified `unrar`, but BOTH use the SYNCHRONOUS crate (`zip` / `unrar`) over the existing rayon pool — the synchronous `read_bytes` trait method plus CPU-bound decode fit rayon naturally, whereas async would force a `block_on` bridge and infect every layer with `tokio`.
 
-The per-entry 500 MB ceiling (`MAX_ENTRY_BYTES` in `naming.rs`) applies to both ZIP and RAR, though RAR's read-time cap is weaker (no streaming `take`; see Patterns & gotchas).
-RAR requires a C++ compiler on every OS (see Toolchain & build).
+The per-entry 500 MB ceiling (`MAX_ENTRY_BYTES` in `naming.rs`) applies to both ZIP and RAR, though RAR's read-time cap is weaker (no streaming `take`; see [docs/patterns.md](patterns.md)).
+RAR requires a C++ compiler on every OS (see [docs/toolchain.md](toolchain.md)).
 
 ### Cache and prefetch
 

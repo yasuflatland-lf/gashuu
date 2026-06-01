@@ -89,7 +89,7 @@ Rust side, and the UI layer receives only RGBA byte slices
   macOS / Windows need nothing extra (this is the basis for the README's
   "macOS/Windows need nothing extra" policy).
 - The Slint DSL must track Slint versions; version-fragile logic (e.g. empty-image detection) is
-  done on the Rust side rather than in the DSL (see CLAUDE.md "Patterns & gotchas").
+  done on the Rust side rather than in the DSL (see [docs/patterns.md](../patterns.md)).
 
 ## Implementation notes (as-built deltas)
 

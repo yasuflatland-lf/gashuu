@@ -11,4 +11,3 @@ The project documentation is organized in three layers: the root `CLAUDE.md` is 
 | [patterns.md](patterns.md) | Hard-won patterns & gotchas from real issues | Before editing a specific area (cross-crate mocking, zoom/pan, settings, etc.) |
 | [scope.md](scope.md) | Shipped baseline and intentionally deferred work | To check if a feature is in scope or deferred |
 | [ADRs/README.md](ADRs/README.md) | Architecture Decision Records; canonical "why" for all design decisions | When understanding the rationale behind a design choice |
-| [superpowers/](superpowers/) | Specs workspace | For collaborative planning and brainstorming sessions |
