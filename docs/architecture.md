@@ -188,10 +188,12 @@ focus. The Up arrow (`KeyCommand::GoToLibrary`, direction-independent) and the c
 
 ### Slint UI files
 
-**`Carousel.slint`** (PR-0b, NEW): Library cover-flow carousel — currently an EMPTY SHELL with a
-frozen public contract: `CarouselItem` struct + `Carousel` component with `items`, `focused-index`,
-callbacks `open(int)`/`move(int)`/`back()`, and `public function focus-self()`. Real cover-flow
-rendering is deferred to a downstream PR.
+**`Carousel.slint`** (PR-0b; extended PR-L): Library cover-flow carousel. Frozen public contract:
+`CarouselItem` struct + `Carousel` component with `items`, `focused-index`, callbacks
+`open(int)`/`move(int)`/`back()`, and `public function focus-self()`. PR-L added an always-visible
+"Add files…"/"Add folder…" toolbar + an interactive empty-state CTA, plus `add-files()`/`add-folder()`
+callbacks (each restores focus via `focus-self()` after firing). Real cover-flow rendering is deferred
+to a downstream PR.
 
 **`Theme.slint`** (PR-0b, NEW): single `global Theme` of visual tokens (colors, spacing, radii,
 font sizes); components reference `Theme.<token>` instead of inline hex literals.
@@ -244,6 +246,14 @@ driven by a `chrome-shown` bool + an idle `Timer`; chrome is revealed on pointer
 PR6 `on_open_archive` → `rfd` `pick_file` filtered to cbz/zip. PR7 extended the filter to
 cbz/zip/cbr/rar — the ONLY UI change in PR7 since `open_path` already dispatched via
 `ArchiveLoader`. "Open Archive" button lives in `ViewerWindow.slint`.
+
+PR-L added Library-side pickers: `on_add_files` (`pick_files`, filtered cbz/zip/cbr/rar) and
+`on_add_folder` (`pick_folder`, folder-as-one-book). `main.rs` owns the library-add seam — `add_paths`
+(dedup-aware insert, returns the count of NEW books), `build_carousel_model` (Library → `ModelRc<CarouselItem>`,
+0-based `last_page` → 1-based `current`, placeholder cover/total/progress), and the shared
+`add_books_and_refresh` handler (insert → save → rebuild carousel → status line → restore carousel
+focus; short-circuits when nothing new was added). The persisted `Library` lives in `main.rs` as
+`Rc<RefCell<Library>>`, loaded at startup and seeded into `carousel-items` on boot.
 
 ### RGBA conversion
 

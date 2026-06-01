@@ -275,6 +275,10 @@ uses a Slint `public function focus-pages() { fs.focus(); }` called from Rust as
 
 During a scrubber drag, ONLY the preview popover + page-counter update: `preview(int)` pulls thumbnails from the existing `VecModel<ThumbnailItem>` and sets the counter text — it must NEVER call `jump_to`/`refresh`. The page body changes ONLY on knob release via `commit(int)` → `jump_to` → `refresh`. Keep all decode/navigation side effects on the commit path; preview is display-only and UI-thread-only (the `Rc`/`!Send` thumbnail model is never crossed).
 
+### Only the INSTANTIATED root window's surface is reachable from Rust — re-expose child properties/callbacks on the root (PR-L)
+
+Slint's generated Rust API exposes ONLY the properties/callbacks/`public function`s declared on the window component `main.rs` instantiates (`ViewerWindow`). A child component's internal `in property`/callback (e.g. `Carousel.items`, `Carousel.add-files()`) is INVISIBLE to Rust — there is no generated accessor for it. To wire a child property/handler from Rust, declare a twin on the ROOT and bind/forward it to the child: `ViewerWindow` exposes `in property <[CarouselItem]> carousel-items` bound by `items: root.carousel-items;`, and root `add-files()`/`add-folder()` callbacks forwarded into the `Carousel`. Generated name mapping: kebab→snake_case, `set_<prop>`/`get_<prop>`, `on_<callback>`, `invoke_<public function>` (e.g. `set_carousel_items`, `on_add_files`, `invoke_focus_carousel`). When adding a new Rust-driven property/handler, put it on the root window first — not only on the child.
+
 ### `if`-gated element ids are NOT reachable from the parent's `public function`s / `init` — gate with `visible:` when an id must be parent-reachable (PR-0b)
 
 Slint scopes an id declared inside an `if`/`for` branch to a child the enclosing component cannot name, so a parent-level Rust-invoked seam like `focus-pages()`/`focus-carousel()` (or `init`) CANNOT `.focus()` an element under `if cond : Foo { ... }`. When a screen/region must be referenced by id from a parent function or `init`, gate it with `visible: <cond>` (keeps the id at root scope) instead of `if <cond>`. Trade-off: `visible:` keeps every branch instantiated (both screens live in the tree, toggled by visibility) — accepted here; focus is driven explicitly by the Rust seam functions on each transition. PR-0b's `ViewerWindow.slint` gates the Carousel (screen 0) and the Viewer body (screen 1) with `visible: root.screen == N` precisely so `focus-carousel()`/`focus-pages()` can reach `carousel`/`fs`.
@@ -306,6 +310,8 @@ The page `FocusScope` key handler guards `if (show-settings || show-guide) { ret
 ### Dialog save failures log `tracing::error!` (matching the other save sites, NOT `warn!`) AND surface to the status bar on close (`ui.set_status_text`)
 
 A `tracing` line alone is invisible in a GUI run (`RUST_LOG` usually unset) — same rationale as surfacing the skipped count. The guide-dismiss save failure degrades gracefully (the guide simply re-shows next launch; `seen_guide` is also saved on exit) — intentional non-fatal.
+
+Routing the outcome to a status property is only half the fix: a bound, VISIBLE widget must exist on the screen where the action RUNS (PR-L). The shared `status-text` is shown by a Viewer-screen `Text` gated `visible: screen == 1`; a Library-screen action (Add Files/Folder on screen 0) would set the property silently with nothing on screen. PR-L therefore mounted a second `status-text`-bound `Text` gated `visible: screen == 0`. Rule: route user-facing outcomes to a widget visible in the CURRENT screen, not just to any bound property.
 
 ### Runtime state is the SINGLE source of truth for the four display modes; `Settings` mirrors them ONLY via `reconcile_settings`, just before each save (PR-D / issue #32)
 
