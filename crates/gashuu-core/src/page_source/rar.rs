@@ -17,8 +17,7 @@
 //! The external `unrar` crate is referenced as `::unrar::` throughout for
 //! clarity even though the local module name (`rar`) does not collide with it.
 
-use super::naming::{enclosed_name, has_image_ext, natural_cmp};
-use super::zip::MAX_ENTRY_BYTES;
+use super::naming::{enclosed_name, has_image_ext, natural_cmp, MAX_ENTRY_BYTES};
 use super::{PageEntry, PageSource};
 use crate::error::CoreError;
 use std::path::{Path, PathBuf};

@@ -11,6 +11,13 @@ use std::str::Chars;
 /// Image extensions recognized (case-insensitive).
 pub(crate) const IMAGE_EXTS: &[&str] = &["png", "jpg", "jpeg"];
 
+/// Per-file uncompressed ceiling shared by all archive sources. Entries
+/// declaring more are skipped at open; reads are also capped to this many bytes
+/// to defend against size-spoofing archive bombs (manga pages are images, far
+/// under this in practice). Lives here (not in `zip`/`rar`) because the ceiling
+/// is a property of the archive-entry domain, not of any one container format.
+pub(crate) const MAX_ENTRY_BYTES: u64 = 500 * 1024 * 1024;
+
 /// Compare two file names in natural order so embedded numbers sort by numeric
 /// value (`2.png` < `10.png`). Non-digit runs compare case-insensitively (ASCII)
 /// with the raw chars as a stable tiebreaker, giving a total order.
