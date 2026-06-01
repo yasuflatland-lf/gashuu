@@ -732,6 +732,13 @@ fn open_and_present(
     // opened via Open Folder / Open Archive (carousel-opened books are already
     // present, so `add` is a no-op there).
     library.borrow_mut().add(path.to_path_buf());
+    // Persist the newly registered book immediately, mirroring the recents
+    // save-on-open above, so the library shelf stays consistent with recents
+    // even if the app exits before the next leave point. Borrow discipline:
+    // `add`'s borrow_mut dropped at its `;`; this is a fresh, separate borrow.
+    if let Err(e) = library.borrow().save() {
+        tracing::error!(error = %e, "failed to save library on open");
+    }
     // Resume at the stored reading position. Look up `last_page` with the
     // CANONICAL key that `open_path`/`add` store (read from `open_file`), not
     // the raw `path` argument, which may be a non-canonical dialog path — using
