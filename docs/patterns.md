@@ -125,7 +125,7 @@ Rust computes the displayed content rect (`content-x/y/w/h`) placed inside a `cl
 
 ### `fit_mode` is persisted (forward-compat, like `cover_mode`); zoom & pan are session-only
 
-`SETTINGS_VERSION` stays 1 (`#[serde(default)]` absorbs the field). `f`=cycle fit / `1`=actual reflect `fit_mode` into in-memory `Settings` → save-on-exit. Changing fit / `0`(reset) resets zoom to 1.0; a page turn keeps zoom+fit and only re-centers pan.
+`SETTINGS_VERSION` stays 1 (`#[serde(default)]` absorbs the field). `f`=cycle fit / `1`=actual mutate ONLY `ViewportState` (the runtime owner of `fit_mode`); `reconcile_settings` mirrors it into `Settings` at the next save (PR-D / issue #32, no per-key `Settings` write). Changing fit / `0`(reset) resets zoom to 1.0; a page turn keeps zoom+fit and only re-centers pan.
 
 ### Zoom/fit keys (`+`/`=`, `-`, `0`, `1`, `f`) are direction-INDEPENDENT
 
@@ -282,3 +282,11 @@ The page `FocusScope` key handler guards `if (show-settings || show-guide) { ret
 ### Dialog save failures log `tracing::error!` (matching the other save sites, NOT `warn!`) AND surface to the status bar on close (`ui.set_status_text`)
 
 A `tracing` line alone is invisible in a GUI run (`RUST_LOG` usually unset) — same rationale as surfacing the skipped count. The guide-dismiss save failure degrades gracefully (the guide simply re-shows next launch; `seen_guide` is also saved on exit) — intentional non-fatal.
+
+### Runtime state is the SINGLE source of truth for the four display modes; `Settings` mirrors them ONLY via `reconcile_settings`, just before each save (PR-D / issue #32)
+
+`ViewerState` owns `reading_direction`/`spread_mode`/`cover_mode`; `ViewportState` owns `fit_mode`. `reconcile_settings(&ViewerState, &ViewportState, &mut Settings)` (a pure fn in `main.rs`) copies those four into `Settings` immediately before EACH `save()` — exit, settings-dialog close, and the open-time save (now INSIDE the `if track_recent_files` gate in `open_and_present`, the only save on that path). Mode-mutation sites (D/R/C/`f` keys + the dialog setters) now ONLY mutate runtime state + `refresh`; the ~9 per-mutation `settings.borrow_mut().X = …` mirror lines are GONE, killing the "a new mutation site forgets to mirror → setting silently not persisted" bug class (neither types nor tests caught it before). The guide-dismiss save writes only `seen_guide` and intentionally SKIPS reconcile (not a runtime-mirrored field). EXCEPTION: `cache_size`/`preload_pages`/`track_recent_files` keep `Settings` as their source (one-way `Settings → ViewerState` via `set_cache_config` — see that bullet above); they are NOT reconciled back. `on_open_settings` reads the dialog's initial mode values from the RUNTIME (`state`/`viewport`), never `Settings`, so a lagging mirror can't make the dialog show a stale value.
+
+### Borrow discipline for reconcile-before-save (PR-D)
+
+Each `reconcile_settings(&state.borrow(), &viewport.borrow(), &mut settings.borrow_mut())` is ONE statement: the three temporaries (distinct RefCells) drop at the `;`, so the following fresh `settings.borrow().save()` cannot double-borrow. In `open_and_present`, bind `let opened = state.borrow_mut().open_folder(path);` FIRST (the `borrow_mut` drops at the `;`) so the `Ok` arm can read `&state.borrow()` in reconcile — a `borrow_mut` held across the `match` would double-borrow-panic. Inside `if s.track_recent_files`, reconcile REUSES the already-held `&mut s` (`s: RefMut<Settings>`) rather than taking a second `settings.borrow_mut()`. Pass `&mut s`, NOT `&mut *s` — `RefMut` deref-coerces to `&mut Settings` and clippy's `explicit_auto_deref` (`-D warnings`) rejects the explicit `*`. The `reconcile_settings` unit test pins BOTH directions: the four mirrored fields ARE written AND the non-mirrored fields (`cache_size`/`preload_pages`/`track_recent_files`/`seen_guide`) are left untouched (built via struct-update syntax to dodge `clippy::field_reassign_with_default`).
