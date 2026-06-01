@@ -209,4 +209,56 @@ mod tests {
         assert_eq!(retrieved.height(), original.height(), "height mismatch");
         assert_eq!(retrieved.rgba(), original.rgba(), "RGBA bytes mismatch");
     }
+
+    #[test]
+    fn put_twice_same_key_returns_latest_image() {
+        let dir = tempdir().unwrap();
+        let cache = ThumbnailCache::with_dir(dir.path().to_path_buf());
+
+        // First write: the 2x3 solid-red fixture.
+        cache
+            .put("overwrite_key", &tiny_decoded_image())
+            .expect("first put");
+
+        // Second write to the SAME key with different bytes AND dimensions.
+        let second_rgba = [0u8, 0, 255, 255].repeat(4 * 2); // solid blue, 4x2
+        let second = DecodedImage::new(second_rgba, 4, 2).expect("valid 4x2 RGBA");
+        cache.put("overwrite_key", &second).expect("second put");
+
+        let retrieved = cache.get("overwrite_key").expect("get after overwrite");
+        assert_eq!(retrieved.width(), 4, "overwrite must update width");
+        assert_eq!(retrieved.height(), 2, "overwrite must update height");
+        assert_eq!(
+            retrieved.rgba(),
+            second.rgba(),
+            "overwrite must return the latest bytes"
+        );
+    }
+
+    #[test]
+    fn put_get_roundtrip_preserves_multicolor_pixels() {
+        let dir = tempdir().unwrap();
+        let cache = ThumbnailCache::with_dir(dir.path().to_path_buf());
+
+        // 4x4 image whose pixels all carry distinct RGBA values derived from the
+        // pixel index, so a channel swap or row-stride bug cannot round-trip
+        // unnoticed (a solid-color fixture would hide it).
+        let mut rgba = Vec::with_capacity(4 * 4 * 4);
+        for i in 0..(4u8 * 4) {
+            rgba.extend_from_slice(&[i, i.wrapping_add(64), i.wrapping_add(128), 255]);
+        }
+        let original = DecodedImage::new(rgba, 4, 4).expect("valid 4x4 RGBA");
+
+        cache
+            .put("multicolor_key", &original)
+            .expect("put must succeed");
+        let retrieved = cache.get("multicolor_key").expect("get must return Some");
+        assert_eq!(retrieved.width(), original.width());
+        assert_eq!(retrieved.height(), original.height());
+        assert_eq!(
+            retrieved.rgba(),
+            original.rgba(),
+            "multi-color RGBA must round-trip byte-exact"
+        );
+    }
 }
