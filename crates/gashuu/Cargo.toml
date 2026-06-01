@@ -7,6 +7,7 @@ edition = "2021"
 gashuu-core = { path = "../gashuu-core" }
 slint = "1"
 rfd = "0.17"
+rayon = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 color-eyre = "0.6"
