@@ -19,7 +19,6 @@ pub fn cache_key(path: &Path, mtime_secs: i64, max_side: u32) -> String {
 /// Persistent thumbnail cache directory handle.
 pub struct ThumbnailCache {
     /// Cache root used for on-disk thumbnail storage.
-    #[allow(dead_code)]
     dir: PathBuf,
 }
 
@@ -43,7 +42,32 @@ impl ThumbnailCache {
     }
 
     /// Store a thumbnail in the cache.
-    pub fn put(&self, _key: &str, _img: &DecodedImage) -> Result<(), CoreError> {
+    ///
+    /// PNG-encodes `img` at its exact dimensions and writes it atomically to
+    /// `<dir>/<key>.png`, creating the cache directory if it does not exist.
+    /// The temp-file-then-rename keeps a concurrent reader from seeing a torn file.
+    pub fn put(&self, key: &str, img: &DecodedImage) -> Result<(), CoreError> {
+        std::fs::create_dir_all(&self.dir)?;
+
+        let raw = image::RgbaImage::from_raw(img.width(), img.height(), img.rgba().to_vec())
+            .ok_or_else(|| CoreError::MalformedImage {
+                expected: (img.width() as usize)
+                    .saturating_mul(img.height() as usize)
+                    .saturating_mul(4),
+                actual: img.rgba().len(),
+            })?;
+
+        let mut png_bytes: Vec<u8> = Vec::new();
+        image::DynamicImage::ImageRgba8(raw).write_to(
+            &mut std::io::Cursor::new(&mut png_bytes),
+            image::ImageFormat::Png,
+        )?;
+
+        let target = self.dir.join(format!("{key}.png"));
+        let tmp_path = self.dir.join(format!(".{key}.tmp"));
+        std::fs::write(&tmp_path, &png_bytes)?;
+        std::fs::rename(&tmp_path, &target)?;
+
         Ok(())
     }
 }
@@ -103,14 +127,41 @@ mod tests {
         assert_eq!(image.width(), 1);
     }
 
+    /// Synthesize a tiny 2x3 solid-red RGBA DecodedImage in memory (no files).
+    /// Canonical in-test fixture for ThumbnailCache round-trip tests.
+    fn tiny_decoded_image() -> DecodedImage {
+        // 2 x 3 x 4 bytes = 24 bytes of solid red RGBA.
+        let rgba = [255u8, 0, 0, 255].repeat(2 * 3);
+        DecodedImage::new(rgba, 2, 3).expect("valid 2x3 RGBA")
+    }
+
     #[test]
-    fn put_is_noop_skeleton_and_writes_nothing() {
+    fn put_creates_directory_if_absent() {
+        let dir = tempdir().unwrap();
+        let nested = dir.path().join("nested_subdir");
+        assert!(
+            !nested.exists(),
+            "pre-condition: nested_subdir must not exist"
+        );
+        let cache = ThumbnailCache::with_dir(nested.clone());
+        cache
+            .put("abc123", &tiny_decoded_image())
+            .expect("put should succeed");
+        assert!(nested.exists(), "put must create the target directory");
+    }
+
+    #[test]
+    fn put_writes_key_dot_png_inside_dir() {
         let dir = tempdir().unwrap();
         let cache = ThumbnailCache::with_dir(dir.path().to_path_buf());
-        let image = DecodedImage::new(vec![0u8; 4], 1, 1).unwrap();
-
-        cache.put("page-001", &image).unwrap();
-
-        assert!(dir.path().read_dir().unwrap().next().is_none());
+        let key = "cafebabe12345678";
+        cache
+            .put(key, &tiny_decoded_image())
+            .expect("put must succeed");
+        let expected_path = dir.path().join(format!("{key}.png"));
+        assert!(
+            expected_path.exists(),
+            "expected file at {expected_path:?} to exist"
+        );
     }
 }
