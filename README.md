@@ -7,6 +7,10 @@ A cross-platform manga / comic viewer built with Rust and [Slint](https://slint.
 Open a folder of images or a comic archive and read with the keyboard — two-page
 spreads, right-to-left binding, zoom/pan, a thumbnail strip, and persistent settings.
 
+*gashuu* (画集, [ɡaɕɯː]) is the Japanese word for a book or booklet of drawings — an
+art book. It is a manga viewer, but the name carries a wish: that it be as refined and
+tasteful a tool as a fine art book.
+
 ## Features
 
 - **Sources** — a folder of PNG/JPG/JPEG images, or a `.cbz`/`.zip`/`.cbr`/`.rar`

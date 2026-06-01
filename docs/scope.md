@@ -5,7 +5,7 @@ This file is the authoritative record of what has shipped and what is intentiona
 
 ## Baseline (shipped)
 
-Shipped across PR1 + PR2 + PR3 + PR4 + PR4a + PR5 + PR6 + PR7 + PR8a + PR8b + PR-L.
+Shipped across PR1 + PR2 + PR3 + PR4 + PR4a + PR5 + PR6 + PR7 + PR8a + PR8b + PR-T + PR-L.
 
 ### Page sources
 
@@ -61,6 +61,10 @@ RAR requires a C++ compiler on every OS (see [docs/toolchain.md](toolchain.md)).
 - A first-run guide shows once, gated by `Settings::seen_guide`.
 - No new deps.
 
+### Thumbnail disk cache (PR-T)
+
+`ThumbnailCache` (gashuu-core) persists thumbnails/covers as PNG files under the OS cache directory, keyed by a version-stable FNV-1a hash of (path, mtime, max-side). `put` writes atomically (temp-file-then-rename); `get` returns `None` on miss/corrupt. This is the storage primitive; the cover carousel that consumes it is PR-V. Concurrent same-key write safety is deferred (see docs/patterns.md).
+
 ### Multi-file loading via picker (PR-L)
 
 - **Add files** (`rfd` `pick_files`, filtered cbz/zip/cbr/rar) and **Add folder** (`pick_folder`, folder-as-one-book) toolbar buttons on the Library screen, plus an interactive empty-state CTA that fires the file picker.
@@ -76,7 +80,6 @@ RAR requires a C++ compiler on every OS (see [docs/toolchain.md](toolchain.md)).
 - PR8a thumbnail-strip follow-ups:
   - RTL strip ordering (8a ships ascending order + current-page highlight only).
   - Lazy/on-demand thumbnail generation (8a eagerly generates all).
-  - Thumbnail disk cache.
   - Virtual scroll for huge archives.
 - Nested archives.
 - `ComicInfo.xml` metadata.

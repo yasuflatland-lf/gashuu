@@ -27,6 +27,10 @@ Slint links system libraries on **Linux** only: `libfontconfig1-dev libfreetype6
 
 **PR8a (thumbnail strip) added NO new dependencies** — it reuses the existing `image` (`DynamicImage::thumbnail`) and `rayon` (already a direct dep). Contrast PR7's `unrar` C++-toolchain exception above: PR8a is dependency-free and adds no build cost.
 
+### image 0.25: RGBA → PNG bytes goes through `DynamicImage`
+
+To encode raw RGBA into an in-memory PNG (`thumbnail_cache::put`), wrap the buffer in a `DynamicImage` and encode: `image::DynamicImage::ImageRgba8(image::RgbaImage::from_raw(w, h, bytes)?).write_to(&mut std::io::Cursor::new(&mut out), image::ImageFormat::Png)?`. Calling `write_to` directly on the `RgbaImage` (`ImageBuffer`) does NOT resolve against `image` 0.25 — `write_to` is reached via `DynamicImage`. `RgbaImage::from_raw` returns `Option` (`None` when the buffer is shorter than `w*h*4`), mapped to `CoreError::MalformedImage`. PNG is lossless, so a `put` → `get` round-trip is byte-exact.
+
 ### Never launch the GUI in a headless session
 
 `cargo run` opens a GUI window — never launch the app from a non-interactive/headless session (it hangs). Verify with build + clippy + tests instead.
