@@ -31,6 +31,18 @@ pub enum CoreError {
     /// The OS did not provide a config directory for settings storage.
     #[error("no config directory available for settings")]
     NoConfigDir,
+
+    /// The archive backend failed to open the container or read an entry.
+    #[error("archive error: {0}")]
+    Zip(#[from] ::zip::result::ZipError),
+
+    /// An archive entry's data exceeded the per-file size ceiling on read.
+    #[error("archive entry too large: {name} exceeds {max} bytes")]
+    EntryTooLarge { name: String, max: u64 },
+
+    /// The path is neither a directory nor a recognized archive.
+    #[error("unsupported format: {path}")]
+    UnsupportedFormat { path: String },
 }
 
 #[cfg(test)]
@@ -69,5 +81,31 @@ mod tests {
         let json_err = serde_json::from_str::<serde_json::Value>("not json").unwrap_err();
         let err = CoreError::Settings(json_err);
         assert!(err.to_string().starts_with("settings format error: "));
+    }
+
+    #[test]
+    fn zip_displays_with_prefix() {
+        let err = CoreError::Zip(::zip::result::ZipError::FileNotFound);
+        assert!(err.to_string().starts_with("archive error: "));
+    }
+
+    #[test]
+    fn entry_too_large_displays_name_and_max() {
+        let err = CoreError::EntryTooLarge {
+            name: "p.png".into(),
+            max: 10,
+        };
+        assert_eq!(
+            err.to_string(),
+            "archive entry too large: p.png exceeds 10 bytes"
+        );
+    }
+
+    #[test]
+    fn unsupported_format_displays_path() {
+        let err = CoreError::UnsupportedFormat {
+            path: "/x.txt".into(),
+        };
+        assert_eq!(err.to_string(), "unsupported format: /x.txt");
     }
 }

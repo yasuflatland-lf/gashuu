@@ -1,5 +1,8 @@
 mod folder;
+mod naming;
+mod zip;
 pub use folder::FolderSource;
+pub use zip::ZipSource;
 
 use crate::error::CoreError;
 use std::path::PathBuf;
@@ -28,6 +31,11 @@ pub trait PageSource: Send + Sync {
     fn list_pages(&self) -> Vec<PageEntry>;
     /// Read the raw, still-encoded bytes of the page at `index`.
     fn read_bytes(&self, index: usize) -> Result<Vec<u8>, CoreError>;
+    /// Entries dropped during `open` for being unreadable, unsafe-named
+    /// (zip-slip), or oversized. Default 0; concrete sources override.
+    fn skipped_count(&self) -> usize {
+        0
+    }
 }
 
 #[cfg(all(test, feature = "testing"))]
@@ -62,6 +70,7 @@ mod send_sync_tests {
         // FolderSource and the generated mock must both satisfy the supertrait so
         // they can become `Arc<dyn PageSource>` shared with rayon.
         assert_send_sync::<FolderSource>();
+        assert_send_sync::<ZipSource>();
         assert_send_sync::<MockPageSource>();
         // And the trait object itself must be Send + Sync.
         fn _accepts(_: Arc<dyn PageSource>) {}
