@@ -8,11 +8,14 @@
 //! `generate_thumbnails`; this controller just launches it on a background
 //! thread and marshals each result back to the UI thread.
 //!
-//! Thread-boundary rule: the worker closure (`on_ready`) runs on a rayon thread
-//! and may capture only `Send` values — the `slint::Weak` (Send+Sync), the epoch
-//! `Arc`, the epoch `usize`, and the decoded `DecodedImage`. The `Rc` model and
-//! `slint::Image` are NOT `Send`; the model is re-fetched and the image is built
-//! inside `invoke_from_event_loop`, i.e. only ever on the UI thread.
+//! Thread-boundary rule: `start` spawns a `std::thread` that calls the blocking
+//! `generate_thumbnails`; rayon's `par_iter` inside it invokes `on_ready` on
+//! rayon pool threads. `on_ready` may capture only `Send` values — the
+//! `slint::Weak` (Send+Sync), the epoch `Arc`, and the epoch `usize`. The decoded
+//! `DecodedImage` is NOT a capture: it arrives as `on_ready`'s `res` parameter
+//! and must also be `Send`. The `Rc` model and `slint::Image` are NOT `Send`; the
+//! model is re-fetched and the image is built inside `invoke_from_event_loop`,
+//! i.e. only ever on the UI thread.
 
 use crate::to_slint_image;
 use crate::{ThumbnailItem, ViewerWindow};
@@ -27,8 +30,9 @@ use std::sync::Arc;
 
 /// The three mutually-exclusive states of a thumbnail cell, collapsing the
 /// (loaded, failed) boolean pair that the Slint `ThumbnailItem` exposes into a
-/// single sum type. `Loaded` carries a `slint::Image` (NOT Send), so a value of
-/// this type may only be constructed on the UI thread.
+/// single sum type. `Loaded` carries a `slint::Image` (NOT Send), so only
+/// `ThumbCell::Loaded` may be constructed on the UI thread; `Loading` and
+/// `Failed` carry no image and are unconstrained.
 enum ThumbCell {
     Loading,
     Loaded(slint::Image),
@@ -80,9 +84,9 @@ impl ThumbnailController {
 
     /// Launch a fresh parallel thumbnail generation for the given source. Runs on
     /// the UI thread: cancels the previous generation, resets the model to
-    /// `page_count` gray placeholders, then (when `source` is `Some`) spawns a
-    /// worker that streams decoded thumbnails back via `invoke_from_event_loop`.
-    /// Invoked after every successful open.
+    /// `page_count` unloaded placeholders (`loaded = false`), then (when `source`
+    /// is `Some`) spawns a worker that streams decoded thumbnails back via
+    /// `invoke_from_event_loop`. Invoked after every successful open.
     pub fn start(
         &self,
         ui_weak: slint::Weak<ViewerWindow>,
@@ -90,8 +94,9 @@ impl ThumbnailController {
         page_count: usize,
     ) {
         // 1. Cancel any in-flight generation, then install a fresh flag.
-        //    Two-statement borrow discipline: the temporary `borrow()` drops
-        //    at the `;` before we take `borrow_mut()`.
+        //    Each borrow is confined to its own statement and drops at the `;`,
+        //    so no borrow is held across the next — avoiding a double-borrow
+        //    panic.
         self.cancel.borrow().store(true, Relaxed);
         *self.cancel.borrow_mut() = Arc::new(AtomicBool::new(false));
         let cancel_flag = Arc::clone(&self.cancel.borrow());
@@ -99,7 +104,7 @@ impl ThumbnailController {
         // 2. Tag this generation so superseded callbacks can be dropped.
         let my_epoch = self.epoch.fetch_add(1, Relaxed) + 1;
 
-        // 3. Rebuild the model with N gray placeholders (loaded = false).
+        // 3. Rebuild the model with N unloaded placeholders (`loaded = false`).
         let placeholders: Vec<ThumbnailItem> = (0..page_count)
             .map(|i| thumbnail_item(i, ThumbCell::Loading))
             .collect();
@@ -115,6 +120,8 @@ impl ThumbnailController {
         //    Weak (Send+Sync), the epoch Arc, and the epoch usize. It must
         //    NOT capture the Rc model nor build a slint::Image off-thread
         //    (both non-Send) — the cell is built inside the event loop.
+        //    The outer `std::thread::spawn` closure also moves `cancel_flag`
+        //    and `source` (both Send) into the worker thread.
         let weak = ui_weak.clone();
         let epoch = Arc::clone(&self.epoch);
         let on_ready = move |i: usize, res: Result<DecodedImage, CoreError>| {
