@@ -209,8 +209,8 @@ mod folder_source_tests {
             let actual = source.read_bytes(i).unwrap();
             assert_eq!(
                 actual, expected,
-                "read_bytes({i}) returned bytes for the wrong file (got {:?}, want {:?})",
-                entry.name, pages[i].name,
+                "read_bytes({i}) returned bytes for the wrong file (expected {:?})",
+                entry.name,
             );
         }
     }
