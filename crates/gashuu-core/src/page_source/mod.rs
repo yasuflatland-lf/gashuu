@@ -9,9 +9,8 @@ pub use zip::ZipSource;
 use crate::error::CoreError;
 
 /// A single page in a source: a display/identity name only. Bytes are ALWAYS
-/// retrieved via `read_bytes(index)`; the public abstraction deliberately carries
-/// no filesystem path, because archive entries have none. `FolderSource` keeps the
-/// real path internally and never exposes it through this struct.
+/// retrieved via `read_bytes(index)`; the abstraction carries no filesystem path
+/// because archive entries have none.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PageEntry {
     /// Display/identity name (typically the file name or flattened archive entry name).
@@ -62,9 +61,10 @@ mod tests {
 
     #[test]
     fn page_entry_carries_name_only() {
-        // The abstraction exposes a name and nothing else; bytes come from
-        // `read_bytes(index)`, never from a path on the entry. This pins the
-        // contract so a filesystem path can never leak back into the struct.
+        // Exhaustive struct literal: if any non-defaulting field is added to
+        // PageEntry this line stops compiling, making it a compile-time regression
+        // tripwire. It is NOT a runtime/behavioral guarantee — it guards the
+        // struct's shape, not the correctness of index↔name↔bytes pairing.
         let entry = PageEntry { name: "x".into() };
         assert_eq!(entry.name, "x");
     }

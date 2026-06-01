@@ -168,4 +168,50 @@ mod folder_source_tests {
 
         assert_eq!(names, vec!["1.png"]);
     }
+
+    /// Pins the load-bearing invariant of the refactor: after the natural-sort,
+    /// `read_bytes(i)` returns the bytes of the file whose `name` sits at position
+    /// `i` in `list_pages()`. WalkDir enumeration order is filesystem-dependent and
+    /// differs from sorted order, so this test uses three files (`"2.png"`,
+    /// `"10.png"`, `"1.png"`) whose natural order (`1, 2, 10`) diverges from their
+    /// creation order. Each file has DISTINCT dimensions so identical bytes cannot
+    /// mask a path/name pairing bug. Guards against a future list_pages filter or
+    /// reorder that drifts out of sync with the internal `FolderEntry` ordering.
+    #[test]
+    fn read_bytes_matches_list_pages_after_natural_sort() {
+        // Write a tiny PNG with a unique pixel dimension for each file so the encoded
+        // bytes differ and a wrong-index read will produce a mismatch.
+        fn write_sized_png(path: &std::path::Path, w: u32, h: u32) {
+            let img = image::RgbaImage::from_pixel(w, h, image::Rgba([10, 20, 30, 255]));
+            let mut bytes = Vec::new();
+            img.write_to(&mut Cursor::new(&mut bytes), image::ImageFormat::Png)
+                .unwrap();
+            fs::write(path, bytes).unwrap();
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        // Create files in a non-natural order so WalkDir enumeration ≠ sorted order.
+        write_sized_png(&dir.path().join("2.png"), 2, 2);
+        write_sized_png(&dir.path().join("10.png"), 10, 10);
+        write_sized_png(&dir.path().join("1.png"), 1, 1);
+
+        let source = FolderSource::open(dir.path()).unwrap();
+        let pages = source.list_pages();
+
+        // Confirm the natural-sort order first.
+        let names: Vec<&str> = pages.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(names, vec!["1.png", "2.png", "10.png"]);
+
+        // For every position i, read_bytes(i) must equal the bytes of the file
+        // identified by pages[i].name — this is the core path↔name pairing contract.
+        for (i, entry) in pages.iter().enumerate() {
+            let expected = fs::read(dir.path().join(&entry.name)).unwrap();
+            let actual = source.read_bytes(i).unwrap();
+            assert_eq!(
+                actual, expected,
+                "read_bytes({i}) returned bytes for the wrong file (got {:?}, want {:?})",
+                entry.name, pages[i].name,
+            );
+        }
+    }
 }
