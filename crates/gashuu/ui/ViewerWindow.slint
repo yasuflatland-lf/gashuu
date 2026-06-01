@@ -3,6 +3,8 @@ import { PageView } from "PageView.slint";
 import { ThumbnailStrip, ThumbnailItem } from "ThumbnailStrip.slint";
 import { SettingsDialog } from "SettingsDialog.slint";
 import { FirstRunGuide } from "FirstRunGuide.slint";
+import { Theme } from "Theme.slint";
+import { Scrubber } from "Scrubber.slint";
 
 export component ViewerWindow inherits Window {
     title: "gashuu";
@@ -12,6 +14,27 @@ export component ViewerWindow inherits Window {
     in property <[ThumbnailItem]> thumbnails;
     in property <int> current-index;
     in property <bool> show-thumbnails: false;
+
+    // ── Scrubber + auto-hide chrome (PR-S) ────────────────────────────────────
+    // Auto-hide state shared by the scrubber and the page-counter chip. Revealed
+    // on mouse-move / arrow / drag; cleared by the idle Timer.
+    in-out property <bool> chrome-shown: false;
+    // Scrubber data (1-based current page + total; direction + layout; preview thumbs).
+    in property <int> scrubber-current-page;
+    in property <int> scrubber-total-pages;
+    in property <bool> scrubber-double;
+    in property <image> scrubber-preview-a;
+    in property <image> scrubber-preview-b;
+    // Counter text, e.g. "142 / 340" (tabular). Maintained by Rust's refresh.
+    in property <string> page-counter-text;
+
+    // Fired with the 0-based page under the knob during a drag (preview only —
+    // the page body must NOT change) and with the page to commit on release.
+    callback scrub-preview(int);
+    callback scrub-commit(int);
+    // Fired whenever the user shows intent (mouse-move / drag). Rust re-arms the
+    // idle timer and sets chrome-shown = true. (Arrow reveal piggybacks on `nav`.)
+    callback reveal-chrome();
 
     in property <image> leading-page;
     in property <image> trailing-page;
@@ -43,6 +66,15 @@ export component ViewerWindow inherits Window {
     callback toggle-thumbnails();
 
     public function focus-pages() { fs.focus(); }
+
+    // Re-arm the idle-fade countdown: show the chrome and restart the timer.
+    // Called by Rust on every reveal (mouse-move / arrow / drag).
+    public function reveal-chrome-now() {
+        root.chrome-shown = true;
+        idle-timer.running = true;
+        idle-timer.stop();
+        idle-timer.start();
+    }
 
     callback open-folder();
     callback open-archive();
@@ -108,51 +140,109 @@ export component ViewerWindow inherits Window {
                 vertical-alignment: center;
             }
         }
-        fs := FocusScope {
-            key-pressed(event) => {
-                // Suppress background navigation while a modal overlay is open.
-                if (root.show-settings || root.show-guide) { return reject; }
-                if (event.text == Key.LeftArrow) {
-                    root.nav("left");
-                    return accept;
+        // Viewer stage: the page, a hover detector (reveals chrome on mouse-move),
+        // and the auto-hiding chrome (counter chip + scrubber) stacked on top.
+        // This Rectangle takes the FocusScope's former layout cell in the
+        // VerticalBox; the chrome positions itself with absolute x/y relative
+        // to this Rectangle.
+        Rectangle {
+            // The FocusScope + PageView are unchanged; only wrapped so the chrome
+            // can be absolutely positioned over them.
+            fs := FocusScope {
+                key-pressed(event) => {
+                    // Suppress background navigation while a modal overlay is open.
+                    if (root.show-settings || root.show-guide) { return reject; }
+                    if (event.text == Key.LeftArrow) {
+                        root.nav("left");
+                        return accept;
+                    }
+                    if (event.text == Key.RightArrow) {
+                        root.nav("right");
+                        return accept;
+                    }
+                    if (event.text == Key.Space) {
+                        root.nav("space");
+                        return accept;
+                    }
+                    if (event.text == Key.Backspace) {
+                        root.nav("backspace");
+                        return accept;
+                    }
+                    if (event.text == "d" || event.text == "D") { root.nav("d"); return accept; }
+                    if (event.text == "r" || event.text == "R") { root.nav("r"); return accept; }
+                    if (event.text == "c" || event.text == "C") { root.nav("c"); return accept; }
+                    if (event.text == "+") { root.nav("+"); return accept; }
+                    if (event.text == "=") { root.nav("="); return accept; }
+                    if (event.text == "-") { root.nav("-"); return accept; }
+                    if (event.text == "0") { root.nav("0"); return accept; }
+                    if (event.text == "1") { root.nav("1"); return accept; }
+                    if (event.text == "f" || event.text == "F") { root.nav("f"); return accept; }
+                    if (event.text == "t" || event.text == "T") { root.nav("t"); return accept; }
+                    return reject;
                 }
-                if (event.text == Key.RightArrow) {
-                    root.nav("right");
-                    return accept;
+                PageView {
+                    leading-page: root.leading-page;
+                    trailing-page: root.trailing-page;
+                    rtl: root.rtl;
+                    single: root.single;
+                    content-x: root.content-x;
+                    content-y: root.content-y;
+                    content-w: root.content-w;
+                    content-h: root.content-h;
+                    zoom-at(mx, my, dy) => { root.zoom-at(mx, my, dy); }
+                    begin-pan() => { root.begin-pan(); }
+                    pan-to(dx, dy) => { root.pan-to(dx, dy); }
+                    viewport-resized(w, h) => { root.viewport-resized(w, h); }
                 }
-                if (event.text == Key.Space) {
-                    root.nav("space");
-                    return accept;
-                }
-                if (event.text == Key.Backspace) {
-                    root.nav("backspace");
-                    return accept;
-                }
-                if (event.text == "d" || event.text == "D") { root.nav("d"); return accept; }
-                if (event.text == "r" || event.text == "R") { root.nav("r"); return accept; }
-                if (event.text == "c" || event.text == "C") { root.nav("c"); return accept; }
-                if (event.text == "+") { root.nav("+"); return accept; }
-                if (event.text == "=") { root.nav("="); return accept; }
-                if (event.text == "-") { root.nav("-"); return accept; }
-                if (event.text == "0") { root.nav("0"); return accept; }
-                if (event.text == "1") { root.nav("1"); return accept; }
-                if (event.text == "f" || event.text == "F") { root.nav("f"); return accept; }
-                if (event.text == "t" || event.text == "T") { root.nav("t"); return accept; }
-                return reject;
             }
-            PageView {
-                leading-page: root.leading-page;
-                trailing-page: root.trailing-page;
+
+            // Mouse-move reveal detector. Listens only for `moved` to signal intent.
+            hover := TouchArea {
+                moved => { root.reveal-chrome(); }
+            }
+
+            // Page-counter chip (top-right), part of the auto-hide chrome.
+            Rectangle {
+                x: parent.width - self.width - Theme.space-xl;
+                y: Theme.space-xl;
+                width: counter-label.preferred-width + 2 * Theme.space-md;
+                height: counter-label.preferred-height + 2 * Theme.space-xs;
+                background: Theme.chip;
+                border-radius: Theme.rounded-pill;
+                opacity: root.chrome-shown ? 1.0 : 0.0;
+                visible: root.chrome-shown;
+                animate opacity { duration: 180ms; }
+                counter-label := Text {
+                    text: root.page-counter-text;
+                    color: Theme.text-mid;
+                    font-size: Theme.font-numeric;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+            }
+
+            // Scrubber pinned to the bottom edge.
+            Scrubber {
+                x: 0;
+                width: parent.width;
+                y: parent.height - self.height - Theme.space-lg;
+                current-page: root.scrubber-current-page;
+                total-pages: root.scrubber-total-pages;
                 rtl: root.rtl;
-                single: root.single;
-                content-x: root.content-x;
-                content-y: root.content-y;
-                content-w: root.content-w;
-                content-h: root.content-h;
-                zoom-at(mx, my, dy) => { root.zoom-at(mx, my, dy); }
-                begin-pan() => { root.begin-pan(); }
-                pan-to(dx, dy) => { root.pan-to(dx, dy); }
-                viewport-resized(w, h) => { root.viewport-resized(w, h); }
+                double: root.scrubber-double;
+                preview-a: root.scrubber-preview-a;
+                preview-b: root.scrubber-preview-b;
+                chrome-shown: root.chrome-shown;
+                preview(p) => { root.reveal-chrome(); root.scrub-preview(p); }
+                commit(p) => { root.scrub-commit(p); }
+            }
+
+            // Idle fade timer. Re-armed by Rust (stop+start) on every reveal; when
+            // it fires, the chrome hides. interval is the idle timeout.
+            idle-timer := Timer {
+                interval: 2500ms;
+                running: root.chrome-shown;
+                triggered => { root.chrome-shown = false; idle-timer.stop(); }
             }
         }
         if root.show-thumbnails : ThumbnailStrip {
