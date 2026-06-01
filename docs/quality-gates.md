@@ -23,6 +23,10 @@ Clippy runs with `-D warnings`; a warning is a build failure.
 
 Coverage is `gashuu-core` only (the UI needs a display server): `MISE_ENV=coverage mise exec -- cargo llvm-cov nextest -p gashuu-core --profile ci --summary-only`. `cargo-llvm-cov` lives in `mise.coverage.toml` and is only active under `MISE_ENV=coverage` (so the per-OS CI `app` jobs stay lean and don't install it; the `core` CI job sets this env and adds `llvm-tools-preview` via `rustup`). Forget the env and you get `error: no such command: llvm-cov`. Core sits ~96.5% line coverage.
 
+### UI interaction behavior (coverage-exempt)
+
+UI interaction and timing/positioning behavior — auto-hide chrome fade timing, scrubber popover positioning, live drag-preview — is coverage-exempt and verified by manual observation (same policy as dialogs and the thumbnail strip). Only the headless logic behind such UI (e.g. `scrub_fraction_to_page`, `preview_is_double`) is unit-tested; pure mapping/decision functions are extracted specifically so they can be tested without a display server.
+
 ### Accepted uncovered lines (cache.rs, settings.rs)
 
 `cache.rs` is ~95% because the rayon background-thread paths cannot be exercised deterministically — specifically `spawn_prefetch` (fire-and-forget), the dropped-prefetch-error path, and the `InFlightGuard` poisoned-lock recovery branch. `settings.rs` is ~95% because the `config_path()` `NoConfigDir` branch cannot be triggered on a normal OS with a config dir. Both sets of uncovered lines receive the same accepted treatment: do not chase them with `sleep`-based or environment-manipulation tests; they will make CI flaky.

@@ -11,6 +11,10 @@ An agent should read the relevant entry BEFORE editing the corresponding code ar
 
 In a *binary* crate `pub` is not a public API surface, so `-D warnings` flags an accessor used only by `#[cfg(test)]` code as dead; such `#[allow(dead_code)]` is intentional and documented in place. (PR8a's thumbnail-strip wiring now USES `ViewerState::page_count()`/`index()` at runtime, so they shed their `#[allow]` — the pattern still applies to any future test-only accessor.)
 
+### A pure Rust helper is the tested spec for logic re-derived in Slint markup (PR-S)
+
+When a mapping is computed in Slint expressions at runtime (e.g. the scrubber knob-fraction → page), keep a pure Rust twin (`scrub_fraction_to_page`) as the unit-tested authoritative spec and keep the Slint expression an EXACT mirror: same clamp to `[0,1]`, same round-half-up (`floor(x + 0.5)`), and RTL inverts the fraction BEFORE rounding (`floor((1-frac)*last + 0.5)`) — `last - floor(frac*last + 0.5)` diverges at half-integer fractions. The twin has no runtime caller in the binary, so it carries `#[allow(dead_code)]` (see the entry above). Cross-reference both sides so a future edit to one stays in lockstep with the other.
+
 ### Enforce load-bearing invariants in the type, not in prose
 
 `DecodedImage` keeps `rgba`/`width`/`height` private with a checked `new() -> Result<_, CoreError>` (validates `rgba.len() == width*height*4`, else `CoreError::MalformedImage`); public fields would let a caller build a value that panics `copy_from_slice` in `to_slint_image`. Construct via `new`; read via `width()/height()/rgba()`.
@@ -258,6 +262,14 @@ Re-opening a book (a) `cancel.store(true)` on the prior generation's flag (stops
 ### TouchArea click focus recovery for thumbnails
 
 uses a Slint `public function focus-pages() { fs.focus(); }` called from Rust as `ui.invoke_focus_pages()` after a thumbnail click — the non-Button-click counterpart of the existing `clicked => fs.focus()` rule (a `TouchArea` click would otherwise leave the page `FocusScope` unfocused and silently kill keyboard navigation).
+
+### `TouchArea.moved` fires only while pressed; any enabled `TouchArea` grabs the press (PR-S, slint 1.16.1)
+
+`TouchArea.moved` fires ONLY while the pointer is pressed/grabbed — never on plain (unpressed) hover. And ANY enabled `TouchArea`, even one with no handlers, unconditionally GRABS the pointer press (`ForwardAndInterceptGrab` then `GrabMouse`), so layering one on top of another (e.g. an overlay over `PageView`) silently blocks the lower one's pan/drag — the lower `TouchArea`'s `pressed` never becomes true. To react to plain hover-movement WITHOUT stealing press/drag/scroll, do NOT add an overlay `TouchArea`: listen for `changed mouse-x` / `changed mouse-y` (or `has-hover`) INSIDE the existing `TouchArea` — `mouse-x`/`mouse-y`/`has-hover` update on every move, pressed or not. Concrete: PR-S reveals the auto-hiding chrome on mouse-move via `PageView`'s existing `TouchArea` (`changed mouse-x/mouse-y => reveal()`), after an initial overlay-`TouchArea` attempt broke pan and never fired on hover.
+
+### Scrubber drag is preview-on-move, commit-on-release (PR-S)
+
+During a scrubber drag, ONLY the preview popover + page-counter update: `preview(int)` pulls thumbnails from the existing `VecModel<ThumbnailItem>` and sets the counter text — it must NEVER call `jump_to`/`refresh`. The page body changes ONLY on knob release via `commit(int)` → `jump_to` → `refresh`. Keep all decode/navigation side effects on the commit path; preview is display-only and UI-thread-only (the `Rc`/`!Send` thumbnail model is never crossed).
 
 ### Showing the thumbnail strip shrinks the `PageView` height, which auto-fires the existing `viewport-resized` wiring
 

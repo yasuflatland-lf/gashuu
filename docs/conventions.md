@@ -17,3 +17,11 @@ Keep a PR ≤ ~1000 production LOC.
 ### Test fixtures (no committed binaries)
 
 Tests synthesize fixtures in memory (the `image` crate makes tiny PNGs) plus `tempfile` for filesystem cases — **no committed binary fixtures.** Two exceptions, both committed TEXT not binaries: insta `.snap` files (see [docs/patterns.md](patterns.md)), and (PR7) the base64-encoded RAR `.cbr` fixtures in `crates/gashuu-core/src/test_fixtures.rs` (RAR has no Rust encoder, so they cannot be synthesized in-memory like PNGs/ZIPs).
+
+### Visual tokens via a single Slint global Theme — no inline hex (PR-S)
+
+All visual tokens (colors, border radii, spacing, font sizes, component sizes, shadow colors) live in ONE Slint `global Theme` at `ui/Theme.slint`, sourced from `/DESIGN.md`.
+
+- New components and chrome **must** reference `Theme.<token>` (e.g. `Theme.accent`, `Theme.rounded-pill`, `Theme.shadow-popover`) and **must not** paste raw hex or magic sizes inline.
+- When a new token is needed, extend `Theme` rather than hard-coding the value in the component.
+- Pre-existing inline hex in older dialogs and `ThumbnailStrip.slint` is grandfathered (out of scope to migrate), but it is **not** a licence to add new inline hex.
