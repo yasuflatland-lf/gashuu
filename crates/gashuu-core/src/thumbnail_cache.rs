@@ -37,8 +37,14 @@ impl ThumbnailCache {
     }
 
     /// Look up a thumbnail in the cache.
-    pub fn get(&self, _key: &str) -> Option<DecodedImage> {
-        None
+    ///
+    /// Reads `<dir>/<key>.png` and decodes it into a `DecodedImage`. Returns
+    /// `None` if the file is missing, unreadable, or not a valid image; it
+    /// never panics.
+    pub fn get(&self, key: &str) -> Option<DecodedImage> {
+        let path = self.dir.join(format!("{key}.png"));
+        let bytes = std::fs::read(&path).ok()?;
+        crate::image_ops::decode(&bytes).ok()
     }
 
     /// Store a thumbnail in the cache.
@@ -117,16 +123,6 @@ mod tests {
         assert_ne!(key1, key2);
     }
 
-    #[test]
-    fn with_dir_constructs_and_get_returns_none_skeleton() {
-        let dir = tempdir().unwrap();
-        let cache = ThumbnailCache::with_dir(dir.path().to_path_buf());
-        let image = DecodedImage::new(vec![0u8; 4], 1, 1).unwrap();
-
-        assert!(cache.get("page-001").is_none());
-        assert_eq!(image.width(), 1);
-    }
-
     /// Synthesize a tiny 2x3 solid-red RGBA DecodedImage in memory (no files).
     /// Canonical in-test fixture for ThumbnailCache round-trip tests.
     fn tiny_decoded_image() -> DecodedImage {
@@ -163,5 +159,39 @@ mod tests {
             expected_path.exists(),
             "expected file at {expected_path:?} to exist"
         );
+    }
+
+    #[test]
+    fn get_missing_key_returns_none() {
+        let dir = tempdir().unwrap();
+        let cache = ThumbnailCache::with_dir(dir.path().to_path_buf());
+        assert!(cache.get("nonexistent_key").is_none());
+    }
+
+    #[test]
+    fn get_corrupt_file_returns_none() {
+        let dir = tempdir().unwrap();
+        let cache = ThumbnailCache::with_dir(dir.path().to_path_buf());
+        let key = "deadbeef01234567";
+        let path = dir.path().join(format!("{key}.png"));
+        std::fs::write(&path, b"this is not a PNG").unwrap();
+        assert!(cache.get(key).is_none());
+    }
+
+    #[test]
+    fn put_get_roundtrip_preserves_dims_and_bytes() {
+        let dir = tempdir().unwrap();
+        let cache = ThumbnailCache::with_dir(dir.path().to_path_buf());
+        let original = tiny_decoded_image();
+        cache
+            .put("roundtrip_key", &original)
+            .expect("put must succeed");
+
+        let retrieved = cache
+            .get("roundtrip_key")
+            .expect("get must return Some after put");
+        assert_eq!(retrieved.width(), original.width(), "width mismatch");
+        assert_eq!(retrieved.height(), original.height(), "height mismatch");
+        assert_eq!(retrieved.rgba(), original.rgba(), "RGBA bytes mismatch");
     }
 }
