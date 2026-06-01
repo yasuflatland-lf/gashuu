@@ -329,6 +329,41 @@ impl ViewerState {
         before != self.reading_direction
     }
 
+    /// Set the spread mode to an exact value (vs. `toggle_spread`'s cycle).
+    /// Re-anchors the index via `renormalize_index` so the visible page stays on
+    /// screen. Idempotent: returns `false` (no change) when already set.
+    pub fn set_spread_mode(&mut self, mode: SpreadMode) -> bool {
+        if self.spread_mode == mode {
+            return false;
+        }
+        self.spread_mode = mode;
+        self.renormalize_index();
+        true
+    }
+
+    /// Set the cover mode to an exact value (vs. `toggle_cover`'s flip).
+    /// Re-anchors the index via `renormalize_index` so the visible page stays on
+    /// screen. Idempotent: returns `false` (no change) when already set.
+    pub fn set_cover_mode(&mut self, mode: CoverMode) -> bool {
+        if self.cover_mode == mode {
+            return false;
+        }
+        self.cover_mode = mode;
+        self.renormalize_index();
+        true
+    }
+
+    /// Set the reading direction to an exact value (vs. `toggle_reading_direction`'s
+    /// flip). Reading direction only affects placement, not pairing, so the index
+    /// is left untouched. Idempotent: returns `false` (no change) when already set.
+    pub fn set_reading_direction(&mut self, dir: ReadingDirection) -> bool {
+        if self.reading_direction == dir {
+            return false;
+        }
+        self.reading_direction = dir;
+        true
+    }
+
     /// Re-anchor `index` onto a valid leading for the current modes after a
     /// pairing-affecting toggle. No-op when no pages are loaded (keeps index 0).
     fn renormalize_index(&mut self) {
@@ -1306,5 +1341,119 @@ mod tests {
         state.set_source(mock_with(6));
         assert!(state.jump_to(5));
         assert_eq!(state.index(), 4);
+    }
+
+    // ---- set_spread_mode (PR8b) ---------------------------------------------
+
+    #[test]
+    fn set_spread_mode_to_double_renormalizes_index() {
+        // Single mode at index 2 of 6. Switching to Double / Standalone makes
+        // index 2 (even > 0) an invalid Standalone leading, so renormalize_index
+        // re-anchors it to the pair start 1 ({1,2}). set_spread_mode returns true.
+        let mut state = ViewerState::new();
+        state.set_source(mock_with(6));
+        state.apply(NavAction::Next);
+        state.apply(NavAction::Next);
+        assert_eq!(state.index(), 2);
+        assert_eq!(state.spread_mode(), SpreadMode::Single);
+
+        assert!(state.set_spread_mode(SpreadMode::Double));
+        assert_eq!(state.spread_mode(), SpreadMode::Double);
+        // index 2 normalized to valid Standalone Double leading 1.
+        assert_eq!(state.index(), 1);
+    }
+
+    #[test]
+    fn set_spread_mode_same_value_is_noop() {
+        // Calling set_spread_mode with the already-active mode must return false
+        // and leave index unchanged.
+        let mut state = ViewerState::new();
+        state.set_source(mock_with(6));
+        state.apply(NavAction::Next);
+        state.apply(NavAction::Next);
+        assert_eq!(state.index(), 2);
+        assert_eq!(state.spread_mode(), SpreadMode::Single);
+
+        assert!(!state.set_spread_mode(SpreadMode::Single));
+        assert_eq!(state.spread_mode(), SpreadMode::Single);
+        assert_eq!(state.index(), 2);
+    }
+
+    // ---- set_cover_mode (PR8b) ----------------------------------------------
+
+    #[test]
+    fn set_cover_mode_flips_and_renormalizes() {
+        // Double / Standalone at index 5 of 6. Switching to Paired makes pairs
+        // start even, so index 5 normalizes down to the even pair start 4 ({4,5}).
+        let mut state = double_state();
+        state.set_source(mock_with(6));
+        for _ in 0..3 {
+            state.apply(NavAction::Next);
+        }
+        assert_eq!(state.index(), 5);
+        assert_eq!(state.cover_mode(), CoverMode::Standalone);
+
+        assert!(state.set_cover_mode(CoverMode::Paired));
+        assert_eq!(state.cover_mode(), CoverMode::Paired);
+        assert_eq!(state.index(), 4);
+
+        // Setting it back to Standalone: page 4 (even>0) normalizes to pair
+        // start 3 ({3,4}) in Standalone Double.
+        assert!(state.set_cover_mode(CoverMode::Standalone));
+        assert_eq!(state.cover_mode(), CoverMode::Standalone);
+        assert_eq!(state.index(), 3);
+    }
+
+    #[test]
+    fn set_cover_mode_same_value_is_noop() {
+        // Calling set_cover_mode with the already-active mode must return false
+        // and leave index unchanged.
+        let mut state = double_state();
+        state.set_source(mock_with(6));
+        for _ in 0..3 {
+            state.apply(NavAction::Next);
+        }
+        assert_eq!(state.index(), 5);
+        assert_eq!(state.cover_mode(), CoverMode::Standalone);
+
+        assert!(!state.set_cover_mode(CoverMode::Standalone));
+        assert_eq!(state.cover_mode(), CoverMode::Standalone);
+        assert_eq!(state.index(), 5);
+    }
+
+    // ---- set_reading_direction (PR8b) ----------------------------------------
+
+    #[test]
+    fn set_reading_direction_flips_and_leaves_index() {
+        // Double / Standalone, Ltr. Switching to Rtl returns true; pairing is
+        // direction-agnostic so index must remain unchanged.
+        let mut state = double_state();
+        state.set_source(mock_with(6));
+        state.apply(NavAction::Next);
+        assert_eq!(state.index(), 1);
+        assert_eq!(state.reading_direction(), ReadingDirection::Ltr);
+
+        assert!(state.set_reading_direction(ReadingDirection::Rtl));
+        assert_eq!(state.reading_direction(), ReadingDirection::Rtl);
+        assert_eq!(state.index(), 1);
+
+        assert!(state.set_reading_direction(ReadingDirection::Ltr));
+        assert_eq!(state.reading_direction(), ReadingDirection::Ltr);
+        assert_eq!(state.index(), 1);
+    }
+
+    #[test]
+    fn set_reading_direction_same_value_is_noop() {
+        // Calling set_reading_direction with the already-active direction must
+        // return false and leave index unchanged.
+        let mut state = double_state();
+        state.set_source(mock_with(6));
+        state.apply(NavAction::Next);
+        assert_eq!(state.index(), 1);
+        assert_eq!(state.reading_direction(), ReadingDirection::Ltr);
+
+        assert!(!state.set_reading_direction(ReadingDirection::Ltr));
+        assert_eq!(state.reading_direction(), ReadingDirection::Ltr);
+        assert_eq!(state.index(), 1);
     }
 }
