@@ -1,6 +1,7 @@
 slint::include_modules!();
 
 mod keymap;
+mod library_model;
 mod navigation;
 mod thumbnail_strip;
 mod viewer_state;
@@ -10,6 +11,7 @@ use gashuu_core::{
     CoverMode, DecodedImage, FitMode, Library, ReadingDirection, Settings, SpreadMode,
 };
 use keymap::{map_key, KeyCommand};
+use library_model::{carousel_data, CarouselData};
 use navigation::{screen_to_index, NavState};
 use slint::{ModelRc, VecModel};
 use std::cell::RefCell;
@@ -32,18 +34,22 @@ fn main() -> color_eyre::Result<()> {
         Settings::default()
     });
 
-    // Load the persisted library; corrupt/unreadable files fall back to an empty
-    // library (same corrupt-file recovery policy as settings, kept in the UI layer).
+    // Load the persisted shelf; an unreadable/corrupt library.json falls back
+    // to an empty library (the corrupt-file recovery policy lives here in the
+    // UI layer, mirroring the Settings load above).
     let library = Library::load().unwrap_or_else(|e| {
-        tracing::warn!(error = %e, "failed to load library; using empty library");
+        tracing::warn!(error = %e, "failed to load library; starting empty");
         Library::new()
     });
-    let library = Rc::new(RefCell::new(library));
 
     let ui = ViewerWindow::new()?;
     let state = Rc::new(RefCell::new(ViewerState::from_settings(&settings)));
     let viewport = Rc::new(RefCell::new(ViewportState::from_settings(&settings)));
     let settings = Rc::new(RefCell::new(settings));
+
+    // The persisted shelf, shared so the carousel model build, the focused-index
+    // clamp, and later PR-L's add / PR-R's position write-back can all reach it.
+    let library = Rc::new(RefCell::new(library));
 
     // Thumbnail-strip controller. Owns the strip's backing model and the
     // generation bookkeeping (epoch + cancel double-guard); its `new` binds the
@@ -51,17 +57,22 @@ fn main() -> color_eyre::Result<()> {
     // open handlers (via `open_and_present`) can share the single controller.
     let thumbs = Rc::new(ThumbnailController::new(&ui));
 
+    // Seed the carousel model from the persisted library so the home screen shows
+    // the saved books on boot. `build_carousel_model` builds AND binds the model
+    // into the UI via `set_carousel_items` internally, returning the `Rc<VecModel>`
+    // held for PR-V (cover streaming) to mutate the SAME model in place; PR-L's
+    // add path rebuilds+rebinds via the same helper. Underscore-bound to satisfy
+    // -D warnings until PR-V uses it. Covers are placeholder until PR-V streams
+    // them in.
+    let _carousel_model = build_carousel_model(&ui, &library.borrow());
+    ui.set_carousel_focused_index(0);
+
     // Top-level screen state machine. App boots to Library (the carousel home).
     // Held in an Rc<RefCell<…>> so the carousel callbacks and the Viewer's
     // GoToLibrary key arm can all flip it through the seam functions below.
     let nav = Rc::new(RefCell::new(NavState::new()));
     // Push the initial screen so the window shows the Library on boot.
     ui.set_screen(screen_to_index(nav.borrow().screen()));
-
-    // Seed the carousel model from the persisted library so the home screen shows
-    // the saved books on boot. Cover images are placeholder until PR-V streams them
-    // in; the model is rebuilt by `build_carousel_model` after every add/remove.
-    ui.set_carousel_items(build_carousel_model(&library.borrow()));
 
     // Initial paint so rtl/single/status are all initialized before the first
     // folder is opened (refresh shows "No folder opened" and clears the images).
@@ -157,9 +168,10 @@ fn main() -> color_eyre::Result<()> {
         });
     }
 
-    // Carousel: Return on the focused book opens it. STUB for PR-0b — PR-C/PR-R
-    // resolve the focused index to a Library book and open+resume it. For now it
-    // simply transitions to the Viewer so the seam is exercised end-to-end.
+    // Carousel: Return on the focused book opens it. PR-C delivers the correct
+    // focused index (the move clamp keeps it in shelf bounds); resolving that
+    // index to a Library book + opening/resuming its source is PR-R/PR-V. For
+    // now it transitions to the Viewer so the seam is exercised end-to-end.
     {
         let ui_weak = ui.as_weak();
         let nav = Rc::clone(&nav);
@@ -170,12 +182,25 @@ fn main() -> color_eyre::Result<()> {
             go_to_viewer(&ui, &nav);
         });
     }
-    // Carousel: Left/Right move focus by `delta`. STUB for PR-0b — PR-C owns
-    // focus-index movement against the Library model. No-op for now (the empty
-    // shell has no items to move between).
+    // Carousel: Left/Right move the focused cover by `delta` (-1 / +1). Clamp
+    // into the shelf bounds — the row ends are hard stops (no wrap), so Left on
+    // the first book and Right on the last are inert. An empty shelf is a no-op
+    // (no books to move between). focused-index is the single source of truth
+    // for which cover is centered + which book Return opens.
     {
-        ui.on_carousel_move(move |_delta| {
-            // PR-C: clamp focused-index within the Library bounds and re-center.
+        let ui_weak = ui.as_weak();
+        let library = Rc::clone(&library);
+        ui.on_carousel_move(move |delta| {
+            let Some(ui) = ui_weak.upgrade() else {
+                return;
+            };
+            let count = library.borrow().books().len();
+            if count == 0 {
+                return; // empty shelf: nothing to move
+            }
+            let last = (count - 1) as i32;
+            let next = (ui.get_carousel_focused_index() + delta).clamp(0, last);
+            ui.set_carousel_focused_index(next);
         });
     }
     // Carousel: Down returns to the currently-open book (the Viewer). Only
@@ -885,6 +910,38 @@ fn to_slint_image(decoded: &DecodedImage) -> slint::Image {
     slint::Image::from_rgba8(buffer)
 }
 
+/// Adapt a pure `CarouselData` row into the Slint `CarouselItem` the carousel
+/// renders. Runs on the UI thread (it builds a `slint::Image`). The cover is a
+/// PLACEHOLDER (`slint::Image::default()`) this PR; PR-V streams real covers
+/// into the same `VecModel<CarouselItem>` via the PR8a `invoke_from_event_loop`
+/// pattern, so the carousel shows a neutral placeholder until then.
+fn to_carousel_item(data: &CarouselData) -> CarouselItem {
+    CarouselItem {
+        cover: slint::Image::default(),
+        title: data.title.as_str().into(),
+        current: data.current,
+        total: data.total,
+        progress: data.progress,
+        available: data.available,
+    }
+}
+
+/// Build the carousel's backing model from the current `Library`, in shelf
+/// order, and bind it to the UI's `carousel-items`. Returns the `Rc<VecModel>`
+/// so callers (PR-V cover streaming; PR-L refresh-after-add) can mutate the
+/// SAME model rather than rebuilding/rebinding. Centralizes the build + bind so
+/// the Library → carousel surface lives in ONE place (mirrors
+/// `ThumbnailController::new`).
+fn build_carousel_model(ui: &ViewerWindow, library: &Library) -> Rc<VecModel<CarouselItem>> {
+    let items: Vec<CarouselItem> = carousel_data(library)
+        .iter()
+        .map(to_carousel_item)
+        .collect();
+    let model = Rc::new(VecModel::from(items));
+    ui.set_carousel_items(ModelRc::from(model.clone()));
+    model
+}
+
 /// Fetch the thumbnail image for a 0-based page from the strip's existing
 /// `VecModel<ThumbnailItem>` (the PR8a model). Returns the cell's image when the
 /// row exists and is loaded; otherwise a default (empty) image. UI-thread only —
@@ -1040,8 +1097,11 @@ fn add_books_and_refresh(
     }
     // Rebuild from the in-memory state even if the save fails, so the newly added
     // books are visible; the save error is then surfaced (not just traced).
+    // `build_carousel_model` rebuilds AND rebinds the model into the UI internally
+    // (the returned `Rc<VecModel>` is held by PR-V for cover streaming; the add
+    // path does not need it, so the return value is dropped).
     let save_result = library.borrow().save();
-    ui.set_carousel_items(build_carousel_model(&library.borrow()));
+    build_carousel_model(ui, &library.borrow());
     match save_result {
         Err(e) => {
             tracing::error!(error = %e, "failed to save library after {op}");
@@ -1054,35 +1114,6 @@ fn add_books_and_refresh(
         }
     }
     ui.invoke_focus_carousel();
-}
-
-/// Rebuild the carousel model from the current library state.
-/// Called after every add/remove and at startup to keep the model in sync.
-///
-/// Placeholder fields (filled by later work):
-///   - `cover`: transparent (`slint::Image::default()`) until PR-V streams real covers.
-///   - `total`: 0 — the page count is unknown until a book is opened; no PR currently
-///     owns back-filling it (tracked as a follow-up).
-///   - `progress`: 0.0 — it would derive from `last_page`/`total`, but `total` is 0.
-///
-/// `current` is the 1-based page position (`last_page + 1`).
-fn build_carousel_model(lib: &Library) -> ModelRc<CarouselItem> {
-    let items: Vec<CarouselItem> = lib
-        .books()
-        .iter()
-        .map(|b| {
-            let last = b.last_page();
-            CarouselItem {
-                cover: slint::Image::default(),
-                title: b.title().into(),
-                current: (last + 1) as i32,
-                total: 0,
-                progress: 0.0,
-                available: Library::is_available(b),
-            }
-        })
-        .collect();
-    ModelRc::new(VecModel::from(items))
 }
 
 #[cfg(test)]
@@ -1244,25 +1275,9 @@ mod tests {
         assert_eq!(lib.books().len(), before, "books count must not change");
     }
 
-    #[test]
-    fn build_carousel_model_length_matches_library() {
-        use slint::Model;
-        let mut lib = gashuu_core::Library::new();
-        lib.add(std::path::PathBuf::from("nonexistent/vol1.cbz"));
-        lib.add(std::path::PathBuf::from("nonexistent/vol2.cbz"));
-        let model = build_carousel_model(&lib);
-        assert_eq!(model.row_count(), 2);
-    }
-
-    #[test]
-    fn build_carousel_model_current_is_one_based() {
-        use slint::Model;
-        let mut lib = gashuu_core::Library::new();
-        lib.add(std::path::PathBuf::from("nonexistent/vol1.cbz"));
-        let model = build_carousel_model(&lib);
-        let item = model.row_data(0).unwrap();
-        assert_eq!(item.current, 1, "current must be last_page + 1 (1-based)");
-        assert_eq!(item.title.as_str(), "vol1");
-        assert!(!item.available, "nonexistent path must be unavailable");
-    }
+    // Note: `build_carousel_model` now takes a `&ViewerWindow` (it builds AND
+    // binds the Slint model), so it cannot be unit-tested headless. The
+    // Library -> carousel row mapping invariants (length, 1-based `current`,
+    // availability, insertion order) are covered by `library_model::tests`
+    // against the pure `carousel_data` helper that this builder delegates to.
 }

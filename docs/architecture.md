@@ -196,14 +196,30 @@ functions are the single chokepoints that flip `NavState`, push `screen` to the 
 focus. The Up arrow (`KeyCommand::GoToLibrary`, direction-independent) and the carousel
 `open`/`move`/`back` callbacks route through them.
 
+### library_model
+
+PR-C, `library_model.rs`. PURE (Slint-free) `Library` → carousel display-row mapping: a plain
+`CarouselData` struct (`title`/`current`/`total`/`progress`/`available`) + `carousel_data(&Library)
+-> Vec<CarouselData>` in shelf order. The carousel counterpart of `thumbnail_strip`'s row mapping —
+keeps the derivation (1-based `current = last_page + 1`; `progress = last_page / total` guarded so
+`total == 0` → `0.0`; `available` via `Library::is_available`) table-testable without a display
+backend. `main.rs`'s `to_carousel_item` adapter builds the `!Send` `slint::Image` (placeholder this
+PR) on the UI thread; `build_carousel_model` is the build+bind chokepoint returning the `Rc<VecModel>`
+so PR-V/PR-L mutate the same model. `total` is intentionally 0 until a book's page source is resolved
+(the Library does not persist page counts).
+
 ### Slint UI files
 
-**`Carousel.slint`** (PR-0b; extended PR-L): Library cover-flow carousel. Frozen public contract:
-`CarouselItem` struct + `Carousel` component with `items`, `focused-index`, callbacks
-`open(int)`/`move(int)`/`back()`, and `public function focus-self()`. PR-L added an always-visible
-"Add files…"/"Add folder…" toolbar + an interactive empty-state CTA, plus `add-files()`/`add-folder()`
-callbacks (each restores focus via `focus-self()` after firing). Real cover-flow rendering is deferred
-to a downstream PR.
+**`Carousel.slint`** (PR-0b shell; PR-C rendering; PR-L toolbar/CTA): Library cover-flow carousel.
+PR-0b froze the public contract (`CarouselItem` struct + `Carousel` component with `items`,
+`focused-index`, callbacks `open(int)`/`move(int)`/`back()`, `public function focus-self()`); PR-C
+filled in the rendering against that UNCHANGED contract: centered focused cover (accent ring) +
+scaled/dimmed neighbors, a per-cover `ProgressBar` (a local shared private sub-component reused for the
+focused-meta bar), a centered focused-book meta block, a grayed broken-cover placeholder for
+unavailable books, and the 0-book empty-state CTA. Covers are PLACEHOLDERS (`slint::Image::default()`)
+until PR-V streams real cover images into the same model. PR-L added an always-visible
+"Add files…"/"Add folder…" toolbar + the `add-files()`/`add-folder()` callbacks and wired the
+empty-state CTA to `add-files()` (each restores focus via `focus-self()` after firing).
 
 **`Theme.slint`** (PR-0b, NEW): single `global Theme` of visual tokens (colors, spacing, radii,
 font sizes); components reference `Theme.<token>` instead of inline hex literals.
