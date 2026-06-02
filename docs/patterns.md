@@ -15,6 +15,10 @@ In a *binary* crate `pub` is not a public API surface, so `-D warnings` flags an
 
 PR-S originally MIRRORED the scrubber knob-fraction → page mapping: a pure Rust twin (`scrub_fraction_to_page`) was the unit-tested spec, and `Scrubber.slint` carried an EXACT-mirror `drag-page` expression (same clamp, same round-half-up, RTL inverting the fraction before rounding). #71 deleted the Slint side: the scrubber now passes the RAW clamped knob fraction (a `float` in `[0,1]`) up via `preview(float)`/`commit(float)`, and `on_scrub_preview`/`on_scrub_commit` in `main.rs` call `scrub_fraction_to_page` to resolve the page. So Rust is the SINGLE LIVE source of that mapping (clamp, RTL inversion, round-half-up all live there) — it has a real runtime caller and is no longer `#[allow(dead_code)]` / test-only. THE LESSON: a mirrored rule drifts (the two sides silently diverge on the next edit to one of them). When a single rule must hold on both sides of the Slint↔Rust boundary, make ONE side authoritative — let Slint pass the raw inputs across the boundary and compute the rule once in Rust, rather than re-deriving it in markup the cargo gates cannot test.
 
+### Dead helper cleanup when a replacement takes over all call sites (#76)
+
+When a PR swaps a helper `X` for a newer `Y` that serves all of `X`'s callers, an issue or plan that says "keep `X` intact for back-compat" is wrong against the gates: in a binary crate `-D warnings` rejects the now-unused `pub(crate) fn X` as `dead_code`, so the clippy gate fails. Remove `X` — don't keep it. The cargo gates are the arbiter of "dead," not the issue text; this is the "verify the as-merged state and reconcile the plan" discipline applied to a gate that *forces* the reconciliation. (#76's issue text said keep `thumb_image_at`, but it had only two callers and both were replaced by `thumb_state_at`, so the helper had to go.)
+
 ### Enforce load-bearing invariants in the type, not in prose
 
 `DecodedImage` keeps `rgba`/`width`/`height` private with a checked `new() -> Result<_, CoreError>` (validates `rgba.len() == width*height*4`, else `CoreError::MalformedImage`); public fields would let a caller build a value that panics `copy_from_slice` in `to_slint_image`. Construct via `new`; read via `width()/height()/rgba()`.
@@ -167,6 +171,16 @@ clamped value, so a trivial infallible ctor is correct and there is nothing to e
 4. **Slint gotcha:** the new submodule needed `use slint::ComponentHandle;` for `ui.as_weak()`. A
    submodule does NOT inherit the crate-root `include_modules!` trait scope that `main.rs` enjoys, so
    trait methods on generated Slint types must be brought into scope explicitly.
+
+### Presentation state object: a named struct beats a tuple or an enum for Slint-setter fan-out (#76)
+
+A 4th value-object flavor, distinct from the three above (`CacheConfig` invariant-owner, `SpreadContext` cohesion-wrapper, `OpenBookUseCase` use-case object): when a helper resolves one input into several values that the caller pushes into N *separate* Slint setters (`set_x_loaded`, `set_x_failed`, …), return a small `pub(crate)` struct with named constructors — not a bare tuple, not a full enum. `ThumbState` (#76, `carousel.rs`) returns `{ image, loaded, failed }` via `ThumbState::loaded(img)` / `loading()` / `failed()`, each constructor producing exactly one of the mutually-exclusive states.
+
+Why not the alternatives:
+- **Bare `(Image, bool, bool)` tuple** — unlabeled positions invite transposition bugs, and it can represent the impossible `(loaded && failed)` combo at every call site.
+- **`enum Loaded(Image)|Loading|Failed`** — makes the invalid state unrepresentable, but each Slint setter wants a plain scalar, so the call site must `match` the enum straight back into `(image, bool, bool)` — more code, no clearer.
+
+The struct splits the difference: the named constructors make the invalid combo unconstructible (no `match` at the call site — `ui.set_x_loaded(s.loaded)` stays declarative), while the fields remain the plain scalars the setters consume. Keep the fields `pub(crate)` while there is a single consumer; if a second consumer appears, switch to private fields + accessors to close the struct-literal bypass. The *source* model's own invariant (a `ThumbnailItem` is never `loaded && failed`) is enforced separately at its single constructor `thumbnail_item` (a `debug_assert`), so `thumb_state_at`'s loaded arm drops `item.failed` safely.
 
 ### Parse the schema `version` with `u32::try_from`, not `as u32`
 
