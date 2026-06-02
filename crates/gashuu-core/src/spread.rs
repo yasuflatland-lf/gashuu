@@ -199,6 +199,46 @@ pub fn normalize_leading(
     }
 }
 
+/// Bundles the three values that always travel together when querying spreads —
+/// total page count, resolved layout, and cover mode — and owns the pairing
+/// queries so call sites read as intent rather than positional-arg plumbing.
+///
+/// Holds an already-resolved `SpreadLayout` (no `Auto` resolution here; that
+/// stays in the UI layer). This is an additive cohesive wrapper over the pure
+/// free functions, which remain the single source of truth.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SpreadContext {
+    total: usize,
+    layout: SpreadLayout,
+    cover: CoverMode,
+}
+
+impl SpreadContext {
+    pub fn new(total: usize, layout: SpreadLayout, cover: CoverMode) -> Self {
+        Self {
+            total,
+            layout,
+            cover,
+        }
+    }
+
+    pub fn spread_at(&self, leading: usize) -> Spread {
+        spread_at(self.total, self.layout, self.cover, leading)
+    }
+
+    pub fn normalize(&self, index: usize) -> usize {
+        normalize_leading(self.total, self.layout, self.cover, index)
+    }
+
+    pub fn next(&self, index: usize) -> usize {
+        next_leading(self.total, self.layout, self.cover, index)
+    }
+
+    pub fn prev(&self, index: usize) -> usize {
+        prev_leading(self.total, self.layout, self.cover, index)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -544,5 +584,77 @@ mod tests {
         let n = next_leading(6, m, c, 1);
         assert_eq!(n, 3);
         assert_eq!(prev_leading(6, m, c, n), 1);
+    }
+
+    // ---- SpreadContext delegation -----------------------------------------
+
+    #[test]
+    fn spread_context_delegates_to_free_fns() {
+        let ctx = SpreadContext::new(10, SpreadLayout::Double, CoverMode::Paired);
+        assert_eq!(
+            ctx.spread_at(0),
+            spread_at(10, SpreadLayout::Double, CoverMode::Paired, 0)
+        );
+        assert_eq!(
+            ctx.normalize(3),
+            normalize_leading(10, SpreadLayout::Double, CoverMode::Paired, 3)
+        );
+        assert_eq!(
+            ctx.next(2),
+            next_leading(10, SpreadLayout::Double, CoverMode::Paired, 2)
+        );
+        assert_eq!(
+            ctx.prev(4),
+            prev_leading(10, SpreadLayout::Double, CoverMode::Paired, 4)
+        );
+    }
+
+    #[test]
+    fn spread_context_delegates_standalone() {
+        let ctx = SpreadContext::new(6, SpreadLayout::Double, CoverMode::Standalone);
+        assert_eq!(
+            ctx.spread_at(1),
+            spread_at(6, SpreadLayout::Double, CoverMode::Standalone, 1)
+        );
+        assert_eq!(
+            ctx.normalize(2),
+            normalize_leading(6, SpreadLayout::Double, CoverMode::Standalone, 2)
+        );
+        assert_eq!(
+            ctx.next(1),
+            next_leading(6, SpreadLayout::Double, CoverMode::Standalone, 1)
+        );
+        assert_eq!(
+            ctx.prev(3),
+            prev_leading(6, SpreadLayout::Double, CoverMode::Standalone, 3)
+        );
+    }
+
+    #[test]
+    fn spread_context_delegates_single_layout() {
+        let ctx = SpreadContext::new(5, SpreadLayout::Single, CoverMode::Standalone);
+        assert_eq!(
+            ctx.spread_at(3),
+            spread_at(5, SpreadLayout::Single, CoverMode::Standalone, 3)
+        );
+        assert_eq!(
+            ctx.normalize(3),
+            normalize_leading(5, SpreadLayout::Single, CoverMode::Standalone, 3)
+        );
+        assert_eq!(
+            ctx.next(3),
+            next_leading(5, SpreadLayout::Single, CoverMode::Standalone, 3)
+        );
+        assert_eq!(
+            ctx.prev(3),
+            prev_leading(5, SpreadLayout::Single, CoverMode::Standalone, 3)
+        );
+    }
+
+    #[test]
+    fn spread_context_is_copy_and_eq() {
+        let ctx = SpreadContext::new(5, SpreadLayout::Single, CoverMode::Standalone);
+        let ctx2 = ctx; // Copy
+        assert_eq!(ctx, ctx2);
     }
 }

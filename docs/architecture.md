@@ -117,7 +117,9 @@ Intentionally not `Deserialize` (that would bypass the clamp). See
 `spread.rs`. Pure, Slint/tracing-free, reading-direction-agnostic page-pairing
 (`spread_at`/`next_leading`/`prev_leading`/`normalize_leading` over
 `Spread {leading, trailing: Option<usize>}`); pairing functions take `SpreadLayout` (never
-`SpreadMode`/`Auto` — `Auto` is unreachable at the type level in pairing).
+`SpreadMode`/`Auto` — `Auto` is unreachable at the type level in pairing). Also exports
+`SpreadContext` — an immutable cohesion wrapper bundling `(total, layout, cover)` that
+delegates to those free fns, so call sites read as intent rather than positional-arg plumbing.
 
 ### viewport
 
@@ -195,9 +197,10 @@ Navigation backed by `ImageCache`; drives a two-page spread via
 `current_spread() -> Option<Result<SpreadImages, CoreError>>`, with `apply` moving in spread units.
 PR6 `open_path(path)` dispatches via `ArchiveLoader` + skipped warn + a `last_open_skipped()` getter,
 and `open_folder` now delegates to it. PR8a added `jump_to(page) -> bool` — routes through
-`normalize_leading` so `index` stays a valid spread leading, clamps out-of-range, guards
-`page_count==0` to avoid underflow, and returns whether it moved, mirroring `set_viewport_size`'s
-"did it change → caller refreshes" convention — and `current_source() -> Option<Arc<dyn PageSource>>`
+`SpreadContext::normalize` (via `spread_ctx()`) so `index` stays a valid spread leading, clamps
+out-of-range, guards `page_count==0` to avoid underflow, and returns whether it moved, mirroring
+`set_viewport_size`'s "did it change → caller refreshes" convention — and
+`current_source() -> Option<Arc<dyn PageSource>>`
 retaining the opened `Arc` because `ImageCache` does not expose its source; `index()`/`page_count()`
 lost their `#[allow(dead_code)]`, now used by the thumbnail-strip wiring.
 

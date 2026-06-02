@@ -10,9 +10,8 @@
 
 use crate::keymap::NavAction;
 use gashuu_core::{
-    next_leading, normalize_leading, prev_leading, spread_at, ArchiveLoader, CacheConfig,
-    CoreError, CoverMode, DecodedImage, ImageCache, PageSource, ReadingDirection, Settings,
-    SpreadLayout, SpreadMode,
+    ArchiveLoader, CacheConfig, CoreError, CoverMode, DecodedImage, ImageCache, PageSource,
+    ReadingDirection, Settings, SpreadContext, SpreadLayout, SpreadMode,
 };
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -173,12 +172,7 @@ impl ViewerState {
         if self.page_count == 0 {
             return false;
         }
-        let target = normalize_leading(
-            self.page_count,
-            self.effective_layout(),
-            self.cover_mode,
-            page.min(self.page_count - 1),
-        );
+        let target = self.spread_ctx().normalize(page.min(self.page_count - 1));
         let moved = target != self.index;
         self.index = target;
         moved
@@ -193,16 +187,9 @@ impl ViewerState {
         if self.page_count == 0 {
             return false;
         }
-        let layout = self.effective_layout();
-        let lead = normalize_leading(
-            self.page_count,
-            layout,
-            self.cover_mode,
-            page.min(self.page_count - 1),
-        );
-        spread_at(self.page_count, layout, self.cover_mode, lead)
-            .trailing
-            .is_some()
+        let ctx = self.spread_ctx();
+        let lead = ctx.normalize(page.min(self.page_count - 1));
+        ctx.spread_at(lead).trailing.is_some()
     }
 
     // Test-only accessors (same #[allow(dead_code)] convention as the existing
@@ -279,6 +266,13 @@ impl ViewerState {
         self.spread_mode.resolve(self.viewport_aspect)
     }
 
+    /// Build a `SpreadContext` from the current `page_count`, `effective_layout()`,
+    /// and `cover_mode` so the `(total, layout, cover)` triple is assembled in one
+    /// place rather than reconstructed positionally at each call site.
+    fn spread_ctx(&self) -> SpreadContext {
+        SpreadContext::new(self.page_count, self.effective_layout(), self.cover_mode)
+    }
+
     /// Apply a navigation action a spread at a time. Returns true if the leading
     /// index moved. In Single mode this is the old ±1 clamp; in Double mode it
     /// advances/retreats one spread (skipping the partner page). Auto first
@@ -288,10 +282,10 @@ impl ViewerState {
         if self.page_count == 0 {
             return false;
         }
-        let layout = self.effective_layout();
+        let ctx = self.spread_ctx();
         let next = match action {
-            NavAction::Next => next_leading(self.page_count, layout, self.cover_mode, self.index),
-            NavAction::Prev => prev_leading(self.page_count, layout, self.cover_mode, self.index),
+            NavAction::Next => ctx.next(self.index),
+            NavAction::Prev => ctx.prev(self.index),
         };
         let moved = next != self.index;
         self.index = next;
@@ -310,12 +304,7 @@ impl ViewerState {
         if self.page_count == 0 {
             return None;
         }
-        let s = spread_at(
-            self.page_count,
-            self.effective_layout(),
-            self.cover_mode,
-            self.index,
-        );
+        let s = self.spread_ctx().spread_at(self.index);
         let leading = match cache.get(s.leading) {
             Ok(img) => img,
             Err(e) => return Some(Err(e)),
@@ -457,12 +446,7 @@ impl ViewerState {
             self.index = 0;
             return;
         }
-        self.index = normalize_leading(
-            self.page_count,
-            self.effective_layout(),
-            self.cover_mode,
-            self.index,
-        );
+        self.index = self.spread_ctx().normalize(self.index);
     }
 
     pub fn reading_direction(&self) -> ReadingDirection {
@@ -485,12 +469,7 @@ impl ViewerState {
             (None, _) => "No folder opened".to_string(),
             (Some(_), 0) => "Folder contains no images".to_string(),
             (Some(_), _) => {
-                let s = spread_at(
-                    self.page_count,
-                    self.effective_layout(),
-                    self.cover_mode,
-                    self.index,
-                );
+                let s = self.spread_ctx().spread_at(self.index);
                 let pages = if let Some(t) = s.trailing {
                     format!("{}\u{2013}{} / {}", s.leading + 1, t + 1, self.page_count)
                 } else {
