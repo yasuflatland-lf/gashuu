@@ -47,6 +47,37 @@ Clicking a `Button` moves focus to it; the page `FocusScope` must call `fs.focus
 
 `from_json` normalizes after deserialize: `cache_size` is floored to 1 via `Settings::cache_config()`, which constructs a `CacheConfig` whose `new` enforces `capacity >= 1` (the single source of truth for that floor — `ImageCache::new` no longer clamps; it consumes a `CacheConfig` whose capacity is already guaranteed `>= 1`, so the `NonZeroUsize::new(...).unwrap()` inside it is provably safe). `recent_files.truncate(MAX_RECENT_FILES)` prevents an over-long hand-edited list from persisting forever via exit-save. **`preload_pages` is deliberately NOT clamped** — 0 is a valid "prefetch disabled" radius and not coerced downstream, so clamping it would silently override a legitimate user choice.
 
+### Value objects own their invariants; pass the whole object, not its fields
+
+When a primitive carries an invariant (e.g. an LRU `capacity` that must be `>= 1`), don't
+re-assert it with scattered `.max(1)` at each layer. Wrap it in a small immutable value object
+that enforces the invariant in its constructor, so an invalid value cannot exist downstream.
+`CacheConfig` (PR59, `cache_config.rs`) is the canonical example: `new(capacity, radius)` clamps
+`capacity` to `>= 1` once, exposes read-only `capacity()`/`radius()`, and is `Copy`. Because every
+`CacheConfig` is valid, `ImageCache::new`'s `NonZeroUsize::new(config.capacity()).unwrap()` is
+provably infallible -- the clamp it used to do internally is gone.
+
+Three hard-won rules for such a type:
+
+1. **Do NOT `#[derive(Deserialize)]` on it.** serde populates the private fields directly,
+   bypassing the constructor and its clamp -- re-opening the invalid-state hole a corrupt or
+   hand-edited file could exploit. Keep the value object serde-free; persist the *raw* primitives
+   on a separate struct (`Settings { cache_size, preload_pages }`) and expose a getter
+   (`Settings::cache_config()`) that builds the validated object on read. That getter is the
+   canonical conversion but not the *only* construction site (the settings dialog rebuilds one
+   live), so don't over-claim "the single point" in its doc.
+2. **Single-source the floor.** If you also keep a storage-hygiene normalization on the load path,
+   route it through the value object instead of repeating the literal:
+   `settings.cache_size = settings.cache_config().capacity();` -- now the `>= 1` floor is defined in
+   exactly one place (`CacheConfig::new`). See the read-path-invariant entry above for why the
+   stored field is still normalized at all.
+3. **Pass the whole object to constructors, not its fields.** `ImageCache::new(source, config)`
+   beats `ImageCache::new(source, capacity, radius)`: two same-typed `usize` args are a silent
+   transposition footgun (swap capacity/radius and it still compiles), whereas a single
+   `CacheConfig` cannot be mis-ordered. Keep the two-field mapping
+   (`CacheConfig::new(cache_size, preload_pages)`) in one tested place so the only transpose risk
+   is also the only thing under test.
+
 ### Parse the schema `version` with `u32::try_from`, not `as u32`
 
 a truncating cast wraps crafted huge values (`u32::MAX + 1` → 0) and silently re-migrates.

@@ -101,6 +101,17 @@ prefetch in front of any `PageSource`.
 
 See [ADR-0003](ADRs/0003-image-loading-and-caching.md) for the LRU/prefetch decision.
 
+### CacheConfig
+
+PR59, `cache_config.rs`. Immutable value object holding the LRU `capacity` (clamped to `>= 1` in
+`new`) and the prefetch `radius` (`0` = prefetch disabled). It owns the capacity invariant in its
+constructor, so an invalid cache size is unrepresentable downstream. `Settings` keeps the raw
+`cache_size`/`preload_pages` integers (serde-flat, JSON unchanged) and exposes
+`cache_config() -> CacheConfig`; `ImageCache::new` and `ViewerState` consume the `CacheConfig`,
+which is why `ImageCache::new`'s `NonZeroUsize::new(config.capacity()).unwrap()` is provably safe.
+Intentionally not `Deserialize` (that would bypass the clamp). See
+[patterns.md](patterns.md) for the value-object pattern.
+
 ### spread
 
 `spread.rs`. Pure, Slint/tracing-free, reading-direction-agnostic page-pairing

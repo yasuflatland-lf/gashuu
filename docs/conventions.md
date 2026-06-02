@@ -40,3 +40,12 @@ Key facts: `#[path]` resolves relative to the **parent file's directory** (`src/
 ### Test fixtures (no committed binaries)
 
 Tests synthesize fixtures in memory (the `image` crate makes tiny PNGs) plus `tempfile` for filesystem cases — **no committed binary fixtures.** Two exceptions, both committed TEXT not binaries: insta `.snap` files (see [docs/patterns.md](patterns.md)), and (PR7) the base64-encoded RAR `.cbr` fixtures in `crates/gashuu-core/src/test_fixtures.rs` (RAR has no Rust encoder, so they cannot be synthesized in-memory like PNGs/ZIPs).
+
+### Validated value objects must not derive `Deserialize`
+
+A type that enforces an invariant in its constructor (e.g. `CacheConfig::new` clamps
+`capacity >= 1`) must NOT `#[derive(Deserialize)]`: serde would populate its private fields
+directly and bypass the constructor, allowing invalid states from a corrupt or hand-edited file.
+Persist the raw primitives on a plain struct (`Settings`) and build the validated object on read
+via a getter (`Settings::cache_config()`). Full pattern: see
+[patterns.md](patterns.md) ("Value objects own their invariants").
