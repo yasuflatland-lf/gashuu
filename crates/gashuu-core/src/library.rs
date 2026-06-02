@@ -89,6 +89,17 @@ pub struct Library {
     books: Vec<Book>,
 }
 
+/// Outcome of [`Library::register_opened`]: where to resume reading and whether the
+/// stored page count changed (so the caller can decide whether to rebuild the
+/// carousel). A pure value — no I/O implied.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct OpenRegistration {
+    /// The position to resume at (the book's recorded `ReadingProgress`).
+    pub resume: ReadingProgress,
+    /// Whether the stored page count actually changed during registration.
+    pub count_changed: bool,
+}
+
 impl Library {
     /// An empty library.
     pub fn new() -> Self {
@@ -157,6 +168,29 @@ impl Library {
                 true
             }
             _ => false,
+        }
+    }
+
+    /// Register a freshly opened book and report how to resume it. Idempotent add
+    /// by canonical path, then back-fill the page count when known (`page_count >
+    /// 0`; `0` is the unknown sentinel — an empty/fully-skipped source — and is
+    /// left untouched, so `set_page_count`'s `> 0` invariant is never violated).
+    /// Returns the resume position (the book's `ReadingProgress`) and whether the
+    /// stored count changed, so the caller can decide to rebuild the carousel.
+    /// Pure domain rule — no I/O. `canonical` is the canonicalized open key (the
+    /// same key `last_page`/`set_page_count` use).
+    pub fn register_opened(&mut self, canonical: &Path, page_count: usize) -> OpenRegistration {
+        self.add(canonical.to_path_buf());
+        let count_changed = page_count > 0 && self.set_page_count(canonical, page_count);
+        let resume = self
+            .books
+            .iter()
+            .find(|b| b.path() == canonical)
+            .map(Book::progress)
+            .unwrap_or(ReadingProgress::new(0, 0));
+        OpenRegistration {
+            resume,
+            count_changed,
         }
     }
 
@@ -378,5 +412,53 @@ mod tests {
         let missing = Book::from_path(PathBuf::from("/manga/missing.cbz"));
         assert!(Library::is_available(&present));
         assert!(!Library::is_available(&missing));
+    }
+
+    #[test]
+    fn register_opened_adds_fresh_book_and_back_fills_count() {
+        let mut lib = Library::new();
+        let path = PathBuf::from("/manga/a.cbz");
+        let reg = lib.register_opened(&path, 10);
+        assert_eq!(lib.books().len(), 1, "fresh open must add the book");
+        assert!(reg.count_changed, "0 -> 10 must report a count change");
+        assert!(reg.resume.is_unread(), "fresh book resumes as unread");
+        assert_eq!(reg.resume.reached(), 0);
+        assert_eq!(reg.resume.total(), 10);
+    }
+
+    #[test]
+    fn register_opened_is_idempotent_and_reports_no_change_when_count_unchanged() {
+        let mut lib = Library::new();
+        let path = PathBuf::from("/manga/a.cbz");
+        lib.register_opened(&path, 10);
+        let reg = lib.register_opened(&path, 10);
+        assert_eq!(lib.books().len(), 1, "re-opening must not duplicate");
+        assert!(
+            !reg.count_changed,
+            "an unchanged count must report no change"
+        );
+    }
+
+    #[test]
+    fn register_opened_skips_set_page_count_for_unknown_sentinel() {
+        // page_count == 0 is the unknown sentinel: the `> 0` guard skips
+        // set_page_count, so its debug_assert is never hit and total stays 0.
+        let mut lib = Library::new();
+        let path = PathBuf::from("/manga/b.cbz");
+        let reg = lib.register_opened(&path, 0);
+        assert_eq!(lib.books().len(), 1, "the book is still added");
+        assert!(!reg.count_changed, "the sentinel must not change the count");
+        assert_eq!(reg.resume.total(), 0, "count stays the unknown sentinel");
+    }
+
+    #[test]
+    fn register_opened_resumes_at_recorded_last_page() {
+        let mut lib = Library::new();
+        let path = PathBuf::from("/manga/a.cbz");
+        assert!(lib.add(path.clone()));
+        assert!(lib.set_last_page(&path, 5));
+        let reg = lib.register_opened(&path, 10);
+        assert_eq!(reg.resume.reached(), 5, "resume reflects the recorded page");
+        assert_eq!(reg.resume.current(), 6, "current is reached + 1");
     }
 }

@@ -844,49 +844,39 @@ fn open_and_present(
             return;
         }
     };
-    // Register the freshly opened book in the Library so its reading position
-    // has a persistent home. `add` is idempotent (dedup by canonical path) and
-    // returns false for a book already present, so re-opening keeps its stored
-    // last_page. This is what makes write-back/resume observable for books
-    // opened via Open Folder / Open Archive (carousel-opened books are already
-    // present, so `add` is a no-op there).
-    library.borrow_mut().add(path.to_path_buf());
-    // The CANONICAL key that `open_path`/`add` store (read from `open_file`),
-    // not the raw `path` argument, which may be a non-canonical dialog path.
-    // It is the same key `last_page`/`set_page_count`/`write_back_position` use;
-    // computed ONCE here and reused for the page-count back-fill and the resume
-    // lookup below. The `state.borrow()` `Ref` drops at the `;`.
+    // The CANONICAL key the source was opened under (read from `open_file`),
+    // not the raw dialog `path`, which may be a non-canonical dialog path. It is
+    // the same key `last_page`/`set_page_count`/`write_back_position` use. The
+    // `state.borrow()` `Ref` drops at the `;`.
     let canonical = state.borrow().open_file().map(Path::to_path_buf);
-    // Back-fill the book's persisted page count so the carousel can show a real
-    // total/progress. GUARDED on `n > 0`: an empty folder or a fully
-    // zip-slip/oversized-skipped archive opens Ok with `page_count() == 0`, the
-    // unknown sentinel that `set_page_count`'s debug_assert forbids — skip those.
-    // Borrow discipline: `state` and `library` are distinct `RefCell`s, so the
-    // `state.borrow()` in the scrutinee and `library.borrow_mut()` in the arm
-    // cannot conflict; `page_count()` returns a `Copy` `usize` — nothing is held
-    // across the arm.
-    let count_changed = match (&canonical, state.borrow().page_count()) {
-        (Some(c), n) if n > 0 => library.borrow_mut().set_page_count(c, n),
-        _ => false,
+    // `page_count()` returns a `Copy` `usize`; the `state.borrow()` drops at the
+    // `;` so it cannot conflict with the `library.borrow_mut()` below.
+    let page_count = state.borrow().page_count();
+    // `register_opened` performs the idempotent add, the guarded page-count
+    // back-fill (skipping the `page_count == 0` unknown sentinel an empty folder
+    // or a fully skipped archive opens with), and the resume lookup as one domain
+    // rule. Borrow discipline: it holds `library.borrow_mut()` only for this
+    // statement; `state.borrow_mut().jump_to(...)` is a separate statement on a
+    // distinct `RefCell`.
+    let count_changed = if let Some(c) = canonical.as_deref() {
+        let reg = library.borrow_mut().register_opened(c, page_count);
+        // Resume at the recorded position (0/no-op via jump_to's guard for a
+        // never-opened book).
+        state.borrow_mut().jump_to(reg.resume.reached());
+        reg.count_changed
+    } else {
+        false
     };
     // Persist the newly registered book (and any back-filled page count)
     // immediately, mirroring the recents save-on-open above, so the library
     // shelf stays consistent even if the app exits before the next leave point.
     // Capture the result to surface AFTER refresh (surfacing now would be
-    // clobbered by the spread/status push). Borrow discipline: `add`/
-    // `set_page_count`'s borrow_mut dropped at their `;`; this is a fresh borrow.
+    // clobbered by the spread/status push). Borrow discipline: `register_opened`'s
+    // borrow_mut dropped at its `;`; this is a fresh borrow.
     let library_save: Result<(), CoreError> = library.borrow().save();
     if let Err(e) = &library_save {
         tracing::error!(error = %e, "failed to save library on open");
     }
-    // Resume at the stored reading position. `last_page` returns 0 for an
-    // unknown book (no-op via jump_to's guard). Borrow discipline:
-    // `library.borrow()` and `state.borrow_mut()` are separate, single-statement
-    // borrows on distinct RefCells that cannot conflict.
-    let resume_page = canonical
-        .as_deref()
-        .map_or(0, |p| library.borrow().last_page(p));
-    state.borrow_mut().jump_to(resume_page);
     refresh(ui, &state.borrow(), viewport);
     // Compose extra notices onto the status line WITHOUT replacing it (the
     // refresh above set the base spread status). Mirrors the skipped-entries
