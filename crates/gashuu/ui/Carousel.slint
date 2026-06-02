@@ -173,7 +173,7 @@ export component Carousel inherits Rectangle {
     private property <length> cover-w: Math.clamp(root.width * 0.26, 140px, 240px); // focused cover width (responsive)
     private property <length> cover-h: root.cover-w * 1.4;  // 7:10 manga cover aspect (280/200 = 1.4)
     private property <length> cover-margin: 4px;       // visible gap between two side (neighbor) covers
-    private property <float> neighbor-scale: 0.78;     // side covers shrink
+    private property <float> neighbor-scale: 0.618;    // side covers shrink to 1/φ (focused : neighbor = φ : 1)
     private property <float> neighbor-opacity: 0.45;   // DESIGN.md components.cover.sideOpacity
     // Step between adjacent cover centers. Sized so two SIDE covers (each at
     // `neighbor-scale`) clear each other by exactly `cover-margin` — that is the
