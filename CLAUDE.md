@@ -27,3 +27,4 @@ This file is the L1 entry point; detailed conventions and hard-won gotchas live 
 - All comments, identifiers, and docs in **English**.
 - `gashuu-core` stays headless — no `slint`, no `tracing`; the core↔UI boundary is RGBA bytes + dimensions.
 - TDD; keep the crate compiling at every save; keep a PR ≤ ~1000 production LOC.
+- UI visual values come from `Theme.*` — no inline color hex in components; `scripts/check-tokens.sh` enforces this (blocking). See docs/conventions.md.

@@ -11,6 +11,10 @@ mise exec -- cargo clippy --workspace --all-targets -- -D warnings
 mise exec -- cargo nextest run --workspace --profile ci
 ```
 
+### Token-drift guard (blocking)
+
+`scripts/check-tokens.sh` fails on any raw color hex (`#rgb`..`#rrggbbaa`) in `crates/gashuu/ui/*.slint` except `Theme.slint`. It runs in CI (the `docs` job) and via `mise run check-tokens`, and is unconditionally blocking for the whole UI (no allowlist). On a hit, move the value into `Theme.slint` and reference the token.
+
 ### Always run cargo fmt after editing
 
 **Always run `cargo fmt` after editing — not just the tests.** Code that compiles and passes `nextest` can still fail the CI `fmt --check` gate (e.g. compact struct/expr literals exceeding rustfmt's default width). Skipping fmt is the easiest way to land a red CI here.

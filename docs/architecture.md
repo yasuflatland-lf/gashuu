@@ -314,15 +314,14 @@ IDENTICAL in both controllers.
 
 **`SettingsDialog.slint`** (PR8b, NEW): modal overlay editing active settings via std-widgets
 `ComboBox`/`SpinBox`/`CheckBox`; two-way `current-index <=> in-out-prop` +
-`selected`/`edited`/`toggled` callbacks.
+`selected`/`edited`/`toggled` callbacks. std-widgets now render dark via the build style set in `build.rs` (`with_style("fluent-dark")`, #70).
 
 **`FirstRunGuide.slint`** (PR8b, NEW): dismissable once-only overlay; a local `GuideLine`
 component dedupes the key-reference rows.
 
-**`Theme.slint`** (PR-S, NEW): a single Slint `global Theme` that centralises all visual design
-tokens — colors, corner radii, spacing, font sizes, component sizes, and shadow colors —
-sourced from `/DESIGN.md`; referenced by the new viewer chrome so inline hex literals do not
-proliferate across `.slint` files.
+**`Theme.slint`** (PR-S, NEW; completed #70): a single Slint `global Theme` that centralises all visual design
+tokens — colors, corner radii, spacing, font sizes, component sizes, shadow colors, motion durations, and font weights —
+sourced from `/DESIGN.md`. ALL UI components reference `Theme.*`; the three previously-inline-hex dialogs (ThumbnailStrip, SettingsDialog, FirstRunGuide) were migrated in #70, and `scripts/check-tokens.sh` is now unconditionally blocking for the whole UI (no allowlist).
 
 **`PageView.slint`**: the page canvas; hosts pan/zoom via a single `TouchArea`. Predates PR-S.
 PR-S added a `reveal()` callback, fired on `changed mouse-x` / `changed mouse-y` (pointer-move),

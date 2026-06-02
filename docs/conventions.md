@@ -21,7 +21,8 @@ Keep a PR ≤ ~1000 production LOC.
 All visual tokens (colors, border radii, spacing, font sizes, component sizes, shadow colors) live in ONE `global Theme` at `crates/gashuu/ui/Theme.slint`, sourced from `/DESIGN.md`. UI components must reference `Theme.<token>` (e.g. `Theme.accent`, `Theme.radius-pill`, `Theme.shadow-popover`) and must **not** paste raw hex or length literals inline — `Theme.slint` is the only place those literals appear, so a restyle changes one file.
 
 - When a new token is needed, extend `Theme` rather than hard-coding the value in the component.
-- Pre-existing inline hex in older dialogs and `ThumbnailStrip.slint` is grandfathered (out of scope to migrate), but it is **not** a licence to add new inline hex.
+- The whole UI now references `Theme.*`; there is **no** grandfathered inline hex. `scripts/check-tokens.sh` blocks any raw color hex (`#rgb`..`#rrggbbaa`) outside `Theme.slint` — treat a hit like a failing gate. The only raw values allowed in components are non-color icon glyph sizes (e.g. a `✕` `font-size`); the guard is hex-only and does not police those.
+- Token types: colors `<color>`, radii/font-sizes `<length>`, motion `<duration>`, font weights `<int>`. Migrating a legacy file to `Theme.*` may deliberately CHANGE rendered values — re-basing to the dark palette is the goal, not a 1:1 hex-preserving swap.
 
 Slint-specific: colors encode alpha as `#RRGGBBAA` (e.g. the `…40` byte is ~25% alpha), unlike CSS `rgba()`.
 
