@@ -3,6 +3,7 @@
 //! Headless (no slint, no tracing). Identity is the canonical filesystem path;
 //! availability is derived (never stored). Persistence lives in `library_store`.
 
+use crate::reading_progress::ReadingProgress;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
@@ -69,6 +70,13 @@ impl Book {
     pub fn page_count(&self) -> usize {
         self.page_count
     }
+
+    /// This book's reading progress as a value object: the last-viewed leading
+    /// page index together with the cached total page count. The `current` /
+    /// `fraction` derivation lives on `ReadingProgress`, not at the call sites.
+    pub fn progress(&self) -> ReadingProgress {
+        ReadingProgress::new(self.last_page, self.page_count)
+    }
 }
 
 /// An ordered, de-duplicated shelf of books. Insertion order is the carousel
@@ -79,6 +87,17 @@ impl Book {
 pub struct Library {
     #[serde(default)]
     books: Vec<Book>,
+}
+
+/// Outcome of [`Library::register_opened`]: where to resume reading and whether the
+/// stored page count changed (so the caller can decide whether to rebuild the
+/// carousel). A pure value — no I/O implied.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct OpenRegistration {
+    /// The position to resume at (the book's recorded `ReadingProgress`).
+    pub resume: ReadingProgress,
+    /// Whether the stored page count actually changed during registration.
+    pub count_changed: bool,
 }
 
 impl Library {
@@ -149,6 +168,38 @@ impl Library {
                 true
             }
             _ => false,
+        }
+    }
+
+    /// Register a freshly opened book and report how to resume it. Idempotent add
+    /// by canonical path, then back-fill the page count when known (`page_count >
+    /// 0`; `0` is the unknown sentinel — an empty/fully-skipped source — and is
+    /// left untouched, so `set_page_count`'s `> 0` invariant is never violated).
+    /// Returns the resume position (the book's `ReadingProgress`) and whether the
+    /// stored count changed, so the caller can decide to rebuild the carousel.
+    /// No persistence I/O; the only filesystem touch is the best-effort
+    /// `canonicalize` inside `add`, which is idempotent when `canonical` is already
+    /// canonical (the result is unchanged, though the syscall still runs; as it is
+    /// when read from `open_file`). `canonical` is the
+    /// canonicalized open key (the same key `last_page`/`set_page_count` use).
+    pub fn register_opened(&mut self, canonical: &Path, page_count: usize) -> OpenRegistration {
+        self.add(canonical.to_path_buf());
+        let count_changed = page_count > 0 && self.set_page_count(canonical, page_count);
+        // The book was just added (or already present), so the lookup by the
+        // same canonical key always resolves; assert it to catch a future
+        // path-identity regression. The fallback keeps a never-panicking
+        // production path.
+        let found = self.books.iter().find(|b| b.path() == canonical);
+        debug_assert!(
+            found.is_some(),
+            "register_opened: book not found by canonical path immediately after add"
+        );
+        let resume = found
+            .map(Book::progress)
+            .unwrap_or(ReadingProgress::new(0, 0));
+        OpenRegistration {
+            resume,
+            count_changed,
         }
     }
 
@@ -332,6 +383,36 @@ mod tests {
     }
 
     #[test]
+    fn progress_is_unread_for_freshly_added_book() {
+        let mut lib = Library::new();
+        let path = PathBuf::from("/manga/a.cbz");
+        assert!(lib.add(path.clone()));
+        let p = lib.books()[0].progress();
+        assert!(p.is_unread(), "freshly added book must be unread");
+        assert_eq!(p.reached(), 0);
+        assert_eq!(p.total(), 0);
+    }
+
+    #[test]
+    fn progress_reflects_last_page_and_page_count() {
+        let mut lib = Library::new();
+        let path = PathBuf::from("/manga/a.cbz");
+        assert!(lib.add(path.clone()));
+        assert!(lib.set_last_page(&path, 3));
+        assert!(lib.set_page_count(&path, 10));
+        let p = lib.books()[0].progress();
+        assert_eq!(p.reached(), 3);
+        assert_eq!(p.total(), 10);
+        assert_eq!(p.current(), 4);
+        let expected: f32 = 3.0 / 10.0;
+        assert!(
+            (p.fraction() - expected).abs() < 1e-6,
+            "fraction should be ~0.3, got {}",
+            p.fraction()
+        );
+    }
+
+    #[test]
     fn is_available_reflects_path_existence() {
         let dir = tempfile::tempdir().unwrap();
         let folder = dir.path().join("Series.1997");
@@ -340,5 +421,79 @@ mod tests {
         let missing = Book::from_path(PathBuf::from("/manga/missing.cbz"));
         assert!(Library::is_available(&present));
         assert!(!Library::is_available(&missing));
+    }
+
+    #[test]
+    fn register_opened_adds_fresh_book_and_back_fills_count() {
+        let mut lib = Library::new();
+        let path = PathBuf::from("/manga/a.cbz");
+        let reg = lib.register_opened(&path, 10);
+        assert_eq!(lib.books().len(), 1, "fresh open must add the book");
+        assert!(reg.count_changed, "0 -> 10 must report a count change");
+        assert!(reg.resume.is_unread(), "fresh book resumes as unread");
+        assert_eq!(reg.resume.reached(), 0);
+        assert_eq!(reg.resume.total(), 10);
+    }
+
+    #[test]
+    fn register_opened_is_idempotent_and_reports_no_change_when_count_unchanged() {
+        let mut lib = Library::new();
+        let path = PathBuf::from("/manga/a.cbz");
+        lib.register_opened(&path, 10);
+        let reg = lib.register_opened(&path, 10);
+        assert_eq!(lib.books().len(), 1, "re-opening must not duplicate");
+        assert!(
+            !reg.count_changed,
+            "an unchanged count must report no change"
+        );
+    }
+
+    #[test]
+    fn register_opened_skips_set_page_count_for_unknown_sentinel() {
+        // page_count == 0 is the unknown sentinel: the `> 0` guard skips
+        // set_page_count, so its debug_assert is never hit and total stays 0.
+        let mut lib = Library::new();
+        let path = PathBuf::from("/manga/b.cbz");
+        let reg = lib.register_opened(&path, 0);
+        assert_eq!(lib.books().len(), 1, "the book is still added");
+        assert!(!reg.count_changed, "the sentinel must not change the count");
+        assert_eq!(reg.resume.total(), 0, "count stays the unknown sentinel");
+    }
+
+    #[test]
+    fn register_opened_resumes_at_recorded_last_page() {
+        let mut lib = Library::new();
+        let path = PathBuf::from("/manga/a.cbz");
+        assert!(lib.add(path.clone()));
+        assert!(lib.set_last_page(&path, 5));
+        let reg = lib.register_opened(&path, 10);
+        assert_eq!(reg.resume.reached(), 5, "resume reflects the recorded page");
+        assert_eq!(reg.resume.current(), 6, "current is reached + 1");
+    }
+
+    #[test]
+    fn register_opened_twice_preserves_recorded_last_page() {
+        // Re-opening a book must NOT reset its resume position: the idempotent
+        // add inside register_opened keeps the existing entry (and its last_page).
+        let mut lib = Library::new();
+        let p = PathBuf::from("/manga/a.cbz");
+        lib.register_opened(&p, 10);
+        assert!(lib.set_last_page(&p, 42));
+        let reg = lib.register_opened(&p, 10);
+        assert_eq!(lib.books().len(), 1, "re-open must not duplicate the book");
+        assert_eq!(reg.resume.reached(), 42, "re-open must preserve last_page");
+        assert!(!reg.count_changed, "same count on re-open is no change");
+    }
+
+    #[test]
+    fn register_opened_reports_count_change_on_new_nonzero_count() {
+        // A legitimately changed (non-zero -> different non-zero) page count is
+        // reported as count_changed, flowing set_page_count's "did it move" branch.
+        let mut lib = Library::new();
+        let p = PathBuf::from("/manga/a.cbz");
+        assert!(lib.register_opened(&p, 10).count_changed);
+        let reg = lib.register_opened(&p, 12);
+        assert!(reg.count_changed, "10 -> 12 is a real change");
+        assert_eq!(reg.resume.total(), 12);
     }
 }

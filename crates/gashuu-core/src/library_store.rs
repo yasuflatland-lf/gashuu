@@ -245,4 +245,55 @@ mod tests {
         assert!(path.ends_with("library.json"));
         assert!(path.to_string_lossy().contains("gashuu"));
     }
+
+    /// Proves that `ReadingProgress` is transient: after serializing a library
+    /// whose book has last_page and page_count set, the JSON object for that
+    /// book contains EXACTLY the four documented keys and none of the
+    /// progress-related keys that a future refactor might accidentally expose.
+    #[test]
+    fn reading_progress_is_not_persisted() {
+        let mut lib = Library::new();
+        let p = PathBuf::from("/manga/a.cbz");
+        assert!(lib.add(p.clone()));
+        assert!(lib.set_last_page(&p, 3));
+        assert!(lib.set_page_count(&p, 10));
+
+        let value: serde_json::Value = serde_json::from_str(&lib.to_json().unwrap()).unwrap();
+        let book = value["books"][0].as_object().unwrap();
+
+        assert_eq!(
+            book.len(),
+            4,
+            "book serde shape must stay {{path,title,last_page,page_count}}"
+        );
+        for k in ["path", "title", "last_page", "page_count"] {
+            assert!(book.contains_key(k), "missing expected key: {k}");
+        }
+        for k in [
+            "progress",
+            "reading_progress",
+            "reached",
+            "fraction",
+            "current",
+        ] {
+            assert!(
+                !book.contains_key(k),
+                "ReadingProgress leaked into library.json: {k}"
+            );
+        }
+    }
+
+    /// Proves that an existing stored `library.json` still loads and
+    /// re-serializes to the same structural shape after this PR (no format
+    /// drift).  Comparison is order-independent because serde_json key
+    /// ordering is not guaranteed.
+    #[test]
+    fn old_library_json_round_trips() {
+        let stored = r#"{"version":1,"books":[{"path":"/manga/a.cbz","title":"a","last_page":42,"page_count":100}]}"#;
+        let lib = Library::from_json(stored).unwrap();
+        let reserialized = lib.to_json().unwrap();
+        let before: serde_json::Value = serde_json::from_str(stored).unwrap();
+        let after: serde_json::Value = serde_json::from_str(&reserialized).unwrap();
+        assert_eq!(before, after, "library.json shape changed across load/save");
+    }
 }

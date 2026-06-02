@@ -15,6 +15,7 @@ source, the divergence is called out in each ADR's "Implementation notes (as-bui
 | [0003](0003-image-loading-and-caching.md) | Load images lazily with ±3 prefetch and an LRU cache | Accepted |
 | [0004](0004-archive-abstraction-and-extraction.md) | Abstract page supply behind a `PageSource` trait, extract in memory | Accepted |
 | [0005](0005-settings-persistence.md) | Persist settings as versioned JSON | Accepted |
+| [0006](0006-reading-position-value-object.md) | Model reading position as a core value object (ReadingProgress) | Accepted |
 
 ## Conventions
 
