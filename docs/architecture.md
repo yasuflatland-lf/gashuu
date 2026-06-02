@@ -222,8 +222,11 @@ point — see the resume/write-back scope entry and `docs/patterns.md`.
 PR-S added two pure scrubber-support helpers:
 
 - `scrub_fraction_to_page(fraction, page_count, rtl)` — pure, total, RTL-aware mapping of a
-  `0..1` knob fraction to a raw 0-based page index (clamped, non-finite-safe); the unit-tested
-  authoritative spec that is mirrored by `Scrubber.slint`'s `drag-page` expression.
+  `0..1` knob fraction to a raw 0-based page index (clamped, non-finite-safe). As of #71 it is the
+  SINGLE LIVE source of that mapping: `Scrubber.slint` passes the raw clamped fraction up via
+  `preview(float)`/`commit(float)` and `main.rs`'s `on_scrub_preview`/`on_scrub_commit` call this
+  helper to resolve the page (the former in-Slint `drag-page` rounding is gone, so it no longer
+  carries `#[allow(dead_code)]`). See [patterns.md](patterns.md) for the one-authoritative-side rule.
 - `preview_is_double(page)` — returns whether a previewed page would land on a 2-page spread
   (using the same layout resolution the body uses) WITHOUT advancing the index; used by the
   scrubber preview to choose 1 vs 2 popover thumbnails.
@@ -301,13 +304,25 @@ PR-58, `enum_adapters.rs`. The 8 `pub(crate)` enum↔index adapters that were pr
 
 ### Slint UI files
 
-**`Carousel.slint`** (PR-0b shell; PR-C rendering; PR-L toolbar/CTA): Library cover-flow carousel.
+**`ui/components/`** (#71, NEW): shared single-purpose UI atoms/molecules, one `export`ed component
+per file — `ProgressBar` (accent/`success` reading-progress fill), `Chip` (pill label, e.g. the
+page counter), `PrimaryButton` (the accent CTA), `ThumbnailCell` (the loaded/loading/failed/highlighted
+cell shared by the page strip, the scrubber preview popover, and the library covers), and `TitleBar`
+(the viewer chrome strip: action affordances + centered book name + optional count chip). Each
+references `Theme.*` via `../Theme.slint`; consumers import via `import { X } from "components/X.slint"`.
+`build.rs` is unchanged — it compiles the single entry `ui/ViewerWindow.slint` and import statements
+cascade. See [docs/conventions.md](conventions.md) for the component RULES.
+
+**`Carousel.slint`** (PR-0b shell; PR-C rendering; PR-L toolbar/CTA; #71 componentized): Library
+cover-flow carousel.
 PR-0b froze the public contract (`CarouselItem` struct + `Carousel` component with `items`,
 `focused-index`, callbacks `open(int)`/`move(int)`/`back()`, `public function focus-self()`); PR-C
 filled in the rendering against that UNCHANGED contract: centered focused cover (accent ring) +
-scaled/dimmed neighbors, a per-cover `ProgressBar` (a local shared private sub-component reused for the
-focused-meta bar), a centered focused-book meta block, a grayed broken-cover placeholder for
-unavailable books, and the 0-book empty-state CTA. Covers start as placeholders
+scaled/dimmed neighbors, a per-cover `ProgressBar` (#71 promoted the former file-private bar to the
+shared `components/ProgressBar.slint`, reused for the focused-meta bar), a centered focused-book meta
+block, a grayed broken-cover placeholder for
+unavailable books, and the 0-book empty-state CTA. #71 also routes its covers and empty-state CTA
+through the shared `ThumbnailCell`/`PrimaryButton` components. Covers start as placeholders
 (`slint::Image::default()`); PR-V's `cover_loader.rs` streams the real cover images into the same
 model row-by-row. PR-L added an always-visible
 "Add files…"/"Add folder…" toolbar + the `add-files()`/`add-folder()` callbacks and wired the
@@ -316,9 +331,11 @@ empty-state CTA to `add-files()` (each restores focus via `focus-self()` after f
 **`Theme.slint`** (PR-0b, NEW): single `global Theme` of visual tokens (colors, spacing, radii,
 font sizes); components reference `Theme.<token>` instead of inline hex literals.
 
-**`ThumbnailStrip.slint`** (PR8a, NEW): horizontal `Flickable` + `HorizontalLayout` + `for` over a
+**`ThumbnailStrip.slint`** (PR8a; #71): horizontal `Flickable` + `HorizontalLayout` + `for` over a
 `VecModel` — the FIRST `VecModel`/`Repeater` use in the codebase since `ListView` is
-vertical-only — over `struct ThumbnailItem { image, page, loaded, failed }`.
+vertical-only — over `struct ThumbnailItem { image, page, loaded, failed }`. #71 replaced the inline
+per-cell markup with the shared `ThumbnailCell` component (border ring / background / radius /
+loaded-loading-failed-highlighted states now live there).
 
 **`thumbnail_strip.rs`** (`ThumbnailController`, PR-B / issue #30): owns the strip's
 `Rc<VecModel<ThumbnailItem>>`, the epoch counter, and the cancel flag; `new(&ui)` builds and binds the
@@ -351,10 +368,12 @@ sourced from `/DESIGN.md`. ALL UI components reference `Theme.*`; the three prev
 PR-S added a `reveal()` callback, fired on `changed mouse-x` / `changed mouse-y` (pointer-move),
 which triggers the auto-hiding viewer chrome.
 
-**`Scrubber.slint`** (PR-S, NEW): bottom auto-hiding page-scrubber with a drag-time thumbnail
-preview popover. Frozen public surface: `in` properties `current-page` / `total-pages` / `rtl` /
-`double` / `preview-a` / `preview-b` / `chrome-shown`; callbacks `preview(int)` / `commit(int)`.
-Drag fires `preview` only; pointer-release fires `commit`.
+**`Scrubber.slint`** (PR-S; #71): bottom auto-hiding page-scrubber with a drag-time thumbnail
+preview popover. Public surface: `in` properties `current-page` / `total-pages` / `rtl` /
+`double` / `preview-a` / `preview-b` / `chrome-shown`; callbacks `preview(float)` / `commit(float)`
+(#71 retyped these from `int`: the scrubber now passes the RAW clamped knob fraction and Rust owns
+the fraction→page rounding — see [patterns.md](patterns.md)). Drag fires `preview` only;
+pointer-release fires `commit`. Its preview thumbs use the shared `ThumbnailCell` component.
 
 **`ViewerWindow.slint`**: extended in PR8b with the two `if root.show-X : Component` overlays
 (last children = front), a "Settings…" toolbar button, the in/in-out properties + setter
@@ -365,7 +384,10 @@ screen` gates the Library `Carousel` (screen 0) vs the Viewer body (screen 1) vi
 reason); Settings/Guide overlays remain viewer-scoped. Extended again in PR-S to mount the
 `Scrubber` + a top-right page-counter chip as auto-hiding chrome inside the screen-1 viewer,
 driven by a `chrome-shown` bool + an idle `Timer`; chrome is revealed on pointer-move (via
-`PageView.reveal()`), arrow-key presses, and scrubber drag.
+`PageView.reveal()`), arrow-key presses, and scrubber drag. #71 mounted the shared `TitleBar`
+component (bound to a new `current-book-name` in-prop — derived in `main.rs` from the post-open
+`ViewerState::open_file()`, see [patterns.md](patterns.md)), routed the page-counter chip through the
+shared `Chip` component, and set a `min-width`/`min-height` floor on the window.
 
 ### rfd file/folder picker
 

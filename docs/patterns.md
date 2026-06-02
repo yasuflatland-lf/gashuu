@@ -11,9 +11,9 @@ An agent should read the relevant entry BEFORE editing the corresponding code ar
 
 In a *binary* crate `pub` is not a public API surface, so `-D warnings` flags an accessor used only by `#[cfg(test)]` code as dead; such `#[allow(dead_code)]` is intentional and documented in place. (PR8a's thumbnail-strip wiring now USES `ViewerState::page_count()`/`index()` at runtime, so they shed their `#[allow]` — the pattern still applies to any future test-only accessor.)
 
-### A pure Rust helper is the tested spec for logic re-derived in Slint markup (PR-S)
+### When one rule must hold across the Slint↔Rust boundary, make ONE side authoritative — don't mirror it (PR-S → #71)
 
-When a mapping is computed in Slint expressions at runtime (e.g. the scrubber knob-fraction → page), keep a pure Rust twin (`scrub_fraction_to_page`) as the unit-tested authoritative spec and keep the Slint expression an EXACT mirror: same clamp to `[0,1]`, same round-half-up (`floor(x + 0.5)`), and RTL inverts the fraction BEFORE rounding (`floor((1-frac)*last + 0.5)`) — `last - floor(frac*last + 0.5)` diverges at half-integer fractions. The twin has no runtime caller in the binary, so it carries `#[allow(dead_code)]` (see the entry above). Cross-reference both sides so a future edit to one stays in lockstep with the other.
+PR-S originally MIRRORED the scrubber knob-fraction → page mapping: a pure Rust twin (`scrub_fraction_to_page`) was the unit-tested spec, and `Scrubber.slint` carried an EXACT-mirror `drag-page` expression (same clamp, same round-half-up, RTL inverting the fraction before rounding). #71 deleted the Slint side: the scrubber now passes the RAW clamped knob fraction (a `float` in `[0,1]`) up via `preview(float)`/`commit(float)`, and `on_scrub_preview`/`on_scrub_commit` in `main.rs` call `scrub_fraction_to_page` to resolve the page. So Rust is the SINGLE LIVE source of that mapping (clamp, RTL inversion, round-half-up all live there) — it has a real runtime caller and is no longer `#[allow(dead_code)]` / test-only. THE LESSON: a mirrored rule drifts (the two sides silently diverge on the next edit to one of them). When a single rule must hold on both sides of the Slint↔Rust boundary, make ONE side authoritative — let Slint pass the raw inputs across the boundary and compute the rule once in Rust, rather than re-deriving it in markup the cargo gates cannot test.
 
 ### Enforce load-bearing invariants in the type, not in prose
 
@@ -396,11 +396,15 @@ uses a Slint `public function focus-pages() { fs.focus(); }` called from Rust as
 
 ### Scrubber drag is preview-on-move, commit-on-release (PR-S)
 
-During a scrubber drag, ONLY the preview popover + page-counter update: `preview(int)` pulls thumbnails from the existing `VecModel<ThumbnailItem>` and sets the counter text — it must NEVER call `jump_to`/`refresh`. The page body changes ONLY on knob release via `commit(int)` → `jump_to` → `refresh`. Keep all decode/navigation side effects on the commit path; preview is display-only and UI-thread-only (the `Rc`/`!Send` thumbnail model is never crossed).
+During a scrubber drag, ONLY the preview popover + page-counter update: `preview(float)` resolves the raw fraction to a page (via `scrub_fraction_to_page`), pulls thumbnails from the existing `VecModel<ThumbnailItem>`, and sets the counter text — it must NEVER call `jump_to`/`refresh`. The page body changes ONLY on knob release via `commit(float)` → `jump_to` → `refresh`. Keep all decode/navigation side effects on the commit path; preview is display-only and UI-thread-only (the `Rc`/`!Send` thumbnail model is never crossed). (Both callbacks carry the RAW clamped fraction, not a page index — see the authoritative-side boundary entry above.)
 
 ### Only the INSTANTIATED root window's surface is reachable from Rust — re-expose child properties/callbacks on the root (PR-L)
 
 Slint's generated Rust API exposes ONLY the properties/callbacks/`public function`s declared on the window component `main.rs` instantiates (`ViewerWindow`). A child component's internal `in property`/callback (e.g. `Carousel.items`, `Carousel.add-files()`) is INVISIBLE to Rust — there is no generated accessor for it. To wire a child property/handler from Rust, declare a twin on the ROOT and bind/forward it to the child: `ViewerWindow` exposes `in property <[CarouselItem]> carousel-items` bound by `items: root.carousel-items;`, and root `add-files()`/`add-folder()` callbacks forwarded into the `Carousel`. Generated name mapping: kebab→snake_case, `set_<prop>`/`get_<prop>`, `on_<callback>`, `invoke_<public function>` (e.g. `set_carousel_items`, `on_add_files`, `invoke_focus_carousel`). When adding a new Rust-driven property/handler, put it on the root window first — not only on the child.
+
+### A callback SIGNATURE change ripples to THREE places, not one (#71)
+
+A child-component callback whose type changes (e.g. the scrubber's `preview`/`commit` going from `int` to `float` when #71 moved fraction→page rounding into Rust) must be edited in all THREE: (1) the child component `.slint` declares the callback; (2) the `ViewerWindow` root TWIN callback `.slint` re-declares + forwards it (Rust binds only the root window surface — see the entry above, so the child's callback alone is invisible to Rust); and (3) the Rust closure(s) (`on_scrub_preview`/`on_scrub_commit`) that receive the new type. Miss any one and it either won't compile (Rust closure type mismatch) or won't wire (an unforwarded root twin). Search for both the child name and the kebab→snake twin name when changing a callback's type.
 
 ### `if`-gated element ids are NOT reachable from the parent's `public function`s / `init` — gate with `visible:` when an id must be parent-reachable (PR-0b)
 
@@ -412,11 +416,19 @@ Slint scopes an id declared inside an `if`/`for` branch to a child the enclosing
 
 ### Slint 1.16.1 accepted syntax + limitations (verified at impl time, PR-C)
 
-Confirmed ACCEPTED by the pinned Slint 1.16.1 (future work need not re-verify): `Math.clamp(x, lo, hi)`, `overflow: elide` on `Text`, `color.with-alpha(f)`, 8-digit `#rrggbbaa` hex, and `@linear-gradient(deg, stop% … )`. NOT supported: per-`Repeater`-item z-order is not settable in Slint 1.x — layer a focused item via opacity/size/accent-ring, not z; no `line-height` on `Text` in Slint 1.x — DESIGN's per-role `lineHeight` cannot be expressed and must not be faked (space elements apart instead). A shared PRIVATE (non-exported) sub-component (`component Foo inherits Rectangle { in property … }`) cleanly de-duplicates repeated markup WITHOUT touching any exported struct/component contract, and works both absolutely positioned and as a layout child (PR-C used one — `ProgressBar` — for the per-cover and focused-meta progress bars in `Carousel.slint`).
+Confirmed ACCEPTED by the pinned Slint 1.16.1 (future work need not re-verify): `Math.clamp(x, lo, hi)`, `overflow: elide` on `Text`, `color.with-alpha(f)`, 8-digit `#rrggbbaa` hex, and `@linear-gradient(deg, stop% … )`. NOT supported: per-`Repeater`-item z-order is not settable in Slint 1.x — layer a focused item via opacity/size/accent-ring, not z; no `line-height` on `Text` in Slint 1.x — DESIGN's per-role `lineHeight` cannot be expressed and must not be faked (space elements apart instead). A shared PRIVATE (non-exported) sub-component (`component Foo inherits Rectangle { in property … }`) cleanly de-duplicates repeated markup WITHIN one file WITHOUT touching any exported struct/component contract, and works both absolutely positioned and as a layout child (PR-C used a file-private `ProgressBar` for the per-cover and focused-meta bars in `Carousel.slint`). When the same markup must be reused ACROSS files, promote it to an `export`ed component under `ui/components/` instead (#71 did exactly this — `ProgressBar` is now `components/ProgressBar.slint`, imported by `Carousel.slint`); keep the file-private form only when the reuse is confined to one file.
 
 ### The cargo gates do NOT exercise Slint markup behavior — verify `.slint` logic against the spec by hand (PR-0b)
 
 fmt/clippy/nextest cover Rust only; Slint key handlers, bindings, and visibility live in `.slint` markup that compiles via `build.rs` but has NO automated behavioral test (the project does not unit-test Slint visuals). After editing a `.slint` `FocusScope` key handler or property binding, explicitly check it against the spec — a missing key arm compiles and passes ALL three gates silently. Concrete PR-0b miss: the `Key.UpArrow -> nav("up")` arm (the entire point of the GoToLibrary feature) was initially omitted from the viewer `FocusScope` yet every gate stayed green; it was caught only by spec re-reading.
+
+### Slint compiles only what is REACHABLE from the entry file — create-and-consume are verified together (#71)
+
+`build.rs` compiles the single entry `ui/ViewerWindow.slint`; `import` statements cascade to pull in only the files reachable from it (which is why adding the new `ui/components/` atoms/molecules needed NO `build.rs` change). The flip side: a component under `ui/components/` is NOT compiled until some reachable file imports it, so a standalone component's syntax errors surface ONLY on its first consumption. Treat create-and-consume as one step — adding a component AND wiring its first consumer in the same change is what actually exercises the new file; an unimported component can sit broken with every gate green.
+
+### A component that `inherits Rectangle` has NO intrinsic layout size (#71)
+
+A `component Foo inherits Rectangle` carries no preferred/minimum size, so dropping it into a `HorizontalLayout`/`VerticalLayout` gives it zero height (or zero width) unless the consumer supplies `min-height`/`min-width` or a stretch. The shared `ThumbnailCell` (which `inherits Rectangle`) needs explicit `horizontal-stretch: 1` + `min-height` at each layout call site (the scrubber preview popover and the strip) to occupy the area the old inline `Image` did — the `Image` had an intrinsic size the bare `Rectangle` lacks.
 
 ### Showing the thumbnail strip shrinks the `PageView` height, which auto-fires the existing `viewport-resized` wiring
 
@@ -461,6 +473,10 @@ match. Resume/write-back therefore read the key from `state.open_file()`, NEVER 
 argument (which may carry `..`/symlinks/case differences). This is a SILENT-failure trap: a raw-path
 lookup "succeeds" returning `last_page` = 0, so the bug presents as resuming at page 0 rather than an
 error.
+
+### Derive UI state from the authoritative POST-OP state, not the request input (#71)
+
+`OpenBookUseCase::run` returns `()` and bails on `Err` (via `open_path`'s `?` before `set_source`), so a FAILED open does not signal failure to the caller. The viewer title bar therefore derives the current book name from `ViewerState::open_file()` AFTER `run` returns — the canonical path set ONLY on a successful open — NOT from the dialog path passed into `run`. Reading post-op state makes a wrong title structurally impossible: a failed open leaves `open_file()` unchanged (empty on boot, or the still-open prior book), so the title can never show a book that did not open, and it uses the same canonical key the library write-back uses. The general rule: when a multi-step op can fail silently (returns `()`, mutates shared state on success only), drive dependent UI from the op's resulting state, not from the inputs you handed it.
 
 ### Mirror the recents save-on-open convention when registering into another persisted store (PR-R)
 
