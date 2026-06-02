@@ -11,9 +11,10 @@
 //! local module is also named `zip`; an unqualified `zip::` would resolve to
 //! this module, not the crate.
 
-use super::naming::{has_image_ext, natural_cmp, MAX_ENTRY_BYTES};
+use super::naming::{has_image_ext, MAX_ENTRY_BYTES};
 use super::{PageEntry, PageSource};
 use crate::error::CoreError;
+use crate::ordering::natural_cmp;
 use std::io::{BufReader, Read};
 use std::path::{Path, PathBuf};
 

@@ -1,4 +1,4 @@
-//! Library domain model: an ordered, de-duplicated shelf of books.
+//! Library domain model: a naturally ordered, de-duplicated shelf of books.
 //!
 //! Headless (no slint, no tracing). Identity is the canonical filesystem path;
 //! availability is derived (never stored). Persistence lives in `library_store`.
@@ -85,10 +85,15 @@ impl Book {
     }
 }
 
-/// An ordered, de-duplicated shelf of books. Insertion order is the carousel
-/// order. Identity / dedup is on the canonical path (best-effort canonicalized at
-/// `add` time). Mirrors `Settings::push_recent` discipline: one place owns the
-/// invariants.
+fn book_order(a: &Book, b: &Book) -> std::cmp::Ordering {
+    crate::ordering::natural_cmp(a.title(), b.title())
+        .then_with(|| a.path().as_os_str().cmp(b.path().as_os_str()))
+}
+
+/// An ordered, de-duplicated shelf of books. Natural title order is the carousel
+/// order, with canonical path as the deterministic tie-break. Identity / dedup
+/// is on the canonical path (best-effort canonicalized at `add` time). Mirrors
+/// `Settings::push_recent` discipline: one place owns the invariants.
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct Library {
     #[serde(default)]
@@ -112,7 +117,7 @@ impl Library {
         Self::default()
     }
 
-    /// The books in insertion (carousel) order.
+    /// The books in natural title (carousel) order, with canonical path tie-break.
     pub fn books(&self) -> &[Book] {
         &self.books
     }
@@ -127,7 +132,12 @@ impl Library {
             return false;
         }
         self.books.push(Book::from_path(canonical));
+        self.books.sort_by(book_order);
         true
+    }
+
+    pub(crate) fn normalize(&mut self) {
+        self.books.sort_by(book_order);
     }
 
     /// Remove the book identified by `path`. Returns `false` when absent.
@@ -262,14 +272,41 @@ mod tests {
     }
 
     #[test]
-    fn add_appends_in_insertion_order() {
+    fn add_orders_books_by_natural_title() {
         // Non-existent paths exercise the best-effort canonicalize fallback
         // (canonicalize fails - path is used verbatim).
         let mut lib = Library::new();
-        assert!(lib.add(PathBuf::from("/manga/a.cbz")));
-        assert!(lib.add(PathBuf::from("/manga/b.cbz")));
+        assert!(lib.add(PathBuf::from("/manga/vol 10.cbz")));
+        assert!(lib.add(PathBuf::from("/manga/vol 1.cbz")));
+        assert!(lib.add(PathBuf::from("/manga/vol 2.cbz")));
         let titles: Vec<&str> = lib.books().iter().map(|b| b.title()).collect();
-        assert_eq!(titles, vec!["a", "b"], "insertion order must be preserved");
+        assert_eq!(
+            titles,
+            vec!["vol 1", "vol 2", "vol 10"],
+            "library order must use natural title sorting"
+        );
+    }
+
+    #[test]
+    fn add_tie_breaks_same_title_by_canonical_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let a_dir = dir.path().join("a");
+        let b_dir = dir.path().join("b");
+        std::fs::create_dir(&a_dir).unwrap();
+        std::fs::create_dir(&b_dir).unwrap();
+        let a = a_dir.join("Same.cbz");
+        let b = b_dir.join("Same.cbz");
+        std::fs::write(&a, []).unwrap();
+        std::fs::write(&b, []).unwrap();
+        let a = a.canonicalize().unwrap();
+        let b = b.canonicalize().unwrap();
+
+        let mut lib = Library::new();
+        assert!(lib.add(b.clone()));
+        assert!(lib.add(a.clone()));
+
+        let paths: Vec<&Path> = lib.books().iter().map(|book| book.path()).collect();
+        assert_eq!(paths, vec![a.as_path(), b.as_path()]);
     }
 
     #[test]

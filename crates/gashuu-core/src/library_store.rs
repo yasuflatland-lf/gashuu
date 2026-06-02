@@ -70,7 +70,9 @@ impl Library {
         } else {
             value
         };
-        serde_json::from_value(value).map_err(CoreError::Library)
+        let mut library: Library = serde_json::from_value(value).map_err(CoreError::Library)?;
+        library.normalize();
+        Ok(library)
     }
 }
 
@@ -209,6 +211,19 @@ mod tests {
         assert_eq!(loaded.books().len(), 1);
         assert_eq!(loaded.books()[0].path(), Path::new("/manga/a.cbz"));
         assert_eq!(loaded.books()[0].last_page(), 7);
+    }
+
+    #[test]
+    fn load_from_normalizes_old_unsorted_library_order() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("library.json");
+        let stored = r#"{"version":1,"books":[{"path":"/manga/vol 10.cbz","title":"vol 10","last_page":0,"page_count":0},{"path":"/manga/vol 1.cbz","title":"vol 1","last_page":0,"page_count":0},{"path":"/manga/vol 2.cbz","title":"vol 2","last_page":0,"page_count":0}]}"#;
+        std::fs::write(&path, stored).unwrap();
+
+        let loaded = Library::load_from(&path).unwrap();
+
+        let titles: Vec<&str> = loaded.books().iter().map(|book| book.title()).collect();
+        assert_eq!(titles, vec!["vol 1", "vol 2", "vol 10"]);
     }
 
     #[test]

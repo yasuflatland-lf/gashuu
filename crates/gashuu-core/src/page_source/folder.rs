@@ -1,6 +1,7 @@
-use super::naming::{has_image_ext, natural_cmp};
+use super::naming::has_image_ext;
 use super::{PageEntry, PageSource};
 use crate::error::CoreError;
+use crate::ordering::natural_cmp;
 
 use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
