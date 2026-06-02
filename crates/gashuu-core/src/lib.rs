@@ -33,7 +33,7 @@ pub use settings::{
     CoverMode, FitMode, KeyBindings, ReadingDirection, Settings, SpreadLayout, SpreadMode,
     MAX_RECENT_FILES, SETTINGS_VERSION,
 };
-pub use spread::{next_leading, normalize_leading, prev_leading, spread_at, Spread};
+pub use spread::{next_leading, normalize_leading, prev_leading, spread_at, Spread, SpreadContext};
 pub use thumbnail::{generate_cover, generate_thumbnails, DEFAULT_THUMB_MAX_SIDE};
 pub use thumbnail_cache::{cache_key, ThumbnailCache};
 pub use viewport::{
