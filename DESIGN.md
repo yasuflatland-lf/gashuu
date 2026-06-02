@@ -335,6 +335,9 @@ Shows **1 thumbnail (single) or 2 (double)** per the active spread layout, plus 
 numeric token. **During drag the page body does not change** — only the popover and counter update;
 the page commits on release. Thumbnails are pulled from the existing page-thumbnail set (no new decode).
 
+### Thumbnail Failed State — PROPOSED (needs sign-off)
+When a thumbnail/page fails to decode, the cell uses a desaturated-red treatment: surface `{colors.error-surface}` (#2a1820) with a `{colors.error}` (#d16b7c) 1px border and glyph. These two hues are **not yet in the DESIGN palette** — they are proposed additions tuned to the dark canvas and deliberately distinct from the forbidden traffic-light close (`{colors.win-close}` #ff5f57). Pending design sign-off.
+
 ### Title Bar — `components.title-bar`
 Background `{colors.surface-raised}`, 1px bottom `{colors.hairline}`, `{typography.ui-label}` in
 `{colors.text-muted}`, with the document/library name centered and a count chip on the right.
