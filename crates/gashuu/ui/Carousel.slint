@@ -88,9 +88,13 @@ component CoverCard inherits Rectangle {
     // neighbor stay visible. Hidden instances stay instantiated and keep
     // animating, so a focus change slides instead of snapping.
     visible: root.show && (!root.narrow || Math.abs(root.delta) <= 1);
-    animate x, width, height, opacity {
-        duration: Theme.motion-standard;
-        easing: ease-out;
+    animate x {
+        duration: Theme.motion-cinematic;
+        easing: cubic-bezier(0.16, 1, 0.3, 1);
+    }
+    animate width, height, opacity {
+        duration: Theme.motion-cinematic-fade;
+        easing: cubic-bezier(0.16, 1, 0.3, 1);
     }
 
     // The cover card: rounded, card shadow on the focused cover only, accent ring.

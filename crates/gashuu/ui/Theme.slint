@@ -85,6 +85,10 @@ export global Theme {
     // ── Motion ────────────────────────────────────────────────────────────────
     out property <duration> motion-fast: 180ms;     // chrome fades (existing value)
     out property <duration> motion-standard: 240ms; // carousel transitions (P2)
+    // Cinematic carousel slide: expo-out. The easing lives in the animate block,
+    // not here (Slint has no easing token): cubic-bezier(0.16, 1, 0.3, 1).
+    out property <duration> motion-cinematic: 480ms;       // cover-flow x (the slide)
+    out property <duration> motion-cinematic-fade: 300ms;  // cover-flow scale/opacity (resolve earlier)
 
     // ── Typography weights (DESIGN typography roles) ──────────────────────────
     // Line-height is intentionally omitted: Slint 1.x Text has no line-height
