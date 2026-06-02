@@ -79,8 +79,11 @@ pub fn carousel_data(library: &Library) -> Vec<CarouselData> {
 }
 
 /// Saturating `usize -> i32` for display counts (Slint ints are `i32`); a value
-/// beyond `i32::MAX` clamps rather than wrapping negative.
-fn clamp_to_i32(v: usize) -> i32 {
+/// beyond `i32::MAX` clamps rather than wrapping negative. `pub(crate)` so the
+/// cover controller's background page-count prefetch (`cover_loader`) maps a
+/// resolved page count into a carousel row's `total` through the SAME saturating
+/// rule used here, instead of duplicating the conversion.
+pub(crate) fn clamp_to_i32(v: usize) -> i32 {
     i32::try_from(v).unwrap_or(i32::MAX)
 }
 

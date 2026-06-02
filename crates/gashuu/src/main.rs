@@ -101,8 +101,11 @@ fn main() -> color_eyre::Result<()> {
     let _carousel_model = build_carousel_model(&ui, &library.borrow());
 
     // Kick off cover loading for the initial library (cache hits paint now; misses
-    // stream in from rayon workers).
-    covers.start(ui.as_weak(), cover_requests(&library.borrow()));
+    // stream in from rayon workers). Build the requests in a separate statement so
+    // the `library.borrow()` is released before `start` takes a `borrow_mut` to
+    // persist any page counts a prior generation prefetched.
+    let cover_reqs = cover_requests(&library.borrow());
+    covers.start(ui.as_weak(), &library, cover_reqs);
     ui.set_carousel_focused_index(0);
 
     // Top-level screen state machine. App boots to Library (the carousel home).
@@ -765,6 +768,11 @@ fn main() -> color_eyre::Result<()> {
     }
 
     ui.run()?;
+    // Persist any page counts the cover prefetch resolved after the last carousel
+    // refresh, so a book counted this session shows its real total next launch
+    // instead of being re-counted by re-opening its archive. Safe here: the event
+    // loop has exited, so `library` is unborrowed.
+    covers.flush_counts(&library);
     // Write the current reading position back to the library before exit.
     // The `state` and `library` RefCells are no longer borrowed (the event
     // loop has exited), so there is no borrow conflict here.
@@ -1095,8 +1103,10 @@ fn add_books_and_refresh(
     let save_result = library.borrow().save();
     build_carousel_model(ui, &library.borrow());
     // Refresh covers for the new library state; the epoch bump cancels any covers
-    // still streaming from the pre-refresh view.
-    covers.start(ui.as_weak(), cover_requests(&library.borrow()));
+    // still streaming from the pre-refresh view. Build the requests first so the
+    // `library.borrow()` is released before `start`'s `borrow_mut`.
+    let cover_reqs = cover_requests(&library.borrow());
+    covers.start(ui.as_weak(), library, cover_reqs);
     match save_result {
         Err(e) => {
             tracing::error!(error = %e, "failed to save library after {op}");

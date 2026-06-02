@@ -51,6 +51,13 @@ pub(crate) fn build_carousel_model(
 /// order, per the `Library` contract). The cover controller resolves each book's
 /// cache key from its path + mtime and either serves a cached cover or generates
 /// one in the background.
+///
+/// `needs_count` is set for a book whose page count is still unknown
+/// (`Book::page_count_opt() == None` — never opened, no persisted total). The
+/// cover controller resolves the real total for those rows in the background so
+/// the carousel shows "1 / 200" instead of "1 / 0"; a book already carrying a
+/// count (opened before, or back-filled on a prior run) leaves it `false` and is
+/// not re-opened just to count.
 pub(crate) fn cover_requests(library: &Library) -> Vec<cover_loader::CoverRequest> {
     library
         .books()
@@ -59,6 +66,7 @@ pub(crate) fn cover_requests(library: &Library) -> Vec<cover_loader::CoverReques
         .map(|(row, book)| cover_loader::CoverRequest {
             row,
             path: book.path().to_path_buf(),
+            needs_count: book.page_count_opt().is_none(),
         })
         .collect()
 }
@@ -135,6 +143,7 @@ pub(crate) fn thumb_state_at(model: &slint::ModelRc<ThumbnailItem>, page: usize)
 mod tests {
     use super::*;
     use slint::{ModelRc, VecModel};
+    use std::num::NonZeroUsize;
 
     fn item(page: i32, loaded: bool, failed: bool) -> ThumbnailItem {
         ThumbnailItem {
@@ -147,6 +156,39 @@ mod tests {
 
     fn model(items: Vec<ThumbnailItem>) -> ModelRc<ThumbnailItem> {
         ModelRc::new(VecModel::from(items))
+    }
+
+    /// A fresh book (never opened, no persisted total) is flagged `needs_count`,
+    /// so the cover controller resolves its real page count in the background; a
+    /// book with a known count is NOT (it would only re-open the archive to learn
+    /// what is already stored). Row index tracks shelf insertion order.
+    #[test]
+    fn cover_requests_flags_only_books_with_unknown_count() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let unknown = root.path().join("unknown");
+        let known = root.path().join("known");
+        std::fs::create_dir(&unknown).expect("create unknown");
+        std::fs::create_dir(&known).expect("create known");
+
+        let mut lib = Library::new();
+        assert!(lib.add(unknown.clone()));
+        assert!(lib.add(known.clone()));
+        // Give the second book a persisted page count (as an open would back-fill).
+        let known_path = lib.books()[1].path().to_path_buf();
+        assert!(lib.set_page_count(&known_path, NonZeroUsize::new(10).unwrap()));
+
+        let reqs = cover_requests(&lib);
+        assert_eq!(reqs.len(), 2);
+        assert_eq!(reqs[0].row, 0);
+        assert!(
+            reqs[0].needs_count,
+            "fresh book with no persisted total needs its count resolved"
+        );
+        assert_eq!(reqs[1].row, 1);
+        assert!(
+            !reqs[1].needs_count,
+            "book with a known total must not be re-opened just to count"
+        );
     }
 
     #[test]
