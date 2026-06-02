@@ -19,8 +19,33 @@
 - [x] Task B1: Update presentation ordering tests that inherit core order.
 - [x] Task B2: Focus newly added book at sorted index after add.
 - [x] Task C1: Run focused verification and full gates.
-- [ ] Task D1: Commit grouped changes with dedicated commit agent. Core commit complete: `840a208 feat(core): sort library by natural title order`; UI commit complete: `8a22673 fix(ui): focus added book after sorted insert`.
-- [ ] Task E1: Final review and issue acceptance check.
+- [x] Task D1: Commit grouped changes with dedicated commit agent. Core commit complete: `840a208 feat(core): sort library by natural title order`; UI commit complete: `8a22673 fix(ui): focus added book after sorted insert`; plan tracked: `7286ba9 docs: track issue 82 implementation plan`.
+- [x] Task E1: Final review and issue acceptance check — all acceptance criteria met (numeric-aware natural order; canonical-path tiebreak; load normalization; presentation inherits books() order; add focuses sorted position; no user-configurable ordering). Two review rounds converged with no remaining Critical/Important.
+
+## Post-Implementation Loop (Steps 2-5)
+
+- [x] 2026-06-03: Gates re-verified on HEAD — fmt PASS, clippy PASS, nextest 449 passed/0 failed. Step 1 (implement + commit) confirmed complete.
+- [x] Step 2: `/pr-review-toolkit:review-pr` loop — fix in-scope Critical/Important until clean. CONVERGED.
+  - Round 1: 4 review agents (code/silent-failure/tests/comments). Critical=0. Central Important = `add_paths` double-canonicalize + separate find → silent-drop of added book (focus/count). User chose Option A.
+  - Fix wave (7 parallel no-cargo writers): `Library::add` now returns `Option<&Path>` (stored canonical path); `add_paths` consumes it via filter_map; updated all `assert!(add)` call sites in 4 files; added docs for `normalize`/`focus_index_for_path`; fixed `naming.rs` stale module doc; added `ordering.rs` module doc + 2 natural_cmp edge tests; +3 main.rs tests, +1 library.rs test. Gates green: fmt/clippy PASS, nextest 454 passed. Commits `e659927` (docs), `3cf101a` (refactor).
+  - Round 2: code-reviewer + silent-failure-hunter both report Critical=0 / Important=0. Silent-drop resolved; no regressions. Only non-blocking suggestions (per-add O(n log n) future-scaling note). Loop converged.
+- [x] Step 3: code-simplifier pass — code already clean, no changes (re-find required by Option<&Path> signature; borrow-scope follows repo idiom). Gates green, 454 passed.
+- [x] Step 4: unit + integration tests run and analyze — nextest 454/454 passed; no `#[ignore]` tests; `crates/gashuu-core/tests/` empty; CI profile applies no filtering. Nothing to fix.
+- [x] Step 5: learnings documented — docs/patterns.md (4 new `(#82)` patterns), docs/architecture.md (new `ordering.rs` entry, naming.rs de-staled, Library ordering defined), README.md (Library natural-order feature bullet), `.claude` memory `gashuu-natural-ordering-harness`. Commit `f8be189`.
+
+## Final Commit Summary
+
+- `840a208` feat(core): sort library by natural title order (original impl)
+- `8a22673` fix(ui): focus added book after sorted insert (original impl)
+- `7286ba9` docs: track issue 82 implementation plan
+- `e659927` docs(core): clarify ordering/naming module docs and add natural_cmp edge tests (review fix)
+- `3cf101a` refactor: return stored path from Library::add for reliable add focus (review fix — Option A)
+- `f8be189` docs: document natural library ordering and add #82 implementation patterns
+
+Gates: fmt PASS, clippy PASS, nextest 454 passed / 0 failed. Review loop converged (Critical=0, Important=0). Not pushed (awaiting user).
+- [ ] Step 3: code-simplifier pass over changed + related files.
+- [ ] Step 4: unit + integration tests re-run and fix.
+- [ ] Step 5: record Why/What + harness learnings into docs (CLAUDE.md / README / docs / .claude).
 
 ## Agent And Commit Rules
 
