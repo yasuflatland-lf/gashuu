@@ -9,8 +9,8 @@
 // Icon    : Theme.nav-icon, image-fit contain, Theme.text-mid by default
 // Hover   : Theme.accent-glow fill + Theme.accent ring + soft accent glow;
 //           icon brightens to Theme.text-high
-// Press   : slightly stronger fill (accent-glow darkened) + accent ring;
-//           icon Theme.text-high, nudged 1px down to read as a sink
+// Press   : stronger fill (accent-glow darkened) + accent ring;
+//           icon brightens to Theme.text-high — no positional shift
 //
 // Colors / lengths come from Theme.* only — NO inline brand hex (DESIGN.md
 // rule 2; scripts/check-tokens.sh enforces this). Theme lives one directory up.
@@ -43,7 +43,7 @@ export component NavItem inherits Rectangle {
     // Priority: pressed > hover (Slint applies the first matching state, so list
     // pressed before hover — same ordering used by PrimaryButton / fluent Button).
     // Only ROOT-level properties are set here. Child-element properties cannot be
-    // assigned from a `states[]` block in Slint 1.16 (no `parent`/sibling access
+    // assigned from a `states[]` block in Slint 1.x (no `parent`/sibling access
     // inside the block), so the icon's colorize is a binding on the Image below
     // that reads the touch state directly.
     states [
@@ -76,6 +76,9 @@ export component NavItem inherits Rectangle {
     // Icon-only: the label is exposed to assistive tech, not drawn on screen.
     accessible-role: button;
     accessible-label: root.a11y-label;
+    // Let a screen-reader activation gesture fire the same callback as a click,
+    // so AT users can both read the label AND trigger the action.
+    accessible-action-default => { root.clicked(); }
 
     // ── Interaction ───────────────────────────────────────────────────────────
     // TouchArea is non-focusable in Slint — it does NOT steal keyboard focus
