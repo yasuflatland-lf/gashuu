@@ -71,25 +71,70 @@ pub(crate) fn cover_requests(library: &Library) -> Vec<cover_loader::CoverReques
         .collect()
 }
 
-/// Fetch the thumbnail image for a 0-based page from the strip's existing
-/// `VecModel<ThumbnailItem>` (the PR8a model). Returns the cell's image when the
-/// row exists and is loaded; otherwise a default (empty) image. UI-thread only —
-/// the `Rc` model is never crossed between threads. No new decode is performed.
-pub(crate) fn thumb_image_at(model: &slint::ModelRc<ThumbnailItem>, page: usize) -> slint::Image {
+/// The mutually-constrained visual state of a thumbnail cell, as returned by
+/// [`thumb_state_at`], mirroring the three states `ThumbnailCell` renders:
+///   - loaded — `image` holds the decoded thumbnail; `failed` is always false.
+///   - loading — blank `image`, `failed` false (still decoding).
+///   - failed — blank `image`, `failed` true (decode failed).
+///
+/// `loaded` and `failed` are mutually exclusive: the constructors never produce
+/// `loaded == true && failed == true` (the strip model enforces the same
+/// invariant through its single `ThumbnailItem` constructor, `thumbnail_item`,
+/// which all strip writes go through).
+pub(crate) struct ThumbState {
+    pub(crate) image: slint::Image,
+    pub(crate) loaded: bool,
+    pub(crate) failed: bool,
+}
+
+impl ThumbState {
+    pub(crate) fn loaded(image: slint::Image) -> Self {
+        Self {
+            image,
+            loaded: true,
+            failed: false,
+        }
+    }
+
+    pub(crate) fn loading() -> Self {
+        Self {
+            image: slint::Image::default(),
+            loaded: false,
+            failed: false,
+        }
+    }
+
+    pub(crate) fn failed() -> Self {
+        Self {
+            image: slint::Image::default(),
+            loaded: false,
+            failed: true,
+        }
+    }
+}
+
+/// Returns the [`ThumbState`] for `page` from the strip model (image + the
+/// loaded/failed flags `ThumbnailCell` renders). No decode happens here — it
+/// only reflects the flags the strip already carries.
+pub(crate) fn thumb_state_at(model: &slint::ModelRc<ThumbnailItem>, page: usize) -> ThumbState {
     use slint::Model;
     match model.row_data(page) {
-        Some(item) if item.loaded => item.image,
-        Some(_) => slint::Image::default(), // still loading: normal, stay silent
+        // `loaded` wins over `failed`: a loaded item shows its real image. The
+        // model never sets both, so dropping `item.failed` here is safe.
+        Some(item) if item.loaded => ThumbState::loaded(item.image),
+        Some(item) if item.failed => ThumbState::failed(),
+        Some(_) => ThumbState::loading(),
         None => {
-            // `page` is outside the thumbnail model — strip and page_count are out
-            // of sync (the model is built to exactly page_count rows). Not fatal:
-            // show a blank preview, but log so the desync is diagnosable.
+            // `page` is outside the thumbnail model — strip and page_count are
+            // out of sync (the model is built to exactly page_count rows). This
+            // is a desync, not a real in-progress load: fall back to the neutral
+            // loading placeholder, but log so the desync is diagnosable.
             tracing::warn!(
                 page,
                 row_count = model.row_count(),
-                "thumb_image_at: page outside thumbnail model (strip/page_count desync)"
+                "thumb_state_at: page outside thumbnail model (strip/page_count desync)"
             );
-            slint::Image::default()
+            ThumbState::loading()
         }
     }
 }
@@ -97,7 +142,21 @@ pub(crate) fn thumb_image_at(model: &slint::ModelRc<ThumbnailItem>, page: usize)
 #[cfg(test)]
 mod tests {
     use super::*;
+    use slint::{ModelRc, VecModel};
     use std::num::NonZeroUsize;
+
+    fn item(page: i32, loaded: bool, failed: bool) -> ThumbnailItem {
+        ThumbnailItem {
+            image: slint::Image::default(),
+            page,
+            loaded,
+            failed,
+        }
+    }
+
+    fn model(items: Vec<ThumbnailItem>) -> ModelRc<ThumbnailItem> {
+        ModelRc::new(VecModel::from(items))
+    }
 
     /// A fresh book (never opened, no persisted total) is flagged `needs_count`,
     /// so the cover controller resolves its real page count in the background; a
@@ -130,5 +189,43 @@ mod tests {
             !reqs[1].needs_count,
             "book with a known total must not be re-opened just to count"
         );
+    }
+
+    #[test]
+    fn loaded_page_reports_loaded_not_failed() {
+        let s = thumb_state_at(&model(vec![item(0, true, false)]), 0);
+        assert!(s.loaded);
+        assert!(!s.failed);
+    }
+
+    #[test]
+    fn still_loading_page_reports_neither() {
+        let s = thumb_state_at(&model(vec![item(0, false, false)]), 0);
+        assert!(!s.loaded);
+        assert!(!s.failed);
+    }
+
+    #[test]
+    fn failed_page_reports_failed() {
+        let s = thumb_state_at(&model(vec![item(0, false, true)]), 0);
+        assert!(!s.loaded);
+        assert!(s.failed);
+    }
+
+    #[test]
+    fn loaded_page_overrides_failed_flag() {
+        // A (loaded && failed) item cannot occur by construction, but the loaded
+        // arm must still report failed=false so a future regression cannot
+        // surface a loaded-yet-failed preview.
+        let s = thumb_state_at(&model(vec![item(0, true, true)]), 0);
+        assert!(s.loaded);
+        assert!(!s.failed);
+    }
+
+    #[test]
+    fn out_of_range_page_reports_blank() {
+        let s = thumb_state_at(&model(vec![item(0, true, false)]), 5);
+        assert!(!s.loaded);
+        assert!(!s.failed);
     }
 }

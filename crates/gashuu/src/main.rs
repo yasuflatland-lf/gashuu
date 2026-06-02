@@ -12,7 +12,7 @@ mod thumbnail_strip;
 mod viewer_state;
 mod viewport;
 
-use carousel::{build_carousel_model, cover_requests, thumb_image_at};
+use carousel::{build_carousel_model, cover_requests, thumb_state_at, ThumbState};
 use enum_adapters::{
     cover_mode_to_index, fit_mode_to_index, index_to_cover_mode, index_to_fit_mode,
     index_to_reading_direction, index_to_spread_mode, reading_direction_to_index,
@@ -354,13 +354,21 @@ fn main() -> color_eyre::Result<()> {
                 } else {
                     None
                 };
-                // Pull thumbnail images from the existing model (no decode).
+                // Pull thumbnail state (image + loaded/failed flags) from the
+                // existing model (no decode) and push it so the popover renders
+                // the loading/failed placeholder, not a blank cell.
                 let model = ui.get_thumbnails();
-                ui.set_scrubber_preview_a(thumb_image_at(&model, lead));
-                ui.set_scrubber_preview_b(match trail {
-                    Some(trail) => thumb_image_at(&model, trail),
-                    None => slint::Image::default(),
-                });
+                let a = thumb_state_at(&model, lead);
+                ui.set_scrubber_preview_a(a.image);
+                ui.set_scrubber_preview_a_loaded(a.loaded);
+                ui.set_scrubber_preview_a_failed(a.failed);
+                let b = match trail {
+                    Some(trail) => thumb_state_at(&model, trail),
+                    None => ThumbState::loading(),
+                };
+                ui.set_scrubber_preview_b(b.image);
+                ui.set_scrubber_preview_b_loaded(b.loaded);
+                ui.set_scrubber_preview_b_failed(b.failed);
                 // Update the counter to the previewed page (1-based).
                 let counter = page_counter_text(lead, trail, total);
                 ui.set_page_counter_text(counter.into());

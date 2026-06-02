@@ -27,6 +27,10 @@ export component Scrubber inherits Rectangle {
     in property <bool> double;          // 2 preview thumbs vs 1
     in property <image> preview-a;      // leading preview thumb
     in property <image> preview-b;      // trailing preview thumb (double only)
+    in property <bool> preview-a-loaded: false;
+    in property <bool> preview-a-failed: false;
+    in property <bool> preview-b-loaded: false;
+    in property <bool> preview-b-failed: false;
     in property <bool> chrome-shown;    // auto-hide state (parent-driven)
     // Raw clamped knob fraction in [0,1] (screen-left 0 -> right 1). Rust maps
     // it to a 0-based page via `scrub_fraction_to_page` (single source of
@@ -147,20 +151,21 @@ export component Scrubber inherits Rectangle {
 
             // ThumbnailCell inherits Rectangle and has NO intrinsic size in a
             // layout, so the cells need explicit stretch (width) + a min-height
-            // to occupy the preview area like the old Images did. These are
-            // preview thumbs: always treated as loaded, never failed/highlighted.
+            // to occupy the preview area like the old Images did. Preview thumbs
+            // mirror the strip's load/decode state via loaded/failed; highlighted
+            // stays false (the popover shows no selection).
             ThumbnailCell {
                 source: root.preview-a;
-                loaded: true;
-                failed: false;
+                loaded: root.preview-a-loaded;
+                failed: root.preview-a-failed;
                 highlighted: false;
                 horizontal-stretch: 1;
                 min-height: 100px;
             }
             if root.double : ThumbnailCell {
                 source: root.preview-b;
-                loaded: true;
-                failed: false;
+                loaded: root.preview-b-loaded;
+                failed: root.preview-b-failed;
                 highlighted: false;
                 horizontal-stretch: 1;
                 min-height: 100px;
