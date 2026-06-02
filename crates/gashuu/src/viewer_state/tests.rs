@@ -1115,6 +1115,36 @@ fn scrub_fraction_rounds_half_up_at_exact_half_step() {
 }
 
 #[test]
+fn scrub_fraction_non_finite_single_page_is_zero() {
+    // Non-finite fraction AND a single-page book — the two zero-guards stack:
+    // a single page has span (count-1) == 0, AND a non-finite fraction is
+    // coerced to 0.0. Either alone forces page 0; together they must still be 0
+    // (and never panic), regardless of direction.
+    assert_eq!(scrub_fraction_to_page(f32::NAN, 1, true), 0);
+    assert_eq!(scrub_fraction_to_page(f32::INFINITY, 1, false), 0);
+}
+
+#[test]
+fn scrub_fraction_odd_span_rtl_half_step_rounds_half_up() {
+    // Odd span (4 pages => last index 3) at an exact RTL half-step boundary,
+    // proving round-half-up holds on an odd span too (the existing
+    // `scrub_fraction_rounds_half_up_at_exact_half_step` uses an even span 4).
+    //
+    // RTL inverts the fraction BEFORE rounding, so the mapping is
+    //   floor((1 - frac) * 3 + 0.5).
+    // frac = 0.5 inverts to (1 - 0.5) = 0.5; 0.5 * 3 = 1.5, which is EXACTLY a
+    // half-step (k + 0.5 with k = 1); floor(1.5 + 0.5) = floor(2.0) = 2 — it
+    // rounds UP at exactly .5 (a round-half-down impl would give 1).
+    //
+    // f32-exactness: 0.5, (1 - 0.5) = 0.5, and 0.5 * 3 = 1.5 are all exactly
+    // representable in f32, so this assertion is not flaky. (The OTHER odd-span
+    // half-steps — (1 - frac) in {1/6, 5/6} — are NOT f32-exact, so the only
+    // exact half-step for span 3 is this midpoint; it coincides with the LTR
+    // midpoint but still exercises the half-up rule on an odd span.)
+    assert_eq!(scrub_fraction_to_page(0.5, 4, true), 2);
+}
+
+#[test]
 fn scrub_fraction_single_page_is_always_zero() {
     // A 1-page book: the only valid index is 0 regardless of fraction/dir
     // (count-1 == 0 span; f * 0 == 0).
