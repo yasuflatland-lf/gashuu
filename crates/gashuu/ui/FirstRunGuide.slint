@@ -5,12 +5,13 @@
 // The panel is dismissed by clicking "Got it", which fires `dismiss-guide` so
 // Rust can persist the "guide shown" flag and hide the component.
 import { Button, VerticalBox } from "std-widgets.slint";
+import { Theme } from "Theme.slint";
 
 // One line of the controls reference. Factors out the styling shared by every
 // reference row so each call site only supplies its text.
 component GuideLine inherits Text {
-    color: #bbbbbb;
-    font-size: 13px;
+    color: Theme.text-muted;
+    font-size: Theme.font-body;
     horizontal-alignment: left;
     wrap: word-wrap;
 }
@@ -24,7 +25,7 @@ export component FirstRunGuide inherits Rectangle {
     // ── Backdrop ───────────────────────────────────────────────────────────────
     // Fills the entire parent area with a semi-transparent black overlay so the
     // viewer behind is visible but clearly dimmed.
-    background: #000000c0;
+    background: Theme.scrim-strong;
 
     // ── Centered panel ─────────────────────────────────────────────────────────
     Rectangle {
@@ -34,8 +35,8 @@ export component FirstRunGuide inherits Rectangle {
         width: 520px;
         // Height grows with content; VerticalBox drives it.
 
-        background: #2b2b2b;
-        border-radius: 8px;
+        background: Theme.surface-float;
+        border-radius: Theme.radius-md;
 
         VerticalBox {
             padding: 28px;
@@ -44,16 +45,16 @@ export component FirstRunGuide inherits Rectangle {
             // ── Title ──────────────────────────────────────────────────────────
             Text {
                 text: "Welcome to gashuu";
-                font-size: 22px;
-                color: #ffffff;
+                font-size: Theme.font-title;
+                color: Theme.text;
                 horizontal-alignment: center;
             }
 
             // ── Intro ──────────────────────────────────────────────────────────
             Text {
                 text: "A quick guide to get you started:";
-                color: #cccccc;
-                font-size: 13px;
+                color: Theme.text-mid;
+                font-size: Theme.font-body;
                 horizontal-alignment: left;
                 wrap: word-wrap;
             }
