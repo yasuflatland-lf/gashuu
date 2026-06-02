@@ -13,6 +13,11 @@ description: >
 colors:
   accent: "#5b8cff"
   accent-glow: "rgba(91,140,255,0.25)"
+  # Glass surfaces — Slint 1.x has NO backdrop-blur; these only approximate "glass"
+  # (no real blur — the look is translucent fill + rim + top highlight + drop shadow).
+  glass-fill: "#10141fd1"      # surface-float at ~82% alpha — translucent glass-pill fill
+  glass-border: "#2f3850b3"    # hairline-float at ~70% alpha — the hairline rim
+  glass-highlight: "#dde5f51f" # text-high at ~12% alpha — 1px top inner highlight rim
   success: "#41c98a"
   canvas: "#0b0e15"
   surface: "#0e1118"
@@ -179,7 +184,7 @@ is the dark frame around them.
 
 ### Accent
 - **Accent** (`{colors.accent}` — `#5b8cff`): The only interactive color. Focus ring on the centered cover, scrubber knob, progress fill, primary button. If an element is interactive or "where you are", it is this blue.
-- **Accent Glow** (`{colors.accent-glow}` — `rgba(91,140,255,0.25)`): A 4px soft ring around the scrubber knob; the only "glow" in the system.
+- **Accent Glow** (`{colors.accent-glow}` — `rgba(91,140,255,0.25)`): The system's one "glow", appearing in two places — a 4px soft ring around the scrubber knob, and the hover/press glow on the Library nav capsules (`components.nav-bar`). It is the SAME accent hue in both, not a second accent.
 - **Success** (`{colors.success}` — `#41c98a`): Reserved exclusively for a fully-read book's progress bar. Never used for general UI.
 
 ### Surface (the ladder)
@@ -346,11 +351,37 @@ Background `{colors.surface-raised}`, 1px bottom `{colors.hairline}`, `{typograp
 Background `{colors.accent}`, white text, `{rounded.md}`, padding 8×16. The empty-library
 call-to-action ("Add books") and other affirmative actions.
 
+### Library Nav — `components.nav-bar`
+A **top, centered glass pill** floating over the Library carousel for adding books. It is drawn
+on top of the stage; its bottom edge may slightly overlap the focused cover so the background
+shows through — reinforcing the "glass" read.
+
+- **Content**: ICON-ONLY twin capsules — `file` (Add files) and `folder` (Add folder). There are
+  **no on-screen text labels** (accessible-label only) and **no tooltips**.
+- **Each capsule** is circular; only the hovered/pressed cell glows softly with
+  `{colors.accent-glow}`, and its icon brightens `{colors.text-mid}` → `{colors.text-high}`.
+- **Glass treatment**: `{colors.glass-fill}` fill + a 1px `{colors.glass-border}` rim + a 1px
+  `{colors.glass-highlight}` top inner highlight line + a `{colors.shadow-popover}` drop shadow
+  (blur 22 / y-offset 8). **No backdrop-blur** — Slint 1.x cannot blur what's behind it, so the
+  glass is faked with translucent fill + rim + top highlight + shadow.
+- **Golden-ratio sizing** (phi ≈ 1.618, stepped through consecutive Fibonacci px): icon 21px →
+  circular capsule diameter 34px → pill height 55px; item gap 13px; pill padding 11px.
+- **Interaction model**: mouse + screen-reader oriented. The pill is **NOT keyboard-reachable** —
+  keyboard navigation stays owned by the carousel. Clicking a capsule fires the OS file/folder
+  picker (`rfd`) and returns focus to the carousel.
+- **Intentional deltas from the reference**: gashuu uses its own dark translucency (not blue
+  glass), and **FILLED** icons (not outline) — a filled mass reads better on the dark canvas and
+  resists low-DPI degradation.
+
 ### Empty Library (0 books)
 The Library screen, when empty, centers a single **`button-primary`** ("Select folders / files to
 add") on a `{colors.surface-sunken}` panel, with a one-line `{typography.ui-micro}` helper. Books
 are added via the OS file/folder picker (`rfd`). **There is no drag-and-drop drop zone** — file
 loading is picker-only.
+
+Once books exist, the top centered glass-pill nav (`components.nav-bar`, icon-only Add files /
+Add folder) sits above the carousel for adding more books — the picker-only, no-drag-drop rule is
+unchanged.
 
 ---
 

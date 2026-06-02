@@ -310,13 +310,23 @@ PR-58, `enum_adapters.rs`. The 8 `pub(crate)` enum↔index adapters that were pr
 **`ui/components/`** (#71, NEW): shared single-purpose UI atoms/molecules, one `export`ed component
 per file — `ProgressBar` (accent/`success` reading-progress fill), `Chip` (pill label, e.g. the
 page counter), `PrimaryButton` (the accent CTA), `ThumbnailCell` (the loaded/loading/failed/highlighted
-cell shared by the page strip, the scrubber preview popover, and the library covers), and `TitleBar`
-(the viewer chrome strip: action affordances + centered book name + optional count chip). Each
-references `Theme.*` via `../Theme.slint`; consumers import via `import { X } from "components/X.slint"`.
-`build.rs` is unchanged — it compiles the single entry `ui/ViewerWindow.slint` and import statements
-cascade. See [docs/conventions.md](conventions.md) for the component RULES.
+cell shared by the page strip, the scrubber preview popover, and the library covers), `TitleBar`
+(the viewer chrome strip: action affordances + centered book name + optional count chip), `NavBar`
+(#83, NEW: the top-centered glass-pill Library nav — translucent fill + hairline border + top inner
+highlight + drop shadow; Slint has no backdrop-blur so the glass effect is paint-only), and `NavItem`
+(#83, NEW: one circular icon capsule inside `NavBar`; hover/press glow via `Theme.accent-glow`;
+non-focusable `TouchArea` with `accessible-role`/`accessible-label`/`accessible-action-default` for
+screen-reader support). Each references `Theme.*` via `../Theme.slint`; consumers import via
+`import { X } from "components/X.slint"`. `build.rs` is unchanged — it compiles the single entry
+`ui/ViewerWindow.slint` and import statements cascade. See [docs/conventions.md](conventions.md)
+for the component RULES.
 
-**`Carousel.slint`** (PR-0b shell; PR-C rendering; PR-L toolbar/CTA; #71 componentized): Library
+**`ui/assets/`** (#83, NEW): the repo's first image assets — `file.svg` and `folder.svg`, each a
+single-path SVG recolored at runtime via Slint's `Image.colorize` property. Components reference
+them with `@image-url(...)` paths relative to the consuming `.slint` file. `build.rs` is unchanged
+(assets are reached transitively through the entry-file import cascade).
+
+**`Carousel.slint`** (PR-0b shell; PR-C rendering; PR-L toolbar/CTA; #71 componentized; #83 glass-pill nav): Library
 cover-flow carousel.
 PR-0b froze the public contract (`CarouselItem` struct + `Carousel` component with `items`,
 `focused-index`, callbacks `open(int)`/`move(int)`/`back()`, `public function focus-self()`); PR-C
@@ -327,9 +337,14 @@ block, a grayed broken-cover placeholder for
 unavailable books, and the 0-book empty-state CTA. #71 also routes its covers and empty-state CTA
 through the shared `ThumbnailCell`/`PrimaryButton` components. Covers start as placeholders
 (`slint::Image::default()`); PR-V's `cover_loader.rs` streams the real cover images into the same
-model row-by-row. PR-L added an always-visible
-"Add files…"/"Add folder…" toolbar + the `add-files()`/`add-folder()` callbacks and wired the
-empty-state CTA to `add-files()` (each restores focus via `focus-self()` after firing). The cover-flow
+model row-by-row. PR-L added the `add-files()`/`add-folder()` callbacks and wired the empty-state CTA
+to `add-files()` (each restores focus via `focus-self()` after firing); PR-L's original left-aligned
+two-`Button` text toolbar was REPLACED in #83 with a centered, icon-only glass-pill `NavBar` (two
+`file`/`folder` `NavItem` capsules). The `NavBar` is declared as a SEPARATE LAST layer in the
+component tree — paint order equals declaration order in Slint, so it renders on top of the cover-flow
+without a z-index — and kept OUTSIDE the `FocusScope` so keyboard navigation remains carousel-owned;
+the nav is mouse + screen-reader oriented. The `add-files()`/`add-folder()` callbacks and the
+`focus-self()`-after-fire behavior are unchanged; `NavBar` simply forwards into them. The cover-flow
 is rendered by a file-private `CoverCard` sub-component instantiated by TWO `for` passes over the model:
 pass 1 paints the neighbors (focused slot hidden via a `show` gate), pass 2 (declared after) paints ONLY
 the focused card so it draws ON TOP of its neighbors — Slint 1.x cannot set per-`Repeater`-item z, so
@@ -338,8 +353,11 @@ in each pass), so the Left/Right slide still animates continuously with a seamle
 enclosing row's `width`/`row-cy` are passed into `CoverCard` as `in` properties because a component ROOT
 cannot read `parent`.
 
-**`Theme.slint`** (PR-0b, NEW): single `global Theme` of visual tokens (colors, spacing, radii,
-font sizes); components reference `Theme.<token>` instead of inline hex literals.
+**`Theme.slint`** (PR-0b, NEW; #83 extended): single `global Theme` of visual tokens (colors, spacing,
+radii, font sizes); components reference `Theme.<token>` instead of inline hex literals. #83 added the
+glass-surface colors (`glass-fill`, `glass-border`, `glass-highlight`) and the golden-ratio nav sizing
+tokens (`nav-icon`, `nav-capsule`, `nav-pill-height`, `nav-item-gap`, `nav-pill-pad`). Authoritative
+values live in DESIGN.md; this file is the as-built note only.
 
 **`ThumbnailStrip.slint`** (PR8a; #71): horizontal `Flickable` + `HorizontalLayout` + `for` over a
 `VecModel` — the FIRST `VecModel`/`Repeater` use in the codebase since `ListView` is
