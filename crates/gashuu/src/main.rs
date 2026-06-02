@@ -1077,12 +1077,23 @@ pub(crate) fn write_back_position(
     }
 }
 
-/// Add every path in `paths` to `lib`, skipping duplicates.
-/// Returns the count of books actually inserted (new books only).
-/// Dedup is handled by `Library::add` (returns `false` when already present),
-/// covering both books already in the library and duplicates within `paths`.
-fn add_paths(lib: &mut Library, paths: Vec<std::path::PathBuf>) -> usize {
-    paths.into_iter().filter(|p| lib.add(p.clone())).count()
+/// Add every path in `paths` to `lib`. Each path is added via `Library::add`,
+/// which canonicalizes, dedups, and re-sorts the library on insert.
+/// Returns the canonical paths of the books actually inserted (new books only);
+/// duplicates within the batch and paths already present are skipped, since
+/// `Library::add` returns `None` in those cases.
+fn add_paths(lib: &mut Library, paths: Vec<std::path::PathBuf>) -> Vec<std::path::PathBuf> {
+    paths
+        .into_iter()
+        .filter_map(|path| lib.add(path).map(std::path::Path::to_path_buf))
+        .collect()
+}
+
+/// Return the 0-based carousel row index of `path` in the sorted library, or
+/// `None` if it is absent. This index is the visual position to focus after an
+/// add. `path` must be a canonical path as returned by `add_paths`.
+fn focus_index_for_path(lib: &Library, path: &std::path::Path) -> Option<usize> {
+    lib.books().iter().position(|book| book.path() == path)
 }
 
 /// Add `paths` to the library, persist, rebuild the carousel, and surface the
@@ -1098,8 +1109,8 @@ fn add_books_and_refresh(
     paths: Vec<std::path::PathBuf>,
     op: &'static str,
 ) {
-    let added = add_paths(&mut library.borrow_mut(), paths);
-    if added == 0 {
+    let added_paths = add_paths(&mut library.borrow_mut(), paths);
+    if added_paths.is_empty() {
         // Everything picked was already in the library: nothing to persist or rebuild.
         ui.set_status_text("Already in library \u{2014} no new books added.".into());
         ui.invoke_focus_carousel();
@@ -1121,11 +1132,24 @@ fn add_books_and_refresh(
         Err(e) => {
             tracing::error!(error = %e, "failed to save library after {op}");
             ui.set_status_text(
-                format!("Added {added} book(s), but could not save library: {e}").into(),
+                format!(
+                    "Added {} book(s), but could not save library: {e}",
+                    added_paths.len()
+                )
+                .into(),
             );
         }
         Ok(()) => {
-            ui.set_status_text(format!("Added {added} book(s)").into());
+            ui.set_status_text(format!("Added {} book(s)", added_paths.len()).into());
+        }
+    }
+    if let Some(first_path) = added_paths.first() {
+        let index = {
+            let library = library.borrow();
+            focus_index_for_path(&library, first_path)
+        };
+        if let Some(index) = index {
+            ui.set_carousel_focused_index(index as i32);
         }
     }
     ui.invoke_focus_carousel();
@@ -1258,7 +1282,7 @@ mod tests {
     fn add_paths_empty_vec_returns_zero() {
         let mut lib = gashuu_core::Library::new();
         let added = add_paths(&mut lib, vec![]);
-        assert_eq!(added, 0);
+        assert!(added.is_empty());
         assert_eq!(lib.books().len(), 0);
     }
 
@@ -1270,8 +1294,17 @@ mod tests {
             std::path::PathBuf::from("nonexistent/vol2.cbz"),
         ];
         let added = add_paths(&mut lib, paths);
-        assert_eq!(added, 2);
+        assert_eq!(added.len(), 2);
         assert_eq!(lib.books().len(), 2);
+        // Nonexistent paths cannot be canonicalized, so `Library::add` stores the
+        // verbatim path; the returned vec therefore equals the input, in input order.
+        assert_eq!(
+            added,
+            vec![
+                std::path::PathBuf::from("nonexistent/vol1.cbz"),
+                std::path::PathBuf::from("nonexistent/vol2.cbz"),
+            ]
+        );
     }
 
     #[test]
@@ -1283,7 +1316,8 @@ mod tests {
         ];
         let added = add_paths(&mut lib, paths);
         assert_eq!(
-            added, 1,
+            added.len(),
+            1,
             "duplicate within the batch must not be double-counted"
         );
         assert_eq!(lib.books().len(), 1);
@@ -1299,22 +1333,23 @@ mod tests {
         ];
         let added = add_paths(&mut lib, paths);
         assert_eq!(
-            added, 1,
+            added.len(),
+            1,
             "a path already in the library must not be counted"
         );
         assert_eq!(lib.books().len(), 2);
     }
 
     #[test]
-    fn add_paths_preserves_insertion_order() {
+    fn add_paths_returns_canonical_paths_and_skips_duplicates() {
         let mut lib = gashuu_core::Library::new();
-        let paths: Vec<_> = (0..5)
-            .map(|i| std::path::PathBuf::from(format!("nonexistent/vol{i}.cbz")))
-            .collect();
-        let added = add_paths(&mut lib, paths);
-        assert_eq!(added, 5);
-        let titles: Vec<&str> = lib.books().iter().map(|b| b.title()).collect();
-        assert_eq!(titles, ["vol0", "vol1", "vol2", "vol3", "vol4"]);
+        let root = tempfile::tempdir().expect("tempdir");
+        let first = root.path().join(".");
+        let expected = root.path().canonicalize().expect("canonicalize tempdir");
+        let added = add_paths(&mut lib, vec![first.clone(), first.clone()]);
+        assert_eq!(added, vec![expected.clone()]);
+        assert_eq!(lib.books().len(), 1);
+        assert_eq!(lib.books()[0].path(), expected.as_path());
     }
 
     #[test]
@@ -1330,13 +1365,67 @@ mod tests {
                 std::path::PathBuf::from("nonexistent/vol2.cbz"),
             ],
         );
-        assert_eq!(added, 0, "all-duplicate batch must return 0");
+        assert!(added.is_empty(), "all-duplicate batch must return 0");
         assert_eq!(lib.books().len(), before, "books count must not change");
+    }
+
+    #[test]
+    fn focus_index_for_path_finds_sorted_position() {
+        let mut lib = gashuu_core::Library::new();
+        let later = std::path::PathBuf::from("nonexistent/vol10.cbz");
+        let earlier = std::path::PathBuf::from("nonexistent/vol2.cbz");
+        lib.add(later.clone());
+        lib.add(earlier.clone());
+
+        let books: Vec<_> = lib
+            .books()
+            .iter()
+            .map(|book| book.path().to_path_buf())
+            .collect();
+        let focus = focus_index_for_path(&lib, &books[0]);
+
+        assert_eq!(focus, Some(0));
+        assert_eq!(focus_index_for_path(&lib, &books[1]), Some(1));
+    }
+
+    #[test]
+    fn focus_index_for_path_absent_returns_none() {
+        let lib = gashuu_core::Library::new();
+        assert_eq!(
+            focus_index_for_path(&lib, std::path::Path::new("nonexistent/vol1.cbz")),
+            None
+        );
+    }
+
+    #[test]
+    fn add_paths_returns_input_order_while_books_are_natural_order() {
+        // Focus follows the FIRST input path, not natural order: `add_paths`
+        // returns the inserted paths in INPUT order, whereas `lib.books()` keeps
+        // them in NATURAL (sorted) order. Nonexistent paths cannot be
+        // canonicalized, so `Library::add` falls back to the verbatim path and the
+        // returned paths equal the verbatim input paths.
+        let mut lib = gashuu_core::Library::new();
+        let vol10 = std::path::PathBuf::from("nonexistent/vol10.cbz");
+        let vol1 = std::path::PathBuf::from("nonexistent/vol1.cbz");
+        let added = add_paths(&mut lib, vec![vol10.clone(), vol1.clone()]);
+
+        // Returned vec is in INPUT order (vol10 first, vol1 second).
+        assert_eq!(added[0], vol10);
+        assert_eq!(added[1], vol1);
+
+        // The library itself is in NATURAL order (vol1 before vol10).
+        let books: Vec<_> = lib
+            .books()
+            .iter()
+            .map(|book| book.path().to_path_buf())
+            .collect();
+        assert_eq!(books, vec![vol1, vol10]);
     }
 
     // Note: `build_carousel_model` now takes a `&ViewerWindow` (it builds AND
     // binds the Slint model), so it cannot be unit-tested headless. The
     // Library -> carousel row mapping invariants (length, 1-based `current`,
-    // availability, insertion order) are covered by `library_model::tests`
+    // availability, natural `Library::books()` order) are covered by
+    // `library_model::tests`
     // against the pure `carousel_data` helper that this builder delegates to.
 }

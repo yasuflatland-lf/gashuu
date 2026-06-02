@@ -42,7 +42,8 @@ pub struct CarouselData {
     pub available: bool,
 }
 
-/// Map a `Library` to its carousel display rows, in shelf (insertion) order.
+/// Map a `Library` to its carousel display rows, in natural `Library::books()`
+/// order.
 ///
 /// Each row is derived from `Book::progress()`, which returns a
 /// `ReadingProgress` value object. `current = progress.current()` (1-based,
@@ -109,7 +110,7 @@ mod tests {
         // progress = 0.0, available = true.
         let dir = tempfile::tempdir().expect("tempdir");
         let mut lib = Library::new();
-        assert!(lib.add(dir.path().to_path_buf()));
+        assert!(lib.add(dir.path().to_path_buf()).is_some());
 
         let rows = carousel_data(&lib);
         assert_eq!(rows.len(), 1);
@@ -136,7 +137,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let path: PathBuf = dir.path().to_path_buf();
         let mut lib = Library::new();
-        assert!(lib.add(path.clone()));
+        assert!(lib.add(path.clone()).is_some());
         drop(dir); // remove the directory from disk
 
         let rows = carousel_data(&lib);
@@ -153,19 +154,19 @@ mod tests {
     }
 
     #[test]
-    fn carousel_data_preserves_insertion_order() {
+    fn carousel_data_uses_library_natural_order() {
         let root = tempfile::tempdir().expect("tempdir");
         let mut lib = Library::new();
-        for name in ["alpha", "beta", "gamma"] {
+        for name in ["vol 10", "vol 1", "vol 2"] {
             let dir = root.path().join(name);
             std::fs::create_dir(&dir).expect("create subdir");
-            assert!(lib.add(dir));
+            assert!(lib.add(dir).is_some());
         }
         let rows = carousel_data(&lib);
         assert_eq!(rows.len(), 3);
-        assert_eq!(rows[0].title, "alpha");
-        assert_eq!(rows[1].title, "beta");
-        assert_eq!(rows[2].title, "gamma");
+        assert_eq!(rows[0].title, "vol 1");
+        assert_eq!(rows[1].title, "vol 2");
+        assert_eq!(rows[2].title, "vol 10");
     }
 
     #[test]
@@ -176,8 +177,8 @@ mod tests {
         std::fs::create_dir(&keep).expect("create keep");
         std::fs::create_dir(&gone).expect("create gone");
         let mut lib = Library::new();
-        assert!(lib.add(keep));
-        assert!(lib.add(gone.clone()));
+        assert!(lib.add(keep).is_some());
+        assert!(lib.add(gone.clone()).is_some());
         std::fs::remove_dir_all(&gone).expect("remove gone"); // now unresolvable
         let rows = carousel_data(&lib);
         assert_eq!(
@@ -185,15 +186,15 @@ mod tests {
             2,
             "both books stay in the shelf (no auto-prune)"
         );
-        assert!(rows[0].available, "keep dir still resolves");
-        assert!(!rows[1].available, "gone dir no longer resolves");
+        assert!(!rows[0].available, "gone dir no longer resolves");
+        assert!(rows[1].available, "keep dir still resolves");
     }
 
     #[test]
     fn carousel_data_current_reflects_last_page() {
         let dir = tempfile::tempdir().expect("tempdir");
         let mut lib = Library::new();
-        assert!(lib.add(dir.path().to_path_buf()));
+        assert!(lib.add(dir.path().to_path_buf()).is_some());
         let path = lib.books()[0].path().to_path_buf();
         assert!(lib.set_last_page(&path, 4));
         let rows = carousel_data(&lib);
@@ -207,7 +208,7 @@ mod tests {
         // (reached=4, total=10 → 0.4), with `current` the 1-based display page.
         let dir = tempfile::tempdir().expect("tempdir");
         let mut lib = Library::new();
-        assert!(lib.add(dir.path().to_path_buf()));
+        assert!(lib.add(dir.path().to_path_buf()).is_some());
         let path = lib.books()[0].path().to_path_buf();
         assert!(lib.set_last_page(&path, 4));
         assert!(lib.set_page_count(&path, NonZeroUsize::new(10).unwrap()));

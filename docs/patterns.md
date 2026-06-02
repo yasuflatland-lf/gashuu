@@ -182,6 +182,24 @@ Why not the alternatives:
 
 The struct splits the difference: the named constructors make the invalid combo unconstructible (no `match` at the call site — `ui.set_x_loaded(s.loaded)` stays declarative), while the fields remain the plain scalars the setters consume. Keep the fields `pub(crate)` while there is a single consumer; if a second consumer appears, switch to private fields + accessors to close the struct-literal bypass. The *source* model's own invariant (a `ThumbnailItem` is never `loaded && failed`) is enforced separately at its single constructor `thumbnail_item` (a `debug_assert`), so `thumb_state_at`'s loaded arm drops `item.failed` safely.
 
+### Return the stored authoritative value from a mutating method; don't recompute-and-re-find in the caller (#82)
+
+When a method canonicalizes/normalizes its input and stores a derived value (e.g. `Library::add` canonicalizes a path before storing the `Book`), have it RETURN that stored value (`add` returns `Option<&Path>` — the stored canonical path, `None` on duplicate) rather than a `bool`. A caller that re-derives the key itself (a second `canonicalize`) and then `find`s the item the callee just inserted can silently diverge from the callee's own derivation — a filesystem TOCTOU, symlink, or case difference between the two `canonicalize` calls makes the lookup miss, so the item is stored but dropped from the caller's result set with no error (here: the added book vanishes from the focus/count path). One source of truth: the mutator returns what it stored; the caller consumes it (`add_paths` is now `filter_map(|p| lib.add(p).map(Path::to_path_buf))`). This also removes the redundant second syscall and the O(n) re-find.
+
+Smell to watch for: a caller computes a key, calls a mutator, then searches for what the mutator just created.
+
+### A core aggregate owns its ordering invariant; the presentation layer inherits it via the single accessor (#82)
+
+When display order must stay consistent, make the core aggregate the one place that sorts: `Library` sorts in `add()` and exposes only `books()` in sorted (natural title, canonical-path tiebreak) order. The UI builders (`carousel_data`, `cover_requests`) iterate `books()` and inherit the order with no sort of their own, so carousel rows and cover-request indices stay aligned automatically. Do not sort in the presentation layer — a second sort site is a divergence risk: when the aggregate's sort changes, the presentation-side sort may produce a different order, and the two silently disagree on index-to-item mapping.
+
+### Normalize-on-load when adding an ordering invariant to a `#[derive(Deserialize)]` type (#82)
+
+`serde` builds the struct field-by-field, bypassing `new()`/`add()`, so an ordering invariant established only in those constructors is NOT applied to deserialized data. Add a `pub(crate) fn normalize(&mut self)` that re-establishes the invariant (here: re-sort `books`) and call it on the load path (`library_store::load_from`) right after `from_value`/`from_str`. This is the same discipline as the `CacheConfig` no-Deserialize rule, applied to a type that must carry `#[derive(Deserialize)]`: the type cannot shed the derive, so the invariant is re-enforced after deserialization instead. Bonus: calling `normalize` on load upgrades data persisted before the invariant existed — insertion-ordered libraries converge to natural order on the next save, with no migration version bump.
+
+### Changing an ordering invariant silently flips order-dependent test fixtures (#82)
+
+Tests that index by position (`lib.books()[0]` vs `[1]`) or assert per-row flags (`needs_count`, `available`) keep compiling after you change the sort order, but now assert against the OLD order. When you change ordering, audit every order-dependent fixture: rename intent-revealing tests (`add_appends_in_insertion_order` → `add_orders_books_by_natural_title`) and re-derive expected indices from the new order (e.g. `known.cbz` now sorts before `unknown.cbz`, so the per-row flags swap). A test that still passes after a sort change should be treated with suspicion — check that its assertions actually exercise order-sensitive behaviour, not an accidentally order-independent property.
+
 ### Parse the schema `version` with `u32::try_from`, not `as u32`
 
 a truncating cast wraps crafted huge values (`u32::MAX + 1` → 0) and silently re-migrates.

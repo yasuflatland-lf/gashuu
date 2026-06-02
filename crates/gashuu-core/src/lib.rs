@@ -10,6 +10,7 @@ pub mod error;
 pub mod image_ops;
 pub mod library;
 pub mod library_store;
+pub(crate) mod ordering;
 pub mod page_source;
 pub mod reading_progress;
 pub mod settings;

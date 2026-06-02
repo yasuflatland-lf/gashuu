@@ -70,7 +70,9 @@ impl Library {
         } else {
             value
         };
-        serde_json::from_value(value).map_err(CoreError::Library)
+        let mut library: Library = serde_json::from_value(value).map_err(CoreError::Library)?;
+        library.normalize();
+        Ok(library)
     }
 }
 
@@ -98,8 +100,8 @@ mod tests {
         let mut lib = Library::new();
         let first = PathBuf::from("/manga/a.cbz");
         let second = PathBuf::from("/manga/b.cbz");
-        assert!(lib.add(first.clone()));
-        assert!(lib.add(second.clone()));
+        assert!(lib.add(first.clone()).is_some());
+        assert!(lib.add(second.clone()).is_some());
         assert!(lib.set_last_page(&second, 42));
 
         let json = lib.to_json().unwrap();
@@ -117,7 +119,7 @@ mod tests {
     #[test]
     fn to_json_emits_version_and_books() {
         let mut lib = Library::new();
-        assert!(lib.add(PathBuf::from("/manga/a.cbz")));
+        assert!(lib.add(PathBuf::from("/manga/a.cbz")).is_some());
 
         let value: serde_json::Value = serde_json::from_str(&lib.to_json().unwrap()).unwrap();
 
@@ -200,7 +202,7 @@ mod tests {
         let path = dir.path().join("nested").join("library.json");
         let book = PathBuf::from("/manga/a.cbz");
         let mut original = Library::new();
-        assert!(original.add(book.clone()));
+        assert!(original.add(book.clone()).is_some());
         assert!(original.set_last_page(&book, 7));
 
         original.save_to(&path).unwrap();
@@ -212,12 +214,25 @@ mod tests {
     }
 
     #[test]
+    fn load_from_normalizes_old_unsorted_library_order() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("library.json");
+        let stored = r#"{"version":1,"books":[{"path":"/manga/vol 10.cbz","title":"vol 10","last_page":0,"page_count":0},{"path":"/manga/vol 1.cbz","title":"vol 1","last_page":0,"page_count":0},{"path":"/manga/vol 2.cbz","title":"vol 2","last_page":0,"page_count":0}]}"#;
+        std::fs::write(&path, stored).unwrap();
+
+        let loaded = Library::load_from(&path).unwrap();
+
+        let titles: Vec<&str> = loaded.books().iter().map(|book| book.title()).collect();
+        assert_eq!(titles, vec!["vol 1", "vol 2", "vol 10"]);
+    }
+
+    #[test]
     fn page_count_persists_across_save_and_load() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("nested").join("library.json");
         let book = PathBuf::from("/manga/a.cbz");
         let mut original = Library::new();
-        assert!(original.add(book.clone()));
+        assert!(original.add(book.clone()).is_some());
         assert!(original.set_page_count(&book, NonZeroUsize::new(42).unwrap()));
 
         original.save_to(&path).unwrap();
@@ -255,7 +270,7 @@ mod tests {
     fn reading_progress_is_not_persisted() {
         let mut lib = Library::new();
         let p = PathBuf::from("/manga/a.cbz");
-        assert!(lib.add(p.clone()));
+        assert!(lib.add(p.clone()).is_some());
         assert!(lib.set_last_page(&p, 3));
         assert!(lib.set_page_count(&p, NonZeroUsize::new(10).unwrap()));
 

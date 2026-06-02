@@ -43,12 +43,23 @@ each `read_bytes` opens its OWN `::unrar::Archive` + `open_for_processing()`, th
 
 ### naming.rs
 
-PR6. Shared `natural_cmp`/`has_image_ext`/`IMAGE_EXTS` (`pub(crate)`) EXTRACTED from `folder.rs`
-so `FolderSource`/`ZipSource`/`RarSource` sort/recognize identically. PR7 added `enclosed_name`
-(`pub(crate)` traversal/zip-slip guard mirroring `zip`'s, rejecting absolute / root-or-prefix /
-any `..`, so RAR entries get the same protection ZIP gets) and MOVED `MAX_ENTRY_BYTES` here from
-`zip.rs` (now a neutral shared `pub(crate)` 500 MB archive-entry ceiling imported by BOTH
-`zip.rs` and `rar.rs`).
+PR6. Shared image-extension recognition (`IMAGE_EXTS`, `has_image_ext`) and archive-entry path
+validation (`MAX_ENTRY_BYTES`, `enclosed_name`) — all `pub(crate)`. `IMAGE_EXTS`/`has_image_ext`
+were extracted from `folder.rs` so `FolderSource`/`ZipSource`/`RarSource` recognise images
+identically. PR7 added `enclosed_name` (traversal/zip-slip guard rejecting absolute /
+root-or-prefix / any `..` paths, mirroring `zip`'s protection for RAR entries) and moved
+`MAX_ENTRY_BYTES` here from `zip.rs` (neutral shared 500 MB archive-entry ceiling imported by
+both `zip.rs` and `rar.rs`). Filename ordering logic (`natural_cmp` and its helpers) was
+extracted to `ordering.rs` in #82.
+
+### ordering.rs
+
+PR-82, `ordering.rs`. Shared numeric-aware natural-ordering comparator: `pub(crate) natural_cmp`
+plus private helpers `take_digits`/`cmp_numeric`. Numeric-aware so `vol 1 < vol 2 < vol 10`
+(digit runs are compared by numeric value, not lexicographically). Extracted from
+`page_source::naming` (#82) so the comparator is reachable from both page-source filename sorting
+(`FolderSource`/`ZipSource`/`RarSource`) and `Library` book ordering — a private submodule helper
+in `naming.rs` could not be reused across the crate.
 
 ### ArchiveLoader
 
@@ -167,22 +178,31 @@ Headless (no slint/tracing).
 
 ### Library aggregate
 
-PR-60 (signature retyped in #65), `library.rs`. `Library::register_opened(canonical: &Path,
-page_count: Option<NonZeroUsize>) -> OpenRegistration { resume: ReadingProgress, count_changed:
-bool }` centralises the open-time domain rule that previously lived in `main.rs`'s
-`app::OpenBookUseCase::run`: idempotent add by canonical path (dedup); page-count back-fill applied only for
-`Some(_)` (an unknown total = `None` is skipped); resume lookup via `Book::progress()`. The
-positivity that PR-60 enforced with a runtime guard is now a type fact — `set_page_count(_, count:
-NonZeroUsize)` makes `0` unrepresentable at the write boundary, so there is no `debug_assert` in core
-and no `page_count > 0` guard at the call site (#65). The reader side maps stored counts through
-`Book::page_count_opt() -> Option<usize>` (stored `0 → None`), the accessor that `progress()` and
-`carousel_data` consume. `main.rs` now just calls `register_opened` and
-`jump_to(reg.resume.reached())`, converting at the boundary with `NonZeroUsize::new(page_count)` (a
-zero-page open → `None` → back-fill skipped), keeping the domain rule out of the presentation layer
-(aligns with the core↔UI boundary, ADR-0002). `count_changed` tells the caller whether to rebuild
-the carousel. `Book::progress() -> ReadingProgress` is the per-book accessor that `carousel_data`
-and `register_opened` both use; `library.json` serde shape is unchanged (only `last_page` +
-`page_count` are persisted on each `Book`, `page_count` still a bare `usize` with `0` for unknown).
+PR-60 (signature retyped in #65; book ordering added in #82), `library.rs`.
+`Library::register_opened(canonical: &Path, page_count: Option<NonZeroUsize>) -> OpenRegistration
+{ resume: ReadingProgress, count_changed: bool }` centralises the open-time domain rule that
+previously lived in `main.rs`'s `app::OpenBookUseCase::run`: idempotent add by canonical path
+(dedup); page-count back-fill applied only for `Some(_)` (an unknown total = `None` is skipped);
+resume lookup via `Book::progress()`. The positivity that PR-60 enforced with a runtime guard is
+now a type fact — `set_page_count(_, count: NonZeroUsize)` makes `0` unrepresentable at the write
+boundary, so there is no `debug_assert` in core and no `page_count > 0` guard at the call site
+(#65). The reader side maps stored counts through `Book::page_count_opt() -> Option<usize>`
+(stored `0 → None`), the accessor that `progress()` and `carousel_data` consume. `main.rs` now
+just calls `register_opened` and `jump_to(reg.resume.reached())`, converting at the boundary with
+`NonZeroUsize::new(page_count)` (a zero-page open → `None` → back-fill skipped), keeping the
+domain rule out of the presentation layer (aligns with the core↔UI boundary, ADR-0002).
+`count_changed` tells the caller whether to rebuild the carousel. `Book::progress() ->
+ReadingProgress` is the per-book accessor that `carousel_data` and `register_opened` both use;
+`library.json` serde shape is unchanged (only `last_page` + `page_count` are persisted on each
+`Book`, `page_count` still a bare `usize` with `0` for unknown).
+
+`Library` is the single source of truth for book ordering: **natural title order** (numeric-aware,
+via `ordering::natural_cmp`) with the canonical path as a stable tiebreak for identically titled
+books. `add()` sorts the book list after inserting; `normalize()` re-sorts on load
+(`library_store::load_from`) so libraries persisted before #82 (insertion order) converge to
+natural title order on the next launch. The presentation layer (`carousel_data`,
+`cover_requests`) inherits this order by iterating `books()` — it does NOT sort independently,
+which keeps carousel row indices and cover-request indices aligned.
 
 ---
 
@@ -281,7 +301,8 @@ stays in `main.rs`. Lives in the UI crate because it coordinates Slint component
 
 PR-C, `library_model.rs`. PURE (Slint-free) `Library` → carousel display-row mapping: a plain
 `CarouselData` struct (`title`/`current`/`total`/`progress`/`available`) + `carousel_data(&Library)
--> Vec<CarouselData>` in shelf order. The carousel counterpart of `thumbnail_strip`'s row mapping —
+-> Vec<CarouselData>` in natural title order (inherited from `Library::books()` — no independent
+sort here; see `Library aggregate` in the core section). The carousel counterpart of `thumbnail_strip`'s row mapping —
 keeps the derivation table-testable without a display backend. Each row is built from
 `Book::progress()`: 1-based `current = ReadingProgress::current()` (`reached + 1`, saturating);
 `progress = ReadingProgress::fraction()` (guarded so an unknown/zero total → `0.0`, overshoot clamps
