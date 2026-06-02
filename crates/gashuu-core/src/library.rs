@@ -177,15 +177,24 @@ impl Library {
     /// left untouched, so `set_page_count`'s `> 0` invariant is never violated).
     /// Returns the resume position (the book's `ReadingProgress`) and whether the
     /// stored count changed, so the caller can decide to rebuild the carousel.
-    /// Pure domain rule — no I/O. `canonical` is the canonicalized open key (the
-    /// same key `last_page`/`set_page_count` use).
+    /// No persistence I/O; the only filesystem touch is the best-effort
+    /// `canonicalize` inside `add`, which is idempotent when `canonical` is already
+    /// canonical (the result is unchanged, though the syscall still runs; as it is
+    /// when read from `open_file`). `canonical` is the
+    /// canonicalized open key (the same key `last_page`/`set_page_count` use).
     pub fn register_opened(&mut self, canonical: &Path, page_count: usize) -> OpenRegistration {
         self.add(canonical.to_path_buf());
         let count_changed = page_count > 0 && self.set_page_count(canonical, page_count);
-        let resume = self
-            .books
-            .iter()
-            .find(|b| b.path() == canonical)
+        // The book was just added (or already present), so the lookup by the
+        // same canonical key always resolves; assert it to catch a future
+        // path-identity regression. The fallback keeps a never-panicking
+        // production path.
+        let found = self.books.iter().find(|b| b.path() == canonical);
+        debug_assert!(
+            found.is_some(),
+            "register_opened: book not found by canonical path immediately after add"
+        );
+        let resume = found
             .map(Book::progress)
             .unwrap_or(ReadingProgress::new(0, 0));
         OpenRegistration {
@@ -460,5 +469,31 @@ mod tests {
         let reg = lib.register_opened(&path, 10);
         assert_eq!(reg.resume.reached(), 5, "resume reflects the recorded page");
         assert_eq!(reg.resume.current(), 6, "current is reached + 1");
+    }
+
+    #[test]
+    fn register_opened_twice_preserves_recorded_last_page() {
+        // Re-opening a book must NOT reset its resume position: the idempotent
+        // add inside register_opened keeps the existing entry (and its last_page).
+        let mut lib = Library::new();
+        let p = PathBuf::from("/manga/a.cbz");
+        lib.register_opened(&p, 10);
+        assert!(lib.set_last_page(&p, 42));
+        let reg = lib.register_opened(&p, 10);
+        assert_eq!(lib.books().len(), 1, "re-open must not duplicate the book");
+        assert_eq!(reg.resume.reached(), 42, "re-open must preserve last_page");
+        assert!(!reg.count_changed, "same count on re-open is no change");
+    }
+
+    #[test]
+    fn register_opened_reports_count_change_on_new_nonzero_count() {
+        // A legitimately changed (non-zero -> different non-zero) page count is
+        // reported as count_changed, flowing set_page_count's "did it move" branch.
+        let mut lib = Library::new();
+        let p = PathBuf::from("/manga/a.cbz");
+        assert!(lib.register_opened(&p, 10).count_changed);
+        let reg = lib.register_opened(&p, 12);
+        assert!(reg.count_changed, "10 -> 12 is a real change");
+        assert_eq!(reg.resume.total(), 12);
     }
 }

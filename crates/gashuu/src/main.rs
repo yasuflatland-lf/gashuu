@@ -855,16 +855,24 @@ fn open_and_present(
     // `register_opened` performs the idempotent add, the guarded page-count
     // back-fill (skipping the `page_count == 0` unknown sentinel an empty folder
     // or a fully skipped archive opens with), and the resume lookup as one domain
-    // rule. Borrow discipline: it holds `library.borrow_mut()` only for this
-    // statement; `state.borrow_mut().jump_to(...)` is a separate statement on a
+    // rule. Borrow discipline: it holds `library.borrow_mut()` only for the
+    // `let reg = ...` line (released at its `;`, before the `jump_to` below);
+    // `state.borrow_mut().jump_to(...)` is a separate statement on a
     // distinct `RefCell`.
     let count_changed = if let Some(c) = canonical.as_deref() {
         let reg = library.borrow_mut().register_opened(c, page_count);
-        // Resume at the recorded position (0/no-op via jump_to's guard for a
-        // never-opened book).
+        // Resume at the recorded position; for a never-read book `reached` is 0
+        // and `jump_to(0)` is a no-op when the index is already 0.
         state.borrow_mut().jump_to(reg.resume.reached());
         reg.count_changed
     } else {
+        // Unreachable in practice: a successful open always sets `open_file`.
+        // Log if the invariant ever breaks so the book-not-registered failure
+        // (no saved reading position) is debuggable instead of silent.
+        tracing::warn!(
+            path = %path.display(),
+            "open_file was None after a successful open; book not registered in library"
+        );
         false
     };
     // Persist the newly registered book (and any back-filled page count)

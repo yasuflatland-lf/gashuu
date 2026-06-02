@@ -11,7 +11,7 @@
 //! row" discipline of the private `thumbnail_item` fn in `thumbnail_strip.rs`).
 //!
 //! Progress is derived from `Book::progress()` which returns a `ReadingProgress`
-//! value object. `ReadingProgress::current()` is 1-based (`last_page + 1`,
+//! value object. `ReadingProgress::current()` is 1-based (`reached + 1`,
 //! saturating, >= 1); `ReadingProgress::fraction()` guards `total == 0` to
 //! `0.0` (no NaN/inf); `ReadingProgress::total()` is the persisted page count.
 
@@ -24,16 +24,16 @@ use gashuu_core::Library;
 pub struct CarouselData {
     /// Book display title (file stem / directory name; from `Book::title`).
     pub title: String,
-    /// 1-based current page for display (`last_page + 1`). A fresh book
-    /// (`last_page == 0`) shows `1`.
+    /// 1-based current page for display = `ReadingProgress::current()` (`reached + 1`,
+    /// saturating). A fresh book (`reached == 0`) shows `1`.
     pub current: i32,
-    /// Total page count for display, the book's persisted `Book::page_count`.
+    /// Total page count for display = `ReadingProgress::total()` / `Book::page_count()`.
     /// `0` until the book has been opened at least once; back-filled and saved
     /// on open (see `set_page_count` in the open path), so an opened book shows
-    /// its real total and a `last_page / total` progress bar.
+    /// its real total and a `ReadingProgress::fraction()`-based progress bar.
     pub total: i32,
-    /// Reading progress in `0.0..=1.0` (`last_page / total`, `0.0` when
-    /// `total == 0`). Ambient per-cover bar; accent fill, green when `>= 1.0`.
+    /// Reading progress in `0.0..=1.0` = `ReadingProgress::fraction()` (`0.0` when
+    /// `total == 0`, never NaN/inf). Ambient per-cover bar; accent fill, green when `>= 1.0`.
     pub progress: f32,
     /// Derived availability (`Library::is_available`): false when the book's
     /// path no longer resolves. Unavailable books stay in the shelf, rendered
@@ -197,8 +197,8 @@ mod tests {
     #[test]
     fn carousel_data_total_and_progress_from_page_count() {
         // An opened book has a persisted page count; the row must surface it as
-        // the real `total` and compute `progress = last_page / total` against
-        // it (4 / 10 = 0.4), with `current` the 1-based display page.
+        // the real `total` and compute `progress = ReadingProgress::fraction()`
+        // (reached=4, total=10 → 0.4), with `current` the 1-based display page.
         let dir = tempfile::tempdir().expect("tempdir");
         let mut lib = Library::new();
         assert!(lib.add(dir.path().to_path_buf()));
