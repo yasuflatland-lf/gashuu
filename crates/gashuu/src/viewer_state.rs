@@ -10,9 +10,9 @@
 
 use crate::keymap::NavAction;
 use gashuu_core::{
-    next_leading, normalize_leading, prev_leading, spread_at, ArchiveLoader, CoreError, CoverMode,
-    DecodedImage, ImageCache, PageSource, ReadingDirection, Settings, SpreadLayout, SpreadMode,
-    DEFAULT_CAPACITY, DEFAULT_PREFETCH_RADIUS,
+    next_leading, normalize_leading, prev_leading, spread_at, ArchiveLoader, CacheConfig,
+    CoreError, CoverMode, DecodedImage, ImageCache, PageSource, ReadingDirection, Settings,
+    SpreadLayout, SpreadMode,
 };
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -77,8 +77,7 @@ pub struct ViewerState {
     source: Option<Arc<dyn PageSource>>,
     page_count: usize,
     index: usize,
-    cache_size: usize,
-    preload_pages: usize,
+    cache_config: CacheConfig,
     spread_mode: SpreadMode,
     cover_mode: CoverMode,
     reading_direction: ReadingDirection,
@@ -105,20 +104,19 @@ pub struct ViewerState {
 
 impl ViewerState {
     pub fn new() -> Self {
-        Self::with_cache_config(DEFAULT_CAPACITY, DEFAULT_PREFETCH_RADIUS)
+        Self::with_cache_config(CacheConfig::default())
     }
 
     /// Construct with explicit cache config and default display modes
     /// (Single / Standalone / Ltr) so callers that only care about cache sizing
     /// get single-page behavior.
-    pub fn with_cache_config(cache_size: usize, preload_pages: usize) -> Self {
+    pub fn with_cache_config(cache_config: CacheConfig) -> Self {
         Self {
             cache: None,
             source: None,
             page_count: 0,
             index: 0,
-            cache_size,
-            preload_pages,
+            cache_config,
             spread_mode: SpreadMode::Single,
             cover_mode: CoverMode::Standalone,
             reading_direction: ReadingDirection::Ltr,
@@ -136,8 +134,7 @@ impl ViewerState {
             source: None,
             page_count: 0,
             index: 0,
-            cache_size: settings.cache_size,
-            preload_pages: settings.preload_pages,
+            cache_config: settings.cache_config(),
             spread_mode: settings.spread_mode,
             cover_mode: settings.cover_mode,
             reading_direction: settings.reading_direction,
@@ -154,7 +151,7 @@ impl ViewerState {
     pub fn set_source(&mut self, source: Arc<dyn PageSource>) {
         self.source = Some(Arc::clone(&source));
         self.open_file = None;
-        let cache = ImageCache::new(source, self.cache_size, self.preload_pages);
+        let cache = ImageCache::new(source, self.cache_config);
         self.page_count = cache.len();
         self.cache = Some(cache);
         self.index = 0;
@@ -211,14 +208,10 @@ impl ViewerState {
     // Test-only accessors (same #[allow(dead_code)] convention as the existing
     // page_count()/index() accessors: in a binary crate, pub is not a public API
     // surface, so -D warnings flags cfg(test)-only callers as dead code).
+    /// The cache configuration applied to newly opened books.
     #[allow(dead_code)]
-    pub fn cache_size(&self) -> usize {
-        self.cache_size
-    }
-
-    #[allow(dead_code)]
-    pub fn preload_pages(&self) -> usize {
-        self.preload_pages
+    pub fn cache_config(&self) -> CacheConfig {
+        self.cache_config
     }
 
     /// Open any supported path (directory or CBZ/ZIP archive) as the active
@@ -442,9 +435,8 @@ impl ViewerState {
     /// values are consumed by `set_source` on the next open, matching the
     /// "applies to newly opened books" contract surfaced in the settings
     /// dialog. (Immediate runtime rebuild of the current cache is deferred.)
-    pub fn set_cache_config(&mut self, cache_size: usize, preload_pages: usize) {
-        self.cache_size = cache_size;
-        self.preload_pages = preload_pages;
+    pub fn set_cache_config(&mut self, cache_config: CacheConfig) {
+        self.cache_config = cache_config;
     }
 
     /// Set the reading direction to an exact value (vs. `toggle_reading_direction`'s

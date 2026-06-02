@@ -135,14 +135,14 @@ fn status_text_at_last_page() {
 
 #[test]
 fn with_cache_config_stores_values() {
-    let state = ViewerState::with_cache_config(7, 1);
-    assert_eq!(state.cache_size(), 7);
-    assert_eq!(state.preload_pages(), 1);
+    let state = ViewerState::with_cache_config(CacheConfig::new(7, 1));
+    assert_eq!(state.cache_config().capacity(), 7);
+    assert_eq!(state.cache_config().radius(), 1);
 }
 
 #[test]
 fn with_cache_config_defaults_to_single_standalone_ltr() {
-    let state = ViewerState::with_cache_config(7, 1);
+    let state = ViewerState::with_cache_config(CacheConfig::new(7, 1));
     assert_eq!(state.spread_mode(), SpreadMode::Single);
     assert_eq!(state.cover_mode(), CoverMode::Standalone);
     assert_eq!(state.reading_direction(), ReadingDirection::Ltr);
@@ -158,8 +158,8 @@ fn from_settings_copies_all_modes_and_cache_config() {
         reading_direction: ReadingDirection::Rtl,
         ..Default::default()
     });
-    assert_eq!(state.cache_size(), 11);
-    assert_eq!(state.preload_pages(), 2);
+    assert_eq!(state.cache_config().capacity(), 11);
+    assert_eq!(state.cache_config().radius(), 2);
     assert_eq!(state.spread_mode(), SpreadMode::Double);
     assert_eq!(state.cover_mode(), CoverMode::Paired);
     assert_eq!(state.reading_direction(), ReadingDirection::Rtl);
@@ -698,7 +698,10 @@ fn last_open_skipped_is_zero_on_fresh_state() {
     // A freshly constructed ViewerState has no open in progress, so
     // last_open_skipped must start at zero.
     assert_eq!(ViewerState::new().last_open_skipped(), 0);
-    assert_eq!(ViewerState::with_cache_config(10, 2).last_open_skipped(), 0);
+    assert_eq!(
+        ViewerState::with_cache_config(CacheConfig::new(10, 2)).last_open_skipped(),
+        0
+    );
     assert_eq!(
         ViewerState::from_settings(&Settings::default()).last_open_skipped(),
         0
@@ -1379,7 +1382,7 @@ fn set_cache_config_updates_fields() {
     // cache/preload values in the ViewerState so a subsequently opened book
     // picks them up without requiring an app relaunch.
     let mut state = ViewerState::new();
-    state.set_cache_config(99, 7);
-    assert_eq!(state.cache_size(), 99);
-    assert_eq!(state.preload_pages(), 7);
+    state.set_cache_config(CacheConfig::new(99, 7));
+    assert_eq!(state.cache_config().capacity(), 99);
+    assert_eq!(state.cache_config().radius(), 7);
 }

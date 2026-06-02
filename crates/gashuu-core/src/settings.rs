@@ -8,6 +8,7 @@
 //! presentation layer.
 
 use crate::cache::{DEFAULT_CAPACITY, DEFAULT_PREFETCH_RADIUS};
+use crate::cache_config::CacheConfig;
 use crate::error::CoreError;
 use directories::ProjectDirs;
 use serde::{Deserialize, Serialize};
@@ -244,12 +245,13 @@ impl Settings {
         };
         let mut settings: Self = serde_json::from_value(value)?;
         // Normalize invariants that a hand-edited or corrupt file could violate.
-        // A persisted cache_size of 0 would otherwise be returned verbatim to callers
-        // while ImageCache::new silently coerces it via `capacity.max(1)`; normalize
-        // here so the stored value matches the value actually used. (preload_pages is
-        // deliberately NOT clamped: 0 is a valid "prefetch disabled" radius and is not
-        // coerced downstream, so there is no stored-vs-used divergence to fix.)
-        settings.cache_size = settings.cache_size.max(1);
+        // A persisted cache_size of 0 would otherwise be returned verbatim via the
+        // public `cache_size` field. `CacheConfig::new` (reached through `cache_config`)
+        // owns the `capacity >= 1` floor, so route the stored field through it: this
+        // keeps the persisted value equal to the value actually used and keeps the floor
+        // defined in exactly one place. (preload_pages is deliberately NOT clamped: 0 is
+        // a valid "prefetch disabled" radius and is taken verbatim downstream.)
+        settings.cache_size = settings.cache_config().capacity();
         // push_recent caps recent_files on write, but a hand-edited file could exceed
         // MAX_RECENT_FILES and then persist forever (exit-save writes in-memory state);
         // enforce the cap on the read path too.
@@ -267,6 +269,16 @@ impl Settings {
         self.recent_files.retain(|p| p != &path);
         self.recent_files.insert(0, path);
         self.recent_files.truncate(MAX_RECENT_FILES);
+    }
+
+    /// Validated cache configuration derived from the persisted `cache_size` /
+    /// `preload_pages` fields. This is the canonical way to obtain a `CacheConfig`
+    /// from a loaded `Settings`; the `capacity >= 1` floor is guaranteed by
+    /// `CacheConfig::new` regardless of the construction site. (The settings-dialog
+    /// handlers in `main.rs` edit the raw fields live and rebuild a `CacheConfig`
+    /// directly for the in-session update.)
+    pub fn cache_config(&self) -> CacheConfig {
+        CacheConfig::new(self.cache_size, self.preload_pages)
     }
 }
 
@@ -654,5 +666,43 @@ mod tests {
             !s.seen_guide,
             "seen_guide must default to false when absent from JSON"
         );
+    }
+
+    #[test]
+    fn cache_config_reflects_fields() {
+        let s = Settings {
+            cache_size: 30,
+            preload_pages: 5,
+            ..Default::default()
+        };
+        let cfg = s.cache_config();
+        assert_eq!(cfg.capacity(), 30);
+        assert_eq!(cfg.radius(), 5);
+    }
+
+    #[test]
+    fn cache_config_capacity_is_at_least_one() {
+        // The value object clamps capacity even if the raw field somehow held 0.
+        let s = Settings {
+            cache_size: 0,
+            ..Default::default()
+        };
+        assert_eq!(s.cache_config().capacity(), 1);
+        assert_eq!(s.cache_config().radius(), s.preload_pages);
+    }
+
+    #[test]
+    fn from_json_old_flat_keys_load_into_cache_config() {
+        // Back-compat: an existing settings.json carrying the flat cache_size /
+        // preload_pages keys still loads and yields a matching CacheConfig.
+        let json = serde_json::json!({
+            "version": SETTINGS_VERSION,
+            "cache_size": 12,
+            "preload_pages": 4,
+        })
+        .to_string();
+        let cfg = Settings::from_json(&json).unwrap().cache_config();
+        assert_eq!(cfg.capacity(), 12);
+        assert_eq!(cfg.radius(), 4);
     }
 }
