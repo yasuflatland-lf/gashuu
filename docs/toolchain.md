@@ -41,7 +41,7 @@ To encode raw RGBA into an in-memory PNG (`thumbnail_cache::put`), wrap the buff
 
 ### App icon / bundling
 
-**Icon asset pipeline** — `app-icon.png` (1024×1024 master) and `app-icon.icns` are generated from the source logo using `sips` and `iconutil` (both ship with macOS Xcode command-line tools; no extra install needed):
+**Icon asset pipeline** — `app-icon.png` (1024×1024 master) and `app-icon.icns` are generated from the source logo using `sips` and `iconutil` (both ship with macOS; no extra install needed):
 
 ```sh
 # Center-crop 2816×1536 logo to 1536×1536 square, then resize to 1024 master
@@ -57,11 +57,11 @@ done
 iconutil -c icns -o crates/gashuu/ui/assets/app-icon.icns "$ICONSET"
 ```
 
-**Producing the macOS .app bundle** — install `cargo-bundle` once via the pinned toolchain, then build:
+**Producing the macOS .app bundle** — install `cargo-bundle` once (compiles under pinned toolchain; binary lands in `~/.cargo/bin`), then build from the crate root:
 
 ```sh
-mise exec -- cargo install cargo-bundle   # one-time, installs into pinned Rust toolchain
-mise exec -- cargo bundle --release   # emits target/release/bundle/osx/gashuu.app  ("osx" is cargo-bundle's fixed dir name)
+mise exec -- cargo install cargo-bundle   # one-time
+cd crates/gashuu && mise exec -- cargo bundle --release   # emits target/release/bundle/osx/gashuu.app  ("osx" is cargo-bundle's fixed dir name)
 ```
 
 `cargo bundle` is NOT wired into the default `cargo build` or CI gates — it is a developer convenience command only.
