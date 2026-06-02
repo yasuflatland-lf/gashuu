@@ -8,6 +8,7 @@
 // FocusScope in ViewerWindow (same convention as PageView.slint).
 
 import { Theme } from "Theme.slint";
+import { ThumbnailCell } from "components/ThumbnailCell.slint";
 
 export struct ThumbnailItem {
     image: image,
@@ -35,9 +36,6 @@ export component ThumbnailStrip inherits Rectangle {
     private property <length> cell-height: 130px;
     private property <length> cell-spacing: 6px;
     private property <length> image-area-height: 100px;
-    // Border widths: highlighted cell vs neutral cell.
-    private property <length> border-highlight: 3px;
-    private property <length> border-neutral: 1px;
 
     // ── Colors ─────────────────────────────────────────────────────────────────
     // Strip background matches the viewer's black aesthetic.
@@ -66,57 +64,21 @@ export component ThumbnailStrip inherits Rectangle {
                 width: root.cell-width;
                 height: root.cell-height;
 
-                // Highlight border: accent color for the current page, subtle
-                // neutral border otherwise.
-                border-color: item.page == root.current-index ? Theme.accent : Theme.hairline;
-                border-width: item.page == root.current-index
-                    ? root.border-highlight
-                    : root.border-neutral;
-                border-radius: Theme.radius-xs;
-                background: Theme.surface-raised;
-
-                // ── Image or placeholder ───────────────────────────────────────
-                // Three mutually-exclusive states:
-                //   loaded              → real thumbnail image
-                //   !loaded && !failed  → gray "still loading" placeholder
-                //   !loaded && failed   → red-tinted "decode failed" placeholder
-                if item.loaded : Image {
-                    x: root.border-highlight;
-                    y: root.border-highlight;
-                    width: root.cell-width - 2 * root.border-highlight;
-                    height: root.image-area-height - root.border-highlight;
+                // ── Thumbnail image area ───────────────────────────────────────
+                // ThumbnailCell owns the border ring, background, corner radius,
+                // and all three image states (loaded / loading placeholder /
+                // failed tint).  It is sized to the image area only; the page-
+                // number label sits below it.
+                ThumbnailCell {
+                    x: 0;
+                    y: 0;
+                    width: root.cell-width;
+                    height: root.image-area-height;
                     source: item.image;
-                    image-fit: contain;
-                }
-
-                if !item.loaded && !item.failed : Rectangle {
-                    x: root.border-highlight;
-                    y: root.border-highlight;
-                    width: root.cell-width - 2 * root.border-highlight;
-                    height: root.image-area-height - root.border-highlight;
-                    background: Theme.placeholder;
-                    border-radius: Theme.radius-xs;
-                }
-
-                if !item.loaded && item.failed : Rectangle {
-                    x: root.border-highlight;
-                    y: root.border-highlight;
-                    width: root.cell-width - 2 * root.border-highlight;
-                    height: root.image-area-height - root.border-highlight;
-                    background: Theme.error-surface;
-                    border-color: Theme.error;
-                    border-width: 1px;
-                    border-radius: Theme.radius-xs;
-
-                    Text {
-                        width: parent.width;
-                        height: parent.height;
-                        text: "✕";
-                        color: Theme.error;
-                        font-size: 20px;
-                        horizontal-alignment: center;
-                        vertical-alignment: center;
-                    }
+                    loaded: item.loaded;
+                    failed: item.failed;
+                    highlighted: item.page == root.current-index;
+                    radius: Theme.radius-xs;
                 }
 
                 // ── Page number label ──────────────────────────────────────────

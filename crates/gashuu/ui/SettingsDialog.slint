@@ -42,7 +42,9 @@ export component SettingsDialog inherits Rectangle {
 
     // ── Centered panel ────────────────────────────────────────────────────────
     Rectangle {
-        width: 480px;
+        // Fluid width: caps at 480 px on wide windows; shrinks to leave a
+        // Theme.space-xl gutter on each side on narrow windows.
+        width: min(480px, parent.width - 2 * Theme.space-xl);
         // Height is determined by content; anchor the panel at center.
         x: (parent.width - self.width) / 2;
         y: (parent.height - self.height) / 2;
