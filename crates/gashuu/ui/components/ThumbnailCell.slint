@@ -38,6 +38,10 @@ export component ThumbnailCell inherits Rectangle {
     // The active border width, used both for the visible border and to inset the
     // inner content so the image/placeholder never overlaps the ring.
     private property <length> border-w: root.highlighted ? root.border-highlight : root.border-neutral;
+    // Inner content box, inset by the border on all sides. Shared by all three
+    // state children below so the image/placeholder never overlaps the ring.
+    private property <length> inner-w: root.width - 2 * root.border-w;
+    private property <length> inner-h: root.height - 2 * root.border-w;
 
     // ── Cell shell ──────────────────────────────────────────────────────────────
     background: Theme.surface-raised;
@@ -49,8 +53,8 @@ export component ThumbnailCell inherits Rectangle {
     if root.loaded : Image {
         x: root.border-w;
         y: root.border-w;
-        width: root.width - 2 * root.border-w;
-        height: root.height - 2 * root.border-w;
+        width: root.inner-w;
+        height: root.inner-h;
         source: root.source;
         image-fit: contain;
     }
@@ -59,8 +63,8 @@ export component ThumbnailCell inherits Rectangle {
     if !root.loaded && !root.failed : Rectangle {
         x: root.border-w;
         y: root.border-w;
-        width: root.width - 2 * root.border-w;
-        height: root.height - 2 * root.border-w;
+        width: root.inner-w;
+        height: root.inner-h;
         background: Theme.placeholder;
         border-radius: root.radius;
     }
@@ -71,8 +75,8 @@ export component ThumbnailCell inherits Rectangle {
     if !root.loaded && root.failed : Rectangle {
         x: root.border-w;
         y: root.border-w;
-        width: root.width - 2 * root.border-w;
-        height: root.height - 2 * root.border-w;
+        width: root.inner-w;
+        height: root.inner-h;
         background: Theme.error-surface;
         border-color: Theme.error;
         border-width: 1px;
