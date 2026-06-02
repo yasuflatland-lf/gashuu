@@ -54,14 +54,14 @@ for s in 16 32 128 256 512; do
   sips -z $s $s         crates/gashuu/ui/assets/app-icon.png --out "$ICONSET/icon_${s}x${s}.png"
   sips -z $((s*2)) $((s*2)) crates/gashuu/ui/assets/app-icon.png --out "$ICONSET/icon_${s}x${s}@2x.png"
 done
-iconutil -c icns "$ICONSET" -o crates/gashuu/ui/assets/app-icon.icns
+iconutil -c icns -o crates/gashuu/ui/assets/app-icon.icns "$ICONSET"
 ```
 
-**Producing the macOS .app bundle** — install `cargo-bundle` once, then build:
+**Producing the macOS .app bundle** — install `cargo-bundle` once via the pinned toolchain, then build:
 
 ```sh
-cargo install cargo-bundle   # one-time
-mise exec -- cargo bundle --release   # emits target/release/bundle/osx/gashuu.app
+mise exec -- cargo install cargo-bundle   # one-time, installs into pinned Rust toolchain
+mise exec -- cargo bundle --release   # emits target/release/bundle/osx/gashuu.app  ("osx" is cargo-bundle's fixed dir name)
 ```
 
 `cargo bundle` is NOT wired into the default `cargo build` or CI gates — it is a developer convenience command only.
