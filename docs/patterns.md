@@ -78,6 +78,43 @@ Three hard-won rules for such a type:
    (`CacheConfig::new(cache_size, preload_pages)`) in one tested place so the only transpose risk
    is also the only thing under test.
 
+### Cohesion-wrapper value object: bundle args-that-always-travel-together, delegate to free fns
+
+A second, distinct value-object flavor — different from the invariant-owning kind above. Use it
+when several same-typed arguments are always passed together to a cluster of pure free functions,
+and the positional ordering is a silent transposition footgun (the compiler cannot distinguish them).
+`SpreadContext` (PR66, `spread.rs`) is the canonical example: it bundles
+`(total: Option<usize>, layout: SpreadLayout, cover: CoverMode)` into a `Copy` struct and exposes
+`.spread_at(i)`, `.next(i)`, `.prev(i)`, `.normalize(i)` — each delegating directly to the
+corresponding free fn (`spread_at`, `next_leading`, `prev_leading`, `normalize_leading`). A private
+`ViewerState::spread_ctx()` assembles it once; the six call sites switch from three positional args
+to a single named receiver, making the wrong argument order a compile error.
+
+Four hard rules for this flavor:
+
+1. **Delegate; do NOT rewrite.** The free fns remain the single source of truth. The wrapper
+   methods are one-liners that forward to them — do not inline or copy the logic into the struct.
+
+2. **Stay additive; do NOT tighten invariants or widen the API.** A cohesion wrapper's contract is
+   "same behavior, named home." Do not add `debug_assert!`s on fields, do not add field accessors
+   that expose internal state, and do not move resolution logic into it (e.g. `Auto → SpreadLayout`
+   resolution stays outside the wrapper). Doing so changes observable behavior (a `debug_assert`
+   panics in debug/test builds; a new accessor widens the public surface) — that is a separate PR.
+   In PR66 a reviewer proposed `debug_assert!(total > 0)`; it was deliberately DECLINED because the
+   free fns intentionally tolerate `total == 0` defensively and the issue mandated "no behavior
+   change."
+
+3. **Test both enum variants in every delegation test.** A delegation test that only exercises
+   `SpreadLayout::Single` can silently pass even with a transposed-field copy-paste error, because
+   `Single`-layout `normalize_leading` is an identity function (transposed args still return the
+   same value). Test `Single` AND `Double` for each method; a `Double` call exposes a wrong-field
+   bug that `Single` masks.
+
+4. **Constructor is trivial (no clamping, no validation) — no `#[derive(Deserialize)]` concern.**
+   Because there is no enforced invariant, there is no serde bypass hazard; the no-Deserialize rule
+   in the invariant-owning section above does NOT apply here. The struct is `Copy` and all fields
+   may be public or private — choose whichever keeps the construction site readable.
+
 ### Parse the schema `version` with `u32::try_from`, not `as u32`
 
 a truncating cast wraps crafted huge values (`u32::MAX + 1` → 0) and silently re-migrates.

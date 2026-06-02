@@ -48,4 +48,7 @@ A type that enforces an invariant in its constructor (e.g. `CacheConfig::new` cl
 directly and bypass the constructor, allowing invalid states from a corrupt or hand-edited file.
 Persist the raw primitives on a plain struct (`Settings`) and build the validated object on read
 via a getter (`Settings::cache_config()`). Full pattern: see
-[patterns.md](patterns.md) ("Value objects own their invariants").
+[patterns.md](patterns.md) ("Value objects own their invariants"). For the second value-object
+flavor — a cohesion wrapper that bundles always-co-travelling args and delegates to existing free
+fns (no invariant enforced, no Deserialize concern) — see
+[patterns.md](patterns.md) ("Cohesion-wrapper value object").
