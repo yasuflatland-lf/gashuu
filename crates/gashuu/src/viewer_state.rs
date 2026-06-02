@@ -266,9 +266,9 @@ impl ViewerState {
         self.spread_mode.resolve(self.viewport_aspect)
     }
 
-    /// Build a `SpreadContext` capturing the current total, layout, and cover
-    /// mode. All spread-math call sites use this helper so the triple is
-    /// assembled in one place.
+    /// Build a `SpreadContext` from the current `page_count`, `effective_layout()`,
+    /// and `cover_mode` so the `(total, layout, cover)` triple is assembled in one
+    /// place rather than reconstructed positionally at each call site.
     fn spread_ctx(&self) -> SpreadContext {
         SpreadContext::new(self.page_count, self.effective_layout(), self.cover_mode)
     }
