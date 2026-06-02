@@ -72,7 +72,7 @@ RAR requires a C++ compiler on every OS (see [docs/toolchain.md](toolchain.md)).
 
 - The Library screen (the PR-0b two-screen shell) now RENDERS the cover-flow carousel from the `Library` model: focused cover with accent ring, scaled/dimmed neighbors, per-cover + focused-meta reading-progress bars, a grayed broken-cover placeholder for unavailable books, and the 0-book empty-state CTA. Built from the pure `library_model::carousel_data` mapping via the `to_carousel_item` UI-thread adapter (covers via `slint::Image::default()` for now). No new deps.
 - **Covers start as placeholders** — PR-V (below) streams the real cover images in (into the same `VecModel<CarouselItem>`, using the PR8a `invoke_from_event_loop` pattern).
-- **Per-book page `total` is 0** — the Library does not persist page counts, so `total` (and therefore the meaningful `current / total` + progress fraction) stays 0 until whichever PR resolves a book's page source and learns its real count.
+- Per-book page `total` was a placeholder `0` in PR-C; **PR-La now persists it** (`Book::page_count`, back-filled and saved on open) and the carousel shows the real `total` + `current / total` progress fraction once a book has been opened. See "Per-book page totals, fallible save, and load-failure notice (PR-La)" below.
 - The empty-state CTA is wired to the file/folder picker by PR-L (see below).
 
 ### Thumbnail disk cache (PR-T)
@@ -92,6 +92,13 @@ RAR requires a C++ compiler on every OS (see [docs/toolchain.md](toolchain.md)).
 - Library is loaded at startup (corrupt/unreadable → empty library, same UI-layer recovery policy as `Settings`) and the carousel is seeded from it on boot.
 - No new deps (reuses `rfd`).
 
+### Per-book page totals, fallible save, and load-failure notice (PR-La)
+
+- **Per-book page totals are modeled + persisted.** `Book::page_count` (a `#[serde(default)]` field, no `LIBRARY_VERSION` bump) is back-filled from the opened source's page count and saved to `library.json` on open, so the count survives relaunch. The cover-flow carousel (`carousel_data`) now shows the REAL `total` / `current` / progress fraction for any opened book (`0` = never opened, reads as unread via the existing guard). Same-session visibility comes from a carousel rebuild on the open path when the count was just back-filled. Cover images remain placeholders until PR-V.
+- **Save is fallible end-to-end** — `Library::to_json -> Result` (symmetric with `from_json`); `save`/`save_to` propagate via `?`. No serialize step is silently swallowed, so a save can no longer write a truncated file while the UI reports success.
+- **Startup load failures surface on the home screen.** A genuine `Library`/`Settings` load failure (corrupt data / I/O / `NoDataDir`; missing files still return `Ok(default)`) is collected and shown on the Library status line after the initial refresh. Closes the PR-L gap where library load failure was tracing-only.
+- No new deps.
+
 ---
 
 ## Deferred (intentionally out of scope)
@@ -110,9 +117,6 @@ RAR requires a C++ compiler on every OS (see [docs/toolchain.md](toolchain.md)).
 - User-remappable keys (`key_bindings` stays persisted-but-inactive; the PR8b dialog shows a read-only reference).
 - Immediate runtime rebuild of the CURRENT book's cache (`ViewerState::rebuild_cache` — PR8b's `set_cache_config` only affects newly opened books).
 - `recent_files`-management / theme settings UI.
-- PR-L follow-ups:
-  - Library LOAD failure is recovered silently (tracing only, no on-screen notice) — same gap as Settings load; the add/save FAILURE path does surface to the status bar.
-  - `library_store.rs::to_json` uses `unwrap_or`/`unwrap_or_else` fallbacks that can silently discard a serialization error on save.
-  - Carousel `total`/`progress` are placeholders (`total = 0`) — page-count back-fill is not yet owned by any PR (covers themselves now stream in via PR-V, but it does not resolve page counts).
+- All three PR-L follow-ups SHIPPED in PR-La (see "Per-book page totals, fallible save, and load-failure notice" above): on-screen library-load-failure notice, fallible `to_json` (no silent serialize-error discard on save), and real carousel `total`/`progress` via persisted page counts. Covers now stream in via PR-V (see "Library carousel covers" above).
 - Backdrop-click / Esc dialog dismissal (PR8b dialogs close via their own button only).
 - PR5 non-goals: touch/pinch, rotation/minimap/scrollbar, click-to-turn, per-page independent zoom in Double mode, and 60fps is NOT CI-asserted (manual/telemetry only).

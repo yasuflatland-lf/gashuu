@@ -38,18 +38,18 @@ impl Library {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        std::fs::write(path, self.to_json())?;
+        std::fs::write(path, self.to_json()?)?;
         Ok(())
     }
 
     /// Serialize to pretty JSON with the on-disk schema version.
-    pub fn to_json(&self) -> String {
-        let books = serde_json::to_value(self.books()).unwrap_or(serde_json::Value::Null);
+    pub fn to_json(&self) -> Result<String, CoreError> {
+        let books = serde_json::to_value(self.books()).map_err(CoreError::Library)?;
         let value = serde_json::json!({
             "version": LIBRARY_VERSION,
             "books": books,
         });
-        serde_json::to_string_pretty(&value).unwrap_or_else(|_| "{}".to_string())
+        serde_json::to_string_pretty(&value).map_err(CoreError::Library)
     }
 
     /// Parse JSON, migrating older schema versions to the current shape.
@@ -101,7 +101,7 @@ mod tests {
         assert!(lib.add(second.clone()));
         assert!(lib.set_last_page(&second, 42));
 
-        let json = lib.to_json();
+        let json = lib.to_json().unwrap();
         let parsed = Library::from_json(&json).unwrap();
 
         assert_eq!(parsed.books().len(), 2);
@@ -118,12 +118,14 @@ mod tests {
         let mut lib = Library::new();
         assert!(lib.add(PathBuf::from("/manga/a.cbz")));
 
-        let value: serde_json::Value = serde_json::from_str(&lib.to_json()).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&lib.to_json().unwrap()).unwrap();
 
         assert_eq!(value["version"].as_u64(), Some(u64::from(LIBRARY_VERSION)));
         assert!(value["books"].is_array());
         assert_eq!(value["books"][0]["path"], "/manga/a.cbz");
         assert_eq!(value["books"][0]["title"], "a");
+        // Guard the schema: `page_count` must be emitted so it can't silently drop.
+        assert_eq!(value["books"][0]["page_count"].as_u64(), Some(0));
     }
 
     #[test]
@@ -206,6 +208,23 @@ mod tests {
         assert_eq!(loaded.books().len(), 1);
         assert_eq!(loaded.books()[0].path(), Path::new("/manga/a.cbz"));
         assert_eq!(loaded.books()[0].last_page(), 7);
+    }
+
+    #[test]
+    fn page_count_persists_across_save_and_load() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("nested").join("library.json");
+        let book = PathBuf::from("/manga/a.cbz");
+        let mut original = Library::new();
+        assert!(original.add(book.clone()));
+        assert!(original.set_page_count(&book, 42));
+
+        original.save_to(&path).unwrap();
+        let loaded = Library::load_from(&path).unwrap();
+
+        assert_eq!(loaded.books().len(), 1);
+        assert_eq!(loaded.books()[0].path(), Path::new("/manga/a.cbz"));
+        assert_eq!(loaded.books()[0].page_count(), 42);
     }
 
     #[test]

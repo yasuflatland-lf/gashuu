@@ -9,7 +9,7 @@ mod viewer_state;
 mod viewport;
 
 use gashuu_core::{
-    CoverMode, DecodedImage, FitMode, Library, ReadingDirection, Settings, SpreadMode,
+    CoreError, CoverMode, DecodedImage, FitMode, Library, ReadingDirection, Settings, SpreadMode,
 };
 use keymap::{map_key, KeyCommand};
 use library_model::{carousel_data, CarouselData};
@@ -28,20 +28,30 @@ fn main() -> color_eyre::Result<()> {
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();
 
-    // Load persisted settings; corrupt/unreadable files fall back to defaults
-    // (the corrupt-file recovery policy lives here in the UI layer, by design).
-    let settings = Settings::load().unwrap_or_else(|e| {
-        tracing::warn!(error = %e, "failed to load settings; using defaults");
-        Settings::default()
-    });
-
-    // Load the persisted shelf; an unreadable/corrupt library.json falls back
-    // to an empty library (the corrupt-file recovery policy lives here in the
-    // UI layer, mirroring the Settings load above).
-    let library = Library::load().unwrap_or_else(|e| {
-        tracing::warn!(error = %e, "failed to load library; starting empty");
-        Library::new()
-    });
+    // Load persisted settings and library; corrupt/unreadable files fall back
+    // to defaults (the corrupt-file recovery policy lives here in the UI layer,
+    // by design). Missing files return Ok(default) from Settings::load /
+    // Library::load, so the Err arm fires only on a GENUINE failure (corrupt
+    // data, I/O error, NoDataDir). Errors are collected and surfaced on the
+    // home screen after the initial refresh, which itself overwrites
+    // status-text, so the notice must be set after that call.
+    let mut load_errs: Vec<String> = Vec::new();
+    let settings = match Settings::load() {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::warn!(error = %e, "failed to load settings; using defaults");
+            load_errs.push(format!("settings ({e})"));
+            Settings::default()
+        }
+    };
+    let library = match Library::load() {
+        Ok(l) => l,
+        Err(e) => {
+            tracing::warn!(error = %e, "failed to load library; starting empty");
+            load_errs.push(format!("library ({e})"));
+            Library::new()
+        }
+    };
 
     let ui = ViewerWindow::new()?;
     let state = Rc::new(RefCell::new(ViewerState::from_settings(&settings)));
@@ -87,6 +97,20 @@ fn main() -> color_eyre::Result<()> {
     // folder is opened (refresh shows "No folder opened" and clears the images).
     refresh(&ui, &state.borrow(), &viewport);
 
+    // Surface any load failures AFTER the initial refresh, which overwrites
+    // status-text with "No folder opened". The carousel/home screen is visible
+    // at this point, so the user sees the notice immediately. Missing files
+    // return Ok(default), so this fires only on genuine failures.
+    if !load_errs.is_empty() {
+        ui.set_status_text(
+            format!(
+                "Could not load {}; starting fresh.",
+                load_errs.join(" and ")
+            )
+            .into(),
+        );
+    }
+
     // First-run guide: show the overlay exactly once. `seen_guide` is flipped and
     // persisted when the user dismisses it (see `on_dismiss_guide`).
     if !settings.borrow().seen_guide {
@@ -101,6 +125,7 @@ fn main() -> color_eyre::Result<()> {
         let viewport = Rc::clone(&viewport);
         let thumbs = Rc::clone(&thumbs);
         let library = Rc::clone(&library);
+        let covers = Rc::clone(&covers);
         ui.on_open_folder(move || {
             let Some(ui) = ui_weak.upgrade() else {
                 return;
@@ -109,7 +134,7 @@ fn main() -> color_eyre::Result<()> {
                 return;
             };
             open_and_present(
-                &ui, &state, &settings, &viewport, &thumbs, &library, &dir, "",
+                &ui, &state, &settings, &viewport, &thumbs, &library, &covers, &dir, "",
             );
         });
     }
@@ -122,6 +147,7 @@ fn main() -> color_eyre::Result<()> {
         let viewport = Rc::clone(&viewport);
         let thumbs = Rc::clone(&thumbs);
         let library = Rc::clone(&library);
+        let covers = Rc::clone(&covers);
         ui.on_open_archive(move || {
             let Some(ui) = ui_weak.upgrade() else {
                 return;
@@ -139,6 +165,7 @@ fn main() -> color_eyre::Result<()> {
                 &viewport,
                 &thumbs,
                 &library,
+                &covers,
                 &file,
                 " (zip-slip or oversized)",
             );
@@ -194,6 +221,7 @@ fn main() -> color_eyre::Result<()> {
         let thumbs = Rc::clone(&thumbs);
         let library = Rc::clone(&library);
         let nav = Rc::clone(&nav);
+        let covers = Rc::clone(&covers);
         ui.on_carousel_open(move |index| {
             let Some(ui) = ui_weak.upgrade() else {
                 return;
@@ -214,7 +242,7 @@ fn main() -> color_eyre::Result<()> {
             // open_and_present writes back the OLD book's position first,
             // then opens the new path and resumes its stored position.
             open_and_present(
-                &ui, &state, &settings, &viewport, &thumbs, &library, &path, "",
+                &ui, &state, &settings, &viewport, &thumbs, &library, &covers, &path, "",
             );
             go_to_viewer(&ui, &nav);
         });
@@ -769,6 +797,7 @@ fn open_and_present(
     viewport: &Rc<RefCell<ViewportState>>,
     thumbs: &ThumbnailController,
     library: &Rc<RefCell<Library>>,
+    covers: &cover_loader::CoverController,
     path: &Path,
     skipped_detail: &str, // "" for folders, " (zip-slip or oversized)" for archives
 ) {
@@ -780,7 +809,11 @@ fn open_and_present(
     // `Ok` arm reads `state` again (a borrow held across the match would
     // double-borrow-panic at the `reconcile_settings(&state.borrow(), ..)` below).
     let opened = state.borrow_mut().open_folder(path);
-    match opened {
+    // The settings-save outcome, captured so it can be surfaced AFTER refresh
+    // (composing onto the status line). `None` when no save was attempted
+    // (recent-files tracking off); `Some(result)` otherwise. Surfacing before
+    // refresh would be clobbered by the spread/status push.
+    let settings_save: Option<Result<(), CoreError>> = match opened {
         Ok(()) => {
             tracing::info!(path = %path.display(), "opened source");
             let mut s = settings.borrow_mut();
@@ -792,9 +825,13 @@ fn open_and_present(
                 // from `open_folder` above already dropped via the `opened` binding).
                 reconcile_settings(&state.borrow(), &viewport.borrow(), &mut s);
                 s.push_recent(path.to_path_buf());
-                if let Err(e) = s.save() {
+                let result = s.save();
+                if let Err(e) = &result {
                     tracing::error!(error = %e, "failed to save settings on open");
                 }
+                Some(result)
+            } else {
+                None
             }
         }
         Err(e) => {
@@ -802,7 +839,7 @@ fn open_and_present(
             ui.set_status_text(format!("Error: {e}").into());
             return;
         }
-    }
+    };
     // Register the freshly opened book in the Library so its reading position
     // has a persistent home. `add` is idempotent (dedup by canonical path) and
     // returns false for a book already present, so re-opening keeps its stored
@@ -810,31 +847,74 @@ fn open_and_present(
     // opened via Open Folder / Open Archive (carousel-opened books are already
     // present, so `add` is a no-op there).
     library.borrow_mut().add(path.to_path_buf());
-    // Persist the newly registered book immediately, mirroring the recents
-    // save-on-open above, so the library shelf stays consistent with recents
-    // even if the app exits before the next leave point. Borrow discipline:
-    // `add`'s borrow_mut dropped at its `;`; this is a fresh, separate borrow.
-    if let Err(e) = library.borrow().save() {
+    // The CANONICAL key that `open_path`/`add` store (read from `open_file`),
+    // not the raw `path` argument, which may be a non-canonical dialog path.
+    // It is the same key `last_page`/`set_page_count`/`write_back_position` use;
+    // computed ONCE here and reused for the page-count back-fill and the resume
+    // lookup below. The `state.borrow()` `Ref` drops at the `;`.
+    let canonical = state.borrow().open_file().map(Path::to_path_buf);
+    // Back-fill the book's persisted page count so the carousel can show a real
+    // total/progress. GUARDED on `n > 0`: an empty folder or a fully
+    // zip-slip/oversized-skipped archive opens Ok with `page_count() == 0`, the
+    // unknown sentinel that `set_page_count`'s debug_assert forbids — skip those.
+    // Borrow discipline: `state` and `library` are distinct `RefCell`s, so the
+    // `state.borrow()` in the scrutinee and `library.borrow_mut()` in the arm
+    // cannot conflict; `page_count()` returns a `Copy` `usize` — nothing is held
+    // across the arm.
+    let count_changed = match (&canonical, state.borrow().page_count()) {
+        (Some(c), n) if n > 0 => library.borrow_mut().set_page_count(c, n),
+        _ => false,
+    };
+    // Persist the newly registered book (and any back-filled page count)
+    // immediately, mirroring the recents save-on-open above, so the library
+    // shelf stays consistent even if the app exits before the next leave point.
+    // Capture the result to surface AFTER refresh (surfacing now would be
+    // clobbered by the spread/status push). Borrow discipline: `add`/
+    // `set_page_count`'s borrow_mut dropped at their `;`; this is a fresh borrow.
+    let library_save: Result<(), CoreError> = library.borrow().save();
+    if let Err(e) = &library_save {
         tracing::error!(error = %e, "failed to save library on open");
     }
-    // Resume at the stored reading position. Look up `last_page` with the
-    // CANONICAL key that `open_path`/`add` store (read from `open_file`), not
-    // the raw `path` argument, which may be a non-canonical dialog path — using
-    // the raw path would miss the stored book and silently resume at page 0.
-    // `last_page` returns 0 for an unknown book (no-op via jump_to's guard).
-    // Borrow discipline: the `state.borrow()` for the canonical path drops at
-    // its `;`; `library.borrow()` and `state.borrow_mut()` are later, separate
-    // borrows that cannot conflict (distinct RefCells, single statements).
-    let canonical = state.borrow().open_file().map(Path::to_path_buf);
-    let resume_page = canonical.map_or(0, |p| library.borrow().last_page(&p));
+    // Resume at the stored reading position. `last_page` returns 0 for an
+    // unknown book (no-op via jump_to's guard). Borrow discipline:
+    // `library.borrow()` and `state.borrow_mut()` are separate, single-statement
+    // borrows on distinct RefCells that cannot conflict.
+    let resume_page = canonical
+        .as_deref()
+        .map_or(0, |p| library.borrow().last_page(p));
     state.borrow_mut().jump_to(resume_page);
     refresh(ui, &state.borrow(), viewport);
+    // Compose extra notices onto the status line WITHOUT replacing it (the
+    // refresh above set the base spread status). Mirrors the skipped-entries
+    // `{base} \u{2014} …` pattern; DRYs the get→format→set glue.
+    let append_status = |detail: &str| {
+        let base = ui.get_status_text().to_string();
+        ui.set_status_text(format!("{base} \u{2014} {detail}").into());
+    };
     let skipped = state.borrow().last_open_skipped();
     if skipped > 0 {
-        let base = ui.get_status_text().to_string();
-        ui.set_status_text(
-            format!("{base} \u{2014} {skipped} entries skipped{skipped_detail}").into(),
-        );
+        append_status(&format!("{skipped} entries skipped{skipped_detail}"));
+    }
+    // Surface save failures (no silent failures on the open path). Order:
+    // settings first, then library/page-count. Success adds no notice.
+    if let Some(Err(e)) = &settings_save {
+        append_status(&format!("Failed to save settings: {e}"));
+    }
+    if let Err(e) = &library_save {
+        append_status(&format!("Failed to save library: {e}"));
+    }
+    // When the stored page count was just back-filled/updated, rebuild the
+    // carousel model so the home screen reflects the real total/progress when
+    // the user returns to the library. `build_carousel_model` rebuilds AND
+    // rebinds the items model; the carousel's focused index is a separate Slint
+    // property, and rebuilding the same book set leaves those indices valid, so
+    // focus is unaffected. Fresh `library.borrow()` — no overlapping borrows.
+    if count_changed {
+        build_carousel_model(ui, &library.borrow());
+        // The rebuild reset each row's cover to a placeholder; re-stream the covers
+        // (hits paint now, misses regenerate). The epoch bump supersedes any covers
+        // still streaming from the pre-rebuild model.
+        covers.start(ui.as_weak(), cover_requests(&library.borrow()));
     }
     // Kick off parallel thumbnail generation for the newly opened source.
     thumbs.start(

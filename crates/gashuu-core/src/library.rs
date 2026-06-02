@@ -19,6 +19,11 @@ pub struct Book {
     title: String,
     #[serde(default)]
     last_page: usize,
+    /// Total page count, cached at open time. `0` is the unknown sentinel (set
+    /// for a freshly added book and for any older `library.json` missing the
+    /// field).
+    #[serde(default)]
+    page_count: usize,
 }
 
 impl Book {
@@ -41,6 +46,7 @@ impl Book {
             path,
             title,
             last_page: 0,
+            page_count: 0,
         }
     }
 
@@ -57,6 +63,11 @@ impl Book {
     /// Leading page index of the last-viewed spread (0 when never opened).
     pub fn last_page(&self) -> usize {
         self.last_page
+    }
+
+    /// Total page count cached at open time (0 when unknown).
+    pub fn page_count(&self) -> usize {
+        self.page_count
     }
 }
 
@@ -117,6 +128,24 @@ impl Library {
         match self.books.iter_mut().find(|b| b.path() == path) {
             Some(book) if book.last_page != page => {
                 book.last_page = page;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Record the total `count` of pages for `path`. Returns `false` when the
+    /// path is absent OR the value is unchanged (mirrors `set_last_page`, so
+    /// callers can skip a save). `count` must be positive: `0` is the unknown
+    /// sentinel and is never a valid measured page count.
+    pub fn set_page_count(&mut self, path: &Path, count: usize) -> bool {
+        debug_assert!(
+            count > 0,
+            "set_page_count: count must be > 0; 0 is the unknown sentinel"
+        );
+        match self.books.iter_mut().find(|b| b.path() == path) {
+            Some(book) if book.page_count != count => {
+                book.page_count = count;
                 true
             }
             _ => false,
@@ -254,6 +283,52 @@ mod tests {
         assert!(lib.add(path.clone()));
         assert!(lib.set_last_page(&path, 3));
         assert!(!lib.set_last_page(&path, 3));
+    }
+
+    #[test]
+    fn page_count_defaults_to_zero_for_fresh_book() {
+        let book = Book::from_path(PathBuf::from("/manga/a.cbz"));
+        assert_eq!(book.page_count(), 0);
+    }
+
+    #[test]
+    fn set_page_count_updates_and_returns_true() {
+        let mut lib = Library::new();
+        let path = PathBuf::from("/manga/a.cbz");
+        assert!(lib.add(path.clone()));
+        assert!(lib.set_page_count(&path, 42));
+        assert_eq!(lib.books()[0].page_count(), 42);
+    }
+
+    #[test]
+    fn set_page_count_false_when_absent() {
+        let mut lib = Library::new();
+        assert!(!lib.set_page_count(Path::new("/manga/missing.cbz"), 12));
+    }
+
+    #[test]
+    fn set_page_count_false_when_unchanged() {
+        let mut lib = Library::new();
+        let path = PathBuf::from("/manga/a.cbz");
+        assert!(lib.add(path.clone()));
+        assert!(lib.set_page_count(&path, 3));
+        assert!(!lib.set_page_count(&path, 3));
+    }
+
+    #[test]
+    fn book_without_page_count_field_deserializes_to_zero() {
+        // Backward compatibility: an older `Book` JSON object that predates the
+        // `page_count` field must still deserialize, defaulting to the unknown
+        // sentinel (0).
+        let value = serde_json::json!({
+            "path": "/manga/a.cbz",
+            "title": "a",
+            "last_page": 5,
+        });
+        let book: Book = serde_json::from_value(value).unwrap();
+        assert_eq!(book.path(), Path::new("/manga/a.cbz"));
+        assert_eq!(book.last_page(), 5);
+        assert_eq!(book.page_count(), 0);
     }
 
     #[test]

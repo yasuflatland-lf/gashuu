@@ -26,10 +26,10 @@ pub struct CarouselData {
     /// 1-based current page for display (`last_page + 1`). A fresh book
     /// (`last_page == 0`) shows `1`.
     pub current: i32,
-    /// Total page count for display. Unknown until the book is opened, so the
-    /// Library does not store it — `total` is always 0 at load time. Whichever
-    /// future PR resolves a book's page source and learns its real count owns
-    /// filling this in; this PR intentionally leaves it 0.
+    /// Total page count for display, the book's persisted `Book::page_count`.
+    /// `0` until the book has been opened at least once; back-filled and saved
+    /// on open (see `set_page_count` in the open path), so an opened book shows
+    /// its real total and a `last_page / total` progress bar.
     pub total: i32,
     /// Reading progress in `0.0..=1.0` (`last_page / total`, `0.0` when
     /// `total == 0`). Ambient per-cover bar; accent fill, green when `>= 1.0`.
@@ -44,17 +44,20 @@ pub struct CarouselData {
 ///
 /// `current = last_page + 1` (1-based display); `progress = last_page / total`
 /// guarded so `total == 0` yields `0.0` (never NaN/inf); `available` is the
-/// derived existence check. `total` is 0 until the book is opened (the Library
-/// does not persist page counts); the real total is filled once a book's page
-/// source is resolved (not owned by this PR), at which point `current`/`progress`
-/// become meaningful against it.
+/// derived existence check. `total` comes from `Book::page_count()`: `0` when
+/// the book has never been opened (so `progress` is `0.0` via the guard), and
+/// the real persisted count once it has been opened, at which point
+/// `current`/`progress` become meaningful against it.
 pub fn carousel_data(library: &Library) -> Vec<CarouselData> {
     library
         .books()
         .iter()
         .map(|book| {
             let last_page = book.last_page();
-            let total = 0usize; // Unknown until opened; see doc comment.
+            // The book's persisted page count; 0 until it has been opened at
+            // least once (back-filled on open). `progress_fraction` guards the
+            // 0 case to 0.0, so a never-opened book still reads as unread.
+            let total = book.page_count();
             let progress = progress_fraction(last_page, total);
             // `last_page` is a `usize` page index; saturate the +1 and the i32
             // cast so a pathological value can never panic in debug.
@@ -228,5 +231,23 @@ mod tests {
         assert!(lib.set_last_page(&path, 4));
         let rows = carousel_data(&lib);
         assert_eq!(rows[0].current, 5); // 1-based: last_page 4 -> display 5
+    }
+
+    #[test]
+    fn carousel_data_total_and_progress_from_page_count() {
+        // An opened book has a persisted page count; the row must surface it as
+        // the real `total` and compute `progress = last_page / total` against
+        // it (4 / 10 = 0.4), with `current` the 1-based display page.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut lib = Library::new();
+        assert!(lib.add(dir.path().to_path_buf()));
+        let path = lib.books()[0].path().to_path_buf();
+        assert!(lib.set_last_page(&path, 4));
+        assert!(lib.set_page_count(&path, 10));
+        let rows = carousel_data(&lib);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].total, 10); // real persisted count
+        assert_eq!(rows[0].current, 5); // 1-based: last_page 4 -> display 5
+        assert_eq!(rows[0].progress, 0.4); // 4 / 10
     }
 }
