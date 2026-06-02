@@ -32,7 +32,7 @@ tasteful a tool as a fine art book.
 - **Page scrubber & counter** — a bottom scrub bar and a top-right page-counter chip
   appear on mouse-move, arrow-key press, or scrubber drag, then fade after idle. Drag the
   knob to scrub; a thumbnail preview (one or two pages for single/double spreads) pops up
-  during the drag and the page only changes on release. RTL-aware: in manga mode dragging
+  during the drag — not-yet-decoded or failed thumbnails show distinct loading/error placeholders — and the page only changes on release. RTL-aware: in manga mode dragging
   left advances pages.
 - **Settings dialog & first-run guide** — change every active option from the toolbar
   without hand-editing config, and a one-time welcome overlay summarises the controls.
