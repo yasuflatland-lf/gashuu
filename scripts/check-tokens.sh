@@ -62,8 +62,7 @@ else
 
     scanned=$((scanned + 1))
     # Report every offending file:line:match (-o so the column points at the hex).
-    # Declare separate from the assignment so grep's exit code is not masked.
-    matches=""
+    # exit 1 = no match (ok); >=2 = real grep error → fail
     matches="$(grep -onE "$HEX_RE" "$f")" || { rc=$?; [ "$rc" -eq 1 ] || fail "grep failed (exit $rc) on $f"; }
     if [ -n "$matches" ]; then
       while IFS= read -r m; do
