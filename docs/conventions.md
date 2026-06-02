@@ -38,6 +38,14 @@ mod tests;
 
 Key facts: `#[path]` resolves relative to the **parent file's directory** (`src/`), not the crate root; `use super::*;` in the moved file still resolves to the parent module; no `mod.rs` is needed. Mechanics: extract the brace-body, write the 3-line stub, then run `cargo fmt` — rustfmt de-indents the moved block automatically. This is the preferred file-shrinking technique for the ongoing refactor set. (`viewer_state` is the first module to use it; previously every module kept tests inline.)
 
+### Extracting a collaborator-threading fn — field-alias verbatim move + `pub(crate)` bridge
+
+Two rules validated by PR67 (extracting the open-a-book use case into `app::OpenBookUseCase`); full rationale in [patterns.md](patterns.md) ("Use-case object").
+
+1. **Field-alias verbatim move.** When extracting a fn that threads many shared collaborators into a `…UseCase::run` method, store the collaborators as fields and alias them to locals at the top of `run` (`let state = &self.state;` per field) so the moved body stays BYTE-IDENTICAL. `Deref` absorbs the `&Rc<T>` (field) vs `&T` (former parameter) difference for method calls, so no statement in the body changes — minimal diff, borrow-discipline comments preserved verbatim.
+
+2. **`pub(crate)` bridge for module extraction under parallel writers.** Keep shared helpers (`refresh`/`reconcile_settings`/`write_back_position`) in `main.rs` but raise them to `pub(crate)` so the new module calls them via `crate::`. This lets a 2-file split (new module ∥ caller edit) be written by parallel no-cargo agents against an exact API contract, then verified once by the gates.
+
 ### Test fixtures (no committed binaries)
 
 Tests synthesize fixtures in memory (the `image` crate makes tiny PNGs) plus `tempfile` for filesystem cases — **no committed binary fixtures.** Two exceptions, both committed TEXT not binaries: insta `.snap` files (see [docs/patterns.md](patterns.md)), and (PR7) the base64-encoded RAR `.cbr` fixtures in `crates/gashuu-core/src/test_fixtures.rs` (RAR has no Rust encoder, so they cannot be synthesized in-memory like PNGs/ZIPs).

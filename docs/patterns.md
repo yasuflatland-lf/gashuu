@@ -115,6 +115,59 @@ Four hard rules for this flavor:
    in the invariant-owning section above does NOT apply here. The struct is `Copy` and all fields
    may be public or private — choose whichever keeps the construction site readable.
 
+### Use-case object (collaborator-owning): bundle shared `Rc<RefCell<…>>` as fields, expose `run`
+
+A THIRD value-object flavor — neither the invariant-owner (CacheConfig #59, above) nor the
+cohesion-wrapper (SpreadContext #66, above). Use it when a free fn coordinates a multi-step use case
+while THREADING many shared `Rc<RefCell<…>>` collaborators — the `#[allow(clippy::too_many_arguments)]`
+smell. Bundle the collaborators as private FIELDS of a `pub(crate) struct XUseCase`, construct it once,
+and expose `run(&self, …per-call args…)` carrying the moved body. `OpenBookUseCase` (PR67, `app.rs`)
+is the canonical example: it owns the six open-path collaborators
+(`state`/`settings`/`viewport`: `Rc<RefCell<_>>`, `library`: `Rc<RefCell<Library>>`,
+`thumbs`: `Rc<ThumbnailController>`, `covers`: `Rc<CoverController>`) and exposes
+`run(&self, ui: &ViewerWindow, path: &Path, skipped_detail: &str)`. It replaces the former
+nine-argument `open_and_present` free fn (which carried `#[allow(clippy::too_many_arguments)]`).
+
+**WHY:** removes the nine-arg signature AND the `#[allow]`; collapses the per-closure `Rc::clone`
+ceremony — the three open handlers used to clone all six collaborators each; now each does ONE
+`Rc::clone(&open_book)` then `open_book.run(ui, path, detail)`. It gives the use case a NAME and a
+single reviewable home. It stays in the UI crate because it touches Slint (status text, carousel
+rebuild, thumbnail launch) — `gashuu-core` stays headless.
+
+**CONTRAST with the two flavors above:** the invariant-owner owns a CLAMPED primitive in an
+immutable ctor; the cohesion-wrapper is a `Copy` bundle that DELEGATES to surviving free fns with no
+behaviour change. The use-case object instead OWNS shared mutable `Rc` handles and IS the moved body
+— there are no peer free fns to delegate to. Its "invariant" is collaborator-completeness, not a
+clamped value, so a trivial infallible ctor is correct and there is nothing to enforce (and no
+`#[derive(Deserialize)]` hazard, same as the cohesion-wrapper).
+
+**The verbatim-move-with-field-aliases harness** (the load-bearing how-to):
+
+1. **Alias the fields to locals at the top of `run`** (`let state = &self.state;` for each field) so
+   the moved body reads BYTE-IDENTICAL to the former parameters. The body's `&Rc<T>` resolves to the
+   former `&T` transparently through `Deref` for method calls (e.g. `thumbs.start(...)` works on
+   `&Rc<ThumbnailController>` exactly as on the old `&ThumbnailController`), so NO statement in the
+   body changes. This minimises the diff/review surface and preserves the dense borrow-discipline
+   comments verbatim.
+
+2. **Extract at least one PURE inline decision for headless unit tests.** `run` itself is Slint-coupled,
+   so the cargo gates never exercise it. PR67 lifted the status-compose decision into
+   `pub(crate) fn status_notices(skipped, skipped_detail, settings_save, library_save) -> Vec<String>`
+   — pure, so the "skipped, then settings-save failure, then library-save failure" order is unit-tested
+   without a UI (mirrors the `position_to_write_back` precedent). The `run` body just iterates
+   `status_notices(...)` and appends each onto the current status; the old `append_status` closure is
+   gone.
+
+3. **Preserve borrow discipline EXACTLY** (the moved body carries the same RefCell-drop choreography):
+   single-statement `reconcile_settings(&state.borrow(), &viewport.borrow(), &mut s)`;
+   `canonical = state.borrow().open_file()…` whose `Ref` drops at its `;`; `register_opened` →
+   `jump_to` kept as separate statements on distinct `RefCell`s; refresh-BEFORE status-compose
+   ordering; the `count_changed`-gated carousel rebuild.
+
+4. **Slint gotcha:** the new submodule needed `use slint::ComponentHandle;` for `ui.as_weak()`. A
+   submodule does NOT inherit the crate-root `include_modules!` trait scope that `main.rs` enjoys, so
+   trait methods on generated Slint types must be brought into scope explicitly.
+
 ### Parse the schema `version` with `u32::try_from`, not `as u32`
 
 a truncating cast wraps crafted huge values (`u32::MAX + 1` → 0) and silently re-migrates.
@@ -393,11 +446,11 @@ Routing the outcome to a status property is only half the fix: a bound, VISIBLE 
 
 ### `refresh()` OVERWRITES `status-text` — surface notices AFTER it, and COMPOSE (append) when several can co-occur (PR-La)
 
-`refresh()` pushes the base spread/status string into `status-text`, so any load/save error notice set BEFORE it is silently clobbered. Set such notices AFTER `refresh()` (the startup load-failure notice is set after the *initial* refresh; the open-path save-failure notices after the open-path refresh). When more than one notice can fire from a single action — on the open path: skipped entries + settings-save failure + library/page-count-save failure — COMPOSE them by APPENDING to the current status (`{base} \u{2014} {detail}`, em-dash), never replacing, so an earlier notice isn't lost. `open_and_present` centralizes the get→format→set glue in an `append_status` closure reused by every notice; the save outcomes are captured into locals (`settings_save`, `library_save`) BEFORE `refresh` and surfaced after it, in a fixed order (settings, then library). (Extends the PR-L "route to a visible widget" bullet above with the refresh-clobber + compose-don't-replace angle.)
+`refresh()` pushes the base spread/status string into `status-text`, so any load/save error notice set BEFORE it is silently clobbered. Set such notices AFTER `refresh()` (the startup load-failure notice is set after the *initial* refresh; the open-path save-failure notices after the open-path refresh). When more than one notice can fire from a single action — on the open path: skipped entries + settings-save failure + library/page-count-save failure — COMPOSE them by APPENDING to the current status (`{base} \u{2014} {detail}`, em-dash), never replacing, so an earlier notice isn't lost. `app::OpenBookUseCase::run` (the former `open_and_present`, see the use-case-object bullet above) decides WHICH notices appear via the pure `status_notices(...)` fn and iterates its `Vec<String>`, appending each onto the current status (the old single `append_status` closure is gone); the save outcomes are captured into locals (`settings_save`, `library_save`) BEFORE `refresh` and surfaced after it, in a fixed order (skipped, then settings, then library). (Extends the PR-L "route to a visible widget" bullet above with the refresh-clobber + compose-don't-replace angle.)
 
 ### Runtime state is the SINGLE source of truth for the four display modes; `Settings` mirrors them ONLY via `reconcile_settings`, just before each save (PR-D / issue #32)
 
-`ViewerState` owns `reading_direction`/`spread_mode`/`cover_mode`; `ViewportState` owns `fit_mode`. `reconcile_settings(&ViewerState, &ViewportState, &mut Settings)` (a pure fn in `main.rs`) copies those four into `Settings` immediately before EACH `save()` — exit, settings-dialog close, and the open-time save (now INSIDE the `if track_recent_files` gate in `open_and_present`, the only save on that path). Mode-mutation sites (D/R/C/`f` keys + the dialog setters) now ONLY mutate runtime state + `refresh`; the ~9 per-mutation `settings.borrow_mut().X = …` mirror lines are GONE, killing the "a new mutation site forgets to mirror → setting silently not persisted" bug class (neither types nor tests caught it before). The guide-dismiss save writes only `seen_guide` and intentionally SKIPS reconcile (not a runtime-mirrored field). EXCEPTION: `cache_size`/`preload_pages`/`track_recent_files` keep `Settings` as their source (one-way `Settings → ViewerState` via `set_cache_config` — see that bullet above); they are NOT reconciled back. `on_open_settings` reads the dialog's initial mode values from the RUNTIME (`state`/`viewport`), never `Settings`, so a lagging mirror can't make the dialog show a stale value.
+`ViewerState` owns `reading_direction`/`spread_mode`/`cover_mode`; `ViewportState` owns `fit_mode`. `reconcile_settings(&ViewerState, &ViewportState, &mut Settings)` (a pure fn in `main.rs`) copies those four into `Settings` immediately before EACH `save()` — exit, settings-dialog close, and the open-time save (INSIDE the `if track_recent_files` gate in `app::OpenBookUseCase::run`, the only save on that path). Mode-mutation sites (D/R/C/`f` keys + the dialog setters) now ONLY mutate runtime state + `refresh`; the ~9 per-mutation `settings.borrow_mut().X = …` mirror lines are GONE, killing the "a new mutation site forgets to mirror → setting silently not persisted" bug class (neither types nor tests caught it before). The guide-dismiss save writes only `seen_guide` and intentionally SKIPS reconcile (not a runtime-mirrored field). EXCEPTION: `cache_size`/`preload_pages`/`track_recent_files` keep `Settings` as their source (one-way `Settings → ViewerState` via `set_cache_config` — see that bullet above); they are NOT reconciled back. `on_open_settings` reads the dialog's initial mode values from the RUNTIME (`state`/`viewport`), never `Settings`, so a lagging mirror can't make the dialog show a stale value.
 
 ### Key `Library` by the CANONICAL path, never the raw dialog path (PR-R)
 
@@ -421,7 +474,7 @@ dialog-save bullet).
 
 ### Borrow discipline for reconcile-before-save (PR-D)
 
-Each `reconcile_settings(&state.borrow(), &viewport.borrow(), &mut settings.borrow_mut())` is ONE statement: the three temporaries (distinct RefCells) drop at the `;`, so the following fresh `settings.borrow().save()` cannot double-borrow. In `open_and_present`, bind `let opened = state.borrow_mut().open_folder(path);` FIRST (the `borrow_mut` drops at the `;`) so the `Ok` arm can read `&state.borrow()` in reconcile — a `borrow_mut` held across the `match` would double-borrow-panic. Inside `if s.track_recent_files`, reconcile REUSES the already-held `&mut s` (`s: RefMut<Settings>`) rather than taking a second `settings.borrow_mut()`. Pass `&mut s`, NOT `&mut *s` — `RefMut` deref-coerces to `&mut Settings` and clippy's `explicit_auto_deref` (`-D warnings`) rejects the explicit `*`. The `reconcile_settings` unit test pins BOTH directions: the four mirrored fields ARE written AND the non-mirrored fields (`cache_size`/`preload_pages`/`track_recent_files`/`seen_guide`) are left untouched (built via struct-update syntax to dodge `clippy::field_reassign_with_default`).
+Each `reconcile_settings(&state.borrow(), &viewport.borrow(), &mut settings.borrow_mut())` is ONE statement: the three temporaries (distinct RefCells) drop at the `;`, so the following fresh `settings.borrow().save()` cannot double-borrow. In `app::OpenBookUseCase::run`, bind `let opened = state.borrow_mut().open_folder(path);` FIRST (the `borrow_mut` drops at the `;`) so the `Ok` arm can read `&state.borrow()` in reconcile — a `borrow_mut` held across the `match` would double-borrow-panic. Inside `if s.track_recent_files`, reconcile REUSES the already-held `&mut s` (`s: RefMut<Settings>`) rather than taking a second `settings.borrow_mut()`. Pass `&mut s`, NOT `&mut *s` — `RefMut` deref-coerces to `&mut Settings` and clippy's `explicit_auto_deref` (`-D warnings`) rejects the explicit `*`. The `reconcile_settings` unit test pins BOTH directions: the four mirrored fields ARE written AND the non-mirrored fields (`cache_size`/`preload_pages`/`track_recent_files`/`seen_guide`) are left untouched (built via struct-update syntax to dodge `clippy::field_reassign_with_default`).
 
 NUANCE (PR-R, `write_back_position`): to read MULTIPLE fields from one `RefCell` in a single expression, take ONE `let s = state.borrow();` block and read all fields from it (e.g. `position_to_write_back(s.open_file(), s.index())`) rather than `state.borrow()` twice in the same expression; let that `Ref` drop at the `;` before the later `borrow_mut()` (e.g. `set_last_page`) — and keep that `borrow_mut()` in its own statement, never held across a following `borrow()` (e.g. the subsequent `save()`).
 
@@ -449,7 +502,7 @@ THE TRAP is still real: `ViewerState::open_path` returns `Ok(())` even for a sou
 
 PR-60 enforced "page count > 0" as a two-layer RUNTIME pattern: in core (no `tracing` — core stays logging-free) `Library::set_page_count` carried `debug_assert!(count > 0)`; at the UI call site the caller short-circuited with `if page_count > 0 { library.set_page_count(…) }` so a legit zero-page open never reached the assert; and an "unreachable" UI branch got a `tracing::warn!` (UI-only, since `tracing` is forbidden in core) to make a future invariant break debuggable rather than silently wrong.
 
-#65 LIFTED that invariant into the TYPE SYSTEM and thereby DISSOLVED all three pieces. `set_page_count(_, NonZeroUsize)` and `register_opened(_, Option<NonZeroUsize>)` make `0` unrepresentable at the write boundary, so the `debug_assert` is gone from core, the `if page_count > 0` short-circuit is gone from the UI, and the `tracing::warn!` that guarded the unreachable branch is gone with it. (The `open_file == None` warn in `open_and_present` is UNRELATED — it covers a different condition and remains.)
+#65 LIFTED that invariant into the TYPE SYSTEM and thereby DISSOLVED all three pieces. `set_page_count(_, NonZeroUsize)` and `register_opened(_, Option<NonZeroUsize>)` make `0` unrepresentable at the write boundary, so the `debug_assert` is gone from core, the `if page_count > 0` short-circuit is gone from the UI, and the `tracing::warn!` that guarded the unreachable branch is gone with it. (The `open_file == None` warn in `app::OpenBookUseCase::run` is UNRELATED — it covers a different condition and remains.)
 
 GENERAL PRINCIPLE: when an invariant is expressible as a type (`NonZeroUsize`, `Option`, a small enum), prefer the type — it makes the bad state unrepresentable at COMPILE time and removes the scattered runtime guards entirely. Fall back to the two-layer runtime pattern (core `debug_assert!` + UI precondition + warn) ONLY when the invariant is NOT type-expressible.
 

@@ -1,5 +1,6 @@
 slint::include_modules!();
 
+mod app;
 mod carousel;
 mod cover_loader;
 mod enum_adapters;
@@ -17,15 +18,11 @@ use enum_adapters::{
     index_to_reading_direction, index_to_spread_mode, reading_direction_to_index,
     spread_mode_to_index,
 };
-use gashuu_core::{
-    CacheConfig, CoreError, DecodedImage, FitMode, Library, ReadingDirection, Settings,
-};
+use gashuu_core::{CacheConfig, DecodedImage, FitMode, Library, ReadingDirection, Settings};
 use keymap::{map_key, KeyCommand};
 use navigation::{screen_to_index, NavState};
 use page_counter::page_counter_text;
 use std::cell::RefCell;
-use std::num::NonZeroUsize;
-use std::path::Path;
 use std::rc::Rc;
 use thumbnail_strip::ThumbnailController;
 use viewer_state::ViewerState;
@@ -74,13 +71,26 @@ fn main() -> color_eyre::Result<()> {
     // Thumbnail-strip controller. Owns the strip's backing model and the
     // generation bookkeeping (epoch + cancel double-guard); its `new` binds the
     // model into the UI via `set_thumbnails` internally. Wrapped in `Rc` so both
-    // open handlers (via `open_and_present`) can share the single controller.
+    // open handlers (via `OpenBookUseCase`) can share the single controller.
     let thumbs = Rc::new(ThumbnailController::new(&ui));
 
     // Cover controller for the library carousel. Owns the epoch + cancel
     // double-guard; `start` is called after the carousel model is (re)built so a
     // library refresh supersedes any covers still streaming from the prior view.
     let covers = Rc::new(cover_loader::CoverController::new());
+
+    // The "open a book" use-case, bundling the six collaborators it threads
+    // (state, settings, viewport, library, thumbs, covers). Built once and shared
+    // via `Rc` by the Open Folder / Open Archive / carousel-open handlers so the
+    // open flow lives in exactly one place (`app::OpenBookUseCase`).
+    let open_book = Rc::new(app::OpenBookUseCase::new(
+        Rc::clone(&state),
+        Rc::clone(&settings),
+        Rc::clone(&viewport),
+        Rc::clone(&library),
+        Rc::clone(&thumbs),
+        Rc::clone(&covers),
+    ));
 
     // Seed the carousel model from the persisted library so the home screen shows
     // the saved books on boot. The carousel model is bound into the UI inside
@@ -129,20 +139,13 @@ fn main() -> color_eyre::Result<()> {
     // Open Folder button: pick a directory, open it, refresh the view, and start thumbnail generation.
     {
         let ui_weak = ui.as_weak();
-        let state = Rc::clone(&state);
-        let settings = Rc::clone(&settings);
-        let viewport = Rc::clone(&viewport);
-        let thumbs = Rc::clone(&thumbs);
-        let library = Rc::clone(&library);
-        let covers = Rc::clone(&covers);
+        let open_book = Rc::clone(&open_book);
         ui.on_open_folder(move || {
             with_ui(&ui_weak, |ui| {
                 let Some(dir) = rfd::FileDialog::new().pick_folder() else {
                     return;
                 };
-                open_and_present(
-                    &ui, &state, &settings, &viewport, &thumbs, &library, &covers, &dir, "",
-                );
+                open_book.run(&ui, &dir, "");
             })
         });
     }
@@ -150,12 +153,7 @@ fn main() -> color_eyre::Result<()> {
     // Open Archive button: pick a CBZ/ZIP/CBR/RAR file, open it, refresh the view, and start thumbnail generation.
     {
         let ui_weak = ui.as_weak();
-        let state = Rc::clone(&state);
-        let settings = Rc::clone(&settings);
-        let viewport = Rc::clone(&viewport);
-        let thumbs = Rc::clone(&thumbs);
-        let library = Rc::clone(&library);
-        let covers = Rc::clone(&covers);
+        let open_book = Rc::clone(&open_book);
         ui.on_open_archive(move || {
             with_ui(&ui_weak, |ui| {
                 let Some(file) = rfd::FileDialog::new()
@@ -164,17 +162,7 @@ fn main() -> color_eyre::Result<()> {
                 else {
                     return;
                 };
-                open_and_present(
-                    &ui,
-                    &state,
-                    &settings,
-                    &viewport,
-                    &thumbs,
-                    &library,
-                    &covers,
-                    &file,
-                    " (zip-slip or oversized)",
-                );
+                open_book.run(&ui, &file, " (zip-slip or oversized)");
             })
         });
     }
@@ -217,16 +205,12 @@ fn main() -> color_eyre::Result<()> {
     }
 
     // Carousel: Return on the focused book opens it, resumes its last-read
-    // page (via open_and_present → jump_to), and transitions to the Viewer.
+    // page (via OpenBookUseCase::run → jump_to), and transitions to the Viewer.
     {
         let ui_weak = ui.as_weak();
-        let state = Rc::clone(&state);
-        let settings = Rc::clone(&settings);
-        let viewport = Rc::clone(&viewport);
-        let thumbs = Rc::clone(&thumbs);
         let library = Rc::clone(&library);
         let nav = Rc::clone(&nav);
-        let covers = Rc::clone(&covers);
+        let open_book = Rc::clone(&open_book);
         ui.on_carousel_open(move |index| {
             with_ui(&ui_weak, |ui| {
                 // Resolve the focused carousel index to a Library book path.
@@ -242,11 +226,9 @@ fn main() -> color_eyre::Result<()> {
                     tracing::warn!(index, "carousel-open: no book at index");
                     return;
                 };
-                // open_and_present writes back the OLD book's position first,
+                // open_book.run writes back the OLD book's position first,
                 // then opens the new path and resumes its stored position.
-                open_and_present(
-                    &ui, &state, &settings, &viewport, &thumbs, &library, &covers, &path, "",
-                );
+                open_book.run(&ui, &path, "");
                 go_to_viewer(&ui, &nav);
             })
         });
@@ -767,163 +749,13 @@ fn with_ui(weak: &slint::Weak<ViewerWindow>, f: impl FnOnce(ViewerWindow)) {
     }
 }
 
-/// Open `path`, record it in recent files (when enabled), refresh the view,
-/// surface any skipped-entry count, and launch thumbnail generation. Shared by
-/// the Open Folder and Open Archive handlers so the "open a book" use-case lives
-/// in exactly one place.
-///
-/// Both directories and archives are opened via `ViewerState::open_folder`, which
-/// delegates to `open_path` (dispatching by format through `ArchiveLoader`). Using
-/// `open_folder` preserves the directory-open API path and also keeps the method a
-/// live runtime caller (avoiding a dead-code warning in a binary crate).
-/// `skipped_detail` is appended to the "N entries skipped" status note: `""` for
-/// folders, and for archives the archive-specific skip reasons (zip-slip /
-/// path-traversal entries and entries exceeding the per-entry size ceiling; see
-/// `naming.rs`).
-///
-/// Thumbnail regeneration is delegated to the shared `ThumbnailController`, which
-/// owns the strip's model and the epoch + cancel double-guard; `start` cancels any
-/// in-flight generation for the previous book before launching this one.
-#[allow(clippy::too_many_arguments)]
-fn open_and_present(
-    ui: &ViewerWindow,
-    state: &Rc<RefCell<ViewerState>>,
-    settings: &Rc<RefCell<Settings>>,
-    viewport: &Rc<RefCell<ViewportState>>,
-    thumbs: &ThumbnailController,
-    library: &Rc<RefCell<Library>>,
-    covers: &cover_loader::CoverController,
-    path: &Path,
-    skipped_detail: &str, // "" for folders, " (zip-slip or oversized)" for archives
-) {
-    // Write back the position for the book that is currently open (if any)
-    // before we replace the source. `open_file()` is None when no book was
-    // open, so write_back_position is a no-op in that case.
-    write_back_position(state, library);
-    // Bind the result first so the `state.borrow_mut()` temporary drops before the
-    // `Ok` arm reads `state` again (a borrow held across the match would
-    // double-borrow-panic at the `reconcile_settings(&state.borrow(), ..)` below).
-    let opened = state.borrow_mut().open_folder(path);
-    // The settings-save outcome, captured so it can be surfaced AFTER refresh
-    // (composing onto the status line). `None` when no save was attempted
-    // (recent-files tracking off); `Some(result)` otherwise. Surfacing before
-    // refresh would be clobbered by the spread/status push.
-    let settings_save: Option<Result<(), CoreError>> = match opened {
-        Ok(()) => {
-            tracing::info!(path = %path.display(), "opened source");
-            let mut s = settings.borrow_mut();
-            if s.track_recent_files {
-                // Reconcile runtime display modes into Settings just before this
-                // open-time save (the only save on this path), reusing the mutable
-                // borrow `s`. `state`/`viewport` are distinct RefCells, so their
-                // immutable borrows can't conflict with `s` (and the `borrow_mut()`
-                // from `open_folder` above already dropped via the `opened` binding).
-                reconcile_settings(&state.borrow(), &viewport.borrow(), &mut s);
-                s.push_recent(path.to_path_buf());
-                let result = s.save();
-                if let Err(e) = &result {
-                    tracing::error!(error = %e, "failed to save settings on open");
-                }
-                Some(result)
-            } else {
-                None
-            }
-        }
-        Err(e) => {
-            tracing::error!(error = %e, "failed to open source");
-            ui.set_status_text(format!("Error: {e}").into());
-            return;
-        }
-    };
-    // The CANONICAL key the source was opened under (read from `open_file`),
-    // not the raw dialog `path`, which may be a non-canonical dialog path. It is
-    // the same key `last_page`/`set_page_count`/`write_back_position` use. The
-    // `state.borrow()` `Ref` drops at the `;`.
-    let canonical = state.borrow().open_file().map(Path::to_path_buf);
-    // `page_count()` returns a `Copy` `usize`; the `state.borrow()` drops at the
-    // `;` so it cannot conflict with the `library.borrow_mut()` below.
-    let page_count = state.borrow().page_count();
-    // `register_opened` performs the idempotent add, the page-count back-fill,
-    // and the resume lookup as one domain rule. The unknown total is now carried
-    // by the type: `NonZeroUsize::new(page_count)` maps a zero-page open (the
-    // unknown sentinel an empty folder or a fully skipped archive opens with) to
-    // `None`, so `register_opened` skips the back-fill for it — no more `> 0`
-    // guard / `debug_assert` at this call site. Borrow discipline: it holds
-    // `library.borrow_mut()` only for the `let reg = ...` line (released at its
-    // `;`, before the `jump_to` below); `state.borrow_mut().jump_to(...)` is a
-    // separate statement on a distinct `RefCell`.
-    let count_changed = if let Some(c) = canonical.as_deref() {
-        let reg = library
-            .borrow_mut()
-            .register_opened(c, NonZeroUsize::new(page_count));
-        // Resume at the recorded position; for a never-read book `reached` is 0
-        // and `jump_to(0)` is a no-op when the index is already 0.
-        state.borrow_mut().jump_to(reg.resume.reached());
-        reg.count_changed
-    } else {
-        // Unreachable in practice: a successful open always sets `open_file`.
-        // Log if the invariant ever breaks so the book-not-registered failure
-        // (no saved reading position) is debuggable instead of silent.
-        tracing::warn!(
-            path = %path.display(),
-            "open_file was None after a successful open; book not registered in library"
-        );
-        false
-    };
-    // Persist the newly registered book (and any back-filled page count)
-    // immediately, mirroring the recents save-on-open above, so the library
-    // shelf stays consistent even if the app exits before the next leave point.
-    // Capture the result to surface AFTER refresh (surfacing now would be
-    // clobbered by the spread/status push). Borrow discipline: `register_opened`'s
-    // borrow_mut dropped at its `;`; this is a fresh borrow.
-    let library_save: Result<(), CoreError> = library.borrow().save();
-    if let Err(e) = &library_save {
-        tracing::error!(error = %e, "failed to save library on open");
-    }
-    refresh(ui, &state.borrow(), viewport);
-    // Compose extra notices onto the status line WITHOUT replacing it (the
-    // refresh above set the base spread status). Mirrors the skipped-entries
-    // `{base} \u{2014} …` pattern; DRYs the get→format→set glue.
-    let append_status = |detail: &str| {
-        let base = ui.get_status_text().to_string();
-        ui.set_status_text(format!("{base} \u{2014} {detail}").into());
-    };
-    let skipped = state.borrow().last_open_skipped();
-    if skipped > 0 {
-        append_status(&format!("{skipped} entries skipped{skipped_detail}"));
-    }
-    // Surface save failures (no silent failures on the open path). Order:
-    // settings first, then library/page-count. Success adds no notice.
-    if let Some(Err(e)) = &settings_save {
-        append_status(&format!("Failed to save settings: {e}"));
-    }
-    if let Err(e) = &library_save {
-        append_status(&format!("Failed to save library: {e}"));
-    }
-    // When the stored page count was just back-filled/updated, rebuild the
-    // carousel model so the home screen reflects the real total/progress when
-    // the user returns to the library. `build_carousel_model` rebuilds AND
-    // rebinds the items model; the carousel's focused index is a separate Slint
-    // property, and rebuilding the same book set leaves those indices valid, so
-    // focus is unaffected. Fresh `library.borrow()` — no overlapping borrows.
-    if count_changed {
-        build_carousel_model(ui, &library.borrow());
-        // The rebuild reset each row's cover to a placeholder; re-stream the covers
-        // (hits paint now, misses regenerate). The epoch bump supersedes any covers
-        // still streaming from the pre-rebuild model.
-        covers.start(ui.as_weak(), cover_requests(&library.borrow()));
-    }
-    // Kick off parallel thumbnail generation for the newly opened source.
-    thumbs.start(
-        ui.as_weak(),
-        state.borrow().current_source(),
-        state.borrow().page_count(),
-    );
-}
-
 /// Push the current spread + status into the UI, then re-anchor the viewport to
 /// the new content size and push the resulting geometry.
-fn refresh(ui: &ViewerWindow, state: &ViewerState, viewport: &Rc<RefCell<ViewportState>>) {
+pub(crate) fn refresh(
+    ui: &ViewerWindow,
+    state: &ViewerState,
+    viewport: &Rc<RefCell<ViewportState>>,
+) {
     let status = state.status_text();
     ui.set_rtl(matches!(state.reading_direction(), ReadingDirection::Rtl));
     match state.current_spread() {
@@ -1085,7 +917,11 @@ Library:
 /// `cover_mode`, and `fit_mode` are written back to `Settings`, so a new
 /// mode-mutation site can never "forget to mirror" — it only changes runtime
 /// state, and the next save reconciles automatically.
-fn reconcile_settings(state: &ViewerState, viewport: &ViewportState, settings: &mut Settings) {
+pub(crate) fn reconcile_settings(
+    state: &ViewerState,
+    viewport: &ViewportState,
+    settings: &mut Settings,
+) {
     settings.reading_direction = state.reading_direction();
     settings.spread_mode = state.spread_mode();
     settings.cover_mode = state.cover_mode();
@@ -1119,7 +955,10 @@ fn position_to_write_back(
 /// the end of the statement, before `library` is borrowed. Each statement's
 /// borrows drop before the next statement acquires a different borrow,
 /// following the one-statement rule in `docs/patterns.md`.
-fn write_back_position(state: &Rc<RefCell<ViewerState>>, library: &Rc<RefCell<Library>>) {
+pub(crate) fn write_back_position(
+    state: &Rc<RefCell<ViewerState>>,
+    library: &Rc<RefCell<Library>>,
+) {
     // Extract the (path, page) tuple from the viewer state under one shared
     // borrow; the `Ref` drops at the `;` before `library` is borrowed.
     let Some((path, page)) = ({
