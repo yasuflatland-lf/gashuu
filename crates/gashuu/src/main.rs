@@ -79,10 +79,10 @@ fn main() -> color_eyre::Result<()> {
     // library refresh supersedes any covers still streaming from the prior view.
     let covers = Rc::new(cover_loader::CoverController::new());
 
-    // The "open a book" use-case, bundling the six collaborators that opening a
-    // source needs (write-back, open, register, refresh, thumbs, covers). Built
-    // once and shared (via `Rc`) by the Open Folder / Open Archive / carousel-open
-    // handlers so the open flow lives in exactly one place (`app::OpenBookUseCase`).
+    // The "open a book" use-case, bundling the six collaborators it threads
+    // (state, settings, viewport, library, thumbs, covers). Built once and shared
+    // via `Rc` by the Open Folder / Open Archive / carousel-open handlers so the
+    // open flow lives in exactly one place (`app::OpenBookUseCase`).
     let open_book = Rc::new(app::OpenBookUseCase::new(
         Rc::clone(&state),
         Rc::clone(&settings),

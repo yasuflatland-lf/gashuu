@@ -1,10 +1,11 @@
 //! The "open a book" application use case, extracted out of `main.rs`.
 //!
-//! [`OpenBookUseCase`] bundles the shared collaborators the open path
-//! coordinates (state, settings, viewport, library, thumbs, covers) so the
-//! orchestration is one reviewable unit instead of a nine-argument free fn
-//! under `#[allow(clippy::too_many_arguments)]`. It touches Slint (status
-//! text, carousel rebuild, thumbnail launch), so it lives in the UI crate.
+//! [`OpenBookUseCase`] bundles the six shared collaborators the open path
+//! coordinates (state, settings, viewport, library, thumbs, covers) as fields,
+//! so the open sites call [`OpenBookUseCase::run`] with just the per-call `ui`,
+//! `path`, and `skipped_detail` instead of threading a nine-argument free fn
+//! under `#[allow(clippy::too_many_arguments)]`. It touches Slint (status text,
+//! carousel rebuild, thumbnail launch), so it lives in the UI crate.
 
 use std::cell::RefCell;
 use std::num::NonZeroUsize;
@@ -53,15 +54,18 @@ impl OpenBookUseCase {
     }
 
     /// Open `path` and present it: write back the previous position, open the
-    /// source, reconcile + save settings, register + save the library, refresh,
-    /// compose status notices, rebuild the carousel, and launch thumbnails.
+    /// source, reconcile + save settings (when recent-files tracking is on),
+    /// register + save the library, refresh, compose status notices, rebuild
+    /// the carousel, and launch thumbnails.
     ///
     /// `skipped_detail` is `""` for folders and `" (zip-slip or oversized)"`
     /// for archives. Behaviour-preserving move of the former `open_and_present`.
     pub(crate) fn run(&self, ui: &ViewerWindow, path: &Path, skipped_detail: &str) {
-        // Alias the fields so the moved body reads exactly as the former free
-        // fn (which took these as `&Rc<…>` / `&…` parameters). `thumbs`/`covers`
-        // are `&Rc<_>` here but `.start()` resolves through `Deref` as before.
+        // Alias the fields so the moved body reads identically at its call
+        // sites. In the old free fn `thumbs`/`covers` were `&ThumbnailController`
+        // / `&CoverController`; here they are `&Rc<ThumbnailController>` /
+        // `&Rc<CoverController>`. `.start()` resolves through the extra `Rc`
+        // `Deref` transparently, so no statement in the body needed changing.
         let state = &self.state;
         let settings = &self.settings;
         let viewport = &self.viewport;
@@ -282,5 +286,23 @@ mod tests {
         let notices = status_notices(0, "", None, &library_err);
         assert_eq!(notices.len(), 1);
         assert!(notices[0].starts_with("Failed to save library: "));
+    }
+
+    #[test]
+    fn skipped_and_library_failure_without_settings_tracking_preserves_order() {
+        let library_err = Err(err());
+        let notices = status_notices(1, " (zip-slip or oversized)", None, &library_err);
+        assert_eq!(notices.len(), 2);
+        assert!(notices[0].starts_with("1 entries skipped (zip-slip or oversized)"));
+        assert!(notices[1].starts_with("Failed to save library: "));
+    }
+
+    #[test]
+    fn skipped_and_settings_failure_preserves_order() {
+        let settings_err = Err(err());
+        let notices = status_notices(1, "", Some(&settings_err), &Ok(()));
+        assert_eq!(notices.len(), 2);
+        assert!(notices[0].starts_with("1 entries skipped"));
+        assert!(notices[1].starts_with("Failed to save settings: "));
     }
 }
