@@ -309,7 +309,7 @@ When Rust pushes a value into a bound `ComboBox.current-index`, `selected` can r
 
 `ViewerState` seeds `cache_size`/`preload_pages` ONCE at `from_settings`; `set_source` builds the `ImageCache` from ViewerState's OWN fields, never re-reading live `Settings`. Updating only `Settings` makes the new value take effect on the NEXT LAUNCH; `set_cache_config` mirrors it so a book opened later THIS session uses it. Immediate rebuild of the CURRENT book's cache stays deferred.
 
-### enum↔index helpers (`main.rs`) stay in lock-step with the ComboBox `model:` arrays
+### enum↔index helpers (`enum_adapters.rs`) stay in lock-step with the ComboBox `model:` arrays
 
 `*_to_index` uses an EXHAUSTIVE match (a new enum variant is a compile error); `index_to_*` defaults any out-of-range `i32` (Slint sends a raw int) to the FIRST variant. Round-trip + out-of-range-clamp are unit-tested.
 
@@ -380,3 +380,15 @@ Both `Book::last_page` and `Book::page_count` use `0` as the not-yet-known senti
 ### `CoreError` and `Library` are NOT `Clone` — use `match` to both keep a fallback AND surface the error (PR-La)
 
 To recover from a failed startup load (fall back to a default) WHILE still surfacing the error message, you cannot write `result.clone().unwrap_or_default()` — neither `Library` nor `CoreError` is `Clone`, so it doesn't compile. Instead `match` the `Result`: the `Ok` arm moves the value out; the `Err` arm pushes the error's `Display` (`format!("{e}")`) into a `Vec<String>` of notices and substitutes the default. `main` does this for both `Settings::load` and `Library::load`, then surfaces the collected notices after the initial refresh (see the status-compose entry below).
+
+### Move-only refactors — checklist of hard-won gotchas (PR-58 refactor set)
+
+A "move-only" refactor (no behavior change, only file splitting) can still go wrong in four reproducible ways:
+
+1. **Verify moved text against `git show <base>:<file>`, not the plan.** Plans that embed "exact content" often mis-transcribe Unicode (em-dash `—`, right-arrow `→` U+2192) as ASCII (`--`/`->`). Doc comments and string literals in the moved file must match the SOURCE byte-for-byte. (Note: the `\u{2014}` convention applies only to Rust *string literals*; doc-comment Unicode is kept as literal chars.)
+
+2. **Let `clippy -D warnings` decide imports, not the plan.** Extracting functions can leave a type import UNUSED in production code when those functions were the only production callers — move that import inside the `#[cfg(test)] mod tests` block where the tests still name it. A plan step saying "keep all imports" can be wrong; clippy arbitrates.
+
+3. **Grep docs AND `crates/` for prose descriptions, not just identifiers.** After extracting a symbol, search ALL of `crates/` and `docs/` for both the moved identifier AND its prose description (e.g. "enum↔index helpers", "the carousel builder") — not just the Rust symbol name — and update location references. `docs/architecture.md` (the as-built module map) must gain a section per new module.
+
+4. **Safety net = unchanged test count.** Run `mise exec -- cargo nextest run --workspace --profile ci` before and after each task; the "N tests run" number must be IDENTICAL (a move neither adds nor drops tests). A delta means the extraction clipped or duplicated a test body.

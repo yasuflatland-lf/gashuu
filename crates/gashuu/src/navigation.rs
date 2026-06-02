@@ -73,9 +73,9 @@ pub fn screen_to_index(s: Screen) -> i32 {
 
 /// Map a raw `screen` int back to a `Screen`, defaulting any out-of-range value
 /// to the FIRST variant (`Library`) — mirroring the `index_to_*` clamp policy in
-/// `main.rs`. (Currently the int only flows Rust -> Slint, but the helper keeps
+/// `enum_adapters.rs`. (Currently the int only flows Rust -> Slint, but the helper keeps
 /// the round-trip symmetric and is unit-tested for the clamp.)
-// Completes the screen<->index contract symmetry (mirrors main.rs's index_to_*
+// Completes the screen<->index contract symmetry (mirrors enum_adapters.rs's index_to_*
 // pattern) and is unit-tested for the clamp; only the tests use it for now.
 #[allow(dead_code)]
 pub fn index_to_screen(i: i32) -> Screen {

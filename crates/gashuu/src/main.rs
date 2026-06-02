@@ -1,6 +1,8 @@
 slint::include_modules!();
 
+mod carousel;
 mod cover_loader;
+mod enum_adapters;
 mod keymap;
 mod library_model;
 mod navigation;
@@ -8,13 +10,15 @@ mod thumbnail_strip;
 mod viewer_state;
 mod viewport;
 
-use gashuu_core::{
-    CoreError, CoverMode, DecodedImage, FitMode, Library, ReadingDirection, Settings, SpreadMode,
+use carousel::{build_carousel_model, cover_requests, thumb_image_at};
+use enum_adapters::{
+    cover_mode_to_index, fit_mode_to_index, index_to_cover_mode, index_to_fit_mode,
+    index_to_reading_direction, index_to_spread_mode, reading_direction_to_index,
+    spread_mode_to_index,
 };
+use gashuu_core::{CoreError, DecodedImage, FitMode, Library, ReadingDirection, Settings};
 use keymap::{map_key, KeyCommand};
-use library_model::{carousel_data, CarouselData};
 use navigation::{screen_to_index, NavState};
-use slint::{ModelRc, VecModel};
 use std::cell::RefCell;
 use std::path::Path;
 use std::rc::Rc;
@@ -1068,77 +1072,6 @@ fn to_slint_image(decoded: &DecodedImage) -> slint::Image {
     slint::Image::from_rgba8(buffer)
 }
 
-/// Adapt a pure `CarouselData` row into the Slint `CarouselItem` the carousel
-/// renders. Runs on the UI thread (it builds a `slint::Image`). The cover field
-/// starts as a placeholder (`slint::Image::default()`); `CoverController` fills
-/// it in asynchronously via `invoke_from_event_loop` (a cache hit paints
-/// immediately; a miss streams in after a background decode).
-fn to_carousel_item(data: &CarouselData) -> CarouselItem {
-    CarouselItem {
-        cover: slint::Image::default(),
-        title: data.title.as_str().into(),
-        current: data.current,
-        total: data.total,
-        progress: data.progress,
-        available: data.available,
-    }
-}
-
-/// Build the carousel's backing model from the current `Library`, in shelf
-/// order, and bind it to the UI's `carousel-items`. Returns the `Rc<VecModel>`
-/// so callers (PR-V cover streaming; PR-L refresh-after-add) can mutate the
-/// SAME model rather than rebuilding/rebinding. Centralizes the build + bind so
-/// the Library → carousel surface lives in ONE place (mirrors
-/// `ThumbnailController::new`).
-fn build_carousel_model(ui: &ViewerWindow, library: &Library) -> Rc<VecModel<CarouselItem>> {
-    let items: Vec<CarouselItem> = carousel_data(library)
-        .iter()
-        .map(to_carousel_item)
-        .collect();
-    let model = Rc::new(VecModel::from(items));
-    ui.set_carousel_items(ModelRc::from(model.clone()));
-    model
-}
-
-/// Build one `CoverRequest` per book, row index == carousel order (insertion
-/// order, per the `Library` contract). The cover controller resolves each book's
-/// cache key from its path + mtime and either serves a cached cover or generates
-/// one in the background.
-fn cover_requests(library: &Library) -> Vec<cover_loader::CoverRequest> {
-    library
-        .books()
-        .iter()
-        .enumerate()
-        .map(|(row, book)| cover_loader::CoverRequest {
-            row,
-            path: book.path().to_path_buf(),
-        })
-        .collect()
-}
-
-/// Fetch the thumbnail image for a 0-based page from the strip's existing
-/// `VecModel<ThumbnailItem>` (the PR8a model). Returns the cell's image when the
-/// row exists and is loaded; otherwise a default (empty) image. UI-thread only —
-/// the `Rc` model is never crossed between threads. No new decode is performed.
-fn thumb_image_at(model: &slint::ModelRc<ThumbnailItem>, page: usize) -> slint::Image {
-    use slint::Model;
-    match model.row_data(page) {
-        Some(item) if item.loaded => item.image,
-        Some(_) => slint::Image::default(), // still loading: normal, stay silent
-        None => {
-            // `page` is outside the thumbnail model — strip and page_count are out
-            // of sync (the model is built to exactly page_count rows). Not fatal:
-            // show a blank preview, but log so the desync is diagnosable.
-            tracing::warn!(
-                page,
-                row_count = model.row_count(),
-                "thumb_image_at: page outside thumbnail model (strip/page_count desync)"
-            );
-            slint::Image::default()
-        }
-    }
-}
-
 /// Concise key-bindings reference shown read-only in the settings dialog. Keep in
 /// sync with `keymap::map_key`.
 const KEY_BINDINGS_HELP: &str = "\
@@ -1159,76 +1092,6 @@ View:
 
 Library:
   Up = return to the library";
-
-// Enum <-> ComboBox index conversions. `*_to_index` use exhaustive matches so a
-// new enum variant becomes a compile error; `index_to_*` default to the first
-// variant for any out-of-range index Slint may send (the index is a raw i32).
-// The ordering is authoritative and MUST match the ComboBox model order in
-// SettingsDialog.slint:
-//   ReadingDirection: Ltr=0, Rtl=1
-//   SpreadMode:       Single=0, Double=1, Auto=2
-//   CoverMode:        Standalone=0, Paired=1
-//   FitMode:          Whole=0, Width=1, Actual=2
-
-fn reading_direction_to_index(d: ReadingDirection) -> i32 {
-    match d {
-        ReadingDirection::Ltr => 0,
-        ReadingDirection::Rtl => 1,
-    }
-}
-
-fn index_to_reading_direction(i: i32) -> ReadingDirection {
-    match i {
-        1 => ReadingDirection::Rtl,
-        _ => ReadingDirection::Ltr,
-    }
-}
-
-fn spread_mode_to_index(m: SpreadMode) -> i32 {
-    match m {
-        SpreadMode::Single => 0,
-        SpreadMode::Double => 1,
-        SpreadMode::Auto => 2,
-    }
-}
-
-fn index_to_spread_mode(i: i32) -> SpreadMode {
-    match i {
-        1 => SpreadMode::Double,
-        2 => SpreadMode::Auto,
-        _ => SpreadMode::Single,
-    }
-}
-
-fn cover_mode_to_index(m: CoverMode) -> i32 {
-    match m {
-        CoverMode::Standalone => 0,
-        CoverMode::Paired => 1,
-    }
-}
-
-fn index_to_cover_mode(i: i32) -> CoverMode {
-    match i {
-        1 => CoverMode::Paired,
-        _ => CoverMode::Standalone,
-    }
-}
-
-fn fit_mode_to_index(m: FitMode) -> i32 {
-    match m {
-        FitMode::Whole => 0,
-        FitMode::Width => 1,
-        FitMode::Actual => 2,
-    }
-}
-
-fn index_to_fit_mode(i: i32) -> FitMode {
-    match i {
-        1 => FitMode::Width,
-        2 => FitMode::Actual,
-        _ => FitMode::Whole,
-    }
-}
 
 /// Copy the runtime-owned display settings into the persisted `Settings` just
 /// before saving. This is the SINGLE place `reading_direction`, `spread_mode`,
@@ -1341,44 +1204,7 @@ fn add_books_and_refresh(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn reading_direction_index_round_trips() {
-        for d in [ReadingDirection::Ltr, ReadingDirection::Rtl] {
-            assert_eq!(index_to_reading_direction(reading_direction_to_index(d)), d);
-        }
-    }
-
-    #[test]
-    fn spread_mode_index_round_trips() {
-        for m in [SpreadMode::Single, SpreadMode::Double, SpreadMode::Auto] {
-            assert_eq!(index_to_spread_mode(spread_mode_to_index(m)), m);
-        }
-    }
-
-    #[test]
-    fn cover_mode_index_round_trips() {
-        for m in [CoverMode::Standalone, CoverMode::Paired] {
-            assert_eq!(index_to_cover_mode(cover_mode_to_index(m)), m);
-        }
-    }
-
-    #[test]
-    fn fit_mode_index_round_trips() {
-        for m in [FitMode::Whole, FitMode::Width, FitMode::Actual] {
-            assert_eq!(index_to_fit_mode(fit_mode_to_index(m)), m);
-        }
-    }
-
-    #[test]
-    fn out_of_range_indices_clamp_to_first_variant() {
-        for bad in [-1, 3, 99, i32::MIN, i32::MAX] {
-            assert_eq!(index_to_reading_direction(bad), ReadingDirection::Ltr);
-            assert_eq!(index_to_spread_mode(bad), SpreadMode::Single);
-            assert_eq!(index_to_cover_mode(bad), CoverMode::Standalone);
-            assert_eq!(index_to_fit_mode(bad), FitMode::Whole);
-        }
-    }
+    use gashuu_core::{CoverMode, SpreadMode};
 
     #[test]
     fn reconcile_writes_runtime_modes_into_settings() {

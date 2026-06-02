@@ -4,7 +4,7 @@
 //! The Slint `CarouselItem` carries an `image` (a `!Send`, backend-dependent
 //! `slint::Image`) and is awkward to build in a headless unit test, so the
 //! derivable display data lives in this plain `CarouselData` struct, table-
-//! tested here. `main.rs`'s `to_carousel_item` adapter turns each row into a
+//! tested here. `carousel.rs`'s `to_carousel_item` adapter turns each row into a
 //! `CarouselItem` on the UI thread (placeholder cover for PR-C; real covers
 //! stream in via PR-V). This is the SINGLE place the Library → carousel
 //! display mapping lives (mirrors the "one chokepoint maps domain → display
