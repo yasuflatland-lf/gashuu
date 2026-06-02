@@ -1,3 +1,9 @@
+//! Shared numeric-aware natural-ordering comparator.
+//!
+//! Provides [`natural_cmp`], which sorts strings so embedded numbers are
+//! compared by numeric value (`vol 1 < vol 2 < vol 10`).  Used by both
+//! page-source filename sorting and `Library` book ordering.
+
 use std::cmp::Ordering;
 use std::iter::Peekable;
 use std::str::Chars;
@@ -108,5 +114,22 @@ mod natural_cmp_tests {
         assert_eq!(natural_cmp("2", "10"), Ordering::Less);
         assert_eq!(natural_cmp("10", "2"), Ordering::Greater);
         assert_eq!(natural_cmp("7", "7"), Ordering::Equal);
+    }
+
+    #[test]
+    fn empty_strings() {
+        assert_eq!(natural_cmp("", ""), Ordering::Equal);
+        assert_eq!(natural_cmp("", "a"), Ordering::Less);
+        assert_eq!(natural_cmp("a", ""), Ordering::Greater);
+        assert_eq!(natural_cmp("", "1"), Ordering::Less);
+    }
+
+    #[test]
+    fn digit_prefix_sorts_before_letter_prefix() {
+        // ASCII digits (0x30-0x39) are below ASCII letters (0x41+), so a
+        // string starting with a digit compares less than one starting with a
+        // letter via the case-insensitive char comparison in `natural_cmp`.
+        assert_eq!(natural_cmp("1vol", "vol1"), Ordering::Less);
+        assert_eq!(natural_cmp("vol1", "1vol"), Ordering::Greater);
     }
 }

@@ -1,8 +1,9 @@
-//! Shared helpers for image-extension detection and archive path naming.
+//! Helpers for image-extension recognition and archive path/entry validation.
 //!
-//! These helpers are shared by `FolderSource` (directory walk) and `ZipSource`
-//! (ZIP/CBZ archive entries) so that all page sources sort filenames and
-//! recognize image extensions identically.
+//! Provides image-extension detection (`IMAGE_EXTS`, `has_image_ext`) and
+//! archive entry path safety checks (`enclosed_name`), used by `FolderSource`
+//! (directory walk) and `ZipSource` (ZIP/CBZ archive entries). Filename ordering
+//! is provided by `crate::ordering::natural_cmp`.
 
 /// Image extensions recognized (case-insensitive).
 pub(crate) const IMAGE_EXTS: &[&str] = &["png", "jpg", "jpeg"];
