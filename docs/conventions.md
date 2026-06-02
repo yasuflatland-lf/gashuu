@@ -25,6 +25,18 @@ All visual tokens (colors, border radii, spacing, font sizes, component sizes, s
 
 Slint-specific: colors encode alpha as `#RRGGBBAA` (e.g. the `…40` byte is ~25% alpha), unlike CSS `rgba()`.
 
+### Splitting oversized modules — external test file via `#[path]`
+
+When a module file grows too large, relocate its `#[cfg(test)] mod tests { … }` to a sibling file `<module>/tests.rs` and include it with:
+
+```rust
+#[cfg(test)]
+#[path = "<module>/tests.rs"]
+mod tests;
+```
+
+Key facts: `#[path]` resolves relative to the **parent file's directory** (`src/`), not the crate root; `use super::*;` in the moved file still resolves to the parent module; no `mod.rs` is needed. Mechanics: extract the brace-body, write the 3-line stub, then run `cargo fmt` — rustfmt de-indents the moved block automatically. This is the preferred file-shrinking technique for the ongoing refactor set. (`viewer_state` is the first module to use it; previously every module kept tests inline.)
+
 ### Test fixtures (no committed binaries)
 
 Tests synthesize fixtures in memory (the `image` crate makes tiny PNGs) plus `tempfile` for filesystem cases — **no committed binary fixtures.** Two exceptions, both committed TEXT not binaries: insta `.snap` files (see [docs/patterns.md](patterns.md)), and (PR7) the base64-encoded RAR `.cbr` fixtures in `crates/gashuu-core/src/test_fixtures.rs` (RAR has no Rust encoder, so they cannot be synthesized in-memory like PNGs/ZIPs).
