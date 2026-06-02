@@ -12,6 +12,10 @@ use crate::cache::{DEFAULT_CAPACITY, DEFAULT_PREFETCH_RADIUS};
 /// Holds the LRU `capacity` (clamped to `>= 1` at construction) and the prefetch
 /// `radius` (`0` disables prefetch). Constructing a `CacheConfig` is the only way
 /// to obtain these values, so downstream consumers can rely on `capacity >= 1`.
+///
+/// Intentionally NOT `Deserialize`: deserializing would populate the private
+/// fields directly and bypass `new`'s `capacity >= 1` clamp. Persistence goes
+/// through `Settings`'s raw integer fields plus `Settings::cache_config`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CacheConfig {
     capacity: usize,

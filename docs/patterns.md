@@ -45,7 +45,7 @@ Clicking a `Button` moves focus to it; the page `FocusScope` must call `fs.focus
 
 ### Enforce read-path invariants on load, but only the ones with no valid alternative
 
-`from_json` normalizes after deserialize: `cache_size.max(1)` (mirrors `ImageCache::new`'s coercion so the stored value matches the value actually used) and `recent_files.truncate(MAX_RECENT_FILES)` (an over-long hand-edited list would otherwise persist forever via exit-save). **`preload_pages` is deliberately NOT clamped** — 0 is a valid "prefetch disabled" radius and not coerced downstream, so clamping it would silently override a legitimate user choice.
+`from_json` normalizes after deserialize: `cache_size` is floored to 1 via `Settings::cache_config()`, which constructs a `CacheConfig` whose `new` enforces `capacity >= 1` (the single source of truth for that floor — `ImageCache::new` no longer clamps; it consumes a `CacheConfig` whose capacity is already guaranteed `>= 1`, so the `NonZeroUsize::new(...).unwrap()` inside it is provably safe). `recent_files.truncate(MAX_RECENT_FILES)` prevents an over-long hand-edited list from persisting forever via exit-save. **`preload_pages` is deliberately NOT clamped** — 0 is a valid "prefetch disabled" radius and not coerced downstream, so clamping it would silently override a legitimate user choice.
 
 ### Parse the schema `version` with `u32::try_from`, not `as u32`
 

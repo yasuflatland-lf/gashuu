@@ -328,8 +328,8 @@ mod tests {
 
     #[test]
     fn capacity_zero_treated_as_one_does_not_panic() {
-        // `new` documents that capacity 0 is coerced to 1 (the LRU must hold at
-        // least the current page); constructing and reading must not panic.
+        // CacheConfig::new coerces capacity 0 to 1 (the LRU must hold at least
+        // the current page); constructing and reading must not panic.
         let (src, _reads) = counting(5);
         let cache = ImageCache::new(src, CacheConfig::new(0, 0));
         let img = cache.get(0).unwrap();
