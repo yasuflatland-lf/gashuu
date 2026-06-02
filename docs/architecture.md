@@ -170,7 +170,7 @@ Headless (no slint/tracing).
 PR-60 (signature retyped in #65), `library.rs`. `Library::register_opened(canonical: &Path,
 page_count: Option<NonZeroUsize>) -> OpenRegistration { resume: ReadingProgress, count_changed:
 bool }` centralises the open-time domain rule that previously lived in `main.rs`'s
-`open_and_present`: idempotent add by canonical path (dedup); page-count back-fill applied only for
+`app::OpenBookUseCase::run`: idempotent add by canonical path (dedup); page-count back-fill applied only for
 `Some(_)` (an unknown total = `None` is skipped); resume lookup via `Book::progress()`. The
 positivity that PR-60 enforced with a runtime guard is now a type fact — `set_page_count(_, count:
 NonZeroUsize)` makes `0` unrepresentable at the write boundary, so there is no `debug_assert` in core
@@ -252,6 +252,27 @@ variant is a compile error); `index_to_screen` clamps out-of-range to `Library`.
 functions are the single chokepoints that flip `NavState`, push `screen` to the UI, and restore
 focus. The Up arrow (`KeyCommand::GoToLibrary`, direction-independent) and the carousel
 `open`/`move`/`back` callbacks route through them.
+
+### app
+
+`app.rs`. `OpenBookUseCase` — the open-a-book application use case extracted from `main.rs` in
+#67. Holds six shared collaborators as `Rc<RefCell<…>>` fields: `ViewerState`, `Settings`,
+`ViewportState`, `Library`, `ThumbnailController` (`Rc`), and `CoverController` (`Rc`). There
+is NO `NavState` field — `NavState` stays in `main.rs`. Exposes two items:
+
+- `run(&self, ui, path, skipped_detail)` — writes back the previous book's position; opens
+  the source; reconciles + saves settings (only when `track_recent_files` is on); registers the
+  book in `Library` and jumps to the resume page; calls `refresh`; composes status notices via
+  the pure `status_notices` fn; rebuilds the carousel model only when the page count changed;
+  and launches thumbnail generation. **`run` does NOT transition screens** — it never calls
+  `go_to_viewer`.
+- Pure `status_notices(…) -> Vec<String>` extracted for unit tests.
+
+`main.rs` constructs one instance and shares it (`Rc`) into the three open-handler closures:
+`on_open_folder`, `on_open_archive`, and `on_carousel_open`. Only `on_carousel_open` calls
+`go_to_viewer(&ui, &nav)` after `run` returns, using the `nav: Rc<RefCell<NavState>>` that
+stays in `main.rs`. Lives in the UI crate because it coordinates Slint components;
+`gashuu-core` is untouched.
 
 ### library_model
 

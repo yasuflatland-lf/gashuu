@@ -10,7 +10,7 @@ The one durable fact the app records is how far the reader got in a book. Before
 three bare `usize`s scattered across layers — `Book.last_page` / `Book.page_count` (core),
 `ViewerState.index` (UI), and a `last_page / total` progress derivation duplicated as the
 `progress_fraction` free function in the UI crate (`library_model.rs`) — plus the open-time
-resume/back-fill RULE living in the UI composition root (`main.rs` `open_and_present`). The
+resume/back-fill RULE living in the UI composition root (`main.rs` `open_and_present`, now `app::OpenBookUseCase::run`). The
 `total == 0` unknown-sentinel guard and the 1-based display offset were re-derived at each call
 site; a domain rule (idempotent register + guarded page-count back-fill + resume lookup) sat in the
 presentation layer.
