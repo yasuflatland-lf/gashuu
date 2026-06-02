@@ -10,9 +10,10 @@
 //! display mapping lives (mirrors the "one chokepoint maps domain → display
 //! row" discipline of the private `thumbnail_item` fn in `thumbnail_strip.rs`).
 //!
-//! Progress is `last_page / total` with a `total == 0` guard (an unread or
-//! pageless book reports `0.0`); `current` is the 1-based page for display
-//! (`last_page + 1`), matching the strip's 1-based page labels.
+//! Progress is derived from `Book::progress()` which returns a `ReadingProgress`
+//! value object. `ReadingProgress::current()` is 1-based (`last_page + 1`,
+//! saturating, >= 1); `ReadingProgress::fraction()` guards `total == 0` to
+//! `0.0` (no NaN/inf); `ReadingProgress::total()` is the persisted page count.
 
 use gashuu_core::Library;
 
@@ -42,54 +43,37 @@ pub struct CarouselData {
 
 /// Map a `Library` to its carousel display rows, in shelf (insertion) order.
 ///
-/// `current = last_page + 1` (1-based display); `progress = last_page / total`
-/// guarded so `total == 0` yields `0.0` (never NaN/inf); `available` is the
-/// derived existence check. `total` comes from `Book::page_count()`: `0` when
-/// the book has never been opened (so `progress` is `0.0` via the guard), and
-/// the real persisted count once it has been opened, at which point
-/// `current`/`progress` become meaningful against it.
+/// Each row is derived from `Book::progress()`, which returns a
+/// `ReadingProgress` value object. `current = progress.current()` (1-based,
+/// `>= 1`, saturating); `progress = progress.fraction()` is guarded so
+/// `total == 0` yields `0.0` (never NaN/inf); `total` comes from
+/// `Book::page_count()` via the value object — `0` when the book has never
+/// been opened, the real persisted count once it has been opened.
 pub fn carousel_data(library: &Library) -> Vec<CarouselData> {
     library
         .books()
         .iter()
         .map(|book| {
-            let last_page = book.last_page();
-            // The book's persisted page count; 0 until it has been opened at
-            // least once (back-filled on open). `progress_fraction` guards the
-            // 0 case to 0.0, so a never-opened book still reads as unread.
-            let total = book.page_count();
-            let progress = progress_fraction(last_page, total);
-            // `last_page` is a `usize` page index; saturate the +1 and the i32
-            // cast so a pathological value can never panic in debug.
-            let current = clamp_to_i32(last_page.saturating_add(1));
-            // Pin the documented invariants at the single construction site
-            // (debug-only; matches the codebase's debug_assert discipline):
-            // `current` is 1-based (>= 1) and `progress` is a 0.0..=1.0 fraction.
+            let progress = book.progress();
+            // 1-based display page; saturate the i32 cast for a pathological value.
+            let current = clamp_to_i32(progress.current());
+            let total = clamp_to_i32(progress.total());
+            let fraction = progress.fraction();
+            // Pin the documented invariants at the single construction site (debug-only).
             debug_assert!(current >= 1, "current is 1-based and must be >= 1");
             debug_assert!(
-                (0.0..=1.0).contains(&progress),
-                "progress must be in 0.0..=1.0"
+                (0.0..=1.0).contains(&fraction),
+                "progress fraction must be in 0.0..=1.0"
             );
             CarouselData {
                 title: book.title().to_string(),
                 current,
-                total: clamp_to_i32(total),
-                progress,
+                total,
+                progress: fraction,
                 available: Library::is_available(book),
             }
         })
         .collect()
-}
-
-/// Reading-progress fraction `last_page / total`, guarded so `total == 0`
-/// yields `0.0` (no division by zero, never NaN/inf) and the result is clamped
-/// to `0.0..=1.0`. A `last_page` past `total` (stale position vs. a shrunken
-/// book) clamps to `1.0` rather than overshooting the bar.
-fn progress_fraction(last_page: usize, total: usize) -> f32 {
-    if total == 0 {
-        return 0.0;
-    }
-    (last_page as f32 / total as f32).clamp(0.0, 1.0)
 }
 
 /// Saturating `usize -> i32` for display counts (Slint ints are `i32`); a value
@@ -103,29 +87,6 @@ mod tests {
     use super::*;
     use gashuu_core::Library;
     use std::path::PathBuf;
-
-    // `progress_fraction` is the load-bearing guard; table-test it directly so
-    // the `total == 0` and overshoot cases are pinned independently of the
-    // filesystem-dependent `carousel_data` availability check.
-    #[test]
-    fn progress_zero_when_total_zero() {
-        // Unread/pageless: guard must return 0.0, never NaN.
-        assert_eq!(progress_fraction(0, 0), 0.0);
-        assert_eq!(progress_fraction(5, 0), 0.0);
-    }
-
-    #[test]
-    fn progress_unread_partway_done() {
-        assert_eq!(progress_fraction(0, 10), 0.0); // unread
-        assert_eq!(progress_fraction(5, 10), 0.5); // partway
-        assert_eq!(progress_fraction(10, 10), 1.0); // done
-    }
-
-    #[test]
-    fn progress_overshoot_clamps_to_one() {
-        // Stale position past a shrunken book: clamp, don't overshoot.
-        assert_eq!(progress_fraction(99, 10), 1.0);
-    }
 
     #[test]
     fn empty_library_yields_no_rows() {

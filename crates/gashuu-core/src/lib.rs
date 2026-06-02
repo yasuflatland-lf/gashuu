@@ -10,6 +10,7 @@ pub mod image_ops;
 pub mod library;
 pub mod library_store;
 pub mod page_source;
+pub mod reading_progress;
 pub mod settings;
 pub mod spread;
 #[cfg(test)]
@@ -25,6 +26,7 @@ pub use image_ops::{check_pixel_limit, decode, decode_thumbnail, DecodedImage, M
 pub use library::{Book, Library};
 pub use library_store::LIBRARY_VERSION;
 pub use page_source::{FolderSource, PageEntry, PageSource, RarSource, ZipSource};
+pub use reading_progress::ReadingProgress;
 pub use settings::{
     CoverMode, FitMode, KeyBindings, ReadingDirection, Settings, SpreadLayout, SpreadMode,
     MAX_RECENT_FILES, SETTINGS_VERSION,

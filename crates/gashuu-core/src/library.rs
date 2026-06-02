@@ -3,6 +3,7 @@
 //! Headless (no slint, no tracing). Identity is the canonical filesystem path;
 //! availability is derived (never stored). Persistence lives in `library_store`.
 
+use crate::reading_progress::ReadingProgress;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
@@ -68,6 +69,13 @@ impl Book {
     /// Total page count cached at open time (0 when unknown).
     pub fn page_count(&self) -> usize {
         self.page_count
+    }
+
+    /// This book's reading progress as a value object: the last-viewed leading
+    /// page index together with the cached total page count. The `current` /
+    /// `fraction` derivation lives on `ReadingProgress`, not at the call sites.
+    pub fn progress(&self) -> ReadingProgress {
+        ReadingProgress::new(self.last_page, self.page_count)
     }
 }
 
@@ -329,6 +337,36 @@ mod tests {
         assert_eq!(book.path(), Path::new("/manga/a.cbz"));
         assert_eq!(book.last_page(), 5);
         assert_eq!(book.page_count(), 0);
+    }
+
+    #[test]
+    fn progress_is_unread_for_freshly_added_book() {
+        let mut lib = Library::new();
+        let path = PathBuf::from("/manga/a.cbz");
+        assert!(lib.add(path.clone()));
+        let p = lib.books()[0].progress();
+        assert!(p.is_unread(), "freshly added book must be unread");
+        assert_eq!(p.reached(), 0);
+        assert_eq!(p.total(), 0);
+    }
+
+    #[test]
+    fn progress_reflects_last_page_and_page_count() {
+        let mut lib = Library::new();
+        let path = PathBuf::from("/manga/a.cbz");
+        assert!(lib.add(path.clone()));
+        assert!(lib.set_last_page(&path, 3));
+        assert!(lib.set_page_count(&path, 10));
+        let p = lib.books()[0].progress();
+        assert_eq!(p.reached(), 3);
+        assert_eq!(p.total(), 10);
+        assert_eq!(p.current(), 4);
+        let expected: f32 = 3.0 / 10.0;
+        assert!(
+            (p.fraction() - expected).abs() < 1e-6,
+            "fraction should be ~0.3, got {}",
+            p.fraction()
+        );
     }
 
     #[test]
