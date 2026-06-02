@@ -172,8 +172,8 @@ mod tests {
         std::fs::create_dir(&known).expect("create known");
 
         let mut lib = Library::new();
-        assert!(lib.add(unknown.clone()));
-        assert!(lib.add(known.clone()));
+        assert!(lib.add(unknown.clone()).is_some());
+        assert!(lib.add(known.clone()).is_some());
         // Give the naturally first-sorted book a persisted page count (as an open would back-fill).
         let known_path = lib.books()[0].path().to_path_buf();
         assert!(lib.set_page_count(&known_path, NonZeroUsize::new(10).unwrap()));

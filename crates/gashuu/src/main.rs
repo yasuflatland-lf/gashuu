@@ -1077,27 +1077,21 @@ pub(crate) fn write_back_position(
     }
 }
 
-/// Add every path in `paths` to `lib`, skipping duplicates.
-/// Returns the canonical paths of books actually inserted (new books only).
-/// Dedup is handled by `Library::add` (returns `false` when already present),
-/// covering both books already in the library and duplicates within `paths`.
+/// Add every path in `paths` to `lib`. Each path is added via `Library::add`,
+/// which canonicalizes, dedups, and re-sorts the library on insert.
+/// Returns the canonical paths of the books actually inserted (new books only);
+/// duplicates within the batch and paths already present are skipped, since
+/// `Library::add` returns `None` in those cases.
 fn add_paths(lib: &mut Library, paths: Vec<std::path::PathBuf>) -> Vec<std::path::PathBuf> {
     paths
         .into_iter()
-        .filter_map(|path| {
-            let canonical = path.canonicalize().unwrap_or_else(|_| path.clone());
-            if lib.add(path) {
-                lib.books()
-                    .iter()
-                    .find(|book| book.path() == canonical.as_path())
-                    .map(|book| book.path().to_path_buf())
-            } else {
-                None
-            }
-        })
+        .filter_map(|path| lib.add(path).map(std::path::Path::to_path_buf))
         .collect()
 }
 
+/// Return the 0-based carousel row index of `path` in the sorted library, or
+/// `None` if it is absent. This index is the visual position to focus after an
+/// add. `path` must be a canonical path as returned by `add_paths`.
 fn focus_index_for_path(lib: &Library, path: &std::path::Path) -> Option<usize> {
     lib.books().iter().position(|book| book.path() == path)
 }
@@ -1302,6 +1296,15 @@ mod tests {
         let added = add_paths(&mut lib, paths);
         assert_eq!(added.len(), 2);
         assert_eq!(lib.books().len(), 2);
+        // Nonexistent paths cannot be canonicalized, so `Library::add` stores the
+        // verbatim path; the returned vec therefore equals the input, in input order.
+        assert_eq!(
+            added,
+            vec![
+                std::path::PathBuf::from("nonexistent/vol1.cbz"),
+                std::path::PathBuf::from("nonexistent/vol2.cbz"),
+            ]
+        );
     }
 
     #[test]
@@ -1383,6 +1386,40 @@ mod tests {
 
         assert_eq!(focus, Some(0));
         assert_eq!(focus_index_for_path(&lib, &books[1]), Some(1));
+    }
+
+    #[test]
+    fn focus_index_for_path_absent_returns_none() {
+        let lib = gashuu_core::Library::new();
+        assert_eq!(
+            focus_index_for_path(&lib, std::path::Path::new("nonexistent/vol1.cbz")),
+            None
+        );
+    }
+
+    #[test]
+    fn add_paths_returns_input_order_while_books_are_natural_order() {
+        // Focus follows the FIRST input path, not natural order: `add_paths`
+        // returns the inserted paths in INPUT order, whereas `lib.books()` keeps
+        // them in NATURAL (sorted) order. Nonexistent paths cannot be
+        // canonicalized, so `Library::add` falls back to the verbatim path and the
+        // returned paths equal the verbatim input paths.
+        let mut lib = gashuu_core::Library::new();
+        let vol10 = std::path::PathBuf::from("nonexistent/vol10.cbz");
+        let vol1 = std::path::PathBuf::from("nonexistent/vol1.cbz");
+        let added = add_paths(&mut lib, vec![vol10.clone(), vol1.clone()]);
+
+        // Returned vec is in INPUT order (vol10 first, vol1 second).
+        assert_eq!(added[0], vol10);
+        assert_eq!(added[1], vol1);
+
+        // The library itself is in NATURAL order (vol1 before vol10).
+        let books: Vec<_> = lib
+            .books()
+            .iter()
+            .map(|book| book.path().to_path_buf())
+            .collect();
+        assert_eq!(books, vec![vol1, vol10]);
     }
 
     // Note: `build_carousel_model` now takes a `&ViewerWindow` (it builds AND

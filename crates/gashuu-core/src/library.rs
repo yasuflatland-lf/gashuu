@@ -124,18 +124,26 @@ impl Library {
 
     /// Add `path` to the shelf. Canonicalizes best-effort (falling back to the
     /// path verbatim when canonicalization fails - e.g. a missing file), derives
-    /// the title, and de-duplicates by canonical path. Returns `false` (no-op)
-    /// when the canonical path is already present.
-    pub fn add(&mut self, path: PathBuf) -> bool {
+    /// the title, and de-duplicates by canonical path. Returns `Some` with the
+    /// canonical path of the newly stored book, or `None` if the path was already
+    /// present (duplicate, no-op).
+    pub fn add(&mut self, path: PathBuf) -> Option<&Path> {
         let canonical = path.canonicalize().unwrap_or(path);
         if self.books.iter().any(|b| b.path() == canonical) {
-            return false;
+            return None;
         }
-        self.books.push(Book::from_path(canonical));
+        self.books.push(Book::from_path(canonical.clone()));
         self.books.sort_by(book_order);
-        true
+        self.books
+            .iter()
+            .find(|b| b.path() == canonical)
+            .map(Book::path)
     }
 
+    /// Re-sort the shelf into natural title order (with canonical path tie-break).
+    /// Called on load (`library_store::load_from`) so libraries persisted before
+    /// natural ordering (in insertion order) converge to the canonical sort on the
+    /// next save; it also repairs any otherwise-unsorted `books` vec.
     pub(crate) fn normalize(&mut self) {
         self.books.sort_by(book_order);
     }
@@ -276,9 +284,9 @@ mod tests {
         // Non-existent paths exercise the best-effort canonicalize fallback
         // (canonicalize fails - path is used verbatim).
         let mut lib = Library::new();
-        assert!(lib.add(PathBuf::from("/manga/vol 10.cbz")));
-        assert!(lib.add(PathBuf::from("/manga/vol 1.cbz")));
-        assert!(lib.add(PathBuf::from("/manga/vol 2.cbz")));
+        assert!(lib.add(PathBuf::from("/manga/vol 10.cbz")).is_some());
+        assert!(lib.add(PathBuf::from("/manga/vol 1.cbz")).is_some());
+        assert!(lib.add(PathBuf::from("/manga/vol 2.cbz")).is_some());
         let titles: Vec<&str> = lib.books().iter().map(|b| b.title()).collect();
         assert_eq!(
             titles,
@@ -302,8 +310,8 @@ mod tests {
         let b = b.canonicalize().unwrap();
 
         let mut lib = Library::new();
-        assert!(lib.add(b.clone()));
-        assert!(lib.add(a.clone()));
+        assert!(lib.add(b.clone()).is_some());
+        assert!(lib.add(a.clone()).is_some());
 
         let paths: Vec<&Path> = lib.books().iter().map(|book| book.path()).collect();
         assert_eq!(paths, vec![a.as_path(), b.as_path()]);
@@ -312,10 +320,32 @@ mod tests {
     #[test]
     fn add_dedups_by_path_and_returns_false() {
         let mut lib = Library::new();
-        assert!(lib.add(PathBuf::from("/manga/a.cbz")));
+        assert!(lib.add(PathBuf::from("/manga/a.cbz")).is_some());
         assert!(
-            !lib.add(PathBuf::from("/manga/a.cbz")),
-            "adding an existing path must be a no-op returning false"
+            lib.add(PathBuf::from("/manga/a.cbz")).is_none(),
+            "adding an existing path must be a no-op returning None"
+        );
+        assert_eq!(lib.books().len(), 1);
+    }
+
+    #[test]
+    fn add_returns_stored_canonical_path_then_none_on_duplicate() {
+        // A real temp file so canonicalize succeeds and the stored path is the
+        // canonical one; the first add returns it, the second (duplicate) is None.
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("Book.cbz");
+        std::fs::write(&file, []).unwrap();
+        let canonical = file.canonicalize().unwrap();
+
+        let mut lib = Library::new();
+        assert_eq!(
+            lib.add(file.clone()),
+            Some(canonical.as_path()),
+            "first add must return the stored canonical path"
+        );
+        assert!(
+            lib.add(file).is_none(),
+            "adding the same path again must return None (duplicate)"
         );
         assert_eq!(lib.books().len(), 1);
     }
@@ -327,7 +357,7 @@ mod tests {
         std::fs::create_dir(&folder).unwrap();
 
         let mut lib = Library::new();
-        assert!(lib.add(folder.join(".")));
+        assert!(lib.add(folder.join(".")).is_some());
         assert_eq!(lib.books().len(), 1);
         assert_eq!(
             lib.books()[0].path(),
@@ -340,7 +370,7 @@ mod tests {
     fn remove_existing_returns_true_and_drops_book() {
         let mut lib = Library::new();
         let path = PathBuf::from("/manga/a.cbz");
-        assert!(lib.add(path.clone()));
+        assert!(lib.add(path.clone()).is_some());
         assert!(lib.remove(&path));
         assert!(lib.books().is_empty());
     }
@@ -361,7 +391,7 @@ mod tests {
     fn set_last_page_updates_and_round_trips() {
         let mut lib = Library::new();
         let path = PathBuf::from("/manga/a.cbz");
-        assert!(lib.add(path.clone()));
+        assert!(lib.add(path.clone()).is_some());
         assert!(lib.set_last_page(&path, 42));
         assert_eq!(lib.last_page(&path), 42);
     }
@@ -376,7 +406,7 @@ mod tests {
     fn set_last_page_false_when_unchanged() {
         let mut lib = Library::new();
         let path = PathBuf::from("/manga/a.cbz");
-        assert!(lib.add(path.clone()));
+        assert!(lib.add(path.clone()).is_some());
         assert!(lib.set_last_page(&path, 3));
         assert!(!lib.set_last_page(&path, 3));
     }
@@ -391,7 +421,7 @@ mod tests {
     fn set_page_count_updates_and_returns_true() {
         let mut lib = Library::new();
         let path = PathBuf::from("/manga/a.cbz");
-        assert!(lib.add(path.clone()));
+        assert!(lib.add(path.clone()).is_some());
         assert!(lib.set_page_count(&path, NonZeroUsize::new(42).unwrap()));
         assert_eq!(lib.books()[0].page_count_opt(), Some(42));
     }
@@ -409,7 +439,7 @@ mod tests {
     fn set_page_count_false_when_unchanged() {
         let mut lib = Library::new();
         let path = PathBuf::from("/manga/a.cbz");
-        assert!(lib.add(path.clone()));
+        assert!(lib.add(path.clone()).is_some());
         assert!(lib.set_page_count(&path, NonZeroUsize::new(3).unwrap()));
         assert!(!lib.set_page_count(&path, NonZeroUsize::new(3).unwrap()));
     }
@@ -435,7 +465,7 @@ mod tests {
     fn progress_is_unread_for_freshly_added_book() {
         let mut lib = Library::new();
         let path = PathBuf::from("/manga/a.cbz");
-        assert!(lib.add(path.clone()));
+        assert!(lib.add(path.clone()).is_some());
         let p = lib.books()[0].progress();
         assert!(p.is_unread(), "freshly added book must be unread");
         assert_eq!(p.reached(), 0);
@@ -446,7 +476,7 @@ mod tests {
     fn progress_reflects_last_page_and_page_count() {
         let mut lib = Library::new();
         let path = PathBuf::from("/manga/a.cbz");
-        assert!(lib.add(path.clone()));
+        assert!(lib.add(path.clone()).is_some());
         assert!(lib.set_last_page(&path, 3));
         assert!(lib.set_page_count(&path, NonZeroUsize::new(10).unwrap()));
         let p = lib.books()[0].progress();
@@ -517,7 +547,7 @@ mod tests {
     fn register_opened_resumes_at_recorded_last_page() {
         let mut lib = Library::new();
         let path = PathBuf::from("/manga/a.cbz");
-        assert!(lib.add(path.clone()));
+        assert!(lib.add(path.clone()).is_some());
         assert!(lib.set_last_page(&path, 5));
         let reg = lib.register_opened(&path, NonZeroUsize::new(10));
         assert_eq!(reg.resume.reached(), 5, "resume reflects the recorded page");
