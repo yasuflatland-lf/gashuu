@@ -288,10 +288,13 @@ keeps the derivation table-testable without a display backend. Each row is built
 to `1.0`); `total = ReadingProgress::total()` (now `Option<usize>`, #65). The free derivation no longer lives in `library_model`
 — it is centralised in `ReadingProgress` (see core entry below). `available` via
 `Library::is_available`. `carousel.rs`'s `to_carousel_item` adapter builds the `!Send`
-`slint::Image` (placeholder this PR) on the UI thread; `build_carousel_model` is the build+bind
+`slint::Image` (a `slint::Image::default()` placeholder, filled in asynchronously by `CoverController`)
+on the UI thread; `build_carousel_model` is the build+bind
 chokepoint returning the `Rc<VecModel>` so PR-V/PR-L mutate the same model. `total` comes from
-the persisted `Book::page_count` (PR-La): `0` until the book has been opened at least once
-(`progress` guarded to `0.0`), the real saved count afterwards. The `total: clamp_to_i32(total)`
+the persisted `Book::page_count` (PR-La): `0` until the count is known
+(`progress` guarded to `0.0`), the real saved count afterwards — known either by opening the book or,
+for a never-opened book, by `CoverController`'s background page-count prefetch (see `cover_loader.rs`),
+which streams the count into this `total` and persists it. The `total: clamp_to_i32(total)`
 saturating cast is unchanged.
 
 ### carousel
@@ -326,7 +329,14 @@ through the shared `ThumbnailCell`/`PrimaryButton` components. Covers start as p
 (`slint::Image::default()`); PR-V's `cover_loader.rs` streams the real cover images into the same
 model row-by-row. PR-L added an always-visible
 "Add files…"/"Add folder…" toolbar + the `add-files()`/`add-folder()` callbacks and wired the
-empty-state CTA to `add-files()` (each restores focus via `focus-self()` after firing).
+empty-state CTA to `add-files()` (each restores focus via `focus-self()` after firing). The cover-flow
+is rendered by a file-private `CoverCard` sub-component instantiated by TWO `for` passes over the model:
+pass 1 paints the neighbors (focused slot hidden via a `show` gate), pass 2 (declared after) paints ONLY
+the focused card so it draws ON TOP of its neighbors — Slint 1.x cannot set per-`Repeater`-item z, so
+draw order is the only lever. Both passes bind identical geometry (each book keeps a persistent instance
+in each pass), so the Left/Right slide still animates continuously with a seamless layer hand-off. The
+enclosing row's `width`/`row-cy` are passed into `CoverCard` as `in` properties because a component ROOT
+cannot read `parent`.
 
 **`Theme.slint`** (PR-0b, NEW): single `global Theme` of visual tokens (colors, spacing, radii,
 font sizes); components reference `Theme.<token>` instead of inline hex literals.
@@ -351,7 +361,18 @@ thread now), miss → `rayon::spawn` a worker that opens via `ArchiveLoader`, ca
 `ThumbnailCache::put`, then `invoke_from_event_loop` to set the row — under the SAME epoch + cancel
 double-guard and Send/!Send discipline as the thumbnail strip (see [patterns.md](patterns.md)). The
 cancel-rotation lives in a shared-shape private `rotate_cancel(&self) -> Arc<AtomicBool>` helper kept
-IDENTICAL in both controllers.
+IDENTICAL in both controllers. Covers render at `COVER_MAX_SIDE = 512` px — DECOUPLED from the strip's
+`DEFAULT_THUMB_MAX_SIDE = 160` (a focused cover slot is far larger than a strip cell, so 160 px upscaled
+blurry); `max_side` is in the cache key, so raising it auto-regenerates stale 160 px covers. The
+controller ALSO prefetches each unopened book's REAL page count (fixing the "1 / 0" display): a request
+flagged `needs_count` (`Book::page_count_opt() == None`) resolves the count in the background — the
+cover-MISS worker reuses its archive open (`source.list_pages().len()` before `generate_cover`), a
+cover-cache HIT spawns a count-only open (`spawn_count_only`). `marshal_total` streams the count to the
+row's `total` for immediate display, and the `(path, count)` is queued in `pending_counts` for UI-thread
+persistence — drained via `Library::set_page_count` + `save` at the next `start` and at shutdown
+(`flush_counts`), so the count survives a relaunch (a worker can't touch the `!Send`
+`Rc<RefCell<Library>>`, hence the queue). Callers build the `CoverRequest` list BEFORE `start` so the
+`library.borrow()` is released before `start`'s persistence `borrow_mut`.
 
 **`SettingsDialog.slint`** (PR8b, NEW): modal overlay editing active settings via std-widgets
 `ComboBox`/`SpinBox`/`CheckBox`; two-way `current-index <=> in-out-prop` +

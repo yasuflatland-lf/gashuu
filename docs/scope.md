@@ -72,7 +72,7 @@ RAR requires a C++ compiler on every OS (see [docs/toolchain.md](toolchain.md)).
 
 - The Library screen (the PR-0b two-screen shell) now RENDERS the cover-flow carousel from the `Library` model: focused cover with accent ring, scaled/dimmed neighbors, per-cover + focused-meta reading-progress bars, a grayed broken-cover placeholder for unavailable books, and the 0-book empty-state CTA. Built from the pure `library_model::carousel_data` mapping via the `carousel::to_carousel_item` UI-thread adapter (covers via `slint::Image::default()` for now). No new deps.
 - **Covers start as placeholders** — PR-V (below) streams the real cover images in (into the same `VecModel<CarouselItem>`, using the PR8a `invoke_from_event_loop` pattern).
-- Per-book page `total` was a placeholder `0` in PR-C; **PR-La now persists it** (`Book::page_count`, back-filled and saved on open) and the carousel shows the real `total` + `current / total` progress fraction once a book has been opened. See "Per-book page totals, fallible save, and load-failure notice (PR-La)" below.
+- Per-book page `total` was a placeholder `0` in PR-C; **PR-La now persists it** (`Book::page_count`, back-filled and saved on open) and the carousel shows the real `total` + `current / total` progress fraction once a book has been opened. See "Per-book page totals, fallible save, and load-failure notice (PR-La)" below. (Later: `CoverController` ALSO prefetches the count for never-opened books in the background, so the carousel no longer shows `1 / 0` before first open — see "Cover sharpness, page-count prefetch, cover-flow z-order" below.)
 - The empty-state CTA is wired to the file/folder picker by PR-L (see below).
 
 ### Thumbnail disk cache (PR-T)
@@ -94,10 +94,17 @@ RAR requires a C++ compiler on every OS (see [docs/toolchain.md](toolchain.md)).
 
 ### Per-book page totals, fallible save, and load-failure notice (PR-La)
 
-- **Per-book page totals are modeled + persisted.** `Book::page_count` (a `#[serde(default)]` field, no `LIBRARY_VERSION` bump) is back-filled from the opened source's page count and saved to `library.json` on open, so the count survives relaunch. The cover-flow carousel (`carousel_data`) now shows the REAL `total` / `current` / progress fraction for any opened book (`0` = never opened, reads as unread via the existing guard). Same-session visibility comes from a carousel rebuild on the open path when the count was just back-filled. Cover images remain placeholders until PR-V.
+- **Per-book page totals are modeled + persisted.** `Book::page_count` (a `#[serde(default)]` field, no `LIBRARY_VERSION` bump) is back-filled from the opened source's page count and saved to `library.json` on open, so the count survives relaunch. The cover-flow carousel (`carousel_data`) now shows the REAL `total` / `current` / progress fraction for any opened book (`0` = never opened until prefetched — see below). Same-session visibility comes from a carousel rebuild on the open path when the count was just back-filled. Cover images remain placeholders until PR-V.
 - **Save is fallible end-to-end** — `Library::to_json -> Result` (symmetric with `from_json`); `save`/`save_to` propagate via `?`. No serialize step is silently swallowed, so a save can no longer write a truncated file while the UI reports success.
 - **Startup load failures surface on the home screen.** A genuine `Library`/`Settings` load failure (corrupt data / I/O / `NoDataDir`; missing files still return `Ok(default)`) is collected and shown on the Library status line after the initial refresh. Closes the PR-L gap where library load failure was tracing-only.
 - No new deps.
+
+### Cover sharpness, page-count prefetch, cover-flow z-order
+
+- **Sharper covers.** `cover_loader::COVER_MAX_SIDE` rises from 160 → **512 px**, decoupled from the page strip's `DEFAULT_THUMB_MAX_SIDE` (160). A focused cover slot is up to 240×336 logical px (≈480×672 physical at 2× Retina), so the old 160 px buffer upscaled ~4× and looked blurry. `max_side` is part of the `cache_key`, so the bump transparently invalidates and regenerates every stale 160 px cover on the next run. The strip path is unchanged.
+- **No more `1 / 0` before first open.** `CoverController` prefetches the REAL page count for never-opened books (`Book::page_count_opt() == None`, flagged `needs_count` in `cover_requests`). The cover-MISS worker reuses its archive open to read `list_pages().len()`; a cover-cache HIT spawns a count-only open (`spawn_count_only`). The count is streamed to the row's `total` immediately (`marshal_total`) and queued in `pending_counts` for UI-thread persistence — applied via `Library::set_page_count` + `save` at the next `start` and at shutdown (`flush_counts`), so it survives a relaunch (no re-open needed next time). A worker can't touch the `!Send` `Rc<RefCell<Library>>`, hence the queue + UI-thread drain.
+- **Focused cover always on top.** The cover-flow now renders via a file-private `CoverCard` sub-component in TWO `for` passes (neighbors, then the focused card declared after → drawn on top), since Slint 1.x has no per-`Repeater`-item z. Both passes bind identical geometry so the Left/Right slide still animates continuously. Fixes the neighbor card overlapping the centered cover.
+- No new deps. The UI streaming/controller path stays coverage-exempt (same as the thumbnail strip); the pure `cover_requests` `needs_count` derivation is unit-tested.
 
 ---
 

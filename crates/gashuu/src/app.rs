@@ -184,8 +184,10 @@ impl OpenBookUseCase {
             build_carousel_model(ui, &library.borrow());
             // The rebuild reset each row's cover to a placeholder; re-stream the covers
             // (hits paint now, misses regenerate). The epoch bump supersedes any covers
-            // still streaming from the pre-rebuild model.
-            covers.start(ui.as_weak(), cover_requests(&library.borrow()));
+            // still streaming from the pre-rebuild model. Build the requests first so
+            // the `library.borrow()` is released before `start`'s `borrow_mut`.
+            let cover_reqs = cover_requests(&library.borrow());
+            covers.start(ui.as_weak(), library, cover_reqs);
         }
         // Kick off parallel thumbnail generation for the newly opened source.
         thumbs.start(

@@ -41,6 +41,112 @@ export struct CarouselItem {
     available: bool,
 }
 
+// File-private cover-flow card: de-duplicates the per-cover animated card so the
+// two z-order passes in `Carousel` can share ONE body (DESIGN.md covers; the
+// patterns.md "shared PRIVATE sub-component within one file" tool). NOT exported,
+// so the frozen public contract is untouched.
+//
+// Why two passes instead of `z`: Slint 1.16.1 cannot set per-Repeater-item z
+// (docs/patterns.md), so the focused cover is layered on top purely by DRAW
+// ORDER. Pass 1 renders the neighbors (`show: idx != focused-index`); pass 2,
+// declared AFTER pass 1, renders ONLY the focused card (`show: idx == focused-
+// index`) so it paints over its neighbors. `show` gates only `visible`; BOTH
+// passes bind identical geometry, so each book keeps a persistent instance in
+// each pass and the Left/Right slide animation is preserved — the hand-off
+// between passes happens at matching positions, with no pop.
+component CoverCard inherits Rectangle {
+    // Layer gate + per-card state (all driven by the enclosing `for`).
+    in property <bool> show;       // this pass should draw this card
+    in property <bool> focused;    // idx == focused-index: full size/opacity, ring + shadow
+    in property <int> delta;       // idx - focused-index: signed distance from center
+    // Geometry tunables, forwarded from the Carousel root.
+    in property <length> cover-w;
+    in property <length> cover-h;
+    in property <length> cover-step;
+    in property <float> neighbor-scale;
+    in property <float> neighbor-opacity;
+    in property <length> ring-width;
+    in property <bool> narrow;
+    // Enclosing cover-flow row geometry. A component ROOT cannot read `parent`
+    // (the parent is unknown until instantiation), so the row's width and vertical
+    // anchor are passed in by each `for` (which CAN read `parent` at its call site).
+    in property <length> row-width;
+    in property <length> row-cy;
+    // Item data.
+    in property <image> cover-source;
+    in property <bool> available;
+    in property <float> progress;
+
+    // Position/size/opacity: identical bindings to the former for-item Rectangle.
+    x: root.row-width / 2 + root.delta * root.cover-step - self.width / 2;
+    y: root.row-cy - self.height / 2;
+    width: root.focused ? root.cover-w : root.cover-w * root.neighbor-scale;
+    height: root.focused ? root.cover-h : root.cover-h * root.neighbor-scale;
+    opacity: root.focused ? 1.0 : root.neighbor-opacity;
+    // Layer gate AND the narrow-window neighbor-drop (DESIGN.md "Responsive
+    // Behavior / Carousel"): at/below the threshold only the focused cover ± one
+    // neighbor stay visible. Hidden instances stay instantiated and keep
+    // animating, so a focus change slides instead of snapping.
+    visible: root.show && (!root.narrow || Math.abs(root.delta) <= 1);
+    animate x, width, height, opacity {
+        duration: Theme.motion-standard;
+        easing: ease-out;
+    }
+
+    // The cover card: rounded, card shadow on the focused cover only, accent ring.
+    cover := Rectangle {
+        width: 100%;
+        height: 100%;
+        border-radius: Theme.radius-sm;               // DESIGN.md covers 6px
+        background: Theme.surface-raised;             // placeholder backing
+        // Card shadow on the FOCUSED cover only (DESIGN.md elevation.card).
+        // Neighbors sit at 0.45 opacity and don't need one — dropping it keeps the
+        // cover-flow GPU-cheap.
+        drop-shadow-blur: root.focused ? 22px : 0px;
+        drop-shadow-color: Theme.shadow-card;
+        // Focus ring: 3px accent outline on the focused cover only.
+        border-width: root.focused ? root.ring-width : 0px;
+        border-color: Theme.accent;
+
+        // Cover image via the shared ThumbnailCell (DESIGN.md rule 6: one
+        // thumbnail treatment across page strip / scrubber / covers). The accent
+        // focus ring is drawn by this `cover` Rectangle (DESIGN cover.focusOutline),
+        // so the cell stays `highlighted: false` to avoid a double ring (covers
+        // signal focus via scale + opacity + the card's own ring).
+        if root.available : ThumbnailCell {
+            x: 0; y: 0; width: 100%; height: 100%;
+            radius: Theme.radius-sm;
+            source: root.cover-source;
+            loaded: true;
+            failed: false;
+            highlighted: false;
+        }
+
+        // Unavailable: grayed card + broken-cover glyph.
+        if !root.available : Rectangle {
+            x: 0; y: 0; width: 100%; height: 100%;
+            border-radius: Theme.radius-sm;
+            background: Theme.surface-sunken;
+            Text {
+                width: 100%; height: 100%;
+                text: "⛌";
+                color: Theme.text-faint;
+                font-size: 48px;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+        }
+    }
+
+    // Per-cover progress bar (under the cover). `parent` is this CoverCard.
+    ProgressBar {
+        x: 0;
+        y: parent.height + Theme.space-xs;
+        width: parent.width;
+        progress: root.progress;
+    }
+}
+
 export component Carousel inherits Rectangle {
     // ── Frozen public contract ────────────────────────────────────────────────
     in property <[CarouselItem]> items;
@@ -186,88 +292,46 @@ export component Carousel inherits Rectangle {
               // below). Covers are centered horizontally on focused-index.
               property <length> row-cy: parent.height / 2 - 28px;
 
-              for item[idx] in root.items : Rectangle {
-                  // Signed distance from the focused cover (… -2 -1 0 +1 +2 …).
-                  property <int> delta: idx - root.focused-index;
-                  property <bool> focused: self.delta == 0;
-                  // Horizontal center: focused at parent center, neighbors stepped.
-                  x: parent.width / 2 + self.delta * root.cover-step - self.width / 2;
-                  y: parent.row-cy - self.height / 2;
-                  width: self.focused ? root.cover-w : root.cover-w * root.neighbor-scale;
-                  height: self.focused ? root.cover-h : root.cover-h * root.neighbor-scale;
-                  opacity: self.focused ? 1.0 : root.neighbor-opacity;
-                  // Neighbor-drop on narrow windows (DESIGN.md "Responsive
-                  // Behavior / Carousel"): below the threshold only the focused
-                  // cover ± one neighbor stay visible; the rest are hidden (kept
-                  // instantiated, just not drawn). Wide windows show all items.
-                  visible: !root.narrow || Math.abs(self.delta) <= 1;
-                  // Motion (P2): glide position/size/opacity on focus changes so a
-                  // Left/Right move animates instead of snapping. ease-out feels
-                  // settled at the end of the slide.
-                  animate x, width, height, opacity {
-                      duration: Theme.motion-standard;
-                      easing: ease-out;
-                  }
-
-                  // The cover card: rounded, card shadow, accent focus ring.
-                  cover := Rectangle {
-                      width: 100%;
-                      height: 100%;
-                      border-radius: Theme.radius-sm;               // DESIGN.md covers 6px
-                      background: Theme.surface-raised;             // placeholder backing
-                      // Card shadow on the FOCUSED cover only (DESIGN.md
-                      // elevation.card). Neighbors sit at 0.45 opacity and don't
-                      // need a shadow — dropping it for them keeps the cover-flow
-                      // GPU-cheap. `parent` here is the for-item Rectangle, which
-                      // owns `focused` (exactly one level up).
-                      drop-shadow-blur: parent.focused ? 22px : 0px;
-                      drop-shadow-color: Theme.shadow-card;
-                      // Focus ring: 3px accent outline on the focused cover only.
-                      border-width: parent.focused ? root.ring-width : 0px;
-                      border-color: Theme.accent;
-
-                      // Cover image via the shared ThumbnailCell (DESIGN.md rule 6:
-                      // one thumbnail treatment across page strip / scrubber / covers).
-                      // Library covers round to Theme.radius-sm (6px). The accent
-                      // focus ring is drawn by the surrounding `cover` Rectangle
-                      // (DESIGN cover.focusOutline), so the cell stays
-                      // `highlighted: false` to avoid a double ring (covers signal
-                      // focus via scale + opacity + the card's own ring). The
-                      // CarouselItem model has no loaded/failed fields; available
-                      // covers are `loaded: true`. (Cover images are placeholders
-                      // until PR-V streams real covers.)
-                      if item.available : ThumbnailCell {
-                          x: 0; y: 0; width: 100%; height: 100%;
-                          radius: Theme.radius-sm;
-                          source: item.cover;
-                          loaded: true;
-                          failed: false;
-                          highlighted: false;
-                      }
-
-                      // ── Unavailable: grayed card + broken-cover glyph ──────────
-                      if !item.available : Rectangle {
-                          x: 0; y: 0; width: 100%; height: 100%;
-                          border-radius: Theme.radius-sm;
-                          background: Theme.surface-sunken;
-                          Text {
-                              width: 100%; height: 100%;
-                              text: "⛌";
-                              color: Theme.text-faint;
-                              font-size: 48px;
-                              horizontal-alignment: center;
-                              vertical-alignment: center;
-                          }
-                      }
-                  }
-
-                  // ── Per-cover progress bar (under every cover) ────────────────
-                  ProgressBar {
-                      x: 0;
-                      y: parent.height + Theme.space-xs;
-                      width: parent.width;
-                      progress: item.progress;
-                  }
+              // ── Cover-flow z-order: two passes (Slint 1.16.1 has no per-item z) ─
+              // Pass 1 paints the NEIGHBORS (focused slot hidden via `show`); pass
+              // 2, declared after, paints ONLY the focused card so it draws on top
+              // of its neighbors. Each book keeps a persistent instance in BOTH
+              // passes (only `visible` differs), so a Left/Right move slides
+              // continuously and the hand-off between passes is seamless. See the
+              // CoverCard header for the full rationale.
+              for item[idx] in root.items : CoverCard {
+                  show: idx != root.focused-index;
+                  focused: idx == root.focused-index;
+                  delta: idx - root.focused-index;
+                  cover-w: root.cover-w;
+                  cover-h: root.cover-h;
+                  cover-step: root.cover-step;
+                  neighbor-scale: root.neighbor-scale;
+                  neighbor-opacity: root.neighbor-opacity;
+                  ring-width: root.ring-width;
+                  narrow: root.narrow;
+                  row-width: parent.width;
+                  row-cy: parent.row-cy;
+                  cover-source: item.cover;
+                  available: item.available;
+                  progress: item.progress;
+              }
+              for item[idx] in root.items : CoverCard {
+                  show: idx == root.focused-index;
+                  focused: idx == root.focused-index;
+                  delta: idx - root.focused-index;
+                  cover-w: root.cover-w;
+                  cover-h: root.cover-h;
+                  cover-step: root.cover-step;
+                  neighbor-scale: root.neighbor-scale;
+                  neighbor-opacity: root.neighbor-opacity;
+                  ring-width: root.ring-width;
+                  narrow: root.narrow;
+                  row-width: parent.width;
+                  row-cy: parent.row-cy;
+                  cover-source: item.cover;
+                  available: item.available;
+                  progress: item.progress;
               }
 
               // ── Focused-book meta block (centered, below the cover row) ───────
@@ -287,8 +351,10 @@ export component Carousel inherits Rectangle {
                       overflow: elide;
                   }
                   Text {
-                      // 1-based "current / total" (total is 0 until the book is
-                      // opened; the real count is filled when a book's page source is resolved).
+                      // 1-based "current / total". `total` is 0 only until the cover
+                      // controller resolves the page count in the background (or the
+                      // book is opened); once resolved it is persisted and shows the
+                      // real count, so this no longer reads "1 / 0" for a fresh book.
                       text: root.items[root.focused-index].current + " / " + root.items[root.focused-index].total;
                       color: Theme.text-muted;
                       font-size: Theme.font-label;
