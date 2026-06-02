@@ -4,7 +4,7 @@
 /// How far a reader got in a book: the last-viewed leading page index (`reached`)
 /// and the known total page count (`total`; `None` = unknown / never opened).
 /// Bundles the `fraction` / `current` derivation that the carousel AND the resume
-/// logic both need, so the unknown-total guard and the 1-based display offset live
+/// logic both need, so the unknown/zero-total guard and the 1-based display offset live
 /// in ONE place. Immutable value object.
 ///
 /// Semantics note (load-bearing, do NOT change in this PR): `reached` stores the
@@ -53,6 +53,16 @@ mod tests {
     use super::*;
 
     // --- fraction ---
+
+    #[test]
+    fn fraction_total_some_zero_is_zero_not_nan() {
+        // `ReadingProgress::new` accepts `Option<usize>`, so `Some(0)` is
+        // constructible. `fraction()` must collapse it to 0.0 (the `_ => 0.0` arm),
+        // never div-by-zero. Pins the doc's "0.0 when total is unknown or 0" promise.
+        let p = ReadingProgress::new(5, Some(0));
+        assert_eq!(p.fraction(), 0.0);
+        assert!(!p.fraction().is_nan() && p.fraction().is_finite());
+    }
 
     #[test]
     fn fraction_total_none_is_always_zero() {

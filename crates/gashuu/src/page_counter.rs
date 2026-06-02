@@ -38,4 +38,11 @@ mod tests {
         // The scrubber clamps the leading page to total-1 on the last page.
         assert_eq!(page_counter_text(9, None, 10), "10 / 10");
     }
+
+    #[test]
+    fn double_spread_clamped_to_last_page_collapses_to_same_number() {
+        // The scrubber clamps both lead and trailing to total-1 on the last page,
+        // so a double spread can present trailing == lead. Pin current output.
+        assert_eq!(page_counter_text(9, Some(9), 10), "10\u{2013}10 / 10");
+    }
 }
