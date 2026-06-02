@@ -8,6 +8,8 @@
 // rectangle inside the clip area. Input callbacks relay mouse wheel (zoom-at),
 // drag (begin-pan / pan-to), and viewport size changes (viewport-resized) up to
 // ViewerWindow so main.rs can implement the zoom/pan math.
+import { Theme } from "Theme.slint";
+
 export component PageView inherits Rectangle {
     in property <image> leading-page;
     in property <image> trailing-page;
@@ -32,7 +34,7 @@ export component PageView inherits Rectangle {
     // not, and without a second TouchArea that would steal the pan press.
     callback reveal();
 
-    background: #000000;
+    background: Theme.canvas;
     clip: true;
 
     init => { root.viewport-resized(self.width, self.height); }

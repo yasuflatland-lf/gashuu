@@ -19,3 +19,7 @@ cargo.binstall = true
 [tasks.check-docs]
 description = "Verify the L1/L2/L3 documentation structure (CLAUDE.md <=35 lines + all doc links resolve)"
 run = "bash scripts/check-docs.sh"
+
+[tasks.check-tokens]
+description = "Guard against raw color hex outside Theme.slint in crates/gashuu/ui/*.slint (DESIGN.md single-source-of-truth rule)"
+run = "bash scripts/check-tokens.sh"

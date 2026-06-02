@@ -7,6 +7,8 @@
 // TouchArea is non-focusable and does NOT steal keyboard focus from the
 // FocusScope in ViewerWindow (same convention as PageView.slint).
 
+import { Theme } from "Theme.slint";
+
 export struct ThumbnailItem {
     image: image,
     // 0-based page index (matches the index used by ViewerState/ImageCache).
@@ -66,7 +68,7 @@ export component ThumbnailStrip inherits Rectangle {
 
                 // Highlight border: accent color for the current page, subtle
                 // neutral border otherwise.
-                border-color: item.page == root.current-index ? #5599ff : #444444;
+                border-color: item.page == root.current-index ? Theme.accent : #444444;
                 border-width: item.page == root.current-index
                     ? root.border-highlight
                     : root.border-neutral;
@@ -125,7 +127,7 @@ export component ThumbnailStrip inherits Rectangle {
                     width: root.cell-width;
                     height: root.cell-height - root.image-area-height - 4px;
                     text: item.page + 1;
-                    color: item.page == root.current-index ? #5599ff : #cccccc;
+                    color: item.page == root.current-index ? Theme.accent : #cccccc;
                     font-size: 11px;
                     horizontal-alignment: center;
                     vertical-alignment: center;
