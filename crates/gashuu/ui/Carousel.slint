@@ -172,12 +172,16 @@ export component Carousel inherits Rectangle {
     // from the live `cover-w` so neighbor spacing follows the focused size.
     private property <length> cover-w: Math.clamp(root.width * 0.26, 140px, 240px); // focused cover width (responsive)
     private property <length> cover-h: root.cover-w * 1.4;  // 7:10 manga cover aspect (280/200 = 1.4)
-    private property <length> cover-gap: Theme.space-lg; // 14px inter-cover gap (DESIGN.md)
+    private property <length> cover-margin: 4px;       // visible gap between two side (neighbor) covers
     private property <float> neighbor-scale: 0.78;     // side covers shrink
     private property <float> neighbor-opacity: 0.45;   // DESIGN.md components.cover.sideOpacity
-    // Step between adjacent cover centers (focused width * a tightening factor
-    // so neighbors tuck partly behind — the cover-flow overlap).
-    private property <length> cover-step: root.cover-w * 0.62 + root.cover-gap;
+    // Step between adjacent cover centers. Sized so two SIDE covers (each at
+    // `neighbor-scale`) clear each other by exactly `cover-margin` — that is the
+    // boundary the eye reads as "books overlapping" in the cover row. Step =
+    // one neighbor's full width + the gap. The focused cover is full-size, so it
+    // still overlaps its immediate neighbors and is drawn on top (z-order pass 2),
+    // preserving the cover-flow depth; only the side-to-side overlap is removed.
+    private property <length> cover-step: root.cover-w * root.neighbor-scale + root.cover-margin;
     private property <length> ring-width: 3px;         // DESIGN.md cover.focusOutline 3px
     // Neighbor-drop threshold (DESIGN.md: "Below a minimum width, neighbors may
     // drop to one per side."). Above the threshold the cover-flow renders all
@@ -359,9 +363,6 @@ export component Carousel inherits Rectangle {
                       color: Theme.text-muted;
                       font-size: Theme.font-label;
                       horizontal-alignment: center;
-                  }
-                  ProgressBar {
-                      progress: root.items[root.focused-index].progress;
                   }
               }
           }

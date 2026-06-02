@@ -30,9 +30,19 @@ use viewport::ViewportState;
 
 fn main() -> color_eyre::Result<()> {
     color_eyre::install()?;
-    tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
-        .init();
+    // Slint's text layout (parley -> icu_segmenter) emits a `log::warn!` for every
+    // CJK run because ICU4X bundles no Japanese line-break dictionary. Segmentation
+    // still works via a per-character fallback, so the resulting "ICU4X data error:
+    // No segmentation model for language: ja" lines are pure noise. They reach this
+    // subscriber through tracing-subscriber's tracing-log bridge; silence the
+    // `icu_provider` target that emits them while leaving any RUST_LOG override for
+    // our own targets intact (a target directive overrides the global default).
+    let env_filter = tracing_subscriber::EnvFilter::from_default_env().add_directive(
+        "icu_provider=off"
+            .parse()
+            .expect("static directive is valid"),
+    );
+    tracing_subscriber::fmt().with_env_filter(env_filter).init();
 
     // Load persisted settings and library; corrupt/unreadable files fall back
     // to defaults (the corrupt-file recovery policy lives here in the UI layer,
