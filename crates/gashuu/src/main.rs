@@ -1,5 +1,6 @@
 slint::include_modules!();
 
+mod cover_loader;
 mod keymap;
 mod library_model;
 mod navigation;
@@ -67,14 +68,22 @@ fn main() -> color_eyre::Result<()> {
     // open handlers (via `open_and_present`) can share the single controller.
     let thumbs = Rc::new(ThumbnailController::new(&ui));
 
+    // Cover controller for the library carousel. Owns the epoch + cancel
+    // double-guard; `start` is called after the carousel model is (re)built so a
+    // library refresh supersedes any covers still streaming from the prior view.
+    let covers = Rc::new(cover_loader::CoverController::new());
+
     // Seed the carousel model from the persisted library so the home screen shows
-    // the saved books on boot. `build_carousel_model` builds AND binds the model
-    // into the UI via `set_carousel_items` internally, returning the `Rc<VecModel>`
-    // held for PR-V (cover streaming) to mutate the SAME model in place; PR-L's
-    // add path rebuilds+rebinds via the same helper. Underscore-bound to satisfy
-    // -D warnings until PR-V uses it. Covers are placeholder until PR-V streams
-    // them in.
+    // the saved books on boot. The carousel model is bound into the UI inside
+    // build_carousel_model; the CoverController re-fetches it through the
+    // window's Weak handle inside each event-loop closure, so the returned Rc
+    // is not needed here. The `_` prefix permanently suppresses the
+    // unused-variable warning.
     let _carousel_model = build_carousel_model(&ui, &library.borrow());
+
+    // Kick off cover loading for the initial library (cache hits paint now; misses
+    // stream in from rayon workers).
+    covers.start(ui.as_weak(), cover_requests(&library.borrow()));
     ui.set_carousel_focused_index(0);
 
     // Top-level screen state machine. App boots to Library (the carousel home).
@@ -116,6 +125,7 @@ fn main() -> color_eyre::Result<()> {
         let viewport = Rc::clone(&viewport);
         let thumbs = Rc::clone(&thumbs);
         let library = Rc::clone(&library);
+        let covers = Rc::clone(&covers);
         ui.on_open_folder(move || {
             let Some(ui) = ui_weak.upgrade() else {
                 return;
@@ -124,7 +134,7 @@ fn main() -> color_eyre::Result<()> {
                 return;
             };
             open_and_present(
-                &ui, &state, &settings, &viewport, &thumbs, &library, &dir, "",
+                &ui, &state, &settings, &viewport, &thumbs, &library, &covers, &dir, "",
             );
         });
     }
@@ -137,6 +147,7 @@ fn main() -> color_eyre::Result<()> {
         let viewport = Rc::clone(&viewport);
         let thumbs = Rc::clone(&thumbs);
         let library = Rc::clone(&library);
+        let covers = Rc::clone(&covers);
         ui.on_open_archive(move || {
             let Some(ui) = ui_weak.upgrade() else {
                 return;
@@ -154,6 +165,7 @@ fn main() -> color_eyre::Result<()> {
                 &viewport,
                 &thumbs,
                 &library,
+                &covers,
                 &file,
                 " (zip-slip or oversized)",
             );
@@ -166,6 +178,7 @@ fn main() -> color_eyre::Result<()> {
     {
         let ui_weak = ui.as_weak();
         let library = Rc::clone(&library);
+        let covers = Rc::clone(&covers);
         ui.on_add_files(move || {
             let Some(ui) = ui_weak.upgrade() else {
                 return;
@@ -176,7 +189,7 @@ fn main() -> color_eyre::Result<()> {
             else {
                 return;
             };
-            add_books_and_refresh(&ui, &library, files, "add-files");
+            add_books_and_refresh(&ui, &library, &covers, files, "add-files");
         });
     }
 
@@ -186,6 +199,7 @@ fn main() -> color_eyre::Result<()> {
     {
         let ui_weak = ui.as_weak();
         let library = Rc::clone(&library);
+        let covers = Rc::clone(&covers);
         ui.on_add_folder(move || {
             let Some(ui) = ui_weak.upgrade() else {
                 return;
@@ -193,7 +207,7 @@ fn main() -> color_eyre::Result<()> {
             let Some(folder) = rfd::FileDialog::new().pick_folder() else {
                 return;
             };
-            add_books_and_refresh(&ui, &library, vec![folder], "add-folder");
+            add_books_and_refresh(&ui, &library, &covers, vec![folder], "add-folder");
         });
     }
 
@@ -207,6 +221,7 @@ fn main() -> color_eyre::Result<()> {
         let thumbs = Rc::clone(&thumbs);
         let library = Rc::clone(&library);
         let nav = Rc::clone(&nav);
+        let covers = Rc::clone(&covers);
         ui.on_carousel_open(move |index| {
             let Some(ui) = ui_weak.upgrade() else {
                 return;
@@ -227,7 +242,7 @@ fn main() -> color_eyre::Result<()> {
             // open_and_present writes back the OLD book's position first,
             // then opens the new path and resumes its stored position.
             open_and_present(
-                &ui, &state, &settings, &viewport, &thumbs, &library, &path, "",
+                &ui, &state, &settings, &viewport, &thumbs, &library, &covers, &path, "",
             );
             go_to_viewer(&ui, &nav);
         });
@@ -782,6 +797,7 @@ fn open_and_present(
     viewport: &Rc<RefCell<ViewportState>>,
     thumbs: &ThumbnailController,
     library: &Rc<RefCell<Library>>,
+    covers: &cover_loader::CoverController,
     path: &Path,
     skipped_detail: &str, // "" for folders, " (zip-slip or oversized)" for archives
 ) {
@@ -895,6 +911,10 @@ fn open_and_present(
     // focus is unaffected. Fresh `library.borrow()` — no overlapping borrows.
     if count_changed {
         build_carousel_model(ui, &library.borrow());
+        // The rebuild reset each row's cover to a placeholder; re-stream the covers
+        // (hits paint now, misses regenerate). The epoch bump supersedes any covers
+        // still streaming from the pre-rebuild model.
+        covers.start(ui.as_weak(), cover_requests(&library.borrow()));
     }
     // Kick off parallel thumbnail generation for the newly opened source.
     thumbs.start(
@@ -1049,10 +1069,10 @@ fn to_slint_image(decoded: &DecodedImage) -> slint::Image {
 }
 
 /// Adapt a pure `CarouselData` row into the Slint `CarouselItem` the carousel
-/// renders. Runs on the UI thread (it builds a `slint::Image`). The cover is a
-/// PLACEHOLDER (`slint::Image::default()`) this PR; PR-V streams real covers
-/// into the same `VecModel<CarouselItem>` via the PR8a `invoke_from_event_loop`
-/// pattern, so the carousel shows a neutral placeholder until then.
+/// renders. Runs on the UI thread (it builds a `slint::Image`). The cover field
+/// starts as a placeholder (`slint::Image::default()`); `CoverController` fills
+/// it in asynchronously via `invoke_from_event_loop` (a cache hit paints
+/// immediately; a miss streams in after a background decode).
 fn to_carousel_item(data: &CarouselData) -> CarouselItem {
     CarouselItem {
         cover: slint::Image::default(),
@@ -1078,6 +1098,22 @@ fn build_carousel_model(ui: &ViewerWindow, library: &Library) -> Rc<VecModel<Car
     let model = Rc::new(VecModel::from(items));
     ui.set_carousel_items(ModelRc::from(model.clone()));
     model
+}
+
+/// Build one `CoverRequest` per book, row index == carousel order (insertion
+/// order, per the `Library` contract). The cover controller resolves each book's
+/// cache key from its path + mtime and either serves a cached cover or generates
+/// one in the background.
+fn cover_requests(library: &Library) -> Vec<cover_loader::CoverRequest> {
+    library
+        .books()
+        .iter()
+        .enumerate()
+        .map(|(row, book)| cover_loader::CoverRequest {
+            row,
+            path: book.path().to_path_buf(),
+        })
+        .collect()
 }
 
 /// Fetch the thumbnail image for a 0-based page from the strip's existing
@@ -1267,6 +1303,7 @@ fn add_paths(lib: &mut Library, paths: Vec<std::path::PathBuf>) -> usize {
 fn add_books_and_refresh(
     ui: &ViewerWindow,
     library: &Rc<RefCell<Library>>,
+    covers: &cover_loader::CoverController,
     paths: Vec<std::path::PathBuf>,
     op: &'static str,
 ) {
@@ -1284,6 +1321,9 @@ fn add_books_and_refresh(
     // path does not need it, so the return value is dropped).
     let save_result = library.borrow().save();
     build_carousel_model(ui, &library.borrow());
+    // Refresh covers for the new library state; the epoch bump cancels any covers
+    // still streaming from the pre-refresh view.
+    covers.start(ui.as_weak(), cover_requests(&library.borrow()));
     match save_result {
         Err(e) => {
             tracing::error!(error = %e, "failed to save library after {op}");

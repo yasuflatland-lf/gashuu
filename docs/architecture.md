@@ -77,7 +77,11 @@ SYNCHRONOUS, rayon `par_iter` over all pages invoking `on_ready(index, Result<De
 as each completes (arbitrary order), BLOCKING until done or `cancelled` flips (polled TWICE per
 page: before read AND before callback); per-page failure is delivered as `Err` (never panics);
 `DEFAULT_THUMB_MAX_SIDE`=160; headless (no slint/tracing), same "testable synchronous core; UI
-owns the fire-and-forget spawn" philosophy as `ImageCache`.
+owns the fire-and-forget spawn" philosophy as `ImageCache`. PR-V added the single-page sibling
+`generate_cover(source: Arc<dyn PageSource>, max_side) -> Result<DecodedImage, CoreError>` (a
+downscaled thumbnail of page index 0, the book's cover; `Err(IndexOutOfRange{index:0,len:0})` on a
+0-page source, decode errors propagated); re-exported from the crate root and consumed by the UI's
+`cover_loader.rs`.
 
 ### thumbnail_cache
 
@@ -87,7 +91,8 @@ seam. `put(key, &DecodedImage)` PNG-encodes the RGBA at exact dimensions and wri
 (temp-file-then-rename); `get(key) -> Option<DecodedImage>` reads `<dir>/<key>.png` and decodes,
 returning `None` on any missing/unreadable/corrupt file (a cache miss, never panics). `cache_key(path,
 mtime_secs, max_side)` derives a stable 16-hex-char filename via FNV-1a (NOT `DefaultHasher`; see
-docs/patterns.md). Headless (no slint/tracing). The cover carousel that consumes it is PR-V.
+docs/patterns.md). Headless (no slint/tracing). The cover carousel consumes it via the UI's
+`cover_loader.rs` (PR-V, shipped).
 
 ### cache::ImageCache
 
@@ -223,8 +228,9 @@ PR-0b froze the public contract (`CarouselItem` struct + `Carousel` component wi
 filled in the rendering against that UNCHANGED contract: centered focused cover (accent ring) +
 scaled/dimmed neighbors, a per-cover `ProgressBar` (a local shared private sub-component reused for the
 focused-meta bar), a centered focused-book meta block, a grayed broken-cover placeholder for
-unavailable books, and the 0-book empty-state CTA. Covers are PLACEHOLDERS (`slint::Image::default()`)
-until PR-V streams real cover images into the same model. PR-L added an always-visible
+unavailable books, and the 0-book empty-state CTA. Covers start as placeholders
+(`slint::Image::default()`); PR-V's `cover_loader.rs` streams the real cover images into the same
+model row-by-row. PR-L added an always-visible
 "Add files…"/"Add folder…" toolbar + the `add-files()`/`add-folder()` callbacks and wired the
 empty-state CTA to `add-files()` (each restores focus via `focus-self()` after firing).
 
@@ -241,6 +247,15 @@ model via `ui.set_thumbnails`; `start(&self, ui_weak, source, page_count)` cance
 generation, resets the model to `page_count` placeholders, and spawns the background worker. `main.rs`
 constructs the controller once and calls `thumbs.start(...)` in every open handler, with no thumbnail
 bookkeeping inline.
+
+**`cover_loader.rs`** (`CoverController`, PR-V): a structural TWIN of `ThumbnailController` for the
+Library carousel. Streams each book's real cover into the shared `VecModel<CarouselItem>`: derive
+`cache_key(path, mtime, max_side)`, try `ThumbnailCache::get` (hit → set the row's `cover` on the UI
+thread now), miss → `rayon::spawn` a worker that opens via `ArchiveLoader`, calls core `generate_cover`,
+`ThumbnailCache::put`, then `invoke_from_event_loop` to set the row — under the SAME epoch + cancel
+double-guard and Send/!Send discipline as the thumbnail strip (see [patterns.md](patterns.md)). The
+cancel-rotation lives in a shared-shape private `rotate_cancel(&self) -> Arc<AtomicBool>` helper kept
+IDENTICAL in both controllers.
 
 **`SettingsDialog.slint`** (PR8b, NEW): modal overlay editing active settings via std-widgets
 `ComboBox`/`SpinBox`/`CheckBox`; two-way `current-index <=> in-out-prop` +

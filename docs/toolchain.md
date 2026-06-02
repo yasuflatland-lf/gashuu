@@ -27,6 +27,10 @@ Slint links system libraries on **Linux** only: `libfontconfig1-dev libfreetype6
 
 **PR8a (thumbnail strip) added NO new dependencies** — it reuses the existing `image` (`DynamicImage::thumbnail`) and `rayon` (already a direct dep). Contrast PR7's `unrar` C++-toolchain exception above: PR8a is dependency-free and adds no build cost.
 
+### PR-V made `rayon` a direct dep of the `gashuu` UI crate (no new lockfile entry)
+
+**PR-V (cover carousel) added `rayon` to the `gashuu` UI crate's manifest** for its fire-and-forget cover worker (`cover_loader.rs` `rayon::spawn`). This adds NO new crate to `Cargo.lock` — `rayon` was already in the tree as a direct dep of `gashuu-core` (and transitively via `image`). The nuance: "no new dependencies" means the LOCKFILE (no new third-party code, no build cost), NOT the per-crate manifest — promoting an already-present transitive/sibling crate to a direct dep of another workspace crate is free.
+
 ### image 0.25: RGBA → PNG bytes goes through `DynamicImage`
 
 To encode raw RGBA into an in-memory PNG (`thumbnail_cache::put`), wrap the buffer in a `DynamicImage` and encode: `image::DynamicImage::ImageRgba8(image::RgbaImage::from_raw(w, h, bytes)?).write_to(&mut std::io::Cursor::new(&mut out), image::ImageFormat::Png)?`. Calling `write_to` directly on the `RgbaImage` (`ImageBuffer`) does NOT resolve against `image` 0.25 — `write_to` is reached via `DynamicImage`. `RgbaImage::from_raw` returns `Option` (`None` when the buffer is shorter than `w*h*4`), mapped to `CoreError::MalformedImage`. PNG is lossless, so a `put` → `get` round-trip is byte-exact.
