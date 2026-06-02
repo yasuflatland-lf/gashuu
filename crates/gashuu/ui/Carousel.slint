@@ -22,25 +22,14 @@
 // Return -> open(focused-index), Down -> back().
 import { Button } from "std-widgets.slint";
 import { Theme } from "Theme.slint";
-
-// Reading-progress bar: a track with an accent fill (green once complete).
-// Shared by the per-cover bar and the focused-book meta bar so the track/fill
-// styling lives in one place. The caller positions/sizes the instance (the
-// per-cover bar sets x/y/width absolutely; the meta bar is laid out by its
-// VerticalLayout); `progress` (0.0..1.0) drives the fill width and color.
-component ProgressBar inherits Rectangle {
-    in property <float> progress;
-    height: 4px;
-    border-radius: 2px;
-    background: Theme.track-prog;
-    Rectangle {
-        x: 0; y: 0;
-        width: parent.width * Math.clamp(root.progress, 0.0, 1.0);
-        height: 100%;
-        border-radius: 2px;
-        background: root.progress >= 1.0 ? Theme.success : Theme.accent;
-    }
-}
+// Shared design-system components (P2 componentization, issue #71): the
+// reading-progress bar, the empty-state primary CTA button, and the shared
+// thumbnail cell used by all three thumbnail surfaces (page strip / scrubber
+// preview / library covers). The local private ProgressBar was deleted in
+// favor of the extracted components/ProgressBar.slint (move-only: same body).
+import { ProgressBar } from "components/ProgressBar.slint";
+import { PrimaryButton } from "components/PrimaryButton.slint";
+import { ThumbnailCell } from "components/ThumbnailCell.slint";
 
 // Frozen by PR-0b; populated by PR-C (covers via PR-V). One book in the shelf.
 export struct CarouselItem {
@@ -68,8 +57,15 @@ export component Carousel inherits Rectangle {
     // ── Cover-flow geometry (local tunables; colors/spacing come from Theme) ──
     // Covers are laid out centered on `focused-index`; each cover's horizontal
     // offset from the focused one drives its position, scale, and opacity.
-    private property <length> cover-w: 200px;          // focused cover width
-    private property <length> cover-h: 280px;          // focused cover height (≈7:10 manga cover)
+    //
+    // RESPONSIVE (DESIGN.md "Responsive Behavior / Carousel"): the focused cover
+    // width tracks the live window width instead of a fixed 200px. It scales as a
+    // fraction of `root.width`, clamped to a usable band so it never collapses on
+    // a narrow window nor balloons on an ultra-wide one. The 7:10 manga aspect is
+    // preserved by deriving `cover-h` from `cover-w`. `cover-step` is recomputed
+    // from the live `cover-w` so neighbor spacing follows the focused size.
+    private property <length> cover-w: Math.clamp(root.width * 0.26, 140px, 240px); // focused cover width (responsive)
+    private property <length> cover-h: root.cover-w * 1.4;  // 7:10 manga cover aspect (280/200 = 1.4)
     private property <length> cover-gap: Theme.space-lg; // 14px inter-cover gap (DESIGN.md)
     private property <float> neighbor-scale: 0.78;     // side covers shrink
     private property <float> neighbor-opacity: 0.45;   // DESIGN.md components.cover.sideOpacity
@@ -77,6 +73,11 @@ export component Carousel inherits Rectangle {
     // so neighbors tuck partly behind — the cover-flow overlap).
     private property <length> cover-step: root.cover-w * 0.62 + root.cover-gap;
     private property <length> ring-width: 3px;         // DESIGN.md cover.focusOutline 3px
+    // Neighbor-drop threshold (DESIGN.md: "Below a minimum width, neighbors may
+    // drop to one per side."). Above the threshold the cover-flow renders all
+    // model items; at/below it, only the focused cover ± one neighbor are shown.
+    private property <length> narrow-threshold: 560px;
+    private property <bool> narrow: root.width <= root.narrow-threshold;
 
     // ── Stage background: stage-top -> canvas vertical gradient (DESIGN.md
     //    "Layout / Two screens"; Slint uses @linear-gradient, not radial). ─────
@@ -133,7 +134,10 @@ export component Carousel inherits Rectangle {
           //    "Empty Library"). The CTA button fires add-files() via a TouchArea
           //    (wired in PR-L) and restores keyboard focus to the carousel. ──────
           if root.items.length == 0 : Rectangle {
-              width: 360px;
+              // Fluid panel width (DESIGN.md "Responsive Behavior"): clamp the
+              // sunken empty-state panel to the carousel width so it never clips
+              // on a narrow window nor stretches too wide on a large one.
+              width: Math.clamp(parent.width - 2 * Theme.space-xl, 280px, 360px);
               height: 200px;
               x: (parent.width - self.width) / 2;
               y: (parent.height - self.height) / 2;
@@ -159,21 +163,14 @@ export component Carousel inherits Rectangle {
                       horizontal-alignment: center;
                   }
                   // CTA button: fires add-files() on click and restores keyboard
-                  // focus to the carousel. Background Theme.accent, label text
-                  // Theme.text at Theme.font-label, corners Theme.radius-md.
-                  Rectangle {
-                      height: 34px;
-                      background: Theme.accent;
-                      border-radius: Theme.radius-md;
-                      Text {
+                  // focus to the carousel. The hand-built accent Rectangle was
+                  // replaced by the shared PrimaryButton (DESIGN.md
+                  // components.button-primary): same accent background, same label
+                  // wording, same Theme.radius-md corners, ≥32px hit area.
+                  HorizontalLayout {
+                      alignment: center;
+                      PrimaryButton {
                           text: "Select folders / files to add";
-                          color: Theme.text;
-                          font-size: Theme.font-label;
-                          font-weight: Theme.weight-medium;
-                          horizontal-alignment: center;
-                          vertical-alignment: center;
-                      }
-                      TouchArea {
                           clicked => { root.add-files(); root.focus-self(); }
                       }
                   }
@@ -199,6 +196,18 @@ export component Carousel inherits Rectangle {
                   width: self.focused ? root.cover-w : root.cover-w * root.neighbor-scale;
                   height: self.focused ? root.cover-h : root.cover-h * root.neighbor-scale;
                   opacity: self.focused ? 1.0 : root.neighbor-opacity;
+                  // Neighbor-drop on narrow windows (DESIGN.md "Responsive
+                  // Behavior / Carousel"): below the threshold only the focused
+                  // cover ± one neighbor stay visible; the rest are hidden (kept
+                  // instantiated, just not drawn). Wide windows show all items.
+                  visible: !root.narrow || Math.abs(self.delta) <= 1;
+                  // Motion (P2): glide position/size/opacity on focus changes so a
+                  // Left/Right move animates instead of snapping. ease-out feels
+                  // settled at the end of the slide.
+                  animate x, width, height, opacity {
+                      duration: Theme.motion-standard;
+                      easing: ease-out;
+                  }
 
                   // The cover card: rounded, card shadow, accent focus ring.
                   cover := Rectangle {
@@ -206,22 +215,34 @@ export component Carousel inherits Rectangle {
                       height: 100%;
                       border-radius: Theme.radius-sm;               // DESIGN.md covers 6px
                       background: Theme.surface-raised;             // placeholder backing
-                      drop-shadow-blur: 22px;                       // DESIGN.md elevation.card
+                      // Card shadow on the FOCUSED cover only (DESIGN.md
+                      // elevation.card). Neighbors sit at 0.45 opacity and don't
+                      // need a shadow — dropping it for them keeps the cover-flow
+                      // GPU-cheap. `parent` here is the for-item Rectangle, which
+                      // owns `focused` (exactly one level up).
+                      drop-shadow-blur: parent.focused ? 22px : 0px;
                       drop-shadow-color: Theme.shadow-card;
                       // Focus ring: 3px accent outline on the focused cover only.
                       border-width: parent.focused ? root.ring-width : 0px;
                       border-color: Theme.accent;
 
-                      // Cover image (placeholder until PR-V streams real covers).
-                      // DESIGN.md components.cover calls for slight neighbor desaturation, but a
-                      // per-Image `colorize` is NOT applied here: it would need the focused state,
-                      // and at this nesting `parent` is the inner cover Rectangle (no `focused`
-                      // property — that lives on the outer for-row Rectangle). The recede cue is
-                      // carried by the for-row's `opacity: 0.45` (root.neighbor-opacity) instead.
-                      if item.available : Image {
+                      // Cover image via the shared ThumbnailCell (DESIGN.md rule 6:
+                      // one thumbnail treatment across page strip / scrubber / covers).
+                      // Library covers round to Theme.radius-sm (6px). The accent
+                      // focus ring is drawn by the surrounding `cover` Rectangle
+                      // (DESIGN cover.focusOutline), so the cell stays
+                      // `highlighted: false` to avoid a double ring (covers signal
+                      // focus via scale + opacity + the card's own ring). The
+                      // CarouselItem model has no loaded/failed fields; available
+                      // covers are `loaded: true`. (Cover images are placeholders
+                      // until PR-V streams real covers.)
+                      if item.available : ThumbnailCell {
                           x: 0; y: 0; width: 100%; height: 100%;
+                          radius: Theme.radius-sm;
                           source: item.cover;
-                          image-fit: contain;
+                          loaded: true;
+                          failed: false;
+                          highlighted: false;
                       }
 
                       // ── Unavailable: grayed card + broken-cover glyph ──────────

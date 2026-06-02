@@ -1,4 +1,4 @@
-import { Button, HorizontalBox, VerticalBox } from "std-widgets.slint";
+import { VerticalBox } from "std-widgets.slint";
 import { PageView } from "PageView.slint";
 import { ThumbnailStrip, ThumbnailItem } from "ThumbnailStrip.slint";
 import { SettingsDialog } from "SettingsDialog.slint";
@@ -6,11 +6,22 @@ import { FirstRunGuide } from "FirstRunGuide.slint";
 import { Carousel, CarouselItem } from "Carousel.slint";
 import { Theme } from "Theme.slint";
 import { Scrubber } from "Scrubber.slint";
+import { Chip } from "components/Chip.slint";
+import { TitleBar } from "components/TitleBar.slint";
 
 export component ViewerWindow inherits Window {
     title: "gashuu";
     preferred-width: 900px;
     preferred-height: 1200px;
+    // Floor that keeps a two-page spread legible with the chrome: the title bar
+    // (left actions + centered title + chip) and the bottom scrubber both need
+    // horizontal room, and a double spread is two half-width pages — below
+    // ~480px each half collapses to an unreadable sliver. The height floor keeps
+    // a portrait-ish page tall enough to read once the title bar (~40px) and the
+    // scrubber's bottom inset are subtracted. Tune the FLOOR only; the
+    // preferred-* boot size above is unchanged.
+    min-width: 480px;
+    min-height: 600px;
 
     // Top-level screen: 0 = Library (Carousel), 1 = Viewer. Pushed by main.rs
     // from NavState; app boots to Library (0).
@@ -38,8 +49,8 @@ export component ViewerWindow inherits Window {
 
     // Fired with the 0-based page under the knob during a drag (preview only —
     // the page body must NOT change) and with the page to commit on release.
-    callback scrub-preview(int);
-    callback scrub-commit(int);
+    callback scrub-preview(float);
+    callback scrub-commit(float);
     // Fired whenever the user shows intent (mouse-move over the page / scrubber
     // drag). Rust's `on_reveal_chrome` handler delegates straight back to the
     // Slint `reveal-chrome-now()` function, which sets chrome-shown and restarts
@@ -52,6 +63,11 @@ export component ViewerWindow inherits Window {
     in property <bool> rtl;
     in property <bool> single;
     in property <string> status-text: "No folder opened";
+    // Centered title-bar name: the current folder/archive display name (set by
+    // main.rs on a successful open, cleared to "" when nothing is open). Declared
+    // on the root because Rust binds only to the root surface; forwarded to the
+    // TitleBar instance below (see docs/patterns.md "re-expose child properties").
+    in property <string> current-book-name;
     // Rust-computed content rectangle forwarded to PageView.
     in property <length> content-x: 0px;
     in property <length> content-y: 0px;
@@ -162,42 +178,39 @@ export component ViewerWindow inherits Window {
     // from `focus-pages()` and `init` (see the note on the carousel above).
     VerticalBox {
         visible: root.screen == 1;
-        HorizontalBox {
-            height: 40px;
-            Button {
-                text: "Open Folder…";
-                clicked => {
-                    root.open-folder();
-                    // Return focus to the page area so keyboard navigation keeps working
-                    // after the picker closes (open-folder is synchronous on the Rust side).
-                    fs.focus();
-                }
+        // Title bar molecule (DESIGN.md components.title-bar): left action
+        // affordances, centered document/library name, optional right count chip.
+        // The fs.focus() keyboard recovery after a click is OUR job here (TitleBar
+        // only emits the callbacks) — see docs/patterns.md "Slint focus after a
+        // Button click".
+        //
+        // `title` maps to `root.current-book-name` (the current folder/archive
+        // display name, DESIGN's "current book/library name"; blank until a book
+        // is open). The page/status descriptor still lives on `status-text`, which
+        // remains wired to the Library-screen status notice below. `show-count:
+        // false` because the in-page page-counter chip (top-right of the stage)
+        // already shows the page count — a TitleBar count chip would duplicate it.
+        TitleBar {
+            title: root.current-book-name;
+            show-count: false;
+            open-folder => {
+                root.open-folder();
+                // Return focus to the page area so keyboard navigation keeps working
+                // after the picker closes (open-folder is synchronous on the Rust side).
+                fs.focus();
             }
-            Button {
-                text: "Open Archive…";
-                clicked => {
-                    root.open-archive();
-                    // Return focus to the page area so keyboard navigation keeps working
-                    // after the picker closes (open-archive is synchronous on the Rust side).
-                    fs.focus();
-                }
+            open-archive => {
+                root.open-archive();
+                // Return focus to the page area so keyboard navigation keeps working
+                // after the picker closes (open-archive is synchronous on the Rust side).
+                fs.focus();
             }
-            Button {
-                text: "Thumbnails";
-                clicked => {
-                    root.toggle-thumbnails();
-                    fs.focus();
-                }
+            toggle-thumbnails => {
+                root.toggle-thumbnails();
+                fs.focus();
             }
-            // Settings button: do NOT call fs.focus() so the dialog stays interactive.
-            Button {
-                text: "Settings…";
-                clicked => { root.open-settings(); }
-            }
-            Text {
-                text: root.status-text;
-                vertical-alignment: center;
-            }
+            // Settings: do NOT call fs.focus() so the dialog stays interactive.
+            open-settings => { root.open-settings(); }
         }
         // Viewer stage: the page and the auto-hiding chrome (counter chip +
         // scrubber) stacked on top. PageView's TouchArea reveals the chrome on
@@ -260,23 +273,24 @@ export component ViewerWindow inherits Window {
                 }
             }
 
-            // Page-counter chip (top-right), part of the auto-hide chrome.
+            // Page-counter chip (top-right), part of the auto-hide chrome. The
+            // outer wrapper keeps the absolute x/y placement and the chrome
+            // fade/visibility; the Chip molecule (DESIGN.md components.chip)
+            // carries the pill background + numeric label.
             Rectangle {
                 x: parent.width - self.width - Theme.space-xl;
                 y: Theme.space-xl;
-                width: counter-label.preferred-width + 2 * Theme.space-md;
-                height: counter-label.preferred-height + 2 * Theme.space-xs;
-                background: Theme.chip;
-                border-radius: Theme.radius-pill;
+                // Size the wrapper to the Chip so the top-right pin (x: parent.width
+                // - self.width) stays exact; a bare Rectangle would otherwise fill
+                // the parent rather than hug its child.
+                width: counter-chip.preferred-width;
+                height: counter-chip.preferred-height;
                 opacity: root.chrome-shown ? 1.0 : 0.0;
                 visible: root.chrome-shown;
                 animate opacity { duration: Theme.motion-fast; }
-                counter-label := Text {
+                counter-chip := Chip {
                     text: root.page-counter-text;
-                    color: Theme.text-mid;
-                    font-size: Theme.font-numeric;
-                    horizontal-alignment: center;
-                    vertical-alignment: center;
+                    tabular: true;
                 }
             }
 

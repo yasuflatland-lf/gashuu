@@ -25,7 +25,7 @@ use page_counter::page_counter_text;
 use std::cell::RefCell;
 use std::rc::Rc;
 use thumbnail_strip::ThumbnailController;
-use viewer_state::ViewerState;
+use viewer_state::{scrub_fraction_to_page, ViewerState};
 use viewport::ViewportState;
 
 fn main() -> color_eyre::Result<()> {
@@ -112,6 +112,10 @@ fn main() -> color_eyre::Result<()> {
     // Push the initial screen so the window shows the Library on boot.
     ui.set_screen(screen_to_index(nav.borrow().screen()));
 
+    // The centered title-bar name starts blank — nothing is open yet — and is
+    // set to the folder/archive name on a successful open (see the open handlers).
+    ui.set_current_book_name("".into());
+
     // Initial paint so rtl/single/status are all initialized before the first
     // folder is opened (refresh shows "No folder opened" and clears the images).
     refresh(&ui, &state.borrow(), &viewport);
@@ -140,12 +144,19 @@ fn main() -> color_eyre::Result<()> {
     {
         let ui_weak = ui.as_weak();
         let open_book = Rc::clone(&open_book);
+        let state = Rc::clone(&state);
         ui.on_open_folder(move || {
             with_ui(&ui_weak, |ui| {
                 let Some(dir) = rfd::FileDialog::new().pick_folder() else {
                     return;
                 };
                 open_book.run(&ui, &dir, "");
+                // Title-bar book name is derived from the AUTHORITATIVE post-open
+                // state (the canonical `open_file`), not the raw dialog path, so a
+                // FAILED open never shows the name of a book that did not open: on
+                // failure `open_file` is unchanged (the previously open book, if
+                // any) and `run` already set an `Error:` status.
+                ui.set_current_book_name(current_book_name(&state).into());
             })
         });
     }
@@ -154,6 +165,7 @@ fn main() -> color_eyre::Result<()> {
     {
         let ui_weak = ui.as_weak();
         let open_book = Rc::clone(&open_book);
+        let state = Rc::clone(&state);
         ui.on_open_archive(move || {
             with_ui(&ui_weak, |ui| {
                 let Some(file) = rfd::FileDialog::new()
@@ -163,6 +175,11 @@ fn main() -> color_eyre::Result<()> {
                     return;
                 };
                 open_book.run(&ui, &file, " (zip-slip or oversized)");
+                // Title-bar book name is derived from the AUTHORITATIVE post-open
+                // state (the canonical `open_file`), so a FAILED open (corrupt /
+                // non-archive file) never shows the picked file's name: on failure
+                // `open_file` is unchanged and `run` already set an `Error:` status.
+                ui.set_current_book_name(current_book_name(&state).into());
             })
         });
     }
@@ -211,6 +228,7 @@ fn main() -> color_eyre::Result<()> {
         let library = Rc::clone(&library);
         let nav = Rc::clone(&nav);
         let open_book = Rc::clone(&open_book);
+        let state = Rc::clone(&state);
         ui.on_carousel_open(move |index| {
             with_ui(&ui_weak, |ui| {
                 // Resolve the focused carousel index to a Library book path.
@@ -229,6 +247,13 @@ fn main() -> color_eyre::Result<()> {
                 // open_book.run writes back the OLD book's position first,
                 // then opens the new path and resumes its stored position.
                 open_book.run(&ui, &path, "");
+                // Title-bar book name is derived from the AUTHORITATIVE post-open
+                // state (the canonical `open_file`), so a FAILED open (a Library
+                // book that was moved/deleted) never shows that book's name: on
+                // failure `open_file` is unchanged and `run` already set an
+                // `Error:` status. The pre-existing `go_to_viewer` navigation is
+                // intentionally left unchanged (out of scope here).
+                ui.set_current_book_name(current_book_name(&state).into());
                 go_to_viewer(&ui, &nav);
             })
         });
@@ -303,13 +328,17 @@ fn main() -> color_eyre::Result<()> {
     {
         let ui_weak = ui.as_weak();
         let state = Rc::clone(&state);
-        ui.on_scrub_preview(move |page| {
+        ui.on_scrub_preview(move |frac| {
             with_ui(&ui_weak, |ui| {
                 let total = state.borrow().page_count();
                 if total == 0 {
                     return;
                 }
-                let lead = (page.max(0) as usize).min(total - 1);
+                // Single source of rounding: resolve the raw knob fraction to a
+                // 0-based page via the pure `scrub_fraction_to_page` (clamp, RTL
+                // inversion, round-half-up) — the Slint side no longer rounds.
+                let rtl = matches!(state.borrow().reading_direction(), ReadingDirection::Rtl);
+                let lead = scrub_fraction_to_page(frac, total, rtl);
                 // Decide whether this previewed spread is double using the SAME layout
                 // resolution the body uses, so the popover shows 1 vs 2 thumbs
                 // correctly (the pure helper carries no layout; ViewerState owns it).
@@ -344,13 +373,20 @@ fn main() -> color_eyre::Result<()> {
         let ui_weak = ui.as_weak();
         let state = Rc::clone(&state);
         let viewport = Rc::clone(&viewport);
-        ui.on_scrub_commit(move |page| {
+        ui.on_scrub_commit(move |frac| {
             with_ui(&ui_weak, |ui| {
-                // borrow_mut() temporary drops at the `;` before refresh borrows state.
+                // Single source of rounding: resolve the raw release fraction to a
+                // page via `scrub_fraction_to_page` (the same helper the preview
+                // path uses), then jump. `page_count`/`reading_direction` reads and
+                // the `borrow_mut()` jump_to each drop at their `;` before refresh
+                // takes a fresh borrow.
+                let total = state.borrow().page_count();
+                let rtl = matches!(state.borrow().reading_direction(), ReadingDirection::Rtl);
+                let page = scrub_fraction_to_page(frac, total, rtl);
                 // Refresh unconditionally — unlike the nav handler, a scrub commit always
                 // re-seeds the scrubber knob + counter to the committed spread, even when
                 // the resolved leading equals the current index (a no-op jump).
-                let _moved = state.borrow_mut().jump_to(page.max(0) as usize);
+                let _moved = state.borrow_mut().jump_to(page);
                 refresh(&ui, &state.borrow(), &viewport);
                 ui.invoke_focus_pages();
             })
@@ -928,6 +964,46 @@ pub(crate) fn reconcile_settings(
     settings.fit_mode = viewport.fit_mode();
 }
 
+/// Derive the centered title-bar display name from the AUTHORITATIVE post-open
+/// state, so it can never show a book that did not actually open.
+///
+/// Reads the canonical `open_file()` from `ViewerState` (the same key the
+/// library write-back uses), which is `Some(path)` after a successful open of a
+/// folder OR an archive and is left UNCHANGED on a failed open (`open_path`
+/// returns early via `?` before `set_source`). Therefore:
+///   - success  -> the just-opened book's name (from the canonical path);
+///   - failure with a prior book still open -> that book's name (still shown);
+///   - failure with nothing open / boot -> `""`.
+///
+/// `open_file` is a real filesystem path, so `is_dir()` reliably discriminates a
+/// folder from an archive for the name component. Borrow discipline: the single
+/// `state.borrow()` `Ref` is confined to this function and drops on return.
+fn current_book_name(state: &Rc<RefCell<ViewerState>>) -> String {
+    let s = state.borrow();
+    match s.open_file() {
+        Some(path) => book_name_for(path, path.is_dir()),
+        None => String::new(),
+    }
+}
+
+/// Derive a book's display name from its path, mirroring the `Book::from_path`
+/// convention: a folder shows its directory name (last path component), an
+/// archive shows its file stem (extension dropped so `.cbz`/`.zip` don't clutter
+/// the title). Falls back to the lossy full path so the name is never empty.
+/// `is_dir` is the folder/archive discriminator. `to_string_lossy` never panics
+/// on a non-UTF-8 path.
+fn book_name_for(path: &std::path::Path, is_dir: bool) -> String {
+    let component = if is_dir {
+        path.file_name()
+    } else {
+        path.file_stem()
+    };
+    component
+        .map(|s| s.to_string_lossy().into_owned())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| path.to_string_lossy().into_owned())
+}
+
 /// Pure helper: decide if and what to write back to the Library.
 ///
 /// Returns `Some((canonical_path, page_index))` when a write-back should be
@@ -1067,6 +1143,56 @@ mod tests {
         assert_eq!(settings.preload_pages, 7);
         assert!(settings.track_recent_files);
         assert!(settings.seen_guide);
+    }
+
+    // ---- current_book_name (#71 title-bar) -------------------------------
+
+    #[test]
+    fn current_book_name_empty_after_failed_open() {
+        // The bug guard: a FAILED open must leave the title-bar name empty when
+        // nothing was previously open. `current_book_name` reads the authoritative
+        // `open_file()` (left None by a failed `open_folder`), not the dialog path,
+        // so it can never surface the name of a book that did not open.
+        let state = Rc::new(RefCell::new(ViewerState::new()));
+        // Sanity: blank before any open.
+        assert_eq!(current_book_name(&state), "");
+        // A nonexistent path makes `open_folder` return Err before `set_source`,
+        // so `open_file()` stays None and the derived name stays empty.
+        let _ = state
+            .borrow_mut()
+            .open_folder(std::path::Path::new("/nonexistent_gashuu_title_guard"));
+        assert_eq!(
+            current_book_name(&state),
+            "",
+            "a failed open must not set a title-bar name"
+        );
+    }
+
+    #[test]
+    fn current_book_name_is_folder_name_after_successful_open() {
+        // A SUCCESSFUL folder open derives the directory name from the canonical
+        // `open_file()`. Uses a real temp dir (an empty folder opens fine as a
+        // FolderSource), mirroring `viewer_state::tests` for open_file.
+        let dir = std::env::temp_dir().join(format!("gashuu_title_ok_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+        let leaf = dir
+            .file_name()
+            .expect("temp dir has a name")
+            .to_string_lossy()
+            .into_owned();
+
+        let state = Rc::new(RefCell::new(ViewerState::new()));
+        state
+            .borrow_mut()
+            .open_folder(&dir)
+            .expect("open_folder on a real directory must succeed");
+        assert_eq!(
+            current_book_name(&state),
+            leaf,
+            "a successful folder open shows the folder's directory name"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     // ---- position_to_write_back (PR-R) ------------------------------------

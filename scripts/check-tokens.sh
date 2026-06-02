@@ -6,8 +6,9 @@
 # NEVER paste raw hex inline. This script enforces that mechanically so the rule
 # survives without per-PR vigilance.
 #
-# It scans crates/gashuu/ui/*.slint for raw color hex (#rgb..#rrggbbaa) and fails
-# on any match, with one deliberate exclusion:
+# It scans crates/gashuu/ui/ recursively (including ui/components/ and any
+# future subdirectories) for raw color hex (#rgb..#rrggbbaa) and fails on any
+# match, with one deliberate exclusion:
 #   * Theme.slint — the single source of truth; raw hex is its whole job.
 # The guard is unconditionally blocking for all other UI files. The allowlist
 # scaffold used during the P0/P1 migration has been retired now that all
@@ -43,7 +44,9 @@ pass() { echo "  OK  $*"; }
 fail() { echo "  FAIL $*"; failures=$((failures + 1)); }
 
 # ---------------------------------------------------------------------------
-# Scan crates/gashuu/ui/*.slint for inline hex outside Theme.slint.
+# Scan crates/gashuu/ui/ recursively for inline hex outside Theme.slint.
+# Uses find + NUL-delimited read to handle any future subdirectory layout
+# (e.g. ui/components/) without requiring explicit glob updates.
 # ---------------------------------------------------------------------------
 echo ""
 echo "=== check-tokens: raw color hex outside $SOURCE_OF_TRUTH ==="
@@ -52,9 +55,7 @@ if [ ! -d "$UI_DIR" ]; then
   fail "$UI_DIR not found"
 else
   scanned=0
-  for f in "$UI_DIR"/*.slint; do
-    # Guard the literal glob when no .slint file matches.
-    [ -e "$f" ] || continue
+  while IFS= read -r -d '' f; do
     name="$(basename "$f")"
 
     # Theme.slint is the single source of truth — never scanned.
@@ -69,7 +70,7 @@ else
         fail "raw hex in $f:$m — use a Theme.* token instead"
       done <<< "$matches"
     fi
-  done
+  done < <(find "$UI_DIR" -type f -name '*.slint' -print0 | sort -z)
 
   if [ "$scanned" -eq 0 ]; then
     fail "no .slint files scanned in $UI_DIR (layer missing or all excluded?)"

@@ -1092,6 +1092,59 @@ fn scrub_fraction_clamps_out_of_range_input() {
 }
 
 #[test]
+fn scrub_fraction_rounds_half_up_at_exact_half_step() {
+    // Pin the round-half-up rule at a fraction that lands EXACTLY on a half-page
+    // boundary (not the midpoint), so a round-half-down or round-half-to-even
+    // implementation would diverge here. 5 pages => last index 4 (the span).
+    //
+    // LTR: the boundary between page 0 and 1 sits at fraction 0.5/4 = 0.125.
+    //   0.125 * 4 + 0.5 = 1.0 -> floor -> page 1 (rounds UP at exactly .5).
+    assert_eq!(scrub_fraction_to_page(0.125, 5, false), 1);
+    //   The boundary between page 1 and 2 sits at 1.5/4 = 0.375.
+    //   0.375 * 4 + 0.5 = 2.0 -> page 2.
+    assert_eq!(scrub_fraction_to_page(0.375, 5, false), 2);
+    //   Just below a half-step rounds DOWN: 0.124 * 4 + 0.5 = 0.996 -> page 0.
+    assert_eq!(scrub_fraction_to_page(0.124, 5, false), 0);
+
+    // RTL inverts the fraction BEFORE rounding, so the same +0.5 half-up rule
+    // applies to (1 - frac). frac = 1 - 0.125 = 0.875 maps to the page-0/1
+    // boundary from the screen-right side: (1 - 0.875) * 4 + 0.5 = 1.0 -> page 1.
+    assert_eq!(scrub_fraction_to_page(0.875, 5, true), 1);
+    //   frac = 1 - 0.375 = 0.625 -> (1 - 0.625) * 4 + 0.5 = 2.0 -> page 2.
+    assert_eq!(scrub_fraction_to_page(0.625, 5, true), 2);
+}
+
+#[test]
+fn scrub_fraction_non_finite_single_page_is_zero() {
+    // Non-finite fraction AND a single-page book — the two zero-guards stack:
+    // a single page has span (count-1) == 0, AND a non-finite fraction is
+    // coerced to 0.0. Either alone forces page 0; together they must still be 0
+    // (and never panic), regardless of direction.
+    assert_eq!(scrub_fraction_to_page(f32::NAN, 1, true), 0);
+    assert_eq!(scrub_fraction_to_page(f32::INFINITY, 1, false), 0);
+}
+
+#[test]
+fn scrub_fraction_odd_span_rtl_half_step_rounds_half_up() {
+    // Odd span (4 pages => last index 3) at an exact RTL half-step boundary,
+    // proving round-half-up holds on an odd span too (the existing
+    // `scrub_fraction_rounds_half_up_at_exact_half_step` uses an even span 4).
+    //
+    // RTL inverts the fraction BEFORE rounding, so the mapping is
+    //   floor((1 - frac) * 3 + 0.5).
+    // frac = 0.5 inverts to (1 - 0.5) = 0.5; 0.5 * 3 = 1.5, which is EXACTLY a
+    // half-step (k + 0.5 with k = 1); floor(1.5 + 0.5) = floor(2.0) = 2 — it
+    // rounds UP at exactly .5 (a round-half-down impl would give 1).
+    //
+    // f32-exactness: 0.5, (1 - 0.5) = 0.5, and 0.5 * 3 = 1.5 are all exactly
+    // representable in f32, so this assertion is not flaky. (The OTHER odd-span
+    // half-steps — (1 - frac) in {1/6, 5/6} — are NOT f32-exact, so the only
+    // exact half-step for span 3 is this midpoint; it coincides with the LTR
+    // midpoint but still exercises the half-up rule on an odd span.)
+    assert_eq!(scrub_fraction_to_page(0.5, 4, true), 2);
+}
+
+#[test]
 fn scrub_fraction_single_page_is_always_zero() {
     // A 1-page book: the only valid index is 0 regardless of fraction/dir
     // (count-1 == 0 span; f * 0 == 0).
@@ -1170,10 +1223,11 @@ fn preview_is_double_paired_cover_is_double() {
 
 #[test]
 fn scrub_commit_path_jumps_via_jump_to() {
-    // The commit seam computes a page (RTL-resolved by the Slint side, mirrored
-    // by scrub_fraction_to_page) and calls jump_to. Verify the end-to-end map:
-    // a screen-right release in LTR (fraction 1.0) -> last page -> jump_to lands
-    // on the last single leading.
+    // The commit seam (on_scrub_commit in main.rs) receives the RAW release
+    // fraction from Slint, resolves it through scrub_fraction_to_page (the single
+    // source of rounding, including RTL inversion), then calls jump_to. Verify the
+    // end-to-end map: a screen-right release in LTR (fraction 1.0) -> last page ->
+    // jump_to lands on the last single leading.
     let mut state = ViewerState::new();
     state.set_source(mock_with(8));
     let page = scrub_fraction_to_page(1.0, state.page_count(), false);

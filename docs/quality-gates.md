@@ -13,7 +13,7 @@ mise exec -- cargo nextest run --workspace --profile ci
 
 ### Token-drift guard (blocking)
 
-`scripts/check-tokens.sh` fails on any raw color hex (`#rgb`..`#rrggbbaa`) in `crates/gashuu/ui/*.slint` except `Theme.slint`. It runs in CI (the `docs` job) and via `mise run check-tokens`, and is unconditionally blocking for the whole UI (no allowlist). On a hit, move the value into `Theme.slint` and reference the token.
+`scripts/check-tokens.sh` fails on any raw color hex (`#rgb`..`#rrggbbaa`) found in `crates/gashuu/ui/` scanned RECURSIVELY (every `*.slint`, including `ui/components/` and any future subdirectory) except `Theme.slint`. It is color-hex only — length/size literals are NOT policed. It runs in CI (the `docs` job) and via `mise run check-tokens`, and is unconditionally blocking for the whole UI (no allowlist). On a hit, move the value into `Theme.slint` and reference the token.
 
 ### Always run cargo fmt after editing
 
