@@ -66,4 +66,4 @@ cd crates/gashuu && mise exec -- cargo bundle --release   # emits target/release
 
 `cargo bundle` is NOT wired into the default `cargo build` or CI gates — it is a developer convenience command only.
 
-**Deferred**: Windows `.ico` embedding (winres / embed-resource) and a Linux `.desktop` entry are deferred to a follow-up issue.
+**Deferred to a follow-up issue**: Windows `.ico` embedding (winres / embed-resource) and a Linux `.desktop` entry.
