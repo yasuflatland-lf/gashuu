@@ -152,11 +152,12 @@ See [ADR-0005](ADRs/0005-settings-persistence.md) for the settings persistence d
 
 ### reading_progress
 
-PR-60, `reading_progress.rs`. Transient, immutable core value object `ReadingProgress { reached,
-total }` (`Copy`) that NAMES the one durable fact — how far a reader got — and centralises its
-derivation in ONE place: `current()` (1-based, `reached + 1` saturating, always ≥ 1),
-`fraction()` (`0.0..=1.0`; `total == 0` → `0.0` — no NaN/inf; stale `reached` past `total` clamps
-to `1.0`), `is_unread()` (`reached == 0`). It is the single home of the `total == 0` guard and
+PR-60 (`total` lifted to `Option<usize>` in #65), `reading_progress.rs`. Transient, immutable core
+value object `ReadingProgress { reached, total: Option<usize> }` (`Copy`) that NAMES the one durable
+fact — how far a reader got — and centralises its derivation in ONE place: `current()` (1-based,
+`reached + 1` saturating, always ≥ 1), `fraction()` (`0.0..=1.0`; an unknown total `None` AND a
+defensive `Some(0)` both → `0.0` — no NaN/inf; stale `reached` past `total` clamps to `1.0`),
+`is_unread()` (`reached == 0`). It is the single home of the unknown/zero-total guard and
 the 1-based offset that BOTH the carousel (`library_model::carousel_data` via `Book::progress()`)
 and the open-time resume (`Library::register_opened`) consume. Derived / transient — never
 serialised; `library.json` stores only the bare `last_page` + `page_count` fields on `Book`.
@@ -164,16 +165,22 @@ Headless (no slint/tracing).
 
 ### Library aggregate
 
-PR-60, `library.rs`. `Library::register_opened(canonical: &Path, page_count: usize) ->
-OpenRegistration { resume: ReadingProgress, count_changed: bool }` centralises the open-time
-domain rule that previously lived in `main.rs`'s `open_and_present`: idempotent add by canonical
-path (dedup); guarded page-count back-fill (`page_count > 0`; `0` is the unknown sentinel that
-`set_page_count`'s `debug_assert` forbids); resume lookup via `Book::progress()`. `main.rs` now
-just calls it and `jump_to(reg.resume.reached())`, keeping the domain rule out of the presentation
-layer (aligns with the core↔UI boundary, ADR-0002). `count_changed` tells the caller whether to
-rebuild the carousel. `Book::progress() -> ReadingProgress` is the per-book accessor that
-`carousel_data` and `register_opened` both use; `library.json` serde shape is unchanged
-(only `last_page` + `page_count` are persisted on each `Book`).
+PR-60 (signature retyped in #65), `library.rs`. `Library::register_opened(canonical: &Path,
+page_count: Option<NonZeroUsize>) -> OpenRegistration { resume: ReadingProgress, count_changed:
+bool }` centralises the open-time domain rule that previously lived in `main.rs`'s
+`open_and_present`: idempotent add by canonical path (dedup); page-count back-fill applied only for
+`Some(_)` (an unknown total = `None` is skipped); resume lookup via `Book::progress()`. The
+positivity that PR-60 enforced with a runtime guard is now a type fact — `set_page_count(_, count:
+NonZeroUsize)` makes `0` unrepresentable at the write boundary, so there is no `debug_assert` in core
+and no `page_count > 0` guard at the call site (#65). The reader side maps stored counts through
+`Book::page_count_opt() -> Option<usize>` (stored `0 → None`), the accessor that `progress()` and
+`carousel_data` consume. `main.rs` now just calls `register_opened` and
+`jump_to(reg.resume.reached())`, converting at the boundary with `NonZeroUsize::new(page_count)` (a
+zero-page open → `None` → back-fill skipped), keeping the domain rule out of the presentation layer
+(aligns with the core↔UI boundary, ADR-0002). `count_changed` tells the caller whether to rebuild
+the carousel. `Book::progress() -> ReadingProgress` is the per-book accessor that `carousel_data`
+and `register_opened` both use; `library.json` serde shape is unchanged (only `last_page` +
+`page_count` are persisted on each `Book`, `page_count` still a bare `usize` with `0` for unknown).
 
 ---
 
@@ -250,8 +257,8 @@ PR-C, `library_model.rs`. PURE (Slint-free) `Library` → carousel display-row m
 -> Vec<CarouselData>` in shelf order. The carousel counterpart of `thumbnail_strip`'s row mapping —
 keeps the derivation table-testable without a display backend. Each row is built from
 `Book::progress()`: 1-based `current = ReadingProgress::current()` (`reached + 1`, saturating);
-`progress = ReadingProgress::fraction()` (guarded so `total == 0` → `0.0`, overshoot clamps to
-`1.0`); `total = ReadingProgress::total()`. The free derivation no longer lives in `library_model`
+`progress = ReadingProgress::fraction()` (guarded so an unknown/zero total → `0.0`, overshoot clamps
+to `1.0`); `total = ReadingProgress::total()` (now `Option<usize>`, #65). The free derivation no longer lives in `library_model`
 — it is centralised in `ReadingProgress` (see core entry below). `available` via
 `Library::is_available`. `carousel.rs`'s `to_carousel_item` adapter builds the `!Send`
 `slint::Image` (placeholder this PR) on the UI thread; `build_carousel_model` is the build+bind

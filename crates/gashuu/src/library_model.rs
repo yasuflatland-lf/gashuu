@@ -27,10 +27,11 @@ pub struct CarouselData {
     /// 1-based current page for display = `ReadingProgress::current()` (`reached + 1`,
     /// saturating). A fresh book (`reached == 0`) shows `1`.
     pub current: i32,
-    /// Total page count for display = `ReadingProgress::total()` / `Book::page_count()`.
-    /// `0` until the book has been opened at least once; back-filled and saved
-    /// on open (see `set_page_count` in the open path), so an opened book shows
-    /// its real total and a `ReadingProgress::fraction()`-based progress bar.
+    /// Total page count for display = `ReadingProgress::total() -> Option<usize>` mapped
+    /// through `Book::page_count_opt()`. `None` (unknown) is displayed as `0` until the
+    /// book has been opened at least once; back-filled and saved on open (see
+    /// `set_page_count` in the open path), so an opened book shows its real total
+    /// and a `ReadingProgress::fraction()`-based progress bar.
     pub total: i32,
     /// Reading progress in `0.0..=1.0` = `ReadingProgress::fraction()` (`0.0` when
     /// `total == 0`, never NaN/inf). Ambient per-cover bar; accent fill, green when `>= 1.0`.
@@ -47,8 +48,9 @@ pub struct CarouselData {
 /// `ReadingProgress` value object. `current = progress.current()` (1-based,
 /// `>= 1`, saturating); `progress = progress.fraction()` is guarded so
 /// `total == 0` yields `0.0` (never NaN/inf); `total` comes from
-/// `Book::page_count()` via the value object — `0` when the book has never
-/// been opened, the real persisted count once it has been opened.
+/// `ReadingProgress::total() -> Option<usize>` via `Book::page_count_opt()` —
+/// `None` (unknown) is mapped to `0` when the book has never been opened,
+/// the real persisted count once it has been opened.
 pub fn carousel_data(library: &Library) -> Vec<CarouselData> {
     library
         .books()
@@ -57,7 +59,7 @@ pub fn carousel_data(library: &Library) -> Vec<CarouselData> {
             let progress = book.progress();
             // 1-based display page; saturate the i32 cast for a pathological value.
             let current = clamp_to_i32(progress.current());
-            let total = clamp_to_i32(progress.total());
+            let total = progress.total().map_or(0, clamp_to_i32);
             let fraction = progress.fraction();
             // Pin the documented invariants at the single construction site (debug-only).
             debug_assert!(current >= 1, "current is 1-based and must be >= 1");
@@ -86,6 +88,7 @@ fn clamp_to_i32(v: usize) -> i32 {
 mod tests {
     use super::*;
     use gashuu_core::Library;
+    use std::num::NonZeroUsize;
     use std::path::PathBuf;
 
     #[test]
@@ -204,7 +207,7 @@ mod tests {
         assert!(lib.add(dir.path().to_path_buf()));
         let path = lib.books()[0].path().to_path_buf();
         assert!(lib.set_last_page(&path, 4));
-        assert!(lib.set_page_count(&path, 10));
+        assert!(lib.set_page_count(&path, NonZeroUsize::new(10).unwrap()));
         let rows = carousel_data(&lib);
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].total, 10); // real persisted count

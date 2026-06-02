@@ -6,6 +6,7 @@ mod enum_adapters;
 mod keymap;
 mod library_model;
 mod navigation;
+mod page_counter;
 mod thumbnail_strip;
 mod viewer_state;
 mod viewport;
@@ -21,7 +22,9 @@ use gashuu_core::{
 };
 use keymap::{map_key, KeyCommand};
 use navigation::{screen_to_index, NavState};
+use page_counter::page_counter_text;
 use std::cell::RefCell;
+use std::num::NonZeroUsize;
 use std::path::Path;
 use std::rc::Rc;
 use thumbnail_strip::ThumbnailController;
@@ -133,15 +136,14 @@ fn main() -> color_eyre::Result<()> {
         let library = Rc::clone(&library);
         let covers = Rc::clone(&covers);
         ui.on_open_folder(move || {
-            let Some(ui) = ui_weak.upgrade() else {
-                return;
-            };
-            let Some(dir) = rfd::FileDialog::new().pick_folder() else {
-                return;
-            };
-            open_and_present(
-                &ui, &state, &settings, &viewport, &thumbs, &library, &covers, &dir, "",
-            );
+            with_ui(&ui_weak, |ui| {
+                let Some(dir) = rfd::FileDialog::new().pick_folder() else {
+                    return;
+                };
+                open_and_present(
+                    &ui, &state, &settings, &viewport, &thumbs, &library, &covers, &dir, "",
+                );
+            })
         });
     }
 
@@ -155,26 +157,25 @@ fn main() -> color_eyre::Result<()> {
         let library = Rc::clone(&library);
         let covers = Rc::clone(&covers);
         ui.on_open_archive(move || {
-            let Some(ui) = ui_weak.upgrade() else {
-                return;
-            };
-            let Some(file) = rfd::FileDialog::new()
-                .add_filter("Comic archive", &["cbz", "zip", "cbr", "rar"])
-                .pick_file()
-            else {
-                return;
-            };
-            open_and_present(
-                &ui,
-                &state,
-                &settings,
-                &viewport,
-                &thumbs,
-                &library,
-                &covers,
-                &file,
-                " (zip-slip or oversized)",
-            );
+            with_ui(&ui_weak, |ui| {
+                let Some(file) = rfd::FileDialog::new()
+                    .add_filter("Comic archive", &["cbz", "zip", "cbr", "rar"])
+                    .pick_file()
+                else {
+                    return;
+                };
+                open_and_present(
+                    &ui,
+                    &state,
+                    &settings,
+                    &viewport,
+                    &thumbs,
+                    &library,
+                    &covers,
+                    &file,
+                    " (zip-slip or oversized)",
+                );
+            })
         });
     }
 
@@ -186,16 +187,15 @@ fn main() -> color_eyre::Result<()> {
         let library = Rc::clone(&library);
         let covers = Rc::clone(&covers);
         ui.on_add_files(move || {
-            let Some(ui) = ui_weak.upgrade() else {
-                return;
-            };
-            let Some(files) = rfd::FileDialog::new()
-                .add_filter("Comic archive", &["cbz", "zip", "cbr", "rar"])
-                .pick_files()
-            else {
-                return;
-            };
-            add_books_and_refresh(&ui, &library, &covers, files, "add-files");
+            with_ui(&ui_weak, |ui| {
+                let Some(files) = rfd::FileDialog::new()
+                    .add_filter("Comic archive", &["cbz", "zip", "cbr", "rar"])
+                    .pick_files()
+                else {
+                    return;
+                };
+                add_books_and_refresh(&ui, &library, &covers, files, "add-files");
+            })
         });
     }
 
@@ -207,13 +207,12 @@ fn main() -> color_eyre::Result<()> {
         let library = Rc::clone(&library);
         let covers = Rc::clone(&covers);
         ui.on_add_folder(move || {
-            let Some(ui) = ui_weak.upgrade() else {
-                return;
-            };
-            let Some(folder) = rfd::FileDialog::new().pick_folder() else {
-                return;
-            };
-            add_books_and_refresh(&ui, &library, &covers, vec![folder], "add-folder");
+            with_ui(&ui_weak, |ui| {
+                let Some(folder) = rfd::FileDialog::new().pick_folder() else {
+                    return;
+                };
+                add_books_and_refresh(&ui, &library, &covers, vec![folder], "add-folder");
+            })
         });
     }
 
@@ -229,28 +228,27 @@ fn main() -> color_eyre::Result<()> {
         let nav = Rc::clone(&nav);
         let covers = Rc::clone(&covers);
         ui.on_carousel_open(move |index| {
-            let Some(ui) = ui_weak.upgrade() else {
-                return;
-            };
-            // Resolve the focused carousel index to a Library book path.
-            // Borrow discipline: `library.borrow()` drops at the `;`.
-            let path = {
-                let lib = library.borrow();
-                lib.books()
-                    .get(index as usize)
-                    .map(|b| b.path().to_path_buf())
-            };
-            let Some(path) = path else {
-                // Index out of range (carousel and library out of sync) — no-op.
-                tracing::warn!(index, "carousel-open: no book at index");
-                return;
-            };
-            // open_and_present writes back the OLD book's position first,
-            // then opens the new path and resumes its stored position.
-            open_and_present(
-                &ui, &state, &settings, &viewport, &thumbs, &library, &covers, &path, "",
-            );
-            go_to_viewer(&ui, &nav);
+            with_ui(&ui_weak, |ui| {
+                // Resolve the focused carousel index to a Library book path.
+                // Borrow discipline: `library.borrow()` drops at the `;`.
+                let path = {
+                    let lib = library.borrow();
+                    lib.books()
+                        .get(index as usize)
+                        .map(|b| b.path().to_path_buf())
+                };
+                let Some(path) = path else {
+                    // Index out of range (carousel and library out of sync) — no-op.
+                    tracing::warn!(index, "carousel-open: no book at index");
+                    return;
+                };
+                // open_and_present writes back the OLD book's position first,
+                // then opens the new path and resumes its stored position.
+                open_and_present(
+                    &ui, &state, &settings, &viewport, &thumbs, &library, &covers, &path, "",
+                );
+                go_to_viewer(&ui, &nav);
+            })
         });
     }
     // Carousel: Left/Right move the focused cover by `delta` (-1 / +1). Clamp
@@ -262,16 +260,15 @@ fn main() -> color_eyre::Result<()> {
         let ui_weak = ui.as_weak();
         let library = Rc::clone(&library);
         ui.on_carousel_move(move |delta| {
-            let Some(ui) = ui_weak.upgrade() else {
-                return;
-            };
-            let count = library.borrow().books().len();
-            if count == 0 {
-                return; // empty shelf: nothing to move
-            }
-            let last = (count - 1) as i32;
-            let next = (ui.get_carousel_focused_index() + delta).clamp(0, last);
-            ui.set_carousel_focused_index(next);
+            with_ui(&ui_weak, |ui| {
+                let count = library.borrow().books().len();
+                if count == 0 {
+                    return; // empty shelf: nothing to move
+                }
+                let last = (count - 1) as i32;
+                let next = (ui.get_carousel_focused_index() + delta).clamp(0, last);
+                ui.set_carousel_focused_index(next);
+            })
         });
     }
     // Carousel: Down returns to the currently-open book (the Viewer). Only
@@ -283,10 +280,9 @@ fn main() -> color_eyre::Result<()> {
         let ui_weak = ui.as_weak();
         let nav = Rc::clone(&nav);
         ui.on_carousel_back(move || {
-            let Some(ui) = ui_weak.upgrade() else {
-                return;
-            };
-            go_to_viewer(&ui, &nav);
+            with_ui(&ui_weak, |ui| {
+                go_to_viewer(&ui, &nav);
+            })
         });
     }
 
@@ -297,13 +293,12 @@ fn main() -> color_eyre::Result<()> {
         let state = Rc::clone(&state);
         let viewport = Rc::clone(&viewport);
         ui.on_thumbnail_clicked(move |page| {
-            let Some(ui) = ui_weak.upgrade() else {
-                return;
-            };
-            if state.borrow_mut().jump_to(page as usize) {
-                refresh(&ui, &state.borrow(), &viewport);
-            }
-            ui.invoke_focus_pages();
+            with_ui(&ui_weak, |ui| {
+                if state.borrow_mut().jump_to(page as usize) {
+                    refresh(&ui, &state.borrow(), &viewport);
+                }
+                ui.invoke_focus_pages();
+            })
         });
     }
 
@@ -313,10 +308,9 @@ fn main() -> color_eyre::Result<()> {
     {
         let ui_weak = ui.as_weak();
         ui.on_reveal_chrome(move || {
-            let Some(ui) = ui_weak.upgrade() else {
-                return;
-            };
-            ui.invoke_reveal_chrome_now();
+            with_ui(&ui_weak, |ui| {
+                ui.invoke_reveal_chrome_now();
+            })
         });
     }
 
@@ -328,41 +322,37 @@ fn main() -> color_eyre::Result<()> {
         let ui_weak = ui.as_weak();
         let state = Rc::clone(&state);
         ui.on_scrub_preview(move |page| {
-            let Some(ui) = ui_weak.upgrade() else {
-                return;
-            };
-            let total = state.borrow().page_count();
-            if total == 0 {
-                return;
-            }
-            let lead = (page.max(0) as usize).min(total - 1);
-            // Decide whether this previewed spread is double using the SAME layout
-            // resolution the body uses, so the popover shows 1 vs 2 thumbs
-            // correctly (the pure helper carries no layout; ViewerState owns it).
-            let is_double = state.borrow().preview_is_double(lead);
-            ui.set_scrubber_double(is_double);
-            // Trailing page of the previewed spread (clamped to the last page),
-            // present only for a double spread.
-            let trail = if is_double {
-                Some((lead + 1).min(total - 1))
-            } else {
-                None
-            };
-            // Pull thumbnail images from the existing model (no decode).
-            let model = ui.get_thumbnails();
-            ui.set_scrubber_preview_a(thumb_image_at(&model, lead));
-            ui.set_scrubber_preview_b(match trail {
-                Some(trail) => thumb_image_at(&model, trail),
-                None => slint::Image::default(),
-            });
-            // Update the counter to the previewed page (1-based).
-            let counter = match trail {
-                Some(trail) => format!("{}\u{2013}{} / {}", lead + 1, trail + 1, total),
-                None => format!("{} / {}", lead + 1, total),
-            };
-            ui.set_page_counter_text(counter.into());
-            // Keep the chrome visible during the drag.
-            ui.invoke_reveal_chrome_now();
+            with_ui(&ui_weak, |ui| {
+                let total = state.borrow().page_count();
+                if total == 0 {
+                    return;
+                }
+                let lead = (page.max(0) as usize).min(total - 1);
+                // Decide whether this previewed spread is double using the SAME layout
+                // resolution the body uses, so the popover shows 1 vs 2 thumbs
+                // correctly (the pure helper carries no layout; ViewerState owns it).
+                let is_double = state.borrow().preview_is_double(lead);
+                ui.set_scrubber_double(is_double);
+                // Trailing page of the previewed spread (clamped to the last page),
+                // present only for a double spread.
+                let trail = if is_double {
+                    Some((lead + 1).min(total - 1))
+                } else {
+                    None
+                };
+                // Pull thumbnail images from the existing model (no decode).
+                let model = ui.get_thumbnails();
+                ui.set_scrubber_preview_a(thumb_image_at(&model, lead));
+                ui.set_scrubber_preview_b(match trail {
+                    Some(trail) => thumb_image_at(&model, trail),
+                    None => slint::Image::default(),
+                });
+                // Update the counter to the previewed page (1-based).
+                let counter = page_counter_text(lead, trail, total);
+                ui.set_page_counter_text(counter.into());
+                // Keep the chrome visible during the drag.
+                ui.invoke_reveal_chrome_now();
+            })
         });
     }
 
@@ -373,16 +363,15 @@ fn main() -> color_eyre::Result<()> {
         let state = Rc::clone(&state);
         let viewport = Rc::clone(&viewport);
         ui.on_scrub_commit(move |page| {
-            let Some(ui) = ui_weak.upgrade() else {
-                return;
-            };
-            // borrow_mut() temporary drops at the `;` before refresh borrows state.
-            // Refresh unconditionally — unlike the nav handler, a scrub commit always
-            // re-seeds the scrubber knob + counter to the committed spread, even when
-            // the resolved leading equals the current index (a no-op jump).
-            let _moved = state.borrow_mut().jump_to(page.max(0) as usize);
-            refresh(&ui, &state.borrow(), &viewport);
-            ui.invoke_focus_pages();
+            with_ui(&ui_weak, |ui| {
+                // borrow_mut() temporary drops at the `;` before refresh borrows state.
+                // Refresh unconditionally — unlike the nav handler, a scrub commit always
+                // re-seeds the scrubber knob + counter to the committed spread, even when
+                // the resolved leading equals the current index (a no-op jump).
+                let _moved = state.borrow_mut().jump_to(page.max(0) as usize);
+                refresh(&ui, &state.borrow(), &viewport);
+                ui.invoke_focus_pages();
+            })
         });
     }
 
@@ -392,10 +381,9 @@ fn main() -> color_eyre::Result<()> {
     {
         let ui_weak = ui.as_weak();
         ui.on_toggle_thumbnails(move || {
-            let Some(ui) = ui_weak.upgrade() else {
-                return;
-            };
-            ui.set_show_thumbnails(!ui.get_show_thumbnails());
+            with_ui(&ui_weak, |ui| {
+                ui.set_show_thumbnails(!ui.get_show_thumbnails());
+            })
         });
     }
 
@@ -411,21 +399,20 @@ fn main() -> color_eyre::Result<()> {
         let settings = Rc::clone(&settings);
         let viewport = Rc::clone(&viewport);
         ui.on_open_settings(move || {
-            let Some(ui) = ui_weak.upgrade() else {
-                return;
-            };
-            let s = settings.borrow();
-            let st = state.borrow();
-            ui.set_reading_direction_index(reading_direction_to_index(st.reading_direction()));
-            ui.set_spread_mode_index(spread_mode_to_index(st.spread_mode()));
-            ui.set_cover_mode_index(cover_mode_to_index(st.cover_mode()));
-            // Fit mode is owned by the viewport at runtime.
-            ui.set_fit_mode_index(fit_mode_to_index(viewport.borrow().fit_mode()));
-            ui.set_cache_size(s.cache_size as i32);
-            ui.set_preload_pages(s.preload_pages as i32);
-            ui.set_track_recent(s.track_recent_files);
-            ui.set_key_bindings_text(KEY_BINDINGS_HELP.into());
-            ui.set_show_settings(true);
+            with_ui(&ui_weak, |ui| {
+                let s = settings.borrow();
+                let st = state.borrow();
+                ui.set_reading_direction_index(reading_direction_to_index(st.reading_direction()));
+                ui.set_spread_mode_index(spread_mode_to_index(st.spread_mode()));
+                ui.set_cover_mode_index(cover_mode_to_index(st.cover_mode()));
+                // Fit mode is owned by the viewport at runtime.
+                ui.set_fit_mode_index(fit_mode_to_index(viewport.borrow().fit_mode()));
+                ui.set_cache_size(s.cache_size as i32);
+                ui.set_preload_pages(s.preload_pages as i32);
+                ui.set_track_recent(s.track_recent_files);
+                ui.set_key_bindings_text(KEY_BINDINGS_HELP.into());
+                ui.set_show_settings(true);
+            })
         });
     }
 
@@ -439,20 +426,19 @@ fn main() -> color_eyre::Result<()> {
         let settings = Rc::clone(&settings);
         let viewport = Rc::clone(&viewport);
         ui.on_close_settings(move || {
-            let Some(ui) = ui_weak.upgrade() else {
-                return;
-            };
-            ui.set_show_settings(false);
-            reconcile_settings(
-                &state.borrow(),
-                &viewport.borrow(),
-                &mut settings.borrow_mut(),
-            );
-            if let Err(e) = settings.borrow().save() {
-                tracing::error!(error = %e, "failed to save settings from dialog");
-                ui.set_status_text(format!("Could not save settings: {e}").into());
-            }
-            ui.invoke_focus_pages();
+            with_ui(&ui_weak, |ui| {
+                ui.set_show_settings(false);
+                reconcile_settings(
+                    &state.borrow(),
+                    &viewport.borrow(),
+                    &mut settings.borrow_mut(),
+                );
+                if let Err(e) = settings.borrow().save() {
+                    tracing::error!(error = %e, "failed to save settings from dialog");
+                    ui.set_status_text(format!("Could not save settings: {e}").into());
+                }
+                ui.invoke_focus_pages();
+            })
         });
     }
 
@@ -463,17 +449,16 @@ fn main() -> color_eyre::Result<()> {
         let ui_weak = ui.as_weak();
         let settings = Rc::clone(&settings);
         ui.on_dismiss_guide(move || {
-            let Some(ui) = ui_weak.upgrade() else {
-                return;
-            };
-            // Persist immediately; a persistent save failure here is non-fatal — the
-            // guide simply re-shows next launch (seen_guide is also saved on exit).
-            settings.borrow_mut().seen_guide = true;
-            if let Err(e) = settings.borrow().save() {
-                tracing::error!(error = %e, "failed to save settings on guide dismiss");
-            }
-            ui.set_show_guide(false);
-            ui.invoke_focus_pages();
+            with_ui(&ui_weak, |ui| {
+                // Persist immediately; a persistent save failure here is non-fatal — the
+                // guide simply re-shows next launch (seen_guide is also saved on exit).
+                settings.borrow_mut().seen_guide = true;
+                if let Err(e) = settings.borrow().save() {
+                    tracing::error!(error = %e, "failed to save settings on guide dismiss");
+                }
+                ui.set_show_guide(false);
+                ui.invoke_focus_pages();
+            })
         });
     }
 
@@ -487,15 +472,14 @@ fn main() -> color_eyre::Result<()> {
         let state = Rc::clone(&state);
         let viewport = Rc::clone(&viewport);
         ui.on_set_reading_direction(move |i| {
-            let Some(ui) = ui_weak.upgrade() else {
-                return;
-            };
-            let dir = index_to_reading_direction(i);
-            // Runtime state is the single source of truth; `reconcile_settings`
-            // mirrors it into `Settings` at the next save.
-            if state.borrow_mut().set_reading_direction(dir) {
-                refresh(&ui, &state.borrow(), &viewport);
-            }
+            with_ui(&ui_weak, |ui| {
+                let dir = index_to_reading_direction(i);
+                // Runtime state is the single source of truth; `reconcile_settings`
+                // mirrors it into `Settings` at the next save.
+                if state.borrow_mut().set_reading_direction(dir) {
+                    refresh(&ui, &state.borrow(), &viewport);
+                }
+            })
         });
     }
     {
@@ -503,15 +487,14 @@ fn main() -> color_eyre::Result<()> {
         let state = Rc::clone(&state);
         let viewport = Rc::clone(&viewport);
         ui.on_set_spread_mode(move |i| {
-            let Some(ui) = ui_weak.upgrade() else {
-                return;
-            };
-            let mode = index_to_spread_mode(i);
-            // Runtime state is the single source of truth; `reconcile_settings`
-            // mirrors it into `Settings` at the next save.
-            if state.borrow_mut().set_spread_mode(mode) {
-                refresh(&ui, &state.borrow(), &viewport);
-            }
+            with_ui(&ui_weak, |ui| {
+                let mode = index_to_spread_mode(i);
+                // Runtime state is the single source of truth; `reconcile_settings`
+                // mirrors it into `Settings` at the next save.
+                if state.borrow_mut().set_spread_mode(mode) {
+                    refresh(&ui, &state.borrow(), &viewport);
+                }
+            })
         });
     }
     {
@@ -519,15 +502,14 @@ fn main() -> color_eyre::Result<()> {
         let state = Rc::clone(&state);
         let viewport = Rc::clone(&viewport);
         ui.on_set_cover_mode(move |i| {
-            let Some(ui) = ui_weak.upgrade() else {
-                return;
-            };
-            let mode = index_to_cover_mode(i);
-            // Runtime state is the single source of truth; `reconcile_settings`
-            // mirrors it into `Settings` at the next save.
-            if state.borrow_mut().set_cover_mode(mode) {
-                refresh(&ui, &state.borrow(), &viewport);
-            }
+            with_ui(&ui_weak, |ui| {
+                let mode = index_to_cover_mode(i);
+                // Runtime state is the single source of truth; `reconcile_settings`
+                // mirrors it into `Settings` at the next save.
+                if state.borrow_mut().set_cover_mode(mode) {
+                    refresh(&ui, &state.borrow(), &viewport);
+                }
+            })
         });
     }
     {
@@ -535,19 +517,18 @@ fn main() -> color_eyre::Result<()> {
         let state = Rc::clone(&state);
         let viewport = Rc::clone(&viewport);
         ui.on_set_fit_mode(move |i| {
-            let Some(ui) = ui_weak.upgrade() else {
-                return;
-            };
-            let mode = index_to_fit_mode(i);
-            // Equality guard (the viewport setter is not idempotent-by-return).
-            // Compare in one borrow, mutate in a separate `borrow_mut()` that
-            // drops at the `;`, then `refresh` (which borrows viewport internally).
-            // The viewport owns `fit_mode` at runtime; `reconcile_settings`
-            // mirrors it into `Settings` at the next save.
-            if viewport.borrow().fit_mode() != mode {
-                viewport.borrow_mut().set_fit(mode);
-                refresh(&ui, &state.borrow(), &viewport);
-            }
+            with_ui(&ui_weak, |ui| {
+                let mode = index_to_fit_mode(i);
+                // Equality guard (the viewport setter is not idempotent-by-return).
+                // Compare in one borrow, mutate in a separate `borrow_mut()` that
+                // drops at the `;`, then `refresh` (which borrows viewport internally).
+                // The viewport owns `fit_mode` at runtime; `reconcile_settings`
+                // mirrors it into `Settings` at the next save.
+                if viewport.borrow().fit_mode() != mode {
+                    viewport.borrow_mut().set_fit(mode);
+                    refresh(&ui, &state.borrow(), &viewport);
+                }
+            })
         });
     }
     {
@@ -603,11 +584,10 @@ fn main() -> color_eyre::Result<()> {
         let ui_weak = ui.as_weak();
         let viewport = Rc::clone(&viewport);
         ui.on_viewport_resized(move |w, h| {
-            let Some(ui) = ui_weak.upgrade() else {
-                return;
-            };
-            viewport.borrow_mut().resize(w, h);
-            apply_viewport(&ui, &viewport.borrow());
+            with_ui(&ui_weak, |ui| {
+                viewport.borrow_mut().resize(w, h);
+                apply_viewport(&ui, &viewport.borrow());
+            })
         });
     }
     {
@@ -619,11 +599,10 @@ fn main() -> color_eyre::Result<()> {
         // inverted on some platform, flip the sign here (one-liner) rather than
         // in the pure step.
         ui.on_zoom_at(move |x, y, dy| {
-            let Some(ui) = ui_weak.upgrade() else {
-                return;
-            };
-            viewport.borrow_mut().zoom_at(x, y, dy);
-            apply_viewport(&ui, &viewport.borrow());
+            with_ui(&ui_weak, |ui| {
+                viewport.borrow_mut().zoom_at(x, y, dy);
+                apply_viewport(&ui, &viewport.borrow());
+            })
         });
     }
     {
@@ -637,11 +616,10 @@ fn main() -> color_eyre::Result<()> {
         let ui_weak = ui.as_weak();
         let viewport = Rc::clone(&viewport);
         ui.on_pan_to(move |dx, dy| {
-            let Some(ui) = ui_weak.upgrade() else {
-                return;
-            };
-            viewport.borrow_mut().pan_to(dx, dy);
-            apply_viewport(&ui, &viewport.borrow());
+            with_ui(&ui_weak, |ui| {
+                viewport.borrow_mut().pan_to(dx, dy);
+                apply_viewport(&ui, &viewport.borrow());
+            })
         });
     }
 
@@ -653,95 +631,94 @@ fn main() -> color_eyre::Result<()> {
         let nav = Rc::clone(&nav);
         let library = Rc::clone(&library);
         ui.on_nav(move |token| {
-            let Some(ui) = ui_weak.upgrade() else {
-                return;
-            };
-            let dir = state.borrow().reading_direction();
-            let Some(cmd) = map_key(token.as_str(), dir) else {
-                return;
-            };
-            let started = std::time::Instant::now();
-            match cmd {
-                KeyCommand::Turn(action) => {
-                    let moved = state.borrow_mut().apply(action);
-                    if moved {
-                        refresh(&ui, &state.borrow(), &viewport);
+            with_ui(&ui_weak, |ui| {
+                let dir = state.borrow().reading_direction();
+                let Some(cmd) = map_key(token.as_str(), dir) else {
+                    return;
+                };
+                let started = std::time::Instant::now();
+                match cmd {
+                    KeyCommand::Turn(action) => {
+                        let moved = state.borrow_mut().apply(action);
+                        if moved {
+                            refresh(&ui, &state.borrow(), &viewport);
+                        }
+                        // Log every page-turn latency (cache hits target <50ms; the
+                        // first visit to a page also includes a synchronous decode).
+                        // Observe with RUST_LOG=debug.
+                        tracing::debug!(
+                            elapsed_ms = started.elapsed().as_secs_f64() * 1000.0,
+                            moved,
+                            "page turn"
+                        );
+                        // Reveal the auto-hiding chrome on a page-turn key (spec §5).
+                        ui.invoke_reveal_chrome_now();
                     }
-                    // Log every page-turn latency (cache hits target <50ms; the
-                    // first visit to a page also includes a synchronous decode).
-                    // Observe with RUST_LOG=debug.
-                    tracing::debug!(
-                        elapsed_ms = started.elapsed().as_secs_f64() * 1000.0,
-                        moved,
-                        "page turn"
-                    );
-                    // Reveal the auto-hiding chrome on a page-turn key (spec §5).
-                    ui.invoke_reveal_chrome_now();
-                }
-                // Runtime state is the single source of truth for these modes;
-                // `reconcile_settings` mirrors them into `Settings` at the next
-                // save (no per-key Settings write).
-                KeyCommand::ToggleSpread => {
-                    if state.borrow_mut().toggle_spread() {
-                        refresh(&ui, &state.borrow(), &viewport);
+                    // Runtime state is the single source of truth for these modes;
+                    // `reconcile_settings` mirrors them into `Settings` at the next
+                    // save (no per-key Settings write).
+                    KeyCommand::ToggleSpread => {
+                        if state.borrow_mut().toggle_spread() {
+                            refresh(&ui, &state.borrow(), &viewport);
+                        }
+                    }
+                    KeyCommand::ToggleReadingDirection => {
+                        if state.borrow_mut().toggle_reading_direction() {
+                            refresh(&ui, &state.borrow(), &viewport);
+                        }
+                    }
+                    KeyCommand::ToggleCover => {
+                        if state.borrow_mut().toggle_cover() {
+                            refresh(&ui, &state.borrow(), &viewport);
+                        }
+                    }
+                    // Zoom/fit commands mutate `ViewportState`, then push geometry.
+                    // The viewport owns `fit_mode` at runtime; `reconcile_settings`
+                    // mirrors it into `Settings` at the next save (zoom/pan stay
+                    // session-only). Each mutates in its own statement, then applies
+                    // geometry with a fresh immutable borrow (never hold borrow_mut
+                    // across apply).
+                    KeyCommand::ZoomIn => {
+                        viewport.borrow_mut().zoom_step(true);
+                        apply_viewport(&ui, &viewport.borrow());
+                    }
+                    KeyCommand::ZoomOut => {
+                        viewport.borrow_mut().zoom_step(false);
+                        apply_viewport(&ui, &viewport.borrow());
+                    }
+                    KeyCommand::ResetView => {
+                        viewport.borrow_mut().reset();
+                        apply_viewport(&ui, &viewport.borrow());
+                    }
+                    // Fit changes reset zoom + re-center. The viewport owns `fit_mode`;
+                    // `reconcile_settings` persists it at the next save (zoom/pan are
+                    // NOT persisted — session-only).
+                    KeyCommand::FitActual => {
+                        viewport.borrow_mut().set_fit(FitMode::Actual);
+                        apply_viewport(&ui, &viewport.borrow());
+                    }
+                    KeyCommand::CycleFit => {
+                        viewport.borrow_mut().cycle_fit();
+                        apply_viewport(&ui, &viewport.borrow());
+                    }
+                    // Toggle the thumbnail strip. No refresh needed: the strip's
+                    // appearance changes PageView's height, which auto-fires the
+                    // existing `viewport-resized` wiring.
+                    KeyCommand::ToggleThumbnails => {
+                        ui.set_show_thumbnails(!ui.get_show_thumbnails());
+                    }
+                    // Up arrow returns to the Library carousel. Direction-independent
+                    // (decoded in keymap); the seam flips NavState + syncs `screen`.
+                    KeyCommand::GoToLibrary => {
+                        // Write the current position back before leaving the viewer.
+                        // Borrow discipline: write_back_position takes &Rc<RefCell<…>>
+                        // and confines each borrow to a single statement; drops before
+                        // go_to_library borrows the UI.
+                        write_back_position(&state, &library);
+                        go_to_library(&ui, &nav);
                     }
                 }
-                KeyCommand::ToggleReadingDirection => {
-                    if state.borrow_mut().toggle_reading_direction() {
-                        refresh(&ui, &state.borrow(), &viewport);
-                    }
-                }
-                KeyCommand::ToggleCover => {
-                    if state.borrow_mut().toggle_cover() {
-                        refresh(&ui, &state.borrow(), &viewport);
-                    }
-                }
-                // Zoom/fit commands mutate `ViewportState`, then push geometry.
-                // The viewport owns `fit_mode` at runtime; `reconcile_settings`
-                // mirrors it into `Settings` at the next save (zoom/pan stay
-                // session-only). Each mutates in its own statement, then applies
-                // geometry with a fresh immutable borrow (never hold borrow_mut
-                // across apply).
-                KeyCommand::ZoomIn => {
-                    viewport.borrow_mut().zoom_step(true);
-                    apply_viewport(&ui, &viewport.borrow());
-                }
-                KeyCommand::ZoomOut => {
-                    viewport.borrow_mut().zoom_step(false);
-                    apply_viewport(&ui, &viewport.borrow());
-                }
-                KeyCommand::ResetView => {
-                    viewport.borrow_mut().reset();
-                    apply_viewport(&ui, &viewport.borrow());
-                }
-                // Fit changes reset zoom + re-center. The viewport owns `fit_mode`;
-                // `reconcile_settings` persists it at the next save (zoom/pan are
-                // NOT persisted — session-only).
-                KeyCommand::FitActual => {
-                    viewport.borrow_mut().set_fit(FitMode::Actual);
-                    apply_viewport(&ui, &viewport.borrow());
-                }
-                KeyCommand::CycleFit => {
-                    viewport.borrow_mut().cycle_fit();
-                    apply_viewport(&ui, &viewport.borrow());
-                }
-                // Toggle the thumbnail strip. No refresh needed: the strip's
-                // appearance changes PageView's height, which auto-fires the
-                // existing `viewport-resized` wiring.
-                KeyCommand::ToggleThumbnails => {
-                    ui.set_show_thumbnails(!ui.get_show_thumbnails());
-                }
-                // Up arrow returns to the Library carousel. Direction-independent
-                // (decoded in keymap); the seam flips NavState + syncs `screen`.
-                KeyCommand::GoToLibrary => {
-                    // Write the current position back before leaving the viewer.
-                    // Borrow discipline: write_back_position takes &Rc<RefCell<…>>
-                    // and confines each borrow to a single statement; drops before
-                    // go_to_library borrows the UI.
-                    write_back_position(&state, &library);
-                    go_to_library(&ui, &nav);
-                }
-            }
+            })
         });
     }
 
@@ -753,12 +730,11 @@ fn main() -> color_eyre::Result<()> {
         let state = Rc::clone(&state);
         let viewport = Rc::clone(&viewport);
         ui.on_resized(move |w, h| {
-            let Some(ui) = ui_weak.upgrade() else {
-                return; // window is being torn down
-            };
-            if state.borrow_mut().set_viewport_size(w, h) {
-                refresh(&ui, &state.borrow(), &viewport);
-            }
+            with_ui(&ui_weak, |ui| {
+                if state.borrow_mut().set_viewport_size(w, h) {
+                    refresh(&ui, &state.borrow(), &viewport);
+                }
+            })
         });
     }
 
@@ -780,6 +756,15 @@ fn main() -> color_eyre::Result<()> {
         tracing::error!(error = %e, "failed to save settings on exit");
     }
     Ok(())
+}
+
+/// Upgrade a window `Weak` and run `f` with the live `ViewerWindow`, or no-op if
+/// the window is gone (teardown race). Replaces the repeated
+/// `let Some(ui) = ui_weak.upgrade() else { return; };` preamble.
+fn with_ui(weak: &slint::Weak<ViewerWindow>, f: impl FnOnce(ViewerWindow)) {
+    if let Some(ui) = weak.upgrade() {
+        f(ui);
+    }
 }
 
 /// Open `path`, record it in recent files (when enabled), refresh the view,
@@ -858,15 +843,19 @@ fn open_and_present(
     // `page_count()` returns a `Copy` `usize`; the `state.borrow()` drops at the
     // `;` so it cannot conflict with the `library.borrow_mut()` below.
     let page_count = state.borrow().page_count();
-    // `register_opened` performs the idempotent add, the guarded page-count
-    // back-fill (skipping the `page_count == 0` unknown sentinel an empty folder
-    // or a fully skipped archive opens with), and the resume lookup as one domain
-    // rule. Borrow discipline: it holds `library.borrow_mut()` only for the
-    // `let reg = ...` line (released at its `;`, before the `jump_to` below);
-    // `state.borrow_mut().jump_to(...)` is a separate statement on a
-    // distinct `RefCell`.
+    // `register_opened` performs the idempotent add, the page-count back-fill,
+    // and the resume lookup as one domain rule. The unknown total is now carried
+    // by the type: `NonZeroUsize::new(page_count)` maps a zero-page open (the
+    // unknown sentinel an empty folder or a fully skipped archive opens with) to
+    // `None`, so `register_opened` skips the back-fill for it — no more `> 0`
+    // guard / `debug_assert` at this call site. Borrow discipline: it holds
+    // `library.borrow_mut()` only for the `let reg = ...` line (released at its
+    // `;`, before the `jump_to` below); `state.borrow_mut().jump_to(...)` is a
+    // separate statement on a distinct `RefCell`.
     let count_changed = if let Some(c) = canonical.as_deref() {
-        let reg = library.borrow_mut().register_opened(c, page_count);
+        let reg = library
+            .borrow_mut()
+            .register_opened(c, NonZeroUsize::new(page_count));
         // Resume at the recorded position; for a never-read book `reached` is 0
         // and `jump_to(0)` is a no-op when the index is already 0.
         state.borrow_mut().jump_to(reg.resume.reached());
@@ -1024,18 +1013,12 @@ fn refresh(ui: &ViewerWindow, state: &ViewerState, viewport: &Rc<RefCell<Viewpor
     let is_double = state.preview_is_double(state.index());
     ui.set_scrubber_double(is_double);
     // Counter text: "X / N" single, "X\u{2013}Y / N" double, "0 / 0" when empty.
-    let counter = if total == 0 {
-        "0 / 0".to_string()
-    } else if is_double {
-        format!(
-            "{}\u{2013}{} / {}",
-            state.index() + 1,
-            state.index() + 2,
-            total
-        )
+    let trailing = if is_double {
+        Some(state.index() + 1)
     } else {
-        format!("{} / {}", state.index() + 1, total)
+        None
     };
+    let counter = page_counter_text(state.index(), trailing, total);
     ui.set_page_counter_text(counter.into());
 }
 
