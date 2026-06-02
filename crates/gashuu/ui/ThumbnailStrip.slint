@@ -41,7 +41,7 @@ export component ThumbnailStrip inherits Rectangle {
 
     // ── Colors ─────────────────────────────────────────────────────────────────
     // Strip background matches the viewer's black aesthetic.
-    background: #1a1a1a;
+    background: Theme.surface;
 
     // The strip height is set by the parent (ViewerWindow), which is the single
     // source of truth; cells fit within whatever height it provides.
@@ -68,12 +68,12 @@ export component ThumbnailStrip inherits Rectangle {
 
                 // Highlight border: accent color for the current page, subtle
                 // neutral border otherwise.
-                border-color: item.page == root.current-index ? Theme.accent : #444444;
+                border-color: item.page == root.current-index ? Theme.accent : Theme.hairline;
                 border-width: item.page == root.current-index
                     ? root.border-highlight
                     : root.border-neutral;
-                border-radius: 3px;
-                background: #2a2a2a;
+                border-radius: Theme.radius-xs;
+                background: Theme.surface-raised;
 
                 // ── Image or placeholder ───────────────────────────────────────
                 // Three mutually-exclusive states:
@@ -94,8 +94,8 @@ export component ThumbnailStrip inherits Rectangle {
                     y: root.border-highlight;
                     width: root.cell-width - 2 * root.border-highlight;
                     height: root.image-area-height - root.border-highlight;
-                    background: #555555;
-                    border-radius: 2px;
+                    background: Theme.placeholder;
+                    border-radius: Theme.radius-xs;
                 }
 
                 if !item.loaded && item.failed : Rectangle {
@@ -103,16 +103,16 @@ export component ThumbnailStrip inherits Rectangle {
                     y: root.border-highlight;
                     width: root.cell-width - 2 * root.border-highlight;
                     height: root.image-area-height - root.border-highlight;
-                    background: #5a2222;
-                    border-color: #cc4444;
+                    background: Theme.error-surface;
+                    border-color: Theme.error;
                     border-width: 1px;
-                    border-radius: 2px;
+                    border-radius: Theme.radius-xs;
 
                     Text {
                         width: parent.width;
                         height: parent.height;
                         text: "✕";
-                        color: #ff6666;
+                        color: Theme.error;
                         font-size: 20px;
                         horizontal-alignment: center;
                         vertical-alignment: center;
@@ -127,8 +127,8 @@ export component ThumbnailStrip inherits Rectangle {
                     width: root.cell-width;
                     height: root.cell-height - root.image-area-height - 4px;
                     text: item.page + 1;
-                    color: item.page == root.current-index ? Theme.accent : #cccccc;
-                    font-size: 11px;
+                    color: item.page == root.current-index ? Theme.accent : Theme.text-mid;
+                    font-size: Theme.font-micro;
                     horizontal-alignment: center;
                     vertical-alignment: center;
                 }

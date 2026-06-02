@@ -9,7 +9,11 @@ fn main() {
     let build = std::thread::Builder::new()
         .stack_size(32 * 1024 * 1024)
         .spawn(|| {
-            slint_build::compile("ui/ViewerWindow.slint").expect("Slint build failed");
+            slint_build::compile_with_config(
+                "ui/ViewerWindow.slint",
+                slint_build::CompilerConfiguration::new().with_style("fluent-dark".into()),
+            )
+            .expect("Slint build failed");
         })
         .expect("failed to spawn Slint build thread");
     build.join().expect("Slint build thread panicked");

@@ -27,7 +27,7 @@ export component Scrubber inherits Rectangle {
     // scrubber can't intercept clicks meant for the page.
     opacity: root.chrome-shown ? 1.0 : 0.0;
     visible: root.chrome-shown;
-    animate opacity { duration: 180ms; }
+    animate opacity { duration: Theme.motion-fast; }
 
     // ── Geometry ────────────────────────────────────────────────────────────
     // The rail spans the component width minus symmetric edge insets.

@@ -7,13 +7,11 @@
 # survives without per-PR vigilance.
 #
 # It scans crates/gashuu/ui/*.slint for raw color hex (#rgb..#rrggbbaa) and fails
-# on any match, with two deliberate exclusions:
-#   * Theme.slint        — the single source of truth; raw hex is its whole job.
-#   * ALLOWLIST (below)  — files not yet migrated to Theme.* tokens. P0 only fixes
-#                          the two hard violations; P1 migrates these wholesale and
-#                          deletes them from the array, at which point the guard
-#                          becomes blocking everywhere. Until then they are reported
-#                          as a visible WARN (never silently skipped).
+# on any match, with one deliberate exclusion:
+#   * Theme.slint — the single source of truth; raw hex is its whole job.
+# The guard is unconditionally blocking for all other UI files. The allowlist
+# scaffold used during the P0/P1 migration has been retired now that all
+# components reference Theme.* tokens.
 #
 # Seam for testing: set CHECK_TOKENS_ROOT to point at a fixture tree and the
 # script runs against that tree instead of the real repo. Example:
@@ -39,33 +37,13 @@ UI_DIR="crates/gashuu/ui"
 HEX_RE='#[0-9a-fA-F]{3,8}'
 # The single source of truth — raw hex here is intentional and always excluded.
 SOURCE_OF_TRUTH="Theme.slint"
-# Files not yet migrated to Theme.* tokens. P1 removes these (shrinks to empty),
-# then the guard is blocking for the whole UI.
-ALLOWLIST=(
-  ThumbnailStrip.slint
-  SettingsDialog.slint
-  FirstRunGuide.slint
-)
 
 failures=0
 pass() { echo "  OK  $*"; }
 fail() { echo "  FAIL $*"; failures=$((failures + 1)); }
 
-is_allowlisted() {
-  local name="$1"
-  local entry
-  for entry in "${ALLOWLIST[@]}"; do
-    [ "$name" = "$entry" ] && return 0
-  done
-  return 1
-}
-
-# Count raw-hex matches in a file (0 if none). `|| true` keeps the no-match
-# grep exit (1) from tripping `set -e`/`pipefail`.
-hex_count() { { grep -oE "$HEX_RE" "$1" || true; } | grep -c . || true; }
-
 # ---------------------------------------------------------------------------
-# Scan crates/gashuu/ui/*.slint for inline hex outside Theme.slint + allowlist.
+# Scan crates/gashuu/ui/*.slint for inline hex outside Theme.slint.
 # ---------------------------------------------------------------------------
 echo ""
 echo "=== check-tokens: raw color hex outside $SOURCE_OF_TRUTH ==="
@@ -74,7 +52,6 @@ if [ ! -d "$UI_DIR" ]; then
   fail "$UI_DIR not found"
 else
   scanned=0
-  pending=()
   for f in "$UI_DIR"/*.slint; do
     # Guard the literal glob when no .slint file matches.
     [ -e "$f" ] || continue
@@ -83,15 +60,10 @@ else
     # Theme.slint is the single source of truth — never scanned.
     [ "$name" = "$SOURCE_OF_TRUTH" ] && continue
 
-    # Allowlisted files are not yet migrated; remember them for the WARN below.
-    if is_allowlisted "$name"; then
-      [ "$(hex_count "$f")" -gt 0 ] && pending+=("$name")
-      continue
-    fi
-
     scanned=$((scanned + 1))
     # Report every offending file:line:match (-o so the column points at the hex).
-    matches="$(grep -onE "$HEX_RE" "$f" || true)"
+    # exit 1 = no match (ok); >=2 = real grep error → fail
+    matches="$(grep -onE "$HEX_RE" "$f")" || { rc=$?; [ "$rc" -eq 1 ] || fail "grep failed (exit $rc) on $f"; }
     if [ -n "$matches" ]; then
       while IFS= read -r m; do
         fail "raw hex in $f:$m — use a Theme.* token instead"
@@ -103,16 +75,6 @@ else
     fail "no .slint files scanned in $UI_DIR (layer missing or all excluded?)"
   elif [ "$failures" -eq 0 ]; then
     pass "$scanned scanned .slint file(s) free of inline hex"
-  fi
-
-  # No silent caps: surface the still-excluded files so the debt stays visible
-  # (Diana Mounter — a guard you can't see the holes in isn't a guard).
-  if [ "${#pending[@]}" -gt 0 ]; then
-    echo ""
-    echo "WARN: ${#pending[@]} file(s) excluded from the hex guard, pending P1 token migration:"
-    for name in "${pending[@]}"; do
-      echo "  - $name ($(hex_count "$UI_DIR/$name") raw hex)"
-    done
   fi
 fi
 
