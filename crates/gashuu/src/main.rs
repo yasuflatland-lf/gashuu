@@ -16,7 +16,9 @@ use enum_adapters::{
     index_to_reading_direction, index_to_spread_mode, reading_direction_to_index,
     spread_mode_to_index,
 };
-use gashuu_core::{CoreError, DecodedImage, FitMode, Library, ReadingDirection, Settings};
+use gashuu_core::{
+    CacheConfig, CoreError, DecodedImage, FitMode, Library, ReadingDirection, Settings,
+};
 use keymap::{map_key, KeyCommand};
 use navigation::{screen_to_index, NavState};
 use std::cell::RefCell;
@@ -562,7 +564,9 @@ fn main() -> color_eyre::Result<()> {
                 s.cache_size = v;
                 s.preload_pages
             };
-            state.borrow_mut().set_cache_config(v, preload);
+            state
+                .borrow_mut()
+                .set_cache_config(CacheConfig::new(v, preload));
         });
     }
     {
@@ -577,7 +581,9 @@ fn main() -> color_eyre::Result<()> {
                 s.preload_pages = v;
                 s.cache_size
             };
-            state.borrow_mut().set_cache_config(cache_size, v);
+            state
+                .borrow_mut()
+                .set_cache_config(CacheConfig::new(cache_size, v));
         });
     }
     {

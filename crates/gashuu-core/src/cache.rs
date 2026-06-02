@@ -7,6 +7,7 @@
 //! surfaces if/when that page is requested directly via `get`. This crate stays
 //! `tracing`-free, so prefetch failures are silent here by design.
 
+use crate::cache_config::CacheConfig;
 use crate::error::CoreError;
 use crate::image_ops::{decode, DecodedImage};
 use crate::page_source::PageSource;
@@ -120,12 +121,12 @@ pub struct ImageCache {
 }
 
 impl ImageCache {
-    /// Build a cache over `source` holding up to `capacity` decoded images and
-    /// prefetching `radius` pages on each side of the current page. A `capacity`
-    /// of 0 is treated as 1 (the LRU must hold at least the current page).
-    pub fn new(source: Arc<dyn PageSource>, capacity: usize, radius: usize) -> Self {
+    /// Build a cache over `source` using `config`: hold up to `config.capacity()`
+    /// decoded images (always >= 1, guaranteed by `CacheConfig`) and prefetch
+    /// `config.radius()` pages on each side of the current page.
+    pub fn new(source: Arc<dyn PageSource>, config: CacheConfig) -> Self {
         let len = source.list_pages().len();
-        let cap = NonZeroUsize::new(capacity.max(1)).unwrap();
+        let cap = NonZeroUsize::new(config.capacity()).unwrap();
         Self {
             inner: Arc::new(Inner {
                 source,
@@ -133,7 +134,7 @@ impl ImageCache {
                 cache: Mutex::new(LruCache::new(cap)),
                 in_flight: Mutex::new(HashSet::new()),
             }),
-            radius,
+            radius: config.radius(),
         }
     }
 
@@ -266,7 +267,7 @@ mod tests {
     #[test]
     fn hit_returns_same_arc_without_rereading() {
         let (src, reads) = counting(5);
-        let cache = ImageCache::new(src, 50, 0);
+        let cache = ImageCache::new(src, CacheConfig::new(50, 0));
         let a = cache.get(0).unwrap();
         assert_eq!(reads.load(Ordering::SeqCst), 1);
         let b = cache.get(0).unwrap();
@@ -277,7 +278,7 @@ mod tests {
     #[test]
     fn miss_reads_and_decodes() {
         let (src, reads) = counting(5);
-        let cache = ImageCache::new(src, 50, 0);
+        let cache = ImageCache::new(src, CacheConfig::new(50, 0));
         let img = cache.get(2).unwrap();
         assert_eq!((img.width(), img.height()), (2, 3));
         assert_eq!(reads.load(Ordering::SeqCst), 1);
@@ -286,7 +287,7 @@ mod tests {
     #[test]
     fn lru_evicts_oldest_over_capacity() {
         let (src, reads) = counting(5);
-        let cache = ImageCache::new(src, 2, 0); // capacity 2
+        let cache = ImageCache::new(src, CacheConfig::new(2, 0)); // capacity 2
         cache.get(0).unwrap();
         cache.get(1).unwrap();
         cache.get(2).unwrap(); // evicts 0 (least recently used)
@@ -304,7 +305,7 @@ mod tests {
         // Distinguishes LRU from FIFO: a hit on 0 must promote it so a later miss
         // evicts 1 (the true LRU), not 0.
         let (src, reads) = counting(5);
-        let cache = ImageCache::new(src, 2, 0); // capacity 2, no prefetch
+        let cache = ImageCache::new(src, CacheConfig::new(2, 0)); // capacity 2, no prefetch
         cache.get(0).unwrap(); // [0]
         cache.get(1).unwrap(); // [0(lru), 1(mru)]
         cache.get(0).unwrap(); // hit: promotes 0 -> [1(lru), 0(mru)]
@@ -330,7 +331,7 @@ mod tests {
         // `new` documents that capacity 0 is coerced to 1 (the LRU must hold at
         // least the current page); constructing and reading must not panic.
         let (src, _reads) = counting(5);
-        let cache = ImageCache::new(src, 0, 0);
+        let cache = ImageCache::new(src, CacheConfig::new(0, 0));
         let img = cache.get(0).unwrap();
         assert_eq!((img.width(), img.height()), (2, 3));
         assert!(cache.inner.cache.lock().unwrap().len() <= 1);
@@ -341,7 +342,7 @@ mod tests {
         // Exercises the `!in_flight.contains(i)` filter branch in isolation:
         // pages already marked in-flight by another batch are not re-read.
         let (src, reads) = counting(10);
-        let cache = ImageCache::new(src, 50, 3);
+        let cache = ImageCache::new(src, CacheConfig::new(50, 3));
         {
             let mut in_flight = cache.inner.in_flight.lock().unwrap();
             in_flight.insert(1);
@@ -367,7 +368,7 @@ mod tests {
     #[test]
     fn capacity_is_never_exceeded() {
         let (src, _reads) = counting(10);
-        let cache = ImageCache::new(src, 3, 0);
+        let cache = ImageCache::new(src, CacheConfig::new(3, 0));
         for i in 0..10 {
             cache.get(i).unwrap();
         }
@@ -379,7 +380,7 @@ mod tests {
     #[test]
     fn prefetch_warms_neighbours_in_range() {
         let (src, reads) = counting(10);
-        let cache = ImageCache::new(src, 50, 3);
+        let cache = ImageCache::new(src, CacheConfig::new(50, 3));
         cache.inner.prefetch_blocking(0, 3); // warms 1, 2, 3
         assert_eq!(reads.load(Ordering::SeqCst), 3);
         let guard = cache.inner.cache.lock().unwrap();
@@ -391,7 +392,7 @@ mod tests {
     #[test]
     fn prefetch_skips_cached_and_clears_in_flight() {
         let (src, reads) = counting(10);
-        let cache = ImageCache::new(src, 50, 3);
+        let cache = ImageCache::new(src, CacheConfig::new(50, 3));
         cache.inner.prefetch_blocking(0, 3); // reads 1, 2, 3
         assert_eq!(reads.load(Ordering::SeqCst), 3);
         cache.inner.prefetch_blocking(0, 3); // all cached ⇒ no new reads
@@ -407,7 +408,7 @@ mod tests {
             reads: Arc::clone(&reads),
             fail_index: Some(2),
         }) as Arc<dyn PageSource>;
-        let cache = ImageCache::new(src, 50, 3);
+        let cache = ImageCache::new(src, CacheConfig::new(50, 3));
         cache.inner.prefetch_blocking(0, 3); // reads 1, 2, 3; page 2 fails to decode
         assert!(
             !cache.inner.cache.lock().unwrap().contains(&2),
