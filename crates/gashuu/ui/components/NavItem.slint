@@ -1,0 +1,87 @@
+// NavItem — one circular icon-only capsule cell inside the glass-pill nav.
+//
+// A single action button (e.g. Add files / Add folder) rendered as a circular
+// "capsule": just a centered, colorized icon over a transparent ground. The
+// capsule reserves a transparent 1px border by default so the layout stays
+// stable when the accent ring appears on hover (no reflow / size jump).
+//
+// Shape   : circular — Theme.nav-capsule diameter, Theme.radius-pill rounding
+// Icon    : Theme.nav-icon, image-fit contain, Theme.text-mid by default
+// Hover   : Theme.accent-glow fill + Theme.accent ring + soft accent glow;
+//           icon brightens to Theme.text-high
+// Press   : slightly stronger fill (accent-glow darkened) + accent ring;
+//           icon Theme.text-high, nudged 1px down to read as a sink
+//
+// Colors / lengths come from Theme.* only — NO inline brand hex (DESIGN.md
+// rule 2; scripts/check-tokens.sh enforces this). Theme lives one directory up.
+import { Theme } from "../Theme.slint";
+
+export component NavItem inherits Rectangle {
+    // ── Public API ────────────────────────────────────────────────────────────
+    in property <image> icon;
+    in property <string> a11y-label;
+    callback clicked;
+
+    // ── Shape: a circular capsule with a stable, reserved 1px ring ────────────
+    width: Theme.nav-capsule;
+    height: Theme.nav-capsule;
+    border-radius: Theme.radius-pill;
+
+    // ── Default appearance ────────────────────────────────────────────────────
+    // Transparent fill + transparent 1px border so the hover ring can appear
+    // without shifting the icon or changing the capsule's footprint.
+    background: transparent;
+    border-width: 1px;
+    border-color: transparent;
+
+    // Mirror PrimaryButton: fade the fill / ring on state change. The glow blur
+    // is intentionally left OUT of the animate block — animating drop-shadow is
+    // version-fragile, so the glow is a discrete state change.
+    animate background, border-color { duration: Theme.motion-fast; }
+
+    // ── States: hover and press light up the accent ring / glow ──────────────
+    // Priority: pressed > hover (Slint applies the first matching state, so list
+    // pressed before hover — same ordering used by PrimaryButton / fluent Button).
+    // Only ROOT-level properties are set here. Child-element properties cannot be
+    // assigned from a `states[]` block in Slint 1.16 (no `parent`/sibling access
+    // inside the block), so the icon's colorize is a binding on the Image below
+    // that reads the touch state directly.
+    states [
+        pressed when touch.pressed : {
+            root.background: Theme.accent-glow.darker(0.10);
+            root.border-color: Theme.accent;
+        }
+        hover when touch.has-hover : {
+            root.background: Theme.accent-glow;
+            root.border-color: Theme.accent;
+            root.drop-shadow-color: Theme.accent-glow;
+            root.drop-shadow-blur: 12px;
+        }
+    ]
+
+    // ── Icon ──────────────────────────────────────────────────────────────────
+    icon-img := Image {
+        source: root.icon;
+        width: Theme.nav-icon;
+        height: Theme.nav-icon;
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        image-fit: contain;
+        // Brighten on hover/press; default to the calmer mid tone. Driven by a
+        // binding (not a states[] assignment) because the icon is a child element.
+        colorize: touch.has-hover || touch.pressed ? Theme.text-high : Theme.text-mid;
+    }
+
+    // ── Accessibility ─────────────────────────────────────────────────────────
+    // Icon-only: the label is exposed to assistive tech, not drawn on screen.
+    accessible-role: button;
+    accessible-label: root.a11y-label;
+
+    // ── Interaction ───────────────────────────────────────────────────────────
+    // TouchArea is non-focusable in Slint — it does NOT steal keyboard focus
+    // from the carousel FocusScope (established pattern, see docs/patterns.md
+    // "TouchArea click focus recovery").
+    touch := TouchArea {
+        clicked => { root.clicked(); }
+    }
+}

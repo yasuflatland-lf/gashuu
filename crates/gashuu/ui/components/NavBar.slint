@@ -1,0 +1,75 @@
+// NavBar — the top, centered "glass pill" holding the two icon-only NavItems
+// (Add files / Add folder).
+//
+// Slint 1.x has NO backdrop-blur, so the frosted-glass look is APPROXIMATED,
+// not rendered, with four cheap layers that read as glass without sampling
+// what is behind the pill:
+//   1. translucent fill   — Theme.glass-fill (surface tint at ~82% alpha)
+//   2. hairline border     — Theme.glass-border (1px, soft cool edge)
+//   3. top inner highlight — a 1px decorative rim (Theme.glass-highlight) that
+//                            fakes light catching the upper lip of the glass
+//   4. drop shadow         — Theme.shadow-popover, lifting the pill off content
+//
+// The width is sized explicitly from tokens (two capsules + the inter-item gap
+// + left/right padding) rather than from a layout's preferred width: binding the
+// root width to its own content layout would create a width binding loop.
+//
+// Colors / lengths come from Theme.* only — NO inline brand hex (DESIGN.md
+// rule 2; scripts/check-tokens.sh enforces this). Theme lives one directory up.
+import { Theme } from "../Theme.slint";
+import { NavItem } from "NavItem.slint";
+
+export component NavBar inherits Rectangle {
+    // ── Public API ────────────────────────────────────────────────────────────
+    in property <image> file-icon;
+    in property <image> folder-icon;
+    callback add-files();
+    callback add-folder();
+
+    // ── Shape & size ──────────────────────────────────────────────────────────
+    // Width is computed from tokens so the pill hugs its content WITHOUT a
+    // layout-preferred-width binding loop: two capsules + one gap + 2x padding.
+    height: Theme.nav-pill-height;
+    width: 2 * Theme.nav-capsule + Theme.nav-item-gap + 2 * Theme.nav-pill-pad;
+    horizontal-stretch: 0;
+    vertical-stretch: 0;
+
+    // ── Glass approximation (layers 1, 2 and 4; see header) ───────────────────
+    background: Theme.glass-fill;
+    border-radius: Theme.radius-pill;
+    border-width: 1px;
+    border-color: Theme.glass-border;
+    drop-shadow-color: Theme.shadow-popover;
+    drop-shadow-blur: 22px;
+    drop-shadow-offset-y: 8px;
+
+    // ── Glass approximation (layer 3): top inner highlight rim ────────────────
+    // A thin decorative line just below the top edge, inset horizontally by
+    // ~half the height so it stays inside the rounded corners (a pill's corner
+    // radius caps at half its height).
+    Rectangle {
+        x: Theme.nav-pill-height / 2;
+        y: 1px;
+        width: parent.width - Theme.nav-pill-height;
+        height: 1px;
+        background: Theme.glass-highlight;
+    }
+
+    // ── Items: the two icon-only capsules, centered with even spacing ─────────
+    HorizontalLayout {
+        spacing: Theme.nav-item-gap;
+        padding: Theme.nav-pill-pad;
+        alignment: center;
+
+        NavItem {
+            icon: root.file-icon;
+            a11y-label: "Add files";
+            clicked => { root.add-files(); }
+        }
+        NavItem {
+            icon: root.folder-icon;
+            a11y-label: "Add folder";
+            clicked => { root.add-folder(); }
+        }
+    }
+}
