@@ -42,7 +42,8 @@ pub struct CarouselData {
     pub available: bool,
 }
 
-/// Map a `Library` to its carousel display rows, in shelf (insertion) order.
+/// Map a `Library` to its carousel display rows, in natural `Library::books()`
+/// order.
 ///
 /// Each row is derived from `Book::progress()`, which returns a
 /// `ReadingProgress` value object. `current = progress.current()` (1-based,
@@ -153,19 +154,19 @@ mod tests {
     }
 
     #[test]
-    fn carousel_data_preserves_insertion_order() {
+    fn carousel_data_uses_library_natural_order() {
         let root = tempfile::tempdir().expect("tempdir");
         let mut lib = Library::new();
-        for name in ["alpha", "beta", "gamma"] {
+        for name in ["vol 10", "vol 1", "vol 2"] {
             let dir = root.path().join(name);
             std::fs::create_dir(&dir).expect("create subdir");
             assert!(lib.add(dir));
         }
         let rows = carousel_data(&lib);
         assert_eq!(rows.len(), 3);
-        assert_eq!(rows[0].title, "alpha");
-        assert_eq!(rows[1].title, "beta");
-        assert_eq!(rows[2].title, "gamma");
+        assert_eq!(rows[0].title, "vol 1");
+        assert_eq!(rows[1].title, "vol 2");
+        assert_eq!(rows[2].title, "vol 10");
     }
 
     #[test]
@@ -185,8 +186,8 @@ mod tests {
             2,
             "both books stay in the shelf (no auto-prune)"
         );
-        assert!(rows[0].available, "keep dir still resolves");
-        assert!(!rows[1].available, "gone dir no longer resolves");
+        assert!(!rows[0].available, "gone dir no longer resolves");
+        assert!(rows[1].available, "keep dir still resolves");
     }
 
     #[test]
