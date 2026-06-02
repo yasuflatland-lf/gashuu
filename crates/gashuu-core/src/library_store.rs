@@ -90,6 +90,7 @@ fn migrate(mut value: serde_json::Value, from: u32) -> serde_json::Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::num::NonZeroUsize;
     use std::path::{Path, PathBuf};
 
     #[test]
@@ -217,14 +218,14 @@ mod tests {
         let book = PathBuf::from("/manga/a.cbz");
         let mut original = Library::new();
         assert!(original.add(book.clone()));
-        assert!(original.set_page_count(&book, 42));
+        assert!(original.set_page_count(&book, NonZeroUsize::new(42).unwrap()));
 
         original.save_to(&path).unwrap();
         let loaded = Library::load_from(&path).unwrap();
 
         assert_eq!(loaded.books().len(), 1);
         assert_eq!(loaded.books()[0].path(), Path::new("/manga/a.cbz"));
-        assert_eq!(loaded.books()[0].page_count(), 42);
+        assert_eq!(loaded.books()[0].page_count_opt(), Some(42));
     }
 
     #[test]
@@ -256,7 +257,7 @@ mod tests {
         let p = PathBuf::from("/manga/a.cbz");
         assert!(lib.add(p.clone()));
         assert!(lib.set_last_page(&p, 3));
-        assert!(lib.set_page_count(&p, 10));
+        assert!(lib.set_page_count(&p, NonZeroUsize::new(10).unwrap()));
 
         let value: serde_json::Value = serde_json::from_str(&lib.to_json().unwrap()).unwrap();
         let book = value["books"][0].as_object().unwrap();
