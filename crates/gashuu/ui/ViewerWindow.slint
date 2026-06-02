@@ -63,6 +63,11 @@ export component ViewerWindow inherits Window {
     in property <bool> rtl;
     in property <bool> single;
     in property <string> status-text: "No folder opened";
+    // Centered title-bar name: the current folder/archive display name (set by
+    // main.rs on a successful open, cleared to "" when nothing is open). Declared
+    // on the root because Rust binds only to the root surface; forwarded to the
+    // TitleBar instance below (see docs/patterns.md "re-expose child properties").
+    in property <string> current-book-name;
     // Rust-computed content rectangle forwarded to PageView.
     in property <length> content-x: 0px;
     in property <length> content-y: 0px;
@@ -179,13 +184,14 @@ export component ViewerWindow inherits Window {
         // only emits the callbacks) — see docs/patterns.md "Slint focus after a
         // Button click".
         //
-        // `title` maps to `root.status-text` (the document/status descriptor, e.g.
-        // "2-3 / 6  [double / LTR]", "No folder opened", or a save/error notice) so
-        // no info the old inline status Text showed is lost. `show-count: false`
-        // because the in-page page-counter chip (top-right of the stage) already
-        // shows the page count — enabling a TitleBar count chip would duplicate it.
+        // `title` maps to `root.current-book-name` (the current folder/archive
+        // display name, DESIGN's "current book/library name"; blank until a book
+        // is open). The page/status descriptor still lives on `status-text`, which
+        // remains wired to the Library-screen status notice below. `show-count:
+        // false` because the in-page page-counter chip (top-right of the stage)
+        // already shows the page count — a TitleBar count chip would duplicate it.
         TitleBar {
-            title: root.status-text;
+            title: root.current-book-name;
             show-count: false;
             open-folder => {
                 root.open-folder();
