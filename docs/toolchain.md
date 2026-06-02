@@ -38,3 +38,32 @@ To encode raw RGBA into an in-memory PNG (`thumbnail_cache::put`), wrap the buff
 ### Never launch the GUI in a headless session
 
 `cargo run` opens a GUI window — never launch the app from a non-interactive/headless session (it hangs). Verify with build + clippy + tests instead.
+
+### App icon / bundling
+
+**Icon asset pipeline** — `app-icon.png` (1024×1024 master) and `app-icon.icns` are generated from the source logo using `sips` and `iconutil` (both ship with macOS Xcode command-line tools; no extra install needed):
+
+```sh
+# Center-crop 2816×1536 logo to 1536×1536 square, then resize to 1024 master
+sips -c 1536 1536 ~/Downloads/gashuu_logo.png --out /tmp/icon-sq.png
+sips -z 1024 1024 /tmp/icon-sq.png --out crates/gashuu/ui/assets/app-icon.png
+
+# Build .iconset (all required macOS sizes) and compile to .icns
+ICONSET=/tmp/gashuu.iconset; mkdir -p "$ICONSET"
+for s in 16 32 128 256 512; do
+  sips -z $s $s         crates/gashuu/ui/assets/app-icon.png --out "$ICONSET/icon_${s}x${s}.png"
+  sips -z $((s*2)) $((s*2)) crates/gashuu/ui/assets/app-icon.png --out "$ICONSET/icon_${s}x${s}@2x.png"
+done
+iconutil -c icns "$ICONSET" -o crates/gashuu/ui/assets/app-icon.icns
+```
+
+**Producing the macOS .app bundle** — install `cargo-bundle` once, then build:
+
+```sh
+cargo install cargo-bundle   # one-time
+mise exec -- cargo bundle --release   # emits target/release/bundle/osx/gashuu.app
+```
+
+`cargo bundle` is NOT wired into the default `cargo build` or CI gates — it is a developer convenience command only.
+
+**Deferred**: Windows `.ico` embedding (winres / embed-resource) and a Linux `.desktop` entry are deferred to a follow-up issue.
