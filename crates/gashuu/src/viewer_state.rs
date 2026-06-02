@@ -40,12 +40,12 @@ pub struct SpreadImages {
 /// `ViewerState::jump_to` (which respects single/double + cover mode), so this
 /// helper carries NO layout awareness — only direction and clamping.
 //
-// Test-only in this PR: the Slint scrubber resolves the knob fraction to a page
-// in the UI and passes an already-resolved page to `on_scrub_commit`, so this
-// pure helper is currently exercised only by the unit tests below. Same
-// `#[allow(dead_code)]` convention as the test-only accessors above (in a binary
-// crate, `pub` is not a public API surface, so `-D warnings` flags it).
-#[allow(dead_code)]
+// Single source of rounding (#71 Part D): the Slint scrubber now passes the RAW
+// clamped knob fraction up via `preview(float)`/`commit(float)`, and the
+// `on_scrub_preview`/`on_scrub_commit` wiring in `main.rs` calls THIS helper to
+// resolve the page. So it has a real runtime caller (no longer `#[allow(dead_code)]`)
+// AND is the authoritative spec the unit tests below pin — the former in-Slint
+// `drag-page` rounding is gone, so there is exactly one place this mapping lives.
 pub fn scrub_fraction_to_page(fraction: f32, page_count: usize, rtl: bool) -> usize {
     if page_count == 0 {
         return 0;

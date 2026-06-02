@@ -25,7 +25,7 @@ use page_counter::page_counter_text;
 use std::cell::RefCell;
 use std::rc::Rc;
 use thumbnail_strip::ThumbnailController;
-use viewer_state::ViewerState;
+use viewer_state::{scrub_fraction_to_page, ViewerState};
 use viewport::ViewportState;
 
 fn main() -> color_eyre::Result<()> {
@@ -303,13 +303,17 @@ fn main() -> color_eyre::Result<()> {
     {
         let ui_weak = ui.as_weak();
         let state = Rc::clone(&state);
-        ui.on_scrub_preview(move |page| {
+        ui.on_scrub_preview(move |frac| {
             with_ui(&ui_weak, |ui| {
                 let total = state.borrow().page_count();
                 if total == 0 {
                     return;
                 }
-                let lead = (page.max(0) as usize).min(total - 1);
+                // Single source of rounding: resolve the raw knob fraction to a
+                // 0-based page via the pure `scrub_fraction_to_page` (clamp, RTL
+                // inversion, round-half-up) — the Slint side no longer rounds.
+                let rtl = matches!(state.borrow().reading_direction(), ReadingDirection::Rtl);
+                let lead = scrub_fraction_to_page(frac, total, rtl);
                 // Decide whether this previewed spread is double using the SAME layout
                 // resolution the body uses, so the popover shows 1 vs 2 thumbs
                 // correctly (the pure helper carries no layout; ViewerState owns it).
@@ -344,13 +348,20 @@ fn main() -> color_eyre::Result<()> {
         let ui_weak = ui.as_weak();
         let state = Rc::clone(&state);
         let viewport = Rc::clone(&viewport);
-        ui.on_scrub_commit(move |page| {
+        ui.on_scrub_commit(move |frac| {
             with_ui(&ui_weak, |ui| {
-                // borrow_mut() temporary drops at the `;` before refresh borrows state.
+                // Single source of rounding: resolve the raw release fraction to a
+                // page via `scrub_fraction_to_page` (the same helper the preview
+                // path uses), then jump. `page_count`/`reading_direction` reads and
+                // the `borrow_mut()` jump_to each drop at their `;` before refresh
+                // takes a fresh borrow.
+                let total = state.borrow().page_count();
+                let rtl = matches!(state.borrow().reading_direction(), ReadingDirection::Rtl);
+                let page = scrub_fraction_to_page(frac, total, rtl);
                 // Refresh unconditionally — unlike the nav handler, a scrub commit always
                 // re-seeds the scrubber knob + counter to the committed spread, even when
                 // the resolved leading equals the current index (a no-op jump).
-                let _moved = state.borrow_mut().jump_to(page.max(0) as usize);
+                let _moved = state.borrow_mut().jump_to(page);
                 refresh(&ui, &state.borrow(), &viewport);
                 ui.invoke_focus_pages();
             })

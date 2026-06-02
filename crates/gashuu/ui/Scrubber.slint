@@ -1,16 +1,24 @@
-// Bottom page scrubber for the viewer. Frozen public surface per
-// .claude/plans/_contracts.md — do NOT change prop/callback signatures.
+// Bottom page scrubber for the viewer.
 //
 // Behavior (spec §5, decision 11):
 //   - The knob reflects `current-page` (1-based) when idle.
-//   - While dragging, the knob follows the pointer; the component computes the
-//     0-based page under the knob and fires `preview(page)` (preview ONLY — the
+//   - While dragging, the knob follows the pointer; the component fires
+//     `preview(fraction)` with the RAW clamped drag fraction (preview ONLY — the
 //     page body must NOT change). A floating popover above the knob shows 1
-//     thumbnail (single) or 2 (double) plus "p.X / N" (or "p.X-Y / N").
-//   - On release it fires `commit(page)` exactly once.
+//     thumbnail (single) or 2 (double); the page number is rendered by the
+//     Rust-maintained page-counter chip, not by the popover.
+//   - On release it fires `commit(fraction)` exactly once.
 //   - RTL (manga): dragging LEFT advances (the screen-left end = last page).
 //   - Visibility is owned by the parent via `chrome-shown` (auto-hide).
+//
+// Single source of rounding (#71 Part D): the knob fraction -> page mapping is
+// owned by Rust's `scrub_fraction_to_page` (the unit-tested spec). This
+// component therefore carries NO fraction->page rounding: it passes the raw
+// clamped fraction (a float in [0,1]) up via `preview`/`commit`, and Rust
+// resolves the page (clamp, RTL inversion, round-half-up). The fraction is the
+// only thing that crosses the Slint->Rust boundary for the scrubber.
 import { Theme } from "Theme.slint";
+import { ThumbnailCell } from "components/ThumbnailCell.slint";
 
 export component Scrubber inherits Rectangle {
     in property <int> current-page;     // 1-based current spread leading
@@ -20,8 +28,11 @@ export component Scrubber inherits Rectangle {
     in property <image> preview-a;      // leading preview thumb
     in property <image> preview-b;      // trailing preview thumb (double only)
     in property <bool> chrome-shown;    // auto-hide state (parent-driven)
-    callback preview(int);   // 0-based page under the knob DURING drag
-    callback commit(int);    // 0-based page to jump_to ON RELEASE
+    // Raw clamped knob fraction in [0,1] (screen-left 0 -> right 1). Rust maps
+    // it to a 0-based page via `scrub_fraction_to_page` (single source of
+    // rounding); RTL inversion + round-half-up live there, not here.
+    callback preview(float);   // fraction under the knob DURING drag
+    callback commit(float);    // fraction to resolve + jump_to ON RELEASE
 
     // Whole component fades with the chrome; no hit area when hidden so a hidden
     // scrubber can't intercept clicks meant for the page.
@@ -39,19 +50,15 @@ export component Scrubber inherits Rectangle {
 
     // Drag bookkeeping.
     private property <bool> dragging: ta.pressed;
-    // Pointer fraction along the rail (screen-left 0 -> right 1), clamped.
+    // Pointer fraction along the rail (screen-left 0 -> right 1), clamped to
+    // [0,1]. This is the ONLY value handed to Rust (`preview`/`commit`); the
+    // fraction->page mapping (RTL inversion + round-half-up) is owned solely by
+    // Rust's `scrub_fraction_to_page`, so there is intentionally NO `drag-page`
+    // rounding property here (#71 Part D: single source of rounding).
     private property <float> drag-frac:
         root.rail-w > 0px
             ? clamp((ta.mouse-x - root.rail-x) / root.rail-w, 0.0, 1.0)
             : 0.0;
-    // 0-based page under the knob while dragging. Mirrors `scrub_fraction_to_page`
-    // in Rust exactly: RTL inverts the fraction first (1.0 - frac), then applies
-    // round-half-up (+0.5 floor); LTR maps the fraction directly. drag-frac is
-    // already clamped to [0,1] above, mirroring the Rust clamp.
-    private property <int> drag-page:
-        root.rtl
-            ? floor((1.0 - root.drag-frac) * root.last-index + 0.5)
-            : floor(root.drag-frac * root.last-index + 0.5);
     // Idle fraction derived from current-page (1-based) so the knob sits at the
     // current spread when not dragging. RTL mirrors the position.
     private property <float> idle-frac:
@@ -96,19 +103,20 @@ export component Scrubber inherits Rectangle {
         height: root.height;
         y: 0;
         // Live preview while dragging — body must NOT change (Rust updates only
-        // the popover + counter from `preview`).
+        // the popover + counter from `preview`). Pass the RAW clamped fraction;
+        // Rust resolves the page via `scrub_fraction_to_page`.
         moved => {
-            if (self.pressed) { root.preview(root.drag-page); }
+            if (self.pressed) { root.preview(clamp(root.drag-frac, 0.0, 1.0)); }
         }
         pointer-event(e) => {
             if (e.kind == PointerEventKind.down) {
                 // Fire an initial preview on press so the popover appears
                 // immediately at the press point.
-                root.preview(root.drag-page);
+                root.preview(clamp(root.drag-frac, 0.0, 1.0));
             }
             if (e.kind == PointerEventKind.up) {
                 // Commit exactly once on release.
-                root.commit(root.drag-page);
+                root.commit(clamp(root.drag-frac, 0.0, 1.0));
             }
         }
     }
@@ -129,34 +137,33 @@ export component Scrubber inherits Rectangle {
         drop-shadow-color: Theme.shadow-popover;
         drop-shadow-blur: 30px;
 
-        VerticalLayout {
+        // Preview thumbnail(s). The page number is shown by the Rust-maintained
+        // page-counter chip (updated from `on_scrub_preview`), so the popover
+        // carries no in-Slint page readout — keeping ALL fraction->page rounding
+        // in Rust (#71 Part D).
+        HorizontalLayout {
             padding: Theme.space-sm;
             spacing: Theme.space-xs;
 
-            HorizontalLayout {
-                spacing: Theme.space-xs;
-                Image {
-                    source: root.preview-a;
-                    image-fit: contain;
-                    horizontal-stretch: 1;
-                }
-                if root.double : Image {
-                    source: root.preview-b;
-                    image-fit: contain;
-                    horizontal-stretch: 1;
-                }
+            // ThumbnailCell inherits Rectangle and has NO intrinsic size in a
+            // layout, so the cells need explicit stretch (width) + a min-height
+            // to occupy the preview area like the old Images did. These are
+            // preview thumbs: always treated as loaded, never failed/highlighted.
+            ThumbnailCell {
+                source: root.preview-a;
+                loaded: true;
+                failed: false;
+                highlighted: false;
+                horizontal-stretch: 1;
+                min-height: 100px;
             }
-            // "p.X / N" single, "p.X–Y / N" double. drag-page is 0-based; +1 for
-            // display. Trailing page is clamped to the last page (mirrors Rust
-            // chip: trail = (lead + 1).min(total - 1)). Tabular numerals so the
-            // count doesn't jitter while scrubbing.
-            Text {
-                text: root.double
-                    ? "p." + (root.drag-page + 1) + "\u{2013}" + (min(root.drag-page + 1, root.total-pages - 1) + 1) + " / " + root.total-pages
-                    : "p." + (root.drag-page + 1) + " / " + root.total-pages;
-                color: Theme.text-mid;
-                font-size: Theme.font-numeric;
-                horizontal-alignment: center;
+            if root.double : ThumbnailCell {
+                source: root.preview-b;
+                loaded: true;
+                failed: false;
+                highlighted: false;
+                horizontal-stretch: 1;
+                min-height: 100px;
             }
         }
     }
