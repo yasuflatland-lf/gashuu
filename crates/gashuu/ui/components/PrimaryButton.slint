@@ -1,0 +1,70 @@
+// PrimaryButton — DESIGN.md `components.button-primary`
+//
+// Background : Theme.accent  (the single interactive hue, see Theme.slint)
+// Corner     : Theme.radius-md (8px)
+// Padding    : 8px vertical / 16px horizontal (size to label + padding)
+// Label      : Theme.font-label (12px), Theme.weight-medium (500), Theme.text (white)
+// Hover      : background darkens slightly via .darker(0.08)
+// Press      : background darkens further via .darker(0.20)
+// All colors are routed through Theme — no raw hex inline.
+
+import { Theme } from "../Theme.slint";
+
+export component PrimaryButton inherits Rectangle {
+    // ── Public API ────────────────────────────────────────────────────────────
+    in property <string> text;
+    callback clicked;
+
+    // ── Sizing: label + 16px horizontal / 8px vertical padding ───────────────
+    // The root Rectangle sizes itself to its content (HorizontalLayout min-size
+    // drives width; explicit padding drives height via the layout's padding).
+    // A min-height of 32px satisfies the DESIGN ≥ 32px hit-area requirement.
+    min-height: 32px;
+    horizontal-stretch: 0;
+    vertical-stretch: 0;
+
+    // ── Default appearance ────────────────────────────────────────────────────
+    background: Theme.accent;
+    border-radius: Theme.radius-md;
+
+    animate background { duration: Theme.motion-fast; }
+
+    // ── States: hover and press darken the accent background ─────────────────
+    // Priority: pressed > hover (Slint evaluates first matching state wins, so
+    // list pressed before hover — same ordering used by the Slint fluent Button).
+    states [
+        pressed when touch.pressed : {
+            root.background: Theme.accent.darker(0.20);
+        }
+        hover when touch.has-hover : {
+            root.background: Theme.accent.darker(0.08);
+        }
+    ]
+
+    // ── Label ─────────────────────────────────────────────────────────────────
+    HorizontalLayout {
+        padding-left: 16px;
+        padding-right: 16px;
+        padding-top: 8px;
+        padding-bottom: 8px;
+        alignment: center;
+
+        Text {
+            text: root.text;
+            color: Theme.text;
+            font-size: Theme.font-label;
+            font-weight: Theme.weight-medium;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+        }
+    }
+
+    // ── Interaction ───────────────────────────────────────────────────────────
+    // TouchArea is non-focusable in Slint — it does NOT steal keyboard focus
+    // from any FocusScope in the parent hierarchy (established pattern, see
+    // docs/patterns.md "TouchArea click focus recovery" and "Slint zoom/pan
+    // plumbing").
+    touch := TouchArea {
+        clicked => { root.clicked(); }
+    }
+}

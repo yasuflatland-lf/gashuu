@@ -1,0 +1,91 @@
+// One thumbnail treatment shared by the three thumbnail surfaces — the page
+// strip, the scrubber preview popover, and the library covers (DESIGN.md
+// "Iteration / Agent Prompt Guide" rule 6: shared rounding / shadow /
+// loading / failed treatment across all three). Centralizing the cell here
+// keeps every call site declarative and guarantees the surfaces can't drift
+// apart visually.
+//
+// Three mutually-exclusive states are modeled as explicit booleans (Figma
+// variant parity), exactly as ThumbnailStrip drives them today:
+//   loaded              → the real thumbnail Image (contain-fit, inset by border)
+//   !loaded && !failed  → neutral "still loading" placeholder (Theme.placeholder)
+//   !loaded && failed   → "decode failed" placeholder (Theme.error-surface +
+//                         Theme.error border/glyph) — the tint MUST stay distinct
+//                         from a loading cell so a permanent failure is visually
+//                         separable (the "view must match status" rule).
+//
+// Colors come from Theme.* only — NO inline brand hex (DESIGN.md rule 2;
+// scripts/check-tokens.sh enforces this). Theme lives one directory up.
+import { Theme } from "../Theme.slint";
+
+export component ThumbnailCell inherits Rectangle {
+    // ── Public API (kept minimal so the three call sites stay declarative) ──────
+    in property <image> source;
+    in property <bool> loaded;
+    in property <bool> failed;
+    // Accent highlight border for the "current page" cell (page strip). Library
+    // covers leave this false and lean on their own focus ring instead.
+    in property <bool> highlighted;
+    // Corner rounding: pages / thumbnail cells use Theme.radius-xs (3px,
+    // DESIGN.md "Shapes"); library covers pass Theme.radius-sm (6px).
+    in property <length> radius: Theme.radius-xs;
+
+    // ── Border widths (adopted verbatim from ThumbnailStrip's two widths) ──────
+    // Highlighted cell vs neutral cell — the accent ring is wider so the current
+    // page reads clearly while a resting cell keeps a quiet 1px hairline.
+    private property <length> border-highlight: 3px;
+    private property <length> border-neutral: 1px;
+    // The active border width, used both for the visible border and to inset the
+    // inner content so the image/placeholder never overlaps the ring.
+    private property <length> border-w: root.highlighted ? root.border-highlight : root.border-neutral;
+
+    // ── Cell shell ──────────────────────────────────────────────────────────────
+    background: Theme.surface-raised;
+    border-radius: root.radius;
+    border-width: root.border-w;
+    border-color: root.highlighted ? Theme.accent : Theme.hairline;
+
+    // ── State 1: loaded → real thumbnail, inset by the border ──────────────────
+    if root.loaded : Image {
+        x: root.border-w;
+        y: root.border-w;
+        width: root.width - 2 * root.border-w;
+        height: root.height - 2 * root.border-w;
+        source: root.source;
+        image-fit: contain;
+    }
+
+    // ── State 2: !loaded && !failed → neutral "loading" placeholder ────────────
+    if !root.loaded && !root.failed : Rectangle {
+        x: root.border-w;
+        y: root.border-w;
+        width: root.width - 2 * root.border-w;
+        height: root.height - 2 * root.border-w;
+        background: Theme.placeholder;
+        border-radius: root.radius;
+    }
+
+    // ── State 3: !loaded && failed → red-tinted "decode failed" placeholder ────
+    // Surface + 1px border + glyph all in the failed hue (matches how
+    // ThumbnailStrip tints this state).
+    if !root.loaded && root.failed : Rectangle {
+        x: root.border-w;
+        y: root.border-w;
+        width: root.width - 2 * root.border-w;
+        height: root.height - 2 * root.border-w;
+        background: Theme.error-surface;
+        border-color: Theme.error;
+        border-width: 1px;
+        border-radius: root.radius;
+
+        Text {
+            width: parent.width;
+            height: parent.height;
+            text: "✕";
+            color: Theme.error;
+            font-size: 20px;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+        }
+    }
+}
