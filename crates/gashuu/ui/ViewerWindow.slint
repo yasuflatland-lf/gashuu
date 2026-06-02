@@ -10,7 +10,9 @@ import { Chip } from "components/Chip.slint";
 import { TitleBar } from "components/TitleBar.slint";
 
 export component ViewerWindow inherits Window {
-    title: "gashuu";
+    // Intentionally empty: the OS title bar shows no app name (the in-app
+    // TitleBar component carries the current book name instead). See issue #85.
+    title: "";
     preferred-width: 900px;
     preferred-height: 1200px;
     // Floor that keeps a two-page spread legible with the chrome: the title bar
