@@ -44,6 +44,10 @@ export component ViewerWindow inherits Window {
     in property <bool> scrubber-double;
     in property <image> scrubber-preview-a;
     in property <image> scrubber-preview-b;
+    in property <bool> scrubber-preview-a-loaded: false;
+    in property <bool> scrubber-preview-a-failed: false;
+    in property <bool> scrubber-preview-b-loaded: false;
+    in property <bool> scrubber-preview-b-failed: false;
     // Counter text, e.g. "142 / 340" (tabular). Maintained by Rust's refresh.
     in property <string> page-counter-text;
 
@@ -305,6 +309,10 @@ export component ViewerWindow inherits Window {
                 double: root.scrubber-double;
                 preview-a: root.scrubber-preview-a;
                 preview-b: root.scrubber-preview-b;
+                preview-a-loaded: root.scrubber-preview-a-loaded;
+                preview-a-failed: root.scrubber-preview-a-failed;
+                preview-b-loaded: root.scrubber-preview-b-loaded;
+                preview-b-failed: root.scrubber-preview-b-failed;
                 chrome-shown: root.chrome-shown;
                 preview(p) => { root.reveal-chrome(); root.scrub-preview(p); }
                 commit(p) => { root.scrub-commit(p); }
