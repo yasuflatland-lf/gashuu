@@ -20,7 +20,6 @@
 // Styling references `Theme.*` tokens only — NO inline brand hex (DESIGN.md).
 // Key seams (handled in the FocusScope): Left/Right -> move(-1/+1),
 // Return -> open(focused-index), Down -> back().
-import { Button } from "std-widgets.slint";
 import { Theme } from "Theme.slint";
 // Shared design-system components (P2 componentization, issue #71): the
 // reading-progress bar, the empty-state primary CTA button, and the shared
@@ -30,6 +29,7 @@ import { Theme } from "Theme.slint";
 import { ProgressBar } from "components/ProgressBar.slint";
 import { PrimaryButton } from "components/PrimaryButton.slint";
 import { ThumbnailCell } from "components/ThumbnailCell.slint";
+import { NavBar } from "components/NavBar.slint";
 
 // Frozen by PR-0b; populated by PR-C (covers via PR-V). One book in the shelf.
 export struct CarouselItem {
@@ -198,32 +198,6 @@ export component Carousel inherits Rectangle {
         background: @linear-gradient(180deg, Theme.stage-top 0%, Theme.canvas 100%);
     }
 
-    // ── Toolbar: "Add files…" / "Add folder…" ────────────────────────────────
-    // Always-visible strip at the top of the carousel. Clicking either button fires
-    // the matching callback (wired to the rfd file/folder pickers in main.rs), then
-    // restores keyboard focus to the carousel's FocusScope.
-    HorizontalLayout {
-        x: 0;
-        y: 0;
-        width: parent.width;
-        height: 40px;
-        alignment: start;
-        spacing: Theme.space-sm;
-        padding-left: Theme.space-md;
-        padding-right: Theme.space-md;
-        padding-top: Theme.space-xs;
-        padding-bottom: Theme.space-xs;
-
-        Button {
-            text: "Add files…";
-            clicked => { root.add-files(); root.focus-self(); }
-        }
-        Button {
-            text: "Add folder…";
-            clicked => { root.add-folder(); root.focus-self(); }
-        }
-    }
-
     // ── Keyboard seams ──────────────────────────────────────────────────────
     // The carousel is the focused screen on the Library route, so it owns key
     // input here. Left/Right move focus, Return opens the focused book, Down
@@ -366,5 +340,20 @@ export component Carousel inherits Rectangle {
                   }
               }
           }
+    }
+
+    // ── Top glass-pill nav (#83): centered, icon-only twin capsules. ──────────
+    // Drawn LAST so it paints on top of the cover-flow (Slint has no per-item z;
+    // paint order == declaration order). Kept OUTSIDE the FocusScope: it is mouse +
+    // screen-reader oriented, and keyboard navigation stays owned by the carousel.
+    // Clicking an item fires the existing rfd picker callback, then restores
+    // keyboard focus to the carousel (preserving the old toolbar behavior).
+    NavBar {
+        x: (parent.width - self.width) / 2;
+        y: Theme.space-md;
+        file-icon: @image-url("assets/file.svg");
+        folder-icon: @image-url("assets/folder.svg");
+        add-files => { root.add-files(); root.focus-self(); }
+        add-folder => { root.add-folder(); root.focus-self(); }
     }
 }
