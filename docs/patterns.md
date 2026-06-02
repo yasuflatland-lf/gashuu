@@ -309,7 +309,7 @@ When Rust pushes a value into a bound `ComboBox.current-index`, `selected` can r
 
 `ViewerState` seeds `cache_size`/`preload_pages` ONCE at `from_settings`; `set_source` builds the `ImageCache` from ViewerState's OWN fields, never re-reading live `Settings`. Updating only `Settings` makes the new value take effect on the NEXT LAUNCH; `set_cache_config` mirrors it so a book opened later THIS session uses it. Immediate rebuild of the CURRENT book's cache stays deferred.
 
-### enum↔index helpers (`main.rs`) stay in lock-step with the ComboBox `model:` arrays
+### enum↔index helpers (`enum_adapters.rs`) stay in lock-step with the ComboBox `model:` arrays
 
 `*_to_index` uses an EXHAUSTIVE match (a new enum variant is a compile error); `index_to_*` defaults any out-of-range `i32` (Slint sends a raw int) to the FIRST variant. Round-trip + out-of-range-clamp are unit-tested.
 

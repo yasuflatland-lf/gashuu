@@ -48,8 +48,8 @@ pub struct CoverRequest {
 }
 
 /// Owns the carousel-cover generation bookkeeping (epoch + cancel double-guard).
-/// It does NOT own the `VecModel` — that lives in `main.rs` and is bound into the
-/// UI by the carousel builder; this controller re-fetches it through the
+/// It does NOT own the `VecModel` — that is built and bound into the UI by
+/// `carousel::build_carousel_model`; this controller re-fetches it through the
 /// `Weak<ViewerWindow>` inside each event-loop closure (the model is `!Send`).
 pub struct CoverController {
     epoch: Arc<AtomicUsize>,

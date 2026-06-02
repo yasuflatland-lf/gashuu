@@ -214,11 +214,19 @@ PR-C, `library_model.rs`. PURE (Slint-free) `Library` → carousel display-row m
 -> Vec<CarouselData>` in shelf order. The carousel counterpart of `thumbnail_strip`'s row mapping —
 keeps the derivation (1-based `current = last_page + 1`; `progress = last_page / total` guarded so
 `total == 0` → `0.0`; `available` via `Library::is_available`) table-testable without a display
-backend. `main.rs`'s `to_carousel_item` adapter builds the `!Send` `slint::Image` (placeholder this
+backend. `carousel.rs`'s `to_carousel_item` adapter builds the `!Send` `slint::Image` (placeholder this
 PR) on the UI thread; `build_carousel_model` is the build+bind chokepoint returning the `Rc<VecModel>`
 so PR-V/PR-L mutate the same model. `total` comes from the persisted `Book::page_count` (PR-La):
 `0` until the book has been opened at least once (`progress` guarded to `0.0`), the real saved count
 afterwards. The `total: clamp_to_i32(total)` saturating cast is unchanged.
+
+### carousel
+
+PR-58, `carousel.rs`. UI-thread adapter layer between `library_model` and Slint: `to_carousel_item` (private) maps a `CarouselData` row to a `CarouselItem` (placeholder `slint::Image::default()` cover); `build_carousel_model` (pub(crate)) builds and binds the `Rc<VecModel<CarouselItem>>` into the UI (the single Library → carousel surface chokepoint); `cover_requests` (pub(crate)) derives the per-book `CoverRequest` list; `thumb_image_at` (pub(crate)) re-fetches a row's thumbnail image for the scrubber preview.
+
+### enum_adapters
+
+PR-58, `enum_adapters.rs`. The 8 `pub(crate)` enum↔index adapters that were previously inline in `main.rs`: `reading_direction_to_index`/`index_to_reading_direction`, `spread_mode_to_index`/`index_to_spread_mode`, `cover_mode_to_index`/`index_to_cover_mode`, `fit_mode_to_index`/`index_to_fit_mode`. Each `index_to_*` clamps out-of-range to the first variant, mirroring the `index_to_screen` clamp policy in `navigation.rs`.
 
 ### Slint UI files
 
@@ -281,7 +289,7 @@ Drag fires `preview` only; pointer-release fires `commit`.
 **`ViewerWindow.slint`**: extended in PR8b with the two `if root.show-X : Component` overlays
 (last children = front), a "Settings…" toolbar button, the in/in-out properties + setter
 callbacks, and a FocusScope key-guard. `main.rs` gained the dialog/guide wiring + 8 enum↔index
-helper fns + `KEY_BINDINGS_HELP`. Extended in PR-0b with a two-screen model: `in property <int>
+helper fns (since extracted to `enum_adapters.rs`) + `KEY_BINDINGS_HELP`. Extended in PR-0b with a two-screen model: `in property <int>
 screen` gates the Library `Carousel` (screen 0) vs the Viewer body (screen 1) via
 `visible: root.screen == N` (not `if` — see [patterns.md](patterns.md) for the Slint id-scoping
 reason); Settings/Guide overlays remain viewer-scoped. Extended again in PR-S to mount the

@@ -1,6 +1,6 @@
-//! `Library` -> carousel display mapping and Slint model building for the UI.
+//! `Library` → carousel display mapping and Slint model building for the UI.
 //!
-//! The pure `Library` -> `CarouselData` row derivation lives in `library_model`;
+//! The pure `Library` → `CarouselData` row derivation lives in `library_model`;
 //! this module adapts those rows into Slint `CarouselItem`s, builds and binds the
 //! backing `VecModel`, and derives the per-book cover requests. UI-thread only
 //! (it constructs `slint::Image`s and the `Rc` model, both `!Send`).
