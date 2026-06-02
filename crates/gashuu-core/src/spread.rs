@@ -631,6 +631,27 @@ mod tests {
     }
 
     #[test]
+    fn spread_context_delegates_single_layout() {
+        let ctx = SpreadContext::new(5, SpreadLayout::Single, CoverMode::Standalone);
+        assert_eq!(
+            ctx.spread_at(3),
+            spread_at(5, SpreadLayout::Single, CoverMode::Standalone, 3)
+        );
+        assert_eq!(
+            ctx.normalize(3),
+            normalize_leading(5, SpreadLayout::Single, CoverMode::Standalone, 3)
+        );
+        assert_eq!(
+            ctx.next(3),
+            next_leading(5, SpreadLayout::Single, CoverMode::Standalone, 3)
+        );
+        assert_eq!(
+            ctx.prev(3),
+            prev_leading(5, SpreadLayout::Single, CoverMode::Standalone, 3)
+        );
+    }
+
+    #[test]
     fn spread_context_is_copy_and_eq() {
         let ctx = SpreadContext::new(5, SpreadLayout::Single, CoverMode::Standalone);
         let ctx2 = ctx; // Copy
