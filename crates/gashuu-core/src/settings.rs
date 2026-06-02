@@ -8,6 +8,7 @@
 //! presentation layer.
 
 use crate::cache::{DEFAULT_CAPACITY, DEFAULT_PREFETCH_RADIUS};
+use crate::cache_config::CacheConfig;
 use crate::error::CoreError;
 use directories::ProjectDirs;
 use serde::{Deserialize, Serialize};
@@ -267,6 +268,14 @@ impl Settings {
         self.recent_files.retain(|p| p != &path);
         self.recent_files.insert(0, path);
         self.recent_files.truncate(MAX_RECENT_FILES);
+    }
+
+    /// Validated cache configuration derived from the persisted `cache_size` /
+    /// `preload_pages` fields. This getter is the single point where the raw
+    /// integers become a capacity-checked `CacheConfig`; downstream consumers
+    /// take the `CacheConfig`, never the raw fields.
+    pub fn cache_config(&self) -> CacheConfig {
+        CacheConfig::new(self.cache_size, self.preload_pages)
     }
 }
 
@@ -654,5 +663,28 @@ mod tests {
             !s.seen_guide,
             "seen_guide must default to false when absent from JSON"
         );
+    }
+
+    #[test]
+    fn cache_config_reflects_fields() {
+        let s = Settings {
+            cache_size: 30,
+            preload_pages: 5,
+            ..Default::default()
+        };
+        let cfg = s.cache_config();
+        assert_eq!(cfg.capacity(), 30);
+        assert_eq!(cfg.radius(), 5);
+    }
+
+    #[test]
+    fn cache_config_capacity_is_at_least_one() {
+        // The value object clamps capacity even if the raw field somehow held 0.
+        let s = Settings {
+            cache_size: 0,
+            ..Default::default()
+        };
+        assert_eq!(s.cache_config().capacity(), 1);
+        assert_eq!(s.cache_config().radius(), s.preload_pages);
     }
 }
