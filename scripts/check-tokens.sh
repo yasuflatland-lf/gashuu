@@ -41,11 +41,7 @@ HEX_RE='#[0-9a-fA-F]{3,8}'
 SOURCE_OF_TRUTH="Theme.slint"
 # Files not yet migrated to Theme.* tokens. P1 removes these (shrinks to empty),
 # then the guard is blocking for the whole UI.
-ALLOWLIST=(
-  ThumbnailStrip.slint
-  SettingsDialog.slint
-  FirstRunGuide.slint
-)
+ALLOWLIST=()
 
 failures=0
 pass() { echo "  OK  $*"; }
@@ -54,7 +50,7 @@ fail() { echo "  FAIL $*"; failures=$((failures + 1)); }
 is_allowlisted() {
   local name="$1"
   local entry
-  for entry in "${ALLOWLIST[@]}"; do
+  for entry in "${ALLOWLIST[@]+"${ALLOWLIST[@]}"}"; do
     [ "$name" = "$entry" ] && return 0
   done
   return 1
@@ -110,7 +106,7 @@ else
   if [ "${#pending[@]}" -gt 0 ]; then
     echo ""
     echo "WARN: ${#pending[@]} file(s) excluded from the hex guard, pending P1 token migration:"
-    for name in "${pending[@]}"; do
+    for name in "${pending[@]+"${pending[@]}"}"; do
       echo "  - $name ($(hex_count "$UI_DIR/$name") raw hex)"
     done
   fi
