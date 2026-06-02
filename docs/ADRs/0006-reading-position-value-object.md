@@ -61,8 +61,29 @@ Name the fact, give it one home, and lift the open-time rule into the domain agg
 
 - **No user-visible behavior change**: resume position + carousel progress are identical to before.
 - `ReadingProgress` is re-exported from `gashuu-core`; `OpenRegistration` too.
-- The same invariant is enforced as a headless `debug_assert!` in core and respected via a
-  `page_count > 0` guard at the UI call site (with a `tracing::warn!` on the unreachable
-  `open_file == None` branch).
+- As shipped in #60, the same invariant was enforced as a headless `debug_assert!` in core and
+  respected via a `page_count > 0` guard at the UI call site. This two-layer runtime enforcement was
+  later SUPERSEDED by #65, which lifted the invariant into the type system (`NonZeroUsize`) — see the
+  Update section below. (The `tracing::warn!` on the `open_file == None` branch is a separate
+  condition and remains.)
 - A serde-shape test (`reading_progress_is_not_persisted`) locks that the value object never leaks
   into `library.json`.
+
+## Update (#65): unknown total lifted from a 0 sentinel into the type system
+
+The `0 = unknown` page count, originally a bare `usize` sentinel with a runtime guard, was lifted
+into the type system:
+
+- `ReadingProgress.total` is now `Option<usize>` (`total() -> Option<usize>`); `fraction()` returns
+  `0.0` for `None` and defensively for `Some(0)`.
+- `Book::page_count_opt() -> Option<usize>` is the public accessor (the old `page_count() -> usize`
+  was removed). The STORAGE is unchanged — `Book.page_count` is still a `usize` with `0` on disk for
+  an unknown/old file, `LIBRARY_VERSION` still 1 — and the accessor maps stored `0 → None`.
+- `set_page_count(_, NonZeroUsize)` + `register_opened(_, Option<NonZeroUsize>)` make `0`
+  unrepresentable at the write boundary, which DISSOLVED both the core `debug_assert` and the UI
+  `page_count > 0` guard recorded in the implementation note above. The UI converts at the boundary
+  with `NonZeroUsize::new(page_count)` (a zero-page open → `None` → back-fill skipped).
+
+This stayed WITHIN alternative (B)'s deferral: `Option`/`NonZeroUsize` are confined to
+`ReadingProgress` and `Book`; there is still NO project-wide `PageIndex` newtype across
+`spread.rs` / `cache.rs` / `ViewerState`. The `open_file == None` `tracing::warn!` remains.
