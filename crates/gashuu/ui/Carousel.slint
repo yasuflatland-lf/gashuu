@@ -149,7 +149,7 @@ export component Carousel inherits Rectangle {
                       text: "Your library is empty";
                       color: Theme.text;
                       font-size: Theme.font-title;
-                      font-weight: 700;
+                      font-weight: Theme.weight-bold;
                       horizontal-alignment: center;
                   }
                   Text {
@@ -169,7 +169,7 @@ export component Carousel inherits Rectangle {
                           text: "Select folders / files to add";
                           color: Theme.text;
                           font-size: Theme.font-label;
-                          font-weight: 500;
+                          font-weight: Theme.weight-medium;
                           horizontal-alignment: center;
                           vertical-alignment: center;
                       }
@@ -261,7 +261,7 @@ export component Carousel inherits Rectangle {
                       text: root.items[root.focused-index].title;
                       color: Theme.text;
                       font-size: Theme.font-title;
-                      font-weight: 700;
+                      font-weight: Theme.weight-bold;
                       horizontal-alignment: center;
                       overflow: elide;
                   }

@@ -64,4 +64,33 @@ export global Theme {
     out property <length> font-label: 12px;
     out property <length> font-micro: 11px;
     out property <length> font-numeric: 13px;   // page counters (tabular figures) (PR-S)
+
+    // ── Scrims (modal backdrops) ──────────────────────────────────────────────
+    out property <color> scrim: #000000a0;          // standard modal backdrop (~63% black)
+    out property <color> scrim-strong: #000000c0;   // denser first-run backdrop (~75% black)
+
+    // ── Elevation: page-image shadow (DESIGN elevation.page 0 6px 18px rgba(0,0,0,.50)) ──
+    out property <color> shadow-page: #00000080;
+
+    // ── Neutral placeholder fill (thumbnail still-loading) ────────────────────
+    out property <color> placeholder: #2a3243;      // neutral loading fill (= track hue)
+
+    // ── Failed-decode state — NOT in the DESIGN palette; PROPOSED, needs sign-off ──
+    // Desaturated red tuned to the dark canvas; deliberately distinct from the
+    // forbidden traffic-light win-close (#ff5f57). Surface for the cell, hue for
+    // the border + glyph. Flagged in DESIGN follow-up as a palette addition.
+    out property <color> error: #d16b7c;
+    out property <color> error-surface: #2a1820;
+
+    // ── Motion ────────────────────────────────────────────────────────────────
+    out property <duration> motion-fast: 180ms;     // chrome fades (existing value)
+    out property <duration> motion-standard: 240ms; // carousel transitions (P2)
+
+    // ── Typography weights (DESIGN typography roles) ──────────────────────────
+    // Line-height is intentionally omitted: Slint 1.x Text has no line-height
+    // property, so DESIGN's per-role lineHeight cannot be expressed and must not be faked.
+    out property <int> weight-regular: 400;
+    out property <int> weight-medium: 500;
+    out property <int> weight-semibold: 600;
+    out property <int> weight-bold: 700;
 }

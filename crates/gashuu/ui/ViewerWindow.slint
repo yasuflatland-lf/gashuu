@@ -270,7 +270,7 @@ export component ViewerWindow inherits Window {
                 border-radius: Theme.radius-pill;
                 opacity: root.chrome-shown ? 1.0 : 0.0;
                 visible: root.chrome-shown;
-                animate opacity { duration: 180ms; }
+                animate opacity { duration: Theme.motion-fast; }
                 counter-label := Text {
                     text: root.page-counter-text;
                     color: Theme.text-mid;
