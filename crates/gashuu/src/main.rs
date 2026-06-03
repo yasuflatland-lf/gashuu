@@ -8,6 +8,7 @@ mod keymap;
 mod library_model;
 mod navigation;
 mod page_counter;
+mod page_jump;
 mod thumbnail_strip;
 mod viewer_state;
 mod viewport;
