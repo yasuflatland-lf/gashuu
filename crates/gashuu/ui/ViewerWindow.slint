@@ -293,19 +293,16 @@ export component ViewerWindow inherits Window {
                 }
             }
 
-            // Title label above the pill (auto-hides with chrome). A dark
-            // translucent capsule keeps the white name legible over bright pages:
-            // Slint 1.x Text has no text-shadow and a Rectangle drop-shadow paints
-            // a full-width bar (not a text glow), so a backing capsule replaces the
-            // glow. The capsule hugs the name — its width tracks the text's
-            // preferred width (capped to the stage), and because preferred-width
-            // does not depend on this Rectangle's width there is no binding loop.
-            // Pinned to the top edge with a small inset; the pill is positioned
-            // BELOW it (see viewer-pill.y) so the title never clips off the top.
-            // No backing capsule — the title sits directly over the page, and
-            // legibility comes from a faux text-glow: Slint 1.x Text has no
-            // text-shadow, so the name is drawn several times in Theme.title-glow,
-            // offset 1px around a crisp white copy.
+            // Title label above the pill (auto-hides with chrome). No backing
+            // capsule — the title sits directly over the page; legibility comes
+            // from a faux text-glow: Slint 1.x Text has no text-shadow (and a
+            // Rectangle drop-shadow paints a full-width bar, not a text glow), so
+            // the name is drawn several times in Theme.title-glow, offset ~1.5–2px
+            // around a crisp white copy. The wrapper hugs the name — its width
+            // tracks the text's preferred width (capped to the stage), and because
+            // preferred-width does not depend on this Rectangle's width there is no
+            // binding loop. Pinned to the top edge with a small inset; the pill is
+            // positioned BELOW it (see viewer-pill.y) so neither clips the other.
             title-label := Rectangle {
                 width: min(front-text.preferred-width + Theme.space-lg * 2, parent.width - Theme.space-xl * 2);
                 height: front-text.preferred-height + Theme.space-xs * 2;

@@ -391,7 +391,9 @@ fn main() -> color_eyre::Result<()> {
                         refresh(&ui, &state.borrow(), &viewport);
                         // Belt-and-suspenders: if refresh gains an early-return path,
                         // the field still shows the canonical post-jump page.
-                        ui.set_page_jump_text(format!("{}", current_page_1based(&state)).into());
+                        ui.set_page_jump_text(
+                            format!("{}", current_page_1based(&state.borrow())).into(),
+                        );
                     }
                     moved
                 } else {
@@ -399,7 +401,9 @@ fn main() -> color_eyre::Result<()> {
                     false
                 };
                 if !did_jump {
-                    ui.set_page_jump_text(format!("{}", current_page_1based(&state)).into());
+                    ui.set_page_jump_text(
+                        format!("{}", current_page_1based(&state.borrow())).into(),
+                    );
                 }
                 ui.invoke_focus_pages();
             })
@@ -412,7 +416,7 @@ fn main() -> color_eyre::Result<()> {
         let state = Rc::clone(&state);
         ui.on_page_jump_cancel(move || {
             with_ui(&ui_weak, |ui| {
-                ui.set_page_jump_text(format!("{}", current_page_1based(&state)).into());
+                ui.set_page_jump_text(format!("{}", current_page_1based(&state.borrow())).into());
                 ui.invoke_focus_pages();
             })
         });
@@ -1004,7 +1008,7 @@ pub(crate) fn refresh(
     // counter uses 1-based numbers; `double` mirrors whether the current spread
     // has a trailing page. These are display-only and do NOT change the page body.
     let total = state.page_count();
-    let current_1based = if total == 0 { 0 } else { state.index() + 1 };
+    let current_1based = current_page_1based(state);
     ui.set_scrubber_total_pages(total as i32);
     ui.set_scrubber_current_page(current_1based as i32);
     // `preview_is_double` resolves the trailing page using the SAME layout as the
@@ -1024,12 +1028,11 @@ pub(crate) fn refresh(
 }
 
 /// Returns the current 1-based page number (0 when no pages loaded).
-fn current_page_1based(state: &std::cell::RefCell<ViewerState>) -> usize {
-    let total = state.borrow().page_count();
-    if total == 0 {
+fn current_page_1based(state: &ViewerState) -> usize {
+    if state.page_count() == 0 {
         0
     } else {
-        state.borrow().index() + 1
+        state.index() + 1
     }
 }
 

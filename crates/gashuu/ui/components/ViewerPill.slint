@@ -1,5 +1,5 @@
-// ViewerPill — the top, centered "glass pill" for the page viewer: a sunken
-// "[ page ] / total" jump field (left), a thin divider, then two icon-only
+// ViewerPill — the top, centered "glass pill" for the page viewer: a borderless
+// "<page> / total" jump field (left), a thin divider, then two icon-only
 // NavItems (toggle thumbnails / settings) on the right.
 //
 // This mirrors NavBar.slint structurally. Slint 1.x has NO backdrop-blur, so
@@ -22,9 +22,9 @@
 import { Theme } from "../Theme.slint";
 import { NavItem } from "NavItem.slint";
 
-// File-private "sunken capsule" page-jump field, rendering "[ page ] / total".
-// The page number is editable; the caller (Rust) validates on Enter and
-// restores on Escape. Kept in this file so no new import path is needed.
+// File-private page-jump field, rendering "<input> / total". The page number is
+// editable; the caller (Rust) validates on Enter and restores on Escape. Kept in
+// this file so no new import path is needed.
 //
 // TextInput (not LineEdit) is used deliberately so EVERY color comes from
 // Theme.* — std-widgets' LineEdit paints its own native palette, which would
@@ -46,7 +46,7 @@ component PageJumpField inherits Rectangle {
     // pill rather than a boxed-in input (a hairline border outlined it as a
     // separate box, which the design does not want). The width holds a 4-digit
     // page number plus the "/ total" readout without clipping.
-    width: 142px;
+    width: Theme.viewer-jump-field-width;
     height: Theme.nav-capsule;
     background: transparent;
 
@@ -133,7 +133,7 @@ export component ViewerPill inherits Rectangle {
     // 1px divider, two icon capsules → four children → three inter-item gaps.
     //   jump-field(142px) + divider + 2*capsule + 3*gap + 2*pad.
     height: Theme.nav-pill-height;
-    width: 142px
+    width: Theme.viewer-jump-field-width
         + Theme.nav-divider-width
         + 2 * Theme.nav-capsule
         + 3 * Theme.nav-item-gap
