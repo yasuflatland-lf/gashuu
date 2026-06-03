@@ -38,12 +38,13 @@ export component ViewerWindow inherits Window {
     // is the TOTAL book count (filter-independent) so the carousel can tell the
     // empty-library CTA apart from the search no-results state.
     // `library-search-changed` carries the debounced query to main.rs;
-    // `focus-library-search` lets Rust move focus into the field; `settings`
-    // opens the settings dialog from the nav.
+    // `focus-library-search` lets Rust move focus into the field. The nav's
+    // `settings` click is routed straight to the existing `open-settings` flow
+    // below (no dedicated root callback), so the glass-pill Settings button opens
+    // the same SettingsDialog as the Viewer title bar.
     in-out property <string> library-search-query;
     in property <int> library-book-count;
     callback library-search-changed(string);
-    callback settings();
     public function focus-library-search() { carousel.focus-search(); }
 
     in property <[ThumbnailItem]> thumbnails;
@@ -172,8 +173,14 @@ export component ViewerWindow inherits Window {
         focused-index <=> root.carousel-focused-index;
         search-query <=> root.library-search-query;
         library-book-count: root.library-book-count;
+        // Suppress the carousel's keyboard seams while a modal overlays the
+        // Library — same condition the Viewer FocusScope uses (see `fs` below).
+        modal-open: root.show-settings || root.show-guide;
         search-changed(q) => { root.library-search-changed(q); }
-        settings() => { root.settings(); }
+        // The nav's Settings button opens the EXISTING SettingsDialog: route the
+        // click straight to the shared `open-settings` flow (same handler the
+        // Viewer title bar uses) rather than a separate placeholder callback.
+        settings() => { root.open-settings(); }
         open(i) => { root.carousel-open(i); }
         move(delta) => { root.carousel-move(delta); }
         back() => { root.carousel-back(); }

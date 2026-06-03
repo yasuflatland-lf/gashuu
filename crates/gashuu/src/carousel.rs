@@ -179,8 +179,8 @@ mod tests {
     /// A fresh book (never opened, no persisted total) is flagged `needs_count`,
     /// so the cover controller resolves its real page count in the background; a
     /// book with a known count is NOT (it would only re-open the archive to learn
-    /// what is already stored). Row index tracks natural `Library::books()`
-    /// order.
+    /// what is already stored). Row index is the enumerated position in the
+    /// supplied visible-indices slice (0, 1, ...), not the full-library position.
     #[test]
     fn cover_requests_flags_only_books_with_unknown_count() {
         let root = tempfile::tempdir().expect("tempdir");
@@ -254,6 +254,36 @@ mod tests {
         assert_eq!(reqs.len(), 1);
         assert_eq!(reqs[0].row, 0);
         assert_eq!(reqs[0].path, beta_path);
+    }
+
+    /// An out-of-range library index is dropped (via `Library::books().get`)
+    /// rather than panicking; the surviving request keeps row 0 from the
+    /// enumerated position.
+    #[test]
+    fn cover_requests_skips_out_of_range_index() {
+        let mut lib = Library::new();
+        assert!(lib
+            .add(std::path::PathBuf::from("/manga/alpha.cbz"))
+            .is_some());
+
+        let reqs = cover_requests(&lib, &[0, 99]);
+        assert_eq!(reqs.len(), 1);
+        assert_eq!(reqs[0].row, 0);
+    }
+
+    /// An empty visible-indices slice yields a model with no rows even when the
+    /// library has books (an active search matching nothing).
+    #[test]
+    fn build_carousel_model_empty_indices_yields_no_rows() {
+        use slint::Model;
+
+        let mut lib = Library::new();
+        assert!(lib
+            .add(std::path::PathBuf::from("/manga/alpha.cbz"))
+            .is_some());
+
+        let model = build_carousel_model(&lib, &[]);
+        assert_eq!(model.row_count(), 0);
     }
 
     #[test]

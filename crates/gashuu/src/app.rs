@@ -1,11 +1,11 @@
 //! The "open a book" application use case, extracted out of `main.rs`.
 //!
-//! [`OpenBookUseCase`] bundles the six shared collaborators the open path
-//! coordinates (state, settings, viewport, library, thumbs, covers) as fields,
-//! so the open sites call [`OpenBookUseCase::run`] with just the per-call `ui`,
-//! `path`, and `skipped_detail` instead of threading a nine-argument free fn
-//! under `#[allow(clippy::too_many_arguments)]`. It touches Slint (status text,
-//! carousel rebuild, thumbnail launch), so it lives in the UI crate.
+//! [`OpenBookUseCase`] bundles the seven shared collaborators the open path
+//! coordinates (state, settings, viewport, library, thumbs, covers, search) as
+//! fields, so the open sites call [`OpenBookUseCase::run`] with just the per-call
+//! `ui`, `path`, and `skipped_detail` instead of threading a nine-argument free
+//! fn under `#[allow(clippy::too_many_arguments)]`. It touches Slint (status
+//! text, carousel rebuild, thumbnail launch), so it lives in the UI crate.
 
 use std::cell::RefCell;
 use std::num::NonZeroUsize;

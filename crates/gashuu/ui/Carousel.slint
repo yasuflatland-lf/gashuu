@@ -165,11 +165,21 @@ export component Carousel inherits Rectangle {
     // `search-query` mirrors the NavBar field; `library-book-count` is the TOTAL
     // book count (independent of the active filter) so the empty-library CTA and
     // the no-results state can be told apart. `search-changed` carries the
-    // debounced query to Rust. `settings` opens the settings dialog.
+    // debounced query to Rust. `settings` bubbles the glass-pill Settings click
+    // up to ViewerWindow, which routes it into the existing `open-settings` flow
+    // (`on_open_settings` in main.rs) — the SAME SettingsDialog reached from the
+    // Viewer's TitleBar "Settings…" button. The dialog overlays the Library
+    // carousel; closing it returns keyboard focus to the carousel.
     in-out property <string> search-query;
     in property <int> library-book-count;
     callback search-changed(string);
     callback settings();
+    // True while a modal overlay (settings / first-run guide) is open over the
+    // Library. The carousel still holds keyboard focus, so its FocusScope must
+    // suppress all key arms — otherwise Left/Right, `/`, Down, and Return would
+    // act on the carousel underneath the modal (mirrors the Viewer FocusScope
+    // guard in ViewerWindow.slint). Bound by ViewerWindow to the same condition.
+    in property <bool> modal-open;
     // Move keyboard focus into the NavBar search field (carousel `/` and click).
     public function focus-search() { nav.focus-search(); }
 
@@ -223,6 +233,8 @@ export component Carousel inherits Rectangle {
     // GoToLibrary.
     fs := FocusScope {
         key-pressed(event) => {
+            // Suppress background navigation while a modal overlay is open.
+            if (root.modal-open) { return reject; }
             // `/` focuses the search field — but ONLY while the carousel owns
             // focus. Once the search field has focus, `/` is ordinary text input
             // (this FocusScope no longer receives the key).

@@ -101,10 +101,10 @@ component SearchField inherits Rectangle {
         accessible-label: "Search library";
         accessible-placeholder-text: "Search library";
 
-        // Each keystroke (re)arms the trailing debounce: stop any pending fire
-        // and restart, so the query callback fires ~120ms after the LAST edit.
+        // Each keystroke (re)arms the trailing debounce: stop any pending fire,
+        // then restart the countdown, so the query callback fires ~120ms after
+        // the LAST edit.
         edited => {
-            debounce.running = true;
             debounce.stop();
             debounce.start();
         }

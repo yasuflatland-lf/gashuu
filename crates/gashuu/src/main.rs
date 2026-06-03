@@ -98,6 +98,13 @@ fn main() -> color_eyre::Result<()> {
     // SAME visible-index set. Starts on the empty query (every book visible).
     let search = Rc::new(RefCell::new(LibrarySearchState::default()));
     ui.set_library_search_query("".into());
+    // Seed the visible set against the loaded library under the empty query
+    // (every book visible). `set_query` recomputes internally, so the search
+    // state is consistent before the first `refresh_library_carousel`, which now
+    // only READS `visible_indices()`.
+    search
+        .borrow_mut()
+        .set_query(String::new(), &library.borrow());
 
     // The "open a book" use-case, bundling the shared collaborators it threads
     // (state, settings, viewport, library, thumbs, covers, search). Built once and
@@ -115,11 +122,13 @@ fn main() -> color_eyre::Result<()> {
     ));
 
     // Seed the carousel from the persisted library so the home screen shows the
-    // saved books on boot. `refresh_library_carousel` recomputes the (empty-query)
-    // visible set, builds + binds the filtered model, resets carousel focus to 0,
-    // and starts cover loading for the visible rows in ONE place — so the initial
-    // build and every later filter/add refresh share the same code path. Cover
-    // streaming is started exactly once here (no separate `covers.start`).
+    // saved books on boot. The empty-query visible set was already computed by the
+    // `set_query(String::new(), …)` seed above; `refresh_library_carousel` reads
+    // those visible indices, builds + binds the filtered model, resets carousel
+    // focus to 0, and starts cover loading for the visible rows in ONE place — so
+    // the initial build and every later filter/add refresh share the same code
+    // path. Cover streaming is started exactly once here (no separate
+    // `covers.start`).
     refresh_library_carousel(&ui, &library, &covers, &search, true);
 
     // Top-level screen state machine. App boots to Library (the carousel home).
@@ -251,21 +260,13 @@ fn main() -> color_eyre::Result<()> {
         let search = Rc::clone(&search);
         ui.on_library_search_changed(move |query| {
             with_ui(&ui_weak, |ui| {
-                search.borrow_mut().set_query(query.to_string());
+                // `search` and `library` are distinct RefCells; borrowing one
+                // mut while the other is shared cannot conflict. The shared
+                // `library.borrow()` drops at the `;` before refresh.
+                search
+                    .borrow_mut()
+                    .set_query(query.to_string(), &library.borrow());
                 refresh_library_carousel(&ui, &library, &covers, &search, true);
-            })
-        });
-    }
-
-    // Settings button (glass-pill nav): placeholder feedback so the button is not
-    // a silent dead control. Surface a "coming soon" notice on the shared status
-    // line and return keyboard focus to the carousel.
-    {
-        let ui_weak = ui.as_weak();
-        ui.on_settings(move || {
-            with_ui(&ui_weak, |ui| {
-                ui.set_status_text("Settings \u{2014} coming soon".into());
-                ui.invoke_focus_carousel();
             })
         });
     }
@@ -285,17 +286,27 @@ fn main() -> color_eyre::Result<()> {
                 // path through the search state's projection: the carousel row is
                 // an index into `visible_indices`, which maps to the underlying
                 // library row. Borrow discipline: both `Ref`s drop at the `;`.
-                let path = {
+                // Capture the visible/library lengths INSIDE the borrow scope so
+                // the out-of-range warn below can report them without taking a
+                // fresh borrow (borrow discipline: both `Ref`s drop at the block's
+                // `}`).
+                let (path, visible_len, library_len) = {
                     let search = search.borrow();
                     let visible = search.visible_indices().get(index as usize).copied();
                     let lib = library.borrow();
-                    visible
+                    let path = visible
                         .and_then(|library_index| lib.books().get(library_index))
-                        .map(|book| book.path().to_path_buf())
+                        .map(|book| book.path().to_path_buf());
+                    (path, search.visible_indices().len(), lib.books().len())
                 };
                 let Some(path) = path else {
                     // Index out of range (carousel and library out of sync) — no-op.
-                    tracing::warn!(index, "carousel-open: no book at index");
+                    tracing::warn!(
+                        index,
+                        visible_len,
+                        library_len,
+                        "carousel-open: no book at index"
+                    );
                     return;
                 };
                 // open_book.run writes back the OLD book's position first,
@@ -499,9 +510,14 @@ fn main() -> color_eyre::Result<()> {
     }
 
     // Close the settings dialog: hide it, reconcile runtime modes into Settings,
-    // persist, then restore focus to the page area so keyboard navigation keeps
-    // working. The `reconcile_settings` call's `settings.borrow_mut()` drops at its
-    // `;`, so `save()`'s fresh `settings.borrow()` cannot double-borrow.
+    // persist, then restore keyboard focus to whichever screen is underneath.
+    // The dialog can be opened from EITHER the Viewer title bar (screen 1) or the
+    // Library glass-pill nav (screen 0), so focus must return to the matching
+    // FocusScope: the page area on the Viewer, the carousel on the Library.
+    // Restoring `focus-pages()` unconditionally would focus the hidden Viewer
+    // scope when closing over the Library, leaving the carousel keys dead.
+    // The `reconcile_settings` call's `settings.borrow_mut()` drops at its `;`, so
+    // `save()`'s fresh `settings.borrow()` cannot double-borrow.
     {
         let ui_weak = ui.as_weak();
         let state = Rc::clone(&state);
@@ -519,7 +535,12 @@ fn main() -> color_eyre::Result<()> {
                     tracing::error!(error = %e, "failed to save settings from dialog");
                     ui.set_status_text(format!("Could not save settings: {e}").into());
                 }
-                ui.invoke_focus_pages();
+                // screen 0 = Library (carousel), 1 = Viewer (page area).
+                if ui.get_screen() == 0 {
+                    ui.invoke_focus_carousel();
+                } else {
+                    ui.invoke_focus_pages();
+                }
             })
         });
     }
@@ -1150,11 +1171,16 @@ fn visible_focus_index_for_path(
     })
 }
 
-/// Recompute the library-search filter, rebuild + bind the filtered carousel
-/// model, optionally reset carousel focus to row 0, and (re)start cover loading
-/// for the visible rows. The SINGLE place the carousel + cover stream are
-/// refreshed from the shared search state, shared by the initial boot build, the
-/// debounced query callback, and the add path.
+/// Project the CURRENT (already-recomputed) search state into the carousel:
+/// rebuild + bind the filtered carousel model, optionally reset carousel focus
+/// to row 0, and (re)start cover loading for the visible rows. The SINGLE place
+/// the carousel + cover stream are refreshed from the shared search state, shared
+/// by the initial boot build, the debounced query callback, and the add path.
+///
+/// This function only READS `visible_indices()`; it does NOT recompute. Every
+/// caller mutates the search state through a recomputing entry point first —
+/// `set_query` (startup seed + search-changed) or `force_visible` (add) — so the
+/// visible set is already consistent here, avoiding a redundant double-recompute.
 ///
 /// Borrow discipline: each `library.borrow()` is confined to one statement and
 /// dropped before the next; in particular the `library.borrow()` is released
@@ -1169,8 +1195,7 @@ fn refresh_library_carousel(
 ) {
     let (indices, book_count) = {
         let lib = library.borrow();
-        let mut search = search.borrow_mut();
-        search.recompute(&lib);
+        let search = search.borrow();
         (search.visible_indices().to_vec(), lib.books().len() as i32)
     };
 
@@ -1226,7 +1251,13 @@ fn add_books_and_refresh(
     // model, and restarts the cover stream). Focus is set explicitly below to the
     // new book's visible row, so do NOT reset focus to 0 here.
     let save_result = library.borrow().save();
-    search.borrow_mut().force_visible(added_paths.clone());
+    // `search` and `library` are distinct RefCells, so the mut borrow of one and
+    // the shared borrow of the other cannot conflict; the `library.borrow()`
+    // drops at the `;` before refresh. `force_visible` recomputes internally, so
+    // the visible set is consistent before `refresh_library_carousel` reads it.
+    search
+        .borrow_mut()
+        .force_visible(added_paths.clone(), &library.borrow());
     refresh_library_carousel(ui, library, covers, search, false);
     match save_result {
         Err(e) => {
@@ -1253,6 +1284,20 @@ fn add_books_and_refresh(
         };
         if let Some(index) = index {
             ui.set_carousel_focused_index(index as i32);
+        } else {
+            // force_visible(added_paths) + recompute guarantees the just-added book is
+            // a visible row, so this is unreachable in practice. Fail loudly in dev/test;
+            // in release, log and fall through (focus stays on the carousel via the
+            // unconditional invoke_focus_carousel below).
+            debug_assert!(
+                false,
+                "add: forced-visible book {} not found in visible rows",
+                first_path.display()
+            );
+            tracing::warn!(
+                path = %first_path.display(),
+                "add: forced-visible book not found in visible rows; focus not restored"
+            );
         }
     }
     ui.invoke_focus_carousel();

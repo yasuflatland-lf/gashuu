@@ -47,7 +47,7 @@ pub struct CarouselData {
 ///
 /// The query is matched verbatim (not trimmed): callers pass the exact debounced
 /// search text, so leading/trailing whitespace is significant by design.
-pub fn book_matches(book: &Book, query: &str) -> bool {
+pub(crate) fn book_matches(book: &Book, query: &str) -> bool {
     if query.is_empty() {
         return true;
     }
@@ -98,7 +98,7 @@ fn carousel_data_for_book(book: &Book) -> CarouselData {
 /// the common (no forced-visible) case. [`LibrarySearchState::recompute`]
 /// delegates here when no forced paths are active so the logic is exercised
 /// in production and there is no duplicate filter loop.
-pub fn matching_indices(library: &Library, query: &str) -> Vec<usize> {
+pub(crate) fn matching_indices(library: &Library, query: &str) -> Vec<usize> {
     library
         .books()
         .iter()
@@ -134,9 +134,15 @@ pub(crate) fn clamp_to_i32(v: usize) -> i32 {
 /// `forced_visible_paths` keeps freshly-added books visible even when the active
 /// query would not match them; they stay forced until the next user query change
 /// (see [`set_query`](LibrarySearchState::set_query), which clears them).
-/// `visible_indices` is the recomputed projection from the library's natural
-/// order — call [`recompute`](LibrarySearchState::recompute) after any query,
-/// force, or library mutation.
+///
+/// `visible_indices` is kept consistent with `(query, forced_visible_paths)`
+/// after EVERY mutation: each mutator ([`set_query`](LibrarySearchState::set_query),
+/// [`force_visible`](LibrarySearchState::force_visible)) owns its invariant and
+/// recomputes the projection internally, so callers never see a stale visible
+/// set (the natural-ordering "a mutator owns its invariant" rule —
+/// docs/patterns.md). [`recompute`](LibrarySearchState::recompute) is the
+/// re-filtering entry point for the cases where the LIBRARY itself changed but
+/// neither the query nor the forced set did (startup seed + open-time backfill).
 #[derive(Debug, Default)]
 pub(crate) struct LibrarySearchState {
     query: String,
@@ -151,25 +157,39 @@ impl LibrarySearchState {
         &self.visible_indices
     }
 
-    /// Replace the query and clear any forced-visible paths. A user-driven query
+    /// Replace the query and clear any forced-visible paths, then recompute the
+    /// visible set so it stays consistent with the new query. A user-driven query
     /// change supersedes the temporary "keep just-added books visible" override.
-    pub(crate) fn set_query(&mut self, query: String) {
+    pub(crate) fn set_query(&mut self, query: String, library: &Library) {
         self.query = query;
         self.forced_visible_paths.clear();
+        self.recompute(library);
     }
 
     /// Force the given paths to stay visible regardless of the current query,
-    /// until the next [`set_query`](LibrarySearchState::set_query).
-    pub(crate) fn force_visible<I>(&mut self, paths: I)
+    /// until the next [`set_query`](LibrarySearchState::set_query), then recompute
+    /// the visible set so the forced books appear immediately. Paths already
+    /// forced are skipped (dedup), so a repeated add never grows the forced set
+    /// with duplicates.
+    pub(crate) fn force_visible<I>(&mut self, paths: I, library: &Library)
     where
         I: IntoIterator<Item = std::path::PathBuf>,
     {
-        self.forced_visible_paths.extend(paths);
+        for path in paths {
+            if !self.forced_visible_paths.contains(&path) {
+                self.forced_visible_paths.push(path);
+            }
+        }
+        self.recompute(library);
     }
 
     /// Recompute `visible_indices` from `library`: a book is visible if it
     /// matches the query or its path is forced visible. Indices are emitted in
     /// natural `Library::books()` order.
+    ///
+    /// The mutators above recompute internally, so this is the entry point for
+    /// the LIBRARY-changed-only cases (startup seed + open-time backfill) where
+    /// neither the query nor the forced set moved but the books did.
     ///
     /// When no paths are forced visible the common fast-path delegates to
     /// [`matching_indices`] so that function is always exercised in production
@@ -363,14 +383,42 @@ mod tests {
         let beta_path = lib.books()[1].path().to_path_buf();
 
         let mut state = LibrarySearchState::default();
-        state.set_query("alpha".to_string());
-        state.force_visible([beta_path]);
-        state.recompute(&lib);
+        state.set_query("alpha".to_string(), &lib);
+        state.force_visible([beta_path], &lib);
         assert_eq!(state.visible_indices(), &[0, 1]);
 
-        state.set_query("alpha".to_string());
-        state.recompute(&lib);
+        state.set_query("alpha".to_string(), &lib);
         assert_eq!(state.visible_indices(), &[0]);
+    }
+
+    #[test]
+    fn recompute_forced_branch_excludes_non_matching_non_forced_books() {
+        // The forced-visible branch keeps the query match (alpha) AND the forced
+        // path (beta) visible, but a book matching NEITHER the query nor the
+        // forced set (gamma) must stay hidden.
+        let mut lib = Library::new();
+        assert!(lib.add(PathBuf::from("/manga/alpha.cbz")).is_some());
+        assert!(lib.add(PathBuf::from("/manga/beta.cbz")).is_some());
+        assert!(lib.add(PathBuf::from("/manga/gamma.cbz")).is_some());
+        let beta_path = lib.books()[1].path().to_path_buf();
+
+        let mut state = LibrarySearchState::default();
+        state.set_query("alpha".to_string(), &lib);
+        state.force_visible([beta_path], &lib);
+        // alpha (query match) + beta (forced) only; gamma is absent.
+        assert_eq!(state.visible_indices(), &[0, 1]);
+    }
+
+    #[test]
+    fn carousel_data_for_indices_skips_out_of_range_index() {
+        // An out-of-range index is dropped rather than panicking; only the valid
+        // row is mapped.
+        let mut lib = Library::new();
+        assert!(lib.add(PathBuf::from("/manga/alpha.cbz")).is_some());
+
+        let rows = carousel_data_for_indices(&lib, &[0, 99]);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].title, "alpha");
     }
 
     #[test]
