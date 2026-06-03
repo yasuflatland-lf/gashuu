@@ -12,7 +12,9 @@ mod thumbnail_strip;
 mod viewer_state;
 mod viewport;
 
-use carousel::{build_carousel_model, cover_requests, thumb_state_at, ThumbState};
+use carousel::{
+    bind_carousel_model, build_carousel_model, cover_requests, thumb_state_at, ThumbState,
+};
 use enum_adapters::{
     cover_mode_to_index, fit_mode_to_index, index_to_cover_mode, index_to_fit_mode,
     index_to_reading_direction, index_to_spread_mode, reading_direction_to_index,
@@ -20,6 +22,7 @@ use enum_adapters::{
 };
 use gashuu_core::{CacheConfig, DecodedImage, FitMode, Library, ReadingDirection, Settings};
 use keymap::{map_key, KeyCommand};
+use library_model::LibrarySearchState;
 use navigation::{screen_to_index, NavState};
 use page_counter::page_counter_text;
 use std::cell::RefCell;
@@ -89,10 +92,18 @@ fn main() -> color_eyre::Result<()> {
     // library refresh supersedes any covers still streaming from the prior view.
     let covers = Rc::new(cover_loader::CoverController::new());
 
-    // The "open a book" use-case, bundling the six collaborators it threads
-    // (state, settings, viewport, library, thumbs, covers). Built once and shared
-    // via `Rc` by the Open Folder / Open Archive / carousel-open handlers so the
-    // open flow lives in exactly one place (`app::OpenBookUseCase`).
+    // Shared library-search filter state. Owned here and shared via `Rc` with the
+    // search-query callback (live filtering), the add/open backfill paths, and the
+    // open-time page-count rebuild in `OpenBookUseCase`, so every path projects the
+    // SAME visible-index set. Starts on the empty query (every book visible).
+    let search = Rc::new(RefCell::new(LibrarySearchState::default()));
+    ui.set_library_search_query("".into());
+
+    // The "open a book" use-case, bundling the shared collaborators it threads
+    // (state, settings, viewport, library, thumbs, covers, search). Built once and
+    // shared via `Rc` by the Open Folder / Open Archive / carousel-open handlers so
+    // the open flow lives in exactly one place (`app::OpenBookUseCase`). The search
+    // state lets the open-time page-count rebuild preserve the active filter.
     let open_book = Rc::new(app::OpenBookUseCase::new(
         Rc::clone(&state),
         Rc::clone(&settings),
@@ -100,23 +111,16 @@ fn main() -> color_eyre::Result<()> {
         Rc::clone(&library),
         Rc::clone(&thumbs),
         Rc::clone(&covers),
+        Rc::clone(&search),
     ));
 
-    // Seed the carousel model from the persisted library so the home screen shows
-    // the saved books on boot. The carousel model is bound into the UI inside
-    // build_carousel_model; the CoverController re-fetches it through the
-    // window's Weak handle inside each event-loop closure, so the returned Rc
-    // is not needed here. The `_` prefix permanently suppresses the
-    // unused-variable warning.
-    let _carousel_model = build_carousel_model(&ui, &library.borrow());
-
-    // Kick off cover loading for the initial library (cache hits paint now; misses
-    // stream in from rayon workers). Build the requests in a separate statement so
-    // the `library.borrow()` is released before `start` takes a `borrow_mut` to
-    // persist any page counts a prior generation prefetched.
-    let cover_reqs = cover_requests(&library.borrow());
-    covers.start(ui.as_weak(), &library, cover_reqs);
-    ui.set_carousel_focused_index(0);
+    // Seed the carousel from the persisted library so the home screen shows the
+    // saved books on boot. `refresh_library_carousel` recomputes the (empty-query)
+    // visible set, builds + binds the filtered model, resets carousel focus to 0,
+    // and starts cover loading for the visible rows in ONE place — so the initial
+    // build and every later filter/add refresh share the same code path. Cover
+    // streaming is started exactly once here (no separate `covers.start`).
+    refresh_library_carousel(&ui, &library, &covers, &search, true);
 
     // Top-level screen state machine. App boots to Library (the carousel home).
     // Held in an Rc<RefCell<…>> so the carousel callbacks and the Viewer's
@@ -204,6 +208,7 @@ fn main() -> color_eyre::Result<()> {
         let ui_weak = ui.as_weak();
         let library = Rc::clone(&library);
         let covers = Rc::clone(&covers);
+        let search = Rc::clone(&search);
         ui.on_add_files(move || {
             with_ui(&ui_weak, |ui| {
                 let Some(files) = rfd::FileDialog::new()
@@ -212,7 +217,7 @@ fn main() -> color_eyre::Result<()> {
                 else {
                     return;
                 };
-                add_books_and_refresh(&ui, &library, &covers, files, "add-files");
+                add_books_and_refresh(&ui, &library, &covers, &search, files, "add-files");
             })
         });
     }
@@ -224,12 +229,43 @@ fn main() -> color_eyre::Result<()> {
         let ui_weak = ui.as_weak();
         let library = Rc::clone(&library);
         let covers = Rc::clone(&covers);
+        let search = Rc::clone(&search);
         ui.on_add_folder(move || {
             with_ui(&ui_weak, |ui| {
                 let Some(folder) = rfd::FileDialog::new().pick_folder() else {
                     return;
                 };
-                add_books_and_refresh(&ui, &library, &covers, vec![folder], "add-folder");
+                add_books_and_refresh(&ui, &library, &covers, &search, vec![folder], "add-folder");
+            })
+        });
+    }
+
+    // Library search: the debounced query from the NavBar search field. This is
+    // the ONLY query-update path from Slint. Replace the filter (clearing any
+    // forced-visible just-added books), then rebuild the filtered carousel + cover
+    // stream and reset focus to row 0 so the first match is centered.
+    {
+        let ui_weak = ui.as_weak();
+        let library = Rc::clone(&library);
+        let covers = Rc::clone(&covers);
+        let search = Rc::clone(&search);
+        ui.on_library_search_changed(move |query| {
+            with_ui(&ui_weak, |ui| {
+                search.borrow_mut().set_query(query.to_string());
+                refresh_library_carousel(&ui, &library, &covers, &search, true);
+            })
+        });
+    }
+
+    // Settings button (glass-pill nav): placeholder feedback so the button is not
+    // a silent dead control. Surface a "coming soon" notice on the shared status
+    // line and return keyboard focus to the carousel.
+    {
+        let ui_weak = ui.as_weak();
+        ui.on_settings(move || {
+            with_ui(&ui_weak, |ui| {
+                ui.set_status_text("Settings \u{2014} coming soon".into());
+                ui.invoke_focus_carousel();
             })
         });
     }
@@ -242,15 +278,20 @@ fn main() -> color_eyre::Result<()> {
         let nav = Rc::clone(&nav);
         let open_book = Rc::clone(&open_book);
         let state = Rc::clone(&state);
+        let search = Rc::clone(&search);
         ui.on_carousel_open(move |index| {
             with_ui(&ui_weak, |ui| {
-                // Resolve the focused carousel index to a Library book path.
-                // Borrow discipline: `library.borrow()` drops at the `;`.
+                // Resolve the focused VISIBLE carousel index to a Library book
+                // path through the search state's projection: the carousel row is
+                // an index into `visible_indices`, which maps to the underlying
+                // library row. Borrow discipline: both `Ref`s drop at the `;`.
                 let path = {
+                    let search = search.borrow();
+                    let visible = search.visible_indices().get(index as usize).copied();
                     let lib = library.borrow();
-                    lib.books()
-                        .get(index as usize)
-                        .map(|b| b.path().to_path_buf())
+                    visible
+                        .and_then(|library_index| lib.books().get(library_index))
+                        .map(|book| book.path().to_path_buf())
                 };
                 let Some(path) = path else {
                     // Index out of range (carousel and library out of sync) — no-op.
@@ -278,12 +319,14 @@ fn main() -> color_eyre::Result<()> {
     // for which cover is centered + which book Return opens.
     {
         let ui_weak = ui.as_weak();
-        let library = Rc::clone(&library);
+        let search = Rc::clone(&search);
         ui.on_carousel_move(move |delta| {
             with_ui(&ui_weak, |ui| {
-                let count = library.borrow().books().len();
+                // Clamp to the VISIBLE (filtered) row count, not the full library:
+                // Left/Right move within the currently displayed carousel slice.
+                let count = search.borrow().visible_indices().len();
                 if count == 0 {
-                    return; // empty shelf: nothing to move
+                    return; // empty shelf or no matches: nothing to move
                 }
                 let last = (count - 1) as i32;
                 let next = (ui.get_carousel_focused_index() + delta).clamp(0, last);
@@ -1089,23 +1132,83 @@ fn add_paths(lib: &mut Library, paths: Vec<std::path::PathBuf>) -> Vec<std::path
         .collect()
 }
 
-/// Return the 0-based carousel row index of `path` in the sorted library, or
-/// `None` if it is absent. This index is the visual position to focus after an
-/// add. `path` must be a canonical path as returned by `add_paths`.
-fn focus_index_for_path(lib: &Library, path: &std::path::Path) -> Option<usize> {
-    lib.books().iter().position(|book| book.path() == path)
+/// Return the 0-based VISIBLE (filtered) carousel row index of `path`, or `None`
+/// if `path` is not among the currently visible rows. `visible_indices` is the
+/// search state's projection (library rows in natural order that pass the filter
+/// or are forced visible); the returned position is the index INTO that slice,
+/// i.e. the carousel row to focus. `path` must be a canonical path as returned by
+/// `add_paths`.
+fn visible_focus_index_for_path(
+    lib: &Library,
+    visible_indices: &[usize],
+    path: &std::path::Path,
+) -> Option<usize> {
+    visible_indices.iter().position(|&library_index| {
+        lib.books()
+            .get(library_index)
+            .is_some_and(|book| book.path() == path)
+    })
 }
 
-/// Add `paths` to the library, persist, rebuild the carousel, and surface the
-/// outcome on the status line, restoring carousel focus in every case.
+/// Recompute the library-search filter, rebuild + bind the filtered carousel
+/// model, optionally reset carousel focus to row 0, and (re)start cover loading
+/// for the visible rows. The SINGLE place the carousel + cover stream are
+/// refreshed from the shared search state, shared by the initial boot build, the
+/// debounced query callback, and the add path.
+///
+/// Borrow discipline: each `library.borrow()` is confined to one statement and
+/// dropped before the next; in particular the `library.borrow()` is released
+/// before `covers.start` takes a `borrow_mut` to persist any prefetched page
+/// counts (never hold a `borrow()` across `start`).
+fn refresh_library_carousel(
+    ui: &ViewerWindow,
+    library: &Rc<RefCell<Library>>,
+    covers: &cover_loader::CoverController,
+    search: &Rc<RefCell<LibrarySearchState>>,
+    reset_focus: bool,
+) {
+    let (indices, book_count) = {
+        let lib = library.borrow();
+        let mut search = search.borrow_mut();
+        search.recompute(&lib);
+        (search.visible_indices().to_vec(), lib.books().len() as i32)
+    };
+
+    ui.set_library_book_count(book_count);
+    let model = {
+        let lib = library.borrow();
+        build_carousel_model(&lib, &indices)
+    };
+    bind_carousel_model(ui, model);
+
+    if reset_focus {
+        ui.set_carousel_focused_index(0);
+    }
+
+    let cover_reqs = {
+        let lib = library.borrow();
+        cover_requests(&lib, &indices)
+    };
+    covers.start(ui.as_weak(), library, cover_reqs);
+}
+
+/// Add `paths` to the library, persist, rebuild the filtered carousel, and
+/// surface the outcome on the status line, restoring carousel focus in every
+/// case.
 ///
 /// Shared by the Add Files and Add Folder handlers; `op` distinguishes the two
 /// only in the save-failure trace message. When nothing new is added there is
 /// nothing to persist or rebuild, so it short-circuits after the status update.
+///
+/// Newly added books are FORCED visible under the active filter (so an add never
+/// silently hides the new book behind a non-matching query); the filter text
+/// stays in place, and the forced override is cleared on the next user query
+/// change (see `LibrarySearchState::set_query`).
 fn add_books_and_refresh(
     ui: &ViewerWindow,
     library: &Rc<RefCell<Library>>,
     covers: &cover_loader::CoverController,
+    search: &Rc<RefCell<LibrarySearchState>>,
     paths: Vec<std::path::PathBuf>,
     op: &'static str,
 ) {
@@ -1117,17 +1220,14 @@ fn add_books_and_refresh(
         return;
     }
     // Rebuild from the in-memory state even if the save fails, so the newly added
-    // books are visible; the save error is then surfaced (not just traced).
-    // `build_carousel_model` rebuilds AND rebinds the model into the UI internally
-    // (the returned `Rc<VecModel>` is held by PR-V for cover streaming; the add
-    // path does not need it, so the return value is dropped).
+    // books are visible; the save error is then surfaced (not just traced). Keep
+    // the just-added paths visible under the active filter, then refresh through
+    // the shared chokepoint (which recomputes the filter, rebuilds + binds the
+    // model, and restarts the cover stream). Focus is set explicitly below to the
+    // new book's visible row, so do NOT reset focus to 0 here.
     let save_result = library.borrow().save();
-    build_carousel_model(ui, &library.borrow());
-    // Refresh covers for the new library state; the epoch bump cancels any covers
-    // still streaming from the pre-refresh view. Build the requests first so the
-    // `library.borrow()` is released before `start`'s `borrow_mut`.
-    let cover_reqs = cover_requests(&library.borrow());
-    covers.start(ui.as_weak(), library, cover_reqs);
+    search.borrow_mut().force_visible(added_paths.clone());
+    refresh_library_carousel(ui, library, covers, search, false);
     match save_result {
         Err(e) => {
             tracing::error!(error = %e, "failed to save library after {op}");
@@ -1143,10 +1243,13 @@ fn add_books_and_refresh(
             ui.set_status_text(format!("Added {} book(s)", added_paths.len()).into());
         }
     }
+    // Focus the first newly added book by its VISIBLE row (the carousel renders
+    // the filtered slice), not its full-library index.
     if let Some(first_path) = added_paths.first() {
         let index = {
-            let library = library.borrow();
-            focus_index_for_path(&library, first_path)
+            let lib = library.borrow();
+            let search = search.borrow();
+            visible_focus_index_for_path(&lib, search.visible_indices(), first_path)
         };
         if let Some(index) = index {
             ui.set_carousel_focused_index(index as i32);
@@ -1370,31 +1473,23 @@ mod tests {
     }
 
     #[test]
-    fn focus_index_for_path_finds_sorted_position() {
-        let mut lib = gashuu_core::Library::new();
-        let later = std::path::PathBuf::from("nonexistent/vol10.cbz");
-        let earlier = std::path::PathBuf::from("nonexistent/vol2.cbz");
-        lib.add(later.clone());
-        lib.add(earlier.clone());
+    fn visible_focus_index_for_path_uses_filtered_rows() {
+        let mut lib = Library::new();
+        assert!(lib
+            .add(std::path::PathBuf::from("/manga/alpha.cbz"))
+            .is_some());
+        assert!(lib
+            .add(std::path::PathBuf::from("/manga/beta.cbz"))
+            .is_some());
+        assert!(lib
+            .add(std::path::PathBuf::from("/manga/gamma.cbz"))
+            .is_some());
 
-        let books: Vec<_> = lib
-            .books()
-            .iter()
-            .map(|book| book.path().to_path_buf())
-            .collect();
-        let focus = focus_index_for_path(&lib, &books[0]);
-
-        assert_eq!(focus, Some(0));
-        assert_eq!(focus_index_for_path(&lib, &books[1]), Some(1));
-    }
-
-    #[test]
-    fn focus_index_for_path_absent_returns_none() {
-        let lib = gashuu_core::Library::new();
-        assert_eq!(
-            focus_index_for_path(&lib, std::path::Path::new("nonexistent/vol1.cbz")),
-            None
-        );
+        let path = lib.books()[2].path().to_path_buf();
+        // gamma is the only visible row, so its visible position is 0.
+        assert_eq!(visible_focus_index_for_path(&lib, &[2], &path), Some(0));
+        // gamma is not among the visible rows, so it has no visible position.
+        assert_eq!(visible_focus_index_for_path(&lib, &[0, 1], &path), None);
     }
 
     #[test]
@@ -1422,10 +1517,10 @@ mod tests {
         assert_eq!(books, vec![vol1, vol10]);
     }
 
-    // Note: `build_carousel_model` now takes a `&ViewerWindow` (it builds AND
-    // binds the Slint model), so it cannot be unit-tested headless. The
-    // Library -> carousel row mapping invariants (length, 1-based `current`,
-    // availability, natural `Library::books()` order) are covered by
-    // `library_model::tests`
-    // against the pure `carousel_data` helper that this builder delegates to.
+    // Note: `build_carousel_model` is now headless (it builds the model from
+    // visible indices; `bind_carousel_model` does the UI bind), and is unit-tested
+    // directly in `carousel::tests`. The Library -> carousel row mapping invariants
+    // (length, 1-based `current`, availability, natural `Library::books()` order)
+    // are covered by `library_model::tests` against the pure `carousel_data` /
+    // `carousel_data_for_indices` helpers that the builder delegates to.
 }
