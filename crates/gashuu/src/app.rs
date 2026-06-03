@@ -187,29 +187,24 @@ impl OpenBookUseCase {
         // full library), so an open-time backfill never resurrects filtered-out
         // books. The carousel's focused index is a separate Slint property and is
         // intentionally NOT reset here — this is a page-count refresh, not a filter
-        // update. Each `library.borrow()` is confined to one statement and dropped
-        // before the next (in particular before `covers.start`'s `borrow_mut`).
+        // update. The `library.borrow()` drops before `covers.start`'s `borrow_mut`.
         if count_changed {
-            let indices = {
+            // Recompute the filter against the changed library, then build the
+            // model and cover requests under one borrow that drops before the bind
+            // and `covers.start`. The rebuild resets each visible row's cover to a
+            // placeholder; re-streaming repaints hits and regenerates misses, and
+            // the epoch bump supersedes any covers still streaming from the old model.
+            let (model, cover_reqs) = {
                 let lib = library.borrow();
                 let mut search = self.search.borrow_mut();
                 search.recompute(&lib);
-                search.visible_indices().to_vec()
-            };
-
-            let model = {
-                let lib = library.borrow();
-                build_carousel_model(&lib, &indices)
+                let indices = search.visible_indices();
+                (
+                    build_carousel_model(&lib, indices),
+                    cover_requests(&lib, indices),
+                )
             };
             bind_carousel_model(ui, model);
-
-            // The rebuild reset each visible row's cover to a placeholder; re-stream
-            // the covers (hits paint now, misses regenerate). The epoch bump
-            // supersedes any covers still streaming from the pre-rebuild model.
-            let cover_reqs = {
-                let lib = library.borrow();
-                cover_requests(&lib, &indices)
-            };
             covers.start(ui.as_weak(), library, cover_reqs);
         }
         // Kick off parallel thumbnail generation for the newly opened source.

@@ -65,15 +65,17 @@ component SearchField inherits Rectangle {
     }
 
     // Text content starts AFTER the icon + a small gap so it never overlaps the
-    // glyph; the right inset mirrors the left padding.
+    // glyph; the right inset mirrors the left padding. The placeholder and the
+    // input share the same column geometry (`text-x` / `text-width`).
     // text-x = pad + icon + gap; text-width = field - text-x - pad.
     property <length> text-x: Theme.nav-search-pad-x + Theme.nav-search-icon + Theme.space-xs;
+    property <length> text-width: root.width - root.text-x - Theme.nav-search-pad-x;
 
     // ── Placeholder (shown only while empty) ──────────────────────────────────
     Text {
         visible: root.query == "";
         x: root.text-x;
-        width: parent.width - root.text-x - Theme.nav-search-pad-x;
+        width: root.text-width;
         height: 100%;
         text: "Search library";
         color: Theme.text-dim;
@@ -87,7 +89,7 @@ component SearchField inherits Rectangle {
     input := TextInput {
         x: root.text-x;
         y: 0;
-        width: parent.width - root.text-x - Theme.nav-search-pad-x;
+        width: root.text-width;
         height: 100%;
         text <=> root.query;
         single-line: true;

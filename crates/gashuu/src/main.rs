@@ -285,11 +285,9 @@ fn main() -> color_eyre::Result<()> {
                 // Resolve the focused VISIBLE carousel index to a Library book
                 // path through the search state's projection: the carousel row is
                 // an index into `visible_indices`, which maps to the underlying
-                // library row. Borrow discipline: both `Ref`s drop at the `;`.
-                // Capture the visible/library lengths INSIDE the borrow scope so
-                // the out-of-range warn below can report them without taking a
-                // fresh borrow (borrow discipline: both `Ref`s drop at the block's
-                // `}`).
+                // library row. Capture the visible/library lengths INSIDE the
+                // borrow scope so the out-of-range warn below can report them
+                // without a fresh borrow. Both `Ref`s drop at the block's `}`.
                 let (path, visible_len, library_len) = {
                     let search = search.borrow();
                     let visible = search.visible_indices().get(index as usize).copied();
@@ -1182,10 +1180,9 @@ fn visible_focus_index_for_path(
 /// `set_query` (startup seed + search-changed) or `force_visible` (add) — so the
 /// visible set is already consistent here, avoiding a redundant double-recompute.
 ///
-/// Borrow discipline: each `library.borrow()` is confined to one statement and
-/// dropped before the next; in particular the `library.borrow()` is released
-/// before `covers.start` takes a `borrow_mut` to persist any prefetched page
-/// counts (never hold a `borrow()` across `start`).
+/// Borrow discipline: all reads share ONE `library.borrow()` scope that drops
+/// before the UI bind and `covers.start` (which takes a `borrow_mut` to persist
+/// any prefetched page counts) — never hold a `borrow()` across `start`.
 fn refresh_library_carousel(
     ui: &ViewerWindow,
     library: &Rc<RefCell<Library>>,
@@ -1193,27 +1190,23 @@ fn refresh_library_carousel(
     search: &Rc<RefCell<LibrarySearchState>>,
     reset_focus: bool,
 ) {
-    let (indices, book_count) = {
+    // Read everything the refresh needs under a single borrow, then drop it
+    // before the UI mutations and `covers.start`.
+    let (book_count, model, cover_reqs) = {
         let lib = library.borrow();
-        let search = search.borrow();
-        (search.visible_indices().to_vec(), lib.books().len() as i32)
+        let indices = search.borrow().visible_indices().to_vec();
+        (
+            lib.books().len() as i32,
+            build_carousel_model(&lib, &indices),
+            cover_requests(&lib, &indices),
+        )
     };
 
     ui.set_library_book_count(book_count);
-    let model = {
-        let lib = library.borrow();
-        build_carousel_model(&lib, &indices)
-    };
     bind_carousel_model(ui, model);
-
     if reset_focus {
         ui.set_carousel_focused_index(0);
     }
-
-    let cover_reqs = {
-        let lib = library.borrow();
-        cover_requests(&lib, &indices)
-    };
     covers.start(ui.as_weak(), library, cover_reqs);
 }
 
