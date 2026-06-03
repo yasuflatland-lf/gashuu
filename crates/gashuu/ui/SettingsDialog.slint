@@ -32,6 +32,9 @@ export component SettingsDialog inherits Rectangle {
     in-out property <bool> track-recent;
     // Read-only reference text listing keyboard shortcuts (display only).
     in property <string> key-bindings-text;
+    // True when this dialog edits the CURRENT book's per-book settings (opened
+    // from the Viewer): shows the per-book title and the reset-to-global button.
+    in property <bool> show-reset-button: false;
 
     // ── Callbacks fired when the user changes a setting ───────────────────────
     callback set-reading-direction(int);
@@ -43,6 +46,8 @@ export component SettingsDialog inherits Rectangle {
     callback set-track-recent(bool);
     // Fired when the user clicks the Close button.
     callback close-settings();
+    // Fired when the user clicks "Reset to global defaults" (viewer context only).
+    callback reset-to-global();
 
     // ── Centered panel ────────────────────────────────────────────────────────
     Rectangle {
@@ -63,7 +68,7 @@ export component SettingsDialog inherits Rectangle {
 
             // ── Title ─────────────────────────────────────────────────────────
             Text {
-                text: "Settings";
+                text: root.show-reset-button ? "Book settings" : "Settings";
                 font-size: Theme.font-title;
                 color: Theme.text-high;
                 horizontal-alignment: left;
@@ -227,9 +232,14 @@ export component SettingsDialog inherits Rectangle {
                 wrap: word-wrap;
             }
 
-            // ── Close button ──────────────────────────────────────────────────
+            // ── Action buttons ────────────────────────────────────────────────
             HorizontalBox {
-                alignment: end;
+                if root.show-reset-button : Button {
+                    text: "Reset to global defaults";
+                    clicked => { root.reset-to-global(); }
+                }
+                // Spacer pushes Close to the right edge (Button stretch is 0).
+                Rectangle { horizontal-stretch: 1; }
                 Button {
                     text: "Close";
                     clicked => { root.close-settings(); }
