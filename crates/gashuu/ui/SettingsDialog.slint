@@ -177,7 +177,6 @@ export component SettingsDialog inherits Rectangle {
                 width: parent.width;
                 height: parent.height;
                 padding-top: Theme.space-lg;
-                padding-bottom: Theme.space-lg;
 
                 // ── Sticky header ─────────────────────────────────────────────────
                 HorizontalLayout {
@@ -379,9 +378,12 @@ export component SettingsDialog inherits Rectangle {
                 }
 
                 // ── Sticky footer ─────────────────────────────────────────────────
-                Rectangle {
+                footer-block := Rectangle {
                     vertical-stretch: 0;
-                    height: footer-row.preferred-height + Theme.space-md;
+                    // Symmetric space-md above/below the row (18 ÷ φ ≈ 11 → the
+                    // existing 10px token; spec 2026-06-04). The panel's bottom
+                    // inset is now owned HERE (body-col padding-bottom is gone).
+                    height: footer-row.preferred-height + 2 * Theme.space-md;
 
                     // 1px hairline top edge honestly marks the scroll boundary.
                     Rectangle {
@@ -392,16 +394,20 @@ export component SettingsDialog inherits Rectangle {
                         background: Theme.hairline;
                     }
 
-                    // Footer order: [Shortcuts] … [Reset to global] [Close]. A
-                    // single stretch spacer pins Shortcuts left and groups the
-                    // action button(s) hard right (alignment: start so the spacer
-                    // owns the slack — `space-between` would scatter 3+ items
-                    // evenly instead of grouping Reset with Close). The Reset
-                    // button only appears in the per-book (viewer) context; the
-                    // 360px panel minus the two space-xl gutters cannot fit the
-                    // full "Reset to global defaults" label beside Shortcuts and
-                    // Close on one line, so the label is shortened to "Reset to
-                    // global" (the accessible-label carries the full intent).
+                    // Footer order: [Shortcuts] … [Reset to global] [Close]. The
+                    // default (stretch) alignment lets the single stretch spacer
+                    // own the slack, pinning Shortcuts to the LEFT edge and the
+                    // action button(s) hard RIGHT (both-ends, HIG; spec
+                    // 2026-06-04). A literal `alignment: start` DISABLES child
+                    // stretch factors — the old bug that glued Close to
+                    // Shortcuts (docs/patterns.md). `space-between` would
+                    // scatter 3+ items instead of grouping Reset with Close. The
+                    // Reset button only appears in the per-book (viewer)
+                    // context; the 360px panel minus the two space-xl gutters
+                    // cannot fit the full "Reset to global defaults" label
+                    // beside Shortcuts and Close on one line, so the label is
+                    // shortened to "Reset to global" (the accessible-label
+                    // carries the full intent).
                     footer-row := HorizontalLayout {
                         x: 0;
                         y: Theme.space-md;
@@ -409,7 +415,6 @@ export component SettingsDialog inherits Rectangle {
                         padding-left: Theme.space-xl;
                         padding-right: Theme.space-xl;
                         spacing: Theme.space-md;
-                        alignment: start;
 
                         // LEFT: a focusable "Shortcuts" link. Sits in the Tab order
                         // between the controls and Close (declaration order). Activating
@@ -421,11 +426,14 @@ export component SettingsDialog inherits Rectangle {
                         shortcuts := FocusScope {
                             horizontal-stretch: 0;
                             width: shortcuts-label.preferred-width;
-                            height: shortcuts-label.preferred-height;
+                            // No height override: the scope stretches to the row
+                            // height so the label centers on the SAME horizontal
+                            // centerline as the Close button (spec 2026-06-04).
                             // Idle goes text-dim (static affordance); focus brightens to
                             // text-high so the Tab ring is visible without an accent rule
                             // (accent stays interactive/selected-only).
                             shortcuts-label := Text {
+                                height: 100%;
                                 text: @tr("⌨ Shortcuts");
                                 font-size: Theme.font-label;
                                 color: parent.has-focus ? Theme.text-high : Theme.text-dim;
