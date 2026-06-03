@@ -6,8 +6,9 @@
 // radius 21px (shares NavBar's glass corner language), height CLAMPED to
 // min(settings-h, window.height − 2·space-huge) so a short window scrolls the
 // body instead of overflowing (Marcotte). The panel is ONE fake-glass object —
-// NavBar's four layers (fill gradient + 1px rim + 1px top highlight + one drop
-// shadow), no nested glass / no second shadow. The sheen is a FILL @linear-
+// NavBar's four-layer fake-glass idiom (fill + 1px rim + 1px top highlight + one
+// drop shadow), with layer 1 promoted from a solid fill to a top-sheen
+// @linear-gradient. No nested glass / no second shadow. The sheen is a FILL
 // gradient, not an opacity layer (opacity blurs text/SVG on HiDPI — patterns.md).
 //
 // Content: three whitespace-delineated sections (Reading / Display / Performance)
@@ -87,7 +88,7 @@ export component SettingsDialog inherits Rectangle {
         width: Theme.settings-w;
         // Marcotte clamp: φ height, but never taller than the window minus a
         // gutter on each side — then the body scrolls instead.
-        height: min(Theme.settings-h, parent.height - 2 * Theme.space-huge);
+        height: min(Theme.settings-h, max(0px, parent.height - 2 * Theme.space-huge));
         x: (parent.width - self.width) / 2;
         y: (parent.height - self.height) / 2;
 
@@ -367,8 +368,8 @@ export component SettingsDialog inherits Rectangle {
             // Flickable viewport geometry. Show/hide via `visible:` ONLY (no
             // opacity — HiDPI blur rule). No edge fades. Declared as a sibling of
             // the content layout inside `fs`, so its y is computed in THIS scope's
-            // space: body-col.y + body.y (the body Flickable's offset within the
-            // content layout, plus that layout's own offset). Deriving y this way
+            // space: body-col.y (the content layout’s own offset within fs) + body.y
+            // (the body Flickable’s y within that layout). Deriving y this way
             // — rather than from a bare `body.y` — keeps the rail aligned even if
             // the content layout is ever given a non-zero offset within `fs`.
             Rectangle {
@@ -379,6 +380,9 @@ export component SettingsDialog inherits Rectangle {
                 height: body.height;
                 background: Theme.track-prog;
                 border-radius: Theme.settings-scroll-indicator-w / 2;
+                // Clip the thumb so elastic overscroll (viewport-y briefly positive)
+                // cannot render the thumb above the rail bounds.
+                clip: true;
 
                 // Thumb: proportional size and offset from the scroll position.
                 Rectangle {

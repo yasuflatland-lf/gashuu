@@ -19,15 +19,19 @@ import { Theme } from "../Theme.slint";
 
 export component SettingRow inherits Rectangle {
     in property <string> label;
+    // STUB (issue 103): the stacked (L4) geometry is INCOMPLETE — the row height
+    // is not yet adapted for a stacked label+control (fixed 34px splits in half,
+    // so a 30px control overflows its ~17px slot). Do NOT set stacked: true at
+    // any call site until the adaptive-height layout is finished.
     in property <bool> stacked: false;   // L4 escape hatch (default = L1 horizontal)
 
     height: Theme.settings-row-h;
 
     // ── Label ─────────────────────────────────────────────────────────────────────
     // L1: at the left margin, vertically centered in the row, occupying the fixed
-    // label column. L4 (stacked): at the top-left, above the control. No wrap / no
-    // elide so the seam never drifts. text-mid (not accent — accent is
-    // interactive-only).
+    // label column. L4 (stacked): at the top-left, above the control. No wrap;
+    // overflow CLIPS (not elide) so the seam width never drifts. text-mid
+    // (not accent — accent is interactive-only).
     Text {
         x: 0;
         y: 0;

@@ -28,10 +28,11 @@ export component Segmented inherits Rectangle {
 
     // Externally focus this control (issue 103, PR-B): the settings dialog calls
     // this on open to satisfy "first control is focused on open". Mirrors the
-    // `focus-pages()` seam idiom (docs/patterns.md) — a TouchArea/init can't reach
-    // the inner FocusScope id from outside, so expose a public function. Named
-    // `focus-control` (not `focus`) because `focus` is a reserved builtin on the
-    // inherited Rectangle and cannot be overridden.
+    // `focus-pages()` seam idiom (docs/patterns.md). A PARENT component cannot
+    // name an id declared inside a CHILD component's body (Slint encapsulation),
+    // so the child exposes a public function. Named `focus-control` (not `focus`)
+    // because `focus` is a reserved builtin on the inherited Rectangle and cannot
+    // be overridden.
     public function focus-control() {
         fs.focus();
     }
