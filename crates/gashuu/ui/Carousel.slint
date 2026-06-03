@@ -347,14 +347,9 @@ export component Carousel inherits Rectangle {
               property <length> row-cy: parent.height / 2 - 28px;
 
               // ── Cover-flow z-order: two passes (Slint 1.16.1 has no per-item z) ─
-              // Pass 1 is the always-on BACKING layer (`show: true`, every book);
-              // pass 2, declared after, repaints ONLY the focused card on top so it
-              // wins the z-order. Keeping pass 1 always-on means a fast Left/Right
-              // sweep never toggles a passed-through book's only instance off-then-on
-              // (which blanked its cover for one frame — the "gap-toothed" bug). The
-              // focused book is drawn in both passes; pass 1 sets `elevated: false`
-              // so its semi-transparent shadow is painted by the pass-2 copy only.
-              // See the CoverCard header for the full rationale.
+              // Pass 1: backing layer, every book always visible (gap-toothed-bug fix).
+              // Pass 2: focused card redrawn on top; shadow painted there only (elevated default).
+              // See CoverCard header for full rationale.
               for item[idx] in root.items : CoverCard {
                   show: true;
                   elevated: false;
@@ -373,7 +368,7 @@ export component Carousel inherits Rectangle {
                   available: item.available;
                   progress: item.progress;
               }
-              // Pass 2: focused card only, on top (elevated defaults true → paints the shadow).
+              // Pass 2: focused card only, on top (elevated: true default → shadow painted once).
               for item[idx] in root.items : CoverCard {
                   show: idx == root.focused-index;
                   focused: idx == root.focused-index;
