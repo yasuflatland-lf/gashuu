@@ -20,7 +20,9 @@ use enum_adapters::{
     index_to_reading_direction, index_to_spread_mode, reading_direction_to_index,
     spread_mode_to_index,
 };
-use gashuu_core::{CacheConfig, DecodedImage, FitMode, Library, ReadingDirection, Settings};
+use gashuu_core::{
+    CacheConfig, DecodedImage, FitMode, Library, ReadingDirection, Settings, ViewOverride,
+};
 use keymap::{map_key, KeyCommand};
 use library_model::LibrarySearchState;
 use navigation::{screen_to_index, NavState};
@@ -1184,6 +1186,71 @@ pub(crate) fn write_back_position(
     }
 }
 
+/// Pure helper: decide what view override to write back for the open book.
+///
+/// Returns `Some((canonical_path, override))` when a book is open (so the
+/// caller persists it), `None` otherwise. The override carries all four current
+/// runtime modes as `Some(_)`: while a book is open, ITS modes are authoritative,
+/// so a write-back fully pins them (a later "reset to global" clears them again).
+/// Extracted (mirrors `position_to_write_back`) so the predicate is unit-tested
+/// without the effectful `set_overrides` + `save`.
+fn view_override_to_write_back(
+    open_file: Option<&std::path::Path>,
+    reading_direction: ReadingDirection,
+    spread_mode: gashuu_core::SpreadMode,
+    cover_mode: gashuu_core::CoverMode,
+    fit_mode: FitMode,
+) -> Option<(std::path::PathBuf, ViewOverride)> {
+    open_file.map(|p| {
+        (
+            p.to_path_buf(),
+            ViewOverride {
+                reading_direction: Some(reading_direction),
+                spread_mode: Some(spread_mode),
+                cover_mode: Some(cover_mode),
+                fit_mode: Some(fit_mode),
+            },
+        )
+    })
+}
+
+/// Write the current runtime view modes back to the OPEN book's override and
+/// persist. Called at every viewer leave point (↑ to Library, opening a
+/// different book, app exit) and on viewer-context settings-dialog close, so a
+/// bare keyboard toggle (D/R/C/fit) persists per-book without opening the dialog.
+/// No-op when no book is open.
+///
+/// Borrow discipline (mirrors `write_back_position`): the `state`/`viewport`
+/// shared borrows are confined to the leading block expression and drop before
+/// `library.borrow_mut()`. `state` and `viewport` are distinct `RefCell`s, so
+/// holding shared borrows of both at once is fine.
+// NOTE: temporary `allow(dead_code)` — this fn has no callers until it is wired
+// into the open/leave/exit/close paths in Tasks 5 and 6; remove this attribute
+// then.
+#[allow(dead_code)]
+pub(crate) fn write_back_view_override(
+    state: &Rc<RefCell<ViewerState>>,
+    viewport: &Rc<RefCell<ViewportState>>,
+    library: &Rc<RefCell<Library>>,
+) {
+    let Some((path, overrides)) = ({
+        let s = state.borrow();
+        view_override_to_write_back(
+            s.open_file(),
+            s.reading_direction(),
+            s.spread_mode(),
+            s.cover_mode(),
+            viewport.borrow().fit_mode(),
+        )
+    }) else {
+        return; // no book open — nothing to write back
+    };
+    library.borrow_mut().set_overrides(&path, overrides);
+    if let Err(e) = library.borrow().save() {
+        tracing::error!(error = %e, "failed to save library on view-override write-back");
+    }
+}
+
 /// Add every path in `paths` to `lib`. Each path is added via `Library::add`,
 /// which canonicalizes, dedups, and re-sorts the library on insert.
 /// Returns the canonical paths of the books actually inserted (new books only);
@@ -1462,6 +1529,42 @@ mod tests {
         assert!(result.is_some());
         let (_, pg) = result.unwrap();
         assert_eq!(pg, 0, "page 0 is a valid write-back (start of book)");
+    }
+
+    // ---- view_override_to_write_back (per-book overrides) ------------------
+
+    #[test]
+    fn view_override_to_write_back_none_when_no_open_file() {
+        assert!(
+            view_override_to_write_back(
+                None,
+                ReadingDirection::Ltr,
+                gashuu_core::SpreadMode::Single,
+                gashuu_core::CoverMode::Standalone,
+                FitMode::Whole,
+            )
+            .is_none(),
+            "no open file => no write-back"
+        );
+    }
+
+    #[test]
+    fn view_override_to_write_back_some_carries_all_four_modes() {
+        use std::path::PathBuf;
+        let path = PathBuf::from("/manga/book.cbz");
+        let result = view_override_to_write_back(
+            Some(path.as_path()),
+            ReadingDirection::Rtl,
+            gashuu_core::SpreadMode::Double,
+            gashuu_core::CoverMode::Paired,
+            FitMode::Actual,
+        );
+        let (p, ov) = result.expect("open file => write-back tuple");
+        assert_eq!(p, path);
+        assert_eq!(ov.reading_direction, Some(ReadingDirection::Rtl));
+        assert_eq!(ov.spread_mode, Some(gashuu_core::SpreadMode::Double));
+        assert_eq!(ov.cover_mode, Some(gashuu_core::CoverMode::Paired));
+        assert_eq!(ov.fit_mode, Some(FitMode::Actual));
     }
 
     #[test]
