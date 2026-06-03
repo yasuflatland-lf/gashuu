@@ -20,7 +20,9 @@ tasteful a tool as a fine art book.
   subfolders are included. Extraction is in-memory (nothing is written to disk); unsafe,
   oversized, or corrupt entries are skipped and counted in the status bar.
 - **Library** — added books are shown in natural title order (numeric-aware, so *vol 1*,
-  *vol 2*, *vol 10* sort in that order rather than lexically).
+  *vol 2*, *vol 10* sort in that order rather than lexically). The NavBar includes a live
+  search field that filters books by title or filesystem path as you type; freshly-added
+  books stay visible until the query changes.
 - **Spreads** — single page, two-page spread, or **auto** (picks single/double from the
   window aspect ratio and follows resizes live). Right-to-left (manga) or left-to-right
   binding, with a standalone or paired cover layout.
