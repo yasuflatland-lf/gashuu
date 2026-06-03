@@ -543,13 +543,7 @@ fn main() -> color_eyre::Result<()> {
                 // runtime). The viewer isn't shown on the Library screen, so this
                 // has no visible effect; a book re-applies its own override on open.
                 if !per_book {
-                    let s = settings.borrow();
-                    state
-                        .borrow_mut()
-                        .set_reading_direction(s.reading_direction);
-                    state.borrow_mut().set_spread_mode(s.spread_mode);
-                    state.borrow_mut().set_cover_mode(s.cover_mode);
-                    viewport.borrow_mut().set_fit(s.fit_mode);
+                    apply_global_view_to_runtime(&settings, &state, &viewport);
                 }
                 let s = settings.borrow();
                 let st = state.borrow();
@@ -638,15 +632,7 @@ fn main() -> color_eyre::Result<()> {
                     }
                 }
                 // Apply the global defaults to the runtime + view.
-                {
-                    let s = settings.borrow();
-                    state
-                        .borrow_mut()
-                        .set_reading_direction(s.reading_direction);
-                    state.borrow_mut().set_spread_mode(s.spread_mode);
-                    state.borrow_mut().set_cover_mode(s.cover_mode);
-                    viewport.borrow_mut().set_fit(s.fit_mode);
-                }
+                apply_global_view_to_runtime(&settings, &state, &viewport);
                 refresh(&ui, &state.borrow(), &viewport);
                 // Sync the open dialog's combos to the now-global values.
                 let st = state.borrow();
@@ -1182,6 +1168,29 @@ pub(crate) fn reconcile_settings(
     settings.spread_mode = state.spread_mode();
     settings.cover_mode = state.cover_mode();
     settings.fit_mode = viewport.fit_mode();
+}
+
+/// Mirror the GLOBAL `Settings` view modes into the runtime (`ViewerState` for
+/// direction/spread/cover, `ViewportState` for fit) — the inverse of
+/// `reconcile_settings`. Used when the dialog edits the global defaults
+/// (opening Library settings) and when resetting an open book to global.
+///
+/// Borrow discipline: the shared `settings.borrow()` (`s`) is held while each
+/// `borrow_mut()` runs, which is safe because `settings`, `state`, and
+/// `viewport` are distinct `RefCell`s; one `borrow_mut()` per statement so no
+/// two mutable borrows of the same cell overlap.
+pub(crate) fn apply_global_view_to_runtime(
+    settings: &Rc<RefCell<Settings>>,
+    state: &Rc<RefCell<ViewerState>>,
+    viewport: &Rc<RefCell<ViewportState>>,
+) {
+    let s = settings.borrow();
+    state
+        .borrow_mut()
+        .set_reading_direction(s.reading_direction);
+    state.borrow_mut().set_spread_mode(s.spread_mode);
+    state.borrow_mut().set_cover_mode(s.cover_mode);
+    viewport.borrow_mut().set_fit(s.fit_mode);
 }
 
 /// Derive the centered title-bar display name from the AUTHORITATIVE post-open
