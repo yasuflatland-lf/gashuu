@@ -640,6 +640,21 @@ mod tests {
     }
 
     #[test]
+    fn set_overrides_clear_to_none_reports_change_and_empties() {
+        let mut lib = Library::new();
+        let p = PathBuf::from("/manga/a.cbz");
+        assert!(lib.add(p.clone()).is_some());
+        let ov = crate::view_override::ViewOverride {
+            reading_direction: Some(crate::settings::ReadingDirection::Rtl),
+            ..crate::view_override::ViewOverride::none()
+        };
+        assert!(lib.set_overrides(&p, ov));
+        // Clearing back to none() is a real change -> true, and leaves it empty.
+        assert!(lib.set_overrides(&p, crate::view_override::ViewOverride::none()));
+        assert!(lib.overrides_for(&p).is_empty());
+    }
+
+    #[test]
     fn set_overrides_false_when_path_absent() {
         let mut lib = Library::new();
         let ov = crate::view_override::ViewOverride::none();

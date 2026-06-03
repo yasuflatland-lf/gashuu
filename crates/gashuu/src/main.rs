@@ -575,8 +575,9 @@ fn main() -> color_eyre::Result<()> {
     // FocusScope: the page area on the Viewer, the carousel on the Library.
     // Restoring `focus-pages()` unconditionally would focus the hidden Viewer
     // scope when closing over the Library, leaving the carousel keys dead.
-    // The `reconcile_settings` call's `settings.borrow_mut()` drops at its `;`, so
-    // `save()`'s fresh `settings.borrow()` cannot double-borrow.
+    // All three temporaries (state.borrow(), viewport.borrow(), settings.borrow_mut())
+    // are argument expressions in the single reconcile_settings(...) call and drop
+    // together at its `;`, before save()'s fresh settings.borrow() on the next line.
     {
         let ui_weak = ui.as_weak();
         let state = Rc::clone(&state);
@@ -627,11 +628,13 @@ fn main() -> color_eyre::Result<()> {
         ui.on_reset_overrides(move || {
             with_ui(&ui_weak, |ui| {
                 if let Some(path) = state.borrow().open_file().map(|p| p.to_path_buf()) {
-                    library
-                        .borrow_mut()
-                        .set_overrides(&path, ViewOverride::none());
+                    let changed = library.borrow_mut().set_overrides(&path, ViewOverride::none());
+                    if !changed {
+                        tracing::warn!(path = %path.display(), "reset override: open book not found in library");
+                    }
                     if let Err(e) = library.borrow().save() {
                         tracing::error!(error = %e, "failed to save library on override reset");
+                        ui.set_status_text(format!("Could not save settings: {e}").into());
                     }
                 }
                 // Apply the global defaults to the runtime + view.

@@ -289,7 +289,8 @@ mod tests {
         let ov = crate::view_override::ViewOverride {
             reading_direction: Some(crate::settings::ReadingDirection::Rtl),
             spread_mode: Some(crate::settings::SpreadMode::Double),
-            ..crate::view_override::ViewOverride::none()
+            cover_mode: Some(crate::settings::CoverMode::Paired),
+            fit_mode: Some(crate::settings::FitMode::Width),
         };
         assert!(lib.set_overrides(&p, ov));
         let reloaded = Library::from_json(&lib.to_json().unwrap()).unwrap();
@@ -311,10 +312,13 @@ mod tests {
         let value: serde_json::Value = serde_json::from_str(&lib.to_json().unwrap()).unwrap();
         let book = value["books"][0].as_object().unwrap();
 
+        // A book with EMPTY overrides serializes to exactly {path,title,last_page,page_count};
+        // the "overrides" key is omitted via skip_serializing_if (see empty_overrides_are_omitted_from_json).
+        // A non-empty override adds an "overrides" key (exercised by non_empty_overrides_round_trip).
         assert_eq!(
             book.len(),
             4,
-            "book serde shape must stay {{path,title,last_page,page_count}}"
+            "book with empty overrides must have exactly 4 keys: {{path,title,last_page,page_count}}"
         );
         for k in ["path", "title", "last_page", "page_count"] {
             assert!(book.contains_key(k), "missing expected key: {k}");

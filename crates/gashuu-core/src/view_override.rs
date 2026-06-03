@@ -18,6 +18,11 @@ use serde::{Deserialize, Serialize};
 /// all-`None` override serializes to nothing (see the `skip_serializing_if` on
 /// each field and on `Book::overrides`), keeping `library.json` byte-compatible
 /// with files written before this feature existed. Immutable `Copy` value object.
+///
+/// In practice the leave-point write-back (`write_back_view_override`) records
+/// all four fields as `Some`, so a book that has been opened at least once carries
+/// a full override until it is explicitly reset to `none()`; a fresh/never-opened
+/// book (or one just reset) has all-`None` and inherits global.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct ViewOverride {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -58,7 +63,8 @@ impl ViewOverride {
 
 /// Fully resolved view preferences for one open book: every field concrete (no
 /// `Option`). Derived via `ViewOverride::resolve`; transient (never persisted).
-/// Consumed by `ViewerState::apply_resolved_view` and `ViewportState::set_fit`.
+/// Consumed by `ViewerState::apply_resolved_view`; the `fit_mode` field is applied
+/// separately by the caller via `ViewportState::set_fit(resolved.fit_mode)`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ResolvedView {
     pub reading_direction: ReadingDirection,
@@ -105,6 +111,45 @@ mod tests {
         assert_eq!(resolved.spread_mode, SpreadMode::Double);
         assert_eq!(resolved.cover_mode, CoverMode::Paired);
         assert_eq!(resolved.fit_mode, FitMode::Actual);
+    }
+
+    #[test]
+    fn spread_field_wins_over_global_others_inherit() {
+        let ov = ViewOverride {
+            spread_mode: Some(SpreadMode::Single),
+            ..ViewOverride::none()
+        };
+        let resolved = ov.resolve(&global());
+        assert_eq!(resolved.spread_mode, SpreadMode::Single);
+        assert_eq!(resolved.reading_direction, ReadingDirection::Rtl);
+        assert_eq!(resolved.cover_mode, CoverMode::Paired);
+        assert_eq!(resolved.fit_mode, FitMode::Actual);
+    }
+
+    #[test]
+    fn cover_field_wins_over_global_others_inherit() {
+        let ov = ViewOverride {
+            cover_mode: Some(CoverMode::Standalone),
+            ..ViewOverride::none()
+        };
+        let resolved = ov.resolve(&global());
+        assert_eq!(resolved.cover_mode, CoverMode::Standalone);
+        assert_eq!(resolved.reading_direction, ReadingDirection::Rtl);
+        assert_eq!(resolved.spread_mode, SpreadMode::Double);
+        assert_eq!(resolved.fit_mode, FitMode::Actual);
+    }
+
+    #[test]
+    fn fit_field_wins_over_global_others_inherit() {
+        let ov = ViewOverride {
+            fit_mode: Some(FitMode::Whole),
+            ..ViewOverride::none()
+        };
+        let resolved = ov.resolve(&global());
+        assert_eq!(resolved.fit_mode, FitMode::Whole);
+        assert_eq!(resolved.reading_direction, ReadingDirection::Rtl);
+        assert_eq!(resolved.spread_mode, SpreadMode::Double);
+        assert_eq!(resolved.cover_mode, CoverMode::Paired);
     }
 
     #[test]
