@@ -4,6 +4,7 @@
 //! availability is derived (never stored). Persistence lives in `library_store`.
 
 use crate::reading_progress::ReadingProgress;
+use crate::view_override::ViewOverride;
 use serde::{Deserialize, Serialize};
 use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
@@ -27,6 +28,12 @@ pub struct Book {
     /// field) and is surfaced as `None` via [`Book::page_count_opt`].
     #[serde(default)]
     page_count: usize,
+    /// Per-book view preference overrides. `None` fields inherit the global
+    /// `Settings`. `skip_serializing_if` keeps an all-None override out of the
+    /// JSON entirely, so a book with no overrides serializes byte-identically to
+    /// the pre-feature shape (and `#[serde(default)]` loads old files as empty).
+    #[serde(default, skip_serializing_if = "ViewOverride::is_empty")]
+    overrides: ViewOverride,
 }
 
 impl Book {
@@ -50,6 +57,7 @@ impl Book {
             title,
             last_page: 0,
             page_count: 0,
+            overrides: ViewOverride::none(),
         }
     }
 
@@ -82,6 +90,11 @@ impl Book {
     /// `ReadingProgress`, not at the call sites.
     pub fn progress(&self) -> ReadingProgress {
         ReadingProgress::new(self.last_page, self.page_count_opt())
+    }
+
+    /// This book's view preference overrides (all-None when it inherits global).
+    pub fn overrides(&self) -> ViewOverride {
+        self.overrides
     }
 }
 
@@ -190,6 +203,30 @@ impl Library {
             }
             _ => false,
         }
+    }
+
+    /// Record the view overrides for `path`. Returns `false` when the path is
+    /// absent OR the value is unchanged (mirrors `set_last_page`/`set_page_count`
+    /// so callers can skip a save). The aggregate owns this mutation; `Book` has
+    /// no setter.
+    pub fn set_overrides(&mut self, path: &Path, overrides: ViewOverride) -> bool {
+        match self.books.iter_mut().find(|b| b.path() == path) {
+            Some(book) if book.overrides != overrides => {
+                book.overrides = overrides;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// The view overrides for `path`, or an all-None override when `path` is
+    /// absent (so callers always get a value to `resolve`).
+    pub fn overrides_for(&self, path: &Path) -> ViewOverride {
+        self.books
+            .iter()
+            .find(|b| b.path() == path)
+            .map(Book::overrides)
+            .unwrap_or_default()
     }
 
     /// Register a freshly opened book and report how to resume it. Idempotent add
@@ -578,5 +615,57 @@ mod tests {
         let reg = lib.register_opened(&p, NonZeroUsize::new(12));
         assert!(reg.count_changed, "10 -> 12 is a real change");
         assert_eq!(reg.resume.total(), Some(12));
+    }
+
+    #[test]
+    fn new_book_has_empty_overrides() {
+        let book = Book::from_path(PathBuf::from("/manga/a.cbz"));
+        assert!(book.overrides().is_empty());
+    }
+
+    #[test]
+    fn set_overrides_updates_and_reports_change() {
+        let mut lib = Library::new();
+        let p = PathBuf::from("/manga/a.cbz");
+        assert!(lib.add(p.clone()).is_some());
+        let ov = crate::view_override::ViewOverride {
+            reading_direction: Some(crate::settings::ReadingDirection::Rtl),
+            ..crate::view_override::ViewOverride::none()
+        };
+        // First set changes the value -> true.
+        assert!(lib.set_overrides(&p, ov));
+        assert_eq!(lib.overrides_for(&p), ov);
+        // Setting the same value again is a no-op -> false (mirrors set_last_page).
+        assert!(!lib.set_overrides(&p, ov));
+    }
+
+    #[test]
+    fn set_overrides_clear_to_none_reports_change_and_empties() {
+        let mut lib = Library::new();
+        let p = PathBuf::from("/manga/a.cbz");
+        assert!(lib.add(p.clone()).is_some());
+        let ov = crate::view_override::ViewOverride {
+            reading_direction: Some(crate::settings::ReadingDirection::Rtl),
+            ..crate::view_override::ViewOverride::none()
+        };
+        assert!(lib.set_overrides(&p, ov));
+        // Clearing back to none() is a real change -> true, and leaves it empty.
+        assert!(lib.set_overrides(&p, crate::view_override::ViewOverride::none()));
+        assert!(lib.overrides_for(&p).is_empty());
+    }
+
+    #[test]
+    fn set_overrides_false_when_path_absent() {
+        let mut lib = Library::new();
+        let ov = crate::view_override::ViewOverride::none();
+        assert!(!lib.set_overrides(Path::new("/manga/missing.cbz"), ov));
+    }
+
+    #[test]
+    fn overrides_for_absent_path_is_empty() {
+        let lib = Library::new();
+        assert!(lib
+            .overrides_for(Path::new("/manga/missing.cbz"))
+            .is_empty());
     }
 }

@@ -176,9 +176,24 @@ and the open-time resume (`Library::register_opened`) consume. Derived / transie
 serialised; `library.json` stores only the bare `last_page` + `page_count` fields on `Book`.
 Headless (no slint/tracing).
 
+### view_override
+
+`view_override.rs`. Two paired view-preference value objects (headless: no slint/tracing). The
+PERSISTED, partial form `ViewOverride { reading_direction, spread_mode, cover_mode, fit_mode }` —
+each an `Option<Enum>` where `None` means INHERIT the global default (an active choice, NOT
+"unknown"); `Copy`, immutable, `Default`/`none()` == all-`None`, `is_empty()` == all-`None` (the
+serde `skip_serializing_if` predicate on `Book::overrides`). The TRANSIENT, total form
+`ResolvedView` — every field concrete, never persisted, produced ONLY by
+`ViewOverride::resolve(&Settings) -> ResolvedView` (the single definition of the per-field
+`unwrap_or(global)` fallback). Re-exported from the crate root (`pub use view_override::{ResolvedView, ViewOverride}`).
+Consumed by the UI's `ViewerState::apply_resolved_view` (+ `ViewportState::set_fit` for the
+viewport-owned `fit_mode`). See [ADR-0007](ADRs/0007-per-book-view-overrides.md) for the design
+decision and [patterns.md](patterns.md) ("Partial/total override pair") for the value-object flavor.
+
 ### Library aggregate
 
-PR-60 (signature retyped in #65; book ordering added in #82), `library.rs`.
+PR-60 (signature retyped in #65; book ordering added in #82; per-book view overrides added in
+this feature), `library.rs`.
 `Library::register_opened(canonical: &Path, page_count: Option<NonZeroUsize>) -> OpenRegistration
 { resume: ReadingProgress, count_changed: bool }` centralises the open-time domain rule that
 previously lived in `main.rs`'s `app::OpenBookUseCase::run`: idempotent add by canonical path
@@ -203,6 +218,15 @@ books. `add()` sorts the book list after inserting; `normalize()` re-sorts on lo
 natural title order on the next launch. The presentation layer (`carousel_data`,
 `cover_requests`) inherits this order by iterating `books()` — it does NOT sort independently,
 which keeps carousel row indices and cover-request indices aligned.
+
+Each `Book` also carries a `ViewOverride overrides` field (the per-book view-preference overrides;
+`#[serde(default, skip_serializing_if = "ViewOverride::is_empty")]`, so an all-`None` override emits
+no key and `library.json` stays byte-compatible with files written before this feature — see
+[conventions.md](conventions.md), "Add an optional nested config"). The aggregate owns the mutation:
+`Library::set_overrides(path, ViewOverride) -> bool` (idempotent-changed bool, same `false`==no-op
+convention as `set_last_page`/`set_page_count`) and `Library::overrides_for(path) -> ViewOverride`
+(returns `ViewOverride::none()` for an unknown path, so the caller can `resolve` unconditionally).
+There is NO `Book` setter — `Book::overrides()` is read-only.
 
 ---
 
@@ -238,6 +262,13 @@ PR-R added `open_file() -> Option<&Path>`: the CANONICAL path of the most recent
 `None` until the first `Ok`, reset by `set_source`, unchanged by a failed `open_path`). `main.rs`
 reads it to form the write-back tuple `(canonical_path, index())` for the `Library` at every leave
 point — see the resume/write-back scope entry and `docs/patterns.md`.
+
+This-feature added `apply_resolved_view(ResolvedView)` — sets `reading_direction`/`spread_mode`/`cover_mode`
+from a resolved view (the `fit_mode` field is applied by the caller via `ViewportState::set_fit`),
+called after the source is set when opening/returning to a book so its per-book override (resolved
+against global `Settings`) takes effect. Runtime modes are intentionally NOT reset on open — they are
+re-seeded by this call — which is why the open-time global reconcile is a clobber trap (see
+[patterns.md](patterns.md), "Write-direction invariant audit").
 
 PR-S added two pure scrubber-support helpers:
 
@@ -296,6 +327,27 @@ is NO `NavState` field — `NavState` stays in `main.rs`. Exposes two items:
 `go_to_viewer(&ui, &nav)` after `run` returns, using the `nav: Rc<RefCell<NavState>>` that
 stays in `main.rs`. Lives in the UI crate because it coordinates Slint components;
 `gashuu-core` is untouched.
+
+`run` writes back the OUTGOING book's per-book view override (`write_back_view_override`) right
+beside the position write-back at its top, and — per the per-book-overrides feature — does NOT
+reconcile runtime modes into the GLOBAL `Settings` on its open-time save (the runtime still holds
+the outgoing book's per-book modes there; reconciling would clobber the global defaults — see
+[patterns.md](patterns.md), "Write-direction invariant audit"). It then applies the just-opened
+book's `ResolvedView` via `ViewerState::apply_resolved_view` (+ `ViewportState::set_fit`).
+
+### per-book view-override seam fns (`main.rs`)
+
+`pub(crate)` seam fns in `main.rs` (peers of `reconcile_settings`/`write_back_position`):
+`write_back_view_override(&state, &viewport, &library)` snapshots the open book's four runtime
+modes into its `ViewOverride` and saves the library — called at EVERY leave point (nav-away,
+open-another, exit, Viewer settings-dialog close); a no-op when no book is open.
+`apply_global_view_to_runtime(&settings, &state, &viewport)` mirrors the GLOBAL `Settings` view
+modes into the runtime so the Library-screen settings dialog seeds from global (the inverse of
+`reconcile_settings`). The shared `SettingsDialog` routes by `ui.get_screen()`: `0` (Library) →
+`reconcile_settings` into global; `1` (Viewer) → `write_back_view_override` into the current book.
+The exit-path `reconcile_settings` is gated on `open_file().is_none()`. See
+[patterns.md](patterns.md), "Per-book view overrides: write-back-at-leave-point + screen-scoped
+dialog routing".
 
 ### library_model
 

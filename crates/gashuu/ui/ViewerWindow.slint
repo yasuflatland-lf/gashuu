@@ -123,6 +123,9 @@ export component ViewerWindow inherits Window {
     in-out property <int> preload-pages;
     in-out property <bool> track-recent;
     in property <string> key-bindings-text;
+    // True when the settings dialog edits the current book's per-book override
+    // (opened from the Viewer) rather than the global defaults (Library screen).
+    in property <bool> settings-per-book: false;
 
     changed width  => { root.resized(self.width, self.height); }
     changed height => { root.resized(self.width, self.height); }
@@ -187,6 +190,8 @@ export component ViewerWindow inherits Window {
     callback close-settings();
     callback open-shortcuts();
     callback close-shortcuts();
+    // Viewer settings: reset the current book to the global defaults.
+    callback reset-overrides();
     callback dismiss-guide();
     callback set-reading-direction(int);
     callback set-spread-mode(int);
@@ -462,6 +467,7 @@ export component ViewerWindow inherits Window {
         preload-pages <=> root.preload-pages;
         track-recent <=> root.track-recent;
         focus-epoch: root.settings-focus-epoch;
+        show-reset-button: root.settings-per-book;
         open-shortcuts() => { root.open-shortcuts(); }
         set-reading-direction(i) => { root.set-reading-direction(i); }
         set-spread-mode(i) => { root.set-spread-mode(i); }
@@ -471,6 +477,7 @@ export component ViewerWindow inherits Window {
         set-preload-pages(v) => { root.set-preload-pages(v); }
         set-track-recent(b) => { root.set-track-recent(b); }
         close-settings() => { root.close-settings(); }
+        reset-to-global() => { root.reset-overrides(); }
     }
     if root.show-guide : FirstRunGuide {
         width: root.width;

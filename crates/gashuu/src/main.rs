@@ -20,7 +20,9 @@ use enum_adapters::{
     index_to_reading_direction, index_to_spread_mode, reading_direction_to_index,
     spread_mode_to_index,
 };
-use gashuu_core::{CacheConfig, DecodedImage, FitMode, Library, ReadingDirection, Settings};
+use gashuu_core::{
+    CacheConfig, DecodedImage, FitMode, Library, ReadingDirection, Settings, ViewOverride,
+};
 use keymap::{map_key, KeyCommand};
 use library_model::LibrarySearchState;
 use navigation::{screen_to_index, NavState};
@@ -534,6 +536,15 @@ fn main() -> color_eyre::Result<()> {
         let viewport = Rc::clone(&viewport);
         ui.on_open_settings(move || {
             with_ui(&ui_weak, |ui| {
+                // screen 1 = Viewer (per-book), screen 0 = Library (global defaults).
+                let per_book = ui.get_screen() == 1;
+                // On the Library screen the dialog edits the GLOBAL defaults, so
+                // mirror them into the runtime first (the dialog seeds from the
+                // runtime). The viewer isn't shown on the Library screen, so this
+                // has no visible effect; a book re-applies its own override on open.
+                if !per_book {
+                    apply_global_view_to_runtime(&settings, &state, &viewport);
+                }
                 let s = settings.borrow();
                 let st = state.borrow();
                 ui.set_reading_direction_index(reading_direction_to_index(st.reading_direction()));
@@ -545,6 +556,7 @@ fn main() -> color_eyre::Result<()> {
                 ui.set_preload_pages(s.preload_pages as i32);
                 ui.set_track_recent(s.track_recent_files);
                 ui.set_key_bindings_text(KEY_BINDINGS_HELP.into());
+                ui.set_settings_per_book(per_book);
                 ui.set_show_settings(true);
             })
         });
@@ -557,29 +569,41 @@ fn main() -> color_eyre::Result<()> {
     // FocusScope: the page area on the Viewer, the carousel on the Library.
     // Restoring `focus-pages()` unconditionally would focus the hidden Viewer
     // scope when closing over the Library, leaving the carousel keys dead.
-    // The `reconcile_settings` call's `settings.borrow_mut()` drops at its `;`, so
-    // `save()`'s fresh `settings.borrow()` cannot double-borrow.
+    // All three temporaries (state.borrow(), viewport.borrow(), settings.borrow_mut())
+    // are argument expressions in the single reconcile_settings(...) call and drop
+    // together at its `;`, before save()'s fresh settings.borrow() on the next line.
     {
         let ui_weak = ui.as_weak();
         let state = Rc::clone(&state);
         let settings = Rc::clone(&settings);
         let viewport = Rc::clone(&viewport);
+        let library = Rc::clone(&library);
         ui.on_close_settings(move || {
             with_ui(&ui_weak, |ui| {
                 ui.set_show_settings(false);
-                reconcile_settings(
-                    &state.borrow(),
-                    &viewport.borrow(),
-                    &mut settings.borrow_mut(),
-                );
-                if let Err(e) = settings.borrow().save() {
-                    tracing::error!(error = %e, "failed to save settings from dialog");
-                    ui.set_status_text(format!("Could not save settings: {e}").into());
-                }
-                // screen 0 = Library (carousel), 1 = Viewer (page area).
+                // screen 0 = Library (edits GLOBAL defaults), 1 = Viewer (edits the
+                // CURRENT book's per-book override).
                 if ui.get_screen() == 0 {
+                    reconcile_settings(
+                        &state.borrow(),
+                        &viewport.borrow(),
+                        &mut settings.borrow_mut(),
+                    );
+                    if let Err(e) = settings.borrow().save() {
+                        tracing::error!(error = %e, "failed to save settings from dialog");
+                        ui.set_status_text(format!("Could not save settings: {e}").into());
+                    }
                     ui.invoke_focus_carousel();
                 } else {
+                    // Persist the four view modes to this book's override. The
+                    // cache/preload/track fields are global; save Settings too so a
+                    // change to them in the viewer dialog is not lost (the view-mode
+                    // fields in Settings are untouched because we did NOT reconcile).
+                    write_back_view_override(&state, &viewport, &library);
+                    if let Err(e) = settings.borrow().save() {
+                        tracing::error!(error = %e, "failed to save settings from dialog");
+                        ui.set_status_text(format!("Could not save settings: {e}").into());
+                    }
                     ui.invoke_focus_pages();
                 }
             })
@@ -624,6 +648,40 @@ fn main() -> color_eyre::Result<()> {
         });
     }
 
+    // Reset-to-global (viewer settings only): clear THIS book's override so it
+    // inherits the global defaults again, apply them to the live view, and re-seed
+    // the open dialog's combos to the now-global values.
+    {
+        let ui_weak = ui.as_weak();
+        let state = Rc::clone(&state);
+        let settings = Rc::clone(&settings);
+        let viewport = Rc::clone(&viewport);
+        let library = Rc::clone(&library);
+        ui.on_reset_overrides(move || {
+            with_ui(&ui_weak, |ui| {
+                if let Some(path) = state.borrow().open_file().map(|p| p.to_path_buf()) {
+                    let changed = library.borrow_mut().set_overrides(&path, ViewOverride::none());
+                    if !changed {
+                        tracing::warn!(path = %path.display(), "reset override: open book not found in library");
+                    }
+                    if let Err(e) = library.borrow().save() {
+                        tracing::error!(error = %e, "failed to save library on override reset");
+                        ui.set_status_text(format!("Could not save settings: {e}").into());
+                    }
+                }
+                // Apply the global defaults to the runtime + view.
+                apply_global_view_to_runtime(&settings, &state, &viewport);
+                refresh(&ui, &state.borrow(), &viewport);
+                // Sync the open dialog's combos to the now-global values.
+                let st = state.borrow();
+                ui.set_reading_direction_index(reading_direction_to_index(st.reading_direction()));
+                ui.set_spread_mode_index(spread_mode_to_index(st.spread_mode()));
+                ui.set_cover_mode_index(cover_mode_to_index(st.cover_mode()));
+                ui.set_fit_mode_index(fit_mode_to_index(viewport.borrow().fit_mode()));
+            })
+        });
+    }
+
     // Dismiss the first-run guide: mark it seen, persist, hide it, restore focus.
     // Two-statement RefCell discipline: the `borrow_mut()` drops at the `;` before
     // the immutable `borrow()` for `save`.
@@ -656,8 +714,10 @@ fn main() -> color_eyre::Result<()> {
         ui.on_set_reading_direction(move |i| {
             with_ui(&ui_weak, |ui| {
                 let dir = index_to_reading_direction(i);
-                // Runtime state is the single source of truth; `reconcile_settings`
-                // mirrors it into `Settings` at the next save.
+                // Mutates the runtime view mode only; while a book is open this change
+                // is persisted to the current book's per-book override via
+                // `write_back_view_override` at the next viewer leave point, not into
+                // the global `Settings`.
                 if state.borrow_mut().set_reading_direction(dir) {
                     refresh(&ui, &state.borrow(), &viewport);
                 }
@@ -671,8 +731,10 @@ fn main() -> color_eyre::Result<()> {
         ui.on_set_spread_mode(move |i| {
             with_ui(&ui_weak, |ui| {
                 let mode = index_to_spread_mode(i);
-                // Runtime state is the single source of truth; `reconcile_settings`
-                // mirrors it into `Settings` at the next save.
+                // Mutates the runtime view mode only; while a book is open this change
+                // is persisted to the current book's per-book override via
+                // `write_back_view_override` at the next viewer leave point, not into
+                // the global `Settings`.
                 if state.borrow_mut().set_spread_mode(mode) {
                     refresh(&ui, &state.borrow(), &viewport);
                 }
@@ -686,8 +748,10 @@ fn main() -> color_eyre::Result<()> {
         ui.on_set_cover_mode(move |i| {
             with_ui(&ui_weak, |ui| {
                 let mode = index_to_cover_mode(i);
-                // Runtime state is the single source of truth; `reconcile_settings`
-                // mirrors it into `Settings` at the next save.
+                // Mutates the runtime view mode only; while a book is open this change
+                // is persisted to the current book's per-book override via
+                // `write_back_view_override` at the next viewer leave point, not into
+                // the global `Settings`.
                 if state.borrow_mut().set_cover_mode(mode) {
                     refresh(&ui, &state.borrow(), &viewport);
                 }
@@ -704,8 +768,10 @@ fn main() -> color_eyre::Result<()> {
                 // Equality guard (the viewport setter is not idempotent-by-return).
                 // Compare in one borrow, mutate in a separate `borrow_mut()` that
                 // drops at the `;`, then `refresh` (which borrows viewport internally).
-                // The viewport owns `fit_mode` at runtime; `reconcile_settings`
-                // mirrors it into `Settings` at the next save.
+                // The viewport owns `fit_mode` at runtime; while a book is open this
+                // change is persisted to the current book's per-book override via
+                // `write_back_view_override` at the next viewer leave point, not into
+                // the global `Settings`.
                 if viewport.borrow().fit_mode() != mode {
                     viewport.borrow_mut().set_fit(mode);
                     refresh(&ui, &state.borrow(), &viewport);
@@ -892,11 +958,13 @@ fn main() -> color_eyre::Result<()> {
                     // Up arrow returns to the Library carousel. Direction-independent
                     // (decoded in keymap); the seam flips NavState + syncs `screen`.
                     KeyCommand::GoToLibrary => {
-                        // Write the current position back before leaving the viewer.
-                        // Borrow discipline: write_back_position takes &Rc<RefCell<…>>
-                        // and confines each borrow to a single statement; drops before
-                        // go_to_library borrows the UI.
+                        // Write the current position AND this book's view modes back
+                        // before leaving the viewer, so a D/R/C/fit toggle made while
+                        // reading persists to the book even without opening settings.
+                        // Each helper confines its borrows to single statements; both
+                        // drop before go_to_library borrows the UI.
                         write_back_position(&state, &library);
+                        write_back_view_override(&state, &viewport, &library);
                         go_to_library(&ui, &nav);
                     }
                 }
@@ -930,15 +998,20 @@ fn main() -> color_eyre::Result<()> {
     // The `state` and `library` RefCells are no longer borrowed (the event
     // loop has exited), so there is no borrow conflict here.
     write_back_position(&state, &library);
-    // Reconcile runtime display modes into Settings, then persist on exit so even a
-    // first run writes a file the user can hand-edit. The `reconcile_settings`
-    // call's `settings.borrow_mut()` drops at the `;`, so `save()`'s fresh
-    // `settings.borrow()` cannot double-borrow. Save failure is logged, not fatal.
-    reconcile_settings(
-        &state.borrow(),
-        &viewport.borrow(),
-        &mut settings.borrow_mut(),
-    );
+    // Persist the open book's view modes to its override on exit (no-op if no book
+    // is open), so a toggle made right before quitting is not lost.
+    write_back_view_override(&state, &viewport, &library);
+    // Only mirror runtime display modes into the GLOBAL Settings when NO book is
+    // open — otherwise the open book's per-book modes would clobber the global
+    // defaults (its modes were just saved to its override above). cache/preload/
+    // track and seen_guide are saved unconditionally below.
+    if state.borrow().open_file().is_none() {
+        reconcile_settings(
+            &state.borrow(),
+            &viewport.borrow(),
+            &mut settings.borrow_mut(),
+        );
+    }
     if let Err(e) = settings.borrow().save() {
         tracing::error!(error = %e, "failed to save settings on exit");
     }
@@ -1135,6 +1208,29 @@ pub(crate) fn reconcile_settings(
     settings.fit_mode = viewport.fit_mode();
 }
 
+/// Mirror the GLOBAL `Settings` view modes into the runtime (`ViewerState` for
+/// direction/spread/cover, `ViewportState` for fit) — the inverse of
+/// `reconcile_settings`. Used when the dialog edits the global defaults
+/// (opening Library settings) and when resetting an open book to global.
+///
+/// Borrow discipline: the shared `settings.borrow()` (`s`) is held while each
+/// `borrow_mut()` runs, which is safe because `settings`, `state`, and
+/// `viewport` are distinct `RefCell`s; one `borrow_mut()` per statement so no
+/// two mutable borrows of the same cell overlap.
+pub(crate) fn apply_global_view_to_runtime(
+    settings: &Rc<RefCell<Settings>>,
+    state: &Rc<RefCell<ViewerState>>,
+    viewport: &Rc<RefCell<ViewportState>>,
+) {
+    let s = settings.borrow();
+    state
+        .borrow_mut()
+        .set_reading_direction(s.reading_direction);
+    state.borrow_mut().set_spread_mode(s.spread_mode);
+    state.borrow_mut().set_cover_mode(s.cover_mode);
+    viewport.borrow_mut().set_fit(s.fit_mode);
+}
+
 /// Derive the centered title-bar display name from the AUTHORITATIVE post-open
 /// state, so it can never show a book that did not actually open.
 ///
@@ -1219,6 +1315,67 @@ pub(crate) fn write_back_position(
     library.borrow_mut().set_last_page(&path, page);
     if let Err(e) = library.borrow().save() {
         tracing::error!(error = %e, "failed to save library on position write-back");
+    }
+}
+
+/// Pure helper: decide what view override to write back for the open book.
+///
+/// Returns `Some((canonical_path, override))` when a book is open (so the
+/// caller persists it), `None` otherwise. The override carries all four current
+/// runtime modes as `Some(_)`: while a book is open, ITS modes are authoritative,
+/// so a write-back fully pins them (a later "reset to global" clears them again).
+/// Extracted (mirrors `position_to_write_back`) so the predicate is unit-tested
+/// without the effectful `set_overrides` + `save`.
+fn view_override_to_write_back(
+    open_file: Option<&std::path::Path>,
+    reading_direction: ReadingDirection,
+    spread_mode: gashuu_core::SpreadMode,
+    cover_mode: gashuu_core::CoverMode,
+    fit_mode: FitMode,
+) -> Option<(std::path::PathBuf, ViewOverride)> {
+    open_file.map(|p| {
+        (
+            p.to_path_buf(),
+            ViewOverride {
+                reading_direction: Some(reading_direction),
+                spread_mode: Some(spread_mode),
+                cover_mode: Some(cover_mode),
+                fit_mode: Some(fit_mode),
+            },
+        )
+    })
+}
+
+/// Write the current runtime view modes back to the OPEN book's override and
+/// persist. Called at every viewer leave point (↑ to Library, opening a
+/// different book, app exit) and on viewer-context settings-dialog close, so a
+/// bare keyboard toggle (D/R/C/fit) persists per-book without opening the dialog.
+/// No-op when no book is open.
+///
+/// Borrow discipline (mirrors `write_back_position`): the `state`/`viewport`
+/// shared borrows are confined to the leading block expression and drop before
+/// `library.borrow_mut()`. `state` and `viewport` are distinct `RefCell`s, so
+/// holding shared borrows of both at once is fine.
+pub(crate) fn write_back_view_override(
+    state: &Rc<RefCell<ViewerState>>,
+    viewport: &Rc<RefCell<ViewportState>>,
+    library: &Rc<RefCell<Library>>,
+) {
+    let Some((path, overrides)) = ({
+        let s = state.borrow();
+        view_override_to_write_back(
+            s.open_file(),
+            s.reading_direction(),
+            s.spread_mode(),
+            s.cover_mode(),
+            viewport.borrow().fit_mode(),
+        )
+    }) else {
+        return; // no book open — nothing to write back
+    };
+    library.borrow_mut().set_overrides(&path, overrides);
+    if let Err(e) = library.borrow().save() {
+        tracing::error!(error = %e, "failed to save library on view-override write-back");
     }
 }
 
@@ -1500,6 +1657,42 @@ mod tests {
         assert!(result.is_some());
         let (_, pg) = result.unwrap();
         assert_eq!(pg, 0, "page 0 is a valid write-back (start of book)");
+    }
+
+    // ---- view_override_to_write_back (per-book overrides) ------------------
+
+    #[test]
+    fn view_override_to_write_back_none_when_no_open_file() {
+        assert!(
+            view_override_to_write_back(
+                None,
+                ReadingDirection::Ltr,
+                gashuu_core::SpreadMode::Single,
+                gashuu_core::CoverMode::Standalone,
+                FitMode::Whole,
+            )
+            .is_none(),
+            "no open file => no write-back"
+        );
+    }
+
+    #[test]
+    fn view_override_to_write_back_some_carries_all_four_modes() {
+        use std::path::PathBuf;
+        let path = PathBuf::from("/manga/book.cbz");
+        let result = view_override_to_write_back(
+            Some(path.as_path()),
+            ReadingDirection::Rtl,
+            gashuu_core::SpreadMode::Double,
+            gashuu_core::CoverMode::Paired,
+            FitMode::Actual,
+        );
+        let (p, ov) = result.expect("open file => write-back tuple");
+        assert_eq!(p, path);
+        assert_eq!(ov.reading_direction, Some(ReadingDirection::Rtl));
+        assert_eq!(ov.spread_mode, Some(gashuu_core::SpreadMode::Double));
+        assert_eq!(ov.cover_mode, Some(gashuu_core::CoverMode::Paired));
+        assert_eq!(ov.fit_mode, Some(FitMode::Actual));
     }
 
     #[test]

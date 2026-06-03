@@ -26,6 +26,9 @@ tasteful a tool as a fine art book.
 - **Spreads** — single page, two-page spread, or **auto** (picks single/double from the
   window aspect ratio and follows resizes live). Right-to-left (manga) or left-to-right
   binding, with a standalone or paired cover layout.
+- **Per-book view settings** — reading direction, spread, cover layout, and fit mode are
+  remembered per book (falling back to your global defaults), so each title reopens the way
+  you left it; the Viewer settings dialog can reset a book back to the global defaults.
 - **Zoom & pan** — the wheel zooms at the cursor and drag pans; fit modes are Whole /
   Width / Actual. Zoom and pan are session-only; the fit mode is saved.
 - **Fast page turns** — pages are held in an LRU cache and neighbours are prefetched in
@@ -89,7 +92,8 @@ Open content from the toolbar — **Open Folder…** (PNG/JPG/JPEG) or **Open Ar
 | `↑` | Return to the Library |
 
 Arrows follow the reading direction (LTR: `→` = next; RTL: `←` = next). `Space` and
-`Backspace` are always next/previous in reading order. Mode changes are saved on exit.
+`Backspace` are always next/previous in reading order. `D` / `R` / `C` mode changes are
+remembered per book, so the book reopens the way you left it.
 
 The **page scrubber** (bottom bar) and **page-counter chip** (top-right) appear on
 mouse-move, arrow-key press, or scrubber drag, then fade after idle. Drag the knob to
@@ -113,10 +117,12 @@ turns keep the current zoom and fit and only re-center the pan. Set `RUST_LOG=de
 log per-turn latency.
 
 **Settings dialog** — click **Settings…** to change reading direction, spread mode,
-cover layout, fit mode, cache size, preload radius, and the recent-files toggle.
-Display-mode changes apply immediately; cache size and preload radius take effect on the
-next book you open. The dialog's footer has a **Shortcuts** link that opens a separate
-overlay listing the keyboard shortcuts (remapping is not yet supported).
+cover layout, fit mode, cache size, preload radius, and the recent-files toggle. Scope
+follows the screen: from the **Library** it edits your GLOBAL defaults; from the
+**Viewer** it edits the CURRENT book's view settings (with a "Reset to global"
+button). Display-mode changes apply immediately; cache size and preload radius take effect
+on the next book you open. The dialog's footer has a **Shortcuts** link that opens a
+separate overlay listing the keyboard shortcuts (remapping is not yet supported).
 
 ## Settings
 

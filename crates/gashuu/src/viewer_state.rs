@@ -11,7 +11,7 @@
 use crate::keymap::NavAction;
 use gashuu_core::{
     ArchiveLoader, CacheConfig, CoreError, CoverMode, DecodedImage, ImageCache, PageSource,
-    ReadingDirection, Settings, SpreadContext, SpreadLayout, SpreadMode,
+    ReadingDirection, ResolvedView, Settings, SpreadContext, SpreadLayout, SpreadMode,
 };
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -437,6 +437,21 @@ impl ViewerState {
         }
         self.reading_direction = dir;
         true
+    }
+
+    /// Apply a fully resolved per-book view to the runtime modes. Delegates to the
+    /// idempotent `set_*` setters (each re-anchors the index for pairing changes
+    /// at most once), so applying a resolved view after `jump_to` keeps the resumed
+    /// page on a valid spread leading. `fit_mode` is intentionally NOT applied here:
+    /// it is owned by `ViewportState`, which the caller updates via `set_fit`.
+    ///
+    /// Callers applying a full `ResolvedView` MUST also call
+    /// `ViewportState::set_fit(view.fit_mode)` separately — this method applies only
+    /// the three `ViewerState`-owned modes (direction/spread/cover).
+    pub fn apply_resolved_view(&mut self, view: ResolvedView) {
+        self.set_reading_direction(view.reading_direction);
+        self.set_spread_mode(view.spread_mode);
+        self.set_cover_mode(view.cover_mode);
     }
 
     /// Re-anchor `index` onto a valid leading for the current modes after a
