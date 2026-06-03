@@ -64,6 +64,13 @@ export global Theme {
     // ~32px hit area is met by the surrounding row (see PR-B); the capsule is 30.
     out property <length> settings-control-h: 30px;
 
+    // ── Settings dropdown (pull-down) atom ────────────────────────────────────
+    // Fixed button width so the capsule does not resize when the selected label
+    // changes length (e.g. "English" vs "日本語"). Fits the widest label plus
+    // the chevron within the settings control column.
+    out property <length> settings-dropdown-w: 140px;
+    out property <length> settings-dropdown-chevron: 10px;  // chevron glyph square
+
     // ── Settings glass panel (issue 103, PR-B) ────────────────────────────────
     out property <length> settings-w: 360px;             // panel width
     out property <length> settings-h: 583px;             // panel height; settings-h / settings-w ≈ φ (1.618)
