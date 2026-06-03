@@ -18,6 +18,7 @@ colors:
   glass-fill: "#10141fd1"      # surface-float at ~82% alpha — translucent glass-pill fill
   glass-border: "#2f3850b3"    # hairline-float at ~70% alpha — the hairline rim
   glass-highlight: "#dde5f51f" # text-high at ~12% alpha — 1px top inner highlight rim
+  glass-sheen-top: "#1a2030d1" # stage-top at ~82% alpha — top stop of the settings panel's fill gradient
   success: "#41c98a"
   canvas: "#0b0e15"
   surface: "#0e1118"
@@ -148,6 +149,19 @@ components:
     backgroundColor: "{colors.surface}"
     border: "1px solid {colors.hairline}"
     rounded: "{rounded.lg}"
+  settings-panel:
+    width: 360px              # Theme.settings-w
+    height: 583px             # Theme.settings-h; height / width ≈ φ (1.618)
+    rounded: 21px             # Theme.settings-radius = nav-pill-radius (shares NavBar's glass corner language)
+    labelColumn: 150px        # Theme.settings-label-col (fixed; sized to the longest label, never wraps/elides)
+    controlSeam: "labelColumn + {spacing.lg}"   # Theme.settings-control-x — the single x every control shares
+    rowHeight: 34px           # Theme.settings-row-h (= nav-capsule); the 30px control atom centers within it
+    scrollIndicatorWidth: 3px # Theme.settings-scroll-indicator-w (self-drawn, not a std scrollbar)
+    sheenTop: "{colors.glass-sheen-top}"  # top stop of the panel fill gradient
+    fill: "{colors.glass-fill}"           # bottom stop of the panel fill gradient
+    border: "1px solid {colors.glass-border}"
+    highlight: "{colors.glass-highlight}" # 1px top inner highlight
+    shadow: "{elevation.float}"           # ONE drop shadow; no second shadow, no nested glass
 ---
 
 ## Overview
@@ -378,6 +392,30 @@ shows through — reinforcing the "glass" read.
   glass), and **FILLED** icons (not outline) — a filled mass reads better on the dark canvas and
   resists low-DPI degradation.
 
+### Settings Panel — `components.settings-panel`
+A modal **golden-ratio glass panel** centered over the dimmed screen: 360 × 583px (height/width ≈ φ),
+corner radius **21px** (= `nav-pill-radius` — it shares NavBar's glass corner language). It is one
+fake-glass object built from NavBar's four layers, with **layer 1 promoted to a top-sheen gradient**:
+a `@linear-gradient(180deg, {colors.glass-sheen-top} 0%, {colors.glass-fill} 46%)` fill, a 1px
+`{colors.glass-border}` rim, a 1px `{colors.glass-highlight}` top inner highlight, and ONE
+`{elevation.float}` drop shadow. No nested glass, no second shadow. (The sheen is a FILL gradient, not
+an opacity layer — Slint `opacity` blurs text/SVG on HiDPI.) On a short window the panel height clamps
+to fit and the **body scrolls** (see Responsive Behavior).
+
+- **L1 single-seam alignment**: each setting is a row with a fixed **label column** (150px,
+  `{colors.text-mid}`, never wrapping/eliding) at the left margin and its control at ONE shared
+  vertical **control seam** (`labelColumn + {spacing.lg}`). Every control's left edge lines up; the
+  RIGHT edges are intentionally ragged (no stretch). Row height 34px; the 30px control atom centers
+  within it.
+- **Sections**: Reading / Display / Performance, delineated by whitespace. Section headers are
+  `{colors.text-dim}` in **sentence case** — NOT accent (accent stays interactive/selected-only).
+- **Controls** are the token-driven atoms (`Segmented` / `Stepper` / `Toggle`), not std widgets.
+- **Scrollable body** is a Slint `Flickable` (NOT a std `ScrollView`, whose light scrollbar breaks the
+  glass) with a thin **self-drawn scroll indicator** (3px `{colors.track-prog}` rail + `{colors.accent}`
+  thumb) shown only on overflow.
+- **Dismiss**: Esc, a backdrop click (the dimmed scrim outside the panel), or the Close button — all
+  three close the dialog.
+
 ### Empty Library (0 books)
 The Library screen, when empty, centers a single **`button-primary`** ("Select folders / files to
 add") on a `{colors.surface-sunken}` panel, with a one-line `{typography.ui-micro}` helper. Books
@@ -426,6 +464,9 @@ adapting to the live window size.
 - **Scrubber**: the rail spans window width minus edge insets; the preview popover clamps inside
   the window so it never clips at the far edges.
 - **Showing the thumbnail strip** shrinks the viewer height and may re-resolve `Auto` (accepted).
+- **Settings panel**: keeps its fixed φ size until the window gets short, then its height clamps to the
+  window minus a gutter on each side and the body scrolls (the sticky header/footer stay put). Never
+  overflows the window.
 
 ### Targets & minimums
 - Interactive targets (knob, covers, buttons) stay ≥ ~32px effective hit area.
