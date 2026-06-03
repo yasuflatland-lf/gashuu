@@ -5,8 +5,11 @@
 // paints every pixel from `Theme.*` so it sits in the dark glass palette instead
 // of the native light ComboBox (mirrors how NavBar dropped `LineEdit` for a raw
 // `TextInput`, issue #88). One capsule (surface-sunken ground, 1px hairline-float
-// border, radius-sm) holds N equal cells; the selected cell fills with `accent`
-// and its label goes white + semibold, idle cells stay `text-muted`.
+// border, radius-md; cells rounded concentrically via seg-cell-radius) holds N
+// equal cells that FILL the row (horizontal-stretch: 1 — spanning the SettingRow
+// seam to the right rail, HIG equal-width segments; spec 2026-06-04); the
+// selected cell fills with `accent` and its label goes white + semibold, idle
+// cells stay `text-muted`.
 //
 // Keyboard (when focused): Left/Right move the selection (clamped, fires
 // `selected`), Space/Enter re-confirm the current selection. Focus shows an
@@ -39,8 +42,11 @@ export component Segmented inherits Rectangle {
 
     // ── Capsule ground ──────────────────────────────────────────────────────────
     height: Theme.settings-control-h;
+    // Fill atom: spans seam → right rail once SettingRow stops forcing
+    // `alignment: start` (the row's conditional spacer handles trailing atoms).
+    horizontal-stretch: 1;
     background: Theme.surface-sunken;
-    border-radius: Theme.radius-sm;
+    border-radius: Theme.radius-md;
     border-width: 1px;
     border-color: fs.has-focus ? Theme.accent : Theme.hairline-float;
     // Soft accent-glow focus halo (one drop-shadow, no spread; discrete change —
@@ -82,7 +88,7 @@ export component Segmented inherits Rectangle {
         for item[idx] in root.model : Rectangle {
             horizontal-stretch: 1;
             background: idx == root.current-index ? Theme.accent : transparent;
-            border-radius: Theme.radius-xs;
+            border-radius: Theme.seg-cell-radius;
             animate background { duration: Theme.motion-fast; }
 
             // a11y: each cell is a selectable list item; AT activation selects it
