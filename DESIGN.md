@@ -157,6 +157,8 @@ components:
     controlSeam: "labelColumn + {spacing.lg}"   # Theme.settings-control-x — the single x every control shares
     rowHeight: 34px           # Theme.settings-row-h (= nav-capsule); the 30px control atom centers within it
     scrollIndicatorWidth: 3px # Theme.settings-scroll-indicator-w (self-drawn, not a std scrollbar)
+    dropdownWidth: 140px      # Theme.settings-dropdown-w (fixed so the pull-down capsule doesn't resize across languages)
+    dropdownChevron: 10px     # Theme.settings-dropdown-chevron (the pull-down's chevron glyph square)
     sheenTop: "{colors.glass-sheen-top}"  # top stop of the panel fill gradient
     fill: "{colors.glass-fill}"           # bottom stop of the panel fill gradient
     border: "1px solid {colors.glass-border}"
@@ -407,9 +409,15 @@ to fit and the **body scrolls** (see Responsive Behavior).
   vertical **control seam** (`labelColumn + {spacing.lg}`). Every control's left edge lines up; the
   RIGHT edges are intentionally ragged (no stretch). Row height 34px; the 30px control atom centers
   within it.
-- **Sections**: Reading / Display / Performance, delineated by whitespace. Section headers are
-  `{colors.text-dim}` in **sentence case** — NOT accent (accent stays interactive/selected-only).
-- **Controls** are the token-driven atoms (`Segmented` / `Stepper` / `Toggle`), not std widgets.
+- **Sections**: Reading / Display / Performance / General, delineated by whitespace. Section headers
+  are `{colors.text-dim}` in **sentence case** — NOT accent (accent stays interactive/selected-only).
+- **Controls** are the token-driven atoms (`Segmented` / `Stepper` / `Toggle` / `Dropdown`), not std
+  widgets.
+- **Language pull-down** (`Dropdown`, Apple-HIG pull-down button): a fixed-width capsule
+  (`dropdownWidth`) on the control seam showing the current value plus a `{colors.text-dim}`
+  chevron; the open menu (a Slint `PopupWindow` — never clipped by the scroll body) lists options
+  with an `{colors.accent}` check mark on the selected row and an accent hover fill. Language
+  names always render in their own tongue ("English" / "日本語") and are never translated.
 - **Scrollable body** is a Slint `Flickable` (NOT a std `ScrollView`, whose light scrollbar breaks the
   glass) with a thin **self-drawn scroll indicator** (3px `{colors.track-prog}` rail + `{colors.accent}`
   thumb) shown only on overflow.
