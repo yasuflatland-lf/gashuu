@@ -444,9 +444,6 @@ impl ViewerState {
     /// at most once), so applying a resolved view after `jump_to` keeps the resumed
     /// page on a valid spread leading. `fit_mode` is intentionally NOT applied here:
     /// it is owned by `ViewportState`, which the caller updates via `set_fit`.
-    // In a binary crate `pub` is not a public API surface, so -D warnings flags
-    // test-only callers as dead code until the UI call site lands.
-    #[allow(dead_code)]
     pub fn apply_resolved_view(&mut self, view: ResolvedView) {
         self.set_reading_direction(view.reading_direction);
         self.set_spread_mode(view.spread_mode);

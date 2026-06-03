@@ -21,7 +21,9 @@ use crate::library_model::LibrarySearchState;
 use crate::thumbnail_strip::ThumbnailController;
 use crate::viewer_state::ViewerState;
 use crate::viewport::ViewportState;
-use crate::{reconcile_settings, refresh, write_back_position, ViewerWindow};
+use crate::{
+    reconcile_settings, refresh, write_back_position, write_back_view_override, ViewerWindow,
+};
 
 /// Coordinates the "open a book" use case. The collaborators it threads are
 /// fields, so the open sites call [`OpenBookUseCase::run`] instead of passing
@@ -83,6 +85,11 @@ impl OpenBookUseCase {
         // before we replace the source. `open_file()` is None when no book was
         // open, so write_back_position is a no-op in that case.
         write_back_position(state, library);
+        // Also capture the OUTGOING book's runtime view modes into its per-book
+        // override before the source is replaced, so a bare D/R/C/fit toggle
+        // persists even when the settings dialog was never opened. No-op when no
+        // book is open (open_file() is None).
+        write_back_view_override(state, viewport, library);
         // Bind the result first so the `state.borrow_mut()` temporary drops before the
         // `Ok` arm reads `state` again (a borrow held across the match would
         // double-borrow-panic at the `reconcile_settings(&state.borrow(), ..)` below).
@@ -153,6 +160,24 @@ impl OpenBookUseCase {
             );
             false
         };
+        // Resolve THIS book's per-book override against the global defaults and
+        // apply it to the runtime BEFORE the first refresh, so the book opens with
+        // its own modes (empty override => the global defaults). This runs after
+        // `jump_to` above, so the resumed page is then re-anchored to a valid
+        // spread leading for the applied spread/cover modes.
+        //
+        // Borrow discipline: the `library`/`settings` shared borrows are confined
+        // to the block expression and drop at its `}`; `resolved` is `Copy`, so the
+        // `state`/`viewport` `borrow_mut()`s below hold no other borrow.
+        let resolved = {
+            let overrides = canonical
+                .as_deref()
+                .map(|c| library.borrow().overrides_for(c))
+                .unwrap_or_default();
+            overrides.resolve(&settings.borrow())
+        };
+        state.borrow_mut().apply_resolved_view(resolved);
+        viewport.borrow_mut().set_fit(resolved.fit_mode);
         // Persist the newly registered book (and any back-filled page count)
         // immediately, mirroring the recents save-on-open above, so the library
         // shelf stays consistent even if the app exits before the next leave point.

@@ -1224,10 +1224,6 @@ fn view_override_to_write_back(
 /// shared borrows are confined to the leading block expression and drop before
 /// `library.borrow_mut()`. `state` and `viewport` are distinct `RefCell`s, so
 /// holding shared borrows of both at once is fine.
-// NOTE: temporary `allow(dead_code)` — this fn has no callers until it is wired
-// into the open/leave/exit/close paths in Tasks 5 and 6; remove this attribute
-// then.
-#[allow(dead_code)]
 pub(crate) fn write_back_view_override(
     state: &Rc<RefCell<ViewerState>>,
     viewport: &Rc<RefCell<ViewportState>>,
