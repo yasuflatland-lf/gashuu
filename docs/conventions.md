@@ -26,6 +26,8 @@ All visual tokens (colors, border radii, spacing, font sizes, component sizes, s
 
 Slint-specific: colors encode alpha as `#RRGGBBAA` (e.g. the `…40` byte is ~25% alpha), unlike CSS `rgba()`.
 
+**Golden-ratio radius tokens** (introduced/refined in PR#83 and PR#88): `Theme.nav-search-radius` (search field corner radius) and `Theme.nav-pill-radius` (outer glass pill) are computed as `height / φ²` (≈ 0.382 × height). A radius below `height / 2` yields a rounded rectangle; `Theme.radius-pill` (`9999px`) yields a stadium/oval. Deriving radii from component height via φ keeps proportions harmonious without hard-coding lengths — a concrete example of the token-driven, no-inline-values rule.
+
 ### Shared Slint components
 
 Reusable atoms/molecules live one per file under `crates/gashuu/ui/components/` (e.g. `ProgressBar`, `Chip`, `PrimaryButton`, `ThumbnailCell`, `TitleBar`); see [docs/architecture.md](architecture.md) for the current inventory. Conventions for a component there:

@@ -1,11 +1,11 @@
 //! The "open a book" application use case, extracted out of `main.rs`.
 //!
-//! [`OpenBookUseCase`] bundles the six shared collaborators the open path
-//! coordinates (state, settings, viewport, library, thumbs, covers) as fields,
-//! so the open sites call [`OpenBookUseCase::run`] with just the per-call `ui`,
-//! `path`, and `skipped_detail` instead of threading a nine-argument free fn
-//! under `#[allow(clippy::too_many_arguments)]`. It touches Slint (status text,
-//! carousel rebuild, thumbnail launch), so it lives in the UI crate.
+//! [`OpenBookUseCase`] bundles the seven shared collaborators the open path
+//! coordinates (state, settings, viewport, library, thumbs, covers, search) as
+//! fields, so the open sites call [`OpenBookUseCase::run`] with just the per-call
+//! `ui`, `path`, and `skipped_detail` instead of threading a nine-argument free
+//! fn under `#[allow(clippy::too_many_arguments)]`. It touches Slint (status
+//! text, carousel rebuild, thumbnail launch), so it lives in the UI crate.
 
 use std::cell::RefCell;
 use std::num::NonZeroUsize;
@@ -15,8 +15,9 @@ use std::rc::Rc;
 use gashuu_core::{CoreError, Library, Settings};
 use slint::ComponentHandle;
 
-use crate::carousel::{build_carousel_model, cover_requests};
+use crate::carousel::{bind_carousel_model, build_carousel_model, cover_requests};
 use crate::cover_loader::CoverController;
+use crate::library_model::LibrarySearchState;
 use crate::thumbnail_strip::ThumbnailController;
 use crate::viewer_state::ViewerState;
 use crate::viewport::ViewportState;
@@ -32,6 +33,9 @@ pub(crate) struct OpenBookUseCase {
     library: Rc<RefCell<Library>>,
     thumbs: Rc<ThumbnailController>,
     covers: Rc<CoverController>,
+    /// Shared library-search filter, so the open-time page-count rebuild below
+    /// preserves the active filter instead of rebuilding the full library.
+    search: Rc<RefCell<LibrarySearchState>>,
 }
 
 impl OpenBookUseCase {
@@ -42,6 +46,7 @@ impl OpenBookUseCase {
         library: Rc<RefCell<Library>>,
         thumbs: Rc<ThumbnailController>,
         covers: Rc<CoverController>,
+        search: Rc<RefCell<LibrarySearchState>>,
     ) -> Self {
         Self {
             state,
@@ -50,6 +55,7 @@ impl OpenBookUseCase {
             library,
             thumbs,
             covers,
+            search,
         }
     }
 
@@ -176,17 +182,29 @@ impl OpenBookUseCase {
         }
         // When the stored page count was just back-filled/updated, rebuild the
         // carousel model so the home screen reflects the real total/progress when
-        // the user returns to the library. `build_carousel_model` rebuilds AND
-        // rebinds the items model; the carousel's focused index is a separate Slint
-        // property, and rebuilding the same book set leaves those indices valid, so
-        // focus is unaffected. Fresh `library.borrow()` — no overlapping borrows.
+        // the user returns to the library. Preserve the ACTIVE filter: recompute
+        // the shared search state and rebuild from its visible indices (not the
+        // full library), so an open-time backfill never resurrects filtered-out
+        // books. The carousel's focused index is a separate Slint property and is
+        // intentionally NOT reset here — this is a page-count refresh, not a filter
+        // update. The `library.borrow()` drops before `covers.start`'s `borrow_mut`.
         if count_changed {
-            build_carousel_model(ui, &library.borrow());
-            // The rebuild reset each row's cover to a placeholder; re-stream the covers
-            // (hits paint now, misses regenerate). The epoch bump supersedes any covers
-            // still streaming from the pre-rebuild model. Build the requests first so
-            // the `library.borrow()` is released before `start`'s `borrow_mut`.
-            let cover_reqs = cover_requests(&library.borrow());
+            // Recompute the filter against the changed library, then build the
+            // model and cover requests under one borrow that drops before the bind
+            // and `covers.start`. The rebuild resets each visible row's cover to a
+            // placeholder; re-streaming repaints hits and regenerates misses, and
+            // the epoch bump supersedes any covers still streaming from the old model.
+            let (model, cover_reqs) = {
+                let lib = library.borrow();
+                let mut search = self.search.borrow_mut();
+                search.recompute(&lib);
+                let indices = search.visible_indices();
+                (
+                    build_carousel_model(&lib, indices),
+                    cover_requests(&lib, indices),
+                )
+            };
+            bind_carousel_model(ui, model);
             covers.start(ui.as_weak(), library, cover_reqs);
         }
         // Kick off parallel thumbnail generation for the newly opened source.

@@ -318,9 +318,22 @@ for a never-opened book, by `CoverController`'s background page-count prefetch (
 which streams the count into this `total` and persists it. The `total: clamp_to_i32(total)`
 saturating cast is unchanged.
 
+### LibrarySearchState
+
+#88, `library_model.rs` (pub(crate) struct). Owns the active search `query` and a set of
+`forced_visible_paths` — books added in the current session that stay visible even when the
+query would exclude them, until the next query change. Maintains `visible_indices: Vec<usize>` —
+the filtered projection of library row indices in natural `Library::books()` order. Recomputes
+after every mutation: `set_query(query, &Library)` (clears forced paths, then recomputes);
+`force_visible(paths, &Library)` (dedups against the existing forced set, then recomputes).
+`recompute(&Library)` is the entry point for LIBRARY-changed-only cases where neither the query
+nor the forced set moved (startup seed, open-time backfill). `visible_indices()` is read-only and
+always consistent with the last mutation. Pure helpers `book_matches` / `matching_indices` live
+alongside it; `matching_indices` is the fast-path delegate when no paths are forced visible.
+
 ### carousel
 
-PR-58, `carousel.rs`. UI-thread adapter layer between `library_model` and Slint: `to_carousel_item` (private) maps a `CarouselData` row to a `CarouselItem` (placeholder `slint::Image::default()` cover); `build_carousel_model` (pub(crate)) builds and binds the `Rc<VecModel<CarouselItem>>` into the UI (the single Library → carousel surface chokepoint); `cover_requests` (pub(crate)) derives the per-book `CoverRequest` list; `thumb_image_at` (pub(crate)) re-fetches a row's thumbnail image for the scrubber preview.
+PR-58, `carousel.rs`. UI-thread adapter layer between `library_model` and Slint: `to_carousel_item` (private) maps a `CarouselData` row to a `CarouselItem` (placeholder `slint::Image::default()` cover); `build_carousel_model(library: &Library, indices: &[usize])` (pub(crate)) is a HEADLESS builder — no `ViewerWindow` arg — returning the `Rc<VecModel<CarouselItem>>`; a separate `bind_carousel_model(ui, model)` performs the Slint bind (the build/bind split enables unit tests over visible-index order); `cover_requests(library: &Library, indices: &[usize])` (pub(crate)) derives the per-book `CoverRequest` list, re-basing each request's `row` to the enumerated position in the filtered `indices` slice (not the library index), so cover targets stay aligned with the filtered carousel model; `thumb_state_at` (pub(crate)) re-fetches a row's thumbnail state for the scrubber preview.
 
 ### enum_adapters
 

@@ -110,4 +110,21 @@ export global Theme {
     out property <length> nav-pill-height: 55px; // 34 x phi
     out property <length> nav-item-gap: 13px;
     out property <length> nav-pill-pad: 11px;
+
+    // ── Nav search field sizing (issue #88: live library search) ──
+    // Length-only tokens; the field's colors reuse the surface / text / accent
+    // tokens above (surface-sunken ground, glass-border idle edge, accent focus
+    // edge, text-dim placeholder). The leading magnifier icon is colorized with
+    // the same text-mid tone NavItem uses for its idle icon (see NavBar.slint).
+    out property <length> nav-search-width: 220px;  // fixed field width (does not stretch / collapse)
+    out property <length> nav-search-pad-x: 13px;   // horizontal inset for placeholder/text/icon
+    out property <length> nav-search-cursor: 1px;   // TextInput caret width
+    out property <length> nav-search-icon: 16px;    // leading magnifier glyph size
+    out property <length> nav-divider-width: 1px;   // thin separator between search and the icon capsules
+    // Golden-ratio corner radius for the search field: field height (nav-capsule 34px) / phi^2 (2.618)
+    // ~= 13px = 0.382 * height. Below height/2 (17px), so it renders as a rounded rectangle, not a pill.
+    out property <length> nav-search-radius: 13px;
+    // Golden-ratio corner radius for the outer nav glass pill: bar height (nav-pill-height 55px) / phi^2 (2.618)
+    // ~= 21px. Below height/2 (27.5px), so the pill is a rounded rectangle that matches the search field corners.
+    out property <length> nav-pill-radius: 21px;
 }

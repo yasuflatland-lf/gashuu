@@ -106,6 +106,14 @@ RAR requires a C++ compiler on every OS (see [docs/toolchain.md](toolchain.md)).
 - **Focused cover always on top.** The cover-flow now renders via a file-private `CoverCard` sub-component in TWO `for` passes (neighbors, then the focused card declared after → drawn on top), since Slint 1.x has no per-`Repeater`-item z. Both passes bind identical geometry so the Left/Right slide still animates continuously. Fixes the neighbor card overlapping the centered cover.
 - No new deps. The UI streaming/controller path stays coverage-exempt (same as the thumbnail strip); the pure `cover_requests` `needs_count` derivation is unit-tested.
 
+### Library search (#88)
+
+- Live filter in the glass-pill NavBar by title and filesystem path; 120ms trailing debounce keeps the carousel responsive while typing.
+- Freshly-added books remain visible until the query changes (the library model appends before filtering, so newly added books are not hidden mid-session).
+- Filtered carousel rows map through a visible-index projection so open / move / add operations resolve the correct book even when only a subset is shown.
+- The Settings button in the same nav bar opens the existing `SettingsDialog` — no new entry points.
+- No new dependencies.
+
 ---
 
 ## Deferred (intentionally out of scope)
