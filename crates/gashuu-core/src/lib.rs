@@ -19,6 +19,7 @@ pub mod spread;
 mod test_fixtures;
 pub mod thumbnail;
 pub mod thumbnail_cache;
+pub mod view_override;
 pub mod viewport;
 
 pub use archive_loader::ArchiveLoader;
@@ -37,6 +38,7 @@ pub use settings::{
 pub use spread::{next_leading, normalize_leading, prev_leading, spread_at, Spread, SpreadContext};
 pub use thumbnail::{generate_cover, generate_thumbnails, DEFAULT_THUMB_MAX_SIDE};
 pub use thumbnail_cache::{cache_key, ThumbnailCache};
+pub use view_override::{ResolvedView, ViewOverride};
 pub use viewport::{
     anchored_zoom, centered_offset, clamp_offset, clamp_zoom, fit_scale, ZOOM_MAX, ZOOM_MIN,
 };

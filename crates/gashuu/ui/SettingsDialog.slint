@@ -61,6 +61,9 @@ export component SettingsDialog inherits Rectangle {
     // bound so the Slint↔Rust contract has nothing dangling); its on-screen
     // rendering moves to ShortcutsOverlay in PR-C.
     in property <string> key-bindings-text;
+    // True when this dialog edits the CURRENT book's per-book settings (opened
+    // from the Viewer): shows the per-book title and the reset-to-global button.
+    in property <bool> show-reset-button: false;
 
     // ── Callbacks fired when the user changes a setting ───────────────────────
     callback set-reading-direction(int);
@@ -72,6 +75,8 @@ export component SettingsDialog inherits Rectangle {
     callback set-track-recent(bool);
     // Fired on Esc, backdrop-click, or the Close button.
     callback close-settings();
+    // Fired when the user clicks "Reset to global" (viewer context only).
+    callback reset-to-global();
 
     // ── Backdrop dismiss ──────────────────────────────────────────────────────
     // A click anywhere on the scrim (outside the panel) closes the dialog. Clicks
@@ -158,13 +163,16 @@ export component SettingsDialog inherits Rectangle {
                     padding-right: Theme.space-xl;
                     padding-bottom: Theme.space-md;
                     Text {
-                        text: "Settings";
+                        // "Book settings" when editing the current book's per-book
+                        // override (opened from the Viewer); plain "Settings" for the
+                        // global defaults (Library screen).
+                        text: root.show-reset-button ? "Book settings" : "Settings";
                         font-size: Theme.font-title;
                         font-weight: Theme.weight-semibold;
                         color: Theme.text-high;
                         horizontal-alignment: left;
                         accessible-role: text;
-                        accessible-label: "Settings";
+                        accessible-label: root.show-reset-button ? "Book settings" : "Settings";
                     }
                 }
 
@@ -320,6 +328,16 @@ export component SettingsDialog inherits Rectangle {
                         background: Theme.hairline;
                     }
 
+                    // Footer order: [Shortcuts] … [Reset to global] [Close]. A
+                    // single stretch spacer pins Shortcuts left and groups the
+                    // action button(s) hard right (alignment: start so the spacer
+                    // owns the slack — `space-between` would scatter 3+ items
+                    // evenly instead of grouping Reset with Close). The Reset
+                    // button only appears in the per-book (viewer) context; the
+                    // 360px panel minus the two space-xl gutters cannot fit the
+                    // full "Reset to global defaults" label beside Shortcuts and
+                    // Close on one line, so the label is shortened to "Reset to
+                    // global" (the accessible-label carries the full intent).
                     footer-row := HorizontalLayout {
                         x: 0;
                         y: Theme.space-md;
@@ -327,7 +345,7 @@ export component SettingsDialog inherits Rectangle {
                         padding-left: Theme.space-xl;
                         padding-right: Theme.space-xl;
                         spacing: Theme.space-md;
-                        alignment: space-between;
+                        alignment: start;
 
                         // LEFT: a FOCUSABLE no-op "Shortcuts" stub. It sits in the Tab
                         // order between the controls and Close (declaration order).
@@ -348,6 +366,20 @@ export component SettingsDialog inherits Rectangle {
                             }
                             accessible-role: button;
                             accessible-label: "Keyboard shortcuts";
+                        }
+
+                        // Stretch spacer: pushes the action button(s) hard right.
+                        Rectangle { horizontal-stretch: 1; }
+
+                        // RIGHT (per-book only): reset the current book's overrides
+                        // back to the global defaults. Reuses PrimaryButton (no
+                        // secondary variant exists); Close stays the rightmost,
+                        // last-resort action. Shown only in the viewer context.
+                        if root.show-reset-button : PrimaryButton {
+                            text: "Reset to global";
+                            clicked => {
+                                root.reset-to-global();
+                            }
                         }
 
                         // RIGHT: Close — the reused PrimaryButton, always visible in

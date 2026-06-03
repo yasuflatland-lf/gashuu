@@ -76,3 +76,28 @@ via a getter (`Settings::cache_config()`). Full pattern: see
 flavor — a cohesion wrapper that bundles always-co-travelling args and delegates to existing free
 fns (no invariant enforced, no Deserialize concern) — see
 [patterns.md](patterns.md) ("Cohesion-wrapper value object").
+
+### Add an optional nested config to a persisted aggregate without breaking old files
+
+To add an optional nested struct (e.g. `ViewOverride` on `Book`) to an already-persisted aggregate
+so that files written before the field existed round-trip byte-identically, use the same
+`#[serde(default)]` forward-compat mechanism as a single defaulted field (see
+[patterns.md](patterns.md), "Add a persisted core field with `#[serde(default)]`"), with one extra
+layer for the all-empty case:
+
+- **Per `Option` field:** `#[serde(default, skip_serializing_if = "Option::is_none")]` — a `None`
+  field emits no key.
+- **On the aggregate's field:** a struct-level `#[serde(default, skip_serializing_if = "X::is_empty")]`
+  (e.g. `ViewOverride::is_empty` == all fields `None`) — so an all-`None` value emits NO `overrides`
+  key at all, and an old `library.json` (no `overrides`) deserializes via `default` to the empty
+  value. `LIBRARY_VERSION` is unchanged.
+
+Lock it with a THREE-test trio (mirrors the `Book::page_count` schema-test pair, extended for the
+all-empty case): (1) **old JSON loads as empty** — a `Book` JSON with no `overrides` key
+deserializes to `ViewOverride::none()`; (2) **empty is omitted from JSON** — serializing an
+all-`None` override emits no `overrides` key (so untouched books stay byte-identical on the next
+save); (3) **non-empty round-trips** — a fully-set override serializes and deserializes back equal,
+exercising ALL fields (a partial round-trip test can mask a single-field serde typo). Add these to
+the value object's own per-field merge ISOLATION tests (see
+[patterns.md](patterns.md), "Partial/total override pair"), which guard the resolve rule against a
+field-swap copy/paste bug.
