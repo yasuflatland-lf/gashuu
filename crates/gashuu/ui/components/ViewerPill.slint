@@ -1,0 +1,206 @@
+// ViewerPill — the bottom, centered "glass pill" for the page viewer: a sunken
+// "[ page ] / total" jump field (left), a thin divider, then two icon-only
+// NavItems (toggle thumbnails / settings) on the right.
+//
+// This mirrors NavBar.slint structurally. Slint 1.x has NO backdrop-blur, so
+// the frosted-glass look is APPROXIMATED, not rendered, with four cheap layers
+// that read as glass without sampling what is behind the pill:
+//   1. translucent fill   — Theme.viewer-pill-fill (surface tint at ~70% alpha;
+//                            slightly more transparent than NavBar's glass-fill)
+//   2. hairline border     — Theme.glass-border (1px, soft cool edge)
+//   3. top inner highlight — a 1px decorative rim (Theme.glass-highlight) that
+//                            fakes light catching the upper lip of the glass
+//   4. drop shadow         — Theme.shadow-popover, lifting the pill off content
+//
+// The width is sized explicitly from tokens (jump field + two capsules + the
+// inter-item gaps + divider + left/right padding) rather than from a layout's
+// preferred width: binding the root width to its own content layout would
+// create a width binding loop (same rationale as NavBar.slint).
+//
+// Colors / lengths come from Theme.* only — NO inline brand hex (DESIGN.md
+// rule 2; scripts/check-tokens.sh enforces this). Theme lives one directory up.
+import { Theme } from "../Theme.slint";
+import { NavItem } from "NavItem.slint";
+
+// File-private "sunken capsule" page-jump field, rendering "[ page ] / total".
+// The page number is editable; the caller (Rust) validates on Enter and
+// restores on Escape. Kept in this file so no new import path is needed.
+//
+// TextInput (not LineEdit) is used deliberately so EVERY color comes from
+// Theme.* — std-widgets' LineEdit paints its own native palette, which would
+// bypass the token rule and clash with the glass pill.
+component PageJumpField inherits Rectangle {
+    // ── Public API ────────────────────────────────────────────────────────────
+    in-out property <string> page-text;   // 1-based page number string, editable
+    in property <int> total-pages;
+    out property <bool> field-focused: input.has-focus;
+    callback page-jump-request(string);    // fires on Enter; caller validates
+    callback page-jump-cancel();            // fires on Escape; caller restores page-text
+    callback exit-field();                  // fires after Enter/Escape so caller returns focus to the page view
+
+    // ── Shape: a sunken rounded rectangle that lights its edge to accent on focus ──
+    width: 145px;
+    height: Theme.nav-capsule;
+    border-radius: Theme.nav-search-radius;
+    background: Theme.surface-sunken;
+    border-width: Theme.nav-divider-width;
+    border-color: input.has-focus ? Theme.accent : Theme.glass-border;
+    animate border-color { duration: Theme.motion-fast; }
+
+    // ── Content: "[" <input> "]" "/" <total> ──────────────────────────────────
+    HorizontalLayout {
+        padding: Theme.nav-search-pad-x;
+        spacing: Theme.space-xs;
+        alignment: center;
+
+        Text {
+            text: "[";
+            color: Theme.text-dim;
+            font-size: Theme.font-label;
+            vertical-alignment: center;
+        }
+
+        input := TextInput {
+            text <=> root.page-text;
+            width: 42px;
+            single-line: true;
+            horizontal-alignment: center;
+            color: Theme.text;
+            font-size: Theme.font-label;
+            vertical-alignment: center;
+            selection-background-color: Theme.accent-glow;
+            selection-foreground-color: Theme.text;
+            text-cursor-width: Theme.nav-search-cursor;
+            accessible-role: text-input;
+            accessible-label: "Go to page";
+
+            // Enter commits the typed page number; the caller validates it and
+            // then we return focus to the page view.
+            accepted => {
+                root.page-jump-request(self.text);
+                root.exit-field();
+            }
+
+            key-pressed(event) => {
+                // Escape abandons the edit (caller restores page-text) and exits.
+                if (event.text == Key.Escape) {
+                    root.page-jump-cancel();
+                    root.exit-field();
+                    return accept;
+                }
+                return reject;
+            }
+        }
+
+        Text {
+            text: "]";
+            color: Theme.text-dim;
+            font-size: Theme.font-label;
+            vertical-alignment: center;
+        }
+
+        Text {
+            text: "/";
+            color: Theme.text-dim;
+            font-size: Theme.font-label;
+            vertical-alignment: center;
+        }
+
+        Text {
+            text: root.total-pages;
+            color: Theme.text-muted;
+            font-size: Theme.font-label;
+            vertical-alignment: center;
+            horizontal-alignment: right;
+            width: 36px;
+        }
+    }
+}
+
+export component ViewerPill inherits Rectangle {
+    // ── Public API ────────────────────────────────────────────────────────────
+    in-out property <string> page-text;    // forwarded to PageJumpField
+    in property <int> total-pages;          // forwarded to PageJumpField
+    callback page-jump-request(string);     // forwarded from PageJumpField (caller validates)
+    callback page-jump-cancel();            // forwarded from PageJumpField (caller restores page-text)
+    callback exit-jump-field();             // forwarded from PageJumpField (caller should re-focus the page view)
+    callback toggle-thumbnails();           // thumbnails NavItem clicked
+    callback open-settings();               // settings NavItem clicked
+    // Exposed so ViewerWindow can suppress its idle-hide timer while editing.
+    out property <bool> field-focused: page-field.field-focused;
+
+    // ── Shape & size ──────────────────────────────────────────────────────────
+    // Width is computed from tokens so the pill hugs its content WITHOUT a
+    // layout-preferred-width binding loop. Children left→right: jump field,
+    // 1px divider, two icon capsules → four children → three inter-item gaps.
+    //   jump-field(145px) + divider + 2*capsule + 3*gap + 2*pad.
+    height: Theme.nav-pill-height;
+    width: 145px
+        + Theme.nav-divider-width
+        + 2 * Theme.nav-capsule
+        + 3 * Theme.nav-item-gap
+        + 2 * Theme.nav-pill-pad;
+    horizontal-stretch: 0;
+    vertical-stretch: 0;
+
+    // ── Glass approximation (layers 1, 2 and 4; see header) ───────────────────
+    background: Theme.viewer-pill-fill;
+    border-radius: Theme.nav-pill-radius;
+    border-width: 1px;
+    border-color: Theme.glass-border;
+    drop-shadow-color: Theme.shadow-popover;
+    drop-shadow-blur: 22px;
+    drop-shadow-offset-y: 8px;
+
+    // ── Glass approximation (layer 3): top inner highlight rim ────────────────
+    // A thin decorative line just below the top edge, inset horizontally by
+    // ~half the height so it stays inside the rounded corners.
+    Rectangle {
+        x: Theme.nav-pill-height / 2;
+        y: 1px;
+        width: parent.width - Theme.nav-pill-height;
+        height: 1px;
+        background: Theme.glass-highlight;
+    }
+
+    // ── Items: jump field, divider, then the two icon-only capsules ───────────
+    HorizontalLayout {
+        spacing: Theme.nav-item-gap;
+        padding: Theme.nav-pill-pad;
+        alignment: center;
+
+        page-field := PageJumpField {
+            page-text <=> root.page-text;
+            total-pages: root.total-pages;
+            page-jump-request(t) => { root.page-jump-request(t); }
+            page-jump-cancel => { root.page-jump-cancel(); }
+            exit-field => { root.exit-jump-field(); }
+        }
+
+        // Thin vertical divider separating the jump field from the capsules.
+        // ~60% of the capsule height, vertically centered within its layout cell.
+        Rectangle {
+            width: Theme.nav-divider-width;
+            vertical-stretch: 0;
+            VerticalLayout {
+                alignment: center;
+                Rectangle {
+                    width: Theme.nav-divider-width;
+                    height: Theme.nav-capsule * 0.6;
+                    background: Theme.hairline-float;
+                }
+            }
+        }
+
+        NavItem {
+            icon: @image-url("../assets/slider.svg");
+            a11y-label: "Toggle thumbnails";
+            clicked => { root.toggle-thumbnails(); }
+        }
+        NavItem {
+            icon: @image-url("../assets/settings.svg");
+            a11y-label: "Settings";
+            clicked => { root.open-settings(); }
+        }
+    }
+}
