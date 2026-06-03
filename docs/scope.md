@@ -114,6 +114,10 @@ RAR requires a C++ compiler on every OS (see [docs/toolchain.md](toolchain.md)).
 - The Settings button in the same nav bar opens the existing `SettingsDialog` — no new entry points.
 - No new dependencies.
 
+### Per-book view overrides with global fallback
+
+- Reading direction, spread mode, cover mode, and fit mode are now **per-book overrides** backed by a `#[serde(default)]`-gated `ViewOverride` on `Book` (backward-compatible; missing field → `None` → inherit global `Settings`). Screen decides scope: the Library settings dialog edits the global `Settings` defaults; the Viewer settings dialog and the in-viewer D/R/C/fit toggles edit the current book's override (written back at every leave point). The Viewer settings dialog also exposes a "Reset to global defaults" button.
+
 ### Release builds — macOS + Windows executables (release workflow)
 
 - `.github/workflows/release.yml` builds a macOS universal `.app` (lipo'd arm64+x86_64, zipped via `ditto`) and a Windows `gashuu.exe` (icon embedded via `winresource`, zipped), and attaches both to the GitHub Release for a `v*` tag (or a `workflow_dispatch` tag input). A `preflight` job gates on tag == `crates/gashuu/Cargo.toml` version before building. See [docs/toolchain.md](toolchain.md) "Release builds".
