@@ -29,9 +29,21 @@ fn main() {
     let build = std::thread::Builder::new()
         .stack_size(32 * 1024 * 1024)
         .spawn(|| {
+            // Bundle the gettext catalogs under translations/<lang>/LC_MESSAGES/
+            // gashuu.po into the binary, so `slint::select_bundled_translation`
+            // can switch every `@tr()` string at runtime without external files.
+            // A malformed .po fails the build here — translation errors surface
+            // at compile time, not in production. The default per-component
+            // msgctxt is DISABLED so the catalog is one flat msgid namespace:
+            // the same string reused across components (e.g. "Settings") needs
+            // one entry, not one per component, and a context/entry mismatch
+            // cannot silently drop every translation.
             slint_build::compile_with_config(
                 "ui/ViewerWindow.slint",
-                slint_build::CompilerConfiguration::new().with_style("fluent-dark".into()),
+                slint_build::CompilerConfiguration::new()
+                    .with_style("fluent-dark".into())
+                    .with_bundled_translations("translations")
+                    .with_default_translation_context(slint_build::DefaultTranslationContext::None),
             )
             .expect("Slint build failed");
         })

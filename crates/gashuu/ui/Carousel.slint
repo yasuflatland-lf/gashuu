@@ -277,14 +277,14 @@ export component Carousel inherits Rectangle {
                   spacing: Theme.space-md;
                   padding: Theme.space-xl;
                   Text {
-                      text: "Your library is empty";
+                      text: @tr("Your library is empty");
                       color: Theme.text;
                       font-size: Theme.font-title;
                       font-weight: Theme.weight-bold;
                       horizontal-alignment: center;
                   }
                   Text {
-                      text: "Add books to start your shelf.";
+                      text: @tr("Add books to start your shelf.");
                       color: Theme.text-muted;
                       font-size: Theme.font-micro;
                       horizontal-alignment: center;
@@ -297,7 +297,7 @@ export component Carousel inherits Rectangle {
                   HorizontalLayout {
                       alignment: center;
                       PrimaryButton {
-                          text: "Select folders / files to add";
+                          text: @tr("Select folders / files to add");
                           clicked => { root.add-files(); root.focus-self(); }
                       }
                   }
@@ -322,14 +322,14 @@ export component Carousel inherits Rectangle {
                   spacing: Theme.space-md;
                   padding: Theme.space-xl;
                   Text {
-                      text: "No matching books";
+                      text: @tr("No matching books");
                       color: Theme.text;
                       font-size: Theme.font-title;
                       font-weight: Theme.weight-bold;
                       horizontal-alignment: center;
                   }
                   Text {
-                      text: "Try a different search.";
+                      text: @tr("Try a different search.");
                       color: Theme.text-muted;
                       font-size: Theme.font-micro;
                       horizontal-alignment: center;

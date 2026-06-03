@@ -74,7 +74,7 @@ component PageJumpField inherits Rectangle {
             selection-foreground-color: Theme.text;
             text-cursor-width: Theme.nav-search-cursor;
             accessible-role: text-input;
-            accessible-label: "Go to page";
+            accessible-label: @tr("Go to page");
 
             // Enter commits the typed page number; Rust validates and returns focus to the page view.
             accepted => {
@@ -196,12 +196,12 @@ export component ViewerPill inherits Rectangle {
 
         thumb-item := NavItem {
             icon: @image-url("../assets/slider.svg");
-            a11y-label: "Toggle thumbnails";
+            a11y-label: @tr("Toggle thumbnails");
             clicked => { root.toggle-thumbnails(); }
         }
         settings-item := NavItem {
             icon: @image-url("../assets/settings.svg");
-            a11y-label: "Settings";
+            a11y-label: @tr("Settings");
             clicked => { root.open-settings(); }
         }
     }

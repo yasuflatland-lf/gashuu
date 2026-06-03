@@ -1,0 +1,195 @@
+# Japanese translations for gashuu.
+#
+# msgids must EXACTLY match the `@tr("...")` literals in crates/gashuu/ui/
+# (including punctuation such as the em dash and ellipsis). Keep the spread /
+# direction vocabulary in lockstep with src/messages.rs, so the status line
+# and the settings dialog speak one language. The language names shown in the
+# settings dropdown ("English" / "日本語") are intentionally NOT translated —
+# see SettingsDialog.slint.
+msgid ""
+msgstr ""
+"Project-Id-Version: gashuu\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Language: ja\n"
+"Plural-Forms: nplurals=1; plural=0;\n"
+
+# ── SettingsDialog ──────────────────────────────────────────────────────────
+
+msgid "Book settings"
+msgstr "この本の設定"
+
+msgid "Settings"
+msgstr "設定"
+
+msgid "Reading"
+msgstr "読み方"
+
+msgid "Direction"
+msgstr "方向"
+
+msgid "Left to Right"
+msgstr "左から右"
+
+msgid "Right to Left"
+msgstr "右から左"
+
+msgid "Reading direction"
+msgstr "読む方向"
+
+msgid "Spread"
+msgstr "ページ表示"
+
+msgid "Single"
+msgstr "単ページ"
+
+msgid "Double"
+msgstr "見開き"
+
+msgid "Auto"
+msgstr "自動"
+
+msgid "Spread mode"
+msgstr "見開きモード"
+
+msgid "Display"
+msgstr "表示"
+
+msgid "Cover"
+msgstr "表紙"
+
+msgid "Standalone"
+msgstr "単独"
+
+msgid "Paired"
+msgstr "ペア"
+
+msgid "Cover mode"
+msgstr "表紙モード"
+
+msgid "Fit"
+msgstr "フィット"
+
+msgid "Whole"
+msgstr "全体"
+
+msgid "Width"
+msgstr "幅"
+
+msgid "Actual"
+msgstr "原寸"
+
+msgid "Fit mode"
+msgstr "フィットモード"
+
+msgid "Performance"
+msgstr "パフォーマンス"
+
+msgid "Cache size (pages)"
+msgstr "キャッシュ（ページ数）"
+
+msgid "Cache size in pages"
+msgstr "キャッシュサイズ（ページ数）"
+
+msgid "Preload radius"
+msgstr "先読みページ数"
+
+msgid "Track recent files"
+msgstr "最近のファイルを記録"
+
+msgid "Cache & preload apply to newly opened books."
+msgstr "キャッシュと先読みは次に開いた本から適用されます。"
+
+msgid "General"
+msgstr "一般"
+
+msgid "Language"
+msgstr "言語"
+
+msgid "Display language"
+msgstr "表示言語"
+
+msgid "⌨ Shortcuts"
+msgstr "⌨ ショートカット"
+
+msgid "Keyboard shortcuts"
+msgstr "キーボードショートカット"
+
+msgid "Reset to global"
+msgstr "全体設定に戻す"
+
+msgid "Close"
+msgstr "閉じる"
+
+# ── FirstRunGuide ───────────────────────────────────────────────────────────
+
+msgid "Welcome to gashuu"
+msgstr "gashuu へようこそ"
+
+msgid "A quick guide to get you started:"
+msgstr "かんたんな使い方ガイド:"
+
+msgid "Open: use the toolbar buttons — Open Folder… / Open Archive… (CBZ/ZIP/CBR/RAR)."
+msgstr "開く: ツールバーの「フォルダーを開く…」「アーカイブを開く…」(CBZ/ZIP/CBR/RAR) ボタンを使います。"
+
+msgid "Turn pages: Space = next, Backspace = previous. Arrow keys follow the reading direction."
+msgstr "ページ送り: Space = 次へ、Backspace = 前へ。矢印キーは読む方向に従います。"
+
+msgid "Modes: D = spread (single → double → auto), R = reading direction (LTR/RTL), C = cover layout."
+msgstr "モード: D = ページ表示 (単ページ → 見開き → 自動)、R = 読む方向 (左から右 / 右から左)、C = 表紙レイアウト。"
+
+msgid "Zoom & fit: + / - to zoom, 0 to reset, 1 for actual size, f to cycle fit mode. Wheel zooms at the cursor; drag to pan."
+msgstr "ズームとフィット: + / - でズーム、0 でリセット、1 で原寸、f でフィット切替。ホイールはカーソル位置でズーム、ドラッグで移動します。"
+
+msgid "Thumbnails: T toggles the thumbnail strip; click a thumbnail to jump to that page."
+msgstr "サムネイル: T で一覧の表示を切替。サムネイルをクリックするとそのページへ移動します。"
+
+msgid "Settings: open the Settings dialog from the toolbar to change these options anytime."
+msgstr "設定: ツールバーから設定ダイアログを開くと、これらの設定をいつでも変更できます。"
+
+msgid "Got it"
+msgstr "わかりました"
+
+# ── NavBar (library glass pill) ─────────────────────────────────────────────
+
+msgid "Search library"
+msgstr "ライブラリを検索"
+
+msgid "Add files"
+msgstr "ファイルを追加"
+
+msgid "Add folder"
+msgstr "フォルダーを追加"
+
+# ── Carousel empty / no-results states ──────────────────────────────────────
+
+msgid "Your library is empty"
+msgstr "ライブラリは空です"
+
+msgid "Add books to start your shelf."
+msgstr "本を追加して本棚を始めましょう。"
+
+msgid "Select folders / files to add"
+msgstr "追加するフォルダー / ファイルを選択"
+
+msgid "No matching books"
+msgstr "一致する本がありません"
+
+msgid "Try a different search."
+msgstr "別のキーワードで検索してください。"
+
+# ── ViewerPill ──────────────────────────────────────────────────────────────
+
+msgid "Go to page"
+msgstr "ページへ移動"
+
+msgid "Toggle thumbnails"
+msgstr "サムネイル表示を切替"
+
+# ── Stepper (a11y verb + label placeholders) ────────────────────────────────
+
+msgid "Decrease {}"
+msgstr "{}を減らす"
+
+msgid "Increase {}"
+msgstr "{}を増やす"

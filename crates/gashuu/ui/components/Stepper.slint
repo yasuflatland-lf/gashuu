@@ -95,7 +95,9 @@ export component Stepper inherits Rectangle {
             min-width: Theme.space-xxl;
             horizontal-stretch: 0;
             glyph: "−";
-            a11y-label: "Decrease " + root.a11y-label;
+            // @tr with a placeholder (not string concat) so the verb and the
+            // label compose correctly in languages with different word order.
+            a11y-label: @tr("Decrease {}", root.a11y-label);
             active: root.value > root.minimum;
             pressed => { fs.focus(); root.bump(-1); }
         }
@@ -113,7 +115,7 @@ export component Stepper inherits Rectangle {
             min-width: Theme.space-xxl;
             horizontal-stretch: 0;
             glyph: "+";
-            a11y-label: "Increase " + root.a11y-label;
+            a11y-label: @tr("Increase {}", root.a11y-label);
             active: root.value < root.maximum;
             pressed => { fs.focus(); root.bump(1); }
         }
