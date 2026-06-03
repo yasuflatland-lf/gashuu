@@ -48,12 +48,12 @@ export struct CarouselItem {
 //
 // Why two passes instead of `z`: Slint 1.16.1 cannot set per-Repeater-item z
 // (docs/patterns.md), so the focused cover is layered on top purely by DRAW
-// ORDER. Pass 1 renders the neighbors (`show: idx != focused-index`); pass 2,
-// declared AFTER pass 1, renders ONLY the focused card (`show: idx == focused-
-// index`) so it paints over its neighbors. `show` gates only `visible`; BOTH
-// passes bind identical geometry, so each book keeps a persistent instance in
-// each pass and the Left/Right slide animation is preserved — the hand-off
-// between passes happens at matching positions, with no pop.
+// ORDER. Pass 1 is the always-on BACKING layer (`show: true`, every book);
+// pass 2, declared AFTER pass 1, redraws ONLY the focused card on top so it
+// wins z-order. This prevents a fast Left/Right sweep from toggling a
+// passed-through book's only instance off-then-on (which blanked its cover for
+// one frame — the "gap-toothed" bug). Both passes bind identical geometry so
+// the slide animation is preserved with no pop.
 component CoverCard inherits Rectangle {
     // Layer gate + per-card state (all driven by the enclosing `for`).
     in property <bool> show;       // this pass should draw this card
@@ -347,14 +347,17 @@ export component Carousel inherits Rectangle {
               property <length> row-cy: parent.height / 2 - 28px;
 
               // ── Cover-flow z-order: two passes (Slint 1.16.1 has no per-item z) ─
-              // Pass 1 paints the NEIGHBORS (focused slot hidden via `show`); pass
-              // 2, declared after, paints ONLY the focused card so it draws on top
-              // of its neighbors. Each book keeps a persistent instance in BOTH
-              // passes (only `visible` differs), so a Left/Right move slides
-              // continuously and the hand-off between passes is seamless. See the
-              // CoverCard header for the full rationale.
+              // Pass 1 is the always-on BACKING layer (`show: true`, every book);
+              // pass 2, declared after, repaints ONLY the focused card on top so it
+              // wins the z-order. Keeping pass 1 always-on means a fast Left/Right
+              // sweep never toggles a passed-through book's only instance off-then-on
+              // (which blanked its cover for one frame — the "gap-toothed" bug). The
+              // focused book is drawn in both passes; pass 1 sets `elevated: false`
+              // so its semi-transparent shadow is painted by the pass-2 copy only.
+              // See the CoverCard header for the full rationale.
               for item[idx] in root.items : CoverCard {
-                  show: idx != root.focused-index;
+                  show: true;
+                  elevated: false;
                   focused: idx == root.focused-index;
                   delta: idx - root.focused-index;
                   cover-w: root.cover-w;
@@ -370,6 +373,7 @@ export component Carousel inherits Rectangle {
                   available: item.available;
                   progress: item.progress;
               }
+              // Pass 2: focused card only, on top (elevated defaults true → paints the shadow).
               for item[idx] in root.items : CoverCard {
                   show: idx == root.focused-index;
                   focused: idx == root.focused-index;
