@@ -339,6 +339,15 @@ PR-58, `carousel.rs`. UI-thread adapter layer between `library_model` and Slint:
 
 PR-58, `enum_adapters.rs`. The 8 `pub(crate)` enum↔index adapters that were previously inline in `main.rs`: `reading_direction_to_index`/`index_to_reading_direction`, `spread_mode_to_index`/`index_to_spread_mode`, `cover_mode_to_index`/`index_to_cover_mode`, `fit_mode_to_index`/`index_to_fit_mode`. Each `index_to_*` clamps out-of-range to the first variant, mirroring the `index_to_screen` clamp policy in `navigation.rs`.
 
+### page_jump
+
+`page_jump.rs`. PURE (Slint-free, table-tested) parser for the `ViewerPill` page-jump field:
+`parse_page_jump(input: &str, total: usize) -> Option<usize>` maps a 1-based string input to a
+0-based page index. Returns `None` for empty / all-whitespace / non-numeric input and for
+`total == 0`; otherwise clamps the numeric value to `[1, total]` (treating `0` as `1`) and
+subtracts 1. Replaces the removed `page_counter.rs`. The viewer wires the parsed index through
+`ViewerState::jump_to` (same "did it move → caller refreshes" convention as the scrubber).
+
 ### Slint UI files
 
 **`ui/components/`** (#71, NEW): shared single-purpose UI atoms/molecules, one `export`ed component
