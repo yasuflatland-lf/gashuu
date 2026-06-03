@@ -2,10 +2,14 @@
 // Rendered as a full-area semi-transparent backdrop with a centered panel.
 // Each setting change fires a callback so Rust can react. Display modes apply
 // immediately; cache size and preload radius apply to newly opened books.
-// Idempotency (no-op on equal values) is enforced on the Rust side to absorb
-// ComboBox self-fire.
-import { Button, ComboBox, SpinBox, CheckBox, VerticalBox, HorizontalBox } from "std-widgets.slint";
+// Idempotency (no-op on equal values) is enforced on the Rust side to absorb the
+// selection self-fire from the token-driven control atoms (Segmented / Stepper /
+// Toggle replaced the native ComboBox / SpinBox / CheckBox in issue 102 / PR-A).
+import { Button, VerticalBox, HorizontalBox } from "std-widgets.slint";
 import { Theme } from "Theme.slint";
+import { Segmented } from "components/Segmented.slint";
+import { Stepper } from "components/Stepper.slint";
+import { Toggle } from "components/Toggle.slint";
 
 export component SettingsDialog inherits Rectangle {
     // ── Full-area semi-transparent backdrop ──────────────────────────────────
@@ -75,10 +79,11 @@ export component SettingsDialog inherits Rectangle {
                     vertical-alignment: center;
                     horizontal-stretch: 1;
                 }
-                ComboBox {
+                Segmented {
                     model: ["Left to Right", "Right to Left"];
                     current-index <=> root.reading-direction-index;
-                    selected => { root.set-reading-direction(self.current-index); }
+                    a11y-label: "Reading direction";
+                    selected(i) => { root.set-reading-direction(i); }
                     horizontal-stretch: 1;
                 }
             }
@@ -93,10 +98,11 @@ export component SettingsDialog inherits Rectangle {
                     vertical-alignment: center;
                     horizontal-stretch: 1;
                 }
-                ComboBox {
+                Segmented {
                     model: ["Single", "Double", "Auto"];
                     current-index <=> root.spread-mode-index;
-                    selected => { root.set-spread-mode(self.current-index); }
+                    a11y-label: "Spread";
+                    selected(i) => { root.set-spread-mode(i); }
                     horizontal-stretch: 1;
                 }
             }
@@ -111,10 +117,11 @@ export component SettingsDialog inherits Rectangle {
                     vertical-alignment: center;
                     horizontal-stretch: 1;
                 }
-                ComboBox {
+                Segmented {
                     model: ["Standalone", "Paired"];
                     current-index <=> root.cover-mode-index;
-                    selected => { root.set-cover-mode(self.current-index); }
+                    a11y-label: "Cover";
+                    selected(i) => { root.set-cover-mode(i); }
                     horizontal-stretch: 1;
                 }
             }
@@ -129,10 +136,11 @@ export component SettingsDialog inherits Rectangle {
                     vertical-alignment: center;
                     horizontal-stretch: 1;
                 }
-                ComboBox {
+                Segmented {
                     model: ["Whole", "Width", "Actual"];
                     current-index <=> root.fit-mode-index;
-                    selected => { root.set-fit-mode(self.current-index); }
+                    a11y-label: "Fit";
+                    selected(i) => { root.set-fit-mode(i); }
                     horizontal-stretch: 1;
                 }
             }
@@ -147,10 +155,11 @@ export component SettingsDialog inherits Rectangle {
                     vertical-alignment: center;
                     horizontal-stretch: 1;
                 }
-                SpinBox {
+                Stepper {
                     value <=> root.cache-size;
                     minimum: 1;
                     maximum: 9999;
+                    a11y-label: "Cache size (pages)";
                     edited(v) => { root.set-cache-size(v); }
                     horizontal-stretch: 1;
                 }
@@ -166,10 +175,11 @@ export component SettingsDialog inherits Rectangle {
                     vertical-alignment: center;
                     horizontal-stretch: 1;
                 }
-                SpinBox {
+                Stepper {
                     value <=> root.preload-pages;
                     minimum: 0;
                     maximum: 99;
+                    a11y-label: "Preload radius";
                     edited(v) => { root.set-preload-pages(v); }
                     horizontal-stretch: 1;
                 }
@@ -184,10 +194,22 @@ export component SettingsDialog inherits Rectangle {
             }
 
             // ── Track recent files ────────────────────────────────────────────
-            CheckBox {
-                text: "Track recent files";
-                checked <=> root.track-recent;
-                toggled => { root.set-track-recent(self.checked); }
+            // PR-A interim: the Toggle carries no built-in label, so pair it with
+            // a sibling Text (mirrors the other rows' label + control layout).
+            HorizontalBox {
+                spacing: 8px;
+                Text {
+                    text: "Track recent files";
+                    color: Theme.text-mid;
+                    font-size: Theme.font-body;
+                    vertical-alignment: center;
+                    horizontal-stretch: 1;
+                }
+                Toggle {
+                    checked <=> root.track-recent;
+                    a11y-label: "Track recent files";
+                    toggled(b) => { root.set-track-recent(b); }
+                }
             }
 
             // ── Keyboard shortcuts reference (read-only) ──────────────────────

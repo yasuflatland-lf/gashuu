@@ -1,0 +1,74 @@
+// Toggle — token-driven on/off switch (issue 102, PR-A/3).
+//
+// Drop-in replacement for the std-widgets `CheckBox` row in the settings dialog:
+// SAME `checked` (two-way) + `toggled(bool)` shape, painted from `Theme.*`. A
+// pill (radius-pill) whose track is `accent` when on / `track` when off; a white
+// knob slides left↔right by animating its `x` (NOT opacity — HiDPI blur). In the
+// PR-A interim layout it is paired with a sibling label `Text`.
+//
+// Keyboard (when focused): Space/Enter toggles. Focus shows an `accent` border +
+// a soft `accent-glow` halo. All colors/lengths are `Theme.*` (check-tokens.sh).
+import { Theme } from "../Theme.slint";
+
+export component Toggle inherits Rectangle {
+    // ── Public API (mirrors the CheckBox it replaces) ───────────────────────────
+    in-out property <bool> checked;
+    in property <string> a11y-label;
+    callback toggled(bool);
+
+    // ── Pill (fixed size: ~1.8:1; the consumer must not stretch it) ──────────────
+    min-width: Theme.settings-control-h * 1.8;
+    min-height: Theme.settings-control-h;
+    horizontal-stretch: 0;
+    vertical-stretch: 0;
+    border-radius: Theme.radius-pill;
+    background: root.checked ? Theme.accent : Theme.track;
+    border-width: 1px;
+    border-color: fs.has-focus ? Theme.accent : Theme.hairline-float;
+    drop-shadow-color: fs.has-focus ? Theme.accent-glow : transparent;
+    drop-shadow-blur: fs.has-focus ? Theme.space-sm : 0px;
+    animate background, border-color { duration: Theme.motion-fast; }
+
+    function flip() {
+        root.checked = !root.checked;
+        root.toggled(root.checked);
+    }
+
+    // ── Knob: white circle that slides via an animated x (no opacity) ────────────
+    Rectangle {
+        height: root.height - 2 * Theme.space-xxs;
+        width: self.height;
+        y: (root.height - self.height) / 2;
+        x: root.checked
+            ? root.width - self.width - Theme.space-xxs
+            : Theme.space-xxs;
+        background: Theme.text;
+        border-radius: Theme.radius-pill;
+        animate x { duration: Theme.motion-fast; }
+    }
+
+    // ── a11y ──────────────────────────────────────────────────────────────────
+    accessible-role: switch;
+    accessible-label: root.a11y-label;
+    accessible-checkable: true;
+    accessible-checked: root.checked;
+    accessible-action-default => { root.flip(); }
+
+    // ── Keyboard (Tab-focusable; click handled by the non-focusable TouchArea) ───
+    fs := FocusScope {
+        key-pressed(event) => {
+            if (event.text == Key.Space || event.text == Key.Return) {
+                root.flip();
+                return accept;
+            }
+            return reject;
+        }
+    }
+
+    TouchArea {
+        clicked => {
+            fs.focus();
+            root.flip();
+        }
+    }
+}
