@@ -3,10 +3,11 @@
 // docs/superpowers/specs/2026-06-03-settings-form-liquid-glass-design.md §5).
 //
 // Reached from the settings footer "⌨ Shortcuts" affordance. It clones the
-// SettingsDialog glass idiom EXACTLY — the same scrim, the same ONE fake-glass
-// object (NavBar's four-layer idiom: a top-sheen FILL gradient + a 1px rim + a
-// 1px top inner highlight + ONE drop shadow), the same Flickable body + self-
-// drawn scroll indicator. The only deltas: a SHORTER panel (shortcuts-h < the
+// SettingsDialog glass VISUAL idiom exactly — the same scrim, the same ONE
+// fake-glass object (NavBar's four-layer structure with layer 1 promoted from
+// a solid fill to a top-sheen FILL gradient + a 1px rim + a 1px top inner
+// highlight + ONE drop shadow), the same Flickable body + self-drawn scroll
+// indicator. The only deltas: a SHORTER panel (shortcuts-h < the
 // settings-h φ rectangle) so it reads as a smaller modal stacked on top, and a
 // read-only body (the KEY_BINDINGS_HELP text) instead of interactive controls.
 // The sheen is a FILL gradient, not an opacity layer (opacity blurs text/SVG on
@@ -23,13 +24,17 @@
 // drive a settings control hidden behind the dim. So the ancestor FocusScope
 // here CONSUMES (returns accept on) EVERY key: Esc closes; Up/Down/PageUp/
 // PageDown scroll our own Flickable; all other keys are swallowed so focus can
-// never escape to the dialog beneath. The FocusScope WRAPS the panel content so
-// it is a genuine ANCESTOR — Slint walks a rejected key strictly UP the focused
-// item's parent chain (i-slint-core 1.16 window.rs); a SIBLING scope is never
-// visited, so Esc would be silently dead (gate-invisible — the cargo gates do
-// NOT exercise .slint key handling; verify by hand). Because the component is
-// if-gated by the parent, its subtree is rebuilt each open, so `init` re-fires
-// and re-grabs focus on every open.
+// never escape to the dialog beneath. Note: the catch-all `accept` also
+// consumes ordinary app-level keys by design while the overlay is open
+// (platform/menu-level shortcuts like Cmd+Q are dispatched by the OS menu
+// before reaching this scope on macOS, so those remain unaffected).
+// The FocusScope WRAPS the panel content so it is a genuine ANCESTOR — Slint
+// walks a rejected key strictly UP the focused item's parent chain
+// (i-slint-core 1.16 window.rs); a SIBLING scope is never visited, so Esc
+// would be silently dead (gate-invisible — the cargo gates do NOT exercise
+// .slint key handling; verify by hand). Because the component is if-gated by
+// the parent, its subtree is rebuilt each open, so `init` re-fires and
+// re-grabs focus on every open.
 import { Theme } from "Theme.slint";
 import { PrimaryButton } from "components/PrimaryButton.slint";
 
@@ -45,8 +50,6 @@ export component ShortcutsOverlay inherits Rectangle {
     // ── Full-area semi-transparent backdrop ───────────────────────────────────
     // Stacks above the SettingsDialog's own scrim (intended double dim).
     background: Theme.scrim;
-    accessible-role: text;
-    accessible-label: "Keyboard shortcuts dialog";
 
     // ── Backdrop dismiss ───────────────────────────────────────────────────────
     // A click anywhere on the scrim (outside the panel) closes the overlay.
@@ -97,11 +100,14 @@ export component ShortcutsOverlay inherits Rectangle {
         // ── FocusScope: Esc-to-close + key trap + initial focus on appear ──────
         // WRAPS the panel content so it is a genuine ANCESTOR (not a sibling):
         // Slint walks a rejected key UP the focused item's parent chain, which
-        // passes through this scope. On appear it grabs focus itself (there is no
-        // interactive child to hand off to — the body is read-only). It CONSUMES
-        // every key (returns accept) so nothing can leak to the SettingsDialog
-        // mounted behind this overlay (the modal-over-modal trap). Declared AFTER
-        // the absorber so empty-panel clicks land on the absorber, not on `fs`.
+        // passes through this scope. On appear it grabs focus on itself (rather
+        // than on a child control) so the scroll-key handlers — Up/Down/PageUp/
+        // PageDown — are immediately active without the user needing to Tab first;
+        // the Close button is interactive but is intentionally not pre-selected on
+        // open. It CONSUMES every key (returns accept) so nothing can leak to the
+        // SettingsDialog mounted behind this overlay (the modal-over-modal trap).
+        // Declared AFTER the absorber so empty-panel clicks land on the absorber,
+        // not on `fs`.
         fs := FocusScope {
             x: 0;
             y: 0;

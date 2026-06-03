@@ -77,6 +77,10 @@ export component SettingsDialog inherits Rectangle {
     // reached by id from outside, so the parent signals through this property.
     in property <int> focus-epoch: 0;
     changed focus-epoch => {
+        // Focuses the dialog's own FocusScope (not a child control like `init`
+        // does) so Esc and Tab are immediately active on return from the overlay.
+        // The first interactive control is intentionally not pre-selected — the
+        // user left mid-task and returns to the same state they left.
         fs.focus();
     }
 

@@ -587,8 +587,11 @@ fn main() -> color_eyre::Result<()> {
     }
 
     // Show the shortcuts overlay: the overlay opens on top of the still-open settings
-    // dialog, so key_bindings_text is already set by on_open_settings; nothing more
-    // is needed here than flipping the visibility flag.
+    // dialog. Load-bearing assumption: this handler is only reachable via the settings
+    // footer link, so on_open_settings has always run first and populated
+    // key_bindings_text. A future entry point that bypasses settings MUST set
+    // key_bindings_text itself before opening the overlay.
+    // Nothing more is needed here than flipping the visibility flag.
     {
         let ui_weak = ui.as_weak();
         ui.on_open_shortcuts(move || {
@@ -609,7 +612,13 @@ fn main() -> color_eyre::Result<()> {
         ui.on_close_shortcuts(move || {
             with_ui(&ui_weak, |ui| {
                 ui.set_show_shortcuts(false);
-                ui.invoke_focus_settings();
+                // Today the overlay is only reachable while the settings dialog is
+                // mounted, so this branch is always taken.  The guard keeps focus
+                // restoration from silently no-oping if a future entry point opens
+                // the overlay without settings.
+                if ui.get_show_settings() {
+                    ui.invoke_focus_settings();
+                }
             })
         });
     }

@@ -444,11 +444,13 @@ export component ViewerWindow inherits Window {
     }
 
     // Modal overlays rendered as siblings of the VerticalBox so they stack on
-    // top of all page content. Window stacks children front-to-back in
-    // declaration order; explicit width/height fill the window surface.
-    // ShortcutsOverlay MUST remain the last child so it stacks above
-    // SettingsDialog when both are theoretically visible (only one is shown at
-    // a time in practice, but declaration order = stacking order is the rule).
+    // top of all page content. Slint children paint back-to-front in
+    // declaration order: first-declared = behind, last-declared = topmost.
+    // Explicit width/height fill the window surface.
+    // show-settings and show-shortcuts are BOTH true while the shortcuts
+    // overlay is open (modal-over-modal), so declaration order is load-bearing:
+    // ShortcutsOverlay MUST remain the last child so it paints above
+    // SettingsDialog.
     if root.show-settings : SettingsDialog {
         width: root.width;
         height: root.height;
