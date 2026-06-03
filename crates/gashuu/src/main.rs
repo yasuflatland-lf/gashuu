@@ -610,6 +610,44 @@ fn main() -> color_eyre::Result<()> {
         });
     }
 
+    // Show the shortcuts overlay: the overlay opens on top of the still-open settings
+    // dialog. Load-bearing assumption: this handler is only reachable via the settings
+    // footer link, so on_open_settings has always run first and populated
+    // key_bindings_text. A future entry point that bypasses settings MUST set
+    // key_bindings_text itself before opening the overlay.
+    // Focus management is intentionally omitted: ShortcutsOverlay's `init` grabs
+    // focus itself on appear, so no explicit focus call is needed here.
+    {
+        let ui_weak = ui.as_weak();
+        ui.on_open_shortcuts(move || {
+            with_ui(&ui_weak, |ui| {
+                ui.set_show_shortcuts(true);
+            })
+        });
+    }
+
+    // Close the shortcuts overlay: hide it and return focus to the still-mounted
+    // SettingsDialog.  Focus must not go to the screen behind — the dialog remains
+    // open.  invoke_focus_settings drives a focus epoch on the dialog because
+    // if-gated child elements cannot be targeted directly.
+    // Closing the overlay must NOT close settings: do not touch show_settings and
+    // do not run reconcile/save here.
+    {
+        let ui_weak = ui.as_weak();
+        ui.on_close_shortcuts(move || {
+            with_ui(&ui_weak, |ui| {
+                ui.set_show_shortcuts(false);
+                // Today the overlay is only reachable while the settings dialog is
+                // mounted, so this branch is always taken.  The guard keeps focus
+                // restoration from silently no-oping if a future entry point opens
+                // the overlay without settings.
+                if ui.get_show_settings() {
+                    ui.invoke_focus_settings();
+                }
+            })
+        });
+    }
+
     // Reset-to-global (viewer settings only): clear THIS book's override so it
     // inherits the global defaults again, apply them to the live view, and re-seed
     // the open dialog's combos to the now-global values.
@@ -1133,8 +1171,8 @@ fn to_slint_image(decoded: &DecodedImage) -> slint::Image {
     slint::Image::from_rgba8(buffer)
 }
 
-/// Concise key-bindings reference shown read-only in the settings dialog. Keep in
-/// sync with `keymap::map_key`.
+/// Concise key-bindings reference rendered read-only in ShortcutsOverlay (opened
+/// from the settings footer). Keep in sync with `keymap::map_key`.
 const KEY_BINDINGS_HELP: &str = "\
 Navigation:
   Space = next page    Backspace = previous page

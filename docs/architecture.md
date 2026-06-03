@@ -491,7 +491,9 @@ persistence — drained via `Library::set_page_count` + `save` at the next `star
 
 **`SettingsDialog.slint`** (PR8b, NEW): modal overlay editing active settings via std-widgets
 `ComboBox`/`SpinBox`/`CheckBox`; two-way `current-index <=> in-out-prop` +
-`selected`/`edited`/`toggled` callbacks. std-widgets now render dark via the build style set in `build.rs` (`with_style("fluent-dark")`, #70).
+`selected`/`edited`/`toggled` callbacks. std-widgets now render dark via the build style set in `build.rs` (`with_style("fluent-dark")`, #70). Since issue 103/104 it is a fixed-height golden-ratio glass panel built from custom `components/` atoms; its footer "Shortcuts" link opens `ShortcutsOverlay`, and an `in property <int> focus-epoch` (bumped by `ViewerWindow.focus-settings()`) lets the parent re-focus this still-mounted dialog after the overlay closes.
+
+**`ShortcutsOverlay.slint`** (issue 104, PR-C, NEW): a second glass modal listing the keyboard shortcuts read-only, stacked OVER the still-mounted `SettingsDialog` (both `show-settings` and `show-shortcuts` true). Reuses the settings glass recipe (`settings-w`/`settings-radius` + all glass tokens; only `shortcuts-h` is new). Its ancestor `FocusScope` traps every key so focus can't leak to the dialog underneath; closing returns focus to the dialog via the epoch seam.
 
 **`FirstRunGuide.slint`** (PR8b, NEW): dismissable once-only overlay; a local `GuideLine`
 component dedupes the key-reference rows.
