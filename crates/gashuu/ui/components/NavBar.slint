@@ -42,11 +42,14 @@ component SearchField inherits Rectangle {
         input.select-all();
     }
 
-    // ── Shape: a sunken rounded rectangle that lights its edge to accent on focus ──
+    // ── Shape: a rounded rectangle that blends into the pill, lighting its edge ──
+    // Background is transparent so the field reads as the same color as the
+    // surrounding glass pill (the sunken fill made it stand out as a darker box);
+    // the border alone delineates the field, brightening to accent on focus.
     width: Theme.nav-search-width;
     height: Theme.nav-capsule;
     border-radius: Theme.nav-search-radius;
-    background: Theme.surface-sunken;
+    background: transparent;
     border-width: Theme.nav-divider-width;
     border-color: input.has-focus ? Theme.accent : Theme.glass-border;
     animate border-color { duration: Theme.motion-fast; }

@@ -1,0 +1,208 @@
+// ViewerPill — the top, centered "glass pill" for the page viewer: a borderless
+// "<page> / total" jump field (left), a thin divider, then two icon-only
+// NavItems (toggle thumbnails / settings) on the right.
+//
+// This mirrors NavBar.slint structurally. Slint 1.x has NO backdrop-blur, so
+// the frosted-glass look is APPROXIMATED, not rendered, with four cheap layers
+// that read as glass without sampling what is behind the pill:
+//   1. translucent fill   — Theme.viewer-pill-fill (surface tint at ~70% alpha;
+//                            slightly more transparent than NavBar's glass-fill)
+//   2. hairline border     — Theme.glass-border (1px, soft cool edge)
+//   3. top inner highlight — a 1px decorative rim (Theme.glass-highlight) that
+//                            fakes light catching the upper lip of the glass
+//   4. drop shadow         — Theme.shadow-popover, lifting the pill off content
+//
+// The width is sized explicitly from tokens (jump field + two capsules + the
+// inter-item gaps + divider + left/right padding) rather than from a layout's
+// preferred width: binding the root width to its own content layout would
+// create a width binding loop (same rationale as NavBar.slint).
+//
+// Colors / lengths come from Theme.* only — NO inline brand hex (DESIGN.md
+// rule 2; scripts/check-tokens.sh enforces this). Theme lives one directory up.
+import { Theme } from "../Theme.slint";
+import { NavItem } from "NavItem.slint";
+
+// File-private page-jump field, rendering "<input> / total". The page number is
+// editable; the caller (Rust) validates on Enter and restores on Escape. Kept in
+// this file so no new import path is needed.
+//
+// TextInput (not LineEdit) is used deliberately so EVERY color comes from
+// Theme.* — std-widgets' LineEdit paints its own native palette, which would
+// bypass the token rule and clash with the glass pill.
+component PageJumpField inherits Rectangle {
+    // ── Public API ────────────────────────────────────────────────────────────
+    in-out property <string> page-text;   // 1-based page number string, editable
+    in property <int> total-pages;
+    out property <bool> field-focused: input.has-focus;
+    // True while the pointer rests over the field, so the container can keep its
+    // auto-hiding chrome visible. The sensor sits behind the TextInput, which
+    // still takes clicks/focus in front of it.
+    out property <bool> hovered: field-touch.has-hover;
+    callback page-jump-request(string);    // fires on Enter; caller validates
+    callback page-jump-cancel();            // fires on Escape; caller restores page-text
+
+    // ── Shape: fully blended into the pill — no fill, no border ───────────────
+    // Background and border are omitted so the field reads as part of the glass
+    // pill rather than a boxed-in input (a hairline border outlined it as a
+    // separate box, which the design does not want). The width holds a 4-digit
+    // page number plus the "/ total" readout without clipping.
+    width: Theme.viewer-jump-field-width;
+    height: Theme.nav-capsule;
+    background: transparent;
+
+    // Hover sensor behind the content (the TextInput in front keeps focus/clicks).
+    field-touch := TouchArea { }
+
+    // ── Content: <input> "/" <total> ──────────────────────────────────────────
+    // Pad horizontally ONLY: a full `padding` would also inset top/bottom, leaving
+    // ~8px of vertical room inside the 34px capsule and clipping the 12px digits.
+    HorizontalLayout {
+        padding-left: Theme.nav-search-pad-x;
+        padding-right: Theme.nav-search-pad-x;
+        spacing: Theme.space-xs;
+        alignment: center;
+
+        input := TextInput {
+            text <=> root.page-text;
+            width: 52px;
+            single-line: true;
+            horizontal-alignment: center;
+            color: Theme.text;
+            font-size: Theme.font-label;
+            vertical-alignment: center;
+            selection-background-color: Theme.accent-glow;
+            selection-foreground-color: Theme.text;
+            text-cursor-width: Theme.nav-search-cursor;
+            accessible-role: text-input;
+            accessible-label: "Go to page";
+
+            // Enter commits the typed page number; Rust validates and returns focus to the page view.
+            accepted => {
+                root.page-jump-request(self.text);
+            }
+
+            key-pressed(event) => {
+                // Escape abandons the edit; Rust restores page-text and returns focus.
+                if (event.text == Key.Escape) {
+                    root.page-jump-cancel();
+                    return accept;
+                }
+                return reject;
+            }
+        }
+
+        Text {
+            text: "/";
+            color: Theme.text-dim;
+            font-size: Theme.font-label;
+            vertical-alignment: center;
+        }
+
+        Text {
+            text: root.total-pages;
+            color: Theme.text-muted;
+            font-size: Theme.font-label;
+            vertical-alignment: center;
+            horizontal-alignment: left;
+            width: 44px;
+        }
+    }
+}
+
+export component ViewerPill inherits Rectangle {
+    // ── Public API ────────────────────────────────────────────────────────────
+    in-out property <string> page-text;    // forwarded to PageJumpField
+    in property <int> total-pages;          // forwarded to PageJumpField
+    callback page-jump-request(string);     // forwarded from PageJumpField (caller validates)
+    callback page-jump-cancel();            // forwarded from PageJumpField (caller restores page-text)
+    callback toggle-thumbnails();           // thumbnails NavItem clicked
+    callback open-settings();               // settings NavItem clicked
+    // Exposed so ViewerWindow can suppress its idle-hide timer while editing.
+    out property <bool> field-focused: page-field.field-focused;
+    // True while the pointer rests anywhere on the pill — the jump field, either
+    // capsule, or the gaps/padding between them (the last via `pill-touch`). Lets
+    // ViewerWindow keep the chrome visible under a hovering cursor.
+    out property <bool> hovered: pill-touch.has-hover
+        || page-field.hovered
+        || thumb-item.hovered
+        || settings-item.hovered;
+
+    // ── Shape & size ──────────────────────────────────────────────────────────
+    // Width is computed from tokens so the pill hugs its content WITHOUT a
+    // layout-preferred-width binding loop. Children left→right: jump field,
+    // 1px divider, two icon capsules → four children → three inter-item gaps.
+    //   jump-field(142px) + divider + 2*capsule + 3*gap + 2*pad.
+    height: Theme.nav-pill-height;
+    width: Theme.viewer-jump-field-width
+        + Theme.nav-divider-width
+        + 2 * Theme.nav-capsule
+        + 3 * Theme.nav-item-gap
+        + 2 * Theme.nav-pill-pad;
+    horizontal-stretch: 0;
+    vertical-stretch: 0;
+
+    // ── Glass approximation (layers 1, 2 and 4; see header) ───────────────────
+    background: Theme.viewer-pill-fill;
+    border-radius: Theme.nav-pill-radius;
+    border-width: 1px;
+    border-color: Theme.glass-border;
+    drop-shadow-color: Theme.shadow-popover;
+    drop-shadow-blur: 22px;
+    drop-shadow-offset-y: 8px;
+
+    // Background hover sensor covering the gaps/padding between items. Declared
+    // first so the interactive children (field, capsules) sit in front and keep
+    // their focus/clicks; this only catches the spaces they don't cover.
+    pill-touch := TouchArea { }
+
+    // ── Glass approximation (layer 3): top inner highlight rim ────────────────
+    // A thin decorative line just below the top edge, inset horizontally by
+    // ~half the height so it stays inside the rounded corners.
+    Rectangle {
+        x: Theme.nav-pill-height / 2;
+        y: 1px;
+        width: parent.width - Theme.nav-pill-height;
+        height: 1px;
+        background: Theme.glass-highlight;
+    }
+
+    // ── Items: jump field, divider, then the two icon-only capsules ───────────
+    HorizontalLayout {
+        spacing: Theme.nav-item-gap;
+        padding: Theme.nav-pill-pad;
+        alignment: center;
+
+        page-field := PageJumpField {
+            page-text <=> root.page-text;
+            total-pages: root.total-pages;
+            page-jump-request(t) => { root.page-jump-request(t); }
+            page-jump-cancel => { root.page-jump-cancel(); }
+        }
+
+        // Thin vertical divider separating the jump field from the capsules.
+        // ~60% of the capsule height, vertically centered within its layout cell.
+        Rectangle {
+            width: Theme.nav-divider-width;
+            vertical-stretch: 0;
+            VerticalLayout {
+                alignment: center;
+                Rectangle {
+                    width: Theme.nav-divider-width;
+                    height: Theme.nav-capsule * 0.6;
+                    background: Theme.hairline-float;
+                }
+            }
+        }
+
+        thumb-item := NavItem {
+            icon: @image-url("../assets/slider.svg");
+            a11y-label: "Toggle thumbnails";
+            clicked => { root.toggle-thumbnails(); }
+        }
+        settings-item := NavItem {
+            icon: @image-url("../assets/settings.svg");
+            a11y-label: "Settings";
+            clicked => { root.open-settings(); }
+        }
+    }
+}

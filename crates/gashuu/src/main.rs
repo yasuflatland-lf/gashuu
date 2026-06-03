@@ -7,7 +7,7 @@ mod enum_adapters;
 mod keymap;
 mod library_model;
 mod navigation;
-mod page_counter;
+mod page_jump;
 mod thumbnail_strip;
 mod viewer_state;
 mod viewport;
@@ -24,7 +24,7 @@ use gashuu_core::{CacheConfig, DecodedImage, FitMode, Library, ReadingDirection,
 use keymap::{map_key, KeyCommand};
 use library_model::LibrarySearchState;
 use navigation::{screen_to_index, NavState};
-use page_counter::page_counter_text;
+use page_jump::parse_page_jump;
 use std::cell::RefCell;
 use std::rc::Rc;
 use thumbnail_strip::ThumbnailController;
@@ -374,6 +374,52 @@ fn main() -> color_eyre::Result<()> {
         });
     }
 
+    // On invalid or no-op input the field snaps back to the current page; this
+    // is the feedback mechanism instead of a visible error message.
+    {
+        let ui_weak = ui.as_weak();
+        let state = Rc::clone(&state);
+        let viewport = Rc::clone(&viewport);
+        ui.on_page_jump_request(move |text: slint::SharedString| {
+            with_ui(&ui_weak, |ui| {
+                let total = state.borrow().page_count();
+                let did_jump = if let Some(page_0based) = parse_page_jump(text.as_str(), total) {
+                    let moved = state.borrow_mut().jump_to(page_0based);
+                    if moved {
+                        refresh(&ui, &state.borrow(), &viewport);
+                        // Belt-and-suspenders: if refresh gains an early-return path,
+                        // the field still shows the canonical post-jump page.
+                        ui.set_page_jump_text(
+                            format!("{}", current_page_1based(&state.borrow())).into(),
+                        );
+                    }
+                    moved
+                } else {
+                    tracing::debug!(input = %text, "page_jump: invalid input, restoring");
+                    false
+                };
+                if !did_jump {
+                    ui.set_page_jump_text(
+                        format!("{}", current_page_1based(&state.borrow())).into(),
+                    );
+                }
+                ui.invoke_focus_pages();
+            })
+        });
+    }
+
+    // Page-jump cancel: restore the field to the current page.
+    {
+        let ui_weak = ui.as_weak();
+        let state = Rc::clone(&state);
+        ui.on_page_jump_cancel(move || {
+            with_ui(&ui_weak, |ui| {
+                ui.set_page_jump_text(format!("{}", current_page_1based(&state.borrow())).into());
+                ui.invoke_focus_pages();
+            })
+        });
+    }
+
     // Reveal the auto-hiding chrome and re-arm its idle-fade countdown. Fired on
     // mouse-move over the page and on a scrubber drag (arrow turns reveal via the
     // `nav` handler below).
@@ -431,9 +477,6 @@ fn main() -> color_eyre::Result<()> {
                 ui.set_scrubber_preview_b(b.image);
                 ui.set_scrubber_preview_b_loaded(b.loaded);
                 ui.set_scrubber_preview_b_failed(b.failed);
-                // Update the counter to the previewed page (1-based).
-                let counter = page_counter_text(lead, trail, total);
-                ui.set_page_counter_text(counter.into());
                 // Keep the chrome visible during the drag.
                 ui.invoke_reveal_chrome_now();
             })
@@ -956,11 +999,11 @@ pub(crate) fn refresh(
     // leading page after every navigation/refresh.
     ui.set_current_index(state.index() as i32);
 
-    // Seed the scrubber + page-counter chrome from the current spread. The
-    // counter uses 1-based numbers; `double` mirrors whether the current spread
-    // has a trailing page. These are display-only and do NOT change the page body.
+    // Seed the scrubber chrome from the current spread. The scrubber uses 1-based
+    // numbers; `double` mirrors whether the current spread has a trailing page.
+    // These are display-only and do NOT change the page body.
     let total = state.page_count();
-    let current_1based = if total == 0 { 0 } else { state.index() + 1 };
+    let current_1based = current_page_1based(state);
     ui.set_scrubber_total_pages(total as i32);
     ui.set_scrubber_current_page(current_1based as i32);
     // `preview_is_double` resolves the trailing page using the SAME layout as the
@@ -968,14 +1011,16 @@ pub(crate) fn refresh(
     // page" predicate without re-running `current_spread`'s decode.
     let is_double = state.preview_is_double(state.index());
     ui.set_scrubber_double(is_double);
-    // Counter text: "X / N" single, "X\u{2013}Y / N" double, "0 / 0" when empty.
-    let trailing = if is_double {
-        Some(state.index() + 1)
+    ui.set_page_jump_text(format!("{}", current_1based).into());
+}
+
+/// Returns the current 1-based page number (0 when no pages loaded).
+fn current_page_1based(state: &ViewerState) -> usize {
+    if state.page_count() == 0 {
+        0
     } else {
-        None
-    };
-    let counter = page_counter_text(state.index(), trailing, total);
-    ui.set_page_counter_text(counter.into());
+        state.index() + 1
+    }
 }
 
 /// Push the viewport's render geometry (content_x/y/w/h, logical px as `f32`)

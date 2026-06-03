@@ -339,13 +339,23 @@ PR-58, `carousel.rs`. UI-thread adapter layer between `library_model` and Slint:
 
 PR-58, `enum_adapters.rs`. The 8 `pub(crate)` enum↔index adapters that were previously inline in `main.rs`: `reading_direction_to_index`/`index_to_reading_direction`, `spread_mode_to_index`/`index_to_spread_mode`, `cover_mode_to_index`/`index_to_cover_mode`, `fit_mode_to_index`/`index_to_fit_mode`. Each `index_to_*` clamps out-of-range to the first variant, mirroring the `index_to_screen` clamp policy in `navigation.rs`.
 
+### page_jump
+
+`page_jump.rs`. PURE (Slint-free, table-tested) parser for the `ViewerPill` page-jump field:
+`parse_page_jump(input: &str, total: usize) -> Option<usize>` maps a 1-based string input to a
+0-based page index. Returns `None` for empty / all-whitespace / non-numeric input and for
+`total == 0`; otherwise clamps the numeric value to `[1, total]` (treating `0` as `1`) and
+subtracts 1. Replaces the removed `page_counter.rs`. The viewer wires the parsed index through
+`ViewerState::jump_to` (same "did it move → caller refreshes" convention as the scrubber).
+
 ### Slint UI files
 
 **`ui/components/`** (#71, NEW): shared single-purpose UI atoms/molecules, one `export`ed component
-per file — `ProgressBar` (accent/`success` reading-progress fill), `Chip` (pill label, e.g. the
-page counter), `PrimaryButton` (the accent CTA), `ThumbnailCell` (the loaded/loading/failed/highlighted
-cell shared by the page strip, the scrubber preview popover, and the library covers), `TitleBar`
-(the viewer chrome strip: action affordances + centered book name + optional count chip), `NavBar`
+per file — `ProgressBar` (accent/`success` reading-progress fill), `PrimaryButton` (the accent CTA),
+`ThumbnailCell` (the loaded/loading/failed/highlighted
+cell shared by the page strip, the scrubber preview popover, and the library covers), `ViewerPill`
+(#this-PR, NEW: the viewer glass-pill — floating page-jump field + thumbnail toggle + settings;
+replaces the docked TitleBar), `NavBar`
 (#83, NEW: the top-centered glass-pill Library nav — translucent fill + hairline border + top inner
 highlight + drop shadow; Slint has no backdrop-blur so the glass effect is paint-only), and `NavItem`
 (#83, NEW: one circular icon capsule inside `NavBar`; hover/press glow via `Theme.accent-glow`;
@@ -355,7 +365,8 @@ screen-reader support). Each references `Theme.*` via `../Theme.slint`; consumer
 `ui/ViewerWindow.slint` and import statements cascade. See [docs/conventions.md](conventions.md)
 for the component RULES.
 
-**`ui/assets/`** (#83, NEW): the repo's first image assets — `file.svg` and `folder.svg`, each a
+**`ui/assets/`** (#83, NEW): the repo's image assets — `file.svg`, `folder.svg` (#83), and `slider.svg`
+(this PR, NEW: the thumbnail-toggle icon in ViewerPill), each a
 single-path SVG recolored at runtime via Slint's `Image.colorize` property. Components reference
 them with `@image-url(...)` paths relative to the consuming `.slint` file. `build.rs` is unchanged
 (assets are reached transitively through the entry-file import cascade).
@@ -455,12 +466,11 @@ helper fns (since extracted to `enum_adapters.rs`) + `KEY_BINDINGS_HELP`. Extend
 screen` gates the Library `Carousel` (screen 0) vs the Viewer body (screen 1) via
 `visible: root.screen == N` (not `if` — see [patterns.md](patterns.md) for the Slint id-scoping
 reason); Settings/Guide overlays remain viewer-scoped. Extended again in PR-S to mount the
-`Scrubber` + a top-right page-counter chip as auto-hiding chrome inside the screen-1 viewer,
+`Scrubber` as auto-hiding chrome inside the screen-1 viewer,
 driven by a `chrome-shown` bool + an idle `Timer`; chrome is revealed on pointer-move (via
 `PageView.reveal()`), arrow-key presses, and scrubber drag. #71 mounted the shared `TitleBar`
 component (bound to a new `current-book-name` in-prop — derived in `main.rs` from the post-open
-`ViewerState::open_file()`, see [patterns.md](patterns.md)), routed the page-counter chip through the
-shared `Chip` component, and set a `min-width`/`min-height` floor on the window.
+`ViewerState::open_file()`, see [patterns.md](patterns.md)), and set a `min-width`/`min-height` floor on the window.
 
 ### rfd file/folder picker
 

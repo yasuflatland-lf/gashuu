@@ -103,6 +103,12 @@ export global Theme {
     out property <color> glass-fill: #10141fd1;      // surface-float @ ~82% alpha
     out property <color> glass-border: #2f3850b3;    // hairline-float @ ~70% alpha
     out property <color> glass-highlight: #dde5f51f; // text-high @ ~12% — top inner rim
+    out property <color> viewer-pill-fill: #10141fb3;   // surface-float @ ~70% alpha (viewer pill, slightly more transparent than glass-fill)
+    // Glow color for the book-title label. Slint 1.x Text has no text-shadow, so
+    // the title is rendered as 1px-offset duplicates in this color behind a crisp
+    // white copy — a soft outline/glow that keeps the name legible over bright
+    // pages without a backing capsule.
+    out property <color> title-glow: #3d3d3d;            // text-glow tone behind the white title
 
     // ── Nav bar sizing (golden ratio phi ~= 1.618 via Fibonacci px) ──
     out property <length> nav-icon: 21px;        // 13 x phi
@@ -127,4 +133,10 @@ export global Theme {
     // Golden-ratio corner radius for the outer nav glass pill: bar height (nav-pill-height 55px) / phi^2 (2.618)
     // ~= 21px. Below height/2 (27.5px), so the pill is a rounded rectangle that matches the search field corners.
     out property <length> nav-pill-radius: 21px;
+
+    // ── Viewer pill sizing (issue #85: page-jump glass pill) ──
+    // Width of the "<page> / total" jump field — the viewer-pill counterpart of
+    // nav-search-width. Referenced twice (the field's own width AND the pill's
+    // token-summed width) so it lives here to keep the two in lockstep.
+    out property <length> viewer-jump-field-width: 142px; // holds a 4-digit page + "/ total" without clipping
 }

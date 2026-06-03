@@ -30,9 +30,9 @@ Slint-specific: colors encode alpha as `#RRGGBBAA` (e.g. the `…40` byte is ~25
 
 ### Shared Slint components
 
-Reusable atoms/molecules live one per file under `crates/gashuu/ui/components/` (e.g. `ProgressBar`, `Chip`, `PrimaryButton`, `ThumbnailCell`, `TitleBar`); see [docs/architecture.md](architecture.md) for the current inventory. Conventions for a component there:
+Reusable atoms/molecules live one per file under `crates/gashuu/ui/components/` (e.g. `ProgressBar`, `PrimaryButton`, `ThumbnailCell`, `ViewerPill`); see [docs/architecture.md](architecture.md) for the current inventory. Conventions for a component there:
 
-- **One `export` per file**, named after the file. A file-private helper sub-component (e.g. `TitleBar`'s internal themed button) stays un-`export`ed.
+- **One `export` per file**, named after the file. A file-private helper sub-component (e.g. `NavBar`'s file-private `SearchField` or `ViewerPill`'s `PageJumpField`) stays un-`export`ed.
 - **Reference `Theme.*` via `import { Theme } from "../Theme.slint";`** — no inline color hex (the recursive `scripts/check-tokens.sh` guard now covers `ui/components/` too).
 - **Consumers import via `import { X } from "components/X.slint";`** (path relative to the importing file). No `build.rs` change is needed — `build.rs` compiles the single entry `ui/ViewerWindow.slint` and `import` statements cascade.
 - **Keep the public API minimal:** in-props plus one callback where possible. Model mutually-exclusive states (focused / loaded / failed / highlighted) as explicit boolean in-props (Figma-variant parity), not derived in-Slint checks, so the call site stays declarative and the states can't drift.
