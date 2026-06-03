@@ -60,7 +60,7 @@ component CoverCard inherits Rectangle {
     in property <bool> focused;    // idx == focused-index: full size/opacity, ring + shadow
     // Only the pass-2 TOP copy of the focused card paints the drop-shadow; the
     // pass-1 backing copy sets `elevated: false` so the focused book's
-    // semi-transparent shadow (Theme.shadow-card, #0000008c) is not composited
+    // semi-transparent shadow (Theme.shadow-card) is not composited
     // twice (which would darken it). Neighbors never carry a shadow regardless
     // (gated by `focused`).
     in property <bool> elevated: true;
