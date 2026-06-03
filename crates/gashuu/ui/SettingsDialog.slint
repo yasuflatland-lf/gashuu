@@ -29,8 +29,8 @@
 // Each setting change fires a callback so Rust can react; the Rust setters are
 // idempotent (no-op on equal values) to absorb the atoms' selection self-fire.
 // The Slint↔Rust contract (the *-index / value in-out props + set-* callbacks) is
-// preserved exactly; key-bindings-text stays declared/parked (its on-screen
-// rendering moves to the shortcuts overlay in PR-C).
+// preserved exactly. key-bindings-text (parked in PR-B) is removed in PR-C; the
+// shortcuts overlay (ShortcutsOverlay.slint) now owns that content.
 import { Theme } from "Theme.slint";
 import { SettingRow } from "components/SettingRow.slint";
 import { Segmented } from "components/Segmented.slint";
@@ -57,11 +57,6 @@ export component SettingsDialog inherits Rectangle {
     in-out property <int> preload-pages;
     // Whether recent-files tracking is enabled.
     in-out property <bool> track-recent;
-    // Read-only reference text listing keyboard shortcuts. Parked in PR-B (kept
-    // bound so the Slint↔Rust contract has nothing dangling); its on-screen
-    // rendering moves to ShortcutsOverlay in PR-C.
-    in property <string> key-bindings-text;
-
     // ── Callbacks fired when the user changes a setting ───────────────────────
     callback set-reading-direction(int);
     callback set-spread-mode(int);
@@ -72,6 +67,18 @@ export component SettingsDialog inherits Rectangle {
     callback set-track-recent(bool);
     // Fired on Esc, backdrop-click, or the Close button.
     callback close-settings();
+    // Fired when the user activates the "Shortcuts" footer link (mouse click,
+    // Return/Space, or accessible-action-default). ViewerWindow opens
+    // ShortcutsOverlay in response and bumps focus-epoch on close.
+    callback open-shortcuts();
+
+    // Bumped by ViewerWindow when the shortcuts overlay closes so this
+    // still-mounted dialog reclaims keyboard focus. An if-gated dialog cannot be
+    // reached by id from outside, so the parent signals through this property.
+    in property <int> focus-epoch: 0;
+    changed focus-epoch => {
+        fs.focus();
+    }
 
     // ── Backdrop dismiss ──────────────────────────────────────────────────────
     // A click anywhere on the scrim (outside the panel) closes the dialog. Clicks
@@ -329,9 +336,13 @@ export component SettingsDialog inherits Rectangle {
                         spacing: Theme.space-md;
                         alignment: space-between;
 
-                        // LEFT: a FOCUSABLE no-op "Shortcuts" stub. It sits in the Tab
-                        // order between the controls and Close (declaration order).
-                        // PR-C wires it to open ShortcutsOverlay; here it does nothing.
+                        // LEFT: a focusable "Shortcuts" link. Sits in the Tab order
+                        // between the controls and Close (declaration order). Activating
+                        // it fires root.open-shortcuts() via three paths: mouse click
+                        // (TouchArea), keyboard Return/Space (key-pressed), and the
+                        // accessible default action (accessible-action-default). Esc is
+                        // rejected here so it propagates up to the ancestor `fs` Esc
+                        // handler and closes the dialog (standard Slint upward-walk).
                         shortcuts := FocusScope {
                             horizontal-stretch: 0;
                             width: shortcuts-label.preferred-width;
@@ -346,8 +357,28 @@ export component SettingsDialog inherits Rectangle {
                                 horizontal-alignment: left;
                                 vertical-alignment: center;
                             }
+                            // Mouse activation.
+                            TouchArea {
+                                width: shortcuts-label.preferred-width;
+                                height: shortcuts-label.preferred-height;
+                                clicked => {
+                                    root.open-shortcuts();
+                                }
+                            }
+                            // Keyboard activation: Return and Space open the overlay;
+                            // everything else is rejected so keys propagate to ancestors
+                            // (Esc in particular must reach the ancestor `fs` to close).
+                            key-pressed(event) => {
+                                if (event.text == Key.Return || event.text == Key.Space) {
+                                    root.open-shortcuts();
+                                    return accept;
+                                }
+                                return reject;
+                            }
                             accessible-role: button;
                             accessible-label: "Keyboard shortcuts";
+                            // Accessibility default action mirrors NavItem/Toggle idiom.
+                            accessible-action-default => { root.open-shortcuts(); }
                         }
 
                         // RIGHT: Close — the reused PrimaryButton, always visible in
