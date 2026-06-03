@@ -6,7 +6,7 @@
 //! (it constructs `slint::Image`s and the `Rc` model, both `!Send`).
 
 use crate::cover_loader;
-use crate::library_model::{carousel_data, CarouselData};
+use crate::library_model::{carousel_data_for_indices, CarouselData};
 use crate::{CarouselItem, ThumbnailItem, ViewerWindow};
 use gashuu_core::Library;
 use slint::{ModelRc, VecModel};
@@ -28,29 +28,44 @@ fn to_carousel_item(data: &CarouselData) -> CarouselItem {
     }
 }
 
-/// Build the carousel's backing model from the current `Library`, in shelf
-/// order, and bind it to the UI's `carousel-items`. Returns the `Rc<VecModel>`
-/// so callers (PR-V cover streaming; PR-L refresh-after-add) can mutate the
-/// SAME model rather than rebuilding/rebinding. Centralizes the build + bind so
-/// the Library → carousel surface lives in ONE place (mirrors
+/// Build the carousel's backing model from the given visible library `indices`,
+/// in the order of `indices` (the search state's natural-order projection).
+/// Pure model construction with NO `ViewerWindow` — headless-testable. The
+/// matching [`bind_carousel_model`] performs the UI bind; keeping build and bind
+/// separate lets a caller rebuild the model off the visible-index slice and bind
+/// it in one place. Centralizes the Library → carousel row adaptation (mirrors
 /// `ThumbnailController::new`).
 pub(crate) fn build_carousel_model(
-    ui: &ViewerWindow,
     library: &Library,
+    indices: &[usize],
 ) -> Rc<VecModel<CarouselItem>> {
-    let items: Vec<CarouselItem> = carousel_data(library)
+    let items: Vec<CarouselItem> = carousel_data_for_indices(library, indices)
         .iter()
         .map(to_carousel_item)
         .collect();
-    let model = Rc::new(VecModel::from(items));
+    Rc::new(VecModel::from(items))
+}
+
+/// Bind a freshly built carousel `model` into the UI's `carousel-items` and
+/// return it, so callers (PR-V cover streaming; PR-L refresh-after-add) can
+/// mutate the SAME model rather than rebuilding/rebinding. The build/bind split
+/// keeps the (headless) row construction in [`build_carousel_model`] and the
+/// UI-thread bind here.
+pub(crate) fn bind_carousel_model(
+    ui: &ViewerWindow,
+    model: Rc<VecModel<CarouselItem>>,
+) -> Rc<VecModel<CarouselItem>> {
     ui.set_carousel_items(ModelRc::from(model.clone()));
     model
 }
 
-/// Build one `CoverRequest` per book, row index == carousel order (aligned with
-/// the natural `Library::books()` row order). The cover controller resolves
-/// each book's cache key from its path + mtime and either serves a cached cover
-/// or generates one in the background.
+/// Build one `CoverRequest` per visible library `index`, with `row` re-based to
+/// the ENUMERATED position in the filtered slice (0, 1, 2, …) so cover targets
+/// align with the filtered carousel model built by [`build_carousel_model`] from
+/// the same `indices`. Out-of-range indices are skipped via
+/// `Library::books().get(index)`. The cover controller resolves each book's
+/// cache key from its path + mtime and either serves a cached cover or generates
+/// one in the background.
 ///
 /// `needs_count` is set for a book whose page count is still unknown
 /// (`Book::page_count_opt() == None` — never opened, no persisted total). The
@@ -58,10 +73,13 @@ pub(crate) fn build_carousel_model(
 /// the carousel shows "1 / 200" instead of "1 / 0"; a book already carrying a
 /// count (opened before, or back-filled on a prior run) leaves it `false` and is
 /// not re-opened just to count.
-pub(crate) fn cover_requests(library: &Library) -> Vec<cover_loader::CoverRequest> {
-    library
-        .books()
+pub(crate) fn cover_requests(
+    library: &Library,
+    indices: &[usize],
+) -> Vec<cover_loader::CoverRequest> {
+    indices
         .iter()
+        .filter_map(|&library_index| library.books().get(library_index))
         .enumerate()
         .map(|(row, book)| cover_loader::CoverRequest {
             row,
@@ -178,7 +196,7 @@ mod tests {
         let known_path = lib.books()[0].path().to_path_buf();
         assert!(lib.set_page_count(&known_path, NonZeroUsize::new(10).unwrap()));
 
-        let reqs = cover_requests(&lib);
+        let reqs = cover_requests(&lib, &[0, 1]);
         assert_eq!(reqs.len(), 2);
         assert_eq!(reqs[0].row, 0);
         assert_eq!(reqs[0].path, known_path);
@@ -193,6 +211,49 @@ mod tests {
             reqs[1].needs_count,
             "fresh book with no persisted total needs its count resolved"
         );
+    }
+
+    /// The model is built strictly in the order of the supplied visible indices,
+    /// not in natural `Library::books()` order: passing `[1, 0]` yields beta then
+    /// alpha. This is what lets the carousel render the filtered/projected slice.
+    #[test]
+    fn build_carousel_model_uses_visible_indices_order() {
+        use slint::Model;
+
+        let mut lib = Library::new();
+        assert!(lib
+            .add(std::path::PathBuf::from("/manga/alpha.cbz"))
+            .is_some());
+        assert!(lib
+            .add(std::path::PathBuf::from("/manga/beta.cbz"))
+            .is_some());
+
+        let model = build_carousel_model(&lib, &[1, 0]);
+
+        assert_eq!(model.row_count(), 2);
+        assert_eq!(model.row_data(0).unwrap().title, "beta");
+        assert_eq!(model.row_data(1).unwrap().title, "alpha");
+    }
+
+    /// `cover_requests` re-bases each request's `row` to its enumerated position
+    /// in the filtered slice, so a single-element filter on library index 1 emits
+    /// `row == 0` (the only row in the filtered model) carrying beta's path.
+    #[test]
+    fn cover_requests_rebase_rows_to_filtered_model() {
+        let mut lib = Library::new();
+        assert!(lib
+            .add(std::path::PathBuf::from("/manga/alpha.cbz"))
+            .is_some());
+        assert!(lib
+            .add(std::path::PathBuf::from("/manga/beta.cbz"))
+            .is_some());
+
+        let beta_path = lib.books()[1].path().to_path_buf();
+        let reqs = cover_requests(&lib, &[1]);
+
+        assert_eq!(reqs.len(), 1);
+        assert_eq!(reqs[0].row, 0);
+        assert_eq!(reqs[0].path, beta_path);
     }
 
     #[test]
