@@ -1,0 +1,112 @@
+// Segmented — a token-driven horizontal segmented control (issue 102, PR-A/3).
+//
+// Drop-in replacement for the std-widgets `ComboBox` rows in the settings dialog:
+// it exposes the SAME `current-index` (two-way) + `selected(int)` shape, but
+// paints every pixel from `Theme.*` so it sits in the dark glass palette instead
+// of the native light ComboBox (mirrors how NavBar dropped `LineEdit` for a raw
+// `TextInput`, issue #88). One capsule (surface-sunken ground, 1px hairline-float
+// border, radius-sm) holds N equal cells; the selected cell fills with `accent`
+// and its label goes white + semibold, idle cells stay `text-muted`.
+//
+// Keyboard (when focused): Left/Right move the selection (clamped, fires
+// `selected`), Space/Enter re-confirm the current selection. Focus shows an
+// `accent` border + a soft `accent-glow` halo (single drop-shadow; no spread —
+// docs/patterns.md).
+//
+// Gotchas honored (docs/patterns.md): NO `opacity` on text (HiDPI blur) — the
+// selected/idle look animates color only; state-dependent CHILD props are DIRECT
+// bindings reading `idx` / `fs.has-focus` (a `states[]` block cannot touch a
+// child or a sibling). Colors/lengths are `Theme.*` only (check-tokens.sh).
+import { Theme } from "../Theme.slint";
+
+export component Segmented inherits Rectangle {
+    // ── Public API (mirrors the ComboBox it replaces) ───────────────────────────
+    in property <[string]> model;
+    in-out property <int> current-index;
+    in property <string> a11y-label;
+    callback selected(int);
+
+    // ── Capsule ground ──────────────────────────────────────────────────────────
+    height: Theme.settings-control-h;
+    background: Theme.surface-sunken;
+    border-radius: Theme.radius-sm;
+    border-width: 1px;
+    border-color: fs.has-focus ? Theme.accent : Theme.hairline-float;
+    // Soft accent-glow focus halo (one drop-shadow, no spread; discrete change —
+    // animating drop-shadow is version-fragile, so only the border-color fades).
+    drop-shadow-color: fs.has-focus ? Theme.accent-glow : transparent;
+    drop-shadow-blur: fs.has-focus ? Theme.space-sm : 0px;
+    animate border-color { duration: Theme.motion-fast; }
+
+    // Sole mutator: update the selection and notify Rust. The Rust setter is
+    // idempotent, so it absorbs the self-fire and there is no feedback loop.
+    function pick(i: int) {
+        root.current-index = i;
+        root.selected(i);
+    }
+
+    // ── Keyboard (Tab-focusable as one stop; cells use non-focusable TouchAreas) ─
+    fs := FocusScope {
+        key-pressed(event) => {
+            if (event.text == Key.LeftArrow) {
+                if (root.current-index > 0) { root.pick(root.current-index - 1); }
+                return accept;
+            }
+            if (event.text == Key.RightArrow) {
+                if (root.current-index < root.model.length - 1) { root.pick(root.current-index + 1); }
+                return accept;
+            }
+            if (event.text == Key.Space || event.text == Key.Return) {
+                root.pick(root.current-index);
+                return accept;
+            }
+            return reject;
+        }
+    }
+
+    // ── Cells: equal-width segments so the right edge is a regular rhythm ─────────
+    HorizontalLayout {
+        padding: Theme.space-xxs;
+        spacing: 0px;
+        for item[idx] in root.model : Rectangle {
+            horizontal-stretch: 1;
+            background: idx == root.current-index ? Theme.accent : transparent;
+            border-radius: Theme.radius-xs;
+            animate background { duration: Theme.motion-fast; }
+
+            // a11y: each cell is a selectable list item; AT activation selects it
+            // (the same path a click takes).
+            accessible-role: list-item;
+            accessible-label: item;
+            accessible-item-index: idx;
+            accessible-item-selectable: true;
+            accessible-item-selected: idx == root.current-index;
+            accessible-action-default => { root.pick(idx); }
+
+            Text {
+                width: 100%;
+                height: 100%;
+                text: item;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+                // Selected = white + semibold; idle = muted + regular. Color only
+                // (no opacity wrapper) so the glyphs stay crisp on HiDPI.
+                color: idx == root.current-index ? Theme.text : Theme.text-muted;
+                font-size: Theme.font-label;
+                font-weight: idx == root.current-index ? Theme.weight-semibold : Theme.weight-regular;
+                animate color { duration: Theme.motion-fast; }
+            }
+
+            TouchArea {
+                clicked => {
+                    fs.focus();
+                    root.pick(idx);
+                }
+            }
+        }
+    }
+
+    // ── a11y (root) ─────────────────────────────────────────────────────────────
+    accessible-role: combobox;
+    accessible-label: root.a11y-label;
+}

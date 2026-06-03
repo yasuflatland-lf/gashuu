@@ -59,6 +59,11 @@ export global Theme {
     out property <length> scrubber-knob-size: 16px;
     out property <length> scrubber-knob-size-active: 20px;   // drag-grow target
 
+    // ── Settings control atoms (issue #102) ───────────────────────────────────
+    // Shared visible-capsule height for Segmented / Stepper / Toggle. The DESIGN
+    // ~32px hit area is met by the surrounding row (see PR-B); the capsule is 30.
+    out property <length> settings-control-h: 30px;
+
     // ── Typography sizes (system font; no custom typeface) ────────────────────
     out property <length> font-title: 15px;
     out property <length> font-body: 13px;

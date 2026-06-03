@@ -1,0 +1,128 @@
+// Stepper — token-driven integer stepper (issue 102, PR-A/3).
+//
+// Drop-in replacement for the std-widgets `SpinBox` rows in the settings dialog:
+// SAME `value` (two-way) + `minimum`/`maximum` + `edited(int)` shape, painted
+// from `Theme.*` for the dark glass palette. A capsule (surface-sunken, 1px
+// hairline-float, radius-sm) holds [ − ] value [ + ]; the value uses the tabular
+// numeric font; the ± glyphs are `accent` and dim + go inert at the matching
+// bound.
+//
+// Keyboard (when focused): Up / "+" increments, Down / "−" decrements (clamped).
+// Focus shows an `accent` border + a soft `accent-glow` halo. No `opacity` on the
+// glyphs/value (HiDPI blur); all colors/lengths are `Theme.*` (check-tokens.sh).
+import { Theme } from "../Theme.slint";
+
+// File-private ± button: a labelled, AT-activatable glyph that dims + goes inert
+// at its bound. Kept in this file so Stepper stays a single export (NavBar.slint
+// does the same with its file-private SearchField).
+component StepButton inherits Rectangle {
+    in property <string> glyph;
+    in property <string> a11y-label;
+    in property <bool> active;     // false at the bound → dim + inert
+    callback pressed;
+
+    background: transparent;
+
+    Text {
+        width: 100%;
+        height: 100%;
+        text: root.glyph;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+        // Accent when interactive, faint when at the bound (color only — no opacity).
+        color: root.active ? Theme.accent : Theme.text-faint;
+        font-size: Theme.font-title;
+        font-weight: Theme.weight-semibold;
+        animate color { duration: Theme.motion-fast; }
+    }
+
+    accessible-role: button;
+    accessible-label: root.a11y-label;
+    accessible-enabled: root.active;
+    accessible-action-default => { if (root.active) { root.pressed(); } }
+
+    TouchArea {
+        enabled: root.active;
+        clicked => { root.pressed(); }
+    }
+}
+
+export component Stepper inherits Rectangle {
+    // ── Public API (mirrors the SpinBox it replaces) ────────────────────────────
+    in-out property <int> value;
+    in property <int> minimum;
+    in property <int> maximum;
+    in property <string> a11y-label;
+    callback edited(int);
+
+    // ── Capsule ground ──────────────────────────────────────────────────────────
+    height: Theme.settings-control-h;
+    background: Theme.surface-sunken;
+    border-radius: Theme.radius-sm;
+    border-width: 1px;
+    border-color: fs.has-focus ? Theme.accent : Theme.hairline-float;
+    drop-shadow-color: fs.has-focus ? Theme.accent-glow : transparent;
+    drop-shadow-blur: fs.has-focus ? Theme.space-sm : 0px;
+    animate border-color { duration: Theme.motion-fast; }
+
+    // Sole mutator: clamp to [minimum, maximum], store, notify. The Rust setter is
+    // idempotent, so a no-op change (already at a bound) is absorbed.
+    function bump(delta: int) {
+        root.value = clamp(root.value + delta, root.minimum, root.maximum);
+        root.edited(root.value);
+    }
+
+    fs := FocusScope {
+        key-pressed(event) => {
+            if (event.text == Key.UpArrow || event.text == "+") {
+                root.bump(1);
+                return accept;
+            }
+            if (event.text == Key.DownArrow || event.text == "-") {
+                root.bump(-1);
+                return accept;
+            }
+            return reject;
+        }
+    }
+
+    HorizontalLayout {
+        padding-left: Theme.space-sm;
+        padding-right: Theme.space-sm;
+        spacing: Theme.space-xs;
+
+        StepButton {
+            min-width: Theme.space-xxl;
+            horizontal-stretch: 0;
+            glyph: "−";
+            a11y-label: "Decrease " + root.a11y-label;
+            active: root.value > root.minimum;
+            pressed => { fs.focus(); root.bump(-1); }
+        }
+        Text {
+            horizontal-stretch: 1;
+            text: "\{root.value}";
+            horizontal-alignment: center;
+            vertical-alignment: center;
+            color: Theme.text;
+            // Theme.font-numeric is the tabular-figures page-counter size.
+            font-size: Theme.font-numeric;
+            font-weight: Theme.weight-semibold;
+        }
+        StepButton {
+            min-width: Theme.space-xxl;
+            horizontal-stretch: 0;
+            glyph: "+";
+            a11y-label: "Increase " + root.a11y-label;
+            active: root.value < root.maximum;
+            pressed => { fs.focus(); root.bump(1); }
+        }
+    }
+
+    // ── a11y (root) ─────────────────────────────────────────────────────────────
+    accessible-role: spinbox;
+    accessible-label: root.a11y-label;
+    accessible-value: "\{root.value}";
+    accessible-action-increment => { root.bump(1); }
+    accessible-action-decrement => { root.bump(-1); }
+}
