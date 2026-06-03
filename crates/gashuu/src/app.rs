@@ -21,9 +21,7 @@ use crate::library_model::LibrarySearchState;
 use crate::thumbnail_strip::ThumbnailController;
 use crate::viewer_state::ViewerState;
 use crate::viewport::ViewportState;
-use crate::{
-    reconcile_settings, refresh, write_back_position, write_back_view_override, ViewerWindow,
-};
+use crate::{refresh, write_back_position, write_back_view_override, ViewerWindow};
 
 /// Coordinates the "open a book" use case. The collaborators it threads are
 /// fields, so the open sites call [`OpenBookUseCase::run`] instead of passing
@@ -92,7 +90,8 @@ impl OpenBookUseCase {
         write_back_view_override(state, viewport, library);
         // Bind the result first so the `state.borrow_mut()` temporary drops before the
         // `Ok` arm reads `state` again (a borrow held across the match would
-        // double-borrow-panic at the `reconcile_settings(&state.borrow(), ..)` below).
+        // double-borrow-panic at the `canonical = state.borrow().open_file()...` read
+        // below).
         let opened = state.borrow_mut().open_folder(path);
         // The settings-save outcome, captured so it can be surfaced AFTER refresh
         // (composing onto the status line). `None` when no save was attempted
@@ -103,12 +102,14 @@ impl OpenBookUseCase {
                 tracing::info!(path = %path.display(), "opened source");
                 let mut s = settings.borrow_mut();
                 if s.track_recent_files {
-                    // Reconcile runtime display modes into Settings just before this
-                    // open-time save (the only save on this path), reusing the mutable
-                    // borrow `s`. `state`/`viewport` are distinct RefCells, so their
-                    // immutable borrows can't conflict with `s` (and the `borrow_mut()`
-                    // from `open_folder` above already dropped via the `opened` binding).
-                    reconcile_settings(&state.borrow(), &viewport.borrow(), &mut s);
+                    // Persist the recents update (and the global Settings as-is) on
+                    // open. We intentionally do NOT reconcile the runtime view modes
+                    // into Settings here — the runtime currently holds the
+                    // just-opened/outgoing book's per-book modes, not the global
+                    // defaults; global view modes change only via the Library settings
+                    // dialog and the no-book-open exit path. This save writes the
+                    // recents list + cache/preload/track plus the UNCHANGED global
+                    // view-mode fields.
                     s.push_recent(path.to_path_buf());
                     let result = s.save();
                     if let Err(e) = &result {
