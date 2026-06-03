@@ -13,9 +13,11 @@
 //
 // Content: four whitespace-delineated sections (Reading / Display / Performance
 // / General) of token-driven atoms (Segmented / Stepper / Toggle / Dropdown),
-// each laid out by a SettingRow on the single L1 seam (settings-control-x).
-// Section headers are text-dim sentence case (NOT accent — accent marks
-// interactive/selected only).
+// each laid out by a SettingRow between the L1 seam (settings-control-x) and
+// the shared right rail (fill segments span both; compact atoms trail on the
+// rail). Section headers are text-dim sentence-case SEMIBOLD eyebrows (NOT
+// accent — accent marks interactive/selected only). Rhythm: rows 14px apart,
+// sections 22px apart (Fibonacci 8/13/21 ladder ≈ ×φ steps; spec 2026-06-04).
 //
 // Dismiss: Esc (FocusScope) + backdrop-click + Close button, all three. The panel
 // absorbs clicks via a lowest-layer TouchArea so a click inside it does not bubble
@@ -209,15 +211,24 @@ export component SettingsDialog inherits Rectangle {
                     content := VerticalLayout {
                         padding-left: Theme.space-xl;
                         padding-right: Theme.space-xl;
-                        spacing: Theme.space-xl;
+                        // φ ladder (spec 2026-06-04): 22px between sections
+                        // (≈ Fibonacci 21), and the same 22px below the last
+                        // section so the footer hairline reads as the final
+                        // section boundary.
+                        spacing: Theme.space-xxl;
+                        padding-bottom: Theme.space-xxl;
                         alignment: start;
 
                         // ── Section: Reading ──────────────────────────────────────
                         VerticalLayout {
-                            spacing: Theme.space-sm;
+                            spacing: Theme.space-lg;
                             Text {
                                 text: @tr("Reading");
                                 font-size: Theme.font-label;
+                                // Semibold eyebrow: hierarchy stays position/whitespace/
+                                // color (Apple grouped-list IA); weight alone separates
+                                // it from the regular row labels (spec 2026-06-04).
+                                font-weight: Theme.weight-semibold;
                                 color: Theme.text-dim;
                                 horizontal-alignment: left;
                             }
@@ -247,10 +258,11 @@ export component SettingsDialog inherits Rectangle {
 
                         // ── Section: Display ──────────────────────────────────────
                         VerticalLayout {
-                            spacing: Theme.space-sm;
+                            spacing: Theme.space-lg;
                             Text {
                                 text: @tr("Display");
                                 font-size: Theme.font-label;
+                                font-weight: Theme.weight-semibold;
                                 color: Theme.text-dim;
                                 horizontal-alignment: left;
                             }
@@ -280,10 +292,11 @@ export component SettingsDialog inherits Rectangle {
 
                         // ── Section: Performance ──────────────────────────────────
                         VerticalLayout {
-                            spacing: Theme.space-sm;
+                            spacing: Theme.space-lg;
                             Text {
                                 text: @tr("Performance");
                                 font-size: Theme.font-label;
+                                font-weight: Theme.weight-semibold;
                                 color: Theme.text-dim;
                                 horizontal-alignment: left;
                             }
@@ -337,10 +350,11 @@ export component SettingsDialog inherits Rectangle {
 
                         // ── Section: General ──────────────────────────────────────
                         VerticalLayout {
-                            spacing: Theme.space-sm;
+                            spacing: Theme.space-lg;
                             Text {
                                 text: @tr("General");
                                 font-size: Theme.font-label;
+                                font-weight: Theme.weight-semibold;
                                 color: Theme.text-dim;
                                 horizontal-alignment: left;
                             }
