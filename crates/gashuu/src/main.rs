@@ -26,6 +26,7 @@ use keymap::{map_key, KeyCommand};
 use library_model::LibrarySearchState;
 use navigation::{screen_to_index, NavState};
 use page_counter::page_counter_text;
+use page_jump::parse_page_jump;
 use std::cell::RefCell;
 use std::rc::Rc;
 use thumbnail_strip::ThumbnailController;
@@ -371,6 +372,53 @@ fn main() -> color_eyre::Result<()> {
                     refresh(&ui, &state.borrow(), &viewport);
                 }
                 ui.invoke_focus_pages();
+            })
+        });
+    }
+
+    // Page-jump field: parse the raw input text, clamp, jump to page, refresh.
+    {
+        let ui_weak = ui.as_weak();
+        let state = Rc::clone(&state);
+        let viewport = Rc::clone(&viewport);
+        ui.on_page_jump_request(move |text: slint::SharedString| {
+            with_ui(&ui_weak, |ui| {
+                let total = state.borrow().page_count();
+                let did_jump = if let Some(page_0based) = parse_page_jump(text.as_str(), total) {
+                    let moved = state.borrow_mut().jump_to(page_0based);
+                    if moved {
+                        refresh(&ui, &state.borrow(), &viewport);
+                    }
+                    moved
+                } else {
+                    false
+                };
+                if !did_jump {
+                    let t2 = state.borrow().page_count();
+                    let cur = if t2 == 0 {
+                        0usize
+                    } else {
+                        state.borrow().index() + 1
+                    };
+                    ui.set_page_jump_text(format!("{}", cur).into());
+                }
+            })
+        });
+    }
+
+    // Page-jump cancel: restore the field to the current page.
+    {
+        let ui_weak = ui.as_weak();
+        let state = Rc::clone(&state);
+        ui.on_page_jump_cancel(move || {
+            with_ui(&ui_weak, |ui| {
+                let total = state.borrow().page_count();
+                let cur = if total == 0 {
+                    0usize
+                } else {
+                    state.borrow().index() + 1
+                };
+                ui.set_page_jump_text(format!("{}", cur).into());
             })
         });
     }
@@ -977,6 +1025,7 @@ pub(crate) fn refresh(
     };
     let counter = page_counter_text(state.index(), trailing, total);
     ui.set_page_counter_text(counter.into());
+    ui.set_page_jump_text(format!("{}", current_1based).into());
 }
 
 /// Push the viewport's render geometry (content_x/y/w/h, logical px as `f32`)
