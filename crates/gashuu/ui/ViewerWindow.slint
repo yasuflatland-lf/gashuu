@@ -9,19 +9,17 @@ import { Scrubber } from "Scrubber.slint";
 import { ViewerPill } from "components/ViewerPill.slint";
 
 export component ViewerWindow inherits Window {
-    // Intentionally empty: the OS title bar shows no app name (the in-app
-    // TitleBar component carries the current book name instead). See issue #85.
+    // Intentionally empty: the OS title bar shows no app name (the floating title label above the ViewerPill carries the current book name instead). See issue #85.
     title: "";
     icon: @image-url("assets/app-icon.png");
     preferred-width: 900px;
     preferred-height: 1200px;
-    // Floor that keeps a two-page spread legible with the chrome: the title bar
-    // (left actions + centered title + chip) and the bottom scrubber both need
-    // horizontal room, and a double spread is two half-width pages — below
-    // ~480px each half collapses to an unreadable sliver. The height floor keeps
-    // a portrait-ish page tall enough to read once the title bar (~40px) and the
-    // scrubber's bottom inset are subtracted. Tune the FLOOR only; the
-    // preferred-* boot size above is unchanged.
+    // Floor that keeps a two-page spread legible with the chrome: the floating
+    // ViewerPill and the bottom scrubber both need horizontal room, and a double
+    // spread is two half-width pages — below ~480px each half collapses to an
+    // unreadable sliver. The height floor keeps a portrait-ish page tall enough
+    // to read once the scrubber's bottom inset is subtracted. Tune the FLOOR
+    // only; the preferred-* boot size above is unchanged.
     min-width: 480px;
     min-height: 600px;
 
@@ -40,7 +38,7 @@ export component ViewerWindow inherits Window {
     // `focus-library-search` lets Rust move focus into the field. The nav's
     // `settings` click is routed straight to the existing `open-settings` flow
     // below (no dedicated root callback), so the glass-pill Settings button opens
-    // the same SettingsDialog as the Viewer title bar.
+    // the same SettingsDialog as the Viewer's ViewerPill Settings button.
     in-out property <string> library-search-query;
     in property <int> library-book-count;
     callback library-search-changed(string);
@@ -51,7 +49,7 @@ export component ViewerWindow inherits Window {
     in property <bool> show-thumbnails: false;
 
     // ── Scrubber + auto-hide chrome (PR-S) ────────────────────────────────────
-    // Auto-hide state shared by the scrubber and the page-counter chip. Revealed
+    // Auto-hide state shared by the scrubber, ViewerPill, and floating title label. Revealed
     // on mouse-move / arrow / drag; cleared by the idle Timer.
     in-out property <bool> chrome-shown: false;
     // Scrubber data (1-based current page + total; direction + layout; preview thumbs).
@@ -89,10 +87,9 @@ export component ViewerWindow inherits Window {
     in property <bool> rtl;
     in property <bool> single;
     in property <string> status-text: "No folder opened";
-    // Centered title-bar name: the current folder/archive display name (set by
-    // main.rs on a successful open, cleared to "" when nothing is open). Declared
-    // on the root because Rust binds only to the root surface; forwarded to the
-    // TitleBar instance below (see docs/patterns.md "re-expose child properties").
+    // Book display name (set by main.rs on a successful open, cleared to "" when
+    // nothing is open). Declared on the root because Rust binds only to the root
+    // surface; consumed by the floating title label Rectangle in the viewer stage.
     in property <string> current-book-name;
     // Rust-computed content rectangle forwarded to PageView.
     in property <length> content-x: 0px;
@@ -304,7 +301,7 @@ export component ViewerWindow inherits Window {
             // ViewerPill: centered floating glass pill (auto-hides with chrome)
             viewer-pill := ViewerPill {
                 x: (parent.width - self.width) / 2;
-                y: Theme.space-xl;
+                y: Theme.space-sm + Theme.font-label + Theme.space-xxs * 2 + Theme.space-xs;
                 page-text <=> root.page-jump-text;
                 total-pages: root.scrubber-total-pages;
                 visible: root.chrome-shown;
@@ -312,7 +309,6 @@ export component ViewerWindow inherits Window {
                 animate opacity { duration: Theme.motion-fast; }
                 page-jump-request(t) => { root.page-jump-request(t); }
                 page-jump-cancel => { root.page-jump-cancel(); }
-                exit-jump-field => { fs.focus(); }
                 toggle-thumbnails => {
                     root.toggle-thumbnails();
                     fs.focus();

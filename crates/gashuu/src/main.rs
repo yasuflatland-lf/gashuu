@@ -376,7 +376,8 @@ fn main() -> color_eyre::Result<()> {
         });
     }
 
-    // Page-jump field: parse the raw input text, clamp, jump to page, refresh.
+    // On invalid or no-op input the field snaps back to the current page; this
+    // is the feedback mechanism instead of a visible error message.
     {
         let ui_weak = ui.as_weak();
         let state = Rc::clone(&state);
@@ -388,20 +389,19 @@ fn main() -> color_eyre::Result<()> {
                     let moved = state.borrow_mut().jump_to(page_0based);
                     if moved {
                         refresh(&ui, &state.borrow(), &viewport);
+                        // Belt-and-suspenders: if refresh gains an early-return path,
+                        // the field still shows the canonical post-jump page.
+                        ui.set_page_jump_text(format!("{}", current_page_1based(&state)).into());
                     }
                     moved
                 } else {
+                    tracing::debug!(input = %text, "page_jump: invalid input, restoring");
                     false
                 };
                 if !did_jump {
-                    let t2 = state.borrow().page_count();
-                    let cur = if t2 == 0 {
-                        0usize
-                    } else {
-                        state.borrow().index() + 1
-                    };
-                    ui.set_page_jump_text(format!("{}", cur).into());
+                    ui.set_page_jump_text(format!("{}", current_page_1based(&state)).into());
                 }
+                ui.invoke_focus_pages();
             })
         });
     }
@@ -412,13 +412,8 @@ fn main() -> color_eyre::Result<()> {
         let state = Rc::clone(&state);
         ui.on_page_jump_cancel(move || {
             with_ui(&ui_weak, |ui| {
-                let total = state.borrow().page_count();
-                let cur = if total == 0 {
-                    0usize
-                } else {
-                    state.borrow().index() + 1
-                };
-                ui.set_page_jump_text(format!("{}", cur).into());
+                ui.set_page_jump_text(format!("{}", current_page_1based(&state)).into());
+                ui.invoke_focus_pages();
             })
         });
     }
@@ -1026,6 +1021,16 @@ pub(crate) fn refresh(
     let counter = page_counter_text(state.index(), trailing, total);
     ui.set_page_counter_text(counter.into());
     ui.set_page_jump_text(format!("{}", current_1based).into());
+}
+
+/// Returns the current 1-based page number (0 when no pages loaded).
+fn current_page_1based(state: &std::cell::RefCell<ViewerState>) -> usize {
+    let total = state.borrow().page_count();
+    if total == 0 {
+        0
+    } else {
+        state.borrow().index() + 1
+    }
 }
 
 /// Push the viewport's render geometry (content_x/y/w/h, logical px as `f32`)

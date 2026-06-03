@@ -5,11 +5,11 @@
 /// Returns `None` when:
 /// - `input` is empty
 /// - `input` is not numeric
+/// - `input` is all-whitespace (trimmed to empty before parsing)
 /// - `total` is 0
 ///
 /// For numeric input the value is clamped to `[1, total]` (treating 0 as 1),
 /// then converted to a 0-based index by subtracting 1.
-#[allow(dead_code)]
 pub fn parse_page_jump(input: &str, total: usize) -> Option<usize> {
     if input.is_empty() {
         return None;
@@ -75,5 +75,15 @@ mod tests {
     #[test]
     fn single_page_book_clamps_correctly() {
         assert_eq!(parse_page_jump("99", 1), Some(0));
+    }
+
+    #[test]
+    fn negative_input_returns_none() {
+        assert_eq!(parse_page_jump("-1", 10), None);
+    }
+
+    #[test]
+    fn whitespace_only_returns_none() {
+        assert_eq!(parse_page_jump("   ", 10), None);
     }
 }

@@ -1,4 +1,4 @@
-// ViewerPill — the bottom, centered "glass pill" for the page viewer: a sunken
+// ViewerPill — the top, centered "glass pill" for the page viewer: a sunken
 // "[ page ] / total" jump field (left), a thin divider, then two icon-only
 // NavItems (toggle thumbnails / settings) on the right.
 //
@@ -36,7 +36,6 @@ component PageJumpField inherits Rectangle {
     out property <bool> field-focused: input.has-focus;
     callback page-jump-request(string);    // fires on Enter; caller validates
     callback page-jump-cancel();            // fires on Escape; caller restores page-text
-    callback exit-field();                  // fires after Enter/Escape so caller returns focus to the page view
 
     // ── Shape: a sunken rounded rectangle that lights its edge to accent on focus ──
     width: 145px;
@@ -74,18 +73,15 @@ component PageJumpField inherits Rectangle {
             accessible-role: text-input;
             accessible-label: "Go to page";
 
-            // Enter commits the typed page number; the caller validates it and
-            // then we return focus to the page view.
+            // Enter commits the typed page number; Rust validates and returns focus to the page view.
             accepted => {
                 root.page-jump-request(self.text);
-                root.exit-field();
             }
 
             key-pressed(event) => {
-                // Escape abandons the edit (caller restores page-text) and exits.
+                // Escape abandons the edit; Rust restores page-text and returns focus.
                 if (event.text == Key.Escape) {
                     root.page-jump-cancel();
-                    root.exit-field();
                     return accept;
                 }
                 return reject;
@@ -123,7 +119,6 @@ export component ViewerPill inherits Rectangle {
     in property <int> total-pages;          // forwarded to PageJumpField
     callback page-jump-request(string);     // forwarded from PageJumpField (caller validates)
     callback page-jump-cancel();            // forwarded from PageJumpField (caller restores page-text)
-    callback exit-jump-field();             // forwarded from PageJumpField (caller should re-focus the page view)
     callback toggle-thumbnails();           // thumbnails NavItem clicked
     callback open-settings();               // settings NavItem clicked
     // Exposed so ViewerWindow can suppress its idle-hide timer while editing.
@@ -174,7 +169,6 @@ export component ViewerPill inherits Rectangle {
             total-pages: root.total-pages;
             page-jump-request(t) => { root.page-jump-request(t); }
             page-jump-cancel => { root.page-jump-cancel(); }
-            exit-field => { root.exit-jump-field(); }
         }
 
         // Thin vertical divider separating the jump field from the capsules.

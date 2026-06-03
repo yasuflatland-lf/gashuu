@@ -344,8 +344,9 @@ PR-58, `enum_adapters.rs`. The 8 `pub(crate)` enum↔index adapters that were pr
 **`ui/components/`** (#71, NEW): shared single-purpose UI atoms/molecules, one `export`ed component
 per file — `ProgressBar` (accent/`success` reading-progress fill), `Chip` (pill label, e.g. the
 page counter), `PrimaryButton` (the accent CTA), `ThumbnailCell` (the loaded/loading/failed/highlighted
-cell shared by the page strip, the scrubber preview popover, and the library covers), `TitleBar`
-(the viewer chrome strip: action affordances + centered book name + optional count chip), `NavBar`
+cell shared by the page strip, the scrubber preview popover, and the library covers), `ViewerPill`
+(#this-PR, NEW: the viewer glass-pill — floating page-jump field + thumbnail toggle + settings;
+replaces the docked TitleBar), `NavBar`
 (#83, NEW: the top-centered glass-pill Library nav — translucent fill + hairline border + top inner
 highlight + drop shadow; Slint has no backdrop-blur so the glass effect is paint-only), and `NavItem`
 (#83, NEW: one circular icon capsule inside `NavBar`; hover/press glow via `Theme.accent-glow`;
@@ -355,7 +356,8 @@ screen-reader support). Each references `Theme.*` via `../Theme.slint`; consumer
 `ui/ViewerWindow.slint` and import statements cascade. See [docs/conventions.md](conventions.md)
 for the component RULES.
 
-**`ui/assets/`** (#83, NEW): the repo's first image assets — `file.svg` and `folder.svg`, each a
+**`ui/assets/`** (#83, NEW): the repo's image assets — `file.svg`, `folder.svg` (#83), and `slider.svg`
+(this PR, NEW: the thumbnail-toggle icon in ViewerPill), each a
 single-path SVG recolored at runtime via Slint's `Image.colorize` property. Components reference
 them with `@image-url(...)` paths relative to the consuming `.slint` file. `build.rs` is unchanged
 (assets are reached transitively through the entry-file import cascade).
