@@ -690,8 +690,10 @@ fn main() -> color_eyre::Result<()> {
         ui.on_set_reading_direction(move |i| {
             with_ui(&ui_weak, |ui| {
                 let dir = index_to_reading_direction(i);
-                // Runtime state is the single source of truth; `reconcile_settings`
-                // mirrors it into `Settings` at the next save.
+                // Mutates the runtime view mode only; while a book is open this change
+                // is persisted to the current book's per-book override via
+                // `write_back_view_override` at the next viewer leave point, not into
+                // the global `Settings`.
                 if state.borrow_mut().set_reading_direction(dir) {
                     refresh(&ui, &state.borrow(), &viewport);
                 }
@@ -705,8 +707,10 @@ fn main() -> color_eyre::Result<()> {
         ui.on_set_spread_mode(move |i| {
             with_ui(&ui_weak, |ui| {
                 let mode = index_to_spread_mode(i);
-                // Runtime state is the single source of truth; `reconcile_settings`
-                // mirrors it into `Settings` at the next save.
+                // Mutates the runtime view mode only; while a book is open this change
+                // is persisted to the current book's per-book override via
+                // `write_back_view_override` at the next viewer leave point, not into
+                // the global `Settings`.
                 if state.borrow_mut().set_spread_mode(mode) {
                     refresh(&ui, &state.borrow(), &viewport);
                 }
@@ -720,8 +724,10 @@ fn main() -> color_eyre::Result<()> {
         ui.on_set_cover_mode(move |i| {
             with_ui(&ui_weak, |ui| {
                 let mode = index_to_cover_mode(i);
-                // Runtime state is the single source of truth; `reconcile_settings`
-                // mirrors it into `Settings` at the next save.
+                // Mutates the runtime view mode only; while a book is open this change
+                // is persisted to the current book's per-book override via
+                // `write_back_view_override` at the next viewer leave point, not into
+                // the global `Settings`.
                 if state.borrow_mut().set_cover_mode(mode) {
                     refresh(&ui, &state.borrow(), &viewport);
                 }
@@ -738,8 +744,10 @@ fn main() -> color_eyre::Result<()> {
                 // Equality guard (the viewport setter is not idempotent-by-return).
                 // Compare in one borrow, mutate in a separate `borrow_mut()` that
                 // drops at the `;`, then `refresh` (which borrows viewport internally).
-                // The viewport owns `fit_mode` at runtime; `reconcile_settings`
-                // mirrors it into `Settings` at the next save.
+                // The viewport owns `fit_mode` at runtime; while a book is open this
+                // change is persisted to the current book's per-book override via
+                // `write_back_view_override` at the next viewer leave point, not into
+                // the global `Settings`.
                 if viewport.borrow().fit_mode() != mode {
                     viewport.borrow_mut().set_fit(mode);
                     refresh(&ui, &state.borrow(), &viewport);
