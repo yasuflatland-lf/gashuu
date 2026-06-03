@@ -313,8 +313,6 @@ export component ViewerWindow inherits Window {
                 y: Theme.space-sm;
                 background: transparent;
                 visible: root.chrome-shown && root.current-book-name != "";
-                opacity: root.chrome-shown ? 1.0 : 0.0;
-                animate opacity { duration: Theme.motion-fast; }
                 // Hover sensor: keeps the chrome from auto-hiding while the pointer
                 // rests on the title (see idle-timer). Declared before the text so
                 // it sits behind it; the text is non-interactive anyway.
@@ -368,8 +366,6 @@ export component ViewerWindow inherits Window {
                 page-text <=> root.page-jump-text;
                 total-pages: root.scrubber-total-pages;
                 visible: root.chrome-shown;
-                opacity: root.chrome-shown ? 1.0 : 0.0;
-                animate opacity { duration: Theme.motion-fast; }
                 page-jump-request(t) => { root.page-jump-request(t); }
                 page-jump-cancel => { root.page-jump-cancel(); }
                 toggle-thumbnails => {
