@@ -158,6 +158,55 @@ pub(crate) fn msg_added_books_save_failed(lang: Language, n: usize, e: &dyn Disp
     }
 }
 
+/// Multi-line keyboard-shortcuts reference rendered read-only in the
+/// ShortcutsOverlay (opened from the settings footer). Keep BOTH arms in sync
+/// with `keymap::map_key`, and the Japanese vocabulary in lockstep with the
+/// settings-dialog terms in `translations/ja/LC_MESSAGES/gashuu.po`.
+pub(crate) fn msg_key_bindings_help(lang: Language) -> &'static str {
+    match lang {
+        Language::En => {
+            "\
+Navigation:
+  Space = next page    Backspace = previous page
+  Arrows follow the reading direction (LTR: \u{2192} next; RTL: \u{2190} next)
+
+Modes:
+  D = spread (single \u{2192} double \u{2192} auto)
+  R = reading direction (LTR / RTL)
+  C = cover layout (standalone / paired)
+
+Zoom & fit:
+  + / - = zoom in / out    0 = reset view    1 = actual size    f = cycle fit
+
+View:
+  T = toggle thumbnail strip
+
+Library:
+  Up = return to the library"
+        }
+        Language::Ja => {
+            "\
+ナビゲーション:
+  Space = 次のページ    Backspace = 前のページ
+  矢印キーは読む方向に従います (左から右: \u{2192} が次 / 右から左: \u{2190} が次)
+
+モード:
+  D = ページ表示 (単ページ \u{2192} 見開き \u{2192} 自動)
+  R = 読む方向 (左から右 / 右から左)
+  C = 表紙レイアウト (単独 / ペア)
+
+ズームとフィット:
+  + / - = ズームイン / アウト    0 = 表示リセット    1 = 原寸    f = フィット切替
+
+表示:
+  T = サムネイル一覧の表示切替
+
+ライブラリ:
+  Up = ライブラリに戻る"
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -244,6 +293,16 @@ mod tests {
             msg_could_not_save_settings(Language::En, &"x"),
             "Could not save settings: x"
         );
+    }
+
+    #[test]
+    fn key_bindings_help_is_translated_with_matching_shape() {
+        let en = msg_key_bindings_help(Language::En);
+        let ja = msg_key_bindings_help(Language::Ja);
+        assert_ne!(en, ja);
+        // Both arms must document the same bindings: equal line counts, so a
+        // shortcut added to one arm cannot silently go missing from the other.
+        assert_eq!(en.lines().count(), ja.lines().count());
     }
 
     #[test]

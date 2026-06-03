@@ -3,6 +3,7 @@ import { PageView } from "PageView.slint";
 import { ThumbnailStrip, ThumbnailItem } from "ThumbnailStrip.slint";
 import { SettingsDialog } from "SettingsDialog.slint";
 import { FirstRunGuide } from "FirstRunGuide.slint";
+import { ShortcutsOverlay } from "ShortcutsOverlay.slint";
 import { Carousel, CarouselItem } from "Carousel.slint";
 import { Theme } from "Theme.slint";
 import { Scrubber } from "Scrubber.slint";
@@ -105,9 +106,15 @@ export component ViewerWindow inherits Window {
     in property <length> content-w: 0px;
     in property <length> content-h: 0px;
 
-    // Settings dialog visibility and state.
+    // Settings dialog / overlay visibility and state.
     in property <bool> show-settings: false;
     in property <bool> show-guide: false;
+    in property <bool> show-shortcuts: false;
+    // Private epoch: Rust bumps this (via focus-settings()) after closing the
+    // shortcuts overlay so SettingsDialog can re-focus its FocusScope. The
+    // if-gated dialog cannot be referenced by id from here, so the epoch is
+    // observed via a `changed` handler inside the dialog.
+    property <int> settings-focus-epoch: 0;
     in-out property <int> reading-direction-index;
     in-out property <int> spread-mode-index;
     in-out property <int> cover-mode-index;
@@ -129,6 +136,11 @@ export component ViewerWindow inherits Window {
     callback toggle-thumbnails();
 
     public function focus-pages() { fs.focus(); }
+    // Rust calls this after closing the shortcuts overlay to return focus to
+    // SettingsDialog. The if-gated dialog cannot be referenced by id, so this
+    // bumps an epoch that the dialog's `changed` handler observes to re-focus
+    // its inner FocusScope.
+    public function focus-settings() { root.settings-focus-epoch += 1; }
 
     // Re-arm the idle-fade countdown: show the chrome, then stop+restart the timer
     // so a full interval elapses from THIS reveal (not from whenever it last
@@ -178,6 +190,8 @@ export component ViewerWindow inherits Window {
     // Settings dialog callbacks.
     callback open-settings();
     callback close-settings();
+    callback open-shortcuts();
+    callback close-shortcuts();
     // Viewer settings: reset the current book to the global defaults.
     callback reset-overrides();
     callback dismiss-guide();
@@ -205,7 +219,7 @@ export component ViewerWindow inherits Window {
         library-book-count: root.library-book-count;
         // Suppress the carousel's keyboard seams while a modal overlays the
         // Library — same condition the Viewer FocusScope uses (see `fs` below).
-        modal-open: root.show-settings || root.show-guide;
+        modal-open: root.show-settings || root.show-guide || root.show-shortcuts;
         search-changed(q) => { root.library-search-changed(q); }
         // The nav's Settings button opens the EXISTING SettingsDialog: route the
         // click straight to the shared `open-settings` flow (same handler the
@@ -249,7 +263,7 @@ export component ViewerWindow inherits Window {
             fs := FocusScope {
                 key-pressed(event) => {
                     // Suppress background navigation while a modal overlay is open.
-                    if (root.show-settings || root.show-guide) { return reject; }
+                    if (root.show-settings || root.show-guide || root.show-shortcuts) { return reject; }
                     if (event.text == Key.LeftArrow) {
                         root.nav("left");
                         return accept;
@@ -438,8 +452,13 @@ export component ViewerWindow inherits Window {
     }
 
     // Modal overlays rendered as siblings of the VerticalBox so they stack on
-    // top of all page content. Window stacks children front-to-back in
-    // declaration order; explicit width/height fill the window surface.
+    // top of all page content. Slint children paint back-to-front in
+    // declaration order: first-declared = behind, last-declared = topmost.
+    // Explicit width/height fill the window surface.
+    // show-settings and show-shortcuts are BOTH true while the shortcuts
+    // overlay is open (modal-over-modal), so declaration order is load-bearing:
+    // ShortcutsOverlay MUST remain the last child so it paints above
+    // SettingsDialog.
     if root.show-settings : SettingsDialog {
         width: root.width;
         height: root.height;
@@ -451,8 +470,9 @@ export component ViewerWindow inherits Window {
         preload-pages <=> root.preload-pages;
         track-recent <=> root.track-recent;
         language-index <=> root.language-index;
-        key-bindings-text: root.key-bindings-text;
+        focus-epoch: root.settings-focus-epoch;
         show-reset-button: root.settings-per-book;
+        open-shortcuts() => { root.open-shortcuts(); }
         set-reading-direction(i) => { root.set-reading-direction(i); }
         set-spread-mode(i) => { root.set-spread-mode(i); }
         set-cover-mode(i) => { root.set-cover-mode(i); }
@@ -468,6 +488,13 @@ export component ViewerWindow inherits Window {
         width: root.width;
         height: root.height;
         dismiss-guide() => { root.dismiss-guide(); }
+    }
+    // ShortcutsOverlay: must stay LAST (topmost) — see stacking-order note above.
+    if root.show-shortcuts : ShortcutsOverlay {
+        width: root.width;
+        height: root.height;
+        key-bindings-text: root.key-bindings-text;
+        close-shortcuts() => { root.close-shortcuts(); }
     }
 
     // Grab keyboard focus on startup so arrow keys work without a click.

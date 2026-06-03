@@ -393,7 +393,7 @@ PR-58, `enum_adapters.rs`. The 10 `pub(crate)` enum↔index adapters (the first 
 
 ### messages
 
-i18n PR, `messages.rs`. PURE (Slint-free) Rust-side user-facing string catalog: one `msg_*` function per message (status line, open/save notices, decode errors), each an exhaustive `match` on `gashuu_core::Language` — adding a language variant is a compile error in every message until its translation is supplied. Covers ONLY strings composed in Rust; `.slint` strings go through `@tr()` + the bundled gettext catalog (`crates/gashuu/translations/<lang>/LC_MESSAGES/gashuu.po`, wired by `build.rs` — see docs/patterns.md for the msgctxt gotcha). The Japanese spread/direction vocabulary is pinned to the `.po`'s by `japanese_labels_match_the_po_vocabulary`.
+i18n PR, `messages.rs`. PURE (Slint-free) Rust-side user-facing string catalog: one `msg_*` function per message (status line, open/save notices, decode errors, the ShortcutsOverlay key-bindings reference), each an exhaustive `match` on `gashuu_core::Language` — adding a language variant is a compile error in every message until its translation is supplied. Covers ONLY strings composed in Rust; `.slint` strings go through `@tr()` + the bundled gettext catalog (`crates/gashuu/translations/<lang>/LC_MESSAGES/gashuu.po`, wired by `build.rs` — see docs/patterns.md for the msgctxt gotcha). The Japanese spread/direction vocabulary is pinned to the `.po`'s by `japanese_labels_match_the_po_vocabulary`.
 
 ### page_jump
 
@@ -498,7 +498,9 @@ persistence — drained via `Library::set_page_count` + `save` at the next `star
 
 **`SettingsDialog.slint`** (PR8b, NEW): modal overlay editing active settings via std-widgets
 `ComboBox`/`SpinBox`/`CheckBox`; two-way `current-index <=> in-out-prop` +
-`selected`/`edited`/`toggled` callbacks. std-widgets now render dark via the build style set in `build.rs` (`with_style("fluent-dark")`, #70).
+`selected`/`edited`/`toggled` callbacks. std-widgets now render dark via the build style set in `build.rs` (`with_style("fluent-dark")`, #70). Since issue 103/104 it is a fixed-height golden-ratio glass panel built from custom `components/` atoms; its footer "Shortcuts" link opens `ShortcutsOverlay`, and an `in property <int> focus-epoch` (bumped by `ViewerWindow.focus-settings()`) lets the parent re-focus this still-mounted dialog after the overlay closes.
+
+**`ShortcutsOverlay.slint`** (issue 104, PR-C, NEW): a second glass modal listing the keyboard shortcuts read-only, stacked OVER the still-mounted `SettingsDialog` (both `show-settings` and `show-shortcuts` true). Reuses the settings glass recipe (`settings-w`/`settings-radius` + all glass tokens; only `shortcuts-h` is new). Its ancestor `FocusScope` traps every key so focus can't leak to the dialog underneath; closing returns focus to the dialog via the epoch seam.
 
 **`FirstRunGuide.slint`** (PR8b, NEW): dismissable once-only overlay; a local `GuideLine`
 component dedupes the key-reference rows.

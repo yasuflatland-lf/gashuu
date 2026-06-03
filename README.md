@@ -121,8 +121,8 @@ cover layout, fit mode, cache size, preload radius, and the recent-files toggle.
 follows the screen: from the **Library** it edits your GLOBAL defaults; from the
 **Viewer** it edits the CURRENT book's view settings (with a "Reset to global"
 button). Display-mode changes apply immediately; cache size and preload radius take effect
-on the next book you open. The dialog also lists the keyboard shortcuts (remapping is not
-yet supported).
+on the next book you open. The dialog's footer has a **Shortcuts** link that opens a
+separate overlay listing the keyboard shortcuts (remapping is not yet supported).
 
 ## Settings
 

@@ -568,7 +568,7 @@ fn main() -> color_eyre::Result<()> {
                 ui.set_preload_pages(s.preload_pages as i32);
                 ui.set_track_recent(s.track_recent_files);
                 ui.set_language_index(language_to_index(s.language));
-                ui.set_key_bindings_text(KEY_BINDINGS_HELP.into());
+                ui.set_key_bindings_text(messages::msg_key_bindings_help(s.language).into());
                 ui.set_settings_per_book(per_book);
                 ui.set_show_settings(true);
             })
@@ -620,6 +620,44 @@ fn main() -> color_eyre::Result<()> {
                         ui.set_status_text(messages::msg_could_not_save_settings(lang, &e).into());
                     }
                     ui.invoke_focus_pages();
+                }
+            })
+        });
+    }
+
+    // Show the shortcuts overlay: the overlay opens on top of the still-open settings
+    // dialog. Load-bearing assumption: this handler is only reachable via the settings
+    // footer link, so on_open_settings has always run first and populated
+    // key_bindings_text. A future entry point that bypasses settings MUST set
+    // key_bindings_text itself before opening the overlay.
+    // Focus management is intentionally omitted: ShortcutsOverlay's `init` grabs
+    // focus itself on appear, so no explicit focus call is needed here.
+    {
+        let ui_weak = ui.as_weak();
+        ui.on_open_shortcuts(move || {
+            with_ui(&ui_weak, |ui| {
+                ui.set_show_shortcuts(true);
+            })
+        });
+    }
+
+    // Close the shortcuts overlay: hide it and return focus to the still-mounted
+    // SettingsDialog.  Focus must not go to the screen behind — the dialog remains
+    // open.  invoke_focus_settings drives a focus epoch on the dialog because
+    // if-gated child elements cannot be targeted directly.
+    // Closing the overlay must NOT close settings: do not touch show_settings and
+    // do not run reconcile/save here.
+    {
+        let ui_weak = ui.as_weak();
+        ui.on_close_shortcuts(move || {
+            with_ui(&ui_weak, |ui| {
+                ui.set_show_shortcuts(false);
+                // Today the overlay is only reachable while the settings dialog is
+                // mounted, so this branch is always taken.  The guard keeps focus
+                // restoration from silently no-oping if a future entry point opens
+                // the overlay without settings.
+                if ui.get_show_settings() {
+                    ui.invoke_focus_settings();
                 }
             })
         });
@@ -816,9 +854,12 @@ fn main() -> color_eyre::Result<()> {
                 }
                 settings.borrow_mut().language = lang;
                 // Flip the .slint side first (all @tr() bindings re-evaluate
-                // immediately), then re-push the Rust-composed status strings
-                // so the whole window switches without a restart.
+                // immediately), then re-push the Rust-composed strings — the
+                // status line via refresh and the shortcuts reference (seeded
+                // at settings-open in the OLD language) — so the whole window
+                // switches without a restart.
                 select_ui_language(lang);
+                ui.set_key_bindings_text(messages::msg_key_bindings_help(lang).into());
                 refresh(&ui, &state.borrow(), &viewport);
             })
         });
@@ -1194,29 +1235,6 @@ fn select_ui_language(lang: Language) {
         tracing::warn!(error = ?e, locale, "failed to select bundled translation");
     }
 }
-
-/// Concise key-bindings reference shown read-only in the settings dialog. Keep in
-/// sync with `keymap::map_key`.
-/// TODO i18n: translate via `messages` once the ShortcutsOverlay (PR-C) renders
-/// it on screen — today the bound property is parked and never displayed.
-const KEY_BINDINGS_HELP: &str = "\
-Navigation:
-  Space = next page    Backspace = previous page
-  Arrows follow the reading direction (LTR: \u{2192} next; RTL: \u{2190} next)
-
-Modes:
-  D = spread (single \u{2192} double \u{2192} auto)
-  R = reading direction (LTR / RTL)
-  C = cover layout (standalone / paired)
-
-Zoom & fit:
-  + / - = zoom in / out    0 = reset view    1 = actual size    f = cycle fit
-
-View:
-  T = toggle thumbnail strip
-
-Library:
-  Up = return to the library";
 
 /// Copy the runtime-owned display settings into the persisted `Settings` just
 /// before saving. This is the SINGLE place `reading_direction`, `spread_mode`,

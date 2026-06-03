@@ -1,0 +1,271 @@
+// Keyboard-shortcuts overlay for gashuu — a small "liquid glass" modal layered
+// ABOVE the still-mounted SettingsDialog (issue 104, PR-C; design:
+// docs/superpowers/specs/2026-06-03-settings-form-liquid-glass-design.md §5).
+//
+// Reached from the settings footer "⌨ Shortcuts" affordance. It clones the
+// SettingsDialog glass VISUAL idiom exactly — the same scrim, the same ONE
+// fake-glass object (NavBar's four-layer structure with layer 1 promoted from
+// a solid fill to a top-sheen FILL gradient + a 1px rim + a 1px top inner
+// highlight + ONE drop shadow), the same Flickable body + self-drawn scroll
+// indicator. The only deltas: a SHORTER panel (shortcuts-h < the
+// settings-h φ rectangle) so it reads as a smaller modal stacked on top, and a
+// read-only body (the key-bindings reference text) instead of interactive controls.
+// The sheen is a FILL gradient, not an opacity layer (opacity blurs text/SVG on
+// HiDPI — patterns.md); show/hide of the scroll indicator is `visible:` only,
+// never `opacity`.
+//
+// Layering: this overlay's root is itself a full-area Theme.scrim. It stacks
+// over the SettingsDialog (which also draws a scrim), so the dialog dims a
+// second time behind this panel — intended layering, the two scrims compound to
+// signal "modal over modal".
+//
+// MODAL-OVER-MODAL TRAP: the SettingsDialog stays MOUNTED and keyboard-operable
+// underneath. If a Tab/arrow key leaked past this overlay it would silently
+// drive a settings control hidden behind the dim. So the ancestor FocusScope
+// here CONSUMES (returns accept on) EVERY key: Esc closes; Up/Down/PageUp/
+// PageDown scroll our own Flickable; all other keys are swallowed so focus can
+// never escape to the dialog beneath. Note: the catch-all `accept` also
+// consumes ordinary app-level keys by design while the overlay is open
+// (platform/menu-level shortcuts like Cmd+Q are dispatched by the OS menu
+// before reaching this scope on macOS, so those remain unaffected).
+// The FocusScope WRAPS the panel content so it is a genuine ANCESTOR — Slint
+// walks a rejected key strictly UP the focused item's parent chain
+// (i-slint-core 1.16 window.rs); a SIBLING scope is never visited, so Esc
+// would be silently dead (gate-invisible — the cargo gates do NOT exercise
+// .slint key handling; verify by hand). Because the component is if-gated by
+// the parent, its subtree is rebuilt each open, so `init` re-fires and
+// re-grabs focus on every open.
+import { Theme } from "Theme.slint";
+import { PrimaryButton } from "components/PrimaryButton.slint";
+
+export component ShortcutsOverlay inherits Rectangle {
+    // ── Public interface (pinned — sibling agents code against this) ───────────
+    // The keyboard-shortcuts reference text (= messages::msg_key_bindings_help
+    // from Rust, rendered in the active UI language; re-pushed on a language
+    // switch). Rendered read-only inside the Flickable body.
+    in property <string> key-bindings-text;
+    // Fired on Esc, backdrop-click, or the Close button. The parent returns
+    // focus to the SettingsDialog (design §5) and hides this overlay.
+    callback close-shortcuts();
+
+    // ── Full-area semi-transparent backdrop ───────────────────────────────────
+    // Stacks above the SettingsDialog's own scrim (intended double dim).
+    background: Theme.scrim;
+
+    // ── Backdrop dismiss ───────────────────────────────────────────────────────
+    // A click anywhere on the scrim (outside the panel) closes the overlay.
+    // Clicks inside the panel are absorbed by the panel's own lowest-layer
+    // TouchArea below, so they never reach this one.
+    TouchArea {
+        clicked => {
+            root.close-shortcuts();
+        }
+    }
+
+    // ── Glass panel ─────────────────────────────────────────────────────────────
+    panel := Rectangle {
+        width: Theme.settings-w;
+        // Marcotte clamp: the fixed shortcuts height, but never taller than the
+        // window minus a gutter on each side — then the body scrolls instead.
+        // max(0px, …) floors negative geometry while the window is dragged
+        // shorter than 2 * space-huge mid-resize.
+        height: min(Theme.shortcuts-h, max(0px, parent.height - 2 * Theme.space-huge));
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+
+        // Glass layers 1, 2, 4: a top-sheen FILL gradient (not opacity), a 1px
+        // soft rim, and ONE drop shadow. No nested glass / no second shadow.
+        background: @linear-gradient(180deg, Theme.glass-sheen-top 0%, Theme.glass-fill 46%);
+        border-radius: Theme.settings-radius;
+        border-width: 1px;
+        border-color: Theme.glass-border;
+        drop-shadow-color: Theme.shadow-popover;
+        drop-shadow-blur: 22px;
+        drop-shadow-offset-y: 8px;
+
+        // Layer 3: 1px top inner highlight, inset horizontally by ~half the
+        // radius so it stays inside the rounded corners (NavBar idiom).
+        Rectangle {
+            x: Theme.space-md;
+            y: 1px;
+            width: parent.width - 2 * Theme.space-md;
+            height: 1px;
+            background: Theme.glass-highlight;
+        }
+
+        // Panel click absorber: lowest interactive layer. Any click that lands on
+        // the panel (not on a control) stops here instead of bubbling to the
+        // backdrop TouchArea — so clicking the panel never dismisses the overlay.
+        TouchArea { }
+
+        // ── FocusScope: Esc-to-close + key trap + initial focus on appear ──────
+        // WRAPS the panel content so it is a genuine ANCESTOR (not a sibling):
+        // Slint walks a rejected key UP the focused item's parent chain, which
+        // passes through this scope. On appear it grabs focus on itself (rather
+        // than on a child control) so the scroll-key handlers — Up/Down/PageUp/
+        // PageDown — are immediately active without the user needing to Tab first;
+        // the Close button is interactive but is intentionally not pre-selected on
+        // open. It CONSUMES every key (returns accept) so nothing can leak to the
+        // SettingsDialog mounted behind this overlay (the modal-over-modal trap).
+        // Declared after the absorber — FocusScope does not intercept pointer events,
+        // so empty-panel clicks fall through to the absorber regardless of declaration
+        // order.
+        fs := FocusScope {
+            x: 0;
+            y: 0;
+            width: parent.width;
+            height: parent.height;
+            init => {
+                fs.focus();
+            }
+            key-pressed(event) => {
+                // Esc dismisses (mirrors the SettingsDialog Esc path).
+                if (event.text == Key.Escape) {
+                    root.close-shortcuts();
+                    return accept;
+                }
+                // Optional scroll keys, handled BEFORE the catch-all so the
+                // read-only body can be paged from the keyboard.
+                if (event.text == Key.UpArrow) {
+                    body.viewport-y = min(0px, body.viewport-y + Theme.space-xl);
+                    return accept;
+                }
+                if (event.text == Key.DownArrow) {
+                    body.viewport-y = max(min(0px, body.height - body.viewport-height), body.viewport-y - Theme.space-xl);
+                    return accept;
+                }
+                if (event.text == Key.PageUp) {
+                    body.viewport-y = min(0px, body.viewport-y + body.height);
+                    return accept;
+                }
+                if (event.text == Key.PageDown) {
+                    body.viewport-y = max(min(0px, body.height - body.viewport-height), body.viewport-y - body.height);
+                    return accept;
+                }
+                // Catch-all: CONSUME every other key (incl. Tab) so focus can
+                // never escape to the SettingsDialog controls underneath.
+                return accept;
+            }
+
+            // ── Panel content: sticky header, scrollable body, sticky footer ───
+            body-col := VerticalLayout {
+                x: 0;
+                y: 0;
+                width: parent.width;
+                height: parent.height;
+                padding-top: Theme.space-lg;
+                padding-bottom: Theme.space-lg;
+
+                // ── Sticky header ─────────────────────────────────────────────
+                HorizontalLayout {
+                    padding-left: Theme.space-xl;
+                    padding-right: Theme.space-xl;
+                    padding-bottom: Theme.space-md;
+                    Text {
+                        text: @tr("Keyboard shortcuts");
+                        font-size: Theme.font-title;
+                        font-weight: Theme.weight-semibold;
+                        color: Theme.text-high;
+                        horizontal-alignment: left;
+                        accessible-role: text;
+                        accessible-label: @tr("Keyboard shortcuts");
+                    }
+                }
+
+                // ── Scrollable body ───────────────────────────────────────────
+                // A Flickable (not std ScrollView — its native scrollbar paints a
+                // light palette that breaks the glass). The viewport height is the
+                // read-only text's intrinsic height, so it scrolls ONLY when the
+                // content overflows the visible body (short-window case).
+                body := Flickable {
+                    vertical-stretch: 1;
+                    viewport-width: self.width;
+                    viewport-height: shortcuts-text.preferred-height;
+
+                    content := VerticalLayout {
+                        padding-left: Theme.space-xl;
+                        padding-right: Theme.space-xl;
+                        alignment: start;
+
+                        shortcuts-text := Text {
+                            text: root.key-bindings-text;
+                            font-size: Theme.font-label;
+                            color: Theme.text-dim;
+                            horizontal-alignment: left;
+                            wrap: word-wrap;
+                            accessible-role: text;
+                            accessible-label: root.key-bindings-text;
+                        }
+                    }
+                }
+
+                // ── Sticky footer ─────────────────────────────────────────────
+                Rectangle {
+                    vertical-stretch: 0;
+                    height: footer-row.preferred-height + Theme.space-md;
+
+                    // 1px hairline top edge honestly marks the scroll boundary.
+                    Rectangle {
+                        x: 0;
+                        y: 0;
+                        width: parent.width;
+                        height: 1px;
+                        background: Theme.hairline;
+                    }
+
+                    footer-row := HorizontalLayout {
+                        x: 0;
+                        y: Theme.space-md;
+                        width: parent.width;
+                        padding-left: Theme.space-xl;
+                        padding-right: Theme.space-xl;
+                        alignment: end;
+
+                        // Close — the reused PrimaryButton, always visible in the
+                        // sticky footer even while the body scrolls. It carries its
+                        // own button a11y semantics (PrimaryButton precedent).
+                        PrimaryButton {
+                            text: @tr("Close");
+                            clicked => {
+                                root.close-shortcuts();
+                            }
+                        }
+                    }
+                }
+            }
+
+            // ── Self-drawn scroll indicator ───────────────────────────────────
+            // Only when the body content overflows its visible height. A thin rail
+            // (track-prog) with an accent thumb whose size/offset derive from the
+            // Flickable viewport geometry. Show/hide via `visible:` ONLY (no
+            // opacity — HiDPI blur rule). Declared as a sibling of the content
+            // layout inside `fs`, so its y is computed in THIS scope's space:
+            // body-col.y (the content layout's own offset within fs) + body.y
+            // (the body Flickable's y within that layout) — derived this way
+            // rather than from a bare `body.y` so the rail stays aligned even if
+            // the content layout is ever given a non-zero offset within `fs`.
+            Rectangle {
+                visible: body.viewport-height > body.height;
+                x: parent.width - Theme.settings-scroll-indicator-w - Theme.space-xxs;
+                y: body-col.y + body.y;
+                width: Theme.settings-scroll-indicator-w;
+                height: body.height;
+                background: Theme.track-prog;
+                border-radius: Theme.settings-scroll-indicator-w / 2;
+                // Clip the thumb so elastic overscroll (viewport-y briefly positive)
+                // cannot render the thumb above the rail bounds.
+                clip: true;
+
+                // Thumb: proportional size and offset from the scroll position.
+                Rectangle {
+                    x: 0;
+                    width: parent.width;
+                    height: parent.height * (body.height / max(body.viewport-height, 1px));
+                    y: -body.viewport-y * (parent.height / max(body.viewport-height, 1px));
+                    background: Theme.accent;
+                    border-radius: Theme.settings-scroll-indicator-w / 2;
+                }
+            }
+        }
+    }
+}

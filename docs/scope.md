@@ -64,7 +64,7 @@ RAR requires a C++ compiler on every OS (see [docs/toolchain.md](toolchain.md)).
 ### Settings dialog and first-run guide (PR8b)
 
 - A modal dialog (opened from the "Settings…" toolbar button) edits the already-active settings — reading direction / spread / cover / fit (applied immediately) and cache size / preload radius / track-recent (cache/preload apply to newly opened books via `set_cache_config`).
-- The keyboard shortcuts are shown read-only (not yet remappable).
+- The keyboard shortcuts are shown read-only (not yet remappable). Since issue 104 they live in a separate `ShortcutsOverlay` modal opened from the dialog's footer "Shortcuts" link, not inline in the dialog.
 - A first-run guide shows once, gated by `Settings::seen_guide`.
 - No new deps.
 
@@ -127,7 +127,7 @@ RAR requires a C++ compiler on every OS (see [docs/toolchain.md](toolchain.md)).
 ### UI language switch — English / 日本語 (i18n)
 
 - The UI is bilingual with **immediate, no-restart switching** from a new "General → Language" pull-down in the settings dialog (the Apple-HIG-style `Dropdown` atom — the repo's first `PopupWindow`). The preference persists as `Settings.language` (`"en"`/`"ja"` serde tags doubling as the Slint locale names; `#[serde(default)]`; global-only — never per-book).
-- `.slint` strings are `@tr()`-wrapped and translated via a bundled gettext catalog (`crates/gashuu/translations/ja/LC_MESSAGES/gashuu.po`, compiled in by `build.rs` — see docs/patterns.md for the msgctxt gotcha). Rust-composed strings (status line, open/save notices, decode errors) go through `src/messages.rs` (exhaustive per-language `match`). `KEY_BINDINGS_HELP` stays English until the ShortcutsOverlay renders it on screen.
+- `.slint` strings are `@tr()`-wrapped and translated via a bundled gettext catalog (`crates/gashuu/translations/ja/LC_MESSAGES/gashuu.po`, compiled in by `build.rs` — see docs/patterns.md for the msgctxt gotcha). Rust-composed strings (status line, open/save notices, decode errors, and the ShortcutsOverlay key-bindings reference) go through `src/messages.rs` (exhaustive per-language `match`).
 
 ---
 

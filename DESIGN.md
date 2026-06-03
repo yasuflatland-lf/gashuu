@@ -164,6 +164,11 @@ components:
     border: "1px solid {colors.glass-border}"
     highlight: "{colors.glass-highlight}" # 1px top inner highlight
     shadow: "{elevation.float}"           # ONE drop shadow; no second shadow, no nested glass
+  shortcuts-overlay:
+    width: 360px              # Theme.settings-w — REUSED, not a new token
+    height: 466px             # Theme.shortcuts-h; < settings-h (583) so it reads as a smaller modal stacked over settings
+    rounded: 21px             # Theme.settings-radius — REUSED
+    # All glass tokens reused from settings-panel above (sheenTop/fill/border/highlight/shadow); no second glass set.
 ---
 
 ## Overview
@@ -424,6 +429,25 @@ to fit and the **body scrolls** (see Responsive Behavior).
 - **Dismiss**: Esc, a backdrop click (the dimmed scrim outside the panel), or the Close button — all
   three close the dialog.
 
+### Shortcuts Overlay — `components.shortcuts-overlay`
+A second modal glass panel that lists the keyboard shortcuts read-only, reached from the settings
+panel's **"⌨ Shortcuts"** footer link. It stacks **ON TOP of the still-open Settings Panel** (a layer,
+not a replacement). It clones the settings glass recipe EXACTLY — same `{components.settings-panel.width}`
+(360px) and `{components.settings-panel.rounded}` (21px), the same one-fake-glass-object build (top-sheen
+gradient fill + 1px rim + 1px top inner highlight + ONE `{elevation.float}` shadow), the same `Flickable`
+body + self-drawn scroll indicator. There is NO second glass token set; only the height differs.
+
+- **Layered sizing**: the panel is **466px** tall (`Theme.shortcuts-h`), deliberately SHORTER than the
+  settings panel's 583px φ height, so the two panels read as a stack — a smaller modal floating over a
+  larger one — rather than one swapping for the other. It is sized to fit the shortcuts text (17 lines at
+  `{typography.ui-micro}`) plus a sticky header and a hairline footer with the Close button; on a short
+  window it clamps and the body scrolls (same Marcotte clamp as the settings panel).
+- **Double scrim (intended)**: the overlay draws its OWN full-area scrim over the settings dialog's scrim,
+  so the screen behind dims a second time. The compounded dim is the signal that this is a modal over a
+  modal, not an error.
+- **Dismiss**: Esc, a backdrop click, or the Close button — all three close ONLY the overlay and return
+  keyboard focus to the still-open settings panel underneath (never to the screen behind).
+
 ### Empty Library (0 books)
 The Library screen, when empty, centers a single **`button-primary`** ("Select folders / files to
 add") on a `{colors.surface-sunken}` panel, with a one-line `{typography.ui-micro}` helper. Books
@@ -475,6 +499,8 @@ adapting to the live window size.
 - **Settings panel**: keeps its fixed φ size until the window gets short, then its height clamps to the
   window minus a gutter on each side and the body scrolls (the sticky header/footer stay put). Never
   overflows the window.
+- **Shortcuts overlay**: same fixed-then-clamp behavior as the settings panel (its 466px height clamps to
+  the window minus a gutter on each side, then the body scrolls), one layer above it.
 
 ### Targets & minimums
 - Interactive targets (knob, covers, buttons) stay ≥ ~32px effective hit area.
