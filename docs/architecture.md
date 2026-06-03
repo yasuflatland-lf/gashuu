@@ -342,8 +342,8 @@ PR-58, `enum_adapters.rs`. The 8 `pub(crate)` enum↔index adapters that were pr
 ### Slint UI files
 
 **`ui/components/`** (#71, NEW): shared single-purpose UI atoms/molecules, one `export`ed component
-per file — `ProgressBar` (accent/`success` reading-progress fill), `Chip` (pill label, e.g. the
-page counter), `PrimaryButton` (the accent CTA), `ThumbnailCell` (the loaded/loading/failed/highlighted
+per file — `ProgressBar` (accent/`success` reading-progress fill), `PrimaryButton` (the accent CTA),
+`ThumbnailCell` (the loaded/loading/failed/highlighted
 cell shared by the page strip, the scrubber preview popover, and the library covers), `ViewerPill`
 (#this-PR, NEW: the viewer glass-pill — floating page-jump field + thumbnail toggle + settings;
 replaces the docked TitleBar), `NavBar`
@@ -457,12 +457,11 @@ helper fns (since extracted to `enum_adapters.rs`) + `KEY_BINDINGS_HELP`. Extend
 screen` gates the Library `Carousel` (screen 0) vs the Viewer body (screen 1) via
 `visible: root.screen == N` (not `if` — see [patterns.md](patterns.md) for the Slint id-scoping
 reason); Settings/Guide overlays remain viewer-scoped. Extended again in PR-S to mount the
-`Scrubber` + a top-right page-counter chip as auto-hiding chrome inside the screen-1 viewer,
+`Scrubber` as auto-hiding chrome inside the screen-1 viewer,
 driven by a `chrome-shown` bool + an idle `Timer`; chrome is revealed on pointer-move (via
 `PageView.reveal()`), arrow-key presses, and scrubber drag. #71 mounted the shared `TitleBar`
 component (bound to a new `current-book-name` in-prop — derived in `main.rs` from the post-open
-`ViewerState::open_file()`, see [patterns.md](patterns.md)), routed the page-counter chip through the
-shared `Chip` component, and set a `min-width`/`min-height` floor on the window.
+`ViewerState::open_file()`, see [patterns.md](patterns.md)), and set a `min-width`/`min-height` floor on the window.
 
 ### rfd file/folder picker
 

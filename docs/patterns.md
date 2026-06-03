@@ -444,7 +444,7 @@ uses a Slint `public function focus-pages() { fs.focus(); }` called from Rust as
 
 ### Scrubber drag is preview-on-move, commit-on-release (PR-S)
 
-During a scrubber drag, ONLY the preview popover + page-counter update: `preview(float)` resolves the raw fraction to a page (via `scrub_fraction_to_page`), pulls thumbnails from the existing `VecModel<ThumbnailItem>`, and sets the counter text — it must NEVER call `jump_to`/`refresh`. The page body changes ONLY on knob release via `commit(float)` → `jump_to` → `refresh`. Keep all decode/navigation side effects on the commit path; preview is display-only and UI-thread-only (the `Rc`/`!Send` thumbnail model is never crossed). (Both callbacks carry the RAW clamped fraction, not a page index — see the authoritative-side boundary entry above.)
+During a scrubber drag, ONLY the preview popover updates: `preview(float)` resolves the raw fraction to a page (via `scrub_fraction_to_page`) and pulls thumbnails from the existing `VecModel<ThumbnailItem>` — it must NEVER call `jump_to`/`refresh`. The page body changes ONLY on knob release via `commit(float)` → `jump_to` → `refresh`. Keep all decode/navigation side effects on the commit path; preview is display-only and UI-thread-only (the `Rc`/`!Send` thumbnail model is never crossed). (Both callbacks carry the RAW clamped fraction, not a page index — see the authoritative-side boundary entry above.)
 
 ### Only the INSTANTIATED root window's surface is reachable from Rust — re-expose child properties/callbacks on the root (PR-L)
 

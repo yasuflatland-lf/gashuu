@@ -6,7 +6,7 @@
 //     `preview(fraction)` with the RAW clamped drag fraction (preview ONLY — the
 //     page body must NOT change). A floating popover above the knob shows 1
 //     thumbnail (single) or 2 (double); the page number is rendered by the
-//     Rust-maintained page-counter chip, not by the popover.
+//     ViewerPill, not by the popover.
 //   - On release it fires `commit(fraction)` exactly once.
 //   - RTL (manga): dragging LEFT advances (the screen-left end = last page).
 //   - Visibility is owned by the parent via `chrome-shown` (auto-hide).
@@ -141,10 +141,9 @@ export component Scrubber inherits Rectangle {
         drop-shadow-color: Theme.shadow-popover;
         drop-shadow-blur: 30px;
 
-        // Preview thumbnail(s). The page number is shown by the Rust-maintained
-        // page-counter chip (updated from `on_scrub_preview`), so the popover
-        // carries no in-Slint page readout — keeping ALL fraction->page rounding
-        // in Rust (#71 Part D).
+        // Preview thumbnail(s). The page number is shown by the ViewerPill, so
+        // the popover carries no in-Slint page readout — keeping ALL
+        // fraction->page rounding in Rust (#71 Part D).
         HorizontalLayout {
             padding: Theme.space-sm;
             spacing: Theme.space-xs;

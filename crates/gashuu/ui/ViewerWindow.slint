@@ -72,8 +72,6 @@ export component ViewerWindow inherits Window {
     in property <bool> scrubber-preview-a-failed: false;
     in property <bool> scrubber-preview-b-loaded: false;
     in property <bool> scrubber-preview-b-failed: false;
-    // Counter text, e.g. "142 / 340" (tabular). Maintained by Rust's refresh.
-    in property <string> page-counter-text;
 
     // Viewer pill: page-jump text (1-based string, kept in sync by Rust)
     in-out property <string> page-jump-text: "1";

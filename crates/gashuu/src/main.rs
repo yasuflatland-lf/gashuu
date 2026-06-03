@@ -7,7 +7,6 @@ mod enum_adapters;
 mod keymap;
 mod library_model;
 mod navigation;
-mod page_counter;
 mod page_jump;
 mod thumbnail_strip;
 mod viewer_state;
@@ -25,7 +24,6 @@ use gashuu_core::{CacheConfig, DecodedImage, FitMode, Library, ReadingDirection,
 use keymap::{map_key, KeyCommand};
 use library_model::LibrarySearchState;
 use navigation::{screen_to_index, NavState};
-use page_counter::page_counter_text;
 use page_jump::parse_page_jump;
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -479,9 +477,6 @@ fn main() -> color_eyre::Result<()> {
                 ui.set_scrubber_preview_b(b.image);
                 ui.set_scrubber_preview_b_loaded(b.loaded);
                 ui.set_scrubber_preview_b_failed(b.failed);
-                // Update the counter to the previewed page (1-based).
-                let counter = page_counter_text(lead, trail, total);
-                ui.set_page_counter_text(counter.into());
                 // Keep the chrome visible during the drag.
                 ui.invoke_reveal_chrome_now();
             })
@@ -1004,9 +999,9 @@ pub(crate) fn refresh(
     // leading page after every navigation/refresh.
     ui.set_current_index(state.index() as i32);
 
-    // Seed the scrubber + page-counter chrome from the current spread. The
-    // counter uses 1-based numbers; `double` mirrors whether the current spread
-    // has a trailing page. These are display-only and do NOT change the page body.
+    // Seed the scrubber chrome from the current spread. The scrubber uses 1-based
+    // numbers; `double` mirrors whether the current spread has a trailing page.
+    // These are display-only and do NOT change the page body.
     let total = state.page_count();
     let current_1based = current_page_1based(state);
     ui.set_scrubber_total_pages(total as i32);
@@ -1016,14 +1011,6 @@ pub(crate) fn refresh(
     // page" predicate without re-running `current_spread`'s decode.
     let is_double = state.preview_is_double(state.index());
     ui.set_scrubber_double(is_double);
-    // Counter text: "X / N" single, "X\u{2013}Y / N" double, "0 / 0" when empty.
-    let trailing = if is_double {
-        Some(state.index() + 1)
-    } else {
-        None
-    };
-    let counter = page_counter_text(state.index(), trailing, total);
-    ui.set_page_counter_text(counter.into());
     ui.set_page_jump_text(format!("{}", current_1based).into());
 }
 
