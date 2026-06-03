@@ -116,7 +116,7 @@ RAR requires a C++ compiler on every OS (see [docs/toolchain.md](toolchain.md)).
 
 ### Per-book view overrides with global fallback
 
-- Reading direction, spread mode, cover mode, and fit mode are now **per-book overrides** backed by a `#[serde(default)]`-gated `ViewOverride` on `Book` (backward-compatible; missing field → `None` → inherit global `Settings`). Screen decides scope: the Library settings dialog edits the global `Settings` defaults; the Viewer settings dialog and the in-viewer D/R/C/fit toggles edit the current book's override (written back at every leave point). The Viewer settings dialog also exposes a "Reset to global defaults" button.
+- Reading direction, spread mode, cover mode, and fit mode are now **per-book overrides** backed by a `#[serde(default)]`-gated `ViewOverride` on `Book` (backward-compatible; missing field → `None` → inherit global `Settings`). Screen decides scope: the Library settings dialog edits the global `Settings` defaults; the Viewer settings dialog and the in-viewer D/R/C/fit toggles edit the current book's override (written back at every leave point). The Viewer settings dialog also exposes a "Reset to global" button.
 
 ### Release builds — macOS + Windows executables (release workflow)
 

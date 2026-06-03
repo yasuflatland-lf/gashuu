@@ -39,7 +39,7 @@ Model the four preferences as a PER-BOOK override that falls back to the global 
    `Book::page_count` / `Settings`' forward-compat fields).
 4. **Scope by screen.** ONE `SettingsDialog` edits different targets by `ui.get_screen()`: the
    Library screen edits the GLOBAL `Settings` defaults; the Viewer screen edits the current book's
-   override. The Viewer dialog also exposes a "Reset to global defaults" button
+   override. The Viewer dialog also exposes a "Reset to global" button
    (→ `ViewOverride::none()`).
 5. **Two NAMED writes, one per scope.** `reconcile_settings` writes runtime → GLOBAL `Settings`
    (only via the Library settings dialog and the no-book-open exit path);
@@ -58,7 +58,7 @@ Model the four preferences as a PER-BOOK override that falls back to the global 
   inheriting global for untouched modes.** Rejected for the first cut: the leave-point write-back
   snapshots the whole runtime tuple, which pins all four fields to `Some` after the first leave. A
   precise diff against the resolved baseline at every toggle is more state and more failure modes;
-  the "Reset to global defaults" button covers the escape hatch. The partial shape still allows
+  the "Reset to global" button covers the escape hatch. The partial shape still allows
   change-tracking later with no storage change. (Trade-off recorded in
   [patterns.md](../patterns.md), "write-back-at-leave-point".)
 - **(D) Bump `LIBRARY_VERSION` + migrate for the new field.** Unnecessary: a defaulted, empty-skipped
