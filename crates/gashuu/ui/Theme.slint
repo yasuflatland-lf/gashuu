@@ -88,7 +88,7 @@ export global Theme {
     // ── Settings glass panel (issue 103, PR-B) ────────────────────────────────
     out property <length> settings-w: 360px;             // panel width (height is content-hug — spec 2026-06-04 dropped the fixed φ outline)
     out property <length> settings-radius: nav-pill-radius;  // = nav-pill-radius (shares NavBar's glass corner language)
-    out property <length> settings-label-col: 132px;     // fixed label column; longest label "Cache size (pages)" ≈ 100px in font-body (13px) leaves ~30px slack; narrowed from 150px (spec 2026-06-04) so fill segments get breathing room; labels never wrap/elide
+    out property <length> settings-label-col: 132px;     // fixed label column; one of the longest labels, "Cache size (pages)", ≈ 100px in font-body (13px) leaves ~30px slack; narrowed from 150px (spec 2026-06-04) so fill segments get breathing room; labels never wrap/elide
     out property <length> settings-control-x: settings-label-col + space-lg;  // single vertical seam every CONTROL shares; section headers align with the label margin (not this seam)
     out property <length> settings-row-h: 34px;          // row height (= nav-capsule); the 30px atom centers within it
     // ⚠ NOT an accent — a hair lighter than glass-fill; top stop of the panel fill

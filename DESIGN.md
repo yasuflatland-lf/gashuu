@@ -19,6 +19,7 @@ colors:
   glass-border: "#2f3850b3"    # hairline-float at ~70% alpha — the hairline rim
   glass-highlight: "#dde5f51f" # text-high at ~12% alpha — 1px top inner highlight rim
   glass-sheen-top: "#1a2030d1" # stage-top at ~82% alpha — top stop of the settings panel's fill gradient
+  shadow-popover: "#00000080"  # Theme.shadow-popover — popover/panel drop-shadow ink (50% black)
   success: "#41c98a"
   canvas: "#0b0e15"
   surface: "#0e1118"
@@ -156,6 +157,7 @@ components:
     labelColumn: 132px        # Theme.settings-label-col (fixed; longest label ≈ 100px + slack, never wraps/elides)
     controlSeam: "labelColumn + {spacing.lg}"   # Theme.settings-control-x — fill controls START here; every control ENDS at the right rail
     rowHeight: 34px           # Theme.settings-row-h (= nav-capsule); the 30px control atom centers within it
+    controlHeight: 30px       # Theme.settings-control-h — the control atom; centers within rowHeight
     rowGap: "{spacing.lg}"    # 14px ≈ Fib 13 — row pitch 48px ≈ controlHeight × φ
     sectionGap: "{spacing.xxl}" # 22px ≈ Fib 21; also the caption→footer-hairline gap
     segmentRadius: "{rounded.md}"          # Theme.radius-md capsule; cells = Theme.seg-cell-radius (md − 4px, concentric)
@@ -167,10 +169,10 @@ components:
     fill: "{colors.glass-fill}"           # bottom stop of the panel fill gradient
     border: "1px solid {colors.glass-border}"
     highlight: "{colors.glass-highlight}" # 1px top inner highlight
-    shadow: "{elevation.float}"           # ONE drop shadow; no second shadow, no nested glass
+    shadow: "0 8px 22px {colors.shadow-popover}"  # ONE drop shadow; no second shadow, no nested glass
   shortcuts-overlay:
     width: 360px              # Theme.settings-w — REUSED, not a new token
-    height: 466px             # Theme.shortcuts-h; < settings-h (583) so it reads as a smaller modal stacked over settings
+    height: 466px             # Theme.shortcuts-h; fixed, smaller than the settings panel's content-hug height so it reads as a smaller modal stacked over settings
     rounded: 21px             # Theme.settings-radius — REUSED
     # All glass tokens reused from settings-panel above (sheenTop/fill/border/highlight/shadow); no second glass set.
 ---
