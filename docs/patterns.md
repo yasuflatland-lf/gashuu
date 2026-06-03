@@ -464,7 +464,41 @@ Slint scopes an id declared inside an `if`/`for` branch to a child the enclosing
 
 ### Slint 1.16.1 accepted syntax + limitations (verified at impl time, PR-C)
 
-Confirmed ACCEPTED by the pinned Slint 1.16.1 (future work need not re-verify): `Math.clamp(x, lo, hi)`, `overflow: elide` on `Text`, `color.with-alpha(f)`, 8-digit `#rrggbbaa` hex, and `@linear-gradient(deg, stop% … )`. NOT supported: per-`Repeater`-item z-order is not settable in Slint 1.x — layer a focused item via opacity/size/accent-ring, not z. To force a focused `for`-item to paint ON TOP of its overlapping neighbors (which model-index draw order otherwise leaves partly covered), render the model with TWO `for` passes over the SAME model into one shared file-private sub-component: pass 1 paints the neighbors (`show: idx != focused-index`), pass 2 — declared AFTER pass 1, so painted later/above — paints ONLY the focused item (`show: idx == focused-index`); `show` gates `visible`, nothing else. Because BOTH passes bind identical geometry, each item keeps a persistent instance in each pass, so a focus-change SLIDE still animates (a `visible:false` Repeater instance keeps computing/animating its geometry, so the hand-off between passes lands at matching positions — no pop). Cost: 2N instances (invisible ones aren't drawn). Do NOT instead reorder the model or use a standalone always-centered focused element — both destroy the slide (a new/destroyed instance snaps with no transition). `Carousel.slint`'s `CoverCard` two-pass does exactly this. no `line-height` on `Text` in Slint 1.x — DESIGN's per-role `lineHeight` cannot be expressed and must not be faked (space elements apart instead). A shared PRIVATE (non-exported) sub-component (`component Foo inherits Rectangle { in property … }`) cleanly de-duplicates repeated markup WITHIN one file WITHOUT touching any exported struct/component contract, and works both absolutely positioned and as a layout child (PR-C used a file-private `ProgressBar` for the per-cover and focused-meta bars in `Carousel.slint`). When the same markup must be reused ACROSS files, promote it to an `export`ed component under `ui/components/` instead (#71 did exactly this — `ProgressBar` is now `components/ProgressBar.slint`, imported by `Carousel.slint`); keep the file-private form only when the reuse is confined to one file.
+Confirmed ACCEPTED by the pinned Slint 1.16.1 (future work need not re-verify): `Math.clamp(x, lo, hi)`, `overflow: elide` on `Text`, `color.with-alpha(f)`, 8-digit `#rrggbbaa` hex, and `@linear-gradient(deg, stop% … )`. NOT supported: per-`Repeater`-item z-order is not settable in Slint 1.x — layer a focused item via opacity/size/accent-ring, not z. To force a focused `for`-item to paint ON TOP of its overlapping neighbors (which model-index draw order otherwise leaves partly covered), render the model with TWO `for` passes over the SAME model into one shared file-private sub-component: pass 1 paints the neighbors (`show: idx != focused-index`), pass 2 — declared AFTER pass 1, so painted later/above — paints ONLY the focused item (`show: idx == focused-index`); `show` gates `visible`, nothing else. Because BOTH passes bind identical geometry, each item keeps a persistent instance in each pass, so a focus-change SLIDE still animates (a `visible:false` Repeater instance keeps computing/animating its geometry, so the hand-off between passes lands at matching positions — no pop). Cost: 2N instances (invisible ones aren't drawn). Do NOT instead reorder the model or use a standalone always-centered focused element — both destroy the slide (a new/destroyed instance snaps with no transition). `Carousel.slint`'s `CoverCard` two-pass does exactly this.
+
+**CORRECTED two-pass z-order pattern — always-on pass-1 backing layer (fast-scroll gap fix):**
+
+The original `show: idx != focused-index` formulation had a subtle render-timing bug:
+toggling pass-1 visibility ON EVERY FOCUS CHANGE blanked each passed-through book's cover
+for exactly 1 frame (the frame where pass-1 hides it and pass-2 has not yet painted it from
+the new focused position). Fast scroll chains these 1-frame blanks into a visible
+"gap-toothed strip" effect.
+
+The CORRECTED pattern:
+- **Pass 1 is an always-on BACKING layer**: `show: true` (every book, every frame).
+  Set `elevated: false` (or equivalent flag) so semi-transparent overlay effects
+  (shadow, tint, highlight ring) only apply to the pass-2 copy.
+- **Pass 2 paints only the focused card on top**: unchanged — `show: idx == focused-index`,
+  declared AFTER pass 1 so it paints above it; carries `elevated: true` and all
+  focus-specific effects.
+
+WHY the always-on approach fixes the gap:
+- No book ever loses its only visible instance during a sweep — pass-1 always covers every
+  slot, so a fast scroll that moves focus across N books never blanks any of them.
+- Transient render gaps (1-frame blank) = render-TIMING cause → fix by keeping the
+  backing layer always visible.
+- Permanent gaps (data/model missing) = DATA cause → fix differently (model integrity).
+  Use this framing when diagnosing future z-order render bugs.
+
+HOW to apply in future Slint two-pass z-order components:
+1. Keep pass-1 `show: true` always — never gate it on `idx != focused-index`.
+2. Use an `elevated` (or equivalent) flag to gate semi-transparent/overlay effects
+   to the pass-2 (top) copy ONLY — avoid double-compositing semi-transparent layers.
+   Opaque layers are safe to double-draw at identical geometry (no visual artifact).
+3. If a focused-only GEOMETRY change is needed (scale, offset), apply it on pass-2;
+   pass-1 always renders at the base geometry.
+
+no `line-height` on `Text` in Slint 1.x — DESIGN's per-role `lineHeight` cannot be expressed and must not be faked (space elements apart instead). A shared PRIVATE (non-exported) sub-component (`component Foo inherits Rectangle { in property … }`) cleanly de-duplicates repeated markup WITHIN one file WITHOUT touching any exported struct/component contract, and works both absolutely positioned and as a layout child (PR-C used a file-private `ProgressBar` for the per-cover and focused-meta bars in `Carousel.slint`). When the same markup must be reused ACROSS files, promote it to an `export`ed component under `ui/components/` instead (#71 did exactly this — `ProgressBar` is now `components/ProgressBar.slint`, imported by `Carousel.slint`); keep the file-private form only when the reuse is confined to one file.
 
 ### `states[]` cannot assign a child element's property or read `parent`/sibling geometry (#83, slint 1.16.1)
 
