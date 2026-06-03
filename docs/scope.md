@@ -114,6 +114,12 @@ RAR requires a C++ compiler on every OS (see [docs/toolchain.md](toolchain.md)).
 - The Settings button in the same nav bar opens the existing `SettingsDialog` — no new entry points.
 - No new dependencies.
 
+### Release builds — macOS + Windows executables (release workflow)
+
+- `.github/workflows/release.yml` builds a macOS universal `.app` (lipo'd arm64+x86_64, zipped via `ditto`) and a Windows `gashuu.exe` (icon embedded via `winresource`, zipped), and attaches both to the GitHub Release for a `v*` tag (or a `workflow_dispatch` tag input). A `preflight` job gates on tag == `crates/gashuu/Cargo.toml` version before building. See [docs/toolchain.md](toolchain.md) "Release builds".
+- Unsigned (MVP); `release.yml` documents the macOS notarization / Windows Authenticode seams for later.
+- Windows `.ico` embedding (previously deferred) now ships via a `cfg(windows)`-gated `winresource` build-dependency + `build.rs`. The only new dependency is `winresource` (Windows-only build-dep); no runtime deps.
+
 ---
 
 ## Deferred (intentionally out of scope)
@@ -135,3 +141,6 @@ RAR requires a C++ compiler on every OS (see [docs/toolchain.md](toolchain.md)).
 - All three PR-L follow-ups SHIPPED in PR-La (see "Per-book page totals, fallible save, and load-failure notice" above): on-screen library-load-failure notice, fallible `to_json` (no silent serialize-error discard on save), and real carousel `total`/`progress` via persisted page counts. Covers now stream in via PR-V (see "Library carousel covers" above).
 - Backdrop-click / Esc dialog dismissal (PR8b dialogs close via their own button only).
 - PR5 non-goals: touch/pinch, rotation/minimap/scrollbar, click-to-turn, per-page independent zoom in Double mode, and 60fps is NOT CI-asserted (manual/telemetry only).
+- Linux release artifacts and a `.desktop` entry (macOS + Windows ship via `release.yml`; Linux's Slint system-library deps make a portable artifact heavier — deferred).
+- Code signing / notarization for release binaries (macOS Developer ID + notarytool, Windows Authenticode) — `release.yml` ships unsigned with documented `SIGNING SEAM` insertion points.
+- Auto-creating the GitHub Release (the release must pre-exist; `release.yml` only uploads assets to it).

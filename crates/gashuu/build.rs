@@ -1,4 +1,24 @@
 fn main() {
+    // Windows: embed the application icon into gashuu.exe so it shows in the
+    // taskbar / Explorer. Two guards: the `#[cfg(windows)]` block keeps the
+    // winresource crate (a Windows-only build-dependency) out of macOS/Linux
+    // compiles, and the runtime `CARGO_CFG_TARGET_OS` check reflects the BUILD
+    // TARGET (build.rs runs on the HOST, so `cfg!(target_os)` would lie under a
+    // cross-compile). The `.ico` is generated from app-icon.png by the release
+    // workflow on the Windows runner; a plain dev `cargo build` without it is a
+    // no-op, so the icon is best-effort and never a build blocker.
+    #[cfg(windows)]
+    {
+        if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows")
+            && std::path::Path::new("ui/assets/app-icon.ico").exists()
+        {
+            let mut res = winresource::WindowsResource::new();
+            res.set_icon("ui/assets/app-icon.ico");
+            res.compile()
+                .expect("failed to embed the Windows application icon");
+        }
+    }
+
     // Slint's compiler recurses deeply while lowering the UI. On Windows the
     // default main-thread stack is only 1 MiB (Linux/macOS get 8 MiB), and once
     // the UI grew past a certain complexity (the PR8a thumbnail strip's nested

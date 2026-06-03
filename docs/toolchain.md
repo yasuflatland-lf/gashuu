@@ -64,6 +64,14 @@ mise exec -- cargo install cargo-bundle   # one-time
 cd crates/gashuu && mise exec -- cargo bundle --release   # emits target/release/bundle/osx/gashuu.app  ("osx" is cargo-bundle's fixed dir name)
 ```
 
-`cargo bundle` is NOT wired into the default `cargo build` or CI gates — it is a developer convenience command only.
+`cargo bundle` is NOT wired into the default `cargo build` or CI gates — but the release workflow (below) drives it on the macOS runner.
 
-**Deferred to a follow-up issue**: Windows `.ico` embedding (winres / embed-resource) and a Linux `.desktop` entry.
+### Release builds (GitHub Actions)
+
+`.github/workflows/release.yml` builds the distributable executables and attaches them to the GitHub Release for a tag. Trigger: push a `v*` tag, or `workflow_dispatch` with a `tag` input (to re-attach to an existing tag). A `preflight` job asserts the tag matches `crates/gashuu/Cargo.toml` `version` before any build runs, so a mistyped tag fails fast. The GitHub Release must already exist — the workflow only uploads assets to it (`gh release upload --clobber`), it does not create it.
+
+- **macOS (universal)**: builds `aarch64-apple-darwin` + `x86_64-apple-darwin`, `lipo`-merges them into a fat binary, runs `cargo bundle --release` for the `.app` scaffold (cargo-bundle has no `--target universal` support, so the scaffold is built once and the fat binary is spliced into `Contents/MacOS/`), and zips with `ditto -c -k --keepParent` (preserves symlinks/permissions). cargo-bundle is `cargo install`ed on the runner — deliberately NOT added to `mise.toml`, so the CI `app` matrix stays lean. Asset: `gashuu-<tag>-macos-universal.zip`.
+- **Windows (x86_64)**: generates `app-icon.ico` from `app-icon.png` with the runner's preinstalled `magick`, builds `--release` (`build.rs` embeds the icon via `winresource`), and zips the `.exe`. Asset: `gashuu-<tag>-windows-x64.zip`.
+- **Signing**: none yet (MVP, unsigned). `release.yml` marks the macOS `codesign`/`notarytool` and Windows `signtool` insertion points as `SIGNING SEAM` comments.
+
+**Windows `.ico` embedding** is now wired (was deferred): `winresource` is a `[target.'cfg(windows)'.build-dependencies]` so it is never fetched on macOS/Linux; `build.rs` gates the embed on `cfg(windows)` AND `CARGO_CFG_TARGET_OS == "windows"` AND the `.ico` existing, so a dev `cargo build` without the (CI-generated, uncommitted) `.ico` is a no-op and never a build blocker. **Still deferred**: Linux release artifacts and a `.desktop` entry — Slint's Linux system-library deps make Linux distribution heavier (see "Linux system libraries" above).

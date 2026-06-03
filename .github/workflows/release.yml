@@ -1,0 +1,194 @@
+name: Release
+
+# Build the macOS (universal) and Windows (x86_64) executables and attach them
+# as zips to the GitHub Release for the tag. The Release must already exist
+# (create it first via the GitHub UI or `gh release create <tag> ...`); this
+# workflow only uploads assets to it, it does not create the release.
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing tag to build and attach assets to (e.g. v0.1.0)'
+        required: true
+        type: string
+
+# Do NOT cancel an in-progress release — re-triggering mid-run could leave a
+# release with a partial set of assets.
+concurrency:
+  group: release-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+# `gh release upload` needs write access to releases.
+permissions:
+  contents: write
+
+jobs:
+  # Fail fast (before any minutes are spent on the slow per-OS builds) if the
+  # tag does not match the crate version, so a mistyped tag never ships.
+  preflight:
+    name: preflight (version gate)
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.resolve.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+      - id: resolve
+        name: Resolve the tag and assert it matches Cargo.toml
+        shell: bash
+        env:
+          # Pass interpolated values through env (never inline into the script).
+          INPUT_TAG: ${{ inputs.tag }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          TAG="${INPUT_TAG:-$REF_NAME}"
+          # Require the `v` prefix so a bare `0.1.0` dispatch can't pass the gate
+          # and then fail later at `gh release view v0.1.0`.
+          if [ "${TAG#v}" = "$TAG" ]; then
+            echo "::error::Tag must start with 'v' (got '$TAG')"
+            exit 1
+          fi
+          CARGO_VER=$(grep '^version' crates/gashuu/Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
+          if [ "${TAG#v}" != "$CARGO_VER" ]; then
+            echo "::error::Tag $TAG (=> ${TAG#v}) does not match crates/gashuu/Cargo.toml version $CARGO_VER"
+            exit 1
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "Version gate OK: $TAG matches Cargo.toml $CARGO_VER"
+
+  build-macos:
+    name: build (macOS universal)
+    needs: preflight
+    runs-on: macos-latest
+    env:
+      TAG: ${{ needs.preflight.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.preflight.outputs.tag }}
+      - uses: jdx/mise-action@v4
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-macos
+          save-if: 'true'
+      # Both arch slices are needed for the universal (fat) binary.
+      - run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
+      # cargo-bundle is not a CI tool (kept out of mise.toml so the CI app matrix
+      # stays lean); install it here only, on the release runner.
+      - name: Install cargo-bundle
+        run: cargo install cargo-bundle --locked --version 0.11.0
+      - name: Build both arches
+        run: |
+          cargo build --release --target aarch64-apple-darwin -p gashuu
+          cargo build --release --target x86_64-apple-darwin  -p gashuu
+      - name: Lipo into a universal binary
+        run: |
+          mkdir -p target/universal
+          lipo -create -output target/universal/gashuu \
+            target/aarch64-apple-darwin/release/gashuu \
+            target/x86_64-apple-darwin/release/gashuu
+          lipo -info target/universal/gashuu
+      # cargo-bundle has no --target universal support: build the .app scaffold
+      # (Info.plist + .icns + dir structure, arch-neutral) then splice the fat
+      # binary into Contents/MacOS. cargo-bundle must run from the crate root.
+      - name: Bundle .app and splice in the universal binary
+        run: |
+          ( cd crates/gashuu && cargo bundle --release )
+          # cargo-bundle's workspace handling is imperfect (burtonageo/cargo-bundle#42):
+          # the .app may land in the shared workspace target dir OR the crate-local
+          # one. Accept either, then export the resolved path for the zip step.
+          APP="target/release/bundle/osx/gashuu.app"
+          [ -d "$APP" ] || APP="crates/gashuu/target/release/bundle/osx/gashuu.app"
+          test -d "$APP" || { echo "::error::cargo-bundle did not emit gashuu.app under target/ or crates/gashuu/target/"; exit 1; }
+          cp target/universal/gashuu "$APP/Contents/MacOS/gashuu"
+          chmod +x "$APP/Contents/MacOS/gashuu"
+          echo "APP=$APP" >> "$GITHUB_ENV"
+      # ── SIGNING SEAM (macOS) ──────────────────────────────────────────────
+      # To sign + notarize later, insert steps HERE (before the ditto zip):
+      #   secrets: MACOS_CERTIFICATE (base64 .p12), MACOS_CERTIFICATE_PWD,
+      #            MACOS_CERTIFICATE_NAME ("Developer ID Application: … (TEAMID)"),
+      #            MACOS_CI_KEYCHAIN_PWD, MACOS_NOTARIZATION_APPLE_ID/PWD/TEAM_ID
+      #   1. import the .p12 into a temporary keychain
+      #   2. codesign --force --options runtime --sign "$MACOS_CERTIFICATE_NAME" "$APP"
+      #   3. ditto the zip, then `xcrun notarytool submit <zip> --wait`
+      #      and `xcrun stapler staple "$APP"`, then re-run ditto on the stapled app.
+      - name: Zip the .app (ditto preserves symlinks + permissions)
+        run: |
+          ditto -c -k --keepParent \
+            "$APP" \
+            "gashuu-${TAG}-macos-universal.zip"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-zip
+          path: gashuu-${{ env.TAG }}-macos-universal.zip
+          if-no-files-found: error
+
+  build-windows:
+    name: build (Windows x86_64)
+    needs: preflight
+    runs-on: windows-latest
+    env:
+      TAG: ${{ needs.preflight.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.preflight.outputs.tag }}
+      - uses: jdx/mise-action@v4
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-windows
+          save-if: 'true'
+      # ImageMagick (magick) is preinstalled on the windows-latest runner image.
+      # Generate the .ico from the committed PNG so build.rs (winresource) embeds
+      # it into gashuu.exe. The .ico is a build artifact, not committed.
+      - name: Generate app-icon.ico from app-icon.png
+        shell: pwsh
+        run: |
+          magick crates/gashuu/ui/assets/app-icon.png `
+            -define icon:auto-resize="256,128,64,48,32,16" `
+            crates/gashuu/ui/assets/app-icon.ico
+      - name: Build release binary (build.rs embeds the .ico)
+        run: cargo build --release -p gashuu
+      # ── SIGNING SEAM (Windows) ────────────────────────────────────────────
+      # To Authenticode-sign later, insert a step HERE (before the zip):
+      #   secrets: WIN_CERTIFICATE (base64 .pfx), WIN_CERT_PWD, WIN_CERT_THUMBPRINT
+      #   signtool sign /sha1 <thumbprint> /fd SHA256 /tr <timestamp-url> /td SHA256 target\release\gashuu.exe
+      - name: Zip the .exe
+        shell: pwsh
+        run: |
+          Compress-Archive -Path target/release/gashuu.exe `
+            -DestinationPath "gashuu-$env:TAG-windows-x64.zip"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-zip
+          path: gashuu-${{ env.TAG }}-windows-x64.zip
+          if-no-files-found: error
+
+  publish:
+    name: publish (attach to release)
+    needs: [preflight, build-macos, build-windows]
+    runs-on: ubuntu-latest
+    env:
+      TAG: ${{ needs.preflight.outputs.tag }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.preflight.outputs.tag }}
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: Verify the release exists, then upload the zips
+        shell: bash
+        run: |
+          gh release view "$TAG" >/dev/null 2>&1 \
+            || { echo "::error::No GitHub Release found for $TAG. Create it first: gh release create $TAG --title $TAG --notes ..."; exit 1; }
+          find artifacts -type f -name '*.zip' -print0 \
+            | while IFS= read -r -d '' path; do
+                echo "Uploading: $path"
+                gh release upload "$TAG" "$path" --clobber
+              done
