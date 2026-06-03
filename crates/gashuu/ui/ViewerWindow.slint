@@ -6,8 +6,7 @@ import { FirstRunGuide } from "FirstRunGuide.slint";
 import { Carousel, CarouselItem } from "Carousel.slint";
 import { Theme } from "Theme.slint";
 import { Scrubber } from "Scrubber.slint";
-import { Chip } from "components/Chip.slint";
-import { TitleBar } from "components/TitleBar.slint";
+import { ViewerPill } from "components/ViewerPill.slint";
 
 export component ViewerWindow inherits Window {
     // Intentionally empty: the OS title bar shows no app name (the in-app
@@ -67,6 +66,12 @@ export component ViewerWindow inherits Window {
     in property <bool> scrubber-preview-b-failed: false;
     // Counter text, e.g. "142 / 340" (tabular). Maintained by Rust's refresh.
     in property <string> page-counter-text;
+
+    // Viewer pill: page-jump text (1-based string, kept in sync by Rust)
+    in-out property <string> page-jump-text: "1";
+    // Viewer pill callbacks — handled by Rust
+    callback page-jump-request(string);
+    callback page-jump-cancel();
 
     // Fired with the 0-based page under the knob during a drag (preview only —
     // the page body must NOT change) and with the page to commit on release.
@@ -209,44 +214,9 @@ export component ViewerWindow inherits Window {
     // from `focus-pages()` and `init` (see the note on the carousel above).
     VerticalBox {
         visible: root.screen == 1;
-        // Title bar molecule (DESIGN.md components.title-bar): left action
-        // affordances, centered document/library name, optional right count chip.
-        // The fs.focus() keyboard recovery after a click is OUR job here (TitleBar
-        // only emits the callbacks) — see docs/patterns.md "Slint focus after a
-        // Button click".
-        //
-        // `title` maps to `root.current-book-name` (the current folder/archive
-        // display name, DESIGN's "current book/library name"; blank until a book
-        // is open). The page/status descriptor still lives on `status-text`, which
-        // remains wired to the Library-screen status notice below. `show-count:
-        // false` because the in-page page-counter chip (top-right of the stage)
-        // already shows the page count — a TitleBar count chip would duplicate it.
-        TitleBar {
-            title: root.current-book-name;
-            show-count: false;
-            open-folder => {
-                root.open-folder();
-                // Return focus to the page area so keyboard navigation keeps working
-                // after the picker closes (open-folder is synchronous on the Rust side).
-                fs.focus();
-            }
-            open-archive => {
-                root.open-archive();
-                // Return focus to the page area so keyboard navigation keeps working
-                // after the picker closes (open-archive is synchronous on the Rust side).
-                fs.focus();
-            }
-            toggle-thumbnails => {
-                root.toggle-thumbnails();
-                fs.focus();
-            }
-            // Settings: do NOT call fs.focus() so the dialog stays interactive.
-            open-settings => { root.open-settings(); }
-        }
-        // Viewer stage: the page and the auto-hiding chrome (counter chip +
+        // Viewer stage: the page and the auto-hiding chrome (ViewerPill +
         // scrubber) stacked on top. PageView's TouchArea reveals the chrome on
-        // pointer movement via its `reveal()` callback. This Rectangle takes the
-        // FocusScope's former layout cell in the VerticalBox; the chrome positions
+        // pointer movement via its `reveal()` callback. The chrome positions
         // itself with absolute x/y relative to this Rectangle.
         Rectangle {
             // The FocusScope + PageView are unchanged; only wrapped so the chrome
@@ -304,25 +274,50 @@ export component ViewerWindow inherits Window {
                 }
             }
 
-            // Page-counter chip (top-right), part of the auto-hide chrome. The
-            // outer wrapper keeps the absolute x/y placement and the chrome
-            // fade/visibility; the Chip molecule (DESIGN.md components.chip)
-            // carries the pill background + numeric label.
+            // Title label above the pill (auto-hides with chrome)
             Rectangle {
-                x: parent.width - self.width - Theme.space-xl;
-                y: Theme.space-xl;
-                // Size the wrapper to the Chip so the top-right pin (x: parent.width
-                // - self.width) stays exact; a bare Rectangle would otherwise fill
-                // the parent rather than hug its child.
-                width: counter-chip.preferred-width;
-                height: counter-chip.preferred-height;
-                opacity: root.chrome-shown ? 1.0 : 0.0;
+                x: Theme.space-lg;
+                y: viewer-pill.y - self.height - Theme.space-xs;
+                width: parent.width - Theme.space-lg * 2;
+                height: Theme.font-label + Theme.space-xxs * 2;
+                background: transparent;
+                drop-shadow-color: Theme.title-glow;
+                drop-shadow-blur: 12px;
+                drop-shadow-offset-y: 1px;
                 visible: root.chrome-shown;
+                opacity: root.chrome-shown ? 1.0 : 0.0;
                 animate opacity { duration: Theme.motion-fast; }
-                counter-chip := Chip {
-                    text: root.page-counter-text;
-                    tabular: true;
+                Text {
+                    x: 0; y: 0;
+                    width: parent.width;
+                    height: parent.height;
+                    text: root.current-book-name;
+                    color: Theme.text;
+                    font-size: Theme.font-label;
+                    font-weight: Theme.weight-medium;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                    overflow: elide;
                 }
+            }
+
+            // ViewerPill: centered floating glass pill (auto-hides with chrome)
+            viewer-pill := ViewerPill {
+                x: (parent.width - self.width) / 2;
+                y: Theme.space-xl;
+                page-text <=> root.page-jump-text;
+                total-pages: root.scrubber-total-pages;
+                visible: root.chrome-shown;
+                opacity: root.chrome-shown ? 1.0 : 0.0;
+                animate opacity { duration: Theme.motion-fast; }
+                page-jump-request(t) => { root.page-jump-request(t); }
+                page-jump-cancel => { root.page-jump-cancel(); }
+                exit-jump-field => { fs.focus(); }
+                toggle-thumbnails => {
+                    root.toggle-thumbnails();
+                    fs.focus();
+                }
+                open-settings => { root.open-settings(); }
             }
 
             // Scrubber pinned to the bottom edge.
@@ -345,14 +340,18 @@ export component ViewerWindow inherits Window {
                 commit(p) => { root.scrub-commit(p); }
             }
 
-            // Idle fade timer. The `running: root.chrome-shown` binding starts it
-            // for any reveal that flips chrome-shown true (via reveal-chrome-now()),
-            // which also does an explicit stop+restart so a full interval elapses
-            // from the latest reveal. When it fires, the chrome hides.
+            // Idle fade timer. The `running` binding starts it for any reveal that
+            // flips chrome-shown true (via reveal-chrome-now()), which also does an
+            // explicit stop+restart so a full interval elapses from the latest reveal.
+            // When it fires, the chrome hides — but only if the page-jump field does
+            // not have focus (suppressed while the user types a page number).
             idle-timer := Timer {
                 interval: 2500ms;
-                running: root.chrome-shown;
-                triggered => { root.chrome-shown = false; idle-timer.stop(); }
+                running: root.chrome-shown && !viewer-pill.field-focused;
+                triggered => {
+                    if (!viewer-pill.field-focused) { root.chrome-shown = false; }
+                    idle-timer.stop();
+                }
             }
         }
         if root.show-thumbnails : ThumbnailStrip {
