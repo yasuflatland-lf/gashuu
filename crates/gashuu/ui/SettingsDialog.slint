@@ -290,6 +290,7 @@ export component SettingsDialog inherits Rectangle {
                             SettingRow {
                                 // Longest label — its width sizes settings-label-col.
                                 label: @tr("Cache size (pages)");
+                                trailing: true;
                                 Stepper {
                                     value <=> root.cache-size;
                                     minimum: 1;
@@ -302,6 +303,7 @@ export component SettingsDialog inherits Rectangle {
                             }
                             SettingRow {
                                 label: @tr("Preload radius");
+                                trailing: true;
                                 Stepper {
                                     value <=> root.preload-pages;
                                     minimum: 0;
@@ -314,6 +316,7 @@ export component SettingsDialog inherits Rectangle {
                             }
                             SettingRow {
                                 label: @tr("Track recent files");
+                                trailing: true;
                                 Toggle {
                                     checked <=> root.track-recent;
                                     a11y-label: @tr("Track recent files");
@@ -343,6 +346,7 @@ export component SettingsDialog inherits Rectangle {
                             }
                             SettingRow {
                                 label: @tr("Language");
+                                trailing: true;
                                 Dropdown {
                                     // Language names are deliberately NOT @tr()'d:
                                     // a language switcher always shows each option
