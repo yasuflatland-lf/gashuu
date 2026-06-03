@@ -52,6 +52,16 @@ export component ViewerWindow inherits Window {
     // Auto-hide state shared by the scrubber, ViewerPill, and floating title label. Revealed
     // on mouse-move / arrow / drag; cleared by the idle Timer.
     in-out property <bool> chrome-shown: false;
+    // Guards the phantom-reveal flip-flop after an idle-hide. When the chrome
+    // hides out from under a STATIONARY cursor, the vacated pill/title lets
+    // PageView's TouchArea re-acquire the cursor and emit a `changed mouse-x` —
+    // a phantom "move" that would re-reveal the chrome and flip-flop it every
+    // idle interval. See `reveal-chrome-from-pointer`.
+    property <bool> suppress-pointer-reveal: false;
+    // True while the pointer rests on the pill or the title capsule. The chrome
+    // must NOT auto-hide under the cursor there, so this pauses the idle timer
+    // (same role `field-focused` plays while typing a page number).
+    property <bool> chrome-hovered: viewer-pill.hovered || title-touch.has-hover;
     // Scrubber data (1-based current page + total; direction + layout; preview thumbs).
     in property <int> scrubber-current-page;
     in property <int> scrubber-total-pages;
@@ -126,6 +136,18 @@ export component ViewerWindow inherits Window {
         idle-timer.running = true;
         idle-timer.stop();
         idle-timer.start();
+    }
+
+    // Pointer-driven reveals (PageView hover) honor a brief suppression window
+    // after an idle-hide so the chrome does not flip-flop when it hides out from
+    // under a stationary cursor (see `suppress-pointer-reveal`). A genuine
+    // pointer move after the window reveals the chrome normally; arrow keys and
+    // scrubber drags bypass this guard via `reveal-chrome-now` directly.
+    function reveal-chrome-from-pointer() {
+        if (root.suppress-pointer-reveal) {
+            return;
+        }
+        root.reveal-chrome-now();
     }
 
     callback open-folder();
@@ -267,27 +289,67 @@ export component ViewerWindow inherits Window {
                     begin-pan() => { root.begin-pan(); }
                     pan-to(dx, dy) => { root.pan-to(dx, dy); }
                     viewport-resized(w, h) => { root.viewport-resized(w, h); }
-                    reveal() => { root.reveal-chrome(); }
+                    reveal() => { root.reveal-chrome-from-pointer(); }
                 }
             }
 
-            // Title label above the pill (auto-hides with chrome)
-            Rectangle {
-                x: Theme.space-lg;
-                y: viewer-pill.y - self.height - Theme.space-xs;
-                width: parent.width - Theme.space-lg * 2;
-                height: Theme.font-label + Theme.space-xxs * 2;
+            // Title label above the pill (auto-hides with chrome). A dark
+            // translucent capsule keeps the white name legible over bright pages:
+            // Slint 1.x Text has no text-shadow and a Rectangle drop-shadow paints
+            // a full-width bar (not a text glow), so a backing capsule replaces the
+            // glow. The capsule hugs the name — its width tracks the text's
+            // preferred width (capped to the stage), and because preferred-width
+            // does not depend on this Rectangle's width there is no binding loop.
+            // Pinned to the top edge with a small inset; the pill is positioned
+            // BELOW it (see viewer-pill.y) so the title never clips off the top.
+            // No backing capsule — the title sits directly over the page, and
+            // legibility comes from a faux text-glow: Slint 1.x Text has no
+            // text-shadow, so the name is drawn several times in Theme.title-glow,
+            // offset 1px around a crisp white copy.
+            title-label := Rectangle {
+                width: min(front-text.preferred-width + Theme.space-lg * 2, parent.width - Theme.space-xl * 2);
+                height: front-text.preferred-height + Theme.space-xs * 2;
+                x: (parent.width - self.width) / 2;
+                y: Theme.space-sm;
                 background: transparent;
-                drop-shadow-color: Theme.title-glow;
-                drop-shadow-blur: 12px;
-                drop-shadow-offset-y: 1px;
-                visible: root.chrome-shown;
+                visible: root.chrome-shown && root.current-book-name != "";
                 opacity: root.chrome-shown ? 1.0 : 0.0;
                 animate opacity { duration: Theme.motion-fast; }
-                Text {
-                    x: 0; y: 0;
-                    width: parent.width;
-                    height: parent.height;
+                // Hover sensor: keeps the chrome from auto-hiding while the pointer
+                // rests on the title (see idle-timer). Declared before the text so
+                // it sits behind it; the text is non-interactive anyway.
+                title-touch := TouchArea { }
+                // Glow copies behind the crisp white title (faux text-shadow).
+                // 8 directions (orthogonal + diagonal) at ~2px spread the glow
+                // wider than a 1px outline; the diagonals use ~1.5px so the halo
+                // stays roughly circular.
+                for o in [
+                    { dx: -2px, dy: 0px },
+                    { dx: 2px, dy: 0px },
+                    { dx: 0px, dy: -2px },
+                    { dx: 0px, dy: 2px },
+                    { dx: -1.5px, dy: -1.5px },
+                    { dx: 1.5px, dy: -1.5px },
+                    { dx: -1.5px, dy: 1.5px },
+                    { dx: 1.5px, dy: 1.5px },
+                ] : Text {
+                    x: Theme.space-lg + o.dx;
+                    y: o.dy;
+                    width: parent.width - Theme.space-lg * 2;
+                    height: 100%;
+                    text: root.current-book-name;
+                    color: Theme.title-glow;
+                    font-size: Theme.font-label;
+                    font-weight: Theme.weight-medium;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                    overflow: elide;
+                }
+                front-text := Text {
+                    x: Theme.space-lg;
+                    y: 0;
+                    width: parent.width - Theme.space-lg * 2;
+                    height: 100%;
                     text: root.current-book-name;
                     color: Theme.text;
                     font-size: Theme.font-label;
@@ -298,10 +360,11 @@ export component ViewerWindow inherits Window {
                 }
             }
 
-            // ViewerPill: centered floating glass pill (auto-hides with chrome)
+            // ViewerPill: centered floating glass pill (auto-hides with chrome),
+            // placed just below the title label so neither clips the other.
             viewer-pill := ViewerPill {
                 x: (parent.width - self.width) / 2;
-                y: Theme.space-sm + Theme.font-label + Theme.space-xxs * 2 + Theme.space-xs;
+                y: title-label.y + title-label.height + Theme.space-xs;
                 page-text <=> root.page-jump-text;
                 total-pages: root.scrubber-total-pages;
                 visible: root.chrome-shown;
@@ -343,10 +406,27 @@ export component ViewerWindow inherits Window {
             // not have focus (suppressed while the user types a page number).
             idle-timer := Timer {
                 interval: 2500ms;
-                running: root.chrome-shown && !viewer-pill.field-focused;
+                running: root.chrome-shown && !viewer-pill.field-focused && !root.chrome-hovered;
                 triggered => {
-                    if (!viewer-pill.field-focused) { root.chrome-shown = false; }
+                    if (!viewer-pill.field-focused && !root.chrome-hovered) {
+                        root.chrome-shown = false;
+                        // Suppress the phantom pointer-reveal this hide triggers
+                        // when a stationary cursor sat over the vacated chrome.
+                        root.suppress-pointer-reveal = true;
+                        reveal-guard.start();
+                    }
                     idle-timer.stop();
+                }
+            }
+            // Clears the post-hide pointer-reveal suppression after a short window
+            // (long enough to absorb the phantom `changed mouse-x`, short enough
+            // that a real pointer move reveals the chrome without a felt delay).
+            reveal-guard := Timer {
+                interval: 250ms;
+                running: false;
+                triggered => {
+                    root.suppress-pointer-reveal = false;
+                    reveal-guard.stop();
                 }
             }
         }

@@ -104,7 +104,11 @@ export global Theme {
     out property <color> glass-border: #2f3850b3;    // hairline-float @ ~70% alpha
     out property <color> glass-highlight: #dde5f51f; // text-high @ ~12% — top inner rim
     out property <color> viewer-pill-fill: #10141fb3;   // surface-float @ ~70% alpha (viewer pill, slightly more transparent than glass-fill)
-    out property <color> title-glow: #7d7d7d;            // mid-gray glow for the book title label over bright pages
+    // Glow color for the book-title label. Slint 1.x Text has no text-shadow, so
+    // the title is rendered as 1px-offset duplicates in this color behind a crisp
+    // white copy — a soft outline/glow that keeps the name legible over bright
+    // pages without a backing capsule.
+    out property <color> title-glow: #3d3d3d;            // text-glow tone behind the white title
 
     // ── Nav bar sizing (golden ratio phi ~= 1.618 via Fibonacci px) ──
     out property <length> nav-icon: 21px;        // 13 x phi
