@@ -59,10 +59,22 @@ export global Theme {
     out property <length> scrubber-knob-size: 16px;
     out property <length> scrubber-knob-size-active: 20px;   // drag-grow target
 
-    // ── Settings control atoms (issue #102) ───────────────────────────────────
+    // ── Settings control atoms (issue 102) ───────────────────────────────────
     // Shared visible-capsule height for Segmented / Stepper / Toggle. The DESIGN
     // ~32px hit area is met by the surrounding row (see PR-B); the capsule is 30.
     out property <length> settings-control-h: 30px;
+
+    // ── Settings glass panel (issue 103, PR-B) ────────────────────────────────
+    out property <length> settings-w: 360px;             // panel width
+    out property <length> settings-h: 583px;             // panel height; settings-h / settings-w ≈ φ (1.618)
+    out property <length> settings-radius: 21px;         // named alias of nav-pill-radius — shares NavBar's glass corner language
+    out property <length> settings-label-col: 150px;     // fixed label column sized to longest label "Cache size (pages)" in font-label (12px); labels never wrap/elide
+    out property <length> settings-control-x: settings-label-col + space-lg;  // single vertical seam every control + section header shares
+    out property <length> settings-row-h: 34px;          // row height (= nav-capsule); the 30px atom centers within it
+    // ⚠ NOT an accent — a hair lighter than glass-fill; top stop of the panel fill
+    // gradient. Do not mistake for an accent color (cf. title-glow's similar caveat).
+    out property <color> glass-sheen-top: #1a2030d1;     // stage-top @ ~82% alpha; top stop of settings panel gradient
+    out property <length> settings-scroll-indicator-w: 3px;  // self-drawn scroll indicator width
 
     // ── Typography sizes (system font; no custom typeface) ────────────────────
     out property <length> font-title: 15px;
