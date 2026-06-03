@@ -30,7 +30,7 @@ All visual tokens (colors, border radii, spacing, font sizes, component sizes, s
 
 Slint-specific: colors encode alpha as `#RRGGBBAA` (e.g. the `…40` byte is ~25% alpha), unlike CSS `rgba()`.
 
-**Golden-ratio radius tokens** (introduced/refined in PR#83 and PR#88): `Theme.nav-search-radius` (search field corner radius) and `Theme.nav-pill-radius` (outer glass pill) are computed as `height / φ²` (≈ 0.382 × height). A radius below `height / 2` yields a rounded rectangle; `Theme.radius-pill` (`9999px`) yields a stadium/oval. Deriving radii from component height via φ keeps proportions harmonious without hard-coding lengths — a concrete example of the token-driven, no-inline-values rule.
+**Golden-ratio radius tokens** (introduced/refined in PR#83 and PR#88): `Theme.nav-search-radius` (search field corner radius) and `Theme.nav-pill-radius` (outer glass pill) are computed as `height / φ²` (≈ 0.382 × height). A radius below `height / 2` yields a rounded rectangle; `Theme.radius-pill` (`9999px`) yields a stadium/oval. Deriving radii from component height via φ keeps proportions harmonious without hard-coding lengths — a concrete example of the token-driven, no-inline-values rule. The settings panel (issue 103, PR-B) extends the same φ discipline: `Theme.settings-radius` ALIASES `nav-pill-radius` (so the panel shares NavBar's glass corner language in one place), and the panel's `Theme.settings-h` / `Theme.settings-w` form a φ ratio (583 / 360 ≈ 1.618).
 
 ### Shared Slint components
 

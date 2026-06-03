@@ -1,0 +1,64 @@
+// SettingRow — the L1 alignment molecule for the settings dialog (issue 103, PR-B).
+//
+// Owns the single readability seam the redesign hinges on: a fixed-width label
+// column (settings-label-col) at the left margin and an `@children` control slot
+// that starts at the shared vertical seam (settings-control-x). Every row places
+// its control at the SAME x, so the seven controls' left edges line up instead of
+// going ragged (the std-widgets defect this molecule fixes). There is NO
+// horizontal-stretch anywhere — width is never negotiated (docs/patterns.md L1).
+//
+// The 30px atom (settings-control-h) centers vertically inside the 34px row
+// (settings-row-h) via the centering wrapper around the slot.
+//
+// `stacked` is an L4 escape hatch (Marcotte's i18n insurance): a future German /
+// Finnish / font-zoom / RTL breach can pivot a row to label-above-control without
+// touching any call site. PR-B ships it as a compiling stub that reuses the SAME
+// single `@children` slot (Slint allows `@children` exactly once per component) —
+// `stacked` only repositions the label + slot.
+import { Theme } from "../Theme.slint";
+
+export component SettingRow inherits Rectangle {
+    in property <string> label;
+    // STUB (issue 103): the stacked (L4) geometry is INCOMPLETE — the row height
+    // is not yet adapted for a stacked label+control (fixed 34px splits in half,
+    // so a 30px control overflows its ~17px slot). Do NOT set stacked: true at
+    // any call site until the adaptive-height layout is finished.
+    in property <bool> stacked: false;   // L4 escape hatch (default = L1 horizontal)
+
+    height: Theme.settings-row-h;
+
+    // ── Label ─────────────────────────────────────────────────────────────────────
+    // L1: at the left margin, vertically centered in the row, occupying the fixed
+    // label column. L4 (stacked): at the top-left, above the control. No wrap;
+    // overflow CLIPS (not elide) so the seam width never drifts. text-mid
+    // (not accent — accent is interactive-only).
+    Text {
+        x: 0;
+        y: 0;
+        width: root.stacked ? root.width : Theme.settings-label-col;
+        height: root.stacked ? root.height / 2 : root.height;
+        text: root.label;
+        color: Theme.text-mid;
+        font-size: Theme.font-body;
+        horizontal-alignment: left;
+        vertical-alignment: center;
+        wrap: no-wrap;
+        overflow: clip;
+    }
+
+    // ── Control slot ────────────────────────────────────────────────────────────
+    // L1: starts at the shared seam (settings-control-x), centering its child (a
+    // 30px atom) within the 34px row. L4 (stacked): drops below the label at the
+    // left margin. The HorizontalLayout (alignment: start, no stretch) hugs the
+    // child's intrinsic width so the right edge stays honestly ragged.
+    Rectangle {
+        x: root.stacked ? 0px : Theme.settings-control-x;
+        y: root.stacked ? root.height / 2 : 0px;
+        width: parent.width - self.x;
+        height: root.stacked ? root.height / 2 : root.height;
+        HorizontalLayout {
+            alignment: start;
+            @children
+        }
+    }
+}

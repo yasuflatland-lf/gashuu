@@ -1,15 +1,42 @@
-// Modal settings overlay for gashuu.
-// Rendered as a full-area semi-transparent backdrop with a centered panel.
-// Each setting change fires a callback so Rust can react. Display modes apply
-// immediately; cache size and preload radius apply to newly opened books.
-// Idempotency (no-op on equal values) is enforced on the Rust side to absorb the
-// selection self-fire from the token-driven control atoms (Segmented / Stepper /
-// Toggle replaced the native ComboBox / SpinBox / CheckBox in issue 102 / PR-A).
-import { Button, VerticalBox, HorizontalBox } from "std-widgets.slint";
+// Modal settings overlay for gashuu — rebuilt as a fixed-height golden-ratio
+// "liquid glass" panel (issue 103, PR-B; design:
+// docs/superpowers/specs/2026-06-03-settings-form-liquid-glass-design.md).
+//
+// Form factor: a 360 x 583 px portrait golden rectangle (height/width ≈ φ),
+// radius 21px (shares NavBar's glass corner language), height CLAMPED to
+// min(settings-h, window.height − 2·space-huge) so a short window scrolls the
+// body instead of overflowing (Marcotte). The panel is ONE fake-glass object —
+// NavBar's four-layer fake-glass idiom (fill + 1px rim + 1px top highlight + one
+// drop shadow), with layer 1 promoted from a solid fill to a top-sheen
+// @linear-gradient. No nested glass / no second shadow. The sheen is a FILL
+// gradient, not an opacity layer (opacity blurs text/SVG on HiDPI — patterns.md).
+//
+// Content: three whitespace-delineated sections (Reading / Display / Performance)
+// of token-driven atoms (Segmented / Stepper / Toggle), each laid out by a
+// SettingRow on the single L1 seam (settings-control-x). Section headers are
+// text-dim sentence case (NOT accent — accent marks interactive/selected only).
+//
+// Dismiss: Esc (FocusScope) + backdrop-click + Close button, all three. The panel
+// absorbs clicks via a lowest-layer TouchArea so a click inside it does not bubble
+// to the backdrop dismiss. The dialog's FocusScope (`fs`) WRAPS the panel content,
+// so it is a genuine ANCESTOR of every control: when a focused atom's inner
+// FocusScope rejects an unhandled key, Slint walks strictly up the focused item's
+// parent chain (Slint 1.16 window.rs) — which now passes through `fs` — so Esc
+// reaches `fs.key-pressed` even while a child control holds focus. (`fs` must be an
+// ancestor, not a sibling, or that upward walk never visits it.) Verify by hand —
+// the cargo gates don't exercise .slint key handling.
+//
+// Each setting change fires a callback so Rust can react; the Rust setters are
+// idempotent (no-op on equal values) to absorb the atoms' selection self-fire.
+// The Slint↔Rust contract (the *-index / value in-out props + set-* callbacks) is
+// preserved exactly; key-bindings-text stays declared/parked (its on-screen
+// rendering moves to the shortcuts overlay in PR-C).
 import { Theme } from "Theme.slint";
+import { SettingRow } from "components/SettingRow.slint";
 import { Segmented } from "components/Segmented.slint";
 import { Stepper } from "components/Stepper.slint";
 import { Toggle } from "components/Toggle.slint";
+import { PrimaryButton } from "components/PrimaryButton.slint";
 
 export component SettingsDialog inherits Rectangle {
     // ── Full-area semi-transparent backdrop ──────────────────────────────────
@@ -30,7 +57,9 @@ export component SettingsDialog inherits Rectangle {
     in-out property <int> preload-pages;
     // Whether recent-files tracking is enabled.
     in-out property <bool> track-recent;
-    // Read-only reference text listing keyboard shortcuts (display only).
+    // Read-only reference text listing keyboard shortcuts. Parked in PR-B (kept
+    // bound so the Slint↔Rust contract has nothing dangling); its on-screen
+    // rendering moves to ShortcutsOverlay in PR-C.
     in property <string> key-bindings-text;
     // True when this dialog edits the CURRENT book's per-book settings (opened
     // from the Viewer): shows the per-book title and the reset-to-global button.
@@ -44,205 +73,357 @@ export component SettingsDialog inherits Rectangle {
     callback set-cache-size(int);
     callback set-preload-pages(int);
     callback set-track-recent(bool);
-    // Fired when the user clicks the Close button.
+    // Fired on Esc, backdrop-click, or the Close button.
     callback close-settings();
     // Fired when the user clicks "Reset to global defaults" (viewer context only).
     callback reset-to-global();
 
-    // ── Centered panel ────────────────────────────────────────────────────────
-    Rectangle {
-        // Fluid width: caps at 480 px on wide windows; shrinks to leave a
-        // Theme.space-xl gutter on each side on narrow windows.
-        width: min(480px, parent.width - 2 * Theme.space-xl);
-        // Height is determined by content; anchor the panel at center.
+    // ── Backdrop dismiss ──────────────────────────────────────────────────────
+    // A click anywhere on the scrim (outside the panel) closes the dialog. Clicks
+    // inside the panel are absorbed by the panel's own lowest-layer TouchArea
+    // below, so they never reach this one.
+    TouchArea {
+        clicked => {
+            root.close-settings();
+        }
+    }
+
+    // ── Glass panel ───────────────────────────────────────────────────────────
+    panel := Rectangle {
+        width: Theme.settings-w;
+        // Marcotte clamp: φ height, but never taller than the window minus a
+        // gutter on each side — then the body scrolls instead.
+        height: min(Theme.settings-h, max(0px, parent.height - 2 * Theme.space-huge));
         x: (parent.width - self.width) / 2;
         y: (parent.height - self.height) / 2;
-        background: Theme.surface-float;
-        border-radius: Theme.radius-md;
-        border-color: Theme.hairline-float;
+
+        // Glass layers 1, 2, 4: a top-sheen FILL gradient (not opacity), a 1px
+        // soft rim, and ONE drop shadow. No nested glass / no second shadow.
+        background: @linear-gradient(180deg, Theme.glass-sheen-top 0%, Theme.glass-fill 46%);
+        border-radius: Theme.settings-radius;
         border-width: 1px;
+        border-color: Theme.glass-border;
+        drop-shadow-color: Theme.shadow-popover;
+        drop-shadow-blur: 22px;
+        drop-shadow-offset-y: 8px;
 
-        VerticalBox {
-            padding: 20px;
-            spacing: 12px;
+        // Layer 3: 1px top inner highlight, inset horizontally by ~half the radius
+        // so it stays inside the rounded corners (NavBar idiom).
+        Rectangle {
+            x: Theme.space-md;
+            y: 1px;
+            width: parent.width - 2 * Theme.space-md;
+            height: 1px;
+            background: Theme.glass-highlight;
+        }
 
-            // ── Title ─────────────────────────────────────────────────────────
-            Text {
-                text: root.show-reset-button ? "Book settings" : "Settings";
-                font-size: Theme.font-title;
-                color: Theme.text-high;
-                horizontal-alignment: left;
+        // Panel click absorber: lowest interactive layer. Any click that lands on
+        // the panel (not on a control) stops here instead of bubbling to the
+        // backdrop TouchArea — so clicking the panel never dismisses the dialog.
+        TouchArea { }
+
+        // ── FocusScope: Esc-to-close + initial focus on the first control ──────
+        // WRAPS the panel content so it is a genuine ANCESTOR of every control:
+        // on appear it hands focus to the first control (Segmented's public
+        // focus-control()) — it does NOT keep focus itself, so arrow-key control
+        // and first-control-focus both work. On Esc, closes; all other keys are
+        // rejected so they reach the focused child control. A focused child atom's
+        // FocusScope rejects unhandled keys; Slint then walks UP the focused item's
+        // parent chain, which passes through this scope, so Esc fires here.
+        // Fills the panel (declared after the absorber so controls keep hit-test
+        // priority and empty-panel clicks fall through to the absorber, not here).
+        fs := FocusScope {
+            x: 0;
+            y: 0;
+            width: parent.width;
+            height: parent.height;
+            init => {
+                direction-control.focus-control();
+            }
+            key-pressed(event) => {
+                if (event.text == Key.Escape) {
+                    root.close-settings();
+                    return accept;
+                }
+                return reject;
             }
 
-            // ── Reading direction ─────────────────────────────────────────────
-            HorizontalBox {
-                spacing: 8px;
-                Text {
-                    text: "Reading direction";
-                    color: Theme.text-mid;
-                    font-size: Theme.font-body;
-                    vertical-alignment: center;
-                    horizontal-stretch: 1;
+            // ── Panel content: sticky header, scrollable body, sticky footer ───
+            body-col := VerticalLayout {
+                x: 0;
+                y: 0;
+                width: parent.width;
+                height: parent.height;
+                padding-top: Theme.space-lg;
+                padding-bottom: Theme.space-lg;
+
+                // ── Sticky header ─────────────────────────────────────────────────
+                HorizontalLayout {
+                    padding-left: Theme.space-xl;
+                    padding-right: Theme.space-xl;
+                    padding-bottom: Theme.space-md;
+                    Text {
+                        // "Book settings" when editing the current book's per-book
+                        // override (opened from the Viewer); plain "Settings" for the
+                        // global defaults (Library screen).
+                        text: root.show-reset-button ? "Book settings" : "Settings";
+                        font-size: Theme.font-title;
+                        font-weight: Theme.weight-semibold;
+                        color: Theme.text-high;
+                        horizontal-alignment: left;
+                        accessible-role: text;
+                        accessible-label: root.show-reset-button ? "Book settings" : "Settings";
+                    }
                 }
-                Segmented {
-                    model: ["Left to Right", "Right to Left"];
-                    current-index <=> root.reading-direction-index;
-                    a11y-label: "Reading direction";
-                    selected(i) => { root.set-reading-direction(i); }
-                    horizontal-stretch: 1;
+
+                // ── Scrollable body ───────────────────────────────────────────────
+                // A Flickable (not std ScrollView — its native scrollbar paints a
+                // light palette that breaks the glass, design §6.3). The viewport
+                // height is the intrinsic content height, so it scrolls ONLY when the
+                // content overflows the visible body (clamped-window case).
+                body := Flickable {
+                    vertical-stretch: 1;
+                    viewport-width: self.width;
+                    viewport-height: content.preferred-height;
+
+                    content := VerticalLayout {
+                        padding-left: Theme.space-xl;
+                        padding-right: Theme.space-xl;
+                        spacing: Theme.space-xl;
+                        alignment: start;
+
+                        // ── Section: Reading ──────────────────────────────────────
+                        VerticalLayout {
+                            spacing: Theme.space-sm;
+                            Text {
+                                text: "Reading";
+                                font-size: Theme.font-label;
+                                color: Theme.text-dim;
+                                horizontal-alignment: left;
+                            }
+                            SettingRow {
+                                label: "Direction";
+                                direction-control := Segmented {
+                                    model: ["Left to Right", "Right to Left"];
+                                    current-index <=> root.reading-direction-index;
+                                    a11y-label: "Reading direction";
+                                    selected(i) => {
+                                        root.set-reading-direction(i);
+                                    }
+                                }
+                            }
+                            SettingRow {
+                                label: "Spread";
+                                Segmented {
+                                    model: ["Single", "Double", "Auto"];
+                                    current-index <=> root.spread-mode-index;
+                                    a11y-label: "Spread mode";
+                                    selected(i) => {
+                                        root.set-spread-mode(i);
+                                    }
+                                }
+                            }
+                        }
+
+                        // ── Section: Display ──────────────────────────────────────
+                        VerticalLayout {
+                            spacing: Theme.space-sm;
+                            Text {
+                                text: "Display";
+                                font-size: Theme.font-label;
+                                color: Theme.text-dim;
+                                horizontal-alignment: left;
+                            }
+                            SettingRow {
+                                label: "Cover";
+                                Segmented {
+                                    model: ["Standalone", "Paired"];
+                                    current-index <=> root.cover-mode-index;
+                                    a11y-label: "Cover mode";
+                                    selected(i) => {
+                                        root.set-cover-mode(i);
+                                    }
+                                }
+                            }
+                            SettingRow {
+                                label: "Fit";
+                                Segmented {
+                                    model: ["Whole", "Width", "Actual"];
+                                    current-index <=> root.fit-mode-index;
+                                    a11y-label: "Fit mode";
+                                    selected(i) => {
+                                        root.set-fit-mode(i);
+                                    }
+                                }
+                            }
+                        }
+
+                        // ── Section: Performance ──────────────────────────────────
+                        VerticalLayout {
+                            spacing: Theme.space-sm;
+                            Text {
+                                text: "Performance";
+                                font-size: Theme.font-label;
+                                color: Theme.text-dim;
+                                horizontal-alignment: left;
+                            }
+                            SettingRow {
+                                // Longest label — its width sizes settings-label-col.
+                                label: "Cache size (pages)";
+                                Stepper {
+                                    value <=> root.cache-size;
+                                    minimum: 1;
+                                    maximum: 9999;
+                                    a11y-label: "Cache size in pages";
+                                    edited(v) => {
+                                        root.set-cache-size(v);
+                                    }
+                                }
+                            }
+                            SettingRow {
+                                label: "Preload radius";
+                                Stepper {
+                                    value <=> root.preload-pages;
+                                    minimum: 0;
+                                    maximum: 99;
+                                    a11y-label: "Preload radius";
+                                    edited(v) => {
+                                        root.set-preload-pages(v);
+                                    }
+                                }
+                            }
+                            SettingRow {
+                                label: "Track recent files";
+                                Toggle {
+                                    checked <=> root.track-recent;
+                                    a11y-label: "Track recent files";
+                                    toggled(b) => {
+                                        root.set-track-recent(b);
+                                    }
+                                }
+                            }
+                            // Performance note at the label left margin.
+                            Text {
+                                text: "Cache & preload apply to newly opened books.";
+                                font-size: Theme.font-micro;
+                                color: Theme.text-dim;
+                                horizontal-alignment: left;
+                                wrap: word-wrap;
+                            }
+                        }
+                    }
+                }
+
+                // ── Sticky footer ─────────────────────────────────────────────────
+                Rectangle {
+                    vertical-stretch: 0;
+                    height: footer-row.preferred-height + Theme.space-md;
+
+                    // 1px hairline top edge honestly marks the scroll boundary.
+                    Rectangle {
+                        x: 0;
+                        y: 0;
+                        width: parent.width;
+                        height: 1px;
+                        background: Theme.hairline;
+                    }
+
+                    // Footer order: [Shortcuts] … [Reset to global] [Close]. A
+                    // single stretch spacer pins Shortcuts left and groups the
+                    // action button(s) hard right (alignment: start so the spacer
+                    // owns the slack — `space-between` would scatter 3+ items
+                    // evenly instead of grouping Reset with Close). The Reset
+                    // button only appears in the per-book (viewer) context; the
+                    // 360px panel minus the two space-xl gutters cannot fit the
+                    // full "Reset to global defaults" label beside Shortcuts and
+                    // Close on one line, so the label is shortened to "Reset to
+                    // global" (the accessible-label carries the full intent).
+                    footer-row := HorizontalLayout {
+                        x: 0;
+                        y: Theme.space-md;
+                        width: parent.width;
+                        padding-left: Theme.space-xl;
+                        padding-right: Theme.space-xl;
+                        spacing: Theme.space-md;
+                        alignment: start;
+
+                        // LEFT: a FOCUSABLE no-op "Shortcuts" stub. It sits in the Tab
+                        // order between the controls and Close (declaration order).
+                        // PR-C wires it to open ShortcutsOverlay; here it does nothing.
+                        shortcuts := FocusScope {
+                            horizontal-stretch: 0;
+                            width: shortcuts-label.preferred-width;
+                            height: shortcuts-label.preferred-height;
+                            // Idle goes text-dim (static affordance); focus brightens to
+                            // text-high so the Tab ring is visible without an accent rule
+                            // (accent stays interactive/selected-only).
+                            shortcuts-label := Text {
+                                text: "⌨ Shortcuts";
+                                font-size: Theme.font-label;
+                                color: parent.has-focus ? Theme.text-high : Theme.text-dim;
+                                horizontal-alignment: left;
+                                vertical-alignment: center;
+                            }
+                            accessible-role: button;
+                            accessible-label: "Keyboard shortcuts";
+                        }
+
+                        // Stretch spacer: pushes the action button(s) hard right.
+                        Rectangle { horizontal-stretch: 1; }
+
+                        // RIGHT (per-book only): reset the current book's overrides
+                        // back to the global defaults. Reuses PrimaryButton (no
+                        // secondary variant exists); Close stays the rightmost,
+                        // last-resort action. Shown only in the viewer context.
+                        if root.show-reset-button : PrimaryButton {
+                            text: "Reset to global";
+                            clicked => {
+                                root.reset-to-global();
+                            }
+                        }
+
+                        // RIGHT: Close — the reused PrimaryButton, always visible in
+                        // the sticky footer even while the body scrolls.
+                        PrimaryButton {
+                            text: "Close";
+                            clicked => {
+                                root.close-settings();
+                            }
+                        }
+                    }
                 }
             }
 
-            // ── Spread mode ───────────────────────────────────────────────────
-            HorizontalBox {
-                spacing: 8px;
-                Text {
-                    text: "Spread";
-                    color: Theme.text-mid;
-                    font-size: Theme.font-body;
-                    vertical-alignment: center;
-                    horizontal-stretch: 1;
-                }
-                Segmented {
-                    model: ["Single", "Double", "Auto"];
-                    current-index <=> root.spread-mode-index;
-                    a11y-label: "Spread";
-                    selected(i) => { root.set-spread-mode(i); }
-                    horizontal-stretch: 1;
-                }
-            }
+            // ── Self-drawn scroll indicator ───────────────────────────────────
+            // Only when the body content overflows its visible height. A thin rail
+            // (track-prog) with an accent thumb whose size/offset derive from the
+            // Flickable viewport geometry. Show/hide via `visible:` ONLY (no
+            // opacity — HiDPI blur rule). No edge fades. Declared as a sibling of
+            // the content layout inside `fs`, so its y is computed in THIS scope's
+            // space: body-col.y (the content layout’s own offset within fs) + body.y
+            // (the body Flickable’s y within that layout). Deriving y this way
+            // — rather than from a bare `body.y` — keeps the rail aligned even if
+            // the content layout is ever given a non-zero offset within `fs`.
+            Rectangle {
+                visible: body.viewport-height > body.height;
+                x: parent.width - Theme.settings-scroll-indicator-w - Theme.space-xxs;
+                y: body-col.y + body.y;
+                width: Theme.settings-scroll-indicator-w;
+                height: body.height;
+                background: Theme.track-prog;
+                border-radius: Theme.settings-scroll-indicator-w / 2;
+                // Clip the thumb so elastic overscroll (viewport-y briefly positive)
+                // cannot render the thumb above the rail bounds.
+                clip: true;
 
-            // ── Cover mode ────────────────────────────────────────────────────
-            HorizontalBox {
-                spacing: 8px;
-                Text {
-                    text: "Cover";
-                    color: Theme.text-mid;
-                    font-size: Theme.font-body;
-                    vertical-alignment: center;
-                    horizontal-stretch: 1;
-                }
-                Segmented {
-                    model: ["Standalone", "Paired"];
-                    current-index <=> root.cover-mode-index;
-                    a11y-label: "Cover";
-                    selected(i) => { root.set-cover-mode(i); }
-                    horizontal-stretch: 1;
-                }
-            }
-
-            // ── Fit mode ──────────────────────────────────────────────────────
-            HorizontalBox {
-                spacing: 8px;
-                Text {
-                    text: "Fit";
-                    color: Theme.text-mid;
-                    font-size: Theme.font-body;
-                    vertical-alignment: center;
-                    horizontal-stretch: 1;
-                }
-                Segmented {
-                    model: ["Whole", "Width", "Actual"];
-                    current-index <=> root.fit-mode-index;
-                    a11y-label: "Fit";
-                    selected(i) => { root.set-fit-mode(i); }
-                    horizontal-stretch: 1;
-                }
-            }
-
-            // ── Cache size ────────────────────────────────────────────────────
-            HorizontalBox {
-                spacing: 8px;
-                Text {
-                    text: "Cache size (pages)";
-                    color: Theme.text-mid;
-                    font-size: Theme.font-body;
-                    vertical-alignment: center;
-                    horizontal-stretch: 1;
-                }
-                Stepper {
-                    value <=> root.cache-size;
-                    minimum: 1;
-                    maximum: 9999;
-                    a11y-label: "Cache size (pages)";
-                    edited(v) => { root.set-cache-size(v); }
-                    horizontal-stretch: 1;
-                }
-            }
-
-            // ── Preload radius ────────────────────────────────────────────────
-            HorizontalBox {
-                spacing: 8px;
-                Text {
-                    text: "Preload radius";
-                    color: Theme.text-mid;
-                    font-size: Theme.font-body;
-                    vertical-alignment: center;
-                    horizontal-stretch: 1;
-                }
-                Stepper {
-                    value <=> root.preload-pages;
-                    minimum: 0;
-                    maximum: 99;
-                    a11y-label: "Preload radius";
-                    edited(v) => { root.set-preload-pages(v); }
-                    horizontal-stretch: 1;
-                }
-            }
-
-            // ── Cache/preload note ────────────────────────────────────────────
-            Text {
-                text: "Cache & preload apply to newly opened books.";
-                font-size: Theme.font-micro;
-                color: Theme.text-dim;
-                horizontal-alignment: left;
-            }
-
-            // ── Track recent files ────────────────────────────────────────────
-            // PR-A interim: the Toggle carries no built-in label, so pair it with
-            // a sibling Text (mirrors the other rows' label + control layout).
-            HorizontalBox {
-                spacing: 8px;
-                Text {
-                    text: "Track recent files";
-                    color: Theme.text-mid;
-                    font-size: Theme.font-body;
-                    vertical-alignment: center;
-                    horizontal-stretch: 1;
-                }
-                Toggle {
-                    checked <=> root.track-recent;
-                    a11y-label: "Track recent files";
-                    toggled(b) => { root.set-track-recent(b); }
-                }
-            }
-
-            // ── Keyboard shortcuts reference (read-only) ──────────────────────
-            Text {
-                text: "Keyboard shortcuts (reference)";
-                font-size: Theme.font-body;
-                color: Theme.text-mid;
-                horizontal-alignment: left;
-            }
-            Text {
-                text: root.key-bindings-text;
-                font-size: Theme.font-label;
-                color: Theme.text-dim;
-                horizontal-alignment: left;
-                wrap: word-wrap;
-            }
-
-            // ── Action buttons ────────────────────────────────────────────────
-            HorizontalBox {
-                if root.show-reset-button : Button {
-                    text: "Reset to global defaults";
-                    clicked => { root.reset-to-global(); }
-                }
-                // Spacer pushes Close to the right edge (Button stretch is 0).
-                Rectangle { horizontal-stretch: 1; }
-                Button {
-                    text: "Close";
-                    clicked => { root.close-settings(); }
+                // Thumb: proportional size and offset from the scroll position.
+                Rectangle {
+                    x: 0;
+                    width: parent.width;
+                    height: parent.height * (body.height / max(body.viewport-height, 1px));
+                    y: -body.viewport-y * (parent.height / max(body.viewport-height, 1px));
+                    background: Theme.accent;
+                    border-radius: Theme.settings-scroll-indicator-w / 2;
                 }
             }
         }
