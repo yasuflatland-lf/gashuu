@@ -1440,3 +1440,20 @@ fn set_cache_config_updates_fields() {
     assert_eq!(state.cache_config().capacity(), 99);
     assert_eq!(state.cache_config().radius(), 7);
 }
+
+#[test]
+fn apply_resolved_view_sets_direction_spread_cover() {
+    // Defaults are Single / Standalone / Ltr; the resolved view differs on all
+    // three so the assertions cannot pass vacuously. fit_mode is ignored here
+    // (ViewportState owns it); the caller applies it via ViewportState::set_fit.
+    let mut s = ViewerState::new();
+    s.apply_resolved_view(ResolvedView {
+        reading_direction: ReadingDirection::Rtl,
+        spread_mode: SpreadMode::Double,
+        cover_mode: CoverMode::Paired,
+        fit_mode: gashuu_core::FitMode::Actual,
+    });
+    assert_eq!(s.reading_direction(), ReadingDirection::Rtl);
+    assert_eq!(s.spread_mode(), SpreadMode::Double);
+    assert_eq!(s.cover_mode(), CoverMode::Paired);
+}
