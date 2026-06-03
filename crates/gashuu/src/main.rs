@@ -586,6 +586,34 @@ fn main() -> color_eyre::Result<()> {
         });
     }
 
+    // Show the shortcuts overlay: the overlay opens on top of the still-open settings
+    // dialog, so key_bindings_text is already set by on_open_settings; nothing more
+    // is needed here than flipping the visibility flag.
+    {
+        let ui_weak = ui.as_weak();
+        ui.on_open_shortcuts(move || {
+            with_ui(&ui_weak, |ui| {
+                ui.set_show_shortcuts(true);
+            })
+        });
+    }
+
+    // Close the shortcuts overlay: hide it and return focus to the still-mounted
+    // SettingsDialog.  Focus must not go to the screen behind — the dialog remains
+    // open.  invoke_focus_settings drives a focus epoch on the dialog because
+    // if-gated child elements cannot be targeted directly.
+    // Closing the overlay must NOT close settings: do not touch show_settings and
+    // do not run reconcile/save here.
+    {
+        let ui_weak = ui.as_weak();
+        ui.on_close_shortcuts(move || {
+            with_ui(&ui_weak, |ui| {
+                ui.set_show_shortcuts(false);
+                ui.invoke_focus_settings();
+            })
+        });
+    }
+
     // Dismiss the first-run guide: mark it seen, persist, hide it, restore focus.
     // Two-statement RefCell discipline: the `borrow_mut()` drops at the `;` before
     // the immutable `borrow()` for `save`.
