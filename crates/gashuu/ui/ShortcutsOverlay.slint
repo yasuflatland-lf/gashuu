@@ -7,9 +7,10 @@
 // fake-glass object (NavBar's four-layer structure with layer 1 promoted from
 // a solid fill to a top-sheen FILL gradient + a 1px rim + a 1px top inner
 // highlight + ONE drop shadow), the same Flickable body + self-drawn scroll
-// indicator. The only deltas: a SHORTER panel (shortcuts-h < the
-// settings-h φ rectangle) so it reads as a smaller modal stacked on top, and a
-// read-only body (the key-bindings reference text) instead of interactive controls.
+// indicator. The only deltas: a SHORTER panel (shortcuts-h, a fixed dimension
+// smaller than the settings panel's content-hug height) so it reads as a smaller
+// modal stacked on top, and a read-only body (the key-bindings reference text)
+// instead of interactive controls.
 // The sheen is a FILL gradient, not an opacity layer (opacity blurs text/SVG on
 // HiDPI — patterns.md); show/hide of the scroll indicator is `visible:` only,
 // never `opacity`.

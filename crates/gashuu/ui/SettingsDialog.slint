@@ -1,10 +1,11 @@
-// Modal settings overlay for gashuu — rebuilt as a fixed-height golden-ratio
-// "liquid glass" panel (issue 103, PR-B; design:
-// docs/superpowers/specs/2026-06-03-settings-form-liquid-glass-design.md).
+// Modal settings overlay for gashuu — a content-hug "liquid glass" panel
+// (issue 103, PR-B; visual polish: spec 2026-06-04 — the fixed φ outline was
+// deliberately dropped; φ now lives in the component proportions instead:
+// toggle track ratio, the 8/14/22 spacing ladder, segment padding).
 //
-// Form factor: a 360 x 583 px portrait golden rectangle (height/width ≈ φ),
-// radius 21px (shares NavBar's glass corner language), height CLAMPED to
-// min(settings-h, window.height − 2·space-huge) so a short window scrolls the
+// Form factor: 360px wide, height hugging header + body + footer, radius 21px
+// (shares NavBar's glass corner language), height CLAMPED to
+// min(content, window.height − 2·space-huge) so a short window scrolls the
 // body instead of overflowing (Marcotte). The panel is ONE fake-glass object —
 // NavBar's four-layer fake-glass idiom (fill + 1px rim + 1px top highlight + one
 // drop shadow), with layer 1 promoted from a solid fill to a top-sheen
@@ -111,9 +112,15 @@ export component SettingsDialog inherits Rectangle {
     // ── Glass panel ───────────────────────────────────────────────────────────
     panel := Rectangle {
         width: Theme.settings-w;
-        // Marcotte clamp: φ height, but never taller than the window minus a
-        // gutter on each side — then the body scrolls instead.
-        height: min(Theme.settings-h, max(0px, parent.height - 2 * Theme.space-huge));
+        // Content-hug height inside the Marcotte clamp (spec 2026-06-04): the
+        // panel is exactly header + body content + footer tall — no dead slack
+        // for the Flickable to absorb — but never taller than the window minus a
+        // gutter each side (then the body scrolls). A Flickable does NOT
+        // propagate its content's preferred height (that's why it can scroll),
+        // so the sum is assembled explicitly from the named parts.
+        height: min(
+            Theme.space-lg + header-row.preferred-height + content.preferred-height + footer-block.height,
+            max(0px, parent.height - 2 * Theme.space-huge));
         x: (parent.width - self.width) / 2;
         y: (parent.height - self.height) / 2;
 
@@ -179,7 +186,7 @@ export component SettingsDialog inherits Rectangle {
                 padding-top: Theme.space-lg;
 
                 // ── Sticky header ─────────────────────────────────────────────────
-                HorizontalLayout {
+                header-row := HorizontalLayout {
                     padding-left: Theme.space-xl;
                     padding-right: Theme.space-xl;
                     padding-bottom: Theme.space-md;

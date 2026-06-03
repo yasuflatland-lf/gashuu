@@ -86,8 +86,7 @@ export global Theme {
     out property <length> settings-dropdown-chevron: 10px;  // chevron glyph square
 
     // ── Settings glass panel (issue 103, PR-B) ────────────────────────────────
-    out property <length> settings-w: 360px;             // panel width
-    out property <length> settings-h: 583px;             // panel height; settings-h / settings-w ≈ φ (1.618)
+    out property <length> settings-w: 360px;             // panel width (height is content-hug — spec 2026-06-04 dropped the fixed φ outline)
     out property <length> settings-radius: nav-pill-radius;  // = nav-pill-radius (shares NavBar's glass corner language)
     out property <length> settings-label-col: 132px;     // fixed label column; longest label "Cache size (pages)" ≈ 100px in font-body (13px) leaves ~30px slack; narrowed from 150px (spec 2026-06-04) so fill segments get breathing room; labels never wrap/elide
     out property <length> settings-control-x: settings-label-col + space-lg;  // single vertical seam every CONTROL shares; section headers align with the label margin (not this seam)
@@ -99,13 +98,13 @@ export global Theme {
 
     // ── Shortcuts overlay panel (issue 104, PR-C) ─────────────────────────────
     // Reuses settings-w / settings-radius / the glass tokens; only the height
-    // differs. Shorter than settings-h (583) so the overlay reads as a SMALLER
+    // differs. Shorter than the settings panel's content-hug height so the overlay reads as a SMALLER
     // modal layered over the still-mounted settings panel. Sized to fit the
     // KEY_BINDINGS_HELP block (17 lines at font-label 12px) + a sticky
     // header (~30px) + a hairline footer with the Close button (~50px) + the
     // panel's vertical paddings, with a little air — the body Flickable still
     // scrolls on a short window (Marcotte clamp).
-    out property <length> shortcuts-h: 466px;            // < settings-h (583px)
+    out property <length> shortcuts-h: 466px;            // fixed; reads smaller than the settings panel's content-hug height
 
     // ── Typography sizes (system font; no custom typeface) ────────────────────
     out property <length> font-title: 15px;
