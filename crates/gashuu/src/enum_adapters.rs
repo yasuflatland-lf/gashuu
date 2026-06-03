@@ -8,8 +8,9 @@
 //!   SpreadMode:       Single=0, Double=1, Auto=2
 //!   CoverMode:        Standalone=0, Paired=1
 //!   FitMode:          Whole=0, Width=1, Actual=2
+//!   Language:         En=0, Ja=1
 
-use gashuu_core::{CoverMode, FitMode, ReadingDirection, SpreadMode};
+use gashuu_core::{CoverMode, FitMode, Language, ReadingDirection, SpreadMode};
 
 pub(crate) fn reading_direction_to_index(d: ReadingDirection) -> i32 {
     match d {
@@ -71,6 +72,20 @@ pub(crate) fn index_to_fit_mode(i: i32) -> FitMode {
     }
 }
 
+pub(crate) fn language_to_index(l: Language) -> i32 {
+    match l {
+        Language::En => 0,
+        Language::Ja => 1,
+    }
+}
+
+pub(crate) fn index_to_language(i: i32) -> Language {
+    match i {
+        1 => Language::Ja,
+        _ => Language::En,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -104,12 +119,20 @@ mod tests {
     }
 
     #[test]
+    fn language_index_round_trips() {
+        for l in [Language::En, Language::Ja] {
+            assert_eq!(index_to_language(language_to_index(l)), l);
+        }
+    }
+
+    #[test]
     fn out_of_range_indices_clamp_to_first_variant() {
         for bad in [-1, 3, 99, i32::MIN, i32::MAX] {
             assert_eq!(index_to_reading_direction(bad), ReadingDirection::Ltr);
             assert_eq!(index_to_spread_mode(bad), SpreadMode::Single);
             assert_eq!(index_to_cover_mode(bad), CoverMode::Standalone);
             assert_eq!(index_to_fit_mode(bad), FitMode::Whole);
+            assert_eq!(index_to_language(bad), Language::En);
         }
     }
 }

@@ -95,6 +95,18 @@ pub enum FitMode {
     Actual,
 }
 
+/// UI display language. Global-only (never per-book overridden, so it is NOT
+/// part of `ViewOverride`). The snake_case serde tags double as IETF language
+/// tags ("en" / "ja"), so the persisted value maps 1:1 onto the locale names
+/// the presentation layer hands to Slint's bundled-translation selector.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Language {
+    #[default]
+    En,
+    Ja,
+}
+
 /// Key tokens (matching the `.slint` FocusScope tokens) bound to each navigation
 /// direction. Persisted in PR3, but `keymap::map_key` hard-codes these same tokens
 /// rather than reading this struct; user-remappable keys are deferred to a later PR.
@@ -144,6 +156,10 @@ pub struct Settings {
     /// a fresh install shows the guide exactly once.
     #[serde(default)]
     pub seen_guide: bool,
+    /// UI display language. `#[serde(default)]` so settings.json files written
+    /// before this field existed load as `Language::En` (English).
+    #[serde(default)]
+    pub language: Language,
 }
 
 fn default_version() -> u32 {
@@ -170,6 +186,7 @@ impl Default for Settings {
             track_recent_files: false,
             recent_files: Vec::new(),
             seen_guide: false,
+            language: Language::default(),
         }
     }
 }
@@ -318,6 +335,7 @@ mod tests {
         assert_eq!(s.key_bindings.prev, vec!["left", "backspace"]);
         assert!(!s.track_recent_files);
         assert!(s.recent_files.is_empty());
+        assert_eq!(s.language, Language::En);
     }
 
     fn non_default_settings() -> Settings {
@@ -336,6 +354,7 @@ mod tests {
             track_recent_files: true,
             recent_files: vec![PathBuf::from("/a"), PathBuf::from("/b")],
             seen_guide: true,
+            language: Language::Ja,
         }
     }
 
@@ -665,6 +684,65 @@ mod tests {
         assert!(
             !s.seen_guide,
             "seen_guide must default to false when absent from JSON"
+        );
+    }
+
+    // ── language tests ──
+
+    #[test]
+    fn language_defaults_to_en() {
+        assert_eq!(Language::default(), Language::En);
+        assert_eq!(Settings::default().language, Language::En);
+    }
+
+    #[test]
+    fn language_round_trips() {
+        for lang in [Language::En, Language::Ja] {
+            let s = Settings {
+                language: lang,
+                ..Default::default()
+            };
+            let json = s.to_json().unwrap();
+            let parsed = Settings::from_json(&json).unwrap();
+            assert_eq!(parsed.language, lang);
+        }
+    }
+
+    #[test]
+    fn language_serializes_as_ietf_tag() {
+        // The snake_case serde tags must stay "en"/"ja" — the presentation layer
+        // hands them to Slint's bundled-translation selector as locale names.
+        let json = Settings {
+            language: Language::Ja,
+            ..Default::default()
+        }
+        .to_json()
+        .unwrap();
+        assert!(json.contains("\"language\": \"ja\""), "json was {json}");
+    }
+
+    #[test]
+    fn from_json_missing_language_defaults_to_en() {
+        // A JSON object that omits `language` must produce `En` via
+        // `#[serde(default)]`, identical to how `seen_guide` was added.
+        let s = Settings::from_json(r#"{"version":1}"#).unwrap();
+        assert_eq!(s.language, Language::En);
+    }
+
+    #[test]
+    fn from_json_unknown_language_value_errors() {
+        // An unrecognised variant is rejected by serde (mirrors the fit_mode
+        // unknown-value contract); #[serde(default)] only covers an ABSENT key.
+        let json = serde_json::json!({
+            "version": SETTINGS_VERSION,
+            "language": "fr",
+        })
+        .to_string();
+        let result = Settings::from_json(&json);
+        assert!(
+            matches!(result, Err(CoreError::Settings(_))),
+            "expected Err(CoreError::Settings(_)) for unknown language value, got {:?}",
+            result
         );
     }
 

@@ -80,7 +80,7 @@ component SearchField inherits Rectangle {
         x: root.text-x;
         width: root.text-width;
         height: 100%;
-        text: "Search library";
+        text: @tr("Search library");
         color: Theme.text-dim;
         font-size: Theme.font-label;
         vertical-alignment: center;
@@ -103,8 +103,8 @@ component SearchField inherits Rectangle {
         selection-foreground-color: Theme.text;
         text-cursor-width: Theme.nav-search-cursor;
         accessible-role: text-input;
-        accessible-label: "Search library";
-        accessible-placeholder-text: "Search library";
+        accessible-label: @tr("Search library");
+        accessible-placeholder-text: @tr("Search library");
 
         // Each keystroke (re)arms the trailing debounce: stop any pending fire,
         // then restart the countdown, so the query callback fires ~120ms after
@@ -235,17 +235,17 @@ export component NavBar inherits Rectangle {
 
         NavItem {
             icon: root.file-icon;
-            a11y-label: "Add files";
+            a11y-label: @tr("Add files");
             clicked => { root.add-files(); }
         }
         NavItem {
             icon: root.folder-icon;
-            a11y-label: "Add folder";
+            a11y-label: @tr("Add folder");
             clicked => { root.add-folder(); }
         }
         NavItem {
             icon: root.settings-icon;
-            a11y-label: "Settings";
+            a11y-label: @tr("Settings");
             clicked => { root.settings(); }
         }
     }

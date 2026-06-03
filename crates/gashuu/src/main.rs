@@ -6,22 +6,24 @@ mod cover_loader;
 mod enum_adapters;
 mod keymap;
 mod library_model;
+mod messages;
 mod navigation;
 mod page_jump;
 mod thumbnail_strip;
 mod viewer_state;
 mod viewport;
 
+use app::SkippedDetail;
 use carousel::{
     bind_carousel_model, build_carousel_model, cover_requests, thumb_state_at, ThumbState,
 };
 use enum_adapters::{
     cover_mode_to_index, fit_mode_to_index, index_to_cover_mode, index_to_fit_mode,
-    index_to_reading_direction, index_to_spread_mode, reading_direction_to_index,
-    spread_mode_to_index,
+    index_to_language, index_to_reading_direction, index_to_spread_mode, language_to_index,
+    reading_direction_to_index, spread_mode_to_index,
 };
 use gashuu_core::{
-    CacheConfig, DecodedImage, FitMode, Library, ReadingDirection, Settings, ViewOverride,
+    CacheConfig, DecodedImage, FitMode, Language, Library, ReadingDirection, Settings, ViewOverride,
 };
 use keymap::{map_key, KeyCommand};
 use library_model::LibrarySearchState;
@@ -75,6 +77,9 @@ fn main() -> color_eyre::Result<()> {
     };
 
     let ui = ViewerWindow::new()?;
+    // Apply the persisted UI language to the .slint side before the first paint
+    // (the Rust-composed strings read it from `ViewerState`/`Settings` instead).
+    select_ui_language(settings.language);
     let state = Rc::new(RefCell::new(ViewerState::from_settings(&settings)));
     let viewport = Rc::new(RefCell::new(ViewportState::from_settings(&settings)));
     let settings = Rc::new(RefCell::new(settings));
@@ -153,13 +158,8 @@ fn main() -> color_eyre::Result<()> {
     // at this point, so the user sees the notice immediately. Missing files
     // return Ok(default), so this fires only on genuine failures.
     if !load_errs.is_empty() {
-        ui.set_status_text(
-            format!(
-                "Could not load {}; starting fresh.",
-                load_errs.join(" and ")
-            )
-            .into(),
-        );
+        let lang = settings.borrow().language;
+        ui.set_status_text(messages::msg_load_failed(lang, &load_errs.join(" and ")).into());
     }
 
     // First-run guide: show the overlay exactly once. `seen_guide` is flipped and
@@ -178,7 +178,7 @@ fn main() -> color_eyre::Result<()> {
                 let Some(dir) = rfd::FileDialog::new().pick_folder() else {
                     return;
                 };
-                open_book.run(&ui, &dir, "");
+                open_book.run(&ui, &dir, SkippedDetail::None);
                 // Title-bar book name is derived from the AUTHORITATIVE post-open
                 // state (the canonical `open_file`), not the raw dialog path, so a
                 // FAILED open never shows the name of a book that did not open: on
@@ -202,7 +202,7 @@ fn main() -> color_eyre::Result<()> {
                 else {
                     return;
                 };
-                open_book.run(&ui, &file, " (zip-slip or oversized)");
+                open_book.run(&ui, &file, SkippedDetail::Archive);
                 // Title-bar book name is derived from the AUTHORITATIVE post-open
                 // state (the canonical `open_file`), so a FAILED open (corrupt /
                 // non-archive file) never shows the picked file's name: on failure
@@ -220,6 +220,7 @@ fn main() -> color_eyre::Result<()> {
         let library = Rc::clone(&library);
         let covers = Rc::clone(&covers);
         let search = Rc::clone(&search);
+        let settings = Rc::clone(&settings);
         ui.on_add_files(move || {
             with_ui(&ui_weak, |ui| {
                 let Some(files) = rfd::FileDialog::new()
@@ -228,7 +229,8 @@ fn main() -> color_eyre::Result<()> {
                 else {
                     return;
                 };
-                add_books_and_refresh(&ui, &library, &covers, &search, files, "add-files");
+                let lang = settings.borrow().language;
+                add_books_and_refresh(&ui, &library, &covers, &search, files, "add-files", lang);
             })
         });
     }
@@ -241,12 +243,22 @@ fn main() -> color_eyre::Result<()> {
         let library = Rc::clone(&library);
         let covers = Rc::clone(&covers);
         let search = Rc::clone(&search);
+        let settings = Rc::clone(&settings);
         ui.on_add_folder(move || {
             with_ui(&ui_weak, |ui| {
                 let Some(folder) = rfd::FileDialog::new().pick_folder() else {
                     return;
                 };
-                add_books_and_refresh(&ui, &library, &covers, &search, vec![folder], "add-folder");
+                let lang = settings.borrow().language;
+                add_books_and_refresh(
+                    &ui,
+                    &library,
+                    &covers,
+                    &search,
+                    vec![folder],
+                    "add-folder",
+                    lang,
+                );
             })
         });
     }
@@ -311,7 +323,7 @@ fn main() -> color_eyre::Result<()> {
                 };
                 // open_book.run writes back the OLD book's position first,
                 // then opens the new path and resumes its stored position.
-                open_book.run(&ui, &path, "");
+                open_book.run(&ui, &path, SkippedDetail::None);
                 // Title-bar book name is derived from the AUTHORITATIVE post-open
                 // state (the canonical `open_file`), so a FAILED open (a Library
                 // book that was moved/deleted) never shows that book's name: on
@@ -555,7 +567,8 @@ fn main() -> color_eyre::Result<()> {
                 ui.set_cache_size(s.cache_size as i32);
                 ui.set_preload_pages(s.preload_pages as i32);
                 ui.set_track_recent(s.track_recent_files);
-                ui.set_key_bindings_text(KEY_BINDINGS_HELP.into());
+                ui.set_language_index(language_to_index(s.language));
+                ui.set_key_bindings_text(messages::msg_key_bindings_help(s.language).into());
                 ui.set_settings_per_book(per_book);
                 ui.set_show_settings(true);
             })
@@ -591,7 +604,8 @@ fn main() -> color_eyre::Result<()> {
                     );
                     if let Err(e) = settings.borrow().save() {
                         tracing::error!(error = %e, "failed to save settings from dialog");
-                        ui.set_status_text(format!("Could not save settings: {e}").into());
+                        let lang = settings.borrow().language;
+                        ui.set_status_text(messages::msg_could_not_save_settings(lang, &e).into());
                     }
                     ui.invoke_focus_carousel();
                 } else {
@@ -602,7 +616,8 @@ fn main() -> color_eyre::Result<()> {
                     write_back_view_override(&state, &viewport, &library);
                     if let Err(e) = settings.borrow().save() {
                         tracing::error!(error = %e, "failed to save settings from dialog");
-                        ui.set_status_text(format!("Could not save settings: {e}").into());
+                        let lang = settings.borrow().language;
+                        ui.set_status_text(messages::msg_could_not_save_settings(lang, &e).into());
                     }
                     ui.invoke_focus_pages();
                 }
@@ -666,7 +681,8 @@ fn main() -> color_eyre::Result<()> {
                     }
                     if let Err(e) = library.borrow().save() {
                         tracing::error!(error = %e, "failed to save library on override reset");
-                        ui.set_status_text(format!("Could not save settings: {e}").into());
+                        let lang = settings.borrow().language;
+                        ui.set_status_text(messages::msg_could_not_save_settings(lang, &e).into());
                     }
                 }
                 // Apply the global defaults to the runtime + view.
@@ -819,6 +835,33 @@ fn main() -> color_eyre::Result<()> {
         let settings = Rc::clone(&settings);
         ui.on_set_track_recent(move |b| {
             settings.borrow_mut().track_recent_files = b;
+        });
+    }
+    {
+        let ui_weak = ui.as_weak();
+        let state = Rc::clone(&state);
+        let settings = Rc::clone(&settings);
+        let viewport = Rc::clone(&viewport);
+        ui.on_set_language(move |i| {
+            with_ui(&ui_weak, |ui| {
+                let lang = index_to_language(i);
+                // Mirror into the runtime state (the same dual-write the
+                // cache-size handler does); the idempotent setter absorbs the
+                // dropdown's selection self-fire. Persisting happens at the
+                // dialog's close path, like every other global field.
+                if !state.borrow_mut().set_language(lang) {
+                    return;
+                }
+                settings.borrow_mut().language = lang;
+                // Flip the .slint side first (all @tr() bindings re-evaluate
+                // immediately), then re-push the Rust-composed strings — the
+                // status line via refresh and the shortcuts reference (seeded
+                // at settings-open in the OLD language) — so the whole window
+                // switches without a restart.
+                select_ui_language(lang);
+                ui.set_key_bindings_text(messages::msg_key_bindings_help(lang).into());
+                refresh(&ui, &state.borrow(), &viewport);
+            })
         });
     }
 
@@ -1070,8 +1113,13 @@ pub(crate) fn refresh(
             // append a marker so the status no longer contradicts the single
             // page actually shown.
             match spread.trailing_failed {
-                Some(failed) => ui
-                    .set_status_text(format!("{status}  (page {} unavailable)", failed + 1).into()),
+                Some(failed) => ui.set_status_text(
+                    format!(
+                        "{status}  {}",
+                        messages::msg_page_unavailable(state.language(), failed + 1)
+                    )
+                    .into(),
+                ),
                 None => ui.set_status_text(status.into()),
             }
             // Re-anchor the viewport to the new content, then push geometry.
@@ -1084,7 +1132,7 @@ pub(crate) fn refresh(
         }
         Some(Err(e)) => {
             tracing::error!(error = %e, "failed to decode page");
-            ui.set_status_text(format!("Decode error: {e}").into());
+            ui.set_status_text(messages::msg_decode_error(state.language(), &e).into());
             ui.set_leading_page(slint::Image::default());
             ui.set_trailing_page(slint::Image::default());
             ui.set_single(true);
@@ -1171,26 +1219,22 @@ fn to_slint_image(decoded: &DecodedImage) -> slint::Image {
     slint::Image::from_rgba8(buffer)
 }
 
-/// Concise key-bindings reference rendered read-only in ShortcutsOverlay (opened
-/// from the settings footer). Keep in sync with `keymap::map_key`.
-const KEY_BINDINGS_HELP: &str = "\
-Navigation:
-  Space = next page    Backspace = previous page
-  Arrows follow the reading direction (LTR: \u{2192} next; RTL: \u{2190} next)
-
-Modes:
-  D = spread (single \u{2192} double \u{2192} auto)
-  R = reading direction (LTR / RTL)
-  C = cover layout (standalone / paired)
-
-Zoom & fit:
-  + / - = zoom in / out    0 = reset view    1 = actual size    f = cycle fit
-
-View:
-  T = toggle thumbnail strip
-
-Library:
-  Up = return to the library";
+/// Select the Slint bundled-translation locale for `lang`, switching every
+/// `@tr()` binding in the running UI. "en" needs no catalog: Slint
+/// special-cases `"en"`/`""` to the source language (the `@tr()` literals are
+/// English), so selection cannot leave a stale language behind. Must be called
+/// AFTER the first component is created (Slint registers the bundled languages
+/// during component creation). A failure is logged and the UI keeps its
+/// current strings — never fatal.
+fn select_ui_language(lang: Language) {
+    let locale = match lang {
+        Language::En => "en",
+        Language::Ja => "ja",
+    };
+    if let Err(e) = slint::select_bundled_translation(locale) {
+        tracing::warn!(error = ?e, locale, "failed to select bundled translation");
+    }
+}
 
 /// Copy the runtime-owned display settings into the persisted `Settings` just
 /// before saving. This is the SINGLE place `reading_direction`, `spread_mode`,
@@ -1469,11 +1513,12 @@ fn add_books_and_refresh(
     search: &Rc<RefCell<LibrarySearchState>>,
     paths: Vec<std::path::PathBuf>,
     op: &'static str,
+    lang: Language,
 ) {
     let added_paths = add_paths(&mut library.borrow_mut(), paths);
     if added_paths.is_empty() {
         // Everything picked was already in the library: nothing to persist or rebuild.
-        ui.set_status_text("Already in library \u{2014} no new books added.".into());
+        ui.set_status_text(messages::msg_already_in_library(lang).into());
         ui.invoke_focus_carousel();
         return;
     }
@@ -1496,15 +1541,11 @@ fn add_books_and_refresh(
         Err(e) => {
             tracing::error!(error = %e, "failed to save library after {op}");
             ui.set_status_text(
-                format!(
-                    "Added {} book(s), but could not save library: {e}",
-                    added_paths.len()
-                )
-                .into(),
+                messages::msg_added_books_save_failed(lang, added_paths.len(), &e).into(),
             );
         }
         Ok(()) => {
-            ui.set_status_text(format!("Added {} book(s)", added_paths.len()).into());
+            ui.set_status_text(messages::msg_added_books(lang, added_paths.len()).into());
         }
     }
     // Focus the first newly added book by its VISIBLE row (the carousel renders
@@ -1540,6 +1581,27 @@ fn add_books_and_refresh(
 mod tests {
     use super::*;
     use gashuu_core::{CoverMode, SpreadMode};
+
+    #[test]
+    fn bundled_translations_compiled_into_generated_code() {
+        // `slint::select_bundled_translation` cannot be exercised headlessly
+        // (the language registry is populated on first component creation), so
+        // pin the BUILD output instead: the generated code must register the
+        // "ja" locale AND contain matched Japanese catalog text. The second
+        // assert is the canary for the silent all-miss failure mode — e.g. a
+        // msgctxt/default-translation-context mismatch or a moved .po makes
+        // every lookup fall back to English with no build error.
+        let generated = include_str!(concat!(env!("OUT_DIR"), "/ViewerWindow.rs"));
+        assert!(
+            generated.contains("\"ja\""),
+            "ja locale missing from the bundled-languages table"
+        );
+        assert!(
+            generated.contains("見開き"),
+            "no Japanese catalog text in the generated code — \
+             translations/ja/LC_MESSAGES/gashuu.po entries matched no @tr() string"
+        );
+    }
 
     #[test]
     fn reconcile_writes_runtime_modes_into_settings() {

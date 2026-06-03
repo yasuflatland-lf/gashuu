@@ -124,6 +124,11 @@ RAR requires a C++ compiler on every OS (see [docs/toolchain.md](toolchain.md)).
 - Unsigned (MVP); `release.yml` documents the macOS notarization / Windows Authenticode seams for later.
 - Windows `.ico` embedding (previously deferred) now ships via a `cfg(windows)`-gated `winresource` build-dependency + `build.rs`. The only new dependency is `winresource` (Windows-only build-dep); no runtime deps.
 
+### UI language switch — English / 日本語 (i18n)
+
+- The UI is bilingual with **immediate, no-restart switching** from a new "General → Language" pull-down in the settings dialog (the Apple-HIG-style `Dropdown` atom — the repo's first `PopupWindow`). The preference persists as `Settings.language` (`"en"`/`"ja"` serde tags doubling as the Slint locale names; `#[serde(default)]`; global-only — never per-book).
+- `.slint` strings are `@tr()`-wrapped and translated via a bundled gettext catalog (`crates/gashuu/translations/ja/LC_MESSAGES/gashuu.po`, compiled in by `build.rs` — see docs/patterns.md for the msgctxt gotcha). Rust-composed strings (status line, open/save notices, decode errors, and the ShortcutsOverlay key-bindings reference) go through `src/messages.rs` (exhaustive per-language `match`).
+
 ---
 
 ## Deferred (intentionally out of scope)

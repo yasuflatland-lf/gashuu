@@ -389,7 +389,11 @@ PR-58, `carousel.rs`. UI-thread adapter layer between `library_model` and Slint:
 
 ### enum_adapters
 
-PR-58, `enum_adapters.rs`. The 8 `pub(crate)` enum↔index adapters that were previously inline in `main.rs`: `reading_direction_to_index`/`index_to_reading_direction`, `spread_mode_to_index`/`index_to_spread_mode`, `cover_mode_to_index`/`index_to_cover_mode`, `fit_mode_to_index`/`index_to_fit_mode`. Each `index_to_*` clamps out-of-range to the first variant, mirroring the `index_to_screen` clamp policy in `navigation.rs`.
+PR-58, `enum_adapters.rs`. The 10 `pub(crate)` enum↔index adapters (the first 8 were previously inline in `main.rs`): `reading_direction_to_index`/`index_to_reading_direction`, `spread_mode_to_index`/`index_to_spread_mode`, `cover_mode_to_index`/`index_to_cover_mode`, `fit_mode_to_index`/`index_to_fit_mode`, and `language_to_index`/`index_to_language` (i18n PR). Each `index_to_*` clamps out-of-range to the first variant, mirroring the `index_to_screen` clamp policy in `navigation.rs`.
+
+### messages
+
+i18n PR, `messages.rs`. PURE (Slint-free) Rust-side user-facing string catalog: one `msg_*` function per message (status line, open/save notices, decode errors, the ShortcutsOverlay key-bindings reference), each an exhaustive `match` on `gashuu_core::Language` — adding a language variant is a compile error in every message until its translation is supplied. Covers ONLY strings composed in Rust; `.slint` strings go through `@tr()` + the bundled gettext catalog (`crates/gashuu/translations/<lang>/LC_MESSAGES/gashuu.po`, wired by `build.rs` — see docs/patterns.md for the msgctxt gotcha). The Japanese spread/direction vocabulary is pinned to the `.po`'s by `japanese_labels_match_the_po_vocabulary`.
 
 ### page_jump
 
@@ -409,16 +413,19 @@ cell shared by the page strip, the scrubber preview popover, and the library cov
 (#this-PR, NEW: the viewer glass-pill — floating page-jump field + thumbnail toggle + settings;
 replaces the docked TitleBar), `NavBar`
 (#83, NEW: the top-centered glass-pill Library nav — translucent fill + hairline border + top inner
-highlight + drop shadow; Slint has no backdrop-blur so the glass effect is paint-only), and `NavItem`
+highlight + drop shadow; Slint has no backdrop-blur so the glass effect is paint-only), `NavItem`
 (#83, NEW: one circular icon capsule inside `NavBar`; hover/press glow via `Theme.accent-glow`;
 non-focusable `TouchArea` with `accessible-role`/`accessible-label`/`accessible-action-default` for
-screen-reader support). Each references `Theme.*` via `../Theme.slint`; consumers import via
+screen-reader support), and `Dropdown` (i18n PR, NEW: the Apple-HIG pull-down button used by the
+language setting — the repo's first `PopupWindow`; the menu is lowered to the window root so the
+dialog's clipping Flickable can't cut it off — see docs/patterns.md). Each references `Theme.*` via `../Theme.slint`; consumers import via
 `import { X } from "components/X.slint"`. `build.rs` is unchanged — it compiles the single entry
 `ui/ViewerWindow.slint` and import statements cascade. See [docs/conventions.md](conventions.md)
 for the component RULES.
 
-**`ui/assets/`** (#83, NEW): the repo's image assets — `file.svg`, `folder.svg` (#83), and `slider.svg`
-(this PR, NEW: the thumbnail-toggle icon in ViewerPill), each a
+**`ui/assets/`** (#83, NEW): the repo's image assets — `file.svg`, `folder.svg` (#83), `slider.svg`
+(the thumbnail-toggle icon in ViewerPill), and `chevron-down.svg` (i18n PR, NEW: the `Dropdown`
+chevron; 96px intrinsic size per the HiDPI rasterization rule), each a
 single-path SVG recolored at runtime via Slint's `Image.colorize` property. Components reference
 them with `@image-url(...)` paths relative to the consuming `.slint` file. `build.rs` is unchanged
 (assets are reached transitively through the entry-file import cascade).

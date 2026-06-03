@@ -32,8 +32,8 @@ pub use library_store::LIBRARY_VERSION;
 pub use page_source::{FolderSource, PageEntry, PageSource, RarSource, ZipSource};
 pub use reading_progress::ReadingProgress;
 pub use settings::{
-    CoverMode, FitMode, KeyBindings, ReadingDirection, Settings, SpreadLayout, SpreadMode,
-    MAX_RECENT_FILES, SETTINGS_VERSION,
+    CoverMode, FitMode, KeyBindings, Language, ReadingDirection, Settings, SpreadLayout,
+    SpreadMode, MAX_RECENT_FILES, SETTINGS_VERSION,
 };
 pub use spread::{next_leading, normalize_leading, prev_leading, spread_at, Spread, SpreadContext};
 pub use thumbnail::{generate_cover, generate_thumbnails, DEFAULT_THUMB_MAX_SIDE};

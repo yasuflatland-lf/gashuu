@@ -46,7 +46,7 @@ export component FirstRunGuide inherits Rectangle {
 
             // ── Title ──────────────────────────────────────────────────────────
             Text {
-                text: "Welcome to gashuu";
+                text: @tr("Welcome to gashuu");
                 font-size: Theme.font-title;
                 color: Theme.text;
                 horizontal-alignment: center;
@@ -54,7 +54,7 @@ export component FirstRunGuide inherits Rectangle {
 
             // ── Intro ──────────────────────────────────────────────────────────
             Text {
-                text: "A quick guide to get you started:";
+                text: @tr("A quick guide to get you started:");
                 color: Theme.text-mid;
                 font-size: Theme.font-body;
                 horizontal-alignment: left;
@@ -63,32 +63,32 @@ export component FirstRunGuide inherits Rectangle {
 
             // ── Controls reference ─────────────────────────────────────────────
             GuideLine {
-                text: "Open: use the toolbar buttons — Open Folder… / Open Archive… (CBZ/ZIP/CBR/RAR).";
+                text: @tr("Open: use the toolbar buttons — Open Folder… / Open Archive… (CBZ/ZIP/CBR/RAR).");
             }
 
             GuideLine {
-                text: "Turn pages: Space = next, Backspace = previous. Arrow keys follow the reading direction.";
+                text: @tr("Turn pages: Space = next, Backspace = previous. Arrow keys follow the reading direction.");
             }
 
             GuideLine {
-                text: "Modes: D = spread (single → double → auto), R = reading direction (LTR/RTL), C = cover layout.";
+                text: @tr("Modes: D = spread (single → double → auto), R = reading direction (LTR/RTL), C = cover layout.");
             }
 
             GuideLine {
-                text: "Zoom & fit: + / - to zoom, 0 to reset, 1 for actual size, f to cycle fit mode. Wheel zooms at the cursor; drag to pan.";
+                text: @tr("Zoom & fit: + / - to zoom, 0 to reset, 1 for actual size, f to cycle fit mode. Wheel zooms at the cursor; drag to pan.");
             }
 
             GuideLine {
-                text: "Thumbnails: T toggles the thumbnail strip; click a thumbnail to jump to that page.";
+                text: @tr("Thumbnails: T toggles the thumbnail strip; click a thumbnail to jump to that page.");
             }
 
             GuideLine {
-                text: "Settings: open the Settings dialog from the toolbar to change these options anytime.";
+                text: @tr("Settings: open the Settings dialog from the toolbar to change these options anytime.");
             }
 
             // ── Dismiss button ─────────────────────────────────────────────────
             Button {
-                text: "Got it";
+                text: @tr("Got it");
                 clicked => { root.dismiss-guide(); }
             }
         }

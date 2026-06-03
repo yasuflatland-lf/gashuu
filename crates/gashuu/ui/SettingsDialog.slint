@@ -11,10 +11,11 @@
 // @linear-gradient. No nested glass / no second shadow. The sheen is a FILL
 // gradient, not an opacity layer (opacity blurs text/SVG on HiDPI — patterns.md).
 //
-// Content: three whitespace-delineated sections (Reading / Display / Performance)
-// of token-driven atoms (Segmented / Stepper / Toggle), each laid out by a
-// SettingRow on the single L1 seam (settings-control-x). Section headers are
-// text-dim sentence case (NOT accent — accent marks interactive/selected only).
+// Content: four whitespace-delineated sections (Reading / Display / Performance
+// / General) of token-driven atoms (Segmented / Stepper / Toggle / Dropdown),
+// each laid out by a SettingRow on the single L1 seam (settings-control-x).
+// Section headers are text-dim sentence case (NOT accent — accent marks
+// interactive/selected only).
 //
 // Dismiss: Esc (FocusScope) + backdrop-click + Close button, all three. The panel
 // absorbs clicks via a lowest-layer TouchArea so a click inside it does not bubble
@@ -36,6 +37,7 @@ import { SettingRow } from "components/SettingRow.slint";
 import { Segmented } from "components/Segmented.slint";
 import { Stepper } from "components/Stepper.slint";
 import { Toggle } from "components/Toggle.slint";
+import { Dropdown } from "components/Dropdown.slint";
 import { PrimaryButton } from "components/PrimaryButton.slint";
 
 export component SettingsDialog inherits Rectangle {
@@ -57,6 +59,9 @@ export component SettingsDialog inherits Rectangle {
     in-out property <int> preload-pages;
     // Whether recent-files tracking is enabled.
     in-out property <bool> track-recent;
+    // Index into the language dropdown model (En=0, Ja=1 — enum_adapters.rs
+    // owns the authoritative ordering).
+    in-out property <int> language-index;
     // True when this dialog edits the CURRENT book's per-book settings (opened
     // from the Viewer): shows the per-book title and the reset-to-global button.
     in property <bool> show-reset-button: false;
@@ -69,6 +74,7 @@ export component SettingsDialog inherits Rectangle {
     callback set-cache-size(int);
     callback set-preload-pages(int);
     callback set-track-recent(bool);
+    callback set-language(int);
     // Fired on Esc, backdrop-click, or the Close button.
     callback close-settings();
     // Fired when the user activates the "Shortcuts" footer link (mouse click,
@@ -180,13 +186,13 @@ export component SettingsDialog inherits Rectangle {
                         // "Book settings" when editing the current book's per-book
                         // override (opened from the Viewer); plain "Settings" for the
                         // global defaults (Library screen).
-                        text: root.show-reset-button ? "Book settings" : "Settings";
+                        text: root.show-reset-button ? @tr("Book settings") : @tr("Settings");
                         font-size: Theme.font-title;
                         font-weight: Theme.weight-semibold;
                         color: Theme.text-high;
                         horizontal-alignment: left;
                         accessible-role: text;
-                        accessible-label: root.show-reset-button ? "Book settings" : "Settings";
+                        accessible-label: root.show-reset-button ? @tr("Book settings") : @tr("Settings");
                     }
                 }
 
@@ -210,28 +216,28 @@ export component SettingsDialog inherits Rectangle {
                         VerticalLayout {
                             spacing: Theme.space-sm;
                             Text {
-                                text: "Reading";
+                                text: @tr("Reading");
                                 font-size: Theme.font-label;
                                 color: Theme.text-dim;
                                 horizontal-alignment: left;
                             }
                             SettingRow {
-                                label: "Direction";
+                                label: @tr("Direction");
                                 direction-control := Segmented {
-                                    model: ["Left to Right", "Right to Left"];
+                                    model: [@tr("Left to Right"), @tr("Right to Left")];
                                     current-index <=> root.reading-direction-index;
-                                    a11y-label: "Reading direction";
+                                    a11y-label: @tr("Reading direction");
                                     selected(i) => {
                                         root.set-reading-direction(i);
                                     }
                                 }
                             }
                             SettingRow {
-                                label: "Spread";
+                                label: @tr("Spread");
                                 Segmented {
-                                    model: ["Single", "Double", "Auto"];
+                                    model: [@tr("Single"), @tr("Double"), @tr("Auto")];
                                     current-index <=> root.spread-mode-index;
-                                    a11y-label: "Spread mode";
+                                    a11y-label: @tr("Spread mode");
                                     selected(i) => {
                                         root.set-spread-mode(i);
                                     }
@@ -243,28 +249,28 @@ export component SettingsDialog inherits Rectangle {
                         VerticalLayout {
                             spacing: Theme.space-sm;
                             Text {
-                                text: "Display";
+                                text: @tr("Display");
                                 font-size: Theme.font-label;
                                 color: Theme.text-dim;
                                 horizontal-alignment: left;
                             }
                             SettingRow {
-                                label: "Cover";
+                                label: @tr("Cover");
                                 Segmented {
-                                    model: ["Standalone", "Paired"];
+                                    model: [@tr("Standalone"), @tr("Paired")];
                                     current-index <=> root.cover-mode-index;
-                                    a11y-label: "Cover mode";
+                                    a11y-label: @tr("Cover mode");
                                     selected(i) => {
                                         root.set-cover-mode(i);
                                     }
                                 }
                             }
                             SettingRow {
-                                label: "Fit";
+                                label: @tr("Fit");
                                 Segmented {
-                                    model: ["Whole", "Width", "Actual"];
+                                    model: [@tr("Whole"), @tr("Width"), @tr("Actual")];
                                     current-index <=> root.fit-mode-index;
-                                    a11y-label: "Fit mode";
+                                    a11y-label: @tr("Fit mode");
                                     selected(i) => {
                                         root.set-fit-mode(i);
                                     }
@@ -276,41 +282,41 @@ export component SettingsDialog inherits Rectangle {
                         VerticalLayout {
                             spacing: Theme.space-sm;
                             Text {
-                                text: "Performance";
+                                text: @tr("Performance");
                                 font-size: Theme.font-label;
                                 color: Theme.text-dim;
                                 horizontal-alignment: left;
                             }
                             SettingRow {
                                 // Longest label — its width sizes settings-label-col.
-                                label: "Cache size (pages)";
+                                label: @tr("Cache size (pages)");
                                 Stepper {
                                     value <=> root.cache-size;
                                     minimum: 1;
                                     maximum: 9999;
-                                    a11y-label: "Cache size in pages";
+                                    a11y-label: @tr("Cache size in pages");
                                     edited(v) => {
                                         root.set-cache-size(v);
                                     }
                                 }
                             }
                             SettingRow {
-                                label: "Preload radius";
+                                label: @tr("Preload radius");
                                 Stepper {
                                     value <=> root.preload-pages;
                                     minimum: 0;
                                     maximum: 99;
-                                    a11y-label: "Preload radius";
+                                    a11y-label: @tr("Preload radius");
                                     edited(v) => {
                                         root.set-preload-pages(v);
                                     }
                                 }
                             }
                             SettingRow {
-                                label: "Track recent files";
+                                label: @tr("Track recent files");
                                 Toggle {
                                     checked <=> root.track-recent;
-                                    a11y-label: "Track recent files";
+                                    a11y-label: @tr("Track recent files");
                                     toggled(b) => {
                                         root.set-track-recent(b);
                                     }
@@ -318,11 +324,37 @@ export component SettingsDialog inherits Rectangle {
                             }
                             // Performance note at the label left margin.
                             Text {
-                                text: "Cache & preload apply to newly opened books.";
+                                text: @tr("Cache & preload apply to newly opened books.");
                                 font-size: Theme.font-micro;
                                 color: Theme.text-dim;
                                 horizontal-alignment: left;
                                 wrap: word-wrap;
+                            }
+                        }
+
+                        // ── Section: General ──────────────────────────────────────
+                        VerticalLayout {
+                            spacing: Theme.space-sm;
+                            Text {
+                                text: @tr("General");
+                                font-size: Theme.font-label;
+                                color: Theme.text-dim;
+                                horizontal-alignment: left;
+                            }
+                            SettingRow {
+                                label: @tr("Language");
+                                Dropdown {
+                                    // Language names are deliberately NOT @tr()'d:
+                                    // a language switcher always shows each option
+                                    // in its own tongue, so a user lost in the
+                                    // wrong language can still find their own.
+                                    model: ["English", "日本語"];
+                                    current-index <=> root.language-index;
+                                    a11y-label: @tr("Display language");
+                                    selected(i) => {
+                                        root.set-language(i);
+                                    }
+                                }
                             }
                         }
                     }
@@ -376,7 +408,7 @@ export component SettingsDialog inherits Rectangle {
                             // text-high so the Tab ring is visible without an accent rule
                             // (accent stays interactive/selected-only).
                             shortcuts-label := Text {
-                                text: "⌨ Shortcuts";
+                                text: @tr("⌨ Shortcuts");
                                 font-size: Theme.font-label;
                                 color: parent.has-focus ? Theme.text-high : Theme.text-dim;
                                 horizontal-alignment: left;
@@ -401,7 +433,7 @@ export component SettingsDialog inherits Rectangle {
                                 return reject;
                             }
                             accessible-role: button;
-                            accessible-label: "Keyboard shortcuts";
+                            accessible-label: @tr("Keyboard shortcuts");
                             // Accessibility default action mirrors NavItem/Toggle idiom.
                             accessible-action-default => { root.open-shortcuts(); }
                         }
@@ -414,7 +446,7 @@ export component SettingsDialog inherits Rectangle {
                         // secondary variant exists); Close stays the rightmost,
                         // last-resort action. Shown only in the viewer context.
                         if root.show-reset-button : PrimaryButton {
-                            text: "Reset to global";
+                            text: @tr("Reset to global");
                             clicked => {
                                 root.reset-to-global();
                             }
@@ -423,7 +455,7 @@ export component SettingsDialog inherits Rectangle {
                         // RIGHT: Close — the reused PrimaryButton, always visible in
                         // the sticky footer even while the body scrolls.
                         PrimaryButton {
-                            text: "Close";
+                            text: @tr("Close");
                             clicked => {
                                 root.close-settings();
                             }

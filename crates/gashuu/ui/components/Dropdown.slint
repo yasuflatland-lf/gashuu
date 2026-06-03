@@ -1,0 +1,203 @@
+// Dropdown — an Apple-HIG-style pull-down button (HIG "pull-down buttons") for
+// the settings dialog: a fixed-width capsule showing the current value plus a
+// trailing chevron; clicking (or Space/Enter) opens a menu below the button
+// listing every option, with a check mark on the selected one.
+//
+// Exposes the SAME `model` / `current-index` (two-way) + `selected(int)` shape
+// as `Segmented`, so the dialog wiring is identical. Use Dropdown over
+// Segmented when the option list may grow (e.g. languages) or the labels are
+// too wide for equal segments.
+//
+// The menu is this codebase's FIRST `PopupWindow`: the settings dialog's body
+// is a clipping Flickable, and a popup is lowered to the window root by the
+// Slint compiler, so the open menu can never be clipped by the scroll viewport.
+// The default close policy (close-on-click) dismisses on item click, outside
+// click, AND Esc — none of that is hand-rolled here. NOTE the documented
+// PopupWindow restriction: elements INSIDE the popup may read/call the
+// component root, but the root cannot reach into the popup; everything below
+// respects that direction.
+//
+// Keyboard (when the button is focused): Space/Enter open the menu;
+// Up/Down cycle the selection inline WITHOUT opening it (clamped, fires
+// `selected`) — the popup itself never needs keyboard focus, sidestepping
+// Slint's popup-focus limitations while keeping the control fully
+// keyboard-operable (mirrors Segmented's arrow keys). Esc is rejected so it
+// bubbles to the dialog's ancestor FocusScope (Esc-to-close).
+//
+// Gotchas honored (docs/patterns.md): NO `opacity` (HiDPI blur) — hover and
+// selected looks animate color only; state-dependent CHILD props are DIRECT bindings
+// (states[] cannot touch a child); ONE drop-shadow per Rectangle (the menu
+// panel's shadow needs the popup surface padded by `shadow-pad`, or the popup
+// bounds would clip the blur); colors/lengths are `Theme.*` only.
+import { Theme } from "../Theme.slint";
+
+export component Dropdown inherits Rectangle {
+    // ── Public API (mirrors Segmented) ──────────────────────────────────────────
+    in property <[string]> model;
+    in-out property <int> current-index;
+    in property <string> a11y-label;
+    callback selected(int);
+
+    // Externally focus this control (same `focus-control` seam as Segmented —
+    // `focus` is a reserved builtin on the inherited Rectangle).
+    public function focus-control() {
+        fs.focus();
+    }
+
+    // ── Button capsule (same ground language as Segmented) ──────────────────────
+    width: Theme.settings-dropdown-w;
+    height: Theme.settings-control-h;
+    background: Theme.surface-sunken;
+    border-radius: Theme.radius-sm;
+    border-width: 1px;
+    border-color: fs.has-focus ? Theme.accent : Theme.hairline-float;
+    // Soft accent-glow focus halo (one drop-shadow, no spread; discrete change —
+    // animating drop-shadow is version-fragile, so only the border-color fades).
+    drop-shadow-color: fs.has-focus ? Theme.accent-glow : transparent;
+    drop-shadow-blur: fs.has-focus ? Theme.space-sm : 0px;
+    animate border-color { duration: Theme.motion-fast; }
+
+    // Sole mutator: update the selection and notify Rust. The Rust setter is
+    // idempotent, so it absorbs the self-fire and there is no feedback loop.
+    function pick(i: int) {
+        root.current-index = i;
+        root.selected(i);
+    }
+
+    // ── Keyboard (one Tab stop; menu rows use non-focusable TouchAreas) ─────────
+    fs := FocusScope {
+        key-pressed(event) => {
+            if (event.text == Key.Space || event.text == Key.Return) {
+                menu.show();
+                return accept;
+            }
+            if (event.text == Key.UpArrow) {
+                if (root.current-index > 0) { root.pick(root.current-index - 1); }
+                return accept;
+            }
+            if (event.text == Key.DownArrow) {
+                if (root.current-index < root.model.length - 1) { root.pick(root.current-index + 1); }
+                return accept;
+            }
+            return reject;
+        }
+    }
+
+    // ── Button face: current value + trailing chevron ───────────────────────────
+    Text {
+        x: Theme.space-sm;
+        width: parent.width - Theme.space-sm * 2 - Theme.settings-dropdown-chevron - Theme.space-xs;
+        height: parent.height;
+        text: root.model[root.current-index];
+        color: Theme.text-high;
+        font-size: Theme.font-label;
+        vertical-alignment: center;
+        horizontal-alignment: left;
+        overflow: elide;
+    }
+    Image {
+        source: @image-url("../assets/chevron-down.svg");
+        width: Theme.settings-dropdown-chevron;
+        height: Theme.settings-dropdown-chevron;
+        x: parent.width - self.width - Theme.space-sm;
+        y: (parent.height - self.height) / 2;
+        image-fit: contain;
+        // colorize overrides the SVG's own stroke color (assets precedent).
+        colorize: Theme.text-dim;
+    }
+
+    TouchArea {
+        clicked => {
+            fs.focus();
+            menu.show();
+        }
+    }
+
+    // ── Menu (PopupWindow, lowered to the window root — escapes the Flickable) ──
+    // The popup surface is padded by `shadow-pad` on every side so the menu
+    // panel's drop shadow blurs inside the popup bounds instead of being
+    // clipped at its edge; the visible panel is the inner Rectangle.
+    property <length> shadow-pad: Theme.space-xl;
+    property <length> menu-h: root.model.length * Theme.settings-control-h + 2 * Theme.space-xxs;
+
+    menu := PopupWindow {
+        x: -root.shadow-pad;
+        y: root.height + Theme.space-xxs - root.shadow-pad;
+        width: root.width + 2 * root.shadow-pad;
+        height: root.menu-h + 2 * root.shadow-pad;
+
+        Rectangle {
+            x: root.shadow-pad;
+            y: root.shadow-pad;
+            width: root.width;
+            height: root.menu-h;
+            background: Theme.surface-raised;
+            border-radius: Theme.radius-sm;
+            border-width: 1px;
+            border-color: Theme.glass-border;
+            drop-shadow-color: Theme.shadow-popover;
+            drop-shadow-blur: 12px;
+            drop-shadow-offset-y: 4px;
+
+            VerticalLayout {
+                padding: Theme.space-xxs;
+                spacing: 0px;
+                for item[idx] in root.model : Rectangle {
+                    height: Theme.settings-control-h;
+                    // HIG menu hover: accent fill + white text (direct bindings —
+                    // a states[] block cannot touch these child props).
+                    background: ta.has-hover ? Theme.accent : transparent;
+                    border-radius: Theme.radius-xs;
+                    animate background { duration: Theme.motion-fast; }
+
+                    // a11y: each row is a selectable list item; AT activation
+                    // selects it (the same path a click takes).
+                    accessible-role: list-item;
+                    accessible-label: item;
+                    accessible-item-index: idx;
+                    accessible-item-selectable: true;
+                    accessible-item-selected: idx == root.current-index;
+                    accessible-action-default => { root.pick(idx); }
+
+                    HorizontalLayout {
+                        padding-left: Theme.space-sm;
+                        padding-right: Theme.space-sm;
+                        spacing: Theme.space-xs;
+
+                        // Check-mark column: fixed width so labels align whether
+                        // or not the row is the selected one.
+                        Text {
+                            width: Theme.font-label;
+                            text: idx == root.current-index ? "\u{2713}" : "";
+                            color: ta.has-hover ? Theme.text : Theme.accent;
+                            font-size: Theme.font-label;
+                            vertical-alignment: center;
+                        }
+                        Text {
+                            text: item;
+                            color: ta.has-hover ? Theme.text : Theme.text-high;
+                            font-size: Theme.font-label;
+                            vertical-alignment: center;
+                            horizontal-stretch: 1;
+                            overflow: elide;
+                        }
+                    }
+
+                    ta := TouchArea {
+                        // The popup's close-on-click policy dismisses the menu
+                        // after this fires — no explicit close() needed.
+                        clicked => {
+                            root.pick(idx);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // ── a11y (root) ─────────────────────────────────────────────────────────────
+    accessible-role: combobox;
+    accessible-label: root.a11y-label;
+    accessible-value: root.model[root.current-index];
+    accessible-action-default => { menu.show(); }
+}

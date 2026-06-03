@@ -120,4 +120,5 @@ export component Segmented inherits Rectangle {
     // ── a11y (root) ─────────────────────────────────────────────────────────────
     accessible-role: combobox;
     accessible-label: root.a11y-label;
+    accessible-value: root.model[root.current-index];
 }

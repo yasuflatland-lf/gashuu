@@ -9,7 +9,7 @@
 // highlight + ONE drop shadow), the same Flickable body + self-drawn scroll
 // indicator. The only deltas: a SHORTER panel (shortcuts-h < the
 // settings-h φ rectangle) so it reads as a smaller modal stacked on top, and a
-// read-only body (the KEY_BINDINGS_HELP text) instead of interactive controls.
+// read-only body (the key-bindings reference text) instead of interactive controls.
 // The sheen is a FILL gradient, not an opacity layer (opacity blurs text/SVG on
 // HiDPI — patterns.md); show/hide of the scroll indicator is `visible:` only,
 // never `opacity`.
@@ -40,8 +40,9 @@ import { PrimaryButton } from "components/PrimaryButton.slint";
 
 export component ShortcutsOverlay inherits Rectangle {
     // ── Public interface (pinned — sibling agents code against this) ───────────
-    // The keyboard-shortcuts reference text (= KEY_BINDINGS_HELP from Rust,
-    // 17 lines). Rendered read-only inside the Flickable body.
+    // The keyboard-shortcuts reference text (= messages::msg_key_bindings_help
+    // from Rust, rendered in the active UI language; re-pushed on a language
+    // switch). Rendered read-only inside the Flickable body.
     in property <string> key-bindings-text;
     // Fired on Esc, backdrop-click, or the Close button. The parent returns
     // focus to the SettingsDialog (design §5) and hides this overlay.
@@ -161,13 +162,13 @@ export component ShortcutsOverlay inherits Rectangle {
                     padding-right: Theme.space-xl;
                     padding-bottom: Theme.space-md;
                     Text {
-                        text: "Keyboard shortcuts";
+                        text: @tr("Keyboard shortcuts");
                         font-size: Theme.font-title;
                         font-weight: Theme.weight-semibold;
                         color: Theme.text-high;
                         horizontal-alignment: left;
                         accessible-role: text;
-                        accessible-label: "Keyboard shortcuts";
+                        accessible-label: @tr("Keyboard shortcuts");
                     }
                 }
 
@@ -224,7 +225,7 @@ export component ShortcutsOverlay inherits Rectangle {
                         // sticky footer even while the body scrolls. It carries its
                         // own button a11y semantics (PrimaryButton precedent).
                         PrimaryButton {
-                            text: "Close";
+                            text: @tr("Close");
                             clicked => {
                                 root.close-shortcuts();
                             }

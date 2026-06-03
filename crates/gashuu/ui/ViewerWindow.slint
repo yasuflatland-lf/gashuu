@@ -122,6 +122,8 @@ export component ViewerWindow inherits Window {
     in-out property <int> cache-size;
     in-out property <int> preload-pages;
     in-out property <bool> track-recent;
+    // Index into the language dropdown model (En=0, Ja=1).
+    in-out property <int> language-index;
     in property <string> key-bindings-text;
     // True when the settings dialog edits the current book's per-book override
     // (opened from the Viewer) rather than the global defaults (Library screen).
@@ -200,6 +202,7 @@ export component ViewerWindow inherits Window {
     callback set-cache-size(int);
     callback set-preload-pages(int);
     callback set-track-recent(bool);
+    callback set-language(int);
 
     // ── Library screen ────────────────────────────────────────────────────────
     // Both screens are always instantiated and toggled with `visible` (rather
@@ -466,6 +469,7 @@ export component ViewerWindow inherits Window {
         cache-size <=> root.cache-size;
         preload-pages <=> root.preload-pages;
         track-recent <=> root.track-recent;
+        language-index <=> root.language-index;
         focus-epoch: root.settings-focus-epoch;
         show-reset-button: root.settings-per-book;
         open-shortcuts() => { root.open-shortcuts(); }
@@ -476,6 +480,7 @@ export component ViewerWindow inherits Window {
         set-cache-size(v) => { root.set-cache-size(v); }
         set-preload-pages(v) => { root.set-preload-pages(v); }
         set-track-recent(b) => { root.set-track-recent(b); }
+        set-language(i) => { root.set-language(i); }
         close-settings() => { root.close-settings(); }
         reset-to-global() => { root.reset-overrides(); }
     }
