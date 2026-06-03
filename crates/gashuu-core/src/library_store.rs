@@ -262,6 +262,40 @@ mod tests {
         assert!(path.to_string_lossy().contains("gashuu"));
     }
 
+    #[test]
+    fn book_without_overrides_loads_as_empty() {
+        // A library.json written before this feature has no "overrides" key; it
+        // must load with an all-None (inherit-global) override.
+        let stored = r#"{"version":1,"books":[{"path":"/manga/a.cbz","title":"a","last_page":5,"page_count":100}]}"#;
+        let lib = Library::from_json(stored).unwrap();
+        assert!(lib.books()[0].overrides().is_empty());
+    }
+
+    #[test]
+    fn empty_overrides_are_omitted_from_json() {
+        // skip_serializing_if: a book with no overrides must NOT emit an
+        // "overrides" key, so the on-disk shape is unchanged for existing books.
+        let mut lib = Library::new();
+        assert!(lib.add(PathBuf::from("/manga/a.cbz")).is_some());
+        let value: serde_json::Value = serde_json::from_str(&lib.to_json().unwrap()).unwrap();
+        assert!(value["books"][0].get("overrides").is_none());
+    }
+
+    #[test]
+    fn non_empty_overrides_round_trip() {
+        let mut lib = Library::new();
+        let p = PathBuf::from("/manga/a.cbz");
+        assert!(lib.add(p.clone()).is_some());
+        let ov = crate::view_override::ViewOverride {
+            reading_direction: Some(crate::settings::ReadingDirection::Rtl),
+            spread_mode: Some(crate::settings::SpreadMode::Double),
+            ..crate::view_override::ViewOverride::none()
+        };
+        assert!(lib.set_overrides(&p, ov));
+        let reloaded = Library::from_json(&lib.to_json().unwrap()).unwrap();
+        assert_eq!(reloaded.books()[0].overrides(), ov);
+    }
+
     /// Proves that `ReadingProgress` is transient: after serializing a library
     /// whose book has last_page and page_count set, the JSON object for that
     /// book contains EXACTLY the four documented keys and none of the
