@@ -64,7 +64,7 @@ RAR requires a C++ compiler on every OS (see [docs/toolchain.md](toolchain.md)).
 ### Settings dialog and first-run guide (PR8b)
 
 - A modal dialog (opened from the "Settings…" toolbar button) edits the already-active settings — reading direction / spread / cover / fit (applied immediately) and cache size / preload radius / track-recent (cache/preload apply to newly opened books via `set_cache_config`).
-- The keyboard shortcuts are shown read-only (not yet remappable).
+- The keyboard shortcuts are shown read-only (not yet remappable). Since issue 104 they live in a separate `ShortcutsOverlay` modal opened from the dialog's footer "Shortcuts" link, not inline in the dialog.
 - A first-run guide shows once, gated by `Settings::seen_guide`.
 - No new deps.
 

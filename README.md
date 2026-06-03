@@ -115,8 +115,8 @@ log per-turn latency.
 **Settings dialog** — click **Settings…** to change reading direction, spread mode,
 cover layout, fit mode, cache size, preload radius, and the recent-files toggle.
 Display-mode changes apply immediately; cache size and preload radius take effect on the
-next book you open. The dialog also lists the keyboard shortcuts (remapping is not yet
-supported).
+next book you open. The dialog's footer has a **Shortcuts** link that opens a separate
+overlay listing the keyboard shortcuts (remapping is not yet supported).
 
 ## Settings
 
