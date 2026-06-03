@@ -115,10 +115,12 @@ components:
   scrubber-track:
     height: 6px
     backgroundColor: "{colors.track}"
+    fillColor: "{colors.accent}"
     rounded: "{rounded.xs}"
   scrubber-knob:
     size: 16px
-    backgroundColor: "{colors.accent}"
+    sizeActive: 20px
+    backgroundColor: "{colors.text}"
     rounded: "{rounded.full}"
     glow: "{elevation.focus-glow}"
   preview-popover:
@@ -160,7 +162,7 @@ keeps it from reading as a void and lets the page art sit warmly on top. Surface
 tight, low-contrast ladder — canvas → window → raised chrome → floating popover — separated by
 1px hairlines and soft shadows rather than bright dividers. There is **one accent**, a confident
 blue (`{colors.accent}` `#5b8cff`), used for every interactive signal: the focused cover's ring,
-the scrubber knob, the reading-progress fill, the primary button. A single green
+the scrubber fill, the reading-progress fill, the primary button. A single green
 (`{colors.success}` `#41c98a`) means one thing only — a book is fully read.
 
 Type is intentionally muted. There is no display tier and no custom typeface; the system font
@@ -183,8 +185,8 @@ is the dark frame around them.
 > Source: the approved brainstorm mockups (cover-flow carousel, viewer scrubber, empty state).
 
 ### Accent
-- **Accent** (`{colors.accent}` — `#5b8cff`): The only interactive color. Focus ring on the centered cover, scrubber knob, progress fill, primary button. If an element is interactive or "where you are", it is this blue.
-- **Accent Glow** (`{colors.accent-glow}` — `rgba(91,140,255,0.25)`): The system's one "glow", appearing in two places — a 4px soft ring around the scrubber knob, and the hover/press glow on the Library nav capsules (`components.nav-bar`). It is the SAME accent hue in both, not a second accent.
+- **Accent** (`{colors.accent}` — `#5b8cff`): The only interactive color. Focus ring on the centered cover, scrubber fill, progress fill, primary button. If an element is interactive or "where you are", it is this blue.
+- **Accent Glow** (`{colors.accent-glow}` — `rgba(91,140,255,0.25)`): The system's one "glow", appearing in two places — a 4px soft halo around the white scrubber knob, and the hover/press glow on the Library nav capsules (`components.nav-bar`). It is the SAME accent hue in both, not a second accent.
 - **Success** (`{colors.success}` — `#41c98a`): Reserved exclusively for a fully-read book's progress bar. Never used for general UI.
 
 ### Surface (the ladder)
@@ -327,11 +329,14 @@ Background `{colors.chip}`, text `{colors.text-mid}`, `{typography.ui-label}`, p
 affordance, and key hints.
 
 ### Scrubber — `components.scrubber-track` + `components.scrubber-knob`
-A bottom rail (6px, `{colors.track}`, `{rounded.xs}`) spanning the window minus edge insets, with
-a 16px circular accent knob carrying a `{elevation.focus-glow}` ring. **RTL-aware**: in manga
-(right-to-left) reading, dragging **left advances** the page, consistent with the direction-aware
-key bindings. The scrubber is **auto-hidden**; it fades in on mouse-move / arrow / drag and out
-after a short idle.
+A bottom rail (6px, `{colors.track}`, `{rounded.xs}`) spanning the window minus edge insets. The
+traversed portion fills with `{colors.accent}` (Apple HIG's defining slider trait), reading-direction
+aware: in RTL (manga) the fill grows from the screen-right edge toward the knob, in LTR from the left.
+The thumb is a 16px white handle (`{colors.text}`) carrying the `{elevation.focus-glow}` accent halo —
+accent reads as progress (the fill), white reads as the grabber — and grows to 20px while dragging.
+**RTL-aware**: in manga (right-to-left) reading, dragging **left advances** the page, consistent with
+the direction-aware key bindings. The scrubber is **auto-hidden**; it fades in on mouse-move / arrow /
+drag and out after a short idle.
 
 ### Scrubber Preview Popover — `components.preview-popover`
 Appears directly above the knob **only while dragging**. Background `{colors.surface-float}`, 1px

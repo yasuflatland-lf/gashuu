@@ -87,17 +87,42 @@ export component Scrubber inherits Rectangle {
         border-radius: Theme.radius-xs;
     }
 
-    // ── Knob ────────────────────────────────────────────────────────────────────
+    // ── Filled track (HIG: track from the reading-start edge to the thumb) ─────
+    // Apple's defining slider trait — the traversed portion fills with the accent
+    // so it reads as reading progress. Derived from `knob-cx`, so it tracks the
+    // pointer live during a drag and the idle anchor otherwise. Reading-direction
+    // aware: RTL (manga) fills from the knob to the RIGHT edge (page 1 sits
+    // screen-right); LTR fills from the LEFT edge to the knob. Guarded to zero
+    // width when there is no progress to show (<= 1 page).
     Rectangle {
-        width: Theme.scrubber-knob-size;
-        height: Theme.scrubber-knob-size;
-        x: root.knob-cx - self.width / 2;
+        x: root.rtl ? root.knob-cx : root.rail-x;
+        width: root.total-pages > 1
+            ? (root.rtl
+                ? (root.rail-x + root.rail-w) - root.knob-cx
+                : root.knob-cx - root.rail-x)
+            : 0px;
+        height: Theme.scrubber-track-height;
         y: (root.height - self.height) / 2;
         background: Theme.accent;
+        border-radius: Theme.radius-xs;
+    }
+
+    // ── Knob ────────────────────────────────────────────────────────────────────
+    // White core + accent halo: the accent now reads as progress (the fill) and
+    // the white core reads as the grabber. Grows on press (sibling `ta.pressed`
+    // binding — not a states[] child mutation, sidestepping the Slint states[]
+    // limitation); stays centered because x/y track self.width/height.
+    Rectangle {
+        width: ta.pressed ? Theme.scrubber-knob-size-active : Theme.scrubber-knob-size;
+        height: ta.pressed ? Theme.scrubber-knob-size-active : Theme.scrubber-knob-size;
+        x: root.knob-cx - self.width / 2;
+        y: (root.height - self.height) / 2;
+        background: Theme.text;
         border-radius: Theme.radius-pill;
-        // 4px accent-glow ring (the only glow in the system).
+        // 4px accent-glow halo (the only glow in the system).
         drop-shadow-color: Theme.accent-glow;
         drop-shadow-blur: 4px;
+        animate width, height { duration: Theme.motion-fast; }
     }
 
     // ── Hit area spanning the full rail width ─────────────────────────────────
