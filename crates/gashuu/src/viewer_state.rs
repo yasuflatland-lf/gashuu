@@ -9,9 +9,10 @@
 //! `reading_direction`; this state only exposes the leading/trailing images.
 
 use crate::keymap::NavAction;
+use crate::messages;
 use gashuu_core::{
-    ArchiveLoader, CacheConfig, CoreError, CoverMode, DecodedImage, ImageCache, PageSource,
-    ReadingDirection, ResolvedView, Settings, SpreadContext, SpreadLayout, SpreadMode,
+    ArchiveLoader, CacheConfig, CoreError, CoverMode, DecodedImage, ImageCache, Language,
+    PageSource, ReadingDirection, ResolvedView, Settings, SpreadContext, SpreadLayout, SpreadMode,
 };
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -80,6 +81,10 @@ pub struct ViewerState {
     spread_mode: SpreadMode,
     cover_mode: CoverMode,
     reading_direction: ReadingDirection,
+    /// UI display language, mirrored from the global `Settings` (the same
+    /// dual-write `cache_config` uses: the settings handler updates both).
+    /// Read by `status_text` so the status line renders in the UI language.
+    language: Language,
     /// Window aspect ratio (width / height) used to resolve `SpreadMode::Auto`
     /// into a concrete `SpreadLayout`. Ignored by Single/Double. Defaults to
     /// `1.0` until the UI pushes the real window size via `set_viewport_size`.
@@ -119,6 +124,7 @@ impl ViewerState {
             spread_mode: SpreadMode::Single,
             cover_mode: CoverMode::Standalone,
             reading_direction: ReadingDirection::Ltr,
+            language: Language::default(),
             viewport_aspect: 1.0,
             last_open_skipped: 0,
             open_file: None,
@@ -137,6 +143,7 @@ impl ViewerState {
             spread_mode: settings.spread_mode,
             cover_mode: settings.cover_mode,
             reading_direction: settings.reading_direction,
+            language: settings.language,
             viewport_aspect: 1.0,
             last_open_skipped: 0,
             open_file: None,
@@ -439,6 +446,25 @@ impl ViewerState {
         true
     }
 
+    /// Mirror the UI display language from the global `Settings` (set by the
+    /// settings-dialog language handler, never per-book). Affects only how
+    /// `status_text` renders. Idempotent: returns `false` when already set —
+    /// the dropdown's selection self-fire is absorbed by this guard.
+    pub fn set_language(&mut self, lang: Language) -> bool {
+        if self.language == lang {
+            return false;
+        }
+        self.language = lang;
+        true
+    }
+
+    /// The UI display language currently mirrored into this state. Used by
+    /// `refresh` in `main.rs` for the Rust-composed strings it pushes (decode
+    /// errors, the trailing-page-unavailable marker).
+    pub fn language(&self) -> Language {
+        self.language
+    }
+
     /// Apply a fully resolved per-book view to the runtime modes. Delegates to the
     /// idempotent `set_*` setters (each re-anchors the index for pairing changes
     /// at most once), so applying a resolved view after `jump_to` keeps the resumed
@@ -478,11 +504,12 @@ impl ViewerState {
 
     /// Status line: "No folder opened", "Folder contains no images", or a page
     /// range plus a mode label, e.g. "2\u{2013}3 / 6  [double \u{00b7} LTR]" or
-    /// "1 / 100  [single \u{00b7} LTR]".
+    /// "1 / 100  [single \u{00b7} LTR]". Rendered in the mirrored UI `language`
+    /// via the `messages` catalog (the page-range arithmetic is language-free).
     pub fn status_text(&self) -> String {
         match (&self.cache, self.page_count) {
-            (None, _) => "No folder opened".to_string(),
-            (Some(_), 0) => "Folder contains no images".to_string(),
+            (None, _) => messages::msg_no_folder_opened(self.language).to_string(),
+            (Some(_), 0) => messages::msg_no_images(self.language).to_string(),
             (Some(_), _) => {
                 let s = self.spread_ctx().spread_at(self.index);
                 let pages = if let Some(t) = s.trailing {
@@ -490,15 +517,9 @@ impl ViewerState {
                 } else {
                     format!("{} / {}", s.leading + 1, self.page_count)
                 };
-                let mode_label = match self.spread_mode {
-                    SpreadMode::Single => "single",
-                    SpreadMode::Double => "double",
-                    SpreadMode::Auto => "auto",
-                };
-                let dir_label = match self.reading_direction {
-                    ReadingDirection::Ltr => "LTR",
-                    ReadingDirection::Rtl => "RTL",
-                };
+                let mode_label = messages::msg_spread_label(self.language, self.spread_mode);
+                let dir_label =
+                    messages::msg_direction_label(self.language, self.reading_direction);
                 format!("{pages}  [{mode_label} \u{00b7} {dir_label}]")
             }
         }
