@@ -76,6 +76,16 @@ export global Theme {
     out property <color> glass-sheen-top: #1a2030d1;     // stage-top @ ~82% alpha; top stop of settings panel gradient
     out property <length> settings-scroll-indicator-w: 3px;  // self-drawn scroll indicator width
 
+    // ── Shortcuts overlay panel (issue 104, PR-C) ─────────────────────────────
+    // Reuses settings-w / settings-radius / the glass tokens; only the height
+    // differs. Shorter than settings-h (583) so the overlay reads as a SMALLER
+    // modal layered over the still-mounted settings panel. Sized to fit the
+    // KEY_BINDINGS_HELP block (~18 lines @ font-label 12px ≈ 306px) + a sticky
+    // header (~30px) + a hairline footer with the Close button (~50px) + the
+    // panel's vertical paddings, with a little air — the body Flickable still
+    // scrolls on a short window (Marcotte clamp).
+    out property <length> shortcuts-h: 466px;            // shortcuts overlay panel height (< settings-h so it layers as a smaller modal)
+
     // ── Typography sizes (system font; no custom typeface) ────────────────────
     out property <length> font-title: 15px;
     out property <length> font-body: 13px;
