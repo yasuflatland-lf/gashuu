@@ -33,6 +33,19 @@ export component ViewerWindow inherits Window {
     in property <[CarouselItem]> carousel-items;
     in-out property <int> carousel-focused-index;
 
+    // ── Library search seams (issue #88) — re-exposed for Rust ────────────────
+    // `library-search-query` mirrors the NavBar field text; `library-book-count`
+    // is the TOTAL book count (filter-independent) so the carousel can tell the
+    // empty-library CTA apart from the search no-results state.
+    // `library-search-changed` carries the debounced query to main.rs;
+    // `focus-library-search` lets Rust move focus into the field; `settings`
+    // opens the settings dialog from the nav.
+    in-out property <string> library-search-query;
+    in property <int> library-book-count;
+    callback library-search-changed(string);
+    callback settings();
+    public function focus-library-search() { carousel.focus-search(); }
+
     in property <[ThumbnailItem]> thumbnails;
     in property <int> current-index;
     in property <bool> show-thumbnails: false;
@@ -157,6 +170,10 @@ export component ViewerWindow inherits Window {
         height: root.height;
         items: root.carousel-items;
         focused-index <=> root.carousel-focused-index;
+        search-query <=> root.library-search-query;
+        library-book-count: root.library-book-count;
+        search-changed(q) => { root.library-search-changed(q); }
+        settings() => { root.settings(); }
         open(i) => { root.carousel-open(i); }
         move(delta) => { root.carousel-move(delta); }
         back() => { root.carousel-back(); }

@@ -161,6 +161,18 @@ export component Carousel inherits Rectangle {
     callback add-files();     // opens a file picker (rfd); wired to on_add_files in main.rs
     callback add-folder();    // opens a folder picker (rfd); wired to on_add_folder in main.rs
 
+    // ── Library search seams (issue #88) ──────────────────────────────────────
+    // `search-query` mirrors the NavBar field; `library-book-count` is the TOTAL
+    // book count (independent of the active filter) so the empty-library CTA and
+    // the no-results state can be told apart. `search-changed` carries the
+    // debounced query to Rust. `settings` opens the settings dialog.
+    in-out property <string> search-query;
+    in property <int> library-book-count;
+    callback search-changed(string);
+    callback settings();
+    // Move keyboard focus into the NavBar search field (carousel `/` and click).
+    public function focus-search() { nav.focus-search(); }
+
     // FocusScope focus recovery (mirrors ViewerWindow's focus-pages() rule).
     public function focus-self() { fs.focus(); }
 
@@ -211,6 +223,10 @@ export component Carousel inherits Rectangle {
     // GoToLibrary.
     fs := FocusScope {
         key-pressed(event) => {
+            // `/` focuses the search field — but ONLY while the carousel owns
+            // focus. Once the search field has focus, `/` is ordinary text input
+            // (this FocusScope no longer receives the key).
+            if (event.text == "/") { root.focus-search(); return accept; }
             if (event.text == Key.LeftArrow) { root.move(-1); return accept; }
             if (event.text == Key.RightArrow) { root.move(1); return accept; }
             if (event.text == Key.Return) { root.open(root.focused-index); return accept; }
@@ -218,10 +234,13 @@ export component Carousel inherits Rectangle {
             return reject;
         }
 
-          // ── Empty state (0 books): the picker call-to-action (DESIGN.md
-          //    "Empty Library"). The CTA button fires add-files() via a TouchArea
-          //    (wired in PR-L) and restores keyboard focus to the carousel. ──────
-          if root.items.length == 0 : Rectangle {
+          // ── Empty state (0 books in the LIBRARY): the picker call-to-action
+          //    (DESIGN.md "Empty Library"). Gated on the total book count, NOT on
+          //    the filtered `items` length, so an active search that hides every
+          //    book shows the no-results panel below instead of this add CTA. The
+          //    CTA button fires add-files() via a TouchArea (wired in PR-L) and
+          //    restores keyboard focus to the carousel. ─────────────────────────
+          if root.library-book-count == 0 : Rectangle {
               // Fluid panel width (DESIGN.md "Responsive Behavior"): clamp the
               // sunken empty-state panel to the carousel width so it never clips
               // on a narrow window nor stretches too wide on a large one.
@@ -261,6 +280,39 @@ export component Carousel inherits Rectangle {
                           text: "Select folders / files to add";
                           clicked => { root.add-files(); root.focus-self(); }
                       }
+                  }
+              }
+          }
+
+          // ── No-results state (library has books, filter matches none) ────────
+          // Distinct from the empty-library CTA above: there ARE books, the
+          // active search just hides them all. NO add CTA here — only guidance to
+          // adjust the query. Uses Theme.* color tokens only.
+          if root.library-book-count > 0 && root.items.length == 0 : Rectangle {
+              width: Math.clamp(parent.width - 2 * Theme.space-xl, 280px, 360px);
+              height: 160px;
+              x: (parent.width - self.width) / 2;
+              y: (parent.height - self.height) / 2;
+              background: Theme.surface-sunken;
+              border-radius: Theme.radius-lg;
+              border-width: 1px;
+              border-color: Theme.hairline;
+              VerticalLayout {
+                  alignment: center;
+                  spacing: Theme.space-md;
+                  padding: Theme.space-xl;
+                  Text {
+                      text: "No matching books";
+                      color: Theme.text;
+                      font-size: Theme.font-title;
+                      font-weight: Theme.weight-bold;
+                      horizontal-alignment: center;
+                  }
+                  Text {
+                      text: "Try a different search.";
+                      color: Theme.text-muted;
+                      font-size: Theme.font-micro;
+                      horizontal-alignment: center;
                   }
               }
           }
@@ -352,12 +404,18 @@ export component Carousel inherits Rectangle {
     // screen-reader oriented, and keyboard navigation stays owned by the carousel.
     // Clicking an item fires the existing rfd picker callback, then restores
     // keyboard focus to the carousel (preserving the old toolbar behavior).
-    NavBar {
+    nav := NavBar {
         x: (parent.width - self.width) / 2;
         y: Theme.space-md;
+        search-query <=> root.search-query;
         file-icon: @image-url("assets/file.svg");
         folder-icon: @image-url("assets/folder.svg");
+        search-icon: @image-url("assets/search.svg");
+        settings-icon: @image-url("assets/settings.svg");
+        search-changed(q) => { root.search-changed(q); }
+        search-exit => { root.focus-self(); }
         add-files => { root.add-files(); root.focus-self(); }
         add-folder => { root.add-folder(); root.focus-self(); }
+        settings => { root.settings(); }
     }
 }

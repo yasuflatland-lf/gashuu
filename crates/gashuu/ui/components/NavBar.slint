@@ -1,5 +1,6 @@
-// NavBar — the top, centered "glass pill" holding the two icon-only NavItems
-// (Add files / Add folder).
+// NavBar — the top, centered "glass pill" holding the live library search field
+// (left), a thin divider, and the three icon-only NavItems (Add files / Add
+// folder / Settings) on the right.
 //
 // Slint 1.x has NO backdrop-blur, so the frosted-glass look is APPROXIMATED,
 // not rendered, with four cheap layers that read as glass without sampling
@@ -10,27 +11,171 @@
 //                            fakes light catching the upper lip of the glass
 //   4. drop shadow         — Theme.shadow-popover, lifting the pill off content
 //
-// The width is sized explicitly from tokens (two capsules + the inter-item gap
-// + left/right padding) rather than from a layout's preferred width: binding the
-// root width to its own content layout would create a width binding loop.
+// The width is sized explicitly from tokens (search field + three capsules +
+// the inter-item gaps + divider + left/right padding) rather than from a
+// layout's preferred width: binding the root width to its own content layout
+// would create a width binding loop.
 //
 // Colors / lengths come from Theme.* only — NO inline brand hex (DESIGN.md
 // rule 2; scripts/check-tokens.sh enforces this). Theme lives one directory up.
 import { Theme } from "../Theme.slint";
 import { NavItem } from "NavItem.slint";
 
+// File-private live search field (issue #88). A self-contained pill with a
+// leading magnifier icon, a placeholder, a TextInput, and a 120ms trailing
+// debounce Timer. Kept in this file so no new import path is needed.
+//
+// TextInput (not LineEdit) is used deliberately so EVERY color comes from
+// Theme.* — std-widgets' LineEdit paints its own native palette, which would
+// bypass the token rule and clash with the glass pill.
+component SearchField inherits Rectangle {
+    // ── Public API ────────────────────────────────────────────────────────────
+    in-out property <string> query;
+    in property <image> search-icon;
+    callback debounced-query(string);
+    callback exit-search();
+
+    // Restore focus to the input (and select existing text) when the carousel
+    // hands focus over via `/` or a click. Exposed so NavBar can forward it.
+    public function focus-self() {
+        input.focus();
+        input.select-all();
+    }
+
+    // ── Shape: a sunken rounded rectangle that lights its edge to accent on focus ──
+    width: Theme.nav-search-width;
+    height: Theme.nav-capsule;
+    border-radius: Theme.nav-search-radius;
+    background: Theme.surface-sunken;
+    border-width: Theme.nav-divider-width;
+    border-color: input.has-focus ? Theme.accent : Theme.glass-border;
+    animate border-color { duration: Theme.motion-fast; }
+
+    // ── Leading magnifier icon ────────────────────────────────────────────────
+    // Colorized with the same idle tone NavItem uses for its icon (text-mid),
+    // so the search glyph reads as part of the same icon family.
+    icon := Image {
+        source: root.search-icon;
+        width: Theme.nav-search-icon;
+        height: Theme.nav-search-icon;
+        x: Theme.nav-search-pad-x;
+        y: (parent.height - self.height) / 2;
+        image-fit: contain;
+        colorize: Theme.text-mid;
+    }
+
+    // Text content starts AFTER the icon + a small gap so it never overlaps the
+    // glyph; the right inset mirrors the left padding.
+    // text-x = pad + icon + gap; text-width = field - text-x - pad.
+    property <length> text-x: Theme.nav-search-pad-x + Theme.nav-search-icon + Theme.space-xs;
+
+    // ── Placeholder (shown only while empty) ──────────────────────────────────
+    Text {
+        visible: root.query == "";
+        x: root.text-x;
+        width: parent.width - root.text-x - Theme.nav-search-pad-x;
+        height: 100%;
+        text: "Search library";
+        color: Theme.text-dim;
+        font-size: Theme.font-label;
+        vertical-alignment: center;
+        overflow: elide;
+        accessible-role: none;
+    }
+
+    // ── The actual text input ─────────────────────────────────────────────────
+    input := TextInput {
+        x: root.text-x;
+        y: 0;
+        width: parent.width - root.text-x - Theme.nav-search-pad-x;
+        height: 100%;
+        text <=> root.query;
+        single-line: true;
+        color: Theme.text;
+        font-size: Theme.font-label;
+        vertical-alignment: center;
+        selection-background-color: Theme.accent-glow;
+        selection-foreground-color: Theme.text;
+        text-cursor-width: Theme.nav-search-cursor;
+        accessible-role: text-input;
+        accessible-label: "Search library";
+        accessible-placeholder-text: "Search library";
+
+        // Each keystroke (re)arms the trailing debounce: stop any pending fire
+        // and restart, so the query callback fires ~120ms after the LAST edit.
+        edited => {
+            debounce.running = true;
+            debounce.stop();
+            debounce.start();
+        }
+
+        // Enter commits the current query immediately and returns focus to the
+        // carousel. It must NOT open the first result — that is intentional.
+        accepted => {
+            debounce.stop();
+            root.debounced-query(root.query);
+            root.exit-search();
+        }
+
+        key-pressed(event) => {
+            // Escape clears the query, flushes an empty filter, and exits.
+            if (event.text == Key.Escape) {
+                root.query = "";
+                debounce.stop();
+                root.debounced-query("");
+                root.exit-search();
+                return accept;
+            }
+            // Down commits the current query and hands focus back to the
+            // carousel WITHOUT switching to the viewer (carousel's Down does).
+            if (event.text == Key.DownArrow) {
+                debounce.stop();
+                root.debounced-query(root.query);
+                root.exit-search();
+                return accept;
+            }
+            return reject;
+        }
+    }
+
+    // ── 120ms trailing debounce ───────────────────────────────────────────────
+    debounce := Timer {
+        interval: 120ms;
+        running: false;
+        triggered => {
+            root.debounced-query(root.query);
+            debounce.stop();
+        }
+    }
+}
+
 export component NavBar inherits Rectangle {
     // ── Public API ────────────────────────────────────────────────────────────
     in property <image> file-icon;
     in property <image> folder-icon;
+    in property <image> search-icon;
+    in property <image> settings-icon;
+    in-out property <string> search-query;
     callback add-files();
     callback add-folder();
+    callback settings();
+    callback search-changed(string);
+    callback search-exit();
+
+    // Move keyboard focus into the search field (carousel `/` and click).
+    public function focus-search() { search.focus-self(); }
 
     // ── Shape & size ──────────────────────────────────────────────────────────
     // Width is computed from tokens so the pill hugs its content WITHOUT a
-    // layout-preferred-width binding loop: two capsules + one gap + 2x padding.
+    // layout-preferred-width binding loop. Children left→right: search field,
+    // 1px divider, three icon capsules → five children → four inter-item gaps.
+    //   search-width + 3*capsule + divider + 4*gap + 2*pad.
     height: Theme.nav-pill-height;
-    width: 2 * Theme.nav-capsule + Theme.nav-item-gap + 2 * Theme.nav-pill-pad;
+    width: Theme.nav-search-width
+        + 3 * Theme.nav-capsule
+        + Theme.nav-divider-width
+        + 4 * Theme.nav-item-gap
+        + 2 * Theme.nav-pill-pad;
     horizontal-stretch: 0;
     vertical-stretch: 0;
 
@@ -55,11 +200,33 @@ export component NavBar inherits Rectangle {
         background: Theme.glass-highlight;
     }
 
-    // ── Items: the two icon-only capsules, centered with even spacing ─────────
+    // ── Items: search field, divider, then the three icon-only capsules ───────
     HorizontalLayout {
         spacing: Theme.nav-item-gap;
         padding: Theme.nav-pill-pad;
         alignment: center;
+
+        search := SearchField {
+            query <=> root.search-query;
+            search-icon: root.search-icon;
+            debounced-query(q) => { root.search-changed(q); }
+            exit-search => { root.search-exit(); }
+        }
+
+        // Thin vertical divider separating search from the action capsules.
+        // ~60% of the capsule height, vertically centered within its layout cell.
+        Rectangle {
+            width: Theme.nav-divider-width;
+            vertical-stretch: 0;
+            VerticalLayout {
+                alignment: center;
+                Rectangle {
+                    width: Theme.nav-divider-width;
+                    height: Theme.nav-capsule * 0.6;
+                    background: Theme.hairline-float;
+                }
+            }
+        }
 
         NavItem {
             icon: root.file-icon;
@@ -70,6 +237,11 @@ export component NavBar inherits Rectangle {
             icon: root.folder-icon;
             a11y-label: "Add folder";
             clicked => { root.add-folder(); }
+        }
+        NavItem {
+            icon: root.settings-icon;
+            a11y-label: "Settings";
+            clicked => { root.settings(); }
         }
     }
 }
