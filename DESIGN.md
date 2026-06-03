@@ -453,7 +453,7 @@ gradient fill + 1px rim + 1px top inner highlight + ONE `{elevation.float}` shad
 body + self-drawn scroll indicator. There is NO second glass token set; only the height differs.
 
 - **Layered sizing**: the panel is **466px** tall (`Theme.shortcuts-h`), deliberately SHORTER than the
-  settings panel's 583px φ height, so the two panels read as a stack — a smaller modal floating over a
+  settings panel's content-hug height, so the two panels read as a stack — a smaller modal floating over a
   larger one — rather than one swapping for the other. It is sized to fit the shortcuts text (17 lines at
   `{typography.ui-micro}`) plus a sticky header and a hairline footer with the Close button; on a short
   window it clamps and the body scrolls (same Marcotte clamp as the settings panel).
@@ -511,9 +511,9 @@ adapting to the live window size.
 - **Scrubber**: the rail spans window width minus edge insets; the preview popover clamps inside
   the window so it never clips at the far edges.
 - **Showing the thumbnail strip** shrinks the viewer height and may re-resolve `Auto` (accepted).
-- **Settings panel**: keeps its fixed φ size until the window gets short, then its height clamps to the
-  window minus a gutter on each side and the body scrolls (the sticky header/footer stay put). Never
-  overflows the window.
+- **Settings panel**: keeps its fixed 360px width and hugs its content vertically; once the window gets
+  short, the Marcotte clamp caps its height to the window minus a gutter on each side and the body scrolls
+  (the sticky header/footer stay put). Never overflows the window.
 - **Shortcuts overlay**: same fixed-then-clamp behavior as the settings panel (its 466px height clamps to
   the window minus a gutter on each side, then the body scrolls), one layer above it.
 
