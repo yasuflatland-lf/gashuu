@@ -21,6 +21,9 @@ export component NavItem inherits Rectangle {
     in property <image> icon;
     in property <string> a11y-label;
     callback clicked;
+    // Exposed so a container can keep its auto-hiding chrome visible while the
+    // pointer rests on this capsule.
+    out property <bool> hovered: touch.has-hover;
 
     // ── Shape: a circular capsule with a stable, reserved 1px ring ────────────
     width: Theme.nav-capsule;

@@ -34,34 +34,37 @@ component PageJumpField inherits Rectangle {
     in-out property <string> page-text;   // 1-based page number string, editable
     in property <int> total-pages;
     out property <bool> field-focused: input.has-focus;
+    // True while the pointer rests over the field, so the container can keep its
+    // auto-hiding chrome visible. The sensor sits behind the TextInput, which
+    // still takes clicks/focus in front of it.
+    out property <bool> hovered: field-touch.has-hover;
     callback page-jump-request(string);    // fires on Enter; caller validates
     callback page-jump-cancel();            // fires on Escape; caller restores page-text
 
-    // ── Shape: a sunken rounded rectangle that lights its edge to accent on focus ──
-    width: 145px;
+    // ── Shape: fully blended into the pill — no fill, no border ───────────────
+    // Background and border are omitted so the field reads as part of the glass
+    // pill rather than a boxed-in input (a hairline border outlined it as a
+    // separate box, which the design does not want). The width holds a 4-digit
+    // page number plus the "/ total" readout without clipping.
+    width: 142px;
     height: Theme.nav-capsule;
-    border-radius: Theme.nav-search-radius;
-    background: Theme.surface-sunken;
-    border-width: Theme.nav-divider-width;
-    border-color: input.has-focus ? Theme.accent : Theme.glass-border;
-    animate border-color { duration: Theme.motion-fast; }
+    background: transparent;
 
-    // ── Content: "[" <input> "]" "/" <total> ──────────────────────────────────
+    // Hover sensor behind the content (the TextInput in front keeps focus/clicks).
+    field-touch := TouchArea { }
+
+    // ── Content: <input> "/" <total> ──────────────────────────────────────────
+    // Pad horizontally ONLY: a full `padding` would also inset top/bottom, leaving
+    // ~8px of vertical room inside the 34px capsule and clipping the 12px digits.
     HorizontalLayout {
-        padding: Theme.nav-search-pad-x;
+        padding-left: Theme.nav-search-pad-x;
+        padding-right: Theme.nav-search-pad-x;
         spacing: Theme.space-xs;
         alignment: center;
 
-        Text {
-            text: "[";
-            color: Theme.text-dim;
-            font-size: Theme.font-label;
-            vertical-alignment: center;
-        }
-
         input := TextInput {
             text <=> root.page-text;
-            width: 42px;
+            width: 52px;
             single-line: true;
             horizontal-alignment: center;
             color: Theme.text;
@@ -89,13 +92,6 @@ component PageJumpField inherits Rectangle {
         }
 
         Text {
-            text: "]";
-            color: Theme.text-dim;
-            font-size: Theme.font-label;
-            vertical-alignment: center;
-        }
-
-        Text {
             text: "/";
             color: Theme.text-dim;
             font-size: Theme.font-label;
@@ -107,8 +103,8 @@ component PageJumpField inherits Rectangle {
             color: Theme.text-muted;
             font-size: Theme.font-label;
             vertical-alignment: center;
-            horizontal-alignment: right;
-            width: 36px;
+            horizontal-alignment: left;
+            width: 44px;
         }
     }
 }
@@ -123,14 +119,21 @@ export component ViewerPill inherits Rectangle {
     callback open-settings();               // settings NavItem clicked
     // Exposed so ViewerWindow can suppress its idle-hide timer while editing.
     out property <bool> field-focused: page-field.field-focused;
+    // True while the pointer rests anywhere on the pill — the jump field, either
+    // capsule, or the gaps/padding between them (the last via `pill-touch`). Lets
+    // ViewerWindow keep the chrome visible under a hovering cursor.
+    out property <bool> hovered: pill-touch.has-hover
+        || page-field.hovered
+        || thumb-item.hovered
+        || settings-item.hovered;
 
     // ── Shape & size ──────────────────────────────────────────────────────────
     // Width is computed from tokens so the pill hugs its content WITHOUT a
     // layout-preferred-width binding loop. Children left→right: jump field,
     // 1px divider, two icon capsules → four children → three inter-item gaps.
-    //   jump-field(145px) + divider + 2*capsule + 3*gap + 2*pad.
+    //   jump-field(142px) + divider + 2*capsule + 3*gap + 2*pad.
     height: Theme.nav-pill-height;
-    width: 145px
+    width: 142px
         + Theme.nav-divider-width
         + 2 * Theme.nav-capsule
         + 3 * Theme.nav-item-gap
@@ -146,6 +149,11 @@ export component ViewerPill inherits Rectangle {
     drop-shadow-color: Theme.shadow-popover;
     drop-shadow-blur: 22px;
     drop-shadow-offset-y: 8px;
+
+    // Background hover sensor covering the gaps/padding between items. Declared
+    // first so the interactive children (field, capsules) sit in front and keep
+    // their focus/clicks; this only catches the spaces they don't cover.
+    pill-touch := TouchArea { }
 
     // ── Glass approximation (layer 3): top inner highlight rim ────────────────
     // A thin decorative line just below the top edge, inset horizontally by
@@ -186,12 +194,12 @@ export component ViewerPill inherits Rectangle {
             }
         }
 
-        NavItem {
+        thumb-item := NavItem {
             icon: @image-url("../assets/slider.svg");
             a11y-label: "Toggle thumbnails";
             clicked => { root.toggle-thumbnails(); }
         }
-        NavItem {
+        settings-item := NavItem {
             icon: @image-url("../assets/settings.svg");
             a11y-label: "Settings";
             clicked => { root.open-settings(); }
