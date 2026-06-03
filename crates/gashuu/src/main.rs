@@ -591,7 +591,8 @@ fn main() -> color_eyre::Result<()> {
     // footer link, so on_open_settings has always run first and populated
     // key_bindings_text. A future entry point that bypasses settings MUST set
     // key_bindings_text itself before opening the overlay.
-    // Nothing more is needed here than flipping the visibility flag.
+    // Focus management is intentionally omitted: ShortcutsOverlay's `init` grabs
+    // focus itself on appear, so no explicit focus call is needed here.
     {
         let ui_weak = ui.as_weak();
         ui.on_open_shortcuts(move || {
@@ -1097,8 +1098,8 @@ fn to_slint_image(decoded: &DecodedImage) -> slint::Image {
     slint::Image::from_rgba8(buffer)
 }
 
-/// Concise key-bindings reference shown read-only in the settings dialog. Keep in
-/// sync with `keymap::map_key`.
+/// Concise key-bindings reference rendered read-only in ShortcutsOverlay (opened
+/// from the settings footer). Keep in sync with `keymap::map_key`.
 const KEY_BINDINGS_HELP: &str = "\
 Navigation:
   Space = next page    Backspace = previous page

@@ -41,7 +41,7 @@ import { PrimaryButton } from "components/PrimaryButton.slint";
 export component ShortcutsOverlay inherits Rectangle {
     // ── Public interface (pinned — sibling agents code against this) ───────────
     // The keyboard-shortcuts reference text (= KEY_BINDINGS_HELP from Rust,
-    // ~18 lines). Rendered read-only inside the Flickable body.
+    // 17 lines). Rendered read-only inside the Flickable body.
     in property <string> key-bindings-text;
     // Fired on Esc, backdrop-click, or the Close button. The parent returns
     // focus to the SettingsDialog (design §5) and hides this overlay.
@@ -106,8 +106,9 @@ export component ShortcutsOverlay inherits Rectangle {
         // the Close button is interactive but is intentionally not pre-selected on
         // open. It CONSUMES every key (returns accept) so nothing can leak to the
         // SettingsDialog mounted behind this overlay (the modal-over-modal trap).
-        // Declared AFTER the absorber so empty-panel clicks land on the absorber,
-        // not on `fs`.
+        // Declared after the absorber — FocusScope does not intercept pointer events,
+        // so empty-panel clicks fall through to the absorber regardless of declaration
+        // order.
         fs := FocusScope {
             x: 0;
             y: 0;

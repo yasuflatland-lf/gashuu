@@ -136,8 +136,10 @@ export component SettingsDialog inherits Rectangle {
         // rejected so they reach the focused child control. A focused child atom's
         // FocusScope rejects unhandled keys; Slint then walks UP the focused item's
         // parent chain, which passes through this scope, so Esc fires here.
-        // Fills the panel (declared after the absorber so controls keep hit-test
-        // priority and empty-panel clicks fall through to the absorber, not here).
+        // Fills the panel (declared after the absorber — FocusScope does not
+        // intercept pointer events, so empty-panel clicks fall through to the
+        // absorber regardless of declaration order; controls keep hit-test priority
+        // over the absorber's TouchArea because they are declared after it).
         fs := FocusScope {
             x: 0;
             y: 0;
