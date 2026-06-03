@@ -151,11 +151,15 @@ components:
     rounded: "{rounded.lg}"
   settings-panel:
     width: 360px              # Theme.settings-w
-    height: 583px             # Theme.settings-h; height / width ≈ φ (1.618)
+    height: content-hug       # header + body + footer; clamps to the window (Marcotte). φ outline dropped 2026-06-04 — φ moved into component proportions (toggle track, spacing ladder)
     rounded: 21px             # Theme.settings-radius = nav-pill-radius (shares NavBar's glass corner language)
-    labelColumn: 150px        # Theme.settings-label-col (fixed; sized to the longest label, never wraps/elides)
-    controlSeam: "labelColumn + {spacing.lg}"   # Theme.settings-control-x — the single x every control shares
+    labelColumn: 132px        # Theme.settings-label-col (fixed; longest label ≈ 100px + slack, never wraps/elides)
+    controlSeam: "labelColumn + {spacing.lg}"   # Theme.settings-control-x — fill controls START here; every control ENDS at the right rail
     rowHeight: 34px           # Theme.settings-row-h (= nav-capsule); the 30px control atom centers within it
+    rowGap: "{spacing.lg}"    # 14px ≈ Fib 13 — row pitch 48px ≈ controlHeight × φ
+    sectionGap: "{spacing.xxl}" # 22px ≈ Fib 21; also the caption→footer-hairline gap
+    segmentRadius: "{rounded.md}"          # Theme.radius-md capsule; cells = Theme.seg-cell-radius (md − 4px, concentric)
+    toggleTrack: "controlHeight × φ"       # Theme.toggle-track-w ≈ 48.5×30 — Apple's 51×31 switch proportion; knob inset 2px
     scrollIndicatorWidth: 3px # Theme.settings-scroll-indicator-w (self-drawn, not a std scrollbar)
     dropdownWidth: 140px      # Theme.settings-dropdown-w (fixed so the pull-down capsule doesn't resize across languages)
     dropdownChevron: 10px     # Theme.settings-dropdown-chevron (the pull-down's chevron glyph square)
@@ -400,8 +404,11 @@ shows through — reinforcing the "glass" read.
   resists low-DPI degradation.
 
 ### Settings Panel — `components.settings-panel`
-A modal **golden-ratio glass panel** centered over the dimmed screen: 360 × 583px (height/width ≈ φ),
-corner radius **21px** (= `nav-pill-radius` — it shares NavBar's glass corner language). It is one
+A modal **content-hug glass panel** centered over the dimmed screen: 360px wide, exactly as tall as
+its header + body + footer (the fixed φ outline was deliberately dropped 2026-06-04 — **φ relocated
+into the component proportions**: the toggle track ratio, the 8/14/22 ≈ Fibonacci 8/13/21 spacing
+ladder, and the segment padding), corner radius **21px** (= `nav-pill-radius` — it shares NavBar's
+glass corner language). It is one
 fake-glass object built from NavBar's four layers, with **layer 1 promoted to a top-sheen gradient**:
 a `@linear-gradient(180deg, {colors.glass-sheen-top} 0%, {colors.glass-fill} 46%)` fill, a 1px
 `{colors.glass-border}` rim, a 1px `{colors.glass-highlight}` top inner highlight, and ONE
@@ -409,17 +416,25 @@ a `@linear-gradient(180deg, {colors.glass-sheen-top} 0%, {colors.glass-fill} 46%
 an opacity layer — Slint `opacity` blurs text/SVG on HiDPI.) On a short window the panel height clamps
 to fit and the **body scrolls** (see Responsive Behavior).
 
-- **L1 single-seam alignment**: each setting is a row with a fixed **label column** (150px,
-  `{colors.text-mid}`, never wrapping/eliding) at the left margin and its control at ONE shared
-  vertical **control seam** (`labelColumn + {spacing.lg}`). Every control's left edge lines up; the
-  RIGHT edges are intentionally ragged (no stretch). Row height 34px; the 30px control atom centers
-  within it.
-- **Sections**: Reading / Display / Performance / General, delineated by whitespace. Section headers
-  are `{colors.text-dim}` in **sentence case** — NOT accent (accent stays interactive/selected-only).
+- **Seam + right-rail alignment**: each setting is a row with a fixed **label column** (132px,
+  `{colors.text-mid}`, never wrapping/eliding) at the left margin. Rule: **every control ENDS at the
+  right rail** (the body's right padding edge); **fill controls (Segmented) also START at the seam**
+  (`labelColumn + {spacing.lg}`) with equal-width cells (HIG), while compact controls
+  (Stepper — width-equalized — Toggle, and the Language pull-down) trail on the rail (macOS System
+  Settings). Row height 34px; the 30px control atom centers within it; row pitch 48px ≈
+  controlHeight × φ.
+- **Sections**: Reading / Display / Performance / General, delineated by whitespace (22px ≈ Fib 21).
+  Section headers are `{colors.text-dim}` **sentence-case semibold eyebrows** — smaller than the row
+  labels on purpose (Apple grouped-list IA: hierarchy via position/whitespace/color, weight marks the
+  header species) — NOT accent (accent stays interactive/selected-only).
+- **Footer**: both-ends (HIG) — "⌨ Shortcuts" on the left edge, (Reset to global +) Close hard
+  right, all on one shared vertical centerline; `{spacing.xl}`/`{spacing.md}` (18/10 ≈ φ) padding.
+- **Toggle** is an Apple-proportioned switch: capsule track `controlHeight × φ` wide, 26px knob,
+  2px inset. **Segmented** capsules are `{rounded.md}` with concentrically rounded cells.
 - **Controls** are the token-driven atoms (`Segmented` / `Stepper` / `Toggle` / `Dropdown`), not std
   widgets.
 - **Language pull-down** (`Dropdown`, Apple-HIG pull-down button): a fixed-width capsule
-  (`dropdownWidth`) on the control seam showing the current value plus a `{colors.text-dim}`
+  (`dropdownWidth`) on the right rail showing the current value plus a `{colors.text-dim}`
   chevron; the open menu (a Slint `PopupWindow` — never clipped by the scroll body) lists options
   with an `{colors.accent}` check mark on the selected row and an accent hover fill. Language
   names always render in their own tongue ("English" / "日本語") and are never translated.
