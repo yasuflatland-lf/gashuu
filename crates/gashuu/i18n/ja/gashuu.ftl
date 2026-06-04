@@ -165,6 +165,11 @@ stepper-increase = { $label }を増やす
 # Close button used in SettingsDialog and ShortcutsOverlay footers.
 common-close = 閉じる
 
+# ---- confirm-delete ----
+
+# Cancel button in the bulk-delete confirmation dialog.
+confirm-delete-cancel = キャンセル
+
 # ---- viewer ----
 # Dynamic status-line messages (mapped to the former msg_* functions of the deleted src/messages.rs).
 
