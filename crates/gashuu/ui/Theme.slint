@@ -153,6 +153,11 @@ export global Theme {
     out property <color> glass-fill: #10141fd1;      // surface-float @ ~82% alpha
     out property <color> glass-border: #2f3850b3;    // hairline-float @ ~70% alpha
     out property <color> glass-highlight: #dde5f51f; // text-high @ ~12% — top inner rim
+    // Resting search-field rim — the hairline-float hue at threshold-of-visibility
+    // alpha (~15%), a hair above glass-highlight's ~12% so the cooler hue reads at
+    // the same faint level. Barely visible at rest; the field brightens to accent on
+    // focus. Dedicated so glass-border (shared by 5 components) stays untouched.
+    out property <color> search-border-rest: #2f385026; // hairline-float @ ~15% alpha
     out property <color> viewer-pill-fill: #10141fb3;   // surface-float @ ~70% alpha (viewer pill, slightly more transparent than glass-fill)
     // Glow color for the book-title label. Slint 1.x Text has no text-shadow, so
     // the title is rendered as 1px-offset duplicates in this color behind a crisp

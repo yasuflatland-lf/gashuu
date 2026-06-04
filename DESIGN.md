@@ -18,6 +18,7 @@ colors:
   glass-fill: "#10141fd1"      # surface-float at ~82% alpha — translucent glass-pill fill
   glass-border: "#2f3850b3"    # hairline-float at ~70% alpha — the hairline rim
   glass-highlight: "#dde5f51f" # text-high at ~12% alpha — 1px top inner highlight rim
+  search-border-rest: "#2f385026" # hairline-float at ~15% alpha — resting search-field rim, threshold-of-visibility
   glass-sheen-top: "#1a2030d1" # stage-top at ~82% alpha — top stop of the settings panel's fill gradient
   shadow-popover: "#00000080"  # Theme.shadow-popover — popover/panel drop-shadow ink (50% black)
   success: "#41c98a"
@@ -227,6 +228,7 @@ is the dark frame around them.
 ### Hairlines & Tracks
 - **Hairline** (`{colors.hairline}` — `#262c3a`): 1px chrome borders and dividers.
 - **Hairline Float** (`{colors.hairline-float}` — `#2f3850`): 1px border on the floating popover.
+- **Search Border Rest** (`{colors.search-border-rest}` — `#2f385026`): The library search field's resting 1px rim — the hairline-float hue held at threshold-of-visibility (~15% alpha), so the field is barely outlined until it brightens to `{colors.accent}` on focus.
 - **Track** (`{colors.track}` — `#2a3243`): The scrubber rail.
 - **Track Prog** (`{colors.track-prog}` — `#333c4f`): The unfilled portion of a progress bar.
 - **Chip** (`{colors.chip}` — `#222a3a`): Pill/chip background (page counter, hints).
@@ -393,6 +395,9 @@ shows through — reinforcing the "glass" read.
   **no on-screen text labels** (accessible-label only) and **no tooltips**.
 - **Each capsule** is circular; only the hovered/pressed cell glows softly with
   `{colors.accent-glow}`, and its icon brightens `{colors.text-mid}` → `{colors.text-high}`.
+- **Search field** (left of the divider): a barely-visible 1px `{colors.search-border-rest}` rim at
+  rest — held at threshold-of-visibility so the field reads as part of the glass — animating to a
+  1px `{colors.accent}` edge on focus.
 - **Glass treatment**: `{colors.glass-fill}` fill + a 1px `{colors.glass-border}` rim + a 1px
   `{colors.glass-highlight}` top inner highlight line + a `{colors.shadow-popover}` drop shadow
   (blur 22 / y-offset 8). **No backdrop-blur** — Slint 1.x cannot blur what's behind it, so the
