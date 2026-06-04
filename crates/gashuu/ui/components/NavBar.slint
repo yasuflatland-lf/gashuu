@@ -169,6 +169,10 @@ export component NavBar inherits Rectangle {
     // one. Pushed once from Rust at boot — never changes at runtime.
     in property <bool> combined-add-picker;
     in-out property <string> search-query;
+    // When true, a soft translucent veil is painted over the pill to visually
+    // recede the NavBar behind foreground content. Default false = no change.
+    // NOT wired at any instantiation site — a later task owns that.
+    in property <bool> receded: false;
     callback add-books();
     callback add-folder();
     callback settings();
@@ -268,5 +272,22 @@ export component NavBar inherits Rectangle {
             a11y-label: Strings.settings-title;
             clicked => { root.settings(); }
         }
+    }
+
+    // ── Recede veil (MUST be the last child — paints over all controls) ───────
+    // A soft translucent overlay that dims the NavBar when `receded` is true,
+    // signalling to the user that something else is in focus. Uses the same
+    // border-radius as the root capsule so the veil is clipped to the pill shape.
+    // NO TouchArea: the overlay is purely visual — all NavBar controls remain
+    // clickable through it (Slint Rectangles without a TouchArea are
+    // pointer-transparent by default).
+    Rectangle {
+        x: 0;
+        y: 0;
+        width: parent.width;
+        height: parent.height;
+        border-radius: Theme.nav-pill-radius;
+        background: root.receded ? Theme.scrim-soft : transparent;
+        animate background { duration: Theme.motion-fast; }
     }
 }
