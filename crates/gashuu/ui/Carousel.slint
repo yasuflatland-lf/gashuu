@@ -457,6 +457,7 @@ export component Carousel inherits Rectangle {
                   clicked => { root.cover-clicked(idx); }
               }
               // Pass 2: focused card only, on top (elevated: true default → shadow painted once).
+              // Any future additional render pass MUST also set interactive: false (single-fire invariant).
               for item[idx] in root.items : CoverCard {
                   show: idx == root.focused-index;
                   focused: idx == root.focused-index;

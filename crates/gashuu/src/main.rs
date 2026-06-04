@@ -1650,12 +1650,14 @@ fn visible_focus_index_for_path(
 }
 
 /// The shared collaborators a Library carousel refresh threads together
-/// (cohesion-wrapper value-object flavor — see docs/patterns.md): the persisted
-/// `library`, the `covers` stream controller, the `search` projection, and the
-/// bulk-`selection` state. They ALWAYS travel together for a carousel rebuild, so
-/// bundling them as borrows keeps `refresh_library_carousel` /
-/// `add_books_and_refresh` under the argument-count limit and documents that they
-/// are one collaboration unit, not four independent params.
+/// (borrowed-collaborator bundle — same argument-count-cohesion intent as the
+/// docs/patterns.md cohesion-wrapper flavor (`SpreadContext`), but holding `&Rc`
+/// borrows rather than owned `Copy` values): the persisted `library`, the
+/// `covers` stream controller, the `search` projection, and the bulk-`selection`
+/// state. They ALWAYS travel together for a carousel rebuild, so bundling them as
+/// borrows keeps `refresh_library_carousel` / `add_books_and_refresh` under the
+/// argument-count limit and documents that they are one collaboration unit, not
+/// four independent params.
 struct CarouselRefresh<'a> {
     library: &'a Rc<RefCell<Library>>,
     covers: &'a cover_loader::CoverController,
