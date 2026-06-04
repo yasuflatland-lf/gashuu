@@ -1277,6 +1277,11 @@ fn apply_viewport(ui: &ViewerWindow, viewport: &ViewportState) {
 fn go_to_library(ui: &ViewerWindow, nav: &Rc<RefCell<NavState>>) {
     nav.borrow_mut().to_library();
     ui.set_screen(screen_to_index(nav.borrow().screen()));
+    // The Library's bottom strip renders `status-text` (its only consumer), so
+    // the Viewer's page status ("12–13 / 200 [double · RTL]") written by
+    // `refresh` would otherwise leak under the carousel, where it is
+    // meaningless. Clear it on entry; add/save feedback is set AFTER this.
+    ui.set_status_text("".into());
     // Restore keyboard focus to the carousel so its key seams work immediately.
     ui.invoke_focus_carousel();
 }
