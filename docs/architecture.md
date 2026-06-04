@@ -495,8 +495,8 @@ without a z-index — and kept OUTSIDE the `FocusScope` so keyboard navigation r
 the nav is mouse + screen-reader oriented. The `add-files()`/`add-folder()` callbacks and the
 `focus-self()`-after-fire behavior are unchanged; `NavBar` simply forwards into them. The cover-flow
 is rendered by a file-private `CoverCard` sub-component instantiated by TWO `for` passes over the model:
-pass 1 paints the neighbors (focused slot hidden via a `show` gate), pass 2 (declared after) paints ONLY
-the focused card so it draws ON TOP of its neighbors — Slint 1.x cannot set per-`Repeater`-item z, so
+pass 1 is the always-on BACKING layer (`show: true` for every book), pass 2 (declared after) paints ONLY
+the focused card so it draws ON TOP of its backing twin — Slint 1.x cannot set per-`Repeater`-item z, so
 draw order is the only lever. Both passes bind identical geometry (each book keeps a persistent instance
 in each pass), so the Left/Right slide still animates continuously with a seamless layer hand-off. The
 enclosing row's `width`/`row-cy` are passed into `CoverCard` as `in` properties because a component ROOT
