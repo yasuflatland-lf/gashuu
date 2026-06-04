@@ -30,8 +30,12 @@ impl Localizer {
     /// replaces all loader state via `ArcSwap`.  No separate
     /// `load_fallback_language` call is needed — its result would be
     /// discarded by the subsequent `load_languages` swap.  This auto-append
-    /// behavior is pinned by `switch_swaps_languages_and_keeps_fallback`; an
-    /// i18n-embed upgrade that drops it will fail that test loudly.
+    /// behavior (relied on by ADR-0008's design) is pinned by
+    /// `switch_swaps_languages_and_keeps_fallback`; an i18n-embed upgrade
+    /// that drops it will fail that test loudly.  The fallback is
+    /// structurally guaranteed but cannot be observed as a runtime resolution
+    /// event while all catalogs are kept in ID lockstep by
+    /// `all_ftl_ids_present_in_every_locale`.
     ///
     /// # Panics
     ///
@@ -387,8 +391,8 @@ mod tests {
     // ---- test 6a: switch swaps languages and keeps fallback -----------
 
     /// Verifies that `Localizer::switch` performs a full catalog swap and that
-    /// the fallback ("en") is re-included automatically via `load_languages`'
-    /// auto-append mechanic (FACT 1 / ADR-0008).  Pins three behaviors:
+    /// the fallback ("en") is re-included automatically via the fallback
+    /// auto-append behavior relied on by ADR-0008's design.  Pins three behaviors:
     ///
     /// 1. En→Ja→En round-trip returns the correct locale-specific value at
     ///    each step, proving the swap is complete (no stale bundle leaks).
@@ -396,9 +400,12 @@ mod tests {
     ///    requested language only.  The fallback is loaded into the bundle set
     ///    but is intentionally NOT reflected in `current_languages()` (that is
     ///    how `FluentLanguageLoader` works: it stores only the caller-supplied
-    ///    `language_ids`, not `load_language_ids`).  The fallback's presence
-    ///    is verified behaviorally in step 1 (no missing-key sentinel for any
-    ///    message lookup).
+    ///    `language_ids`, not `load_language_ids`).  The fallback is
+    ///    structurally guaranteed (fallback_language = "en" in i18n.toml +
+    ///    load_languages auto-append) but cannot be observed as a runtime
+    ///    resolution event while all catalogs are kept in ID lockstep by
+    ///    `all_ftl_ids_present_in_every_locale`; a real fallback-resolution
+    ///    test belongs to the PR where a translation can actually be missing.
     /// 3. After `switch(Ja)`, a parameterized message contains no FSI/PDI
     ///    isolation marks, proving `set_use_isolating(false)` survives a swap.
     #[test]
@@ -459,11 +466,11 @@ mod tests {
 
     // ---- test 6b: static FTL channel covers every .po msgid -----------
 
-    /// Guards the half of ADR-0008's two-tier net that `fl!()` cannot see
-    /// until PR-2: while both gettext and Fluent coexist, the .po is the live
-    /// oracle of which strings the UI uses.  This test asserts that every
-    /// non-empty msgid in the .po has a corresponding message value in en.ftl,
-    /// so no string can silently fall through the Fluent layer.
+    /// Guards catalog completeness between the legacy .po and en.ftl while
+    /// both i18n systems coexist (the .po is the live oracle for the static
+    /// channel).  This test asserts that every non-empty msgid in the .po has
+    /// a corresponding message value in en.ftl, so no string can silently
+    /// fall through the Fluent layer.
     ///
     /// The two Stepper msgids ("Decrease {}" / "Increase {}") use `{}` as the
     /// positional placeholder in the .po but `{ $label }` in the Fluent
@@ -493,6 +500,17 @@ mod tests {
                 }
             }
         }
+
+        // Vacuous-pass guard: a silent zero is the exact failure this test
+        // exists to prevent.  If the line-prefix parser breaks (e.g. because
+        // the .po was reformatted with multi-line msgids), we want a loud
+        // failure rather than a green run that covers nothing.
+        assert!(
+            po_msgids.len() >= 50,
+            "po parser found only {} msgids — the .po was likely reformatted \
+             (multi-line msgids?) and the line-prefix parser broke",
+            po_msgids.len()
+        );
 
         // Parse en.ftl and collect message VALUES (pattern text).
         let en_src = include_str!("../../i18n/en/gashuu.ftl");
@@ -528,7 +546,11 @@ mod tests {
                                     fluent_syntax::ast::Expression::Inline(
                                         InlineExpression::StringLiteral { value },
                                     ) => value.to_string(),
-                                    _ => String::new(),
+                                    other => panic!(
+                                        "unhandled Fluent placeable kind in ftl value \
+                                         reconstruction: {other:?} — extend this match arm \
+                                         to handle the new construct explicitly"
+                                    ),
                                 }
                             }
                         })
@@ -573,7 +595,7 @@ mod tests {
 
     // ---- test 6c: duplicate-ID guard (integrated into existing test) --
     // Note: the duplicate-ID check is incorporated into
-    // `all_ftl_ids_present_in_every_locale` below via a pre-collection
+    // `all_ftl_ids_present_in_every_locale` above via a pre-collection
     // assertion.  The existing test is replaced with the enhanced version.
 
     // ---- test 6d: message arguments match across locales --------------

@@ -31,8 +31,8 @@ gashuu-core = { path = "../gashuu-core", features = ["testing"] }
 image = "0.25"
 tempfile = "3"
 # fluent-syntax is used only by tests to parse .ftl catalogs; it is not a
-# direct production dependency (though it is a transitive runtime dep via
-# i18n-embed).
+# direct production dependency (though it arrives transitively at runtime via
+# i18n-embed's fluent-system feature and i18n-embed-fl).
 fluent-syntax = "0.12"
 
 [package.metadata.bundle]
