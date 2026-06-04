@@ -367,7 +367,7 @@ stays in the shelf with its reading position intact.
 Cover overlays occupy two distinct corners and can render simultaneously:
 
 - **BookmarkRibbon** (top-LEFT): a display-only bookmark-shape image (`bookmark.svg`, `colorize:
-  {colors.accent}`, sized `{spacing.huge}²` = 26×26 pt) that hangs from the top edge of the cover.
+  {colors.accent}`, sized `{spacing.huge}²` = 26×26 px) that hangs from the top edge of the cover.
   It appears on the single book whose path equals `Library.last_opened` — the "continue reading"
   signifier that explains why that cover is automatically focused when entering the Library. Color
   and shape are the semantic differentiators: the accent hue means "interactive / where you are",

@@ -1443,9 +1443,10 @@ fn go_to_library(ui: &ViewerWindow, nav: &Rc<RefCell<NavState>>, deps: &Carousel
     // meaningless. Clear it on entry; add/save feedback is set AFTER this.
     ui.set_status_text("".into());
     // Rebuild so the model reflects the CURRENT `last_opened` (freshness), then
-    // override the chokepoint's reset-to-0 with the continue-reading snap. Passing
-    // `reset_focus = true` here is harmless — the explicit snap below supersedes
-    // it — but keeping it true documents that entry owns the focus, not the
+    // override the chokepoint's reset-to-0 with the continue-reading snap.
+    // Two writes: refresh_library_carousel sets focused-index to 0 (reset_focus =
+    // true), then the snap below sets the real target — the second always wins.
+    // Keeping reset_focus = true documents that entry owns the focus, not the
     // residual viewer focus. The borrow is confined to the single statement that
     // computes the snap index and drops before the UI set.
     refresh_library_carousel(ui, deps, true);
