@@ -88,6 +88,13 @@ export component Dropdown inherits Rectangle {
         x: Theme.space-sm;
         width: parent.width - Theme.space-sm * 2 - Theme.settings-dropdown-chevron - Theme.space-xs;
         height: parent.height;
+        // Optical centering: Slint's vertical-alignment centers the font's FULL
+        // line box (ascent + descent), but these labels have no descenders, so
+        // the glyph mass sits ~1px high of the pill's visual center. Nudge down
+        // half the 12px font's descent so the GLYPHS — not the em box — read
+        // centered (Apple optically centers control labels the same way; mirrors
+        // Segmented's label nudge).
+        y: 1px;
         text: root.model[root.current-index];
         color: Theme.text-high;
         font-size: Theme.font-label;
@@ -165,15 +172,20 @@ export component Dropdown inherits Rectangle {
                         spacing: Theme.space-xs;
 
                         // Check-mark column: fixed width so labels align whether
-                        // or not the row is the selected one.
+                        // or not the row is the selected one. Same 1px optical
+                        // nudge as the button face so the row reads centered in
+                        // the 30px row (metric centering sits descender-less
+                        // glyphs high).
                         Text {
                             width: Theme.font-label;
+                            y: 1px;
                             text: idx == root.current-index ? "\u{2713}" : "";
                             color: ta.has-hover ? Theme.text : Theme.accent;
                             font-size: Theme.font-label;
                             vertical-alignment: center;
                         }
                         Text {
+                            y: 1px;
                             text: item;
                             color: ta.has-hover ? Theme.text : Theme.text-high;
                             font-size: Theme.font-label;
