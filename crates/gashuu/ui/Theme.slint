@@ -70,9 +70,11 @@ export global Theme {
     // Shared visible-capsule height for Segmented / Stepper / Toggle. The DESIGN
     // ~32px hit area is met by the surrounding row (see PR-B); the capsule is 30.
     out property <length> settings-control-h: 30px;
-    // Segmented cell rounding: concentric with the radius-md capsule across the
-    // space-xxs inset (inner radius = outer radius − inset; Apple's nested-corner rule).
-    out property <length> seg-cell-radius: radius-md - space-xxs;
+    // Segmented selected-pill inset — with the derived cell radius below this is a
+    // CONSECUTIVE-FIBONACCI concentric triple: inset 3 → pill radius 5 → capsule
+    // radius-md 8 (inner radius = outer radius − inset; Apple's nested-corner rule).
+    out property <length> seg-pill-inset: 3px;
+    out property <length> seg-cell-radius: radius-md - seg-pill-inset;
     // Toggle track: width / height = φ — the same proportion as Apple's 51×31 switch.
     out property <length> toggle-track-w: settings-control-h * phi;
     // Toggle knob inset (Apple's switch keeps a 2px rim around the knob).
