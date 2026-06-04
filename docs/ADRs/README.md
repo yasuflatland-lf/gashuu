@@ -17,6 +17,7 @@ source, the divergence is called out in each ADR's "Implementation notes (as-bui
 | [0005](0005-settings-persistence.md) | Persist settings as versioned JSON | Accepted |
 | [0006](0006-reading-position-value-object.md) | Model reading position as a core value object (ReadingProgress) | Accepted |
 | [0007](0007-per-book-view-overrides.md) | Per-book view overrides with a global fallback | Accepted |
+| [0008](0008-fluent-i18n.md) | Adopt Fluent (.ftl) as the single i18n catalog via i18n-embed | Proposed |
 
 ## Conventions
 
