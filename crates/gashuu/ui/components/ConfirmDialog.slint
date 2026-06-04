@@ -43,17 +43,56 @@
 // BUTTON FOCUS / Tab / Space: DangerButton and PrimaryButton are TouchArea-based
 // and therefore NON-focusable (repo convention — a TouchArea never steals
 // keyboard focus). To make them Tab-reachable and Space-activatable WITHOUT
-// editing the button atoms, each button is wrapped in a FocusScope (the two
-// focus stops) that draws the focus ring (the Toggle/Segmented accent +
-// accent-glow idiom) and fires the button's callback on Space. Tab/Backtab,
-// Enter and Esc are all REJECTED by the button scopes so they bubble to the
-// ancestor `fs`: `fs` maps Enter/Esc to cancel() and ROTATES focus between the
-// two stops on Tab/Backtab itself (it never defers to Slint's window-level Tab
+// editing the button atoms, each button is wrapped in a file-private FocusButton
+// (a FocusScope, one of the two focus stops) that draws the focus ring (the
+// Toggle/Segmented accent + accent-glow idiom) and fires `pressed` on Space.
+// Tab/Backtab, Enter and Esc are all REJECTED by the button scopes so they bubble
+// to the ancestor `fs`: `fs` maps Enter/Esc to cancel() and ROTATES focus between
+// the two stops on Tab/Backtab itself (it never defers to Slint's window-level Tab
 // navigation — that could carry focus out of the modal; see `fs.key-pressed`).
 
 import { Theme } from "../Theme.slint";
 import { DangerButton } from "DangerButton.slint";
 import { PrimaryButton } from "PrimaryButton.slint";
+
+// File-private focus wrapper: makes the non-focusable, TouchArea-based button
+// atom a Tab stop and Space-activatable WITHOUT editing the atom. Kept in this
+// file so ConfirmDialog stays a single export (NavBar/Stepper do the same with
+// their file-private SearchField / StepButton). Inherits FocusScope so the
+// parent reads `has-focus` and calls `focus()` directly (used by `fs` to rotate
+// focus between the two stops on Tab). Sizes to its slotted button via the
+// `@children` layout. Space fires `pressed`; Tab/Backtab/Enter/Esc are rejected
+// so they bubble to the ancestor `fs` (which owns the key model in ONE place).
+component FocusButton inherits FocusScope {
+    callback pressed;
+    width: slot.preferred-width;
+    height: slot.preferred-height;
+    key-pressed(event) => {
+        if (event.text == Key.Space) {
+            root.pressed();
+            return accept;
+        }
+        return reject;
+    }
+    // Focus ring: accent border + soft accent-glow halo (the Toggle/Segmented
+    // idiom), drawn just outside the button.
+    Rectangle {
+        x: -Theme.space-xxs;
+        y: -Theme.space-xxs;
+        width: parent.width + 2 * Theme.space-xxs;
+        height: parent.height + 2 * Theme.space-xxs;
+        background: transparent;
+        border-radius: Theme.radius-md + Theme.space-xxs;
+        border-width: parent.has-focus ? 1px : 0px;
+        border-color: parent.has-focus ? Theme.accent : transparent;
+        drop-shadow-color: parent.has-focus ? Theme.accent-glow : transparent;
+        drop-shadow-blur: parent.has-focus ? Theme.space-sm : 0px;
+        animate border-color { duration: Theme.motion-fast; }
+    }
+    slot := HorizontalLayout {
+        @children
+    }
+}
 
 export component ConfirmDialog inherits Rectangle {
     // ── Public API (pinned — issue 127 signature) ─────────────────────────────
@@ -277,38 +316,13 @@ export component ConfirmDialog inherits Rectangle {
                     // Stretch spacer: pushes the buttons hard right.
                     Rectangle { horizontal-stretch: 1; }
 
-                    // Cancel — wraps Primary->TouchArea in a FocusScope so it is a
-                    // Tab stop and Space-activatable (the button atom is itself
-                    // non-focusable). Holds the default focus on open. Space
-                    // cancels; Enter/Esc are rejected so the ancestor `fs` handles
-                    // them (it also maps both to cancel, so behavior is identical
-                    // — rejecting keeps the key model in ONE place).
-                    cancel-scope := FocusScope {
-                        width: cancel-btn.preferred-width;
-                        height: cancel-btn.preferred-height;
-                        key-pressed(event) => {
-                            if (event.text == Key.Space) {
-                                root.cancel();
-                                return accept;
-                            }
-                            return reject;
-                        }
-                        // Focus ring: accent border + soft accent-glow halo (the
-                        // Toggle/Segmented idiom), drawn just outside the button.
-                        Rectangle {
-                            x: -Theme.space-xxs;
-                            y: -Theme.space-xxs;
-                            width: parent.width + 2 * Theme.space-xxs;
-                            height: parent.height + 2 * Theme.space-xxs;
-                            background: transparent;
-                            border-radius: Theme.radius-md + Theme.space-xxs;
-                            border-width: parent.has-focus ? 1px : 0px;
-                            border-color: parent.has-focus ? Theme.accent : transparent;
-                            drop-shadow-color: parent.has-focus ? Theme.accent-glow : transparent;
-                            drop-shadow-blur: parent.has-focus ? Theme.space-sm : 0px;
-                            animate border-color { duration: Theme.motion-fast; }
-                        }
-                        cancel-btn := PrimaryButton {
+                    // Cancel — holds the default focus on open. Space cancels;
+                    // Enter/Esc are rejected so the ancestor `fs` handles them (it
+                    // also maps both to cancel, so behavior is identical —
+                    // rejecting keeps the key model in ONE place).
+                    cancel-scope := FocusButton {
+                        pressed => { root.cancel(); }
+                        PrimaryButton {
                             text: root.cancel-label;
                             clicked => {
                                 root.cancel();
@@ -316,49 +330,24 @@ export component ConfirmDialog inherits Rectangle {
                         }
                     }
 
-                    // Confirm — same focus-scope wrapper. Swaps DangerButton vs
-                    // PrimaryButton on `danger`. Space fires confirm; Enter/Esc are
-                    // rejected so they bubble to the ancestor `fs` and map to
-                    // cancel — so confirm can NEVER be reached by Enter, only by a
-                    // pointer click or a deliberate Tab→Space.
-                    confirm-scope := FocusScope {
-                        width: confirm-row.preferred-width;
-                        height: confirm-row.preferred-height;
-                        key-pressed(event) => {
-                            if (event.text == Key.Space) {
+                    // Confirm — same wrapper, swapping DangerButton vs
+                    // PrimaryButton on `danger` (mutually-exclusive `if` gates, so
+                    // exactly one button shows). Space fires confirm; Enter/Esc
+                    // bubble to `fs` and map to cancel — so confirm can NEVER be
+                    // reached by Enter, only by a pointer click or a deliberate
+                    // Tab→Space.
+                    confirm-scope := FocusButton {
+                        pressed => { root.confirm(); }
+                        if root.danger : DangerButton {
+                            text: root.confirm-label;
+                            clicked => {
                                 root.confirm();
-                                return accept;
                             }
-                            return reject;
                         }
-                        Rectangle {
-                            x: -Theme.space-xxs;
-                            y: -Theme.space-xxs;
-                            width: parent.width + 2 * Theme.space-xxs;
-                            height: parent.height + 2 * Theme.space-xxs;
-                            background: transparent;
-                            border-radius: Theme.radius-md + Theme.space-xxs;
-                            border-width: parent.has-focus ? 1px : 0px;
-                            border-color: parent.has-focus ? Theme.accent : transparent;
-                            drop-shadow-color: parent.has-focus ? Theme.accent-glow : transparent;
-                            drop-shadow-blur: parent.has-focus ? Theme.space-sm : 0px;
-                            animate border-color { duration: Theme.motion-fast; }
-                        }
-                        // Exactly one button shows at a time (mutually-exclusive
-                        // `if` gates on `danger`), wrapped so the scope sizes to
-                        // whichever is live.
-                        confirm-row := HorizontalLayout {
-                            if root.danger : DangerButton {
-                                text: root.confirm-label;
-                                clicked => {
-                                    root.confirm();
-                                }
-                            }
-                            if !root.danger : PrimaryButton {
-                                text: root.confirm-label;
-                                clicked => {
-                                    root.confirm();
-                                }
+                        if !root.danger : PrimaryButton {
+                            text: root.confirm-label;
+                            clicked => {
+                                root.confirm();
                             }
                         }
                     }
