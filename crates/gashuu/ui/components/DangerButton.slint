@@ -13,6 +13,8 @@
 // Hover      : background darkens via .darker(0.08) + danger-glow ring
 // Press      : background darkens further via .darker(0.20) + danger-glow ring
 // All colors are routed through Theme — no raw hex inline.
+// Accessibility: role/label/action-default are added here; PrimaryButton predates
+// the repo's a11y hooks and lacks them (backport pending).
 
 import { Theme } from "../Theme.slint";
 
@@ -40,8 +42,13 @@ export component DangerButton inherits Rectangle {
     // list pressed before hover — same ordering used by PrimaryButton / NavItem).
     // Only ROOT-level properties are set here: Slint 1.x cannot assign a child
     // element's properties from a states[] block, but background and the
-    // drop-shadow-* glow are the root's own, so the danger-glow ring follows
-    // PrimaryButton's exact state idiom (NavItem uses the same drop-shadow trick).
+    // drop-shadow-* glow are the root's own. The glow ring is borrowed from
+    // NavItem's idiom — root-level drop-shadow-* props only, with the glow blur
+    // intentionally NOT animated (animating drop-shadow is version-fragile, see
+    // NavItem.slint). PrimaryButton's states set only root.background, so it is
+    // not the glow source. Deliberate divergence: DangerButton lights the glow on
+    // BOTH pressed and hover (NavItem fires it on hover only) for more emphatic
+    // press feedback on a destructive action.
     states [
         pressed when touch.pressed : {
             root.background: Theme.danger.darker(0.20);

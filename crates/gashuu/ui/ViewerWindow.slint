@@ -15,7 +15,7 @@ import { DangerButton } from "components/DangerButton.slint";
 // generates global accessors for globals exported from the build entry point.
 export { Strings }
 
-// TEMP export until the PR-3 consumer lands (compile-check only)
+// TEMP: compile-reachability guard only — remove when bulk-delete PR-3 (issue 127, ConfirmDialog) consumes DangerButton.
 export { DangerButton }
 
 export component ViewerWindow inherits Window {
