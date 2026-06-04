@@ -6,6 +6,7 @@
 // Rust can persist the "guide shown" flag and hide the component.
 import { Button, VerticalBox } from "std-widgets.slint";
 import { Theme } from "Theme.slint";
+import { Strings } from "Strings.slint";
 
 // One line of the controls reference. Factors out the styling shared by every
 // reference row so each call site only supplies its text.
@@ -46,7 +47,7 @@ export component FirstRunGuide inherits Rectangle {
 
             // ── Title ──────────────────────────────────────────────────────────
             Text {
-                text: @tr("Welcome to gashuu");
+                text: Strings.guide-welcome;
                 font-size: Theme.font-title;
                 color: Theme.text;
                 horizontal-alignment: center;
@@ -54,7 +55,7 @@ export component FirstRunGuide inherits Rectangle {
 
             // ── Intro ──────────────────────────────────────────────────────────
             Text {
-                text: @tr("A quick guide to get you started:");
+                text: Strings.guide-intro;
                 color: Theme.text-mid;
                 font-size: Theme.font-body;
                 horizontal-alignment: left;
@@ -63,32 +64,32 @@ export component FirstRunGuide inherits Rectangle {
 
             // ── Controls reference ─────────────────────────────────────────────
             GuideLine {
-                text: @tr("Open: use the toolbar buttons — Open Folder… / Open Archive… (CBZ/ZIP/CBR/RAR).");
+                text: Strings.guide-open;
             }
 
             GuideLine {
-                text: @tr("Turn pages: Space = next, Backspace = previous. Arrow keys follow the reading direction.");
+                text: Strings.guide-turn-pages;
             }
 
             GuideLine {
-                text: @tr("Modes: D = spread (single → double → auto), R = reading direction (LTR/RTL), C = cover layout.");
+                text: Strings.guide-modes;
             }
 
             GuideLine {
-                text: @tr("Zoom & fit: + / - to zoom, 0 to reset, 1 for actual size, f to cycle fit mode. Wheel zooms at the cursor; drag to pan.");
+                text: Strings.guide-zoom-fit;
             }
 
             GuideLine {
-                text: @tr("Thumbnails: T toggles the thumbnail strip; click a thumbnail to jump to that page.");
+                text: Strings.guide-thumbnails;
             }
 
             GuideLine {
-                text: @tr("Settings: open the Settings dialog from the toolbar to change these options anytime.");
+                text: Strings.guide-settings;
             }
 
             // ── Dismiss button ─────────────────────────────────────────────────
             Button {
-                text: @tr("Got it");
+                text: Strings.guide-got-it;
                 clicked => { root.dismiss-guide(); }
             }
         }
