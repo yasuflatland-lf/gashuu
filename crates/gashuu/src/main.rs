@@ -161,6 +161,10 @@ fn main() -> color_eyre::Result<()> {
         },
         true,
     );
+    // Continue reading: the app boots on the Library screen, so override the
+    // refresh's reset-to-0 with a one-shot snap to the last-read book's visible
+    // row, resolved through the empty-query visible set seeded above.
+    snap_carousel_focus_to_last_opened(&ui, &library, &search);
 
     // Top-level screen state machine. App boots to Library (the carousel home).
     // Held in an Rc<RefCell<…>> so the carousel callbacks and the Viewer's
@@ -1307,6 +1311,12 @@ fn main() -> color_eyre::Result<()> {
         let nav = Rc::clone(&nav);
         let library = Rc::clone(&library);
         let localizer = Rc::clone(&localizer);
+        // The carousel-refresh collaborators are captured because the GoToLibrary
+        // arm rebuilds the carousel on entry (continue-reading freshness +
+        // focus snap) through `go_to_library` / `refresh_library_carousel`.
+        let covers = Rc::clone(&covers);
+        let search = Rc::clone(&search);
+        let selection = Rc::clone(&selection);
         ui.on_nav(move |token| {
             with_ui(&ui_weak, |ui| {
                 let dir = state.borrow().reading_direction();
@@ -1394,7 +1404,21 @@ fn main() -> color_eyre::Result<()> {
                         // drop before go_to_library borrows the UI.
                         write_back_position(&state, &library);
                         write_back_view_override(&state, &viewport, &library);
-                        go_to_library(&ui, &nav);
+                        // `go_to_library` rebuilds the carousel on entry so the
+                        // continue-reading ribbon reflects the `last_opened` just
+                        // persisted above, and snaps focus to that book. The
+                        // CarouselRefresh borrows are cheap `&Rc` references.
+                        go_to_library(
+                            &ui,
+                            &nav,
+                            &CarouselRefresh {
+                                library: &library,
+                                covers: &covers,
+                                search: &search,
+                                selection: &selection,
+                                localizer: &localizer,
+                            },
+                        );
                     }
                 }
             })
@@ -1611,7 +1635,18 @@ fn apply_viewport(ui: &ViewerWindow, viewport: &ViewportState) {
 /// Switch the app to the Library carousel and sync the UI's `screen` property.
 /// The single chokepoint for "go to Library" so no caller forgets to sync the
 /// UI's `screen` property and restore carousel focus (mirrors `go_to_viewer`).
-fn go_to_library(ui: &ViewerWindow, nav: &Rc<RefCell<NavState>>) {
+///
+/// On every entry transition this REBUILDS the carousel model through the shared
+/// `refresh_library_carousel` chokepoint. The model was bound once at boot, so a
+/// per-row flag derived from `last_opened` (the "continue reading" ribbon) would
+/// otherwise still carry its build-time value: after reading book X and coming
+/// back, `last_opened` has changed but the bound rows have not. Rebuilding here
+/// re-derives those rows from the CURRENT library, restarting cover loading from
+/// the (already-warm) cache and re-applying the path-keyed selection — both
+/// handled inside the chokepoint, so neither flashes nor drops. We then snap the
+/// carousel focus to the last-read book so Return resumes it. This is a ONE-SHOT
+/// set at the entry moment, NOT a binding — after entry the user owns focus.
+fn go_to_library(ui: &ViewerWindow, nav: &Rc<RefCell<NavState>>, deps: &CarouselRefresh) {
     nav.borrow_mut().to_library();
     ui.set_screen(screen_to_index(nav.borrow().screen()));
     // The Library's bottom strip renders `status-text` (its only consumer), so
@@ -1619,6 +1654,14 @@ fn go_to_library(ui: &ViewerWindow, nav: &Rc<RefCell<NavState>>) {
     // `refresh` would otherwise leak under the carousel, where it is
     // meaningless. Clear it on entry; add/save feedback is set AFTER this.
     ui.set_status_text("".into());
+    // Rebuild so the model reflects the CURRENT `last_opened` (freshness), then
+    // override the chokepoint's reset-to-0 with the continue-reading snap.
+    // Two writes: refresh_library_carousel sets focused-index to 0 (reset_focus =
+    // true), then the snap below sets the real target — the second always wins.
+    // Keeping reset_focus = true documents that entry owns the focus, not the
+    // residual viewer focus.
+    refresh_library_carousel(ui, deps, true);
+    snap_carousel_focus_to_last_opened(ui, deps.library, deps.search);
     // Restore keyboard focus to the carousel so its key seams work immediately.
     ui.invoke_focus_carousel();
 }
@@ -1876,6 +1919,41 @@ fn visible_focus_index_for_path(
             .get(library_index)
             .is_some_and(|book| book.path() == path)
     })
+}
+
+/// Resolve the one-shot carousel `focused-index` to land on when ENTERING the
+/// Library screen ("continue reading"): the VISIBLE row of `last_opened`, or `0`
+/// as the fallback. The fallback covers every unresolvable case — no last-opened
+/// book yet (`None`), the last-opened book filtered out of the current visible
+/// set, an empty library, or a stale path no longer in `books`. Resolved THROUGH
+/// the visible projection (`visible_indices` from the search state) so the index
+/// is a carousel row, not a full-library index. Pure (library + projection in,
+/// `i32` out) so it is headless-testable; the result is set ONCE at entry — after
+/// that, user navigation owns `focused-index` (never a continuous binding).
+fn entry_focus_index(lib: &Library, visible_indices: &[usize]) -> i32 {
+    lib.last_opened()
+        .and_then(|path| visible_focus_index_for_path(lib, visible_indices, path))
+        .map(|index| index as i32)
+        .unwrap_or(0)
+}
+
+/// Snap the carousel's `focused-index` to the last-read book ("continue reading")
+/// when ENTERING the Library screen. A plain set at the entry moment — NOT a
+/// binding — so user navigation owns focus afterwards. This OVERRIDES the
+/// refresh's reset-to-0: a caller that just ran `refresh_library_carousel` with
+/// `reset_focus = true` calls this immediately after, and the snap always wins.
+/// Resolved through the CURRENT visible set (`entry_focus_index`); the borrow is
+/// confined to the snap computation and drops before the UI set.
+fn snap_carousel_focus_to_last_opened(
+    ui: &ViewerWindow,
+    library: &Rc<RefCell<Library>>,
+    search: &Rc<RefCell<LibrarySearchState>>,
+) {
+    let focus = {
+        let lib = library.borrow();
+        entry_focus_index(&lib, search.borrow().visible_indices())
+    };
+    ui.set_carousel_focused_index(focus);
 }
 
 /// Clamp a carousel focused index into the valid range for a projection of
@@ -2360,6 +2438,66 @@ mod tests {
         assert_eq!(visible_focus_index_for_path(&lib, &[2], &path), Some(0));
         // gamma is not among the visible rows, so it has no visible position.
         assert_eq!(visible_focus_index_for_path(&lib, &[0, 1], &path), None);
+    }
+
+    // ---- entry_focus_index (continue reading) ----------------------------
+
+    /// Build a 3-book library (alpha/beta/gamma, natural order) and mark `index`
+    /// as last-opened via `register_opened`. Returns the library; the natural
+    /// order is alpha(0), beta(1), gamma(2) since the paths sort lexically.
+    fn library_with_last_opened(index: usize) -> Library {
+        let mut lib = Library::new();
+        for leaf in ["alpha", "beta", "gamma"] {
+            assert!(lib
+                .add(std::path::PathBuf::from(format!("/manga/{leaf}.cbz")))
+                .is_some());
+        }
+        let path = lib.books()[index].path().to_path_buf();
+        lib.register_opened(&path, None);
+        lib
+    }
+
+    #[test]
+    fn entry_focus_index_resolves_last_opened_with_no_filter() {
+        // beta is last-opened and all three rows are visible (natural-order
+        // identity projection), so the snap lands on beta's row (1).
+        let lib = library_with_last_opened(1);
+        assert_eq!(entry_focus_index(&lib, &[0, 1, 2]), 1);
+    }
+
+    #[test]
+    fn entry_focus_index_uses_filtered_position() {
+        // gamma is last-opened and the visible set is the filtered slice
+        // [beta, gamma]; gamma's VISIBLE row is 1, not its library index 2.
+        let lib = library_with_last_opened(2);
+        assert_eq!(entry_focus_index(&lib, &[1, 2]), 1);
+    }
+
+    #[test]
+    fn entry_focus_index_falls_back_when_last_opened_filtered_out() {
+        // alpha is last-opened but the filter hides it (visible set is gamma
+        // only), so the snap falls back to row 0.
+        let lib = library_with_last_opened(0);
+        assert_eq!(entry_focus_index(&lib, &[2]), 0);
+    }
+
+    #[test]
+    fn entry_focus_index_falls_back_when_no_last_opened() {
+        // A fresh library has never opened a book, so the fallback is row 0.
+        let mut lib = Library::new();
+        assert!(lib
+            .add(std::path::PathBuf::from("/manga/alpha.cbz"))
+            .is_some());
+        assert_eq!(lib.last_opened(), None, "no book opened yet");
+        assert_eq!(entry_focus_index(&lib, &[0]), 0);
+    }
+
+    #[test]
+    fn entry_focus_index_falls_back_for_empty_library() {
+        // No books and no visible rows: the fallback is row 0 (never panics on
+        // the empty slice).
+        let lib = Library::new();
+        assert_eq!(entry_focus_index(&lib, &[]), 0);
     }
 
     // ---- clamp_focused_index (bulk-delete focus safety) -------------------

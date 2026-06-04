@@ -197,6 +197,7 @@ impl Localizer {
         strings.set_navbar_add_files_a11y(fl!(self.loader, "navbar-add-files-a11y").into());
         strings.set_navbar_add_folder_a11y(fl!(self.loader, "navbar-add-folder-a11y").into());
         strings.set_navbar_add_books_a11y(fl!(self.loader, "navbar-add-books-a11y").into());
+        strings.set_continue_reading(fl!(self.loader, "continue-reading").into());
         strings
             .set_viewer_pill_goto_page_a11y(fl!(self.loader, "viewer-pill-goto-page-a11y").into());
         strings.set_viewer_pill_thumbnails_a11y(

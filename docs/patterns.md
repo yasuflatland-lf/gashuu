@@ -934,6 +934,44 @@ When `messages.rs` was deleted its tests needed named successors in `i18n::dynam
 - "Cross-locale differ" — asserts `en_string != ja_string` per message family, proving the catalog is not English-only. A test that passes on a catalog that has only one locale is vacuous.
 - "Args are embedded" — `assert!(formatted.contains(arg_value))` per parameterized function. Covers the `fl!()` arg-name wiring without byte-pinning translated text.
 
+### Set sibling fields from what was STORED, not from the raw input — aggregate invariants hold by construction (continue-reading)
+
+When an aggregate stores a DERIVED form of an input (e.g. `Library::add` stores `path.canonicalize().unwrap_or(path)` rather than the raw path), any SIBLING field set from the raw input is an invariant time bomb. The bug: the first cut of `register_opened` read `last_opened` from the `canonical` argument directly — making the "last_opened ∈ books" invariant depend on canonicalize-idempotence of the sole caller (a coincidence across two functions). The fix resolves the stored book once (`books.iter().find(|b| b.path() == canonical)`) and derives both outputs from that lookup — `last_opened` from `b.path().to_path_buf()`, reading progress from `b.progress()`. Membership holds BY CONSTRUCTION; divergence degrades to `None` instead of a stale orphan that `normalize()` would silently erase on next load.
+
+**Corollary — do not `debug_assert!` caller-input assumptions.** The original code carried `debug_assert!(found.is_some(), "canonical path must be in books")`, which asserted an over-strong PRECONDITION rather than a real post-condition invariant. When the divergence path became legitimately reachable (a test passes a `..`-containing path), the assert had to go. A `debug_assert!` on a caller's input assumption is a precondition disguised as an invariant; the correct guard is the structural fix: if the lookup misses, degrade gracefully to `None` rather than asserting the caller was right.
+
+Anchor: `crates/gashuu-core/src/library.rs` `register_opened` (~line 335–365), test `register_opened_with_non_canonical_path_keeps_invariant`.
+
+**Relationship to the #82 entry ("Return the stored authoritative value …"):** that entry addresses what the METHOD RETURNS to callers; this entry addresses what the method uses when setting its OWN sibling fields. Both instances of the same principle — derive everything from the single authoritative store, not from any re-derivation of the input.
+
+### `#[serde(skip_serializing_if)]` is inert on a hand-built serializer — conditional key omission needs an explicit guard, and sibling fields in the same serializer must share one strictness policy (continue-reading)
+
+`Library::to_json()` (`library_store.rs`) hand-builds a `serde_json::Map` (the `version` field lives in the store, not the struct, so derived `Serialize` cannot be used). The field attribute `#[serde(skip_serializing_if = "Option::is_none")]` on `Library.last_opened` applies ONLY to the generated `Serialize` impl — it is invisible to `to_json`. Conditional key omission must be expressed as an explicit `if let` guard:
+
+```rust
+if let Some(p) = self.last_opened() {
+    map.insert("last_opened".into(), serde_json::to_value(p).map_err(CoreError::Library)?);
+}
+```
+
+The code comment at this site says exactly this: "Do NOT remove this guard believing the attribute covers it — for `to_json` it does not." A reviewer who deletes the guard thinking the attribute provides the same safety has introduced a bug (the key is always emitted, breaking byte-identity with old library files). Any time a hand-built serializer is responsible for more than one field, keep ONE strictness policy across all of them: the first cut used `to_string_lossy` for `last_opened` (silent U+FFFD replacement on non-UTF-8 paths) while `books` went through `serde_json::to_value` (loud `Err` on non-UTF-8). Unified to `serde_json::to_value` for both so a path encoding failure surfaces consistently rather than being silently mangled on one field and loud on another.
+
+The same risk applies to the existing `books` serialization: if a future refactor extracts `to_json` into a derived `Serialize`, the `#[serde(skip_serializing_if)]` attribute would then be active and the explicit guard would become dead code — document the intended mechanism at each site so the two never disagree silently.
+
+Anchor: `crates/gashuu-core/src/library_store.rs` `to_json` (~line 46–63).
+
+### Screen re-entry staleness: model flags derived at build time need a rebuild through the existing refresh chokepoint (continue-reading)
+
+A flag derived at carousel-model BUILD time (e.g. `CarouselData.bookmarked` — whether a row is the last-opened book) reflects the library state AT THE MOMENT the model was built, not the live library state. Any entry path that does NOT rebuild the model leaves the flag stale: after reading book X and returning to the Library, `last_opened` has changed but the bound rows have not, so the bookmark ribbon marks the OLD last-opened book.
+
+**The fix:** `go_to_library` always calls `refresh_library_carousel` (the single rebuild chokepoint) before restoring focus, so the rows are derived from the CURRENT library state on every entry. Rebuilding re-derives `bookmarked` per row, re-applies cover-loading from the warm cache, and re-applies the path-keyed selection — no separate surgical row write is needed.
+
+**Companion micro-pattern — reset-then-snap double write:** `refresh_library_carousel(…, reset_focus: true)` sets `focused-index` to 0, and the immediately following `snap_carousel_focus_to_last_opened` sets it to the real target. The second write always wins. Keeping `reset_focus = true` is intentional: it documents that ENTRY owns the focus reset, not the residual viewer focus left over from the previous screen.
+
+**General rule:** any flag or display-property derived from core state and projected into a long-lived bound model goes stale on screen re-entry. Route every entry transition through the one refresh chokepoint instead of adding Slint-side bindings or surgical per-row writes. A Slint-side binding on `Library.last_opened` would re-derive automatically but would require making `last_opened` observable from Slint — a boundary violation, and a live binding that re-evaluates for every frame.
+
+Anchor: `crates/gashuu/src/main.rs` `go_to_library` (~line 1431–1449), `snap_carousel_focus_to_last_opened`, `entry_focus_index`.
+
 ### First modifier-key arm (Cmd/Ctrl+A): verify Slint key delivery in the vendored source, don't assume (bulk-delete PR-4, #128)
 
 `Carousel.slint`'s FocusScope gained the repo's FIRST `event.modifiers` usage — the select-all chord `if (root.selection-mode && (event.modifiers.control || event.modifiers.meta) && event.text == "a")`. Two delivery facts had to be confirmed in the vendored Slint source before trusting the arm; both were verified at the pinned 1.16.1:
