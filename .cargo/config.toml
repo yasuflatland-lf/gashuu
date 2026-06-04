@@ -1,0 +1,4 @@
+[env]
+# ICU4X bundles no Japanese line-break dictionary; suppress the resulting noise.
+# force=false (default) means a user-set RUST_LOG in the shell takes precedence.
+RUST_LOG = { value = "icu_provider=off", force = false }
