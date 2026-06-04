@@ -112,6 +112,12 @@ fn book_order(a: &Book, b: &Book) -> std::cmp::Ordering {
 pub struct Library {
     #[serde(default)]
     books: Vec<Book>,
+    /// The canonical path of the most recently opened book, or `None` when no
+    /// book has been opened yet. Invariant: if `Some`, the path is present in
+    /// `books`. `normalize()` enforces this on load; `register_opened` sets it
+    /// after `add` so the invariant is always satisfied at write time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    last_opened: Option<PathBuf>,
 }
 
 /// Outcome of [`Library::remove_many`]: the canonical paths actually removed and
@@ -150,6 +156,14 @@ impl Library {
         &self.books
     }
 
+    /// The canonical path of the most recently opened book, or `None` when no
+    /// book has been opened yet. Invariant: if `Some`, the path is present in
+    /// `books` (enforced at write time by `register_opened` and on load by
+    /// `normalize`).
+    pub fn last_opened(&self) -> Option<&Path> {
+        self.last_opened.as_deref()
+    }
+
     /// Add `path` to the shelf. Canonicalizes best-effort (falling back to the
     /// path verbatim when canonicalization fails - e.g. a missing file), derives
     /// the title, and de-duplicates by canonical path. Returns `Some` with the
@@ -168,19 +182,34 @@ impl Library {
             .map(Book::path)
     }
 
-    /// Re-sort the shelf into natural title order (with canonical path tie-break).
-    /// Called on load (`library_store::load_from`) so libraries persisted before
-    /// natural ordering (in insertion order) converge to the canonical sort on the
-    /// next save; it also repairs any otherwise-unsorted `books` vec.
+    /// Re-sort the shelf into natural title order (with canonical path tie-break)
+    /// and enforce the `last_opened` invariant. Called on load
+    /// (`library_store::load_from`) so libraries persisted before natural
+    /// ordering converge to the canonical sort on the next save; it also repairs
+    /// any otherwise-unsorted `books` vec and clears an orphan `last_opened`
+    /// (a path that is no longer present in `books`).
     pub(crate) fn normalize(&mut self) {
         self.books.sort_by(book_order);
+        // Clear a `last_opened` whose path is no longer in the shelf (e.g.
+        // after an external edit removed a book without going through `remove`).
+        if let Some(ref p) = self.last_opened {
+            if !self.books.iter().any(|b| b.path() == p.as_path()) {
+                self.last_opened = None;
+            }
+        }
     }
 
     /// Remove the book identified by `path`. Returns `false` when absent.
+    /// Clears `last_opened` when it points at the removed book; preserves it
+    /// when the removed book is different.
     pub fn remove(&mut self, path: &Path) -> bool {
         let before = self.books.len();
         self.books.retain(|b| b.path() != path);
-        self.books.len() != before
+        let removed = self.books.len() != before;
+        if removed && self.last_opened.as_deref() == Some(path) {
+            self.last_opened = None;
+        }
+        removed
     }
 
     /// Remove every book whose path is in `paths`, in ONE retain pass, and report
@@ -215,6 +244,14 @@ impl Library {
         // ONE retain pass drops every requested book; survivors keep their relative
         // (already-sorted) order, so the natural-order invariant holds with no re-sort.
         self.books.retain(|b| !requested.contains(b.path()));
+        // Clear `last_opened` when it points at one of the removed books.
+        if self
+            .last_opened
+            .as_deref()
+            .is_some_and(|p| requested.contains(p))
+        {
+            self.last_opened = None;
+        }
         report
     }
 
@@ -297,6 +334,10 @@ impl Library {
         page_count: Option<NonZeroUsize>,
     ) -> OpenRegistration {
         self.add(canonical.to_path_buf());
+        // Set after `add` so the invariant (last_opened is present in books) is
+        // always satisfied — `add` either inserted the book or confirmed it was
+        // already there before we record it as last-opened.
+        self.last_opened = Some(canonical.to_path_buf());
         let count_changed = page_count.is_some_and(|c| self.set_page_count(canonical, c));
         // The book was just added (or already present), so the lookup by the
         // same canonical key always resolves; assert it to catch a future
@@ -800,5 +841,127 @@ mod tests {
         assert!(lib
             .overrides_for(Path::new("/manga/missing.cbz"))
             .is_empty());
+    }
+
+    // --- last_opened tests ---
+
+    #[test]
+    fn last_opened_is_none_for_fresh_library() {
+        let lib = Library::new();
+        assert_eq!(lib.last_opened(), None);
+    }
+
+    #[test]
+    fn register_opened_sets_last_opened_on_fresh_book() {
+        let mut lib = Library::new();
+        let path = PathBuf::from("/manga/a.cbz");
+        lib.register_opened(&path, None);
+        assert_eq!(lib.last_opened(), Some(Path::new("/manga/a.cbz")));
+    }
+
+    #[test]
+    fn register_opened_updates_last_opened_on_reopen() {
+        // Opening a different book after the first one replaces last_opened.
+        let mut lib = Library::new();
+        let a = PathBuf::from("/manga/a.cbz");
+        let b = PathBuf::from("/manga/b.cbz");
+        lib.register_opened(&a, None);
+        lib.register_opened(&b, None);
+        assert_eq!(lib.last_opened(), Some(Path::new("/manga/b.cbz")));
+    }
+
+    #[test]
+    fn register_opened_same_book_twice_preserves_last_opened() {
+        // Re-opening the same book keeps last_opened pointing at it.
+        let mut lib = Library::new();
+        let path = PathBuf::from("/manga/a.cbz");
+        lib.register_opened(&path, None);
+        lib.register_opened(&path, None);
+        assert_eq!(lib.last_opened(), Some(Path::new("/manga/a.cbz")));
+    }
+
+    #[test]
+    fn remove_last_opened_book_clears_last_opened() {
+        let mut lib = Library::new();
+        let path = PathBuf::from("/manga/a.cbz");
+        lib.register_opened(&path, None);
+        assert!(lib.remove(&path));
+        assert_eq!(lib.last_opened(), None);
+    }
+
+    #[test]
+    fn remove_different_book_preserves_last_opened() {
+        let mut lib = Library::new();
+        let a = PathBuf::from("/manga/a.cbz");
+        let b = PathBuf::from("/manga/b.cbz");
+        lib.register_opened(&a, None);
+        lib.add(b.clone());
+        assert!(lib.remove(&b));
+        assert_eq!(
+            lib.last_opened(),
+            Some(Path::new("/manga/a.cbz")),
+            "removing a different book must not clear last_opened"
+        );
+    }
+
+    #[test]
+    fn remove_many_containing_last_opened_clears_it() {
+        let mut lib = Library::new();
+        let a = PathBuf::from("/manga/a.cbz");
+        let b = PathBuf::from("/manga/b.cbz");
+        lib.register_opened(&a, None);
+        lib.add(b.clone());
+        lib.remove_many(&[a.clone(), b.clone()]);
+        assert_eq!(lib.last_opened(), None);
+    }
+
+    #[test]
+    fn remove_many_not_containing_last_opened_preserves_it() {
+        let mut lib = Library::new();
+        let a = PathBuf::from("/manga/a.cbz");
+        let b = PathBuf::from("/manga/b.cbz");
+        lib.register_opened(&a, None);
+        lib.add(b.clone());
+        lib.remove_many(std::slice::from_ref(&b));
+        assert_eq!(
+            lib.last_opened(),
+            Some(Path::new("/manga/a.cbz")),
+            "removing an unrelated book must not clear last_opened"
+        );
+    }
+
+    #[test]
+    fn normalize_clears_orphan_last_opened() {
+        // Build a library via serde with a last_opened that points at a path
+        // NOT present in books, then confirm normalize() resets it to None.
+        let json = serde_json::json!({
+            "version": 1,
+            "books": [{"path": "/manga/a.cbz", "title": "a", "last_page": 0, "page_count": 0}],
+            "last_opened": "/manga/gone.cbz"
+        })
+        .to_string();
+        let lib = Library::from_json(&json).unwrap();
+        assert_eq!(
+            lib.last_opened(),
+            None,
+            "normalize must clear an orphan last_opened"
+        );
+    }
+
+    #[test]
+    fn normalize_keeps_valid_last_opened() {
+        // A valid last_opened (path is in books) must survive normalize().
+        let json = serde_json::json!({
+            "version": 1,
+            "books": [{"path": "/manga/a.cbz", "title": "a", "last_page": 0, "page_count": 0}],
+            "last_opened": "/manga/a.cbz"
+        })
+        .to_string();
+        let lib = Library::from_json(&json).unwrap();
+        assert_eq!(
+            lib.last_opened(),
+            Some(Path::new("/manga/a.cbz")),
+            "normalize must keep a valid last_opened"
+        );
     }
 }
