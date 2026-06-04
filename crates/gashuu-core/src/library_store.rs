@@ -48,12 +48,15 @@ impl Library {
         let mut map = serde_json::Map::new();
         map.insert("version".into(), serde_json::json!(LIBRARY_VERSION));
         map.insert("books".into(), books);
-        // Omit `last_opened` entirely when None (mirrors skip_serializing_if so
-        // libraries with no last_opened are byte-identical to the pre-feature shape).
+        // Omit `last_opened` entirely when None. This if-let guard IS the
+        // omission mechanism for to_json; the field's #[serde(skip_serializing_if)]
+        // attribute applies only to the derived Serialize path, which to_json
+        // bypasses entirely. Do NOT remove this guard believing the attribute
+        // covers it — for to_json it does not.
         if let Some(p) = self.last_opened() {
             map.insert(
                 "last_opened".into(),
-                serde_json::Value::String(p.to_string_lossy().into_owned()),
+                serde_json::to_value(p).map_err(CoreError::Library)?,
             );
         }
         serde_json::to_string_pretty(&serde_json::Value::Object(map)).map_err(CoreError::Library)
@@ -371,7 +374,9 @@ mod tests {
     #[test]
     fn old_json_without_last_opened_omits_key_on_resave() {
         // A library loaded from old JSON (no last_opened) must not emit the key
-        // on re-save: skip_serializing_if keeps the on-disk shape unchanged.
+        // on re-save: the if-let guard in to_json is what prevents the key from
+        // appearing (the field's skip_serializing_if applies only to the derived
+        // Serialize path, which to_json bypasses).
         let stored = r#"{"version":1,"books":[{"path":"/manga/a.cbz","title":"a","last_page":42,"page_count":100}]}"#;
         let lib = Library::from_json(stored).unwrap();
         let value: serde_json::Value = serde_json::from_str(&lib.to_json().unwrap()).unwrap();

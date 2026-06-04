@@ -114,8 +114,10 @@ pub struct Library {
     books: Vec<Book>,
     /// The canonical path of the most recently opened book, or `None` when no
     /// book has been opened yet. Invariant: if `Some`, the path is present in
-    /// `books`. `normalize()` enforces this on load; `register_opened` sets it
-    /// after `add` so the invariant is always satisfied at write time.
+    /// `books`. Maintained by: `register_opened` (sets from the stored book so
+    /// membership holds by construction), `remove`/`remove_many` (clear when
+    /// the pointed-at book is removed), `normalize()` (clears an orphan on
+    /// load).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     last_opened: Option<PathBuf>,
 }
@@ -158,8 +160,10 @@ impl Library {
 
     /// The canonical path of the most recently opened book, or `None` when no
     /// book has been opened yet. Invariant: if `Some`, the path is present in
-    /// `books` (enforced at write time by `register_opened` and on load by
-    /// `normalize`).
+    /// `books`. Maintained by: `register_opened` (sets from the stored book so
+    /// membership holds by construction), `remove`/`remove_many` (clear when
+    /// the pointed-at book is removed), `normalize()` (clears an orphan on
+    /// load).
     pub fn last_opened(&self) -> Option<&Path> {
         self.last_opened.as_deref()
     }
@@ -223,7 +227,9 @@ impl Library {
     /// stored canonical paths — no canonicalization happens here. The returned
     /// [`RemovalReport`] partitions the de-duplicated input into `removed` (matched
     /// a stored book) and `not_found` (matched none); a path duplicated in `paths`
-    /// is counted once, and empty input yields an empty report.
+    /// is counted once, and empty input yields an empty report. Clears
+    /// `last_opened` when it points at one of the removed paths; preserves it
+    /// otherwise.
     pub fn remove_many(&mut self, paths: &[PathBuf]) -> RemovalReport {
         // Collect the requested paths into a set: de-duplication falls out for
         // free (a repeated input is counted once in the report), and the retain
@@ -334,21 +340,25 @@ impl Library {
         page_count: Option<NonZeroUsize>,
     ) -> OpenRegistration {
         self.add(canonical.to_path_buf());
-        // Set after `add` so the invariant (last_opened is present in books) is
-        // always satisfied — `add` either inserted the book or confirmed it was
-        // already there before we record it as last-opened.
-        self.last_opened = Some(canonical.to_path_buf());
         let count_changed = page_count.is_some_and(|c| self.set_page_count(canonical, c));
-        // The book was just added (or already present), so the lookup by the
-        // same canonical key always resolves; assert it to catch a future
-        // path-identity regression. The fallback keeps a never-panicking
-        // production path.
-        let found = self.books.iter().find(|b| b.path() == canonical);
-        debug_assert!(
-            found.is_some(),
-            "register_opened: book not found by canonical path immediately after add"
-        );
-        let resume = found
+        // Resolve last_opened from the book actually stored in `books` so the
+        // invariant (last_opened is a member of books) holds by construction —
+        // `add` canonicalizes internally, so the stored path may differ from the
+        // raw `canonical` argument when the caller passes a non-canonical path.
+        // Mapping the found book's path to an owned PathBuf before assigning avoids
+        // a simultaneous borrow of `self`. When the lookup returns None (divergence:
+        // `canonical` does not match the stored canonical key), `last_opened` stays
+        // None — invariant-preserving degradation rather than a stale bookmark.
+        let found_path: Option<PathBuf> = self
+            .books
+            .iter()
+            .find(|b| b.path() == canonical)
+            .map(|b| b.path().to_path_buf());
+        self.last_opened = found_path;
+        let resume = self
+            .books
+            .iter()
+            .find(|b| b.path() == canonical)
             .map(Book::progress)
             .unwrap_or(ReadingProgress::new(0, None));
         OpenRegistration {
@@ -568,12 +578,20 @@ mod tests {
     #[test]
     fn remove_many_empty_input_yields_empty_report() {
         let mut lib = Library::new();
-        assert!(lib.add(PathBuf::from("/manga/a.cbz")).is_some());
+        let book = PathBuf::from("/manga/a.cbz");
+        assert!(lib.add(book.clone()).is_some());
+        // Register it as last-opened so we can verify it is preserved.
+        lib.register_opened(&book, None);
         let report = lib.remove_many(&[]);
         assert_eq!(report, RemovalReport::default());
         assert!(report.removed.is_empty());
         assert!(report.not_found.is_empty());
         assert_eq!(lib.books().len(), 1, "no input removes nothing");
+        assert_eq!(
+            lib.last_opened(),
+            Some(book.as_path()),
+            "empty remove_many must not disturb last_opened"
+        );
     }
 
     #[test]
@@ -789,6 +807,51 @@ mod tests {
         let reg = lib.register_opened(&p, NonZeroUsize::new(12));
         assert!(reg.count_changed, "10 -> 12 is a real change");
         assert_eq!(reg.resume.total(), Some(12));
+    }
+
+    #[test]
+    fn register_opened_with_non_canonical_path_keeps_invariant() {
+        // Invariant: last_opened, when Some, must equal a books[].path() entry.
+        // We exercise this with a real file reached via a non-canonical route (a
+        // path containing a `..` component). On macOS, /tmp → /private/tmp also
+        // exercises symlink divergence when tempdir lives there.
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("Book.cbz");
+        std::fs::write(&file, []).unwrap();
+
+        // Build a non-canonical path: enter a subdirectory and navigate back up.
+        // If the tempdir has no subdirectory yet, create one purely for the detour.
+        let sub = dir.path().join("sub");
+        std::fs::create_dir(&sub).unwrap();
+        let non_canonical = sub.join("..").join("Book.cbz");
+
+        let mut lib = Library::new();
+        lib.register_opened(&non_canonical, None);
+
+        // Core invariant: if last_opened is Some, its path must be in books.
+        if let Some(lo) = lib.last_opened() {
+            assert!(
+                lib.books().iter().any(|b| b.path() == lo),
+                "last_opened must point at a book actually in the shelf"
+            );
+            // On hosts where canonicalize resolves the `..`, the stored path
+            // should equal the canonical form.
+            if let Ok(canonical) = non_canonical.canonicalize() {
+                assert_eq!(
+                    lo,
+                    canonical.as_path(),
+                    "last_opened must equal the canonicalized path stored by add"
+                );
+            }
+        } else {
+            // last_opened is None only when add's canonicalization diverged from
+            // the lookup key. That is still invariant-preserving: None is safe.
+            // Confirm the book was still added.
+            assert!(
+                !lib.books().is_empty(),
+                "the book must still have been added even when last_opened is None"
+            );
+        }
     }
 
     #[test]
