@@ -192,9 +192,9 @@ impl ViewerState {
     /// no "previous book" to fall back to, so the viewer must show "No folder
     /// opened" rather than keep rendering a book that no longer exists.
     ///
-    /// Drops the cache + source, zeroes the page count / index, and clears
-    /// `open_file` so `current_book_name` reads `""` and `status_content`
-    /// reports `NoFolder`. The display MODES (direction/spread/cover) and the
+    /// Drops the cache + source, zeroes the page count / index /
+    /// `last_open_skipped`, and clears `open_file` so `current_book_name`
+    /// reads `""` and `status_content` reports `NoFolder`. The display MODES (direction/spread/cover) and the
     /// `cache_config` / `viewport_aspect` are deliberately preserved — closing a
     /// book is not a settings reset; the next open reuses the same configuration.
     ///

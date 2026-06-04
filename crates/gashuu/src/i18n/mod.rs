@@ -135,7 +135,7 @@ impl Localizer {
     pub(crate) fn apply(&self, ui: &ViewerWindow) {
         let strings = ui.global::<Strings>();
 
-        // ---- 61 plain pushes (id == property name, no arguments) ----------
+        // ---- 60 plain pushes (id == property name, no arguments) ----------
         strings.set_settings_book_title(fl!(self.loader, "settings-book-title").into());
         strings.set_settings_title(fl!(self.loader, "settings-title").into());
         strings.set_settings_section_reading(fl!(self.loader, "settings-section-reading").into());
@@ -205,7 +205,7 @@ impl Localizer {
         strings.set_common_close(fl!(self.loader, "common-close").into());
         strings.set_confirm_delete_cancel(fl!(self.loader, "confirm-delete-cancel").into());
 
-        // ---- SelectionToolbar static strings --------------------------------
+        // ---- 3 plain pushes (SelectionToolbar) ------------------------------
         strings.set_selection_enter(fl!(self.loader, "selection-enter").into());
         strings.set_selection_exit_a11y(fl!(self.loader, "selection-exit-a11y").into());
         strings.set_selection_delete(fl!(self.loader, "selection-delete").into());
