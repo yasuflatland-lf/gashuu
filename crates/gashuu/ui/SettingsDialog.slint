@@ -387,10 +387,13 @@ export component SettingsDialog inherits Rectangle {
                 // ── Sticky footer ─────────────────────────────────────────────────
                 footer-block := Rectangle {
                     vertical-stretch: 0;
-                    // Symmetric space-md above/below the row (18 ÷ φ ≈ 11 → the
-                    // existing 10px token; spec 2026-06-04). The panel's bottom
-                    // inset is now owned HERE (body-col padding-bottom is gone).
-                    height: footer-row.preferred-height + 2 * Theme.space-md;
+                    // Symmetric space-lg above/below the row — 14px ≈ Fib 13,
+                    // the SAME ladder rung as the body's row gap, so the footer
+                    // breathes on the row rhythm (bumped from space-md after
+                    // visual review: 10px read cramped around the 32px buttons
+                    // beside the 21px bottom corner). The panel's bottom inset
+                    // is owned HERE (body-col padding-bottom is gone).
+                    height: footer-row.preferred-height + 2 * Theme.space-lg;
 
                     // 1px hairline top edge honestly marks the scroll boundary.
                     Rectangle {
@@ -417,8 +420,16 @@ export component SettingsDialog inherits Rectangle {
                     // carries the full intent).
                     footer-row := HorizontalLayout {
                         x: 0;
-                        y: Theme.space-md;
+                        y: Theme.space-lg;
                         width: parent.width;
+                        // EXPLICIT height: an element placed outside a layout
+                        // defaults to its PARENT's size, so without this the row
+                        // filled the whole footer-block, its y-offset pushed it
+                        // space-md past the panel bottom, and the cross-axis
+                        // stretch inflated the Close button to the full block
+                        // height (docs/patterns.md). Content height restores the
+                        // symmetric space-md insets the block height budgets for.
+                        height: self.preferred-height;
                         padding-left: Theme.space-xl;
                         padding-right: Theme.space-xl;
                         spacing: Theme.space-md;
