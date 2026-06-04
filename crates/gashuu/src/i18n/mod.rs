@@ -902,6 +902,105 @@ Library:
         );
     }
 
+    // ---- test 7: japanese notices render in japanese ---------------------
+
+    /// Successor to the deleted `app::tests::japanese_notices_render_in_japanese`.
+    /// Exercises `dynamic::format_notices` with a ja-switched loader.
+    #[test]
+    fn japanese_notices_render_in_japanese() {
+        use crate::app::{NoticesContent, SkippedDetail};
+        let loc = Localizer::new(Language::Ja);
+        let content = NoticesContent {
+            skipped: 3,
+            skipped_detail: SkippedDetail::Archive,
+            settings_save_err: None,
+            library_save_err: None,
+        };
+        let notices = crate::i18n::dynamic::format_notices(loc.loader(), &content);
+        assert_eq!(notices.len(), 1);
+        assert!(
+            notices[0].contains('3'),
+            "expected count in notice, got {:?}",
+            notices[0]
+        );
+        assert!(
+            notices[0].contains("スキップ"),
+            "expected Japanese notice, got {:?}",
+            notices[0]
+        );
+    }
+
+    // ---- test 8: english dynamic fns preserve historical strings ----------
+
+    /// Successor to `messages::tests::english_arms_preserve_the_historical_strings`.
+    /// Pins exact English output of `dynamic::` fns against the historical strings.
+    #[test]
+    fn english_dynamic_fns_preserve_historical_strings() {
+        use crate::app::{NoticesContent, SkippedDetail};
+        use crate::viewer_state::{StatusContent, StatusKind};
+        use gashuu_core::{ReadingDirection, SpreadMode};
+
+        let loc = Localizer::new(Language::En);
+        let l = loc.loader();
+
+        // Static status strings
+        let no_folder = crate::i18n::dynamic::format_status(
+            l,
+            &StatusContent {
+                pages: String::new(),
+                spread: SpreadMode::Single,
+                direction: ReadingDirection::Ltr,
+                kind: StatusKind::NoFolder,
+            },
+        );
+        assert_eq!(no_folder, "No folder opened");
+
+        let no_images = crate::i18n::dynamic::format_status(
+            l,
+            &StatusContent {
+                pages: String::new(),
+                spread: SpreadMode::Single,
+                direction: ReadingDirection::Ltr,
+                kind: StatusKind::NoImages,
+            },
+        );
+        assert_eq!(no_images, "Folder contains no images");
+
+        // Notice fn pins
+        let n3_archive = NoticesContent {
+            skipped: 3,
+            skipped_detail: SkippedDetail::Archive,
+            settings_save_err: None,
+            library_save_err: None,
+        };
+        let notices = crate::i18n::dynamic::format_notices(l, &n3_archive);
+        assert_eq!(notices, vec!["3 entries skipped (zip-slip or oversized)"]);
+
+        assert_eq!(crate::i18n::dynamic::added_books(l, 2), "Added 2 book(s)");
+        assert_eq!(
+            crate::i18n::dynamic::decode_error(l, &"x"),
+            "Decode error: x"
+        );
+
+        let n_settings_err = NoticesContent {
+            skipped: 0,
+            skipped_detail: SkippedDetail::None,
+            settings_save_err: Some("x".to_string()),
+            library_save_err: None,
+        };
+        let notices = crate::i18n::dynamic::format_notices(l, &n_settings_err);
+        assert_eq!(notices, vec!["Failed to save settings: x"]);
+
+        let n_lib_err = NoticesContent {
+            skipped: 0,
+            skipped_detail: SkippedDetail::None,
+            settings_save_err: None,
+            library_save_err: Some("x".to_string()),
+        };
+        let notices = crate::i18n::dynamic::format_notices(l, &n_lib_err);
+        assert_eq!(notices, vec!["Failed to save library: x"]);
+    }
+
     // ---- test 6c: duplicate-ID guard (integrated into existing test) --
     // Note: the duplicate-ID check is incorporated into
     // `all_ftl_ids_present_in_every_locale` above via a pre-collection
