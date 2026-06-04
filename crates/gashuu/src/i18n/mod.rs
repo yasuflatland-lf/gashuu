@@ -999,6 +999,59 @@ Library:
         };
         let notices = crate::i18n::dynamic::format_notices(l, &n_lib_err);
         assert_eq!(notices, vec!["Failed to save library: x"]);
+
+        // Pages branch: verify composed shape for a known spread/direction
+        let pages_status = crate::i18n::dynamic::format_status(
+            l,
+            &StatusContent {
+                pages: "2\u{2013}3 / 6".to_string(),
+                spread: SpreadMode::Double,
+                direction: ReadingDirection::Ltr,
+                kind: StatusKind::Pages,
+            },
+        );
+        assert_eq!(pages_status, "2\u{2013}3 / 6  [double \u{00b7} LTR]");
+
+        // Pin exact English string for could_not_save_settings
+        assert_eq!(
+            crate::i18n::dynamic::could_not_save_settings(l, &"x"),
+            "Could not save settings: x"
+        );
+    }
+
+    // ---- test 8b: format_notices ordering -----------------------------------
+
+    /// Successor to app::tests::all_three_failures_emit_in_skipped_settings_library_order.
+    /// Asserts that format_notices produces notices in the canonical order:
+    /// skipped entries FIRST, then settings-save failure, then library-save failure.
+    #[test]
+    fn format_notices_preserves_skipped_settings_library_order() {
+        use crate::app::{NoticesContent, SkippedDetail};
+        let loc = Localizer::new(Language::En);
+        let l = loc.loader();
+        let all_three = NoticesContent {
+            skipped: 2,
+            skipped_detail: SkippedDetail::Archive,
+            settings_save_err: Some("se".to_string()),
+            library_save_err: Some("le".to_string()),
+        };
+        let notices = crate::i18n::dynamic::format_notices(l, &all_three);
+        assert_eq!(notices.len(), 3, "expected 3 notices, got {:?}", notices);
+        assert!(
+            notices[0].contains('2'),
+            "skipped notice must be first, got {:?}",
+            notices[0]
+        );
+        assert!(
+            notices[1].contains("settings"),
+            "settings notice must be second, got {:?}",
+            notices[1]
+        );
+        assert!(
+            notices[2].contains("library"),
+            "library notice must be third, got {:?}",
+            notices[2]
+        );
     }
 
     // ---- test 6c: duplicate-ID guard (integrated into existing test) --

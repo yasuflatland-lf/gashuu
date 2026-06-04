@@ -40,6 +40,7 @@ pub(crate) struct NoticesContent {
 
 /// Result of [`OpenBookUseCase::run`]. Carries enough information for
 /// `main.rs` to finalize the UI without any i18n logic in this module.
+#[derive(Debug)]
 pub(crate) enum OpenOutcome {
     /// The open failed with this pre-captured error detail (untranslated).
     /// `main.rs` wraps it in `i18n::dynamic::open_error_str(loader, &e_str)`.

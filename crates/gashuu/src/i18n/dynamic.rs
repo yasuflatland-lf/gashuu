@@ -54,10 +54,8 @@ pub(crate) fn direction_label(loader: &FluentLanguageLoader, dir: ReadingDirecti
 ///
 /// Production composes failed opens from a pre-captured error string via
 /// [`open_error_str`] (the `OpenOutcome::Error` payload), so this `&dyn Display`
-/// flavor currently has only test callers; kept as the parallel to the other
-/// `&dyn Display` message functions. `#[allow(dead_code)]` mirrors the test-only
-/// accessor convention used elsewhere in the crate.
-#[allow(dead_code)]
+/// flavor has only test callers and is gated to `#[cfg(test)]`.
+#[cfg(test)]
 pub(crate) fn open_error(loader: &FluentLanguageLoader, e: &dyn Display) -> String {
     let error = e.to_string();
     fl!(loader, "viewer-open-error", error = error.as_str())
