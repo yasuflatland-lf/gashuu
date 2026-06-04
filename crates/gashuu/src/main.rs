@@ -81,11 +81,12 @@ fn main() -> color_eyre::Result<()> {
     // Apply the persisted UI language to the .slint side before the first paint
     // (the Rust-composed strings read it from `ViewerState`/`Settings` instead).
     select_ui_language(settings.language);
-    // Boot the Fluent localizer alongside the gettext path so both systems'
-    // language state stay in lockstep from the first frame.  The Strings-global
-    // push (PR-2, #113) will consume the localizer's output; wiring it here
-    // rather than at that PR's call site avoids a split-brain window.
+    // Boot the Fluent localizer and immediately push every static string into
+    // the Strings global via `apply()`.  Both systems' language state stay in
+    // lockstep from the first frame; `select_ui_language` is kept as an inert
+    // no-op surface for the gettext @tr() path until the gettext excision in #115.
     let localizer = Rc::new(i18n::Localizer::new(settings.language));
+    localizer.apply(&ui);
     let state = Rc::new(RefCell::new(ViewerState::from_settings(&settings)));
     let viewport = Rc::new(RefCell::new(ViewportState::from_settings(&settings)));
     let settings = Rc::new(RefCell::new(settings));
@@ -867,11 +868,13 @@ fn main() -> color_eyre::Result<()> {
                 // programmer-error policy, intentionally diverging from
                 // select_ui_language's never-fatal tracing::warn path.
                 localizer.switch(lang);
-                // Flip the .slint side first (all @tr() bindings re-evaluate
-                // immediately), then re-push the Rust-composed strings — the
-                // status line via refresh and the shortcuts reference (seeded
-                // at settings-open in the OLD language) — so the whole window
-                // switches without a restart.
+                // Push the newly loaded catalog into the Strings global so
+                // every Fluent-sourced label flips to the new language atomically
+                // before the next paint.
+                localizer.apply(&ui);
+                // `select_ui_language` is kept as an inert no-op surface for
+                // the gettext @tr() path; zero @tr() bindings remain after
+                // PR-2.  The call stays until the gettext excision in #115.
                 select_ui_language(lang);
                 ui.set_key_bindings_text(messages::msg_key_bindings_help(lang).into());
                 refresh(&ui, &state.borrow(), &viewport);
@@ -1600,20 +1603,25 @@ mod tests {
     fn bundled_translations_compiled_into_generated_code() {
         // `slint::select_bundled_translation` cannot be exercised headlessly
         // (the language registry is populated on first component creation), so
-        // pin the BUILD output instead: the generated code must register the
-        // "ja" locale AND contain matched Japanese catalog text. The second
-        // assert is the canary for the silent all-miss failure mode — e.g. a
-        // msgctxt/default-translation-context mismatch or a moved .po makes
-        // every lookup fall back to English with no build error.
+        // pin the BUILD output instead: the generated code must still register
+        // the "ja" locale via the inert `with_bundled_translations` build flag
+        // that PR-2 deliberately leaves in place (a trivial rollback surface
+        // until the gettext excision in #115).
+        //
+        // Note: this test no longer asserts that Japanese catalog *text* (e.g.
+        // "見開き") is compiled into the generated code. Slint only bundles a
+        // `.po` entry whose msgid matches a live `@tr()` source string, and
+        // PR-2 removed every `@tr()` call from the `.slint` files (zero @tr()
+        // remain — an issue #113 acceptance criterion). With no `@tr()` source
+        // strings left, the gettext bundler matches nothing, so no Japanese
+        // text reaches the generated code by design. The "ja catalog actually
+        // says 見開き" guarantee now lives in PR-1's loader test
+        // `i18n::tests::ja_catalog_pins_spread_vocabulary`; this whole canary
+        // is scheduled for deletion alongside `select_ui_language` in #115.
         let generated = include_str!(concat!(env!("OUT_DIR"), "/ViewerWindow.rs"));
         assert!(
             generated.contains("\"ja\""),
             "ja locale missing from the bundled-languages table"
-        );
-        assert!(
-            generated.contains("見開き"),
-            "no Japanese catalog text in the generated code — \
-             translations/ja/LC_MESSAGES/gashuu.po entries matched no @tr() string"
         );
     }
 
