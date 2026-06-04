@@ -139,6 +139,19 @@ RAR requires a C++ compiler on every OS (see [docs/toolchain.md](toolchain.md)).
 
 **Deferred from this slice:** recently-read sort/history, read timestamps, auto-open on launch, multiple bookmarks.
 
+### Bulk-delete: selection mode, toolbar, and destructive delete (bulk-delete epic, PR-2..PR-5 / #125–#129)
+
+- The Library carousel has a bulk-**selection** mode. Entered by keyboard `x` (also toggles the focused book) or the mouse "Select" entry pill; toggled per-book via `x` / Space / a cover click; left via Esc or the toolbar's ✕ exit. Selection is a `PathBuf` set keyed by canonical path (survives query changes and adds), drawn as an accent check badge per cover. (Selection-mode state + the `x`/Space/cover-click toggles + the `PathBuf` set landed in PR-1/PR-2, #125/#126 → PR#130/#131; PR-4 adds the visible toolbar chrome and select-all.)
+- **`SelectionToolbar`** organism (below the untouched NavBar, shown only in selection mode with no modal open): a count mode-indicator ("N selected", or "N selected (M outside search)" when some selected books are filtered out of the current search), a **Select all / Deselect all** toggle button, the exit ✕, and the **Delete (N)…** `DangerButton` (the only red element in the app's chrome; if-gated/hidden at N=0). A content-hugging glass pill (no fixed width — see docs/patterns.md).
+- **Cmd/Ctrl+A** select-all/deselect-all keyboard chord (selection mode only) — the repo's first `event.modifiers` arm; the same action as the toolbar's Select-all button (Rust decides select-vs-deselect from whether every visible book is already selected). See docs/patterns.md.
+- **Delete / Backspace** keys arm the destructive path in selection mode, opening the confirm dialog (same as the DangerButton). `Enter` = Cancel — the destructive action is never on `Enter`.
+- **Confirm dialog** (PR-5, #129): before any deletion, a `ConfirmDialog` is mounted in `ViewerWindow` listing up to 10 book titles (BTreeSet order), an "…and M more" line when the selection exceeds 10, an "N selected outside the current search" line when filtered-out books are included, a warning line when the open book is among the selection, and a "files on disk are kept" info line. Cancel / Esc / backdrop click preserve the selection and mode.
+- **Destructive transaction** (`RemoveBooksUseCase`, PR-5): mutate → save with rollback → best-effort cover purge → viewer-close if the open book was deleted → search recompute → selection clear (success only). **No undo** — the confirm dialog is the safety gate instead. **Source files on disk are never touched** — only the library entry is removed.
+- **Save-failure rollback** (PR-5): if `Library::save()` fails after a `remove_many`, the full `Book` clones (captured before removal) are re-inserted via `Library::restore`, returning the shelf to a byte-identical pre-removal state. The selection is preserved so the user can retry; no cache entries are touched on failure.
+- Status line reports "Deleted N book(s)" on success or a loud save-failure message on `SaveFailed`; the focused carousel index is clamped into the shrunken visible-row count.
+- The `ShortcutsOverlay` keyboard-reference now documents the full selection grammar: `x`, `Space`, `Cmd/Ctrl+A`, `Delete`/`Backspace`, `Esc`.
+- No new dependencies.
+
 ---
 
 ## Deferred (intentionally out of scope)

@@ -1,0 +1,270 @@
+// SelectionToolbar — organism shown BELOW the NavBar during bulk-selection mode.
+//
+// A glass pill (matching NavBar.slint's four-layer glass idiom exactly) with three
+// inline cells left→right:
+//   1. Count pill    — accent-bordered MODE INDICATOR; shows the pre-composed count
+//                      string from Rust; never red/danger — selection is always accent.
+//   2. Select-all capsule — neutral interactive capsule; label = select-all-label.
+//                      When `narrow` is true: collapses to the check.svg icon-only
+//                      form (same colorize idiom as SelectionBadge), keeping the
+//                      full label as the accessible-label.
+//   3. Exit capsule  — circular NavItem-style capsule with a "✕" text glyph,
+//                      fires exit(). No close SVG exists in assets/ so the glyph
+//                      is a Text element sized and colorized as a pseudo-icon.
+//
+// Width HUGS content (unlike NavBar's fixed token formula) — no explicit width
+// binding exists on the root; `horizontal-stretch: 0` lets Slint resolve the
+// preferred content size intrinsically from the HorizontalLayout. This avoids
+// the binding-loop risk (see NavBar header) because no expression reads the
+// layout's own preferred-width.
+//
+// Deliberately Strings-agnostic: the component does NOT import Strings. All
+// human-visible text (count-text, select-all-label, exit-a11y) is composed in
+// Rust and passed via in-properties.
+//
+// Colors / lengths come from Theme.* only — NO inline brand hex (DESIGN.md
+// rule 2; scripts/check-tokens.sh enforces this). Theme lives one directory up.
+import { Theme } from "../Theme.slint";
+import { DangerButton } from "DangerButton.slint";
+
+export component SelectionToolbar inherits Rectangle {
+    // ── Public API ────────────────────────────────────────────────────────────
+    // Pre-composed count label from Rust (e.g. "3 selected (1 outside search)").
+    in property <string> count-text;
+    // Flips between "Select all" and "Deselect all" based on Rust state.
+    in property <string> select-all-label;
+    // Consumer binds Strings.selection-exit-a11y.
+    in property <string> exit-a11y;
+    // Consumer binds Carousel's narrow breakpoint; collapses select-all to icon-only.
+    in property <bool> narrow;
+    // Pre-composed destructive label from Rust (e.g. "Delete (3)…"). Drives the
+    // DangerButton's text at all widths (see the narrow-mode note on the cell).
+    in property <string> delete-label;
+    // Gates the DangerButton: hidden at N=0 (decision D2 — hidden, not disabled).
+    in property <bool> has-selection;
+    callback select-all();
+    callback exit();
+    // Fired by the DangerButton (pointer / screen-reader). Forwarded to Rust,
+    // which opens the ConfirmDialog.
+    callback request-delete();
+
+    // ── Shape & size ──────────────────────────────────────────────────────────
+    // With `horizontal-stretch: 0` and no explicit width, the root adopts its
+    // preferred content size from the HorizontalLayout — no binding-loop risk
+    // because no width binding reads the layout's own preferred-width.
+    height: Theme.nav-pill-height;
+    horizontal-stretch: 0;
+    vertical-stretch: 0;
+
+    // ── Glass approximation (layers 1, 2, 4 — verbatim from NavBar lines 189–195) ──
+    background: Theme.glass-fill;
+    border-radius: Theme.nav-pill-radius;
+    border-width: 1px;
+    border-color: Theme.glass-border;
+    drop-shadow-color: Theme.shadow-popover;
+    drop-shadow-blur: 22px;
+    drop-shadow-offset-y: 8px;
+
+    // ── Glass approximation (layer 3): top inner highlight rim ────────────────
+    // A 1px decorative line just below the top edge, inset horizontally by
+    // ~half the height so it stays inside the rounded corners (NavBar idiom,
+    // lines 201–207).
+    Rectangle {
+        x: Theme.nav-pill-height / 2;
+        y: 1px;
+        width: parent.width - Theme.nav-pill-height;
+        height: 1px;
+        background: Theme.glass-highlight;
+    }
+
+    // ── Items ─────────────────────────────────────────────────────────────────
+    HorizontalLayout {
+        spacing: Theme.nav-item-gap;
+        padding: Theme.nav-pill-pad;
+        alignment: center;
+
+        // ── 1. Count pill — accent-bordered MODE INDICATOR ───────────────────
+        // A rounded pill with an accent border and accent-glow background that
+        // clearly signals "selection mode is active". Text is read-only (not a
+        // button). Never red/danger — selection is strictly accent language.
+        count-pill := Rectangle {
+            height: Theme.nav-capsule;
+            // Width hugs the text with horizontal padding; min width so the pill
+            // never collapses to zero on an empty string.
+            min-width: Theme.nav-capsule;
+            horizontal-stretch: 0;
+            border-radius: Theme.radius-pill;
+            background: Theme.accent-glow;
+            border-width: 1px;
+            border-color: Theme.accent;
+            // Soft accent glow drop-shadow to reinforce "selected" mode language.
+            drop-shadow-color: Theme.accent-glow;
+            drop-shadow-blur: 10px;
+
+            HorizontalLayout {
+                padding-left: Theme.nav-pill-pad;
+                padding-right: Theme.nav-pill-pad;
+                alignment: center;
+
+                count-label := Text {
+                    text: root.count-text;
+                    color: Theme.accent;
+                    font-size: Theme.font-label;
+                    font-weight: Theme.weight-medium;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                    // Bright accent for the mode indicator (same hue as the pill border).
+                }
+            }
+
+            // Accessibility: count is a read-only text element.
+            accessible-role: text;
+            accessible-label: root.count-text;
+        }
+
+        // ── 2. Select-all capsule — neutral interactive capsule ───────────────
+        // Uses the NavItem hover/press state idiom (accent-glow fill + accent ring
+        // on hover; darker fill on press). Wider than the circular exit capsule to
+        // hold a text label; in narrow mode collapses to the check.svg icon-only
+        // form (same colorize idiom as SelectionBadge). The full select-all-label
+        // is always the accessible-label regardless of narrow/wide mode.
+        select-all-capsule := Rectangle {
+            height: Theme.nav-capsule;
+            // Circle floor in every mode; in wide mode the inner HorizontalLayout auto-sizes the capsule from the label width.
+            min-width: Theme.nav-capsule;
+            horizontal-stretch: 0;
+            border-radius: Theme.radius-pill;
+
+            // Default appearance: transparent fill + transparent 1px ring (stable
+            // footprint — no reflow when the hover ring appears).
+            background: transparent;
+            border-width: 1px;
+            border-color: transparent;
+            animate background, border-color { duration: Theme.motion-fast; }
+
+            // States: pressed > hover (first match wins in Slint states[]).
+            // Only root-level properties — child colorize uses a binding below.
+            states [
+                pressed when sa-touch.pressed : {
+                    select-all-capsule.background: Theme.accent-glow.darker(0.10);
+                    select-all-capsule.border-color: Theme.accent;
+                }
+                hover when sa-touch.has-hover : {
+                    select-all-capsule.background: Theme.accent-glow;
+                    select-all-capsule.border-color: Theme.accent;
+                    select-all-capsule.drop-shadow-color: Theme.accent-glow;
+                    select-all-capsule.drop-shadow-blur: 12px;
+                }
+            ]
+
+            // Narrow mode: icon-only — centered check.svg glyph.
+            // Wide mode: centered text label.
+            if root.narrow : Image {
+                source: @image-url("../assets/check.svg");
+                width: Theme.nav-icon;
+                height: Theme.nav-icon;
+                x: (parent.width - self.width) / 2;
+                y: (parent.height - self.height) / 2;
+                image-fit: contain;
+                // Brighten on hover/press; idle at text-mid (SelectionBadge idiom).
+                colorize: sa-touch.has-hover || sa-touch.pressed ? Theme.text-high : Theme.text-mid;
+            }
+
+            if !root.narrow : HorizontalLayout {
+                padding-left: Theme.nav-pill-pad;
+                padding-right: Theme.nav-pill-pad;
+                alignment: center;
+
+                Text {
+                    text: root.select-all-label;
+                    // Brighten on hover/press; idle at text-mid (NavItem icon idiom).
+                    color: sa-touch.has-hover || sa-touch.pressed ? Theme.text-high : Theme.text-mid;
+                    font-size: Theme.font-label;
+                    font-weight: Theme.weight-medium;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+            }
+
+            // Accessibility: always expose the full label, even in icon-only mode.
+            accessible-role: button;
+            accessible-label: root.select-all-label;
+            accessible-action-default => { root.select-all(); }
+
+            sa-touch := TouchArea {
+                clicked => { root.select-all(); }
+            }
+        }
+
+        // ── 3. Delete button — the ONLY red element in the app's chrome ───────
+        // The destructive DangerButton, the toolbar's single danger affordance
+        // (count pill and capsules stay strictly accent). `if`-gated on
+        // `has-selection`: at N=0 the button is HIDDEN, not disabled — a
+        // deliberate decision (D2) so an empty selection offers no delete target
+        // at all (an `if` gate also costs zero layout space, unlike `visible:`).
+        // DangerButton is TouchArea-based and non-focusable, so keyboard focus
+        // stays on the carousel FocusScope (toolbar convention); it carries its
+        // own accessible role/label/action-default. NARROW MODE: the toolbar
+        // collapses only the SELECT-ALL label to an icon (above); this delete
+        // button KEEPS its full text label at every width because hiding the
+        // label on a destructive control is a safety hazard (approved spec).
+        if root.has-selection : DangerButton {
+            text: root.delete-label;
+            clicked => { root.request-delete(); }
+        }
+
+        // ── 4. Exit capsule — circular NavItem-style ✕ button ────────────────
+        // Circular capsule matching NavItem exactly (nav-capsule diameter, radius-pill
+        // corner). No close SVG exists in assets/; the ✕ is a Text element styled
+        // as a pseudo-icon (font-label, centered, colorized via a binding like
+        // NavItem's Image binding).
+        exit-capsule := Rectangle {
+            width: Theme.nav-capsule;
+            height: Theme.nav-capsule;
+            border-radius: Theme.radius-pill;
+
+            // Default appearance: same stable transparent ring as NavItem.
+            background: transparent;
+            border-width: 1px;
+            border-color: transparent;
+            animate background, border-color { duration: Theme.motion-fast; }
+
+            // States: pressed > hover (NavItem ordering).
+            states [
+                pressed when exit-touch.pressed : {
+                    exit-capsule.background: Theme.accent-glow.darker(0.10);
+                    exit-capsule.border-color: Theme.accent;
+                }
+                hover when exit-touch.has-hover : {
+                    exit-capsule.background: Theme.accent-glow;
+                    exit-capsule.border-color: Theme.accent;
+                    exit-capsule.drop-shadow-color: Theme.accent-glow;
+                    exit-capsule.drop-shadow-blur: 12px;
+                }
+            ]
+
+            // ✕ glyph as a Text element: no close SVG in assets/.
+            // font-title (15px) for a glyph that visually matches nav-icon (21px) in
+            // perceived weight. Colorize via binding (not states[]) — child element rule.
+            Text {
+                text: "✕";
+                width: parent.width;
+                height: parent.height;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+                font-size: Theme.font-title;
+                // Brighten on hover/press; default to the calmer mid tone (NavItem idiom).
+                color: exit-touch.has-hover || exit-touch.pressed ? Theme.text-high : Theme.text-mid;
+            }
+
+            // Accessibility: screen-reader gets the provided exit label.
+            accessible-role: button;
+            accessible-label: root.exit-a11y;
+            accessible-action-default => { root.exit(); }
+
+            exit-touch := TouchArea {
+                clicked => { root.exit(); }
+            }
+        }
+    }
+}

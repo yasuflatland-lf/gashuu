@@ -161,6 +161,56 @@ components:
     rounded: "{rounded.md}"
     padding: 8px 16px         # same geometry as button-primary (9/7 optical-centering split)
     glow: "{colors.danger-glow}"  # hover/focus ring (drop-shadow), symmetric to the accent glow
+  # bulk-delete epic — selection chrome (PR-2 + PR-4). Selection is ALWAYS accent
+  # (blue). Red/danger NEVER appears in selection chrome — the delete DangerButton
+  # in SelectionToolbar and the ConfirmDialog confirm button are the only red elements.
+  selection-badge:
+    size: "{spacing.huge}"    # 26px accent disc, radius-pill (full circle)
+    checkSize: "{spacing.lg}" # 14px check.svg glyph, colorize: text (white), centered
+    backgroundColor: "{colors.accent}"
+    checkColor: "{colors.text}"
+  selection-toolbar:
+    # Glass pill — shares NavBar's four-layer glass recipe exactly.
+    height: "{nav-pill-height}"      # 55px (golden-ratio nav capsule × φ)
+    width: content-hug               # horizontal-stretch: 0; no explicit width
+    rounded: "{nav-pill-radius}"     # 21px (consecutive-Fibonacci nav glass corner)
+    fill: "{colors.glass-fill}"
+    border: "1px solid {colors.glass-border}"
+    highlight: "{colors.glass-highlight}"   # 1px top inner rim
+    shadow: "0 8px 22px {colors.shadow-popover}"
+    # Count pill (mode indicator, left cell)
+    countPillBackground: "{colors.accent-glow}"
+    countPillBorder: "1px solid {colors.accent}"
+    countPillGlow: "drop-shadow 0 0 10px {colors.accent-glow}"
+    countPillTextColor: "{colors.accent}"
+    countPillTypography: "{typography.ui-label}"
+    countPillRounded: "{rounded.pill}"
+    # Select-all/deselect-all capsule (center cell)
+    # Idle: transparent; hover: accent-glow fill + accent border ring; pressed: darker
+    selectAllTextColor: "{colors.text-mid}"      # idle
+    selectAllHoverTextColor: "{colors.text-high}"
+    selectAllHoverBackground: "{colors.accent-glow}"
+    selectAllHoverBorder: "1px solid {colors.accent}"
+    selectAllRounded: "{rounded.pill}"
+    selectAllNarrowBreakpoint: 560px             # collapses to check.svg icon-only ≤ this width
+    # Exit capsule (right cell, circular nav-capsule diameter)
+    exitSize: "{nav-capsule}"        # 34px circle
+    exitGlyph: "✕"                   # Unicode ✕ as Text (no close.svg in assets)
+    exitTextColor: "{colors.text-mid}"
+    exitHoverTextColor: "{colors.text-high}"
+    exitHoverBackground: "{colors.accent-glow}"
+    exitHoverBorder: "1px solid {colors.accent}"
+  selection-entry-pill:
+    # Quiet mouse-only entry point into selection mode (normal mode, covers visible).
+    height: "{nav-capsule}"          # 34px — shorter than the toolbar; same capsule atom
+    width: content-hug               # label preferred-width + nav-pill-pad × 2
+    rounded: "{rounded.pill}"
+    # Idle: transparent (no fill, no border ring)
+    # Hover: accent-glow fill + accent border ring; pressed: darker
+    textColor: "{colors.text-mid}"
+    hoverTextColor: "{colors.text-high}"
+    hoverBackground: "{colors.accent-glow}"
+    hoverBorder: "1px solid {colors.accent}"
   page-image:
     rounded: "{rounded.xs}"
     shadow: "{elevation.page}"
@@ -193,6 +243,15 @@ components:
     height: 466px             # Theme.shortcuts-h; fixed, smaller than the settings panel's content-hug height so it reads as a smaller modal stacked over settings
     rounded: 21px             # Theme.settings-radius — REUSED
     # All glass tokens reused from settings-panel above (sheenTop/fill/border/highlight/shadow); no second glass set.
+  confirm-dialog:
+    width: 360px              # Theme.settings-w — REUSED; fluid-width clamp: min(settings-w, parent − 2 × space-xl)
+    rounded: 21px             # Theme.settings-radius — REUSED (same NavBar glass corner language)
+    # Glass tokens all reused from settings-panel (sheenTop/fill/border/highlight/shadow); no new token set.
+    # Body layout tokens (spacing, typography) also reused from settings-panel.
+    cancelFocus: true         # Cancel holds default focus on open (init + changed focus-epoch)
+    confirmGround: "{colors.danger}"   # destructive confirm uses DangerButton; neutral uses PrimaryButton (toggled by `danger` prop)
+    infoBandBackground: "{colors.surface-raised}"  # neutral reassurance band
+    warningTextColor: "{colors.danger}"            # open-book caution line
 ---
 
 ## Overview
@@ -424,6 +483,73 @@ the WCAG AA contrast floor (≈ 4.91:1) on the dark canvas. On hover/press the g
 reserve this button — and the `danger` hue — for destructive actions only; selection and "you are here"
 visuals stay `{colors.accent}`.
 
+### Selection Badge — `components.selection-badge`
+A small accent disc with a white check mark overlaid on a selected cover during selection mode (bulk-delete epic, PR-2). An atom — no interactive state, no callback. Rendered inside the `CoverCard` at the top-right corner, inset `{spacing.xs}` from the edges. Disc diameter `{spacing.huge}` 26px, `{rounded.pill}` (full circle), background `{colors.accent}`. The check is `check.svg` colorized to `{colors.text}` (white), sized `{spacing.lg}` 14px, centered. **Red is reserved for destructive actions** (the `SelectionToolbar` DangerButton and the `ConfirmDialog` confirm button) — this badge is strictly accent.
+
+### SelectionToolbar — `components.selection-toolbar`
+An organism shown **below the NavBar**, centered, y = `nav.y + nav.height + {spacing.sm}`, only while selection mode is active and no modal is open (bulk-delete epic, PR-4). If-gated (not `visible:`-toggled) — zero cost outside selection mode. Not in the keyboard focus chain; mouse + screen-reader only (keyboard navigation stays carousel-owned).
+
+**Glass pill**: the NavBar's four-layer glass idiom — `{colors.glass-fill}` background, 1px `{colors.glass-border}` rim, 1px `{colors.glass-highlight}` top inner highlight, `{colors.shadow-popover}` drop shadow (blur 22 / y-offset 8) — at `{nav-pill-height}` (55px) height. Width **hugs content** (`horizontal-stretch: 0`; no explicit width binding — avoids the binding-loop risk that a fixed NavBar formula would introduce).
+
+**Left → right contents** (gap = `{nav-item-gap}`, padding = `{nav-pill-pad}`):
+
+1. **Count pill** (mode indicator): `{rounded.pill}` capsule with `{colors.accent-glow}` background and 1px `{colors.accent}` border. A soft accent drop-shadow glow reinforces "you are in selection mode". Text is the Rust-composed count string (e.g. "3 selected" or "5 selected (2 outside search)"), `{typography.ui-label}` in `{colors.accent}`. Read-only (not a button). **Never red/danger** — selection language is accent.
+
+2. **Select-all / deselect-all capsule**: `{rounded.pill}`, `{nav-capsule}` (34px) height, minimum width. Idle: transparent fill + transparent ring (stable footprint). Hover: `{colors.accent-glow}` fill + 1px `{colors.accent}` border + accent drop-shadow glow. Pressed: slightly darker fill + accent ring. Label text `{colors.text-mid}` at idle, brightening to `{colors.text-high}` on hover/press — the `NavItem` icon idiom. At **≤ 560px** window width (the `narrow` breakpoint), collapses to `check.svg` icon-only form (same `colorize` idiom as `SelectionBadge`); the full label is always the `accessible-label`. Fires the `select-all()` callback (Rust decides select-vs-deselect); also triggered by Cmd/Ctrl+A in the carousel `FocusScope`.
+
+3. **Delete DangerButton — the ONLY red element in the app's chrome**: label "Delete (N)…" (Rust-composed with the exact selection count). `{colors.danger}` ground — the only place `danger` appears in the toolbar; all other cells are accent. **Hidden at N=0** (`if`-gated, not `disabled`) — zero layout cost and zero target for an empty selection. The label NEVER collapses in narrow mode: hiding a destructive control's label at any width is a safety hazard and was explicitly rejected in the spec. Fires `request-delete()` (Rust opens the `ConfirmDialog`).
+
+4. **Exit capsule**: circular `{nav-capsule}` (34px) × `{nav-capsule}`, `{rounded.pill}`. Same hover/press states as the select-all capsule. Glyph is Unicode `✕` as a `Text` element (no `close.svg` in assets). Fires `exit()` — equivalent to pressing Esc in the carousel.
+
+### Select Entry Pill — `components.selection-entry-pill`
+A small quiet mouse-only affordance shown in **normal mode** (not selection mode, no modal, library has at least one visible book), at the same position as the SelectionToolbar — centered, y = `nav.y + nav.height + {spacing.sm}` (bulk-delete epic, PR-4). If-gated; zero cost in selection mode. Not in the keyboard focus chain.
+
+`{nav-capsule}` (34px) height, width hugs the label (`Strings.selection-enter` = "Select") plus `{nav-pill-pad}` horizontal padding on each side. `{rounded.pill}` corners. Idle: transparent fill + transparent 1px ring (stable footprint, no reflow on hover). Hover: `{colors.accent-glow}` fill + 1px `{colors.accent}` border + accent glow. Pressed: slightly darker fill. Text `{colors.text-mid}` at idle, `{colors.text-high}` on hover/press. Clicking enters selection mode only (does NOT toggle the focused book — that is the `x` key's job). No FocusScope; keyboard focus stays on the carousel.
+
+**Placement rule (both toolbar and entry pill)**: both are suppressed while any modal (settings / shortcuts / first-run guide) is open — the `!modal-open` guard mirrors the carousel `FocusScope`'s modal-reject arm so pointer targets under a modal are always unreachable.
+
+### ConfirmDialog — `components.confirm-dialog`
+A reusable two-choice modal (issue 127, consumed by the bulk-delete epic PR-5). Generic: carries NO domain vocabulary — every word arrives through properties so the same component serves any confirm-or-cancel decision.
+
+**Glass panel**: clones the `SettingsDialog` / `ShortcutsOverlay` glass recipe exactly — a full-area `Theme.scrim` backdrop, the same one-fake-glass object (top-sheen `@linear-gradient` fill + 1px `{colors.glass-border}` rim + 1px `{colors.glass-highlight}` top inner highlight + ONE `{colors.shadow-popover}` drop shadow, blur 22 / y-offset 8). No nested glass, no second shadow. The sheen is a FILL gradient, not an `opacity` layer (opacity blurs text/SVG on HiDPI — see `docs/patterns.md`). The panel is fluid-width: caps at `{components.settings-panel.width}` (360px) on wide windows, leaving a `{spacing.xl}` gutter each side on narrow ones (FirstRunGuide clamp).
+
+**Key model — EVERY dismiss path is cancel except one explicit confirm action:**
+- Esc → `cancel()`.
+- Return/Enter → `cancel()`. A reflexive press can never fire the destructive action — the ancestor `FocusScope` maps both Esc and Return to `cancel()`. The confirm button's `FocusButton` wrapper rejects Return (and all keys except Space), so Return bubbles up even when confirm holds focus.
+- Backdrop click (scrim `TouchArea` outside the panel) → `cancel()`.
+- Cancel button (pointer click or Tab→Space) → `cancel()`.
+- Confirm button (pointer click or Tab→Space ONLY) → `confirm()`.
+- All other keys are swallowed by the ancestor `FocusScope`'s catch-all `accept` so nothing leaks to content mounted behind the modal.
+
+**Default focus: Cancel.** Set on BOTH `init` (fires on every `if`-gated open) and `changed focus-epoch` (re-claims focus after a stacked overlay closes). The parent MUST mount via `if`, NOT `visible:` — `init` fires only on subtree reconstruction.
+
+**Tab containment**: two `FocusButton` stops (Cancel, Confirm). The ancestor `FocusScope` self-rotates Tab between them in-trap rather than deferring to window-level Tab navigation (which could carry focus out of the modal into live carousel elements behind it). See "Modal Tab containment" in `docs/patterns.md`.
+
+**Body content structure (for the bulk-delete use case):**
+1. Title line — carries the TOTAL selection count.
+2. Optional itemized body lines — up to 10 titles, then "…and M more", then "N selected outside the current search" when applicable. The parent truncates before binding; the component renders what it receives.
+3. Info band — `{colors.surface-raised}` raised panel with `{colors.text-muted}` text. Neutral reassurance ("Files on disk are kept"). Hidden when `info-text` is empty.
+4. Warning line — `{colors.danger}` text. Fires only when the open book is among the selection. Hidden when `warning-text` is empty.
+5. Action row — Cancel left, Confirm right (both pinned right via a leading stretch spacer; `alignment:` is NOT set — see "alignment kills stretch" in `docs/patterns.md`). DangerButton for destructive confirm; PrimaryButton for neutral confirm (toggled by the `danger` property).
+
+### Selection mode and destructive-confirm interaction patterns
+
+**Key bindings** (Library carousel, `Carousel.slint` `FocusScope`):
+
+| Key | Normal mode | Selection mode |
+|---|---|---|
+| `x` | Enter selection mode + toggle focused book | Toggle focused book |
+| Space | — (no-op / falls through) | Toggle focused book |
+| Cmd/Ctrl+A | — (no-op / falls through) | Select all / deselect all |
+| Delete / Backspace | — (no-op / falls through) | Open `ConfirmDialog` (no-op if N=0) |
+| Esc | — (reject, no-op) | Clear selection + exit selection mode |
+| Return | Open focused book | Open focused book (unchanged in both modes) |
+| Cover click | Enter selection mode (via "Select" entry pill click) | Toggle clicked book |
+
+Return is **never repurposed** — it always opens the focused book, in both modes. The `x` key is the primary keyboard entry into selection mode; the "Select" entry pill is the mouse entry point (it enters mode only, does NOT toggle the focused book).
+
+**Toolbar placement rationale**: the `SelectionToolbar` is a separate overlay anchored immediately below the `NavBar` (`y = nav.y + nav.height + {spacing.sm}`), NOT embedded in the NavBar itself. This keeps the NavBar's chrome and the add-books pill visually and interactively untouched — the destructive control is separated from the constructive ones by a deliberate spatial gap. The DangerButton is the rightmost element of the toolbar, as far as possible from the accent-only count pill and capsules on the left, reinforcing the "destructive is at the end of the row" HIG convention.
+
 ### Library Nav — `components.nav-bar`
 A **top, centered glass pill** floating over the Library carousel for adding books. It is drawn
 on top of the stage; its bottom edge may slightly overlap the focused cover so the background
@@ -534,6 +660,7 @@ unchanged.
 - Let the cover and page art lead; keep the dark frame quiet around them.
 - Use `{colors.accent}` for every interactive/"you are here" signal, and nothing else.
 - Reserve `{colors.success}` strictly for the fully-read progress state.
+- Use `{colors.accent}` for ALL selection visuals (badge, count pill, toolbar hover states) — red/danger is reserved for the destructive delete/confirm buttons only.
 - Auto-hide viewer chrome so the page reads edge-to-edge; bring it back on intent.
 - Build depth from soft shadows, scale, and opacity; separate chrome with 1px hairlines.
 - Use tabular figures for page counters so they don't jitter while scrubbing.
@@ -560,7 +687,7 @@ adapting to the live window size.
   window aspect ratio (landscape/square → double, portrait → single) and follows live resizes.
   This is the primary responsive behavior and the visual system must compose with it.
 - **Carousel**: the number of visible neighbor covers grows/shrinks with width; the focused cover
-  stays centered. Below a minimum width, neighbors may drop to one per side.
+  stays centered. Below a minimum width (560px threshold), neighbors may drop to one per side. This same 560px `narrow` flag is forwarded to `SelectionToolbar`, collapsing its select-all capsule from a text label to the `check.svg` icon-only form at narrow widths.
 - **Scrubber**: the rail spans window width minus edge insets; the preview popover clamps inside
   the window so it never clips at the far edges.
 - **Showing the thumbnail strip** shrinks the viewer height and may re-resolve `Auto` (accepted).

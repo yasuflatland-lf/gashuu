@@ -43,7 +43,12 @@ use std::sync::{Arc, Mutex};
 /// 1× and near-sharp at 2× while staying a single cover per book in the cache.
 /// `max_side` is part of the cache key, so raising it transparently invalidates
 /// and regenerates every stale 160 px cover on the next run.
-const COVER_MAX_SIDE: u32 = 512;
+///
+/// `pub(crate)` so the bulk-removal purge in `app.rs` passes the SAME single
+/// persistent cover side to `ThumbnailCache::purge_for`, instead of duplicating
+/// the literal — strip thumbnails are RAM-only and never persisted, so 512 is the
+/// only on-disk cover variant a removed book can have.
+pub(crate) const COVER_MAX_SIDE: u32 = 512;
 
 /// One book the controller must load a cover for: its carousel row index and its
 /// canonical filesystem path. Built on the UI thread from the `Library`, then the
@@ -84,7 +89,11 @@ impl Default for CoverController {
 /// the file is missing / has no readable mtime (an unavailable book still gets a
 /// stable, if degenerate, cache key). This is one of the three `cache_key` inputs
 /// so a modified file regenerates its cover automatically (the cache owns hashing).
-fn mtime_secs(path: &std::path::Path) -> i64 {
+///
+/// `pub(crate)` so the bulk-removal purge in `app.rs` derives the cover's cache
+/// key under the book's CURRENT mtime (the same value the cover was generated
+/// under, modulo drift) when calling `ThumbnailCache::purge_for`.
+pub(crate) fn mtime_secs(path: &std::path::Path) -> i64 {
     std::fs::metadata(path)
         .and_then(|m| m.modified())
         .ok()

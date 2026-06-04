@@ -93,6 +93,16 @@ export global Strings {
     // ── shared ────────────────────────────────────────────────────────────────
     in property <string> common-close: "Close";
 
+    // ── ConfirmDialog ─────────────────────────────────────────────────────────
+    in property <string> confirm-delete-cancel: "Cancel";
+
+    // ── SelectionToolbar ──────────────────────────────────────────────────────
+    in property <string> selection-enter: "Select";
+    in property <string> selection-exit-a11y: "Exit selection mode";
+    // DangerButton label; doubles as the confirm-button label in the bulk-delete
+    // ConfirmDialog (a parallel cluster binds Strings.selection-delete there).
+    in property <string> selection-delete: "Delete";
+
     // ── Stepper composed (pre-composed in Rust via Fluent named args) ─────────
     in property <string> stepper-decrease-cache: "Decrease Cache size in pages";
     in property <string> stepper-increase-cache: "Increase Cache size in pages";
