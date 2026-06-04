@@ -1473,3 +1473,52 @@ fn apply_resolved_view_sets_direction_spread_cover() {
     assert_eq!(s.spread_mode(), SpreadMode::Double);
     assert_eq!(s.cover_mode(), CoverMode::Paired);
 }
+
+#[test]
+fn close_returns_to_no_book_open_state() {
+    // After opening a source, close() must drop it and report the boot/no-folder
+    // shape: no source, zero pages/index, open_file None, status NoFolder. This
+    // is what the bulk-removal path uses when the open book is deleted.
+    let mut state = ViewerState::new();
+    state.set_source(mock_with(5));
+    assert_eq!(state.page_count(), 5);
+    assert!(state.current_source().is_some());
+
+    state.close();
+    assert_eq!(state.page_count(), 0, "page count zeroed on close");
+    assert_eq!(state.index(), 0, "index reset on close");
+    assert!(state.current_source().is_none(), "source dropped on close");
+    assert!(state.open_file().is_none(), "open_file cleared on close");
+    assert!(state.current_spread().is_none(), "no spread after close");
+    assert_eq!(
+        state.status_content().kind,
+        StatusKind::NoFolder,
+        "status reverts to NoFolder after close"
+    );
+}
+
+#[test]
+fn close_preserves_display_modes() {
+    // Closing a book is not a settings reset: the runtime display modes survive
+    // so the NEXT open reuses them (the apply_resolved_view path then overrides).
+    let mut state = double_state();
+    state.set_source(mock_with(4));
+    assert_eq!(state.spread_mode(), SpreadMode::Double);
+
+    state.close();
+    assert_eq!(
+        state.spread_mode(),
+        SpreadMode::Double,
+        "close must not reset the spread mode"
+    );
+}
+
+#[test]
+fn close_is_idempotent_from_boot_state() {
+    // Closing when nothing is open must be a harmless no-op (no panic, stays empty).
+    let mut state = ViewerState::new();
+    state.close();
+    assert_eq!(state.page_count(), 0);
+    assert!(state.open_file().is_none());
+    assert_eq!(state.status_content().kind, StatusKind::NoFolder);
+}

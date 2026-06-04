@@ -190,6 +190,61 @@ pub(crate) fn select_all_label(
     }
 }
 
+// ---- Confirm-delete dialog messages ---------------------------------------
+
+/// Dialog title for the bulk-delete confirmation dialog.
+/// `n` is the count of books to delete.
+pub(crate) fn confirm_delete_title(loader: &FluentLanguageLoader, n: usize) -> String {
+    let n = n as i64;
+    fl!(loader, "confirm-delete-title", n = n)
+}
+
+/// Overflow line when the preview list is truncated.
+/// `n` is the count of books not shown in the preview.
+pub(crate) fn confirm_delete_more(loader: &FluentLanguageLoader, n: usize) -> String {
+    let n = n as i64;
+    fl!(loader, "confirm-delete-more", n = n)
+}
+
+/// Explanatory body line: what gets removed vs what stays on disk.
+pub(crate) fn confirm_delete_keep_files(loader: &FluentLanguageLoader) -> String {
+    fl!(loader, "confirm-delete-keep-files")
+}
+
+/// Warning shown when the currently open book is included in the delete set.
+pub(crate) fn confirm_delete_open_book(loader: &FluentLanguageLoader) -> String {
+    fl!(loader, "confirm-delete-open-book")
+}
+
+/// Warning shown when the selection spans books outside the current search filter.
+/// `n` is the count of books outside the search projection.
+pub(crate) fn confirm_delete_outside_search(loader: &FluentLanguageLoader, n: usize) -> String {
+    let n = n as i64;
+    fl!(loader, "confirm-delete-outside-search", n = n)
+}
+
+/// Notice after a successful bulk delete. `n` is the count of books deleted.
+pub(crate) fn deleted_books(loader: &FluentLanguageLoader, n: usize) -> String {
+    let n = n as i64;
+    fl!(loader, "notice-deleted-books", n = n)
+}
+
+/// Notice when the library save failed after a bulk delete, meaning nothing
+/// was actually removed.
+pub(crate) fn delete_save_failed(loader: &FluentLanguageLoader, e: &dyn Display) -> String {
+    let error = e.to_string();
+    fl!(loader, "notice-delete-save-failed", error = error.as_str())
+}
+
+/// SelectionToolbar DangerButton label composed as "Delete (N)…".
+///
+/// Decision D1: a trailing parenthesized numeral + ellipsis is word-order-safe
+/// in both en ("Delete (3)…") and ja ("削除 (3)…") — numerals are exempt from
+/// the no-fragment-concatenation rule; only translated WORD fragments are banned.
+pub(crate) fn selection_delete_label(loader: &FluentLanguageLoader, n: usize) -> String {
+    format!("{} ({})…", fl!(loader, "selection-delete"), n)
+}
+
 // ---- Shortcuts help -------------------------------------------------------
 
 /// Multi-line keyboard-shortcuts reference rendered read-only in the
@@ -412,5 +467,89 @@ mod tests {
             assert!(added_books_save_failed(l, 3, &"io").contains('3'));
             assert!(added_books_save_failed(l, 3, &"io").contains("io"));
         }
+    }
+
+    #[test]
+    fn confirm_delete_fns_are_non_empty_and_embed_args() {
+        for loc in [en(), ja()] {
+            let l = loc.loader();
+            // Parameterized: n must appear
+            assert!(confirm_delete_title(l, 5).contains('5'));
+            assert!(confirm_delete_more(l, 2).contains('2'));
+            // No-arg: must not be empty
+            assert!(!confirm_delete_keep_files(l).is_empty());
+            assert!(!confirm_delete_open_book(l).is_empty());
+            // Parameterized: n must appear
+            assert!(confirm_delete_outside_search(l, 3).contains('3'));
+        }
+        // En != Ja for each key
+        assert_ne!(
+            confirm_delete_title(en().loader(), 1),
+            confirm_delete_title(ja().loader(), 1),
+            "confirm_delete_title must differ between En and Ja"
+        );
+        assert_ne!(
+            confirm_delete_more(en().loader(), 1),
+            confirm_delete_more(ja().loader(), 1),
+            "confirm_delete_more must differ between En and Ja"
+        );
+        assert_ne!(
+            confirm_delete_keep_files(en().loader()),
+            confirm_delete_keep_files(ja().loader()),
+            "confirm_delete_keep_files must differ between En and Ja"
+        );
+        assert_ne!(
+            confirm_delete_open_book(en().loader()),
+            confirm_delete_open_book(ja().loader()),
+            "confirm_delete_open_book must differ between En and Ja"
+        );
+        assert_ne!(
+            confirm_delete_outside_search(en().loader(), 1),
+            confirm_delete_outside_search(ja().loader(), 1),
+            "confirm_delete_outside_search must differ between En and Ja"
+        );
+    }
+
+    #[test]
+    fn delete_notice_fns_are_non_empty_and_embed_args() {
+        for loc in [en(), ja()] {
+            let l = loc.loader();
+            assert!(deleted_books(l, 4).contains('4'));
+            assert!(delete_save_failed(l, &"disk full").contains("disk full"));
+        }
+        // En != Ja
+        assert_ne!(
+            deleted_books(en().loader(), 2),
+            deleted_books(ja().loader(), 2),
+            "deleted_books must differ between En and Ja"
+        );
+        assert_ne!(
+            delete_save_failed(en().loader(), &"x"),
+            delete_save_failed(ja().loader(), &"x"),
+            "delete_save_failed must differ between En and Ja"
+        );
+    }
+
+    #[test]
+    fn selection_delete_label_embeds_count_and_ellipsis() {
+        // The composed label must contain the count and end with '…' (ellipsis).
+        for loc in [en(), ja()] {
+            let l = loc.loader();
+            let label = selection_delete_label(l, 3);
+            assert!(
+                label.contains('3'),
+                "selection_delete_label must contain count n=3, got: {label:?}"
+            );
+            assert!(
+                label.ends_with('…'),
+                "selection_delete_label must end with '…', got: {label:?}"
+            );
+        }
+        // En != Ja (different base word: "Delete" vs "削除")
+        assert_ne!(
+            selection_delete_label(en().loader(), 1),
+            selection_delete_label(ja().loader(), 1),
+            "selection_delete_label must differ between En and Ja"
+        );
     }
 }

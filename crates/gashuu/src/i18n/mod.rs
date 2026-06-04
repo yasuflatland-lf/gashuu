@@ -124,7 +124,7 @@ impl Localizer {
     /// every [`switch`] to keep the global in sync with the active locale.
     ///
     /// Slint batches property changes and repaints them together before the next
-    /// frame, so a sequential push of 66 setters cannot produce a half-translated
+    /// frame, so a sequential push of 67 setters cannot produce a half-translated
     /// frame — the entire swap is visually atomic.
     ///
     /// All `fl!()` calls resolve IDs against the `i18n.toml`-declared crate
@@ -205,9 +205,10 @@ impl Localizer {
         strings.set_common_close(fl!(self.loader, "common-close").into());
         strings.set_confirm_delete_cancel(fl!(self.loader, "confirm-delete-cancel").into());
 
-        // ---- SelectionToolbar static strings --------------------------------
+        // ---- 3 plain pushes (SelectionToolbar) ------------------------------
         strings.set_selection_enter(fl!(self.loader, "selection-enter").into());
         strings.set_selection_exit_a11y(fl!(self.loader, "selection-exit-a11y").into());
+        strings.set_selection_delete(fl!(self.loader, "selection-delete").into());
 
         // ---- 4 pre-composed Stepper labels --------------------------------
         //
@@ -499,7 +500,13 @@ View:
   T = toggle thumbnail strip
 
 Library:
-  Up = return to the library";
+  Up = return to the library
+
+Selection:
+  x = enter selection mode    Space = toggle focused
+  Cmd/Ctrl+A = select all visible / deselect all
+  Delete / Backspace = delete selected books
+  Esc = exit selection mode";
         let legacy_ja = "\
 ナビゲーション:
   Space = 次のページ    Backspace = 前のページ
@@ -517,7 +524,13 @@ Library:
   T = サムネイル一覧の表示切替
 
 ライブラリ:
-  Up = ライブラリに戻る";
+  Up = ライブラリに戻る
+
+選択:
+  x = 選択モードへ    Space = 選択を切替
+  Cmd/Ctrl+A = 表示中をすべて選択 / すべて解除
+  Delete / Backspace = 選択した本を削除
+  Esc = 選択モードを終了";
         for lang in [Language::En, Language::Ja] {
             let loc = Localizer::new(lang);
             let fluent_text = get(&loc, "shortcuts-help");

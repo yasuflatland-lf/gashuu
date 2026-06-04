@@ -186,6 +186,29 @@ impl ViewerState {
         self.index = 0;
     }
 
+    /// Close the current source, returning the viewer to the boot/no-book-open
+    /// state (the same shape `with_cache_config` constructs). Used by the
+    /// bulk-removal path when the open book is among the deleted ones: there is
+    /// no "previous book" to fall back to, so the viewer must show "No folder
+    /// opened" rather than keep rendering a book that no longer exists.
+    ///
+    /// Drops the cache + source, zeroes the page count / index /
+    /// `last_open_skipped`, and clears `open_file` so `current_book_name`
+    /// reads `""` and `status_content` reports `NoFolder`. The display MODES (direction/spread/cover) and the
+    /// `cache_config` / `viewport_aspect` are deliberately preserved — closing a
+    /// book is not a settings reset; the next open reuses the same configuration.
+    ///
+    /// Called by `app::RemoveBooksUseCase::run` when the open book is among the
+    /// deleted ones (PR-5 #129).
+    pub fn close(&mut self) {
+        self.cache = None;
+        self.source = None;
+        self.page_count = 0;
+        self.index = 0;
+        self.last_open_skipped = 0;
+        self.open_file = None;
+    }
+
     /// Returns the currently opened page source, if any. Used by the UI to
     /// launch background thumbnail generation (`ImageCache` does not expose its
     /// source). Returns `None` before a source is successfully opened.

@@ -15,13 +15,6 @@ import { ConfirmDialog } from "components/ConfirmDialog.slint";
 // generates global accessors for globals exported from the build entry point.
 export { Strings }
 
-// TEMP: compile-reachability guard only — remove when bulk-delete PR-5 wires
-// ConfirmDialog into the delete flow (it then becomes reachable from the markup
-// and no longer needs this re-export to be compiled). ConfirmDialog re-exports
-// DangerButton's reachability transitively (it imports it), so the prior TEMP
-// DangerButton export is dropped here.
-export { ConfirmDialog }
-
 export component ViewerWindow inherits Window {
     // Intentionally empty: the OS title bar shows no app name (the floating title label above the ViewerPill carries the current book name instead). See issue #85.
     title: "";
@@ -202,6 +195,29 @@ export component ViewerWindow inherits Window {
     in property <string> carousel-selection-count-text;
     in property <string> carousel-select-all-label;
     callback carousel-select-all();
+    // Delete root twins (bulk-delete epic, PR-5). `carousel-delete-label` is the
+    // pre-composed destructive label; `carousel-has-selection` gates the toolbar
+    // DangerButton. `carousel-request-delete()` fires from BOTH the toolbar
+    // button and the carousel's Delete/Backspace key arm; Rust composes the
+    // ConfirmDialog body and flips `show-confirm-delete` true. Same root-twin
+    // reason as above: Slint exposes only the root window surface to Rust.
+    in property <string> carousel-delete-label;
+    in property <bool> carousel-has-selection;
+    callback carousel-request-delete();
+    // ── Confirm-delete modal (bulk-delete epic, PR-5) ─────────────────────────
+    // `show-confirm-delete` gates the modal mount below; it is `in-out` so Rust
+    // opens it (on request-delete, after composing the body) and the dialog's
+    // own `cancel` path can close it WITHOUT a Rust round-trip (decision D4 —
+    // selection is preserved on cancel). The four text properties are
+    // pre-composed in Rust (title / itemized body lines / neutral info / danger
+    // warning); the confirm/cancel labels come from Strings. Rust closes the
+    // dialog itself on confirm (after the delete completes).
+    in-out property <bool> show-confirm-delete: false;
+    in property <string> confirm-delete-title;
+    in property <[string]> confirm-delete-body-lines;
+    in property <string> confirm-delete-info;
+    in property <string> confirm-delete-warning;
+    callback confirm-delete-accepted();
     // Add-picker triggers forwarded from the Carousel toolbar and CTA. Rust
     // decides the dialog flavor behind add-books (files+folders on macOS,
     // files-only elsewhere — see `combined-add-picker`).
@@ -256,7 +272,7 @@ export component ViewerWindow inherits Window {
         combined-add-picker: root.combined-add-picker;
         // Suppress the carousel's keyboard seams while a modal overlays the
         // Library — same condition the Viewer FocusScope uses (see `fs` below).
-        modal-open: root.show-settings || root.show-guide || root.show-shortcuts;
+        modal-open: root.show-settings || root.show-guide || root.show-shortcuts || root.show-confirm-delete;
         search-changed(q) => { root.library-search-changed(q); }
         // The nav's Settings button opens the EXISTING SettingsDialog: route the
         // click straight to the shared `open-settings` flow (same handler the
@@ -277,6 +293,11 @@ export component ViewerWindow inherits Window {
         selection-count-text: root.carousel-selection-count-text;
         select-all-label: root.carousel-select-all-label;
         select-all() => { root.carousel-select-all(); }
+        // Delete (PR-5): pre-composed label + has-selection gate down, the
+        // request-delete action up (Rust opens the ConfirmDialog).
+        delete-label: root.carousel-delete-label;
+        has-selection: root.carousel-has-selection;
+        request-delete() => { root.carousel-request-delete(); }
     }
 
     // ── Library-screen status notice ─────────────────────────────────────────
@@ -542,6 +563,33 @@ export component ViewerWindow inherits Window {
         height: root.height;
         key-bindings-text: root.key-bindings-text;
         close-shortcuts() => { root.close-shortcuts(); }
+    }
+    // ── Confirm-delete modal (bulk-delete epic, PR-5) ─────────────────────────
+    // The destructive confirm/cancel dialog, mounted as the LAST modal child so
+    // it paints on top of everything (declaration order == paint order). The
+    // `if` gate is the dialog's USAGE CONTRACT: it re-instantiates the subtree on
+    // every open, so the component's `init` re-focuses Cancel each time — hence
+    // NO focus-epoch is passed (the default 0 is correct; the epoch is only for
+    // re-claiming focus after a STACKED overlay closes, which never happens here).
+    // `cancel` is pure Slint (decision D4): it closes the dialog AND restores
+    // carousel focus WITHOUT a Rust round-trip, so the selection is preserved;
+    // Esc / backdrop / Enter all route to cancel() inside the component. Only
+    // `confirm` crosses to Rust, which performs the delete and closes the dialog
+    // itself. The `!root.modal-open` term that gates the toolbar already excludes
+    // show-confirm-delete, so the toolbar's pointer targets are suppressed behind
+    // this dialog.
+    if root.show-confirm-delete : ConfirmDialog {
+        width: root.width;
+        height: root.height;
+        title: root.confirm-delete-title;
+        body-lines: root.confirm-delete-body-lines;
+        info-text: root.confirm-delete-info;
+        warning-text: root.confirm-delete-warning;
+        confirm-label: Strings.selection-delete;
+        cancel-label: Strings.confirm-delete-cancel;
+        danger: true;
+        confirm => { root.confirm-delete-accepted(); }
+        cancel => { root.show-confirm-delete = false; carousel.focus-self(); }
     }
 
     // Grab keyboard focus on startup so arrow keys work without a click.

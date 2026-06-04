@@ -25,6 +25,7 @@
 // Colors / lengths come from Theme.* only — NO inline brand hex (DESIGN.md
 // rule 2; scripts/check-tokens.sh enforces this). Theme lives one directory up.
 import { Theme } from "../Theme.slint";
+import { DangerButton } from "DangerButton.slint";
 
 export component SelectionToolbar inherits Rectangle {
     // ── Public API ────────────────────────────────────────────────────────────
@@ -36,8 +37,16 @@ export component SelectionToolbar inherits Rectangle {
     in property <string> exit-a11y;
     // Consumer binds Carousel's narrow breakpoint; collapses select-all to icon-only.
     in property <bool> narrow;
+    // Pre-composed destructive label from Rust (e.g. "Delete (3)…"). Drives the
+    // DangerButton's text at all widths (see the narrow-mode note on the cell).
+    in property <string> delete-label;
+    // Gates the DangerButton: hidden at N=0 (decision D2 — hidden, not disabled).
+    in property <bool> has-selection;
     callback select-all();
     callback exit();
+    // Fired by the DangerButton (pointer / screen-reader). Forwarded to Rust,
+    // which opens the ConfirmDialog.
+    callback request-delete();
 
     // ── Shape & size ──────────────────────────────────────────────────────────
     // With `horizontal-stretch: 0` and no explicit width, the root adopts its
@@ -187,7 +196,24 @@ export component SelectionToolbar inherits Rectangle {
             }
         }
 
-        // ── 3. Exit capsule — circular NavItem-style ✕ button ────────────────
+        // ── 3. Delete button — the ONLY red element in the app's chrome ───────
+        // The destructive DangerButton, the toolbar's single danger affordance
+        // (count pill and capsules stay strictly accent). `if`-gated on
+        // `has-selection`: at N=0 the button is HIDDEN, not disabled — a
+        // deliberate decision (D2) so an empty selection offers no delete target
+        // at all (an `if` gate also costs zero layout space, unlike `visible:`).
+        // DangerButton is TouchArea-based and non-focusable, so keyboard focus
+        // stays on the carousel FocusScope (toolbar convention); it carries its
+        // own accessible role/label/action-default. NARROW MODE: the toolbar
+        // collapses only the SELECT-ALL label to an icon (above); this delete
+        // button KEEPS its full text label at every width because hiding the
+        // label on a destructive control is a safety hazard (approved spec).
+        if root.has-selection : DangerButton {
+            text: root.delete-label;
+            clicked => { root.request-delete(); }
+        }
+
+        // ── 4. Exit capsule — circular NavItem-style ✕ button ────────────────
         // Circular capsule matching NavItem exactly (nav-capsule diameter, radius-pill
         // corner). No close SVG exists in assets/; the ✕ is a Text element styled
         // as a pseudo-icon (font-label, centered, colorized via a binding like

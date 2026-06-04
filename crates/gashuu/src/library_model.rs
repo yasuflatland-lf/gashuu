@@ -260,9 +260,8 @@ impl LibrarySelectionState {
     }
 
     /// Iterate the selected paths in deterministic (`BTreeSet`, path-sorted) order.
-    // Consumed in PR-5 (#129) by the bulk-removal call (Library::remove_many over
-    // the selected paths).
-    #[allow(dead_code)]
+    /// Consumed by `RemoveBooksUseCase::run` (the bulk-removal path snapshots these
+    /// paths) and `confirm_delete_content` (the dialog title list) — PR-5 (#129).
     pub(crate) fn selected(&self) -> impl Iterator<Item = &std::path::Path> {
         self.selected.iter().map(std::path::PathBuf::as_path)
     }
