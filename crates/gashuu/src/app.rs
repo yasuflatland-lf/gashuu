@@ -330,7 +330,15 @@ mod tests {
     fn settings_failure_only_emits_settings_notice() {
         let c = notices_content(0, SkippedDetail::None, Some(&Err(err())), &Ok(()));
         assert_eq!(c.skipped, 0);
-        assert!(c.settings_save_err.is_some());
+        let e_str = c
+            .settings_save_err
+            .as_ref()
+            .expect("settings_save_err must be Some");
+        assert!(!e_str.is_empty(), "captured error string must not be empty");
+        assert!(
+            e_str.contains('x'),
+            "error string must embed the 'x' from err()"
+        );
         assert!(c.library_save_err.is_none());
     }
 
@@ -339,7 +347,15 @@ mod tests {
         let c = notices_content(0, SkippedDetail::None, Some(&Ok(())), &Err(err()));
         assert_eq!(c.skipped, 0);
         assert!(c.settings_save_err.is_none());
-        assert!(c.library_save_err.is_some());
+        let e_str = c
+            .library_save_err
+            .as_ref()
+            .expect("library_save_err must be Some");
+        assert!(!e_str.is_empty(), "captured error string must not be empty");
+        assert!(
+            e_str.contains('x'),
+            "error string must embed the 'x' from err()"
+        );
     }
 
     #[test]

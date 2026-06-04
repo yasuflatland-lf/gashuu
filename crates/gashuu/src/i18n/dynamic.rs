@@ -211,6 +211,30 @@ mod tests {
     }
 
     #[test]
+    fn static_status_strings_are_non_empty_and_translated() {
+        // Successor to messages::tests::static_messages_are_non_empty_and_translated
+        // for the viewer-no-folder and viewer-no-images IDs.
+        for loc in [en(), ja()] {
+            let l = loc.loader();
+            let no_folder = no_folder_opened(l);
+            let no_images = no_images(l);
+            assert!(!no_folder.is_empty(), "no_folder_opened must not be empty");
+            assert!(!no_images.is_empty(), "no_images must not be empty");
+        }
+        // Differ across locales
+        assert_ne!(
+            no_folder_opened(en().loader()),
+            no_folder_opened(ja().loader()),
+            "no_folder_opened must differ between En and Ja"
+        );
+        assert_ne!(
+            no_images(en().loader()),
+            no_images(ja().loader()),
+            "no_images must differ between En and Ja"
+        );
+    }
+
+    #[test]
     fn spread_labels_differ_across_languages() {
         for mode in [SpreadMode::Single, SpreadMode::Double, SpreadMode::Auto] {
             assert_ne!(
