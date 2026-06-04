@@ -22,6 +22,16 @@ colors:
   glass-sheen-top: "#1a2030d1" # stage-top at ~82% alpha — top stop of the settings panel's fill gradient
   shadow-popover: "#00000080"  # Theme.shadow-popover — popover/panel drop-shadow ink (50% black)
   success: "#41c98a"
+  # Destructive-operation red (bulk-delete epic). Red is scarce — destructive
+  # BUTTONS only; selection visuals stay accent. Distinct from the STATE-semantics
+  # error/error-surface below (which mark a failed decode/load, not an action).
+  danger: "#c1455e"           # filled destructive-button ground; white label ≈ 4.91:1 (WCAG AA pass)
+  danger-glow: "#c1455e40"    # danger at ~25% alpha — hover/focus ring (symmetric to accent-glow); its own value, never an alias of error
+  # STATE semantics: failed decode/load surface + hue. Tuned to the dark canvas,
+  # distinct from the forbidden traffic-light close (win-close #ff5f57). NOT for
+  # destructive buttons (white-on-error ≈ 3.44:1, fails AA — use danger instead).
+  error: "#d16b7c"            # failed-decode border + glyph hue
+  error-surface: "#2a1820"    # failed-decode cell ground
   canvas: "#0b0e15"
   surface: "#0e1118"
   surface-raised: "#161b27"
@@ -144,6 +154,13 @@ components:
     typography: "{typography.ui-label}"
     rounded: "{rounded.md}"
     padding: 8px 16px         # vertical 16px total split 9 top / 7 bottom — optical centering (metric centering sits the label ~1px high)
+  button-danger:
+    backgroundColor: "{colors.danger}"   # destructive red, not accent — red is scarce, buttons only
+    textColor: "{colors.text}"
+    typography: "{typography.ui-label}"
+    rounded: "{rounded.md}"
+    padding: 8px 16px         # same geometry as button-primary (9/7 optical-centering split)
+    glow: "{colors.danger-glow}"  # hover/focus ring (drop-shadow), symmetric to the accent glow
   page-image:
     rounded: "{rounded.xs}"
     shadow: "{elevation.page}"
@@ -374,8 +391,8 @@ Shows **1 thumbnail (single) or 2 (double)** per the active spread layout, plus 
 numeric token. **During drag the page body does not change** — only the popover and counter update;
 the page commits on release. Thumbnails are pulled from the existing page-thumbnail set (no new decode).
 
-### Thumbnail Failed State — colors PROPOSED (needs sign-off)
-When a thumbnail/page fails to decode, the cell uses a desaturated-red treatment: surface `{colors.error-surface}` (#2a1820) with a `{colors.error}` (#d16b7c) 1px border and glyph. These two hues are **not yet in the DESIGN palette** — they are proposed additions tuned to the dark canvas and deliberately distinct from the forbidden traffic-light close (`{colors.win-close}` #ff5f57). Pending design sign-off.
+### Thumbnail Failed State — `{colors.error}` / `{colors.error-surface}` (accepted)
+When a thumbnail/page fails to decode, the cell uses a desaturated-red treatment: surface `{colors.error-surface}` (#2a1820) with a `{colors.error}` (#d16b7c) 1px border and glyph. These two hues are **STATE semantics** — they mark a failed decode/load, not an interactive action — tuned to the dark canvas and deliberately distinct from the forbidden traffic-light close (`{colors.win-close}` #ff5f57). They are **NOT** for destructive buttons: white label text on `{colors.error}` is only ≈ 3.44:1, below the WCAG AA floor — destructive buttons use the deeper `{colors.danger}` instead.
 
 ### Title Bar — `components.title-bar`
 Background `{colors.surface-raised}`, 1px bottom `{colors.hairline}`, `{typography.ui-label}` in
@@ -385,6 +402,16 @@ Background `{colors.surface-raised}`, 1px bottom `{colors.hairline}`, `{typograp
 Background `{colors.accent}`, white text, `{rounded.md}`, padding 8×16 (the vertical 16px is
 split 9 top / 7 bottom — the optical-centering nudge shared with the segmented labels). The empty-library
 call-to-action ("Add books") and other affirmative actions.
+
+### Danger Button — `components.button-danger`
+The destructive-action counterpart of the primary button (used by the bulk-delete epic for
+"Delete N book(s)" and similar). Structurally identical to `components.button-primary` — white text,
+`{rounded.md}`, the same 8×16 padding (9 top / 7 bottom optical-centering split) — but its ground is the
+deeper destructive red `{colors.danger}` (#c1455e) rather than `{colors.accent}`, so the white label clears
+the WCAG AA contrast floor (≈ 4.91:1) on the dark canvas. On hover/press the ground darkens and a
+`{colors.danger-glow}` ring lights up (a drop-shadow glow symmetric to the accent glow). **Red is scarce:**
+reserve this button — and the `danger` hue — for destructive actions only; selection and "you are here"
+visuals stay `{colors.accent}`.
 
 ### Library Nav — `components.nav-bar`
 A **top, centered glass pill** floating over the Library carousel for adding books. It is drawn
