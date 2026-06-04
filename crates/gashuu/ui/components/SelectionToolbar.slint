@@ -13,9 +13,9 @@
 //                      check.svg icon-only form (same colorize idiom as
 //                      SelectionBadge), keeping the full label as the
 //                      accessible-label.
-//   3. Exit capsule  — circular NavItem-style capsule with a "✕" text glyph,
-//                      fires exit(). No close SVG exists in assets/ so the glyph
-//                      is a Text element sized and colorized as a pseudo-icon.
+//   3. Exit capsule  — circular NavItem-style capsule with close.svg (Cancel
+//                      Fill — disc + knocked-out ✕), colorized via the same
+//                      Image/colorize idiom as the select-all icon.
 //
 // Width HUGS content via the root's intrinsic preferred width — but ONLY when the
 // component is instantiated as a LAYOUT CHILD: an absolutely positioned (x/y)
@@ -70,7 +70,7 @@ export component SelectionToolbar inherits Rectangle {
     background: Theme.glass-fill;
     border-radius: Theme.nav-pill-radius;
     border-width: 1px;
-    border-color: Theme.glass-border;
+    border-color: Theme.accent;
     drop-shadow-color: Theme.shadow-popover;
     drop-shadow-blur: 22px;
     drop-shadow-offset-y: 8px;
@@ -109,9 +109,6 @@ export component SelectionToolbar inherits Rectangle {
             background: Theme.accent-glow;
             border-width: 1px;
             border-color: Theme.accent;
-            // Soft accent glow drop-shadow to reinforce "selected" mode language.
-            drop-shadow-color: Theme.accent-glow;
-            drop-shadow-blur: 10px;
 
             count-label := Text {
                 text: root.count-text;
@@ -232,11 +229,10 @@ export component SelectionToolbar inherits Rectangle {
             clicked => { root.request-delete(); }
         }
 
-        // ── 4. Exit capsule — circular NavItem-style ✕ button ────────────────
+        // ── 4. Exit capsule — circular NavItem-style close button ───────────
         // Circular capsule matching NavItem exactly (nav-capsule diameter, radius-pill
-        // corner). No close SVG exists in assets/; the ✕ is a Text element styled
-        // as a pseudo-icon (font-label, centered, colorized via a binding like
-        // NavItem's Image binding).
+        // corner). Uses close.svg (Cancel Fill — disc + knocked-out ✕), recolored
+        // via colorize exactly like check.svg in the select-all capsule above.
         exit-capsule := Rectangle {
             width: Theme.nav-capsule;
             height: Theme.nav-capsule;
@@ -262,18 +258,17 @@ export component SelectionToolbar inherits Rectangle {
                 }
             ]
 
-            // ✕ glyph as a Text element: no close SVG in assets/.
-            // font-title (15px) for a glyph that visually matches nav-icon (21px) in
-            // perceived weight. Colorize via binding (not states[]) — child element rule.
-            Text {
-                text: "✕";
-                width: parent.width;
-                height: parent.height;
-                horizontal-alignment: center;
-                vertical-alignment: center;
-                font-size: Theme.font-title;
+            // close.svg glyph: Cancel Fill icon (disc + knocked-out ✕).
+            // Colorize via binding (not states[]) — child element rule.
+            Image {
+                source: @image-url("../assets/close.svg");
+                width: Theme.nav-icon;
+                height: Theme.nav-icon;
+                x: (parent.width - self.width) / 2;
+                y: (parent.height - self.height) / 2;
+                image-fit: contain;
                 // Brighten on hover/press; default to the calmer mid tone (NavItem idiom).
-                color: exit-touch.has-hover || exit-touch.pressed ? Theme.text-high : Theme.text-mid;
+                colorize: exit-touch.has-hover || exit-touch.pressed ? Theme.text-high : Theme.text-mid;
             }
 
             // Accessibility: screen-reader gets the provided exit label.
