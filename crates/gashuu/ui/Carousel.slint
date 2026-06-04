@@ -257,6 +257,15 @@ export component Carousel inherits Rectangle {
     in property <string> selection-count-text;
     in property <string> select-all-label;
     callback select-all();
+    // ── Delete seams (bulk-delete epic, PR-5) ─────────────────────────────────
+    // `delete-label` is the pre-composed destructive label from Rust (e.g.
+    // "Delete (3)…"); `has-selection` gates the toolbar DangerButton. Both fire
+    // the SAME `request-delete()` action: the toolbar button and the
+    // Delete/Backspace key arm below. Forwarded through ViewerWindow to main.rs
+    // (mirrors the PR-4 seams above), which opens the ConfirmDialog.
+    in property <string> delete-label;
+    in property <bool> has-selection;
+    callback request-delete();
 
     // Move keyboard focus into the NavBar search field (carousel `/` and click).
     public function focus-search() { nav.focus-search(); }
@@ -343,6 +352,21 @@ export component Carousel inherits Rectangle {
             // bare `a` (no modifier) never matches the modifier guard.
             if (root.selection-mode && (event.modifiers.control || event.modifiers.meta) && event.text == "a") {
                 root.select-all();
+                return accept;
+            }
+            // Delete / Backspace — the destructive arm (selection mode only). One
+            // action, two triggers: this and the toolbar's DangerButton both fire
+            // root.request-delete(); Rust opens the ConfirmDialog. We `accept` even
+            // when nothing is selected (N=0): Rust no-ops on an empty set, and
+            // accepting unconditionally keeps the key swallowed inside selection
+            // mode rather than letting it leak to an ancestor handler. Both
+            // Key.Delete (forward delete) and Key.Backspace are bound because the
+            // two read identically as "remove the selected books" on the keyboards
+            // that lack the other; both exist in Slint 1.16.1's Key namespace
+            // (verified against the vendored i-slint-common key_codes.rs:
+            // U+007F => Delete, U+0008 => Backspace).
+            if (root.selection-mode && (event.text == Key.Delete || event.text == Key.Backspace)) {
+                root.request-delete();
                 return accept;
             }
             // Esc clears the selection and leaves selection mode (no-op / reject
@@ -591,7 +615,12 @@ export component Carousel inherits Rectangle {
         select-all-label: root.select-all-label;
         exit-a11y: Strings.selection-exit-a11y;
         narrow: root.narrow;
+        // Delete (PR-5): pre-composed label + has-selection gate down, the
+        // request-delete action up (Rust opens the ConfirmDialog).
+        delete-label: root.delete-label;
+        has-selection: root.has-selection;
         select-all => { root.select-all(); }
+        request-delete => { root.request-delete(); }
         exit => { root.selection-mode = false; root.exit-selection(); }
     }
 
