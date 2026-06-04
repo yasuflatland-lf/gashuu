@@ -414,7 +414,7 @@ glass corner language). It is one
 fake-glass object built from NavBar's four layers, with **layer 1 promoted to a top-sheen gradient**:
 a `@linear-gradient(180deg, {colors.glass-sheen-top} 0%, {colors.glass-fill} 46%)` fill, a 1px
 `{colors.glass-border}` rim, a 1px `{colors.glass-highlight}` top inner highlight, and ONE
-`{elevation.float}` drop shadow. No nested glass, no second shadow. (The sheen is a FILL gradient, not
+`{colors.shadow-popover}` drop shadow (blur 22 / y-offset 8). No nested glass, no second shadow. (The sheen is a FILL gradient, not
 an opacity layer — Slint `opacity` blurs text/SVG on HiDPI.) On a short window the panel height clamps
 to fit and the **body scrolls** (see Responsive Behavior).
 
