@@ -157,6 +157,7 @@ fn main() -> color_eyre::Result<()> {
             covers: &covers,
             search: &search,
             selection: &selection,
+            localizer: &localizer,
         },
         true,
     );
@@ -274,6 +275,7 @@ fn main() -> color_eyre::Result<()> {
                         covers: &covers,
                         search: &search,
                         selection: &selection,
+                        localizer: &localizer,
                     },
                     paths,
                     "add-books",
@@ -305,6 +307,7 @@ fn main() -> color_eyre::Result<()> {
                         covers: &covers,
                         search: &search,
                         selection: &selection,
+                        localizer: &localizer,
                     },
                     vec![folder],
                     "add-folder",
@@ -324,6 +327,7 @@ fn main() -> color_eyre::Result<()> {
         let covers = Rc::clone(&covers);
         let search = Rc::clone(&search);
         let selection = Rc::clone(&selection);
+        let localizer = Rc::clone(&localizer);
         ui.on_library_search_changed(move |query| {
             with_ui(&ui_weak, |ui| {
                 // `search` and `library` are distinct RefCells; borrowing one
@@ -342,6 +346,7 @@ fn main() -> color_eyre::Result<()> {
                         covers: &covers,
                         search: &search,
                         selection: &selection,
+                        localizer: &localizer,
                     },
                     true,
                 );
@@ -451,21 +456,31 @@ fn main() -> color_eyre::Result<()> {
     // visible index → library path through the search projection (the SAME hop as
     // `on_carousel_open`), toggles the path in the selection set, then flips ONLY
     // that row's `selected` flag so its accent badge appears/disappears without a
-    // model rebuild. Out-of-range / desync indices are a no-op.
+    // model rebuild. Out-of-range / desync indices are a no-op (warn on desync).
     {
         let ui_weak = ui.as_weak();
         let library = Rc::clone(&library);
         let search = Rc::clone(&search);
         let selection = Rc::clone(&selection);
+        let localizer = Rc::clone(&localizer);
         ui.on_carousel_toggle_selection(move |index| {
             with_ui(&ui_weak, |ui| {
-                let path = visible_index_to_path(&library, &search, index);
-                let Some(path) = path else {
+                let Some(path) = visible_index_to_path(&library, &search, index) else {
+                    // Desync diagnostics (cold path): re-borrow is safe — the helper's borrows dropped.
+                    let visible_len = search.borrow().visible_indices().len();
+                    let library_len = library.borrow().books().len();
+                    tracing::warn!(
+                        index,
+                        visible_len,
+                        library_len,
+                        "carousel-toggle-selection: no book at index"
+                    );
                     return;
                 };
                 selection.borrow_mut().toggle(path.clone());
                 let selected = selection.borrow().contains(&path);
                 set_carousel_selected(&ui, index as usize, selected);
+                push_selection_strings(&ui, &localizer, &selection, &search, &library);
             })
         });
     }
@@ -478,6 +493,7 @@ fn main() -> color_eyre::Result<()> {
         let library = Rc::clone(&library);
         let search = Rc::clone(&search);
         let selection = Rc::clone(&selection);
+        let localizer = Rc::clone(&localizer);
         ui.on_carousel_cover_clicked(move |index| {
             with_ui(&ui_weak, |ui| {
                 // Always focus the clicked cover (carousel and click both drive
@@ -486,32 +502,80 @@ fn main() -> color_eyre::Result<()> {
                 if !ui.get_carousel_selection_mode() {
                     return; // normal mode: focus only, never open
                 }
-                let path = visible_index_to_path(&library, &search, index);
-                let Some(path) = path else {
+                let Some(path) = visible_index_to_path(&library, &search, index) else {
+                    // Desync diagnostics (cold path): re-borrow is safe — the helper's borrows dropped.
+                    let visible_len = search.borrow().visible_indices().len();
+                    let library_len = library.borrow().books().len();
+                    tracing::warn!(
+                        index,
+                        visible_len,
+                        library_len,
+                        "carousel-cover-clicked: no book at index in selection mode"
+                    );
                     return;
                 };
                 selection.borrow_mut().toggle(path.clone());
                 let selected = selection.borrow().contains(&path);
                 set_carousel_selected(&ui, index as usize, selected);
+                push_selection_strings(&ui, &localizer, &selection, &search, &library);
             })
         });
     }
 
-    // Carousel: leave selection mode (Esc). The Slint key arm already cleared
-    // `selection-mode`; here we clear the Rust selection set and re-apply the
-    // (now empty) flags over the visible rows so every badge disappears. A fresh
-    // re-entry into selection mode then starts with nothing selected.
+    // Carousel: select-all / deselect-all toggle. Routed here by both the toolbar
+    // button and Cmd/Ctrl+A from the Slint side. If every visible book is already
+    // selected, this deselects them all (via `deselect_visible`); otherwise it
+    // selects them all (via `select_visible`). Re-applies the selection flags over
+    // the visible rows and refreshes the toolbar strings.
     {
         let ui_weak = ui.as_weak();
         let library = Rc::clone(&library);
         let search = Rc::clone(&search);
         let selection = Rc::clone(&selection);
+        let localizer = Rc::clone(&localizer);
+        ui.on_carousel_select_all(move || {
+            with_ui(&ui_weak, |ui| {
+                {
+                    let lib = library.borrow();
+                    let srch = search.borrow();
+                    let mut sel = selection.borrow_mut();
+                    if sel.all_visible_selected(&srch, &lib) {
+                        sel.deselect_visible(&srch, &lib);
+                    } else {
+                        sel.select_visible(&srch, &lib);
+                    }
+                }
+                // Re-apply the (updated) selection flags over the visible rows so
+                // every badge appears/disappears without a full carousel rebuild.
+                {
+                    let lib = library.borrow();
+                    let indices = search.borrow().visible_indices().to_vec();
+                    let sel = selection.borrow();
+                    apply_selection_flags(&ui, &lib, &indices, |path| sel.contains(path));
+                }
+                push_selection_strings(&ui, &localizer, &selection, &search, &library);
+            })
+        });
+    }
+
+    // Carousel: leave selection mode (Esc or toolbar exit button). The Slint
+    // caller (Esc key arm or toolbar exit button) already cleared `selection-mode`;
+    // here we clear the Rust selection set and re-apply the (now empty) flags over
+    // the visible rows so every badge disappears. A fresh re-entry into selection
+    // mode then starts with nothing selected.
+    {
+        let ui_weak = ui.as_weak();
+        let library = Rc::clone(&library);
+        let search = Rc::clone(&search);
+        let selection = Rc::clone(&selection);
+        let localizer = Rc::clone(&localizer);
         ui.on_carousel_exit_selection(move || {
             with_ui(&ui_weak, |ui| {
                 selection.borrow_mut().clear();
                 let lib = library.borrow();
                 let indices = search.borrow().visible_indices().to_vec();
                 apply_selection_flags(&ui, &lib, &indices, |_| false);
+                push_selection_strings(&ui, &localizer, &selection, &search, &library);
             })
         });
     }
@@ -1005,6 +1069,9 @@ fn main() -> color_eyre::Result<()> {
         let settings = Rc::clone(&settings);
         let viewport = Rc::clone(&viewport);
         let localizer = Rc::clone(&localizer);
+        let library = Rc::clone(&library);
+        let search = Rc::clone(&search);
+        let selection = Rc::clone(&selection);
         ui.on_set_language(move |i| {
             with_ui(&ui_weak, |ui| {
                 let lang = index_to_language(i);
@@ -1029,6 +1096,8 @@ fn main() -> color_eyre::Result<()> {
                     crate::i18n::dynamic::shortcuts_help(localizer.loader()).into(),
                 );
                 refresh(&ui, &state.borrow(), &viewport, localizer.loader());
+                // Recompose the selection-toolbar strings in the new language.
+                push_selection_strings(&ui, &localizer, &selection, &search, &library);
             })
         });
     }
@@ -1661,20 +1730,61 @@ fn visible_focus_index_for_path(
     })
 }
 
+/// Push the selection-toolbar count text and select-all label into the UI.
+///
+/// Called from every point where the selection set or the visible projection
+/// changes (toggle, select-all, exit, carousel rebuild, language switch, boot)
+/// so the toolbar strings are always current without a full refresh.
+///
+/// Borrow discipline: `selection`, `search`, and `library` are distinct
+/// `RefCell`s, so the three shared `Ref`s are taken together in one block scope
+/// (both projection reads need the same trio) and drop at the block's `}` before
+/// the UI setters run.
+fn push_selection_strings(
+    ui: &ViewerWindow,
+    localizer: &i18n::Localizer,
+    selection: &Rc<RefCell<LibrarySelectionState>>,
+    search: &Rc<RefCell<LibrarySearchState>>,
+    library: &Rc<RefCell<Library>>,
+) {
+    let loader = localizer.loader();
+    // One shared-borrow group: `selection`, `search`, and `library` are distinct
+    // `RefCell`s, so holding all three immutable `Ref`s at once is safe, and both
+    // projection reads need the same trio. The group drops at the block's `}`.
+    let (total, visible_selected, all_visible) = {
+        let sel = selection.borrow();
+        let srch = search.borrow();
+        let lib = library.borrow();
+        (
+            sel.count(),
+            sel.visible_selected_count(&srch, &lib),
+            sel.all_visible_selected(&srch, &lib),
+        )
+    };
+    ui.set_carousel_selection_count_text(
+        crate::i18n::dynamic::selection_count_text(loader, total, visible_selected).into(),
+    );
+    ui.set_carousel_select_all_label(
+        crate::i18n::dynamic::select_all_label(loader, all_visible).into(),
+    );
+}
+
 /// The shared collaborators a Library carousel refresh threads together
 /// (borrowed-collaborator bundle — same argument-count-cohesion intent as the
 /// docs/patterns.md cohesion-wrapper flavor (`SpreadContext`), but holding `&Rc`
 /// borrows rather than owned `Copy` values): the persisted `library`, the
-/// `covers` stream controller, the `search` projection, and the bulk-`selection`
-/// state. They ALWAYS travel together for a carousel rebuild, so bundling them as
-/// borrows keeps `refresh_library_carousel` / `add_books_and_refresh` under the
-/// argument-count limit and documents that they are one collaboration unit, not
-/// four independent params.
+/// `covers` stream controller, the `search` projection, the bulk-`selection`
+/// state, and the `localizer` (for composing the selection-toolbar strings after
+/// the projection changes). They ALWAYS travel together for a carousel rebuild,
+/// so bundling them as borrows keeps `refresh_library_carousel` /
+/// `add_books_and_refresh` under the argument-count limit and documents that
+/// they are one collaboration unit, not independent params.
 struct CarouselRefresh<'a> {
     library: &'a Rc<RefCell<Library>>,
     covers: &'a cover_loader::CoverController,
     search: &'a Rc<RefCell<LibrarySearchState>>,
     selection: &'a Rc<RefCell<LibrarySelectionState>>,
+    localizer: &'a Rc<i18n::Localizer>,
 }
 
 /// Project the CURRENT (already-recomputed) search state into the carousel:
@@ -1719,6 +1829,16 @@ fn refresh_library_carousel(ui: &ViewerWindow, deps: &CarouselRefresh, reset_foc
         let selection = deps.selection.borrow();
         apply_selection_flags(ui, &lib, &indices, |path| selection.contains(path));
     }
+    // Refresh the selection-toolbar strings: the visible projection just changed
+    // (query change, add, boot), so visible_selected_count / all_visible_selected
+    // may have moved. Both `Ref`s drop before `covers.start`.
+    push_selection_strings(
+        ui,
+        deps.localizer,
+        deps.selection,
+        deps.search,
+        deps.library,
+    );
     deps.covers.start(ui.as_weak(), deps.library, cover_reqs);
 }
 

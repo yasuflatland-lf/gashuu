@@ -194,6 +194,14 @@ export component ViewerWindow inherits Window {
     callback carousel-toggle-selection(int);
     callback carousel-cover-clicked(int);
     callback carousel-exit-selection();
+    // SelectionToolbar root twins (bulk-delete epic, PR-4). `carousel-selection-
+    // count-text` is the pre-composed count label; `carousel-select-all-label`
+    // flips "Select all"/"Deselect all". `carousel-select-all()` fires from both
+    // the toolbar button and the carousel's Cmd/Ctrl+A arm. Same root-twin reason
+    // as above: Slint exposes only the root window surface to Rust.
+    in property <string> carousel-selection-count-text;
+    in property <string> carousel-select-all-label;
+    callback carousel-select-all();
     // Add-picker triggers forwarded from the Carousel toolbar and CTA. Rust
     // decides the dialog flavor behind add-books (files+folders on macOS,
     // files-only elsewhere — see `combined-add-picker`).
@@ -264,6 +272,11 @@ export component ViewerWindow inherits Window {
         toggle-selection(i) => { root.carousel-toggle-selection(i); }
         cover-clicked(i) => { root.carousel-cover-clicked(i); }
         exit-selection() => { root.carousel-exit-selection(); }
+        // SelectionToolbar (PR-4): pre-composed count + select-all label down,
+        // select-all action up.
+        selection-count-text: root.carousel-selection-count-text;
+        select-all-label: root.carousel-select-all-label;
+        select-all() => { root.carousel-select-all(); }
     }
 
     // ── Library-screen status notice ─────────────────────────────────────────

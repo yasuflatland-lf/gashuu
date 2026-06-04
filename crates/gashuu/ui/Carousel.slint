@@ -33,6 +33,7 @@ import { PrimaryButton } from "components/PrimaryButton.slint";
 import { ThumbnailCell } from "components/ThumbnailCell.slint";
 import { NavBar } from "components/NavBar.slint";
 import { SelectionBadge } from "components/SelectionBadge.slint";
+import { SelectionToolbar } from "components/SelectionToolbar.slint";
 
 // Frozen by PR-0b; populated by PR-C (covers via PR-V). One book in the shelf.
 // `selected` (bulk-delete PR-2) marks the book as picked in selection mode, so
@@ -247,6 +248,15 @@ export component Carousel inherits Rectangle {
     callback toggle-selection(int);   // visible carousel index to toggle
     callback cover-clicked(int);      // visible carousel index whose cover was clicked
     callback exit-selection();        // Esc: clear selection + leave selection mode
+    // ── SelectionToolbar seams (bulk-delete epic, PR-4) ───────────────────────
+    // `selection-count-text` is the pre-composed count label from Rust (e.g.
+    // "3 selected" or "5 selected (2 outside search)"); `select-all-label` flips between the "Select all"/"Deselect
+    // all" wording. `select-all()` fires from BOTH the toolbar button and the
+    // Cmd/Ctrl+A key arm (Rust decides select-vs-deselect). All three are forwarded
+    // through ViewerWindow to main.rs (mirrors the PR-2 seams above).
+    in property <string> selection-count-text;
+    in property <string> select-all-label;
+    callback select-all();
 
     // Move keyboard focus into the NavBar search field (carousel `/` and click).
     public function focus-search() { nav.focus-search(); }
@@ -316,6 +326,23 @@ export component Carousel inherits Rectangle {
             }
             if (root.selection-mode && event.text == " ") {
                 root.toggle-selection(root.focused-index);
+                return accept;
+            }
+            // Cmd/Ctrl+A — select/deselect all (selection mode only). The repo's
+            // FIRST modifier-key arm. One action, two triggers: this and the
+            // toolbar's Select-all button both fire root.select-all() (Rust decides
+            // select-vs-deselect). Verified against the vendored winit backend
+            // (i-slint-backend-winit-1.16.1/event_loop.rs to_slint_key): Slint's
+            // `event.text` is built from winit's logical key (Key::Character => the
+            // letter), NOT the control-character form, so Cmd/Ctrl+A delivers
+            // event.text == "a" (lowercase) here, never "\u{1}". On macOS Slint maps
+            // Cmd -> control and physical Ctrl -> meta (KeyboardModifiers doc), so
+            // testing BOTH control || meta catches Cmd+A on macOS, Ctrl+A on
+            // Windows/Linux, and physical Ctrl+A on macOS alike. Gated on
+            // selection-mode so normal-mode Cmd/Ctrl+A falls through (reject); a
+            // bare `a` (no modifier) never matches the modifier guard.
+            if (root.selection-mode && (event.modifiers.control || event.modifiers.meta) && event.text == "a") {
+                root.select-all();
                 return accept;
             }
             // Esc clears the selection and leaves selection mode (no-op / reject
@@ -541,5 +568,92 @@ export component Carousel inherits Rectangle {
         add-books => { root.add-books(); root.focus-self(); }
         add-folder => { root.add-folder(); root.focus-self(); }
         settings => { root.settings(); }
+    }
+
+    // ── Bulk-selection chrome (PR-4): toolbar + "Select" entry pill ───────────
+    // Declared AFTER `nav := NavBar` (same paint-order / outside-FocusScope
+    // rationale as the NavBar above): mouse + screen-reader oriented, drawn on
+    // top of the cover-flow, and kept OUT of the keyboard focus chain so the
+    // carousel FocusScope keeps owning key input. Both are `if`-gated, never
+    // `visible:`-toggled: Slint keeps layout space for an invisible element, so
+    // `if` guarantees zero cost outside the relevant mode (repo gotcha,
+    // docs/patterns.md). Anchored just below the NavBar via `nav.y`/`nav.height`.
+
+    // SelectionToolbar — shown only IN selection mode (modal closed). The
+    // `!root.modal-open` term mirrors the FocusScope's modal reject guard so a
+    // settings/guide/shortcuts modal suppresses the toolbar's pointer targets
+    // too. `exit` reproduces the Esc arm EXACTLY: clear the local mode flag and
+    // fire exit-selection().
+    if root.selection-mode && !root.modal-open : SelectionToolbar {
+        x: (parent.width - self.width) / 2;
+        y: nav.y + nav.height + Theme.space-sm;
+        count-text: root.selection-count-text;
+        select-all-label: root.select-all-label;
+        exit-a11y: Strings.selection-exit-a11y;
+        narrow: root.narrow;
+        select-all => { root.select-all(); }
+        exit => { root.selection-mode = false; root.exit-selection(); }
+    }
+
+    // "Select" entry pill — the MOUSE entry point into selection mode, shown in
+    // NORMAL mode (not selection mode, modal closed). Gated on `items.length > 0`
+    // (the SAME condition the cover-flow row uses): a "Select" affordance over an
+    // empty library / no-results panel is noise, so it appears only when there is
+    // at least one visible book to select. Quieter/smaller than the toolbar — it
+    // is an entry hint, not a mode indicator. A non-focusable TouchArea (NavItem
+    // idiom) enters the mode ONLY; it does NOT toggle the focused book (that is
+    // the `x` key's job). No FocusScope, so keyboard focus stays on the carousel.
+    if !root.selection-mode && !root.modal-open && root.items.length > 0 : select-pill := Rectangle {
+        x: (parent.width - self.width) / 2;
+        y: nav.y + nav.height + Theme.space-sm;
+        width: select-label.preferred-width + Theme.nav-pill-pad * 2;
+        height: Theme.nav-capsule;
+        border-radius: Theme.radius-pill;
+
+        // Default appearance: transparent fill + reserved transparent 1px ring,
+        // so the hover ring appears with no reflow (NavItem idiom).
+        background: transparent;
+        border-width: 1px;
+        border-color: transparent;
+        animate background, border-color { duration: Theme.motion-fast; }
+
+        // States: pressed > hover (NavItem ordering; this pill's own props only —
+        // states[] can target only this element's id, not `root`).
+        states [
+            pressed when select-touch.pressed : {
+                select-pill.background: Theme.accent-glow.darker(0.10);
+                select-pill.border-color: Theme.accent;
+            }
+            hover when select-touch.has-hover : {
+                select-pill.background: Theme.accent-glow;
+                select-pill.border-color: Theme.accent;
+                select-pill.drop-shadow-color: Theme.accent-glow;
+                select-pill.drop-shadow-blur: 12px;
+            }
+        ]
+
+        select-label := Text {
+            text: Strings.selection-enter;
+            // Brighten on hover/press; idle at the calmer mid tone (NavItem idiom).
+            color: select-touch.has-hover || select-touch.pressed ? Theme.text-high : Theme.text-mid;
+            font-size: Theme.font-label;
+            font-weight: Theme.weight-medium;
+            x: (parent.width - self.width) / 2;
+            y: (parent.height - self.height) / 2;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+        }
+
+        // Accessibility: a button that enters selection mode.
+        accessible-role: button;
+        accessible-label: Strings.selection-enter;
+        accessible-action-default => { root.selection-mode = true; }
+
+        // Enter selection mode ONLY (do NOT toggle the focused book — that is the
+        // `x` key's behavior). TouchArea is non-focusable, so keyboard focus stays
+        // on the carousel FocusScope (repo convention, see NavItem).
+        select-touch := TouchArea {
+            clicked => { root.selection-mode = true; }
+        }
     }
 }

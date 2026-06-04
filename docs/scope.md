@@ -130,6 +130,14 @@ RAR requires a C++ compiler on every OS (see [docs/toolchain.md](toolchain.md)).
 - `.slint` strings live in an `export global Strings` (ui/Strings.slint) with English defaults and are pushed from the Fluent catalog by `Localizer::apply()` (i18n/{en,ja}/gashuu.ftl). Rust-composed strings (status line, open/save notices, decode errors, and the ShortcutsOverlay key-bindings reference) are resolved via `src/i18n/dynamic.rs` using the `fl!()` macro against the same catalog.
 - **Fluent is the sole i18n system (ADR-0008, Accepted).** The 4-PR migration (#112-#115) is complete: gettext, `.po` files, build flags, and `src/messages.rs` were fully excised in PR-4 (#115).
 
+### Bulk-delete: selection mode + toolbar (bulk-delete epic, PR-4 / #128)
+
+- The Library carousel has a bulk-**selection** mode (no delete yet). Entered by keyboard `x` (also toggles the focused book) or the mouse "Select" entry pill; toggled per-book via `x` / Space / a cover click; left via Esc or the toolbar's ✕ exit. Selection is a `PathBuf` set keyed by canonical path (survives query changes and adds), drawn as an accent check badge per cover. (Selection-mode state + the `x`/Space/cover-click toggles + the `PathBuf` set landed in PR-1/PR-2, #125/#126 → PR#130/#131; PR-4 adds the visible toolbar chrome and select-all.)
+- **`SelectionToolbar`** organism (below the untouched NavBar, shown only in selection mode with no modal open): a count mode-indicator ("N selected", or "N selected (M outside search)" when some selected books are filtered out of the current search), a **Select all / Deselect all** toggle button, and the exit ✕. A content-hugging glass pill (no fixed width — see docs/patterns.md).
+- **Cmd/Ctrl+A** select-all/deselect-all keyboard chord (selection mode only) — the repo's first `event.modifiers` arm; the same action as the toolbar's Select-all button (Rust decides select-vs-deselect from whether every visible book is already selected). See docs/patterns.md.
+- Selection is always **accent** language, never red/danger — the destructive surface does not exist yet.
+- No new dependencies.
+
 ---
 
 ## Deferred (intentionally out of scope)
@@ -150,6 +158,7 @@ RAR requires a C++ compiler on every OS (see [docs/toolchain.md](toolchain.md)).
 - `recent_files`-management / theme settings UI.
 - All three PR-L follow-ups SHIPPED in PR-La (see "Per-book page totals, fallible save, and load-failure notice" above): on-screen library-load-failure notice, fallible `to_json` (no silent serialize-error discard on save), and real carousel `total`/`progress` via persisted page counts. Covers now stream in via PR-V (see "Library carousel covers" above).
 - Backdrop-click / Esc dialog dismissal (PR8b dialogs close via their own button only).
+- The bulk-**delete** action itself — the destructive Delete button on the `SelectionToolbar` and its confirm-dialog + mutate→save→purge wiring — is deferred to bulk-delete PR-5 (#129). PR-4 ships selection + the toolbar's count/select-all/exit ONLY; the destructive button is intentionally absent until it works (the epic's "a destructive button never appears before it works" rule). See "Bulk-delete: selection mode + toolbar" above.
 - PR5 non-goals: touch/pinch, rotation/minimap/scrollbar, click-to-turn, per-page independent zoom in Double mode, and 60fps is NOT CI-asserted (manual/telemetry only).
 - Linux release artifacts and a `.desktop` entry (macOS + Windows ship via `release.yml`; Linux's Slint system-library deps make a portable artifact heavier — deferred).
 - Code signing / notarization for release binaries (macOS Developer ID + notarytool, Windows Authenticode) — `release.yml` ships unsigned with documented `SIGNING SEAM` insertion points.
