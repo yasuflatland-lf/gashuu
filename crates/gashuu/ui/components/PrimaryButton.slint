@@ -2,7 +2,8 @@
 //
 // Background : Theme.accent  (the single interactive hue, see Theme.slint)
 // Corner     : Theme.radius-md (8px)
-// Padding    : 8px vertical / 16px horizontal (size to label + padding)
+// Padding    : 16px vertical total, split 9 top / 7 bottom for optical
+//              centering / 16px horizontal (size to label + padding)
 // Label      : Theme.font-label (12px), Theme.weight-medium (500), Theme.text (white)
 // Hover      : background darkens slightly via .darker(0.08)
 // Press      : background darkens further via .darker(0.20)
@@ -45,8 +46,14 @@ export component PrimaryButton inherits Rectangle {
     HorizontalLayout {
         padding-left: 16px;
         padding-right: 16px;
-        padding-top: 8px;
-        padding-bottom: 8px;
+        // Optical centering (same correction as the Segmented labels): Slint
+        // metric-centers the full font line box, which sits a descender-less
+        // label ~1px high of the button's visual center. The label is a layout
+        // child whose y the LAYOUT owns, so the nudge lives in an asymmetric
+        // vertical-padding split (9/7 — the 16px total is unchanged), not a
+        // `y:` binding (docs/patterns.md optical-centering entry).
+        padding-top: 9px;
+        padding-bottom: 7px;
         alignment: center;
 
         Text {
