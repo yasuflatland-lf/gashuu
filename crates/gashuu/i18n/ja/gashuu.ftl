@@ -75,8 +75,10 @@ settings-reset-to-global = 全体設定に戻す
 shortcuts-title = キーボードショートカット
 
 # Multi-line keyboard reference rendered read-only in ShortcutsOverlay.
-# Continuation lines indented 4 spaces; section headers at 4 spaces,
-# body lines at 6 spaces. Blank lines between sections are preserved naturally.
+# File indentation: section headers 4 spaces, body lines 6 spaces.
+# Fluent strips the common 4-space prefix from block values, so delivered text
+# has: headers 0 spaces (flush), body lines 2 spaces — matching messages.rs arms.
+# Blank lines between sections are preserved naturally.
 # Line count must equal the English arm (test: key_bindings_help_is_translated_with_matching_shape).
 shortcuts-help =
     ナビゲーション:

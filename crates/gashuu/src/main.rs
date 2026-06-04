@@ -81,9 +81,10 @@ fn main() -> color_eyre::Result<()> {
     // Apply the persisted UI language to the .slint side before the first paint
     // (the Rust-composed strings read it from `ViewerState`/`Settings` instead).
     select_ui_language(settings.language);
-    // Boot the Fluent localizer alongside the gettext path. Nothing consumes
-    // its output until PR-2 wires the `Strings` global; constructing it here
-    // keeps the two systems' language state in lockstep from the start.
+    // Boot the Fluent localizer alongside the gettext path so both systems'
+    // language state stay in lockstep from the first frame.  The Strings-global
+    // push (PR-2, #113) will consume the localizer's output; wiring it here
+    // rather than at that PR's call site avoids a split-brain window.
     let localizer = Rc::new(i18n::Localizer::new(settings.language));
     let state = Rc::new(RefCell::new(ViewerState::from_settings(&settings)));
     let viewport = Rc::new(RefCell::new(ViewportState::from_settings(&settings)));
@@ -859,8 +860,12 @@ fn main() -> color_eyre::Result<()> {
                     return;
                 }
                 settings.borrow_mut().language = lang;
-                // Keep the Fluent loader in step with the gettext switch
-                // (output unconsumed until PR-2).
+                // Keep the Fluent loader in step with the gettext switch.
+                // Deliberate asymmetry: localizer.switch panics on load
+                // failure (compile-time-embedded catalogs + exhaustive
+                // langid_for make this theoretically unreachable) — loud
+                // programmer-error policy, intentionally diverging from
+                // select_ui_language's never-fatal tracing::warn path.
                 localizer.switch(lang);
                 // Flip the .slint side first (all @tr() bindings re-evaluate
                 // immediately), then re-push the Rust-composed strings — the

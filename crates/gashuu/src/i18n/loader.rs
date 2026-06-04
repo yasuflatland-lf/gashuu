@@ -14,6 +14,7 @@ pub(crate) struct Localizations;
 /// `messages.rs`'s exhaustive-match safety for new `Language` variants:
 /// adding a new variant without updating this function is a compile error.
 pub(crate) fn langid_for(lang: Language) -> LanguageIdentifier {
+    // No wildcard arm — a new `Language` variant must fail compilation here.
     match lang {
         Language::En => langid!("en"),
         Language::Ja => langid!("ja"),
