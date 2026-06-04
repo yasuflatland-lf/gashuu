@@ -759,6 +759,35 @@ mod tests {
     }
 
     #[test]
+    fn carousel_data_bookmarked_false_when_last_opened_filtered_out() {
+        // When the last-opened book (alpha) is excluded from the index slice
+        // (as a search filter would do), the returned row for beta must have
+        // bookmarked == false — the ribbon must not bleed onto visible books
+        // that are not actually the last-opened book.
+        // Natural sort: "alpha" < "beta", so alpha is index 0, beta is index 1.
+        let mut lib = Library::new();
+        let alpha = PathBuf::from("/manga/alpha.cbz");
+        let beta = PathBuf::from("/manga/beta.cbz");
+        lib.register_opened(&alpha, None); // adds alpha + sets last_opened = alpha
+        lib.add(beta); // adds beta (not last_opened)
+
+        // Derive beta's index from lib.books() to be safe against sort changes.
+        let beta_idx = lib
+            .books()
+            .iter()
+            .position(|b| b.path().ends_with("beta.cbz"))
+            .expect("beta must be in the library");
+
+        // Pass only beta's index — alpha (last_opened) is excluded.
+        let rows = carousel_data_for_indices(&lib, &[beta_idx]);
+        assert_eq!(rows.len(), 1);
+        assert!(
+            !rows[0].bookmarked,
+            "beta is not last-opened; bookmarked must be false even though alpha is last_opened"
+        );
+    }
+
+    #[test]
     fn carousel_data_bookmarked_false_when_last_opened_is_none() {
         // When no book has ever been opened (last_opened == None),
         // every row must have bookmarked == false.
