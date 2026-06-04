@@ -241,6 +241,8 @@ notice-delete-save-failed = ライブラリを保存できませんでした: { 
 
 # ---- selection ----
 
+# Toolbar count label shown when zero books are selected (just entered selection mode).
+selection-mode-label = 選択モード
 # Toolbar count label when all selected books are in the current visible projection.
 selection-count = { $n } 件選択中
 # Toolbar count label when some selected books are outside the visible search projection.
