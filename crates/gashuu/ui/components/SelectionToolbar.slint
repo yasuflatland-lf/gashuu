@@ -116,7 +116,11 @@ export component SelectionToolbar inherits Rectangle {
                 font-size: Theme.font-label;
                 font-weight: Theme.weight-medium;
                 x: (parent.width - self.width) / 2;
-                y: (parent.height - self.height) / 2;
+                // Optical centering: metric-center then nudge down by 1px so the
+                // glyph mass (no descenders) reads visually centered inside the
+                // tight capsule — see docs/patterns.md "vertical-alignment: center
+                // centers the font's METRIC line box" and DangerButton (9/7 split).
+                y: (parent.height - self.height) / 2 + 1px;
                 horizontal-alignment: center;
                 vertical-alignment: center;
                 // Bright accent for the mode indicator (same hue as the pill border).
@@ -194,7 +198,9 @@ export component SelectionToolbar inherits Rectangle {
                 font-size: Theme.font-label;
                 font-weight: Theme.weight-medium;
                 x: (parent.width - self.width) / 2;
-                y: (parent.height - self.height) / 2;
+                // Optical centering nudge — same 1px downward correction as
+                // count-label above; keeps all text cells on one idiom.
+                y: (parent.height - self.height) / 2 + 1px;
                 horizontal-alignment: center;
                 vertical-alignment: center;
             }
