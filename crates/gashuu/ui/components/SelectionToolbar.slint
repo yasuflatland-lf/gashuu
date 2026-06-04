@@ -52,6 +52,13 @@ export component SelectionToolbar inherits Rectangle {
     in property <string> delete-label;
     // Gates the DangerButton: hidden at N=0 (decision D2 — hidden, not disabled).
     in property <bool> has-selection;
+    // True only while this toolbar is the VISIBLE (slid-in) bar. The §2.6 slide
+    // transition keeps the toolbar ALWAYS instantiated inside a `clip: true`
+    // strip and slides it out of view when inactive; this flag is ANDed into
+    // every TouchArea `enabled` binding and every `accessible-action-default`
+    // guard so a slid-away bar never takes pointer/keyboard/screen-reader input
+    // even if clip hit-testing leaks (belt-and-braces — docs/patterns.md).
+    in property <bool> active: true;
     callback select-all();
     callback exit();
     // Fired by the DangerButton (pointer / screen-reader). Forwarded to Rust,
@@ -206,11 +213,15 @@ export component SelectionToolbar inherits Rectangle {
             }
 
             // Accessibility: always expose the full label, even in icon-only mode.
+            // The action is gated on `active` so a slid-away toolbar exposes no
+            // working screen-reader action (mirrors the TouchArea enabled gate).
             accessible-role: button;
             accessible-label: root.select-all-label;
-            accessible-action-default => { root.select-all(); }
+            accessible-action-default => { if (root.active) { root.select-all(); } }
 
             sa-touch := TouchArea {
+                // Slid-away bars must never take input even if clip hit-testing leaks.
+                enabled: root.active;
                 clicked => { root.select-all(); }
             }
         }
@@ -232,7 +243,10 @@ export component SelectionToolbar inherits Rectangle {
             // Leading trash glyph (delete.svg, recolored white by the button);
             // the label stays — the icon supplements, never replaces it.
             icon: @image-url("../assets/delete.svg");
-            clicked => { root.request-delete(); }
+            // DangerButton owns its TouchArea (no `enabled` pass-through), so gate
+            // the forwarded action on `active`: a slid-away toolbar must not open
+            // the ConfirmDialog even if a click/screen-reader gesture leaks through.
+            clicked => { if (root.active) { root.request-delete(); } }
         }
 
         // ── 4. Exit capsule — circular NavItem-style close button ───────────
@@ -277,12 +291,15 @@ export component SelectionToolbar inherits Rectangle {
                 colorize: exit-touch.has-hover || exit-touch.pressed ? Theme.text-high : Theme.text-mid;
             }
 
-            // Accessibility: screen-reader gets the provided exit label.
+            // Accessibility: screen-reader gets the provided exit label. Gated on
+            // `active` so a slid-away toolbar exposes no working action.
             accessible-role: button;
             accessible-label: root.exit-a11y;
-            accessible-action-default => { root.exit(); }
+            accessible-action-default => { if (root.active) { root.exit(); } }
 
             exit-touch := TouchArea {
+                // Slid-away bars must never take input even if clip hit-testing leaks.
+                enabled: root.active;
                 clicked => { root.exit(); }
             }
         }
