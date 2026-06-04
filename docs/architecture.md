@@ -453,24 +453,41 @@ replaces the docked TitleBar), `NavBar`
 highlight + drop shadow; Slint has no backdrop-blur so the glass effect is paint-only), `NavItem`
 (#83, NEW: one circular icon capsule inside `NavBar`; hover/press glow via `Theme.accent-glow`;
 non-focusable `TouchArea` with `accessible-role`/`accessible-label`/`accessible-action-default` for
-screen-reader support), and `Dropdown` (i18n PR, NEW: the Apple-HIG pull-down button used by the
+screen-reader support), `Dropdown` (i18n PR, NEW: the Apple-HIG pull-down button used by the
 language setting — the repo's first `PopupWindow`; the menu is lowered to the window root so the
-dialog's clipping Flickable can't cut it off — see docs/patterns.md). Each references `Theme.*` via `../Theme.slint`; consumers import via
-`import { X } from "components/X.slint"`. `build.rs` is unchanged — it compiles the single entry
-`ui/ViewerWindow.slint` and import statements cascade. See [docs/conventions.md](conventions.md)
-for the component RULES.
+dialog's clipping Flickable can't cut it off — see docs/patterns.md), `Segmented` (issue 102,
+PR-A: token-driven horizontal segmented control replacing the std-widgets `ComboBox`; equal-width
+cells with an accent-pill selected state, keyboard Left/Right navigation), `Stepper` (issue 102,
+PR-A: token-driven integer stepper replacing `SpinBox`; surface-sunken capsule with accent ± glyphs,
+keyboard Up/Down), `Toggle` (issue 102, PR-A: token-driven on/off switch replacing `CheckBox`; pill
+track accent-on / `track-prog`-off, spring-animated knob), `SettingRow` (issue 103, PR-B: L1
+alignment molecule — fixed label column + `@children` control slot spanning to the shared right
+rail; `trailing` flag pushes compact atoms onto the rail via a leading stretch spacer),
+`SelectionBadge` (bulk-delete PR-2: pure visual atom — accent disc with a centered white check mark,
+overlaid on selected covers in selection mode; both Carousel `for` passes include it, rendered only
+when `selected` is true), `SelectionToolbar` (bulk-delete PR-4: selection-mode organism — count
+pill / select-all capsule / exit capsule; glass-pill matching `NavBar`'s four-layer idiom, content-hugged
+width, overlaid below `NavBar` inside `Carousel` via an `if-gate`; all human-visible text passed
+from Rust via `in` properties — deliberately `Strings`-agnostic), and `DangerButton`
+(bulk-delete PR-1: destructive-action atom — structural clone of `PrimaryButton` swapping accent for
+`Theme.danger` red + `Theme.danger-glow` hover/focus ring; accessibility role/label/action-default
+added here, `PrimaryButton` backport pending; first consumed by the PR-3 ConfirmDialog). Each references `Theme.*` via `../Theme.slint`;
+consumers import via `import { X } from "components/X.slint"`. `build.rs` is unchanged — it compiles
+the single entry `ui/ViewerWindow.slint` and import statements cascade. See
+[docs/conventions.md](conventions.md) for the component RULES.
 
 **`ui/assets/`** (#83, NEW): the repo's image assets — `file.svg`, `folder.svg` (#83), `plus.svg`
 (the macOS combined "Add books" capsule glyph), `carousel.svg`
-(the thumbnail-toggle icon in ViewerPill; replaced the original `slider.svg` glyph), and
-`chevron-down.svg` (i18n PR, NEW: the `Dropdown`
-chevron; 96px intrinsic size per the HiDPI rasterization rule), each a
-single-path SVG recolored at runtime via Slint's `Image.colorize` property. Components reference
+(the thumbnail-toggle icon in ViewerPill; replaced the original `slider.svg` glyph),
+`chevron-down.svg` (i18n PR, NEW: the `Dropdown` chevron; 96px intrinsic size per the HiDPI
+rasterization rule), and `check.svg` (bulk-delete PR-2, NEW: the single-path check mark recolored
+via `colorize` to `Theme.text` white inside `SelectionBadge`), each a single-path SVG recolored at
+runtime via Slint's `Image.colorize` property. Components reference
 them with `@image-url(...)` paths relative to the consuming `.slint` file. `build.rs` is unchanged
 (assets are reached transitively through the entry-file import cascade).
 
 **`ui/Strings.slint`** (Fluent i18n PR-2, #113, NEW): `export global Strings` — the Fluent-served
-static-string surface, 63 `in property <string>` slots (property name == Fluent message ID) with
+static-string surface, 65 `in property <string>` slots (property name == Fluent message ID) with
 English-literal defaults. Written exclusively from Rust by `Localizer::apply()`; `.slint` bindings
 read `Strings.<prop>` in place of the removed `@tr()` calls. `ViewerWindow.slint` re-exports it
 (`import` + `export { Strings }`) so Slint generates the `ui.global::<Strings>()` accessor. See

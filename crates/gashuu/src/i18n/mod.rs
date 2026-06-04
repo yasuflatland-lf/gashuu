@@ -124,7 +124,7 @@ impl Localizer {
     /// every [`switch`] to keep the global in sync with the active locale.
     ///
     /// Slint batches property changes and repaints them together before the next
-    /// frame, so a sequential push of 63 setters cannot produce a half-translated
+    /// frame, so a sequential push of 65 setters cannot produce a half-translated
     /// frame — the entire swap is visually atomic.
     ///
     /// All `fl!()` calls resolve IDs against the `i18n.toml`-declared crate

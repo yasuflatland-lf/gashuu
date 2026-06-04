@@ -123,7 +123,7 @@ gettext machinery is left INERT (not deleted) for rollback, so this ADR stays `P
 PR-4 (#115) cutover. Full harness in [docs/patterns.md](../patterns.md) ("The `Strings`-global
 push", "Word-order-safe composed a11y labels", "The gettext bundler is keyed by live `@tr()`").
 
-- **`Strings` global + `apply()` chokepoint.** `ui/Strings.slint` declares 61 string properties with
+- **`Strings` global + `apply()` chokepoint.** `ui/Strings.slint` declares 65 string properties with
   English-literal defaults; `Localizer::apply(&ui)` resolves them all via `fl!()` and pushes them at
   boot and after each `switch()`. The global is re-exported from `ViewerWindow.slint` (the build
   entry) or Slint generates no `ui.global::<Strings>()` accessor.
