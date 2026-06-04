@@ -111,8 +111,7 @@ impl Localizer {
     /// frame — the entire swap is visually atomic.
     ///
     /// All `fl!()` calls resolve IDs against the `i18n.toml`-declared crate
-    /// catalog.  Keeping every `fl!` in this one module makes the complete set of
-    /// Fluent-sourced strings greppable at a glance.
+    /// catalog.
     ///
     /// [`new`]: Localizer::new
     /// [`switch`]: Localizer::switch
