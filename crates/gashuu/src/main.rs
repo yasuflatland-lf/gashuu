@@ -580,6 +580,154 @@ fn main() -> color_eyre::Result<()> {
         });
     }
 
+    // Carousel: a delete was requested (toolbar DangerButton or the Delete /
+    // Backspace key arm). The Slint side fires this even at N=0 (the key arm is
+    // unconditional by design), so an empty selection is a no-op here — the
+    // confirm dialog is never shown for nothing. Otherwise, build the language-
+    // free confirm-dialog content for the current selection and push it into the
+    // ConfirmDialog's in-out properties, then flip `show-confirm-delete` true to
+    // mount the modal. Cancel/Esc/backdrop are handled purely in Slint (selection
+    // PRESERVED); Rust only sees the accept (the handler below).
+    {
+        let ui_weak = ui.as_weak();
+        let state = Rc::clone(&state);
+        let library = Rc::clone(&library);
+        let search = Rc::clone(&search);
+        let selection = Rc::clone(&selection);
+        let localizer = Rc::clone(&localizer);
+        ui.on_carousel_request_delete(move || {
+            with_ui(&ui_weak, |ui| {
+                // No-op on an empty selection (the key arm accepts even at zero).
+                if selection.borrow().count() == 0 {
+                    return;
+                }
+                // Build the dialog content under one shared-borrow group:
+                // `state`, `selection`, `search`, and `library` are distinct
+                // `RefCell`s, so holding the four immutable `Ref`s together is
+                // safe; the `ConfirmDeleteContent` it returns owns its strings, so
+                // the group drops at the block's `}` before the UI setters run.
+                let content = {
+                    let st = state.borrow();
+                    app::confirm_delete_content(
+                        localizer.loader(),
+                        &selection.borrow(),
+                        &search.borrow(),
+                        &library.borrow(),
+                        st.open_file(),
+                    )
+                };
+                ui.set_confirm_delete_title(content.title.into());
+                // `confirm-delete-body-lines` is a Slint `[string]` property, so its
+                // setter takes a `ModelRc<SharedString>`; wrap the owned lines in a
+                // `VecModel` (mirrors `bind_carousel_model`'s `ModelRc::from`).
+                let body_lines: Vec<slint::SharedString> =
+                    content.body_lines.into_iter().map(Into::into).collect();
+                ui.set_confirm_delete_body_lines(slint::ModelRc::from(std::rc::Rc::new(
+                    slint::VecModel::from(body_lines),
+                )));
+                ui.set_confirm_delete_info(content.info.into());
+                ui.set_confirm_delete_warning(content.warning.into());
+                ui.set_show_confirm_delete(true);
+            })
+        });
+    }
+
+    // Carousel: the delete confirmation was accepted (ConfirmDialog primary
+    // action). Run the destructive `RemoveBooksUseCase` transaction (mutate +
+    // save with rollback, cover purge, viewer-close-if-open, search recompute,
+    // selection clear), then finalize the UI from the returned `RemoveOutcome`.
+    // The modal is dismissed in EVERY outcome (its stale content props are
+    // rebuilt on the next open). The use case is constructed once and moved into
+    // the closure (mirrors how `OpenBookUseCase` is held).
+    {
+        let ui_weak = ui.as_weak();
+        let library = Rc::clone(&library);
+        let search = Rc::clone(&search);
+        let selection = Rc::clone(&selection);
+        let localizer = Rc::clone(&localizer);
+        let covers = Rc::clone(&covers);
+        let remove_books = app::RemoveBooksUseCase::new(
+            Rc::clone(&state),
+            Rc::clone(&library),
+            Rc::clone(&search),
+            Rc::clone(&selection),
+        );
+        ui.on_confirm_delete_accepted(move || {
+            with_ui(&ui_weak, |ui| {
+                let loader = localizer.loader();
+                // The use case owns the destructive transaction in the issue's
+                // non-negotiable order, including the viewer-close (it cleared
+                // `current_book_name` itself) and the success-only selection clear.
+                let outcome = remove_books.run(&ui);
+                // Dismiss the modal in every outcome.
+                ui.set_show_confirm_delete(false);
+                match outcome {
+                    app::RemoveOutcome::NoSelection => {
+                        // Defensive: the request handler guards against an empty
+                        // selection, so this should not be reached. Just refocus.
+                        ui.invoke_focus_carousel();
+                    }
+                    app::RemoveOutcome::SaveFailed { error } => {
+                        // The shelf was rolled back and the selection PRESERVED by
+                        // `run` (no flag re-apply needed — the rows are unchanged).
+                        // Stay in selection mode so the user can retry.
+                        ui.set_status_text(
+                            crate::i18n::dynamic::delete_save_failed(loader, &error).into(),
+                        );
+                        ui.invoke_focus_carousel();
+                    }
+                    app::RemoveOutcome::Removed { n, .. } => {
+                        // `run` already recomputed the search projection and cleared
+                        // the selection. Rebuild the carousel from the fresh visible
+                        // set (no focus reset — we clamp the focused index below to a
+                        // valid row), so the rebuilt model reflects the shrunken shelf.
+                        refresh_library_carousel(
+                            &ui,
+                            &CarouselRefresh {
+                                library: &library,
+                                covers: &covers,
+                                search: &search,
+                                selection: &selection,
+                                localizer: &localizer,
+                            },
+                            false,
+                        );
+                        // Clamp the focused index into the NEW visible row count
+                        // BEFORE the Slint side can read a stale out-of-range value.
+                        // The model is already bound above; setting the focused index
+                        // now re-centers the carousel on a valid row (index-out-of-
+                        // range on the projection is the documented crash risk).
+                        let visible_count = search.borrow().visible_indices().len();
+                        let clamped =
+                            clamp_focused_index(ui.get_carousel_focused_index(), visible_count);
+                        ui.set_carousel_focused_index(clamped);
+                        // Exit selection mode: drop the toolbar and clear every row's
+                        // `selected` flag (selection itself was already cleared by
+                        // `run`, so do NOT double-clear it — just re-apply all-false).
+                        ui.set_carousel_selection_mode(false);
+                        {
+                            let lib = library.borrow();
+                            let indices = search.borrow().visible_indices().to_vec();
+                            apply_selection_flags(&ui, &lib, &indices, |_| false);
+                        }
+                        push_selection_strings(&ui, &localizer, &selection, &search, &library);
+                        // Status push AFTER the refresh + toolbar string updates (the
+                        // same status-last ordering `add_books_and_refresh` uses), so
+                        // the deleted-books notice is the final write to the Library's
+                        // bottom strip. `n` already excludes stale not_found paths.
+                        ui.set_status_text(crate::i18n::dynamic::deleted_books(loader, n).into());
+                        // Restore keyboard focus to the carousel so its key seams work.
+                        // `run` cleared the viewer + `current_book_name` itself when the
+                        // open book was deleted; `current_book_name` is derived on demand
+                        // from `state.open_file()` (now `None`), so no main.rs mirror
+                        // state needs syncing here.
+                        ui.invoke_focus_carousel();
+                    }
+                }
+            })
+        });
+    }
+
     // Thumbnail click: jump to the clicked page's spread, refresh, then restore
     // focus to the page area so keyboard navigation keeps working.
     {
@@ -1730,6 +1878,20 @@ fn visible_focus_index_for_path(
     })
 }
 
+/// Clamp a carousel focused index into the valid range for a projection of
+/// `visible_count` rows: `[0, visible_count - 1]`, or `0` when the projection is
+/// empty. Pure so the destructive-delete refresh can pin the focused index to a
+/// valid row BEFORE the Slint side reads it — an index past the shrunken
+/// projection's end is the documented index-out-of-range crash risk. A negative
+/// `old` (never produced by the live carousel, but defensive) floors to 0.
+fn clamp_focused_index(old: i32, visible_count: usize) -> i32 {
+    if visible_count == 0 {
+        return 0;
+    }
+    let last = (visible_count - 1) as i32;
+    old.clamp(0, last)
+}
+
 /// Push the selection-toolbar count text and select-all label into the UI.
 ///
 /// Called from every point where the selection set or the visible projection
@@ -1767,6 +1929,13 @@ fn push_selection_strings(
     ui.set_carousel_select_all_label(
         crate::i18n::dynamic::select_all_label(loader, all_visible).into(),
     );
+    // The destructive toolbar twins: the pre-composed "Delete (N)…" label and the
+    // `has-selection` gate (the DangerButton is disabled at N=0). Driven by the
+    // TOTAL selection count, like the title, so they track every selection change.
+    ui.set_carousel_delete_label(
+        crate::i18n::dynamic::selection_delete_label(loader, total).into(),
+    );
+    ui.set_carousel_has_selection(total > 0);
 }
 
 /// The shared collaborators a Library carousel refresh threads together
@@ -2191,6 +2360,23 @@ mod tests {
         assert_eq!(visible_focus_index_for_path(&lib, &[2], &path), Some(0));
         // gamma is not among the visible rows, so it has no visible position.
         assert_eq!(visible_focus_index_for_path(&lib, &[0, 1], &path), None);
+    }
+
+    // ---- clamp_focused_index (bulk-delete focus safety) -------------------
+
+    #[test]
+    fn clamp_focused_index_pins_into_shrunken_projection() {
+        // The crash guard: after a bulk delete shrinks the projection, a focused
+        // index past the new last row must clamp DOWN to the last valid row.
+        assert_eq!(clamp_focused_index(7, 3), 2, "past-end clamps to last row");
+        // An empty projection (everything deleted) floors to 0.
+        assert_eq!(clamp_focused_index(7, 0), 0, "empty projection floors to 0");
+        assert_eq!(clamp_focused_index(0, 0), 0, "0 on empty stays 0");
+        // An in-range index is preserved unchanged.
+        assert_eq!(clamp_focused_index(1, 4), 1, "in-range index unchanged");
+        assert_eq!(clamp_focused_index(0, 1), 0, "single row keeps focus at 0");
+        // A negative index (defensive; not produced by the live carousel) floors.
+        assert_eq!(clamp_focused_index(-1, 4), 0, "negative floors to 0");
     }
 
     #[test]
