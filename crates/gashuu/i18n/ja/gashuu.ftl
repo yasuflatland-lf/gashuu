@@ -188,6 +188,11 @@ viewer-open-error = エラー: { $error }
 viewer-page-unavailable = （ページ { $page } は表示できません）
 viewer-decode-error = デコードエラー: { $error }
 
+# ---- bookmark-ribbon ----
+
+# BookmarkRibbon アクセシブルラベル — ライブラリカバーの「続きから読む」サインポスト。
+continue-reading = 続きから読む
+
 # ---- notice ----
 # Parameterized notice strings (mapped to the former msg_* functions of the deleted src/messages.rs).
 

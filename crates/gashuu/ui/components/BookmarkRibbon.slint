@@ -1,0 +1,35 @@
+// BookmarkRibbon — the "continue reading" signifier overlaid on a library cover.
+//
+// Renders the bookmark SVG as the ribbon shape (a filled flag hanging from the
+// top edge) in Theme.accent — no background disc.  The single `Image` element
+// provides both the visual shape and the accessible label; it does NOT enter
+// the keyboard focus chain (no FocusScope, no TouchArea, no focusable element).
+//
+// Sizing uses Theme.* length tokens only (DESIGN.md rule 2): the glyph is
+// Theme.space-huge across — same scale as SelectionBadge's disc — matching the
+// approved design where the ribbon is a comparable-scale affordance.  NO inline
+// px literals (scripts/check-tokens.sh enforces this).
+//
+// Positioning (x/y) is the consumer's job: this atom is a display-only overlay
+// that the parent places where the design specifies.
+//
+// Colors come from Theme.* only — NO inline brand hex (DESIGN.md rule 2;
+// scripts/check-tokens.sh enforces this).  Theme lives one directory up.
+import { Theme } from "../Theme.slint";
+import { Strings } from "../Strings.slint";
+
+export component BookmarkRibbon inherits Image {
+    source: @image-url("../assets/bookmark.svg");
+    width: Theme.space-huge;
+    height: Theme.space-huge;
+    image-fit: contain;
+    colorize: Theme.accent;
+
+    // ── Accessibility ─────────────────────────────────────────────────────────
+    // Display-only signifier: expose a label to assistive technology without
+    // entering the keyboard focus chain.  `text` is the closest non-interactive,
+    // non-focusable role available in this codebase (see SettingsDialog.slint,
+    // ShortcutsOverlay.slint precedents).
+    accessible-role: text;
+    accessible-label: Strings.continue-reading;
+}
