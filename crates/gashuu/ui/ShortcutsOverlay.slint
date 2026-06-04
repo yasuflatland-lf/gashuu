@@ -38,6 +38,7 @@
 // re-grabs focus on every open.
 import { Theme } from "Theme.slint";
 import { PrimaryButton } from "components/PrimaryButton.slint";
+import { Strings } from "Strings.slint";
 
 export component ShortcutsOverlay inherits Rectangle {
     // ── Public interface (pinned — sibling agents code against this) ───────────
@@ -163,13 +164,13 @@ export component ShortcutsOverlay inherits Rectangle {
                     padding-right: Theme.space-xl;
                     padding-bottom: Theme.space-md;
                     Text {
-                        text: @tr("Keyboard shortcuts");
+                        text: Strings.shortcuts-title;
                         font-size: Theme.font-title;
                         font-weight: Theme.weight-semibold;
                         color: Theme.text-high;
                         horizontal-alignment: left;
                         accessible-role: text;
-                        accessible-label: @tr("Keyboard shortcuts");
+                        accessible-label: Strings.shortcuts-title;
                     }
                 }
 
@@ -226,7 +227,7 @@ export component ShortcutsOverlay inherits Rectangle {
                         // sticky footer even while the body scrolls. It carries its
                         // own button a11y semantics (PrimaryButton precedent).
                         PrimaryButton {
-                            text: @tr("Close");
+                            text: Strings.common-close;
                             clicked => {
                                 root.close-shortcuts();
                             }
