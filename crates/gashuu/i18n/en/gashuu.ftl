@@ -116,6 +116,8 @@ guide-got-it = Got it
 carousel-empty-title = Your library is empty
 carousel-empty-subtitle = Add books to start your shelf.
 carousel-empty-cta = Select folders / files to add
+# Files-only CTA wording for platforms without the combined picker (non-macOS).
+carousel-empty-cta-files = Select files to add
 
 # No-results state (library has books but active filter matches none)
 carousel-no-results-title = No matching books
@@ -127,9 +129,12 @@ carousel-no-results-hint = Try a different search.
 navbar-search-placeholder = Search library
 navbar-search-a11y = Search library
 
-# NavItem a11y labels for the three action capsules
+# NavItem a11y labels for the action capsules. add-books labels the single
+# combined capsule on macOS (one NSOpenPanel picks files and folders);
+# add-files/add-folder label the two separate capsules on other platforms.
 navbar-add-files-a11y = Add files
 navbar-add-folder-a11y = Add folder
+navbar-add-books-a11y = Add books
 
 # NavBar settings capsule a11y — deduped to settings-title.
 
