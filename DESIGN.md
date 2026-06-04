@@ -142,7 +142,7 @@ components:
     textColor: "{colors.text}"
     typography: "{typography.ui-label}"
     rounded: "{rounded.md}"
-    padding: 8px 16px
+    padding: 8px 16px         # vertical 16px total split 9 top / 7 bottom — optical centering (metric centering sits the label ~1px high)
   page-image:
     rounded: "{rounded.xs}"
     shadow: "{elevation.page}"
@@ -160,8 +160,8 @@ components:
     controlHeight: 30px       # Theme.settings-control-h — the control atom; centers within rowHeight
     rowGap: "{spacing.lg}"    # 14px ≈ Fib 13 — row pitch 48px ≈ controlHeight × φ
     sectionGap: "{spacing.xxl}" # 22px ≈ Fib 21; also the caption→footer-hairline gap
-    segmentRadius: "{rounded.md}"          # Theme.radius-md capsule; cells = Theme.seg-cell-radius (md − 4px, concentric)
-    toggleTrack: "controlHeight × φ"       # Theme.toggle-track-w ≈ 48.5×30 — Apple's 51×31 switch proportion; knob inset 2px
+    segmentRadius: "{rounded.md}"          # Theme.radius-md capsule; selected pill = Theme.seg-cell-radius (md − seg-pill-inset = 5px — consecutive-Fibonacci 3/5/8 concentric: inset → pill radius → capsule radius)
+    toggleTrack: "controlHeight × φ"       # Theme.toggle-track-w ≈ 48.5×30 — Apple's 51×31 switch proportion; knob inset 2px; off track {colors.track-prog} (visible on the glass), knob carries a subtle {colors.shadow-popover} depth shadow
     scrollIndicatorWidth: 3px # Theme.settings-scroll-indicator-w (self-drawn, not a std scrollbar)
     dropdownWidth: 140px      # Theme.settings-dropdown-w (fixed so the pull-down capsule doesn't resize across languages)
     dropdownChevron: 10px     # Theme.settings-dropdown-chevron (the pull-down's chevron glyph square)
@@ -380,7 +380,8 @@ Background `{colors.surface-raised}`, 1px bottom `{colors.hairline}`, `{typograp
 `{colors.text-muted}`, with the document/library name centered and a count chip on the right.
 
 ### Primary Button — `components.button-primary`
-Background `{colors.accent}`, white text, `{rounded.md}`, padding 8×16. The empty-library
+Background `{colors.accent}`, white text, `{rounded.md}`, padding 8×16 (the vertical 16px is
+split 9 top / 7 bottom — the optical-centering nudge shared with the segmented labels). The empty-library
 call-to-action ("Add books") and other affirmative actions.
 
 ### Library Nav — `components.nav-bar`
@@ -409,7 +410,7 @@ shows through — reinforcing the "glass" read.
 A modal **content-hug glass panel** centered over the dimmed screen: 360px wide, exactly as tall as
 its header + body + footer (the fixed φ outline was deliberately dropped 2026-06-04 — **φ relocated
 into the component proportions**: the toggle track ratio, the 8/14/22 ≈ Fibonacci 8/13/21 spacing
-ladder, and the segment padding), corner radius **21px** (= `nav-pill-radius` — it shares NavBar's
+ladder, and the segment pill inset), corner radius **21px** (= `nav-pill-radius` — it shares NavBar's
 glass corner language). It is one
 fake-glass object built from NavBar's four layers, with **layer 1 promoted to a top-sheen gradient**:
 a `@linear-gradient(180deg, {colors.glass-sheen-top} 0%, {colors.glass-fill} 46%)` fill, a 1px
@@ -430,9 +431,16 @@ to fit and the **body scrolls** (see Responsive Behavior).
   labels on purpose (Apple grouped-list IA: hierarchy via position/whitespace/color, weight marks the
   header species) — NOT accent (accent stays interactive/selected-only).
 - **Footer**: both-ends (HIG) — "⌨ Shortcuts" on the left edge, (Reset to global +) Close hard
-  right, all on one shared vertical centerline; `{spacing.xl}`/`{spacing.md}` (18/10 ≈ φ) padding.
+  right, all on one shared vertical centerline; `{spacing.xl}` horizontal / `{spacing.lg}` vertical
+  padding (18 / 14 ≈ Fib 13 — the same ladder rung as the row gap, so the footer breathes on the
+  body's row rhythm).
 - **Toggle** is an Apple-proportioned switch: capsule track `controlHeight × φ` wide, 26px knob,
-  2px inset. **Segmented** capsules are `{rounded.md}` with concentrically rounded cells.
+  2px inset; the off track is `{colors.track-prog}` (the darker `{colors.track}` vanished into the
+  glass — HIG keeps the off state plainly visible), the knob carries a subtle depth shadow and
+  slides on the Carousel's spring curve. **Segmented** capsules are `{rounded.md}` with a
+  concentrically rounded selected pill inset 3px — a consecutive-Fibonacci 3/5/8 triple (inset →
+  pill radius → capsule radius); labels center in the full 30px control height so ascenders never
+  clip, with a 1px downward optical nudge (descender-less labels sit high under metric centering).
 - **Controls** are the token-driven atoms (`Segmented` / `Stepper` / `Toggle` / `Dropdown`), not std
   widgets.
 - **Language pull-down** (`Dropdown`, Apple-HIG pull-down button): a fixed-width capsule
