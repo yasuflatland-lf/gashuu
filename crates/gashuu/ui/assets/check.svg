@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" height="96" width="96">
+  <desc>
+    Check mark glyph for the selection badge (single path, recolored via colorize).
+  </desc>
+  <path fill="#ffffff" d="M9.55 17.65 4.2 12.3l1.5-1.5 3.85 3.85L18.3 5.3l1.5 1.5L9.55 17.65Z" stroke-width="0.5"></path>
+</svg>

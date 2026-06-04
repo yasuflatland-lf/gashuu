@@ -9,10 +9,14 @@ import { Theme } from "Theme.slint";
 import { Scrubber } from "Scrubber.slint";
 import { ViewerPill } from "components/ViewerPill.slint";
 import { Strings } from "Strings.slint";
+import { DangerButton } from "components/DangerButton.slint";
 
 // Re-export so Rust gets the `ui.global::<Strings>()` accessor — Slint only
 // generates global accessors for globals exported from the build entry point.
 export { Strings }
+
+// TEMP: compile-reachability guard only — remove when bulk-delete PR-3 (issue 127, ConfirmDialog) consumes DangerButton.
+export { DangerButton }
 
 export component ViewerWindow inherits Window {
     // Intentionally empty: the OS title bar shows no app name (the floating title label above the ViewerPill carries the current book name instead). See issue #85.
@@ -176,6 +180,16 @@ export component ViewerWindow inherits Window {
     callback carousel-open(int);
     callback carousel-move(int);
     callback carousel-back();
+    // Bulk-selection seams (bulk-delete epic, PR-2). `carousel-selection-mode` is
+    // the root twin of the Carousel's `selection-mode`. The toggle/cover-clicked
+    // callbacks forward the focused/clicked VISIBLE carousel index to main.rs;
+    // `carousel-exit-selection` is the Esc clear. (Slint exposes only the root
+    // window surface to Rust — see docs/patterns.md — so each child seam needs a
+    // forwarded root twin.)
+    in-out property <bool> carousel-selection-mode;
+    callback carousel-toggle-selection(int);
+    callback carousel-cover-clicked(int);
+    callback carousel-exit-selection();
     // Add-picker triggers forwarded from the Carousel toolbar and CTA. Rust
     // decides the dialog flavor behind add-books (files+folders on macOS,
     // files-only elsewhere — see `combined-add-picker`).
@@ -241,6 +255,11 @@ export component ViewerWindow inherits Window {
         back() => { root.carousel-back(); }
         add-books() => { root.add-books(); }
         add-folder() => { root.add-folder(); }
+        // Bulk-selection (PR-2): mirror the mode locally and forward the seams.
+        selection-mode <=> root.carousel-selection-mode;
+        toggle-selection(i) => { root.carousel-toggle-selection(i); }
+        cover-clicked(i) => { root.carousel-cover-clicked(i); }
+        exit-selection() => { root.carousel-exit-selection(); }
     }
 
     // ── Library-screen status notice ─────────────────────────────────────────
