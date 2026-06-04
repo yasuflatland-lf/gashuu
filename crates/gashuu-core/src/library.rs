@@ -160,10 +160,8 @@ impl Library {
 
     /// The canonical path of the most recently opened book, or `None` when no
     /// book has been opened yet. Invariant: if `Some`, the path is present in
-    /// `books`. Maintained by: `register_opened` (sets from the stored book so
-    /// membership holds by construction), `remove`/`remove_many` (clear when
-    /// the pointed-at book is removed), `normalize()` (clears an orphan on
-    /// load).
+    /// [`books()`](Library::books) (see the `last_opened` field for how it is
+    /// maintained).
     pub fn last_opened(&self) -> Option<&Path> {
         self.last_opened.as_deref()
     }
@@ -341,26 +339,25 @@ impl Library {
     ) -> OpenRegistration {
         self.add(canonical.to_path_buf());
         let count_changed = page_count.is_some_and(|c| self.set_page_count(canonical, c));
-        // Resolve last_opened from the book actually stored in `books` so the
-        // invariant (last_opened is a member of books) holds by construction —
-        // `add` canonicalizes internally, so the stored path may differ from the
-        // raw `canonical` argument when the caller passes a non-canonical path.
-        // Mapping the found book's path to an owned PathBuf before assigning avoids
-        // a simultaneous borrow of `self`. When the lookup returns None (divergence:
-        // `canonical` does not match the stored canonical key), `last_opened` stays
-        // None — invariant-preserving degradation rather than a stale bookmark.
-        let found_path: Option<PathBuf> = self
+        // Resolve both outputs from the book actually stored in `books` so the
+        // `last_opened` invariant (it is a member of `books`) holds by construction:
+        // `add` canonicalizes internally, so the stored path may differ from the raw
+        // `canonical` argument when the caller passes a non-canonical path. Extract
+        // owned values (an owned path + the `Copy` progress) before assigning, so the
+        // immutable borrow of `self` ends before `self.last_opened` is set. When the
+        // lookup returns None (divergence: `canonical` does not match the stored
+        // canonical key), `last_opened` stays None and resume defaults to the start —
+        // invariant-preserving degradation rather than a stale bookmark.
+        let found = self
             .books
             .iter()
             .find(|b| b.path() == canonical)
-            .map(|b| b.path().to_path_buf());
-        self.last_opened = found_path;
-        let resume = self
-            .books
-            .iter()
-            .find(|b| b.path() == canonical)
-            .map(Book::progress)
-            .unwrap_or(ReadingProgress::new(0, None));
+            .map(|b| (b.path().to_path_buf(), b.progress()));
+        let (last_opened, resume) = match found {
+            Some((path, progress)) => (Some(path), progress),
+            None => (None, ReadingProgress::new(0, None)),
+        };
+        self.last_opened = last_opened;
         OpenRegistration {
             resume,
             count_changed,
