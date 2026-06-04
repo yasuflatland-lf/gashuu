@@ -11,7 +11,13 @@ mod loader;
 use gashuu_core::Language;
 use i18n_embed::fluent::{fluent_language_loader, FluentLanguageLoader};
 use i18n_embed::LanguageLoader as _;
+use i18n_embed_fl::fl;
 use loader::{langid_for, Localizations};
+// `ComponentHandle` must be in scope to call `.global::<T>()` on a Slint
+// component handle from within this submodule.  The `as _` form avoids an
+// unused-import warning when the trait name itself is never referenced directly.
+use crate::{Strings, ViewerWindow};
+use slint::ComponentHandle as _;
 
 /// Fluent localizer, wrapping a [`FluentLanguageLoader`].
 ///
@@ -90,6 +96,135 @@ impl Localizer {
         // `FluentLanguageLoader::set_use_isolating`'s doc note, the setting
         // takes effect only after load_languages.
         self.loader.set_use_isolating(false);
+    }
+
+    /// Push every Fluent-served static string into the [`Strings`] global on
+    /// `ui`.
+    ///
+    /// This is the single chokepoint between the Fluent catalog and the Slint
+    /// presentation layer: all [`fl!`] calls in the crate live here so they
+    /// remain easy to grep and audit.  Call it at boot (after [`new`]) and after
+    /// every [`switch`] to keep the global in sync with the active locale.
+    ///
+    /// Slint batches property changes and repaints them together before the next
+    /// frame, so a sequential push of 61 setters cannot produce a half-translated
+    /// frame — the entire swap is visually atomic.
+    ///
+    /// All `fl!()` calls resolve IDs against the `i18n.toml`-declared crate
+    /// catalog.
+    ///
+    /// [`new`]: Localizer::new
+    /// [`switch`]: Localizer::switch
+    pub(crate) fn apply(&self, ui: &ViewerWindow) {
+        let strings = ui.global::<Strings>();
+
+        // ---- 57 plain pushes (id == property name, no arguments) ----------
+        strings.set_settings_book_title(fl!(self.loader, "settings-book-title").into());
+        strings.set_settings_title(fl!(self.loader, "settings-title").into());
+        strings.set_settings_section_reading(fl!(self.loader, "settings-section-reading").into());
+        strings.set_settings_section_display(fl!(self.loader, "settings-section-display").into());
+        strings.set_settings_section_performance(
+            fl!(self.loader, "settings-section-performance").into(),
+        );
+        strings.set_settings_section_general(fl!(self.loader, "settings-section-general").into());
+        strings.set_settings_direction_label(fl!(self.loader, "settings-direction-label").into());
+        strings.set_settings_direction_ltr(fl!(self.loader, "settings-direction-ltr").into());
+        strings.set_settings_direction_rtl(fl!(self.loader, "settings-direction-rtl").into());
+        strings.set_settings_direction_a11y(fl!(self.loader, "settings-direction-a11y").into());
+        strings.set_settings_spread_label(fl!(self.loader, "settings-spread-label").into());
+        strings.set_settings_spread_single(fl!(self.loader, "settings-spread-single").into());
+        strings.set_settings_spread_double(fl!(self.loader, "settings-spread-double").into());
+        strings.set_settings_spread_auto(fl!(self.loader, "settings-spread-auto").into());
+        strings.set_settings_spread_a11y(fl!(self.loader, "settings-spread-a11y").into());
+        strings.set_settings_cover_label(fl!(self.loader, "settings-cover-label").into());
+        strings.set_settings_cover_standalone(fl!(self.loader, "settings-cover-standalone").into());
+        strings.set_settings_cover_paired(fl!(self.loader, "settings-cover-paired").into());
+        strings.set_settings_cover_a11y(fl!(self.loader, "settings-cover-a11y").into());
+        strings.set_settings_fit_label(fl!(self.loader, "settings-fit-label").into());
+        strings.set_settings_fit_whole(fl!(self.loader, "settings-fit-whole").into());
+        strings.set_settings_fit_width(fl!(self.loader, "settings-fit-width").into());
+        strings.set_settings_fit_actual(fl!(self.loader, "settings-fit-actual").into());
+        strings.set_settings_fit_a11y(fl!(self.loader, "settings-fit-a11y").into());
+        strings.set_settings_cache_label(fl!(self.loader, "settings-cache-label").into());
+        strings.set_settings_cache_a11y(fl!(self.loader, "settings-cache-a11y").into());
+        strings.set_settings_preload_label(fl!(self.loader, "settings-preload-label").into());
+        strings.set_settings_preload_a11y(fl!(self.loader, "settings-preload-a11y").into());
+        strings.set_settings_track_recent_label(
+            fl!(self.loader, "settings-track-recent-label").into(),
+        );
+        strings
+            .set_settings_track_recent_a11y(fl!(self.loader, "settings-track-recent-a11y").into());
+        strings.set_settings_performance_note(fl!(self.loader, "settings-performance-note").into());
+        strings.set_settings_language_label(fl!(self.loader, "settings-language-label").into());
+        strings.set_settings_language_a11y(fl!(self.loader, "settings-language-a11y").into());
+        strings.set_settings_shortcuts_label(fl!(self.loader, "settings-shortcuts-label").into());
+        strings.set_settings_reset_to_global(fl!(self.loader, "settings-reset-to-global").into());
+        strings.set_shortcuts_title(fl!(self.loader, "shortcuts-title").into());
+        strings.set_guide_welcome(fl!(self.loader, "guide-welcome").into());
+        strings.set_guide_intro(fl!(self.loader, "guide-intro").into());
+        strings.set_guide_open(fl!(self.loader, "guide-open").into());
+        strings.set_guide_turn_pages(fl!(self.loader, "guide-turn-pages").into());
+        strings.set_guide_modes(fl!(self.loader, "guide-modes").into());
+        strings.set_guide_zoom_fit(fl!(self.loader, "guide-zoom-fit").into());
+        strings.set_guide_thumbnails(fl!(self.loader, "guide-thumbnails").into());
+        strings.set_guide_settings(fl!(self.loader, "guide-settings").into());
+        strings.set_guide_got_it(fl!(self.loader, "guide-got-it").into());
+        strings.set_carousel_empty_title(fl!(self.loader, "carousel-empty-title").into());
+        strings.set_carousel_empty_subtitle(fl!(self.loader, "carousel-empty-subtitle").into());
+        strings.set_carousel_empty_cta(fl!(self.loader, "carousel-empty-cta").into());
+        strings.set_carousel_no_results_title(fl!(self.loader, "carousel-no-results-title").into());
+        strings.set_carousel_no_results_hint(fl!(self.loader, "carousel-no-results-hint").into());
+        strings.set_navbar_search_placeholder(fl!(self.loader, "navbar-search-placeholder").into());
+        strings.set_navbar_search_a11y(fl!(self.loader, "navbar-search-a11y").into());
+        strings.set_navbar_add_files_a11y(fl!(self.loader, "navbar-add-files-a11y").into());
+        strings.set_navbar_add_folder_a11y(fl!(self.loader, "navbar-add-folder-a11y").into());
+        strings
+            .set_viewer_pill_goto_page_a11y(fl!(self.loader, "viewer-pill-goto-page-a11y").into());
+        strings.set_viewer_pill_thumbnails_a11y(
+            fl!(self.loader, "viewer-pill-thumbnails-a11y").into(),
+        );
+        strings.set_common_close(fl!(self.loader, "common-close").into());
+
+        // ---- 4 pre-composed Stepper labels --------------------------------
+        //
+        // Composed here via Fluent named args so verb/noun order survives
+        // Japanese verb-final grammar — never Slint-side string concatenation.
+        // English: "Decrease Cache size in pages"
+        // Japanese: "キャッシュサイズ（ページ数）を減らす"  (label comes first)
+        let cache_label = fl!(self.loader, "settings-cache-a11y");
+        strings.set_stepper_decrease_cache(
+            fl!(
+                self.loader,
+                "stepper-decrease",
+                label = cache_label.as_str()
+            )
+            .into(),
+        );
+        strings.set_stepper_increase_cache(
+            fl!(
+                self.loader,
+                "stepper-increase",
+                label = cache_label.as_str()
+            )
+            .into(),
+        );
+        let preload_label = fl!(self.loader, "settings-preload-a11y");
+        strings.set_stepper_decrease_preload(
+            fl!(
+                self.loader,
+                "stepper-decrease",
+                label = preload_label.as_str()
+            )
+            .into(),
+        );
+        strings.set_stepper_increase_preload(
+            fl!(
+                self.loader,
+                "stepper-increase",
+                label = preload_label.as_str()
+            )
+            .into(),
+        );
     }
 }
 
@@ -582,6 +717,128 @@ mod tests {
                 check_value
             );
         }
+    }
+
+    // ---- test 6e: composed stepper labels reproduce apply()'s two-step -------
+
+    /// Reproduces `apply()`'s exact two-step Stepper a11y composition end-to-end
+    /// so that a label cross-wire or a word-order regression fails loudly.
+    ///
+    /// Why this test exists:
+    ///
+    /// (a) `apply()` resolves `settings-cache-a11y` / `settings-preload-a11y`
+    ///     from the live catalog, then passes that string as the `label` named arg
+    ///     into `stepper-decrease` / `stepper-increase`.  A cross-wire — e.g.
+    ///     feeding `settings-cache-label` ("Cache size (pages)") instead of
+    ///     `settings-cache-a11y` ("Cache size in pages") — would produce a
+    ///     silently wrong composed string that the existing
+    ///     `parameterized_messages_embed_arguments` test (which hardcodes the
+    ///     label literal and only asserts starts_with/ends_with) would never catch.
+    ///
+    /// (b) The four English byte-exact literals below double as a compile-time pin
+    ///     for the composed English defaults in `ui/Strings.slint` (lines ~91-94).
+    ///     If `settings-cache-a11y` or `stepper-decrease` is edited in en.ftl
+    ///     without updating the Slint defaults, this test will fail, alerting
+    ///     the author to keep both in sync.
+    ///
+    /// Japanese byte-exact equality (not ends_with) is essential: verb-final word
+    /// order is the entire reason composition lives in Rust rather than Slint.
+    /// An `ends_with` check would mask a regression like
+    /// `減らす（{ $label }）` (reversed order).
+    #[test]
+    fn composed_stepper_labels_match_apply_composition() {
+        // ---- English -------------------------------------------------------
+        let en = Localizer::new(Language::En);
+
+        // Step 1: resolve the label from the catalog (mirrors apply()'s first fl!).
+        let en_cache = get(&en, "settings-cache-a11y");
+        let en_preload = get(&en, "settings-preload-a11y");
+
+        // Step 2: compose via named arg (mirrors apply()'s second fl!).
+        let mut args = HashMap::new();
+        args.insert("label", en_cache.clone());
+        assert_eq!(
+            get_args(&en, "stepper-decrease", args),
+            "Decrease Cache size in pages",
+            "En stepper-decrease(cache): composed string mismatch — \
+             check settings-cache-a11y and stepper-decrease in en.ftl \
+             and the Strings.slint stepper-decrease-cache default"
+        );
+
+        let mut args = HashMap::new();
+        args.insert("label", en_cache.clone());
+        assert_eq!(
+            get_args(&en, "stepper-increase", args),
+            "Increase Cache size in pages",
+            "En stepper-increase(cache): composed string mismatch — \
+             check settings-cache-a11y and stepper-increase in en.ftl \
+             and the Strings.slint stepper-increase-cache default"
+        );
+
+        let mut args = HashMap::new();
+        args.insert("label", en_preload.clone());
+        assert_eq!(
+            get_args(&en, "stepper-decrease", args),
+            "Decrease Preload radius",
+            "En stepper-decrease(preload): composed string mismatch — \
+             check settings-preload-a11y and stepper-decrease in en.ftl \
+             and the Strings.slint stepper-decrease-preload default"
+        );
+
+        let mut args = HashMap::new();
+        args.insert("label", en_preload.clone());
+        assert_eq!(
+            get_args(&en, "stepper-increase", args),
+            "Increase Preload radius",
+            "En stepper-increase(preload): composed string mismatch — \
+             check settings-preload-a11y and stepper-increase in en.ftl \
+             and the Strings.slint stepper-increase-preload default"
+        );
+
+        // ---- Japanese ------------------------------------------------------
+        // Byte-exact equality (not ends_with / starts_with): verb-final word
+        // order is the entire reason composition lives in Rust; a reorder like
+        // `減らす（{ $label }）` would still pass an ends_with check.
+        let ja = Localizer::new(Language::Ja);
+
+        let ja_cache = get(&ja, "settings-cache-a11y");
+        let ja_preload = get(&ja, "settings-preload-a11y");
+
+        let mut args = HashMap::new();
+        args.insert("label", ja_cache.clone());
+        assert_eq!(
+            get_args(&ja, "stepper-decrease", args),
+            "キャッシュサイズ（ページ数）を減らす",
+            "Ja stepper-decrease(cache): byte-exact composition mismatch — \
+             check settings-cache-a11y and stepper-decrease in ja.ftl"
+        );
+
+        let mut args = HashMap::new();
+        args.insert("label", ja_cache.clone());
+        assert_eq!(
+            get_args(&ja, "stepper-increase", args),
+            "キャッシュサイズ（ページ数）を増やす",
+            "Ja stepper-increase(cache): byte-exact composition mismatch — \
+             check settings-cache-a11y and stepper-increase in ja.ftl"
+        );
+
+        let mut args = HashMap::new();
+        args.insert("label", ja_preload.clone());
+        assert_eq!(
+            get_args(&ja, "stepper-decrease", args),
+            "先読みページ数を減らす",
+            "Ja stepper-decrease(preload): byte-exact composition mismatch — \
+             check settings-preload-a11y and stepper-decrease in ja.ftl"
+        );
+
+        let mut args = HashMap::new();
+        args.insert("label", ja_preload.clone());
+        assert_eq!(
+            get_args(&ja, "stepper-increase", args),
+            "先読みページ数を増やす",
+            "Ja stepper-increase(preload): byte-exact composition mismatch — \
+             check settings-preload-a11y and stepper-increase in ja.ftl"
+        );
     }
 
     // ---- test 6c: duplicate-ID guard (integrated into existing test) --

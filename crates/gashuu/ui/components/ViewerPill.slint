@@ -20,6 +20,7 @@
 // Colors / lengths come from Theme.* only — NO inline brand hex (DESIGN.md
 // rule 2; scripts/check-tokens.sh enforces this). Theme lives one directory up.
 import { Theme } from "../Theme.slint";
+import { Strings } from "../Strings.slint";
 import { NavItem } from "NavItem.slint";
 
 // File-private page-jump field, rendering "<input> / total". The page number is
@@ -74,7 +75,7 @@ component PageJumpField inherits Rectangle {
             selection-foreground-color: Theme.text;
             text-cursor-width: Theme.nav-search-cursor;
             accessible-role: text-input;
-            accessible-label: @tr("Go to page");
+            accessible-label: Strings.viewer-pill-goto-page-a11y;
 
             // Enter commits the typed page number; Rust validates and returns focus to the page view.
             accepted => {
@@ -196,12 +197,12 @@ export component ViewerPill inherits Rectangle {
 
         thumb-item := NavItem {
             icon: @image-url("../assets/slider.svg");
-            a11y-label: @tr("Toggle thumbnails");
+            a11y-label: Strings.viewer-pill-thumbnails-a11y;
             clicked => { root.toggle-thumbnails(); }
         }
         settings-item := NavItem {
             icon: @image-url("../assets/settings.svg");
-            a11y-label: @tr("Settings");
+            a11y-label: Strings.settings-title;
             clicked => { root.open-settings(); }
         }
     }

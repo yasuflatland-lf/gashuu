@@ -8,6 +8,11 @@ import { Carousel, CarouselItem } from "Carousel.slint";
 import { Theme } from "Theme.slint";
 import { Scrubber } from "Scrubber.slint";
 import { ViewerPill } from "components/ViewerPill.slint";
+import { Strings } from "Strings.slint";
+
+// Re-export so Rust gets the `ui.global::<Strings>()` accessor — Slint only
+// generates global accessors for globals exported from the build entry point.
+export { Strings }
 
 export component ViewerWindow inherits Window {
     // Intentionally empty: the OS title bar shows no app name (the floating title label above the ViewerPill carries the current book name instead). See issue #85.

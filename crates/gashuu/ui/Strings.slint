@@ -1,0 +1,96 @@
+// Fluent-served static-string surface (issue 113, PR-2/4).
+//
+// Property names equal the Fluent message IDs from i18n/en/gashuu.ftl (kebab-case),
+// except the four `stepper-*` labels, which are composed in Rust (see below).
+// Rust gets generated `set_snake_case` setters and pushes values via
+// `Localizer::apply()` on every locale change.
+//
+// English literal defaults here prevent blank labels if a frame paints before
+// the first `Localizer::apply()` call.
+//
+// The four `stepper-*` labels are pre-composed in Rust via Fluent named args
+// (word-order-safe — Japanese is verb-final); they must never be concatenated
+// on the Slint side.
+//
+// NOTE: `shortcuts-help` (the multiline shortcuts body) is deliberately absent
+// here — it continues to flow through the existing `key-bindings-text` channel
+// until PR-3.
+
+export global Strings {
+    // ── SettingsDialog ────────────────────────────────────────────────────────
+    in property <string> settings-book-title: "Book settings";
+    in property <string> settings-title: "Settings";
+    in property <string> settings-section-reading: "Reading";
+    in property <string> settings-section-display: "Display";
+    in property <string> settings-section-performance: "Performance";
+    in property <string> settings-section-general: "General";
+    in property <string> settings-direction-label: "Direction";
+    in property <string> settings-direction-ltr: "Left to Right";
+    in property <string> settings-direction-rtl: "Right to Left";
+    in property <string> settings-direction-a11y: "Reading direction";
+    in property <string> settings-spread-label: "Spread";
+    in property <string> settings-spread-single: "Single";
+    in property <string> settings-spread-double: "Double";
+    in property <string> settings-spread-auto: "Auto";
+    in property <string> settings-spread-a11y: "Spread mode";
+    in property <string> settings-cover-label: "Cover";
+    in property <string> settings-cover-standalone: "Standalone";
+    in property <string> settings-cover-paired: "Paired";
+    in property <string> settings-cover-a11y: "Cover mode";
+    in property <string> settings-fit-label: "Fit";
+    in property <string> settings-fit-whole: "Whole";
+    in property <string> settings-fit-width: "Width";
+    in property <string> settings-fit-actual: "Actual";
+    in property <string> settings-fit-a11y: "Fit mode";
+    in property <string> settings-cache-label: "Cache size (pages)";
+    in property <string> settings-cache-a11y: "Cache size in pages";
+    in property <string> settings-preload-label: "Preload radius";
+    in property <string> settings-preload-a11y: "Preload radius";
+    in property <string> settings-track-recent-label: "Track recent files";
+    in property <string> settings-track-recent-a11y: "Track recent files";
+    in property <string> settings-performance-note: "Cache & preload apply to newly opened books.";
+    in property <string> settings-language-label: "Language";
+    in property <string> settings-language-a11y: "Display language";
+    in property <string> settings-shortcuts-label: "⌨ Shortcuts";
+    in property <string> settings-reset-to-global: "Reset to global";
+
+    // ── ShortcutsOverlay ──────────────────────────────────────────────────────
+    in property <string> shortcuts-title: "Keyboard shortcuts";
+
+    // ── FirstRunGuide ─────────────────────────────────────────────────────────
+    in property <string> guide-welcome: "Welcome to gashuu";
+    in property <string> guide-intro: "A quick guide to get you started:";
+    in property <string> guide-open: "Open: use the toolbar buttons — Open Folder… / Open Archive… (CBZ/ZIP/CBR/RAR).";
+    in property <string> guide-turn-pages: "Turn pages: Space = next, Backspace = previous. Arrow keys follow the reading direction.";
+    in property <string> guide-modes: "Modes: D = spread (single → double → auto), R = reading direction (LTR/RTL), C = cover layout.";
+    in property <string> guide-zoom-fit: "Zoom & fit: + / - to zoom, 0 to reset, 1 for actual size, f to cycle fit mode. Wheel zooms at the cursor; drag to pan.";
+    in property <string> guide-thumbnails: "Thumbnails: T toggles the thumbnail strip; click a thumbnail to jump to that page.";
+    in property <string> guide-settings: "Settings: open the Settings dialog from the toolbar to change these options anytime.";
+    in property <string> guide-got-it: "Got it";
+
+    // ── Carousel ──────────────────────────────────────────────────────────────
+    in property <string> carousel-empty-title: "Your library is empty";
+    in property <string> carousel-empty-subtitle: "Add books to start your shelf.";
+    in property <string> carousel-empty-cta: "Select folders / files to add";
+    in property <string> carousel-no-results-title: "No matching books";
+    in property <string> carousel-no-results-hint: "Try a different search.";
+
+    // ── NavBar ────────────────────────────────────────────────────────────────
+    in property <string> navbar-search-placeholder: "Search library";
+    in property <string> navbar-search-a11y: "Search library";
+    in property <string> navbar-add-files-a11y: "Add files";
+    in property <string> navbar-add-folder-a11y: "Add folder";
+
+    // ── ViewerPill ────────────────────────────────────────────────────────────
+    in property <string> viewer-pill-goto-page-a11y: "Go to page";
+    in property <string> viewer-pill-thumbnails-a11y: "Toggle thumbnails";
+
+    // ── shared ────────────────────────────────────────────────────────────────
+    in property <string> common-close: "Close";
+
+    // ── Stepper composed (pre-composed in Rust via Fluent named args) ─────────
+    in property <string> stepper-decrease-cache: "Decrease Cache size in pages";
+    in property <string> stepper-increase-cache: "Increase Cache size in pages";
+    in property <string> stepper-decrease-preload: "Decrease Preload radius";
+    in property <string> stepper-increase-preload: "Increase Preload radius";
+}

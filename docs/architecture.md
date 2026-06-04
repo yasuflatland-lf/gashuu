@@ -409,7 +409,10 @@ the exhaustive `langid_for(Language) -> LanguageIdentifier` (no wildcard — the
 replacing `messages.rs`'s exhaustive match). The completeness/parity/byte-oracle integration tests
 live in `mod.rs`'s `#[cfg(test)]`. The `Language` enum stays in headless `gashuu-core`; ALL Fluent
 machinery is UI-crate-only, per [ADR-0002](ADRs/0002-layered-two-crate-architecture.md). PR-2 (#113)
-will add the `Strings`-global push that consumes this localizer.
+added `Localizer::apply(&self, ui: &ViewerWindow)` to `mod.rs`: the single chokepoint that resolves
+every Fluent-served static string via `fl!()` and pushes it into the `Strings` global (next entry);
+`main.rs` calls it at boot and after each `switch()` — see [patterns.md](patterns.md), "The
+`Strings`-global push".
 
 **`i18n/` assets + `i18n.toml`** (crate root): one Fluent catalog per locale,
 `i18n/{en,ja}/gashuu.ftl`, carrying the FULL vocabulary (both the former gettext msgids and the
@@ -450,6 +453,13 @@ chevron; 96px intrinsic size per the HiDPI rasterization rule), each a
 single-path SVG recolored at runtime via Slint's `Image.colorize` property. Components reference
 them with `@image-url(...)` paths relative to the consuming `.slint` file. `build.rs` is unchanged
 (assets are reached transitively through the entry-file import cascade).
+
+**`ui/Strings.slint`** (Fluent i18n PR-2, #113, NEW): `export global Strings` — the Fluent-served
+static-string surface, 61 `in property <string>` slots (property name == Fluent message ID) with
+English-literal defaults. Written exclusively from Rust by `Localizer::apply()`; `.slint` bindings
+read `Strings.<prop>` in place of the removed `@tr()` calls. `ViewerWindow.slint` re-exports it
+(`import` + `export { Strings }`) so Slint generates the `ui.global::<Strings>()` accessor. See
+[docs/patterns.md](patterns.md), "The `Strings`-global push".
 
 **`Carousel.slint`** (PR-0b shell; PR-C rendering; PR-L toolbar/CTA; #71 componentized; #83 glass-pill nav): Library
 cover-flow carousel.

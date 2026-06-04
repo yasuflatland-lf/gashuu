@@ -19,6 +19,7 @@
 // Colors / lengths come from Theme.* only — NO inline brand hex (DESIGN.md
 // rule 2; scripts/check-tokens.sh enforces this). Theme lives one directory up.
 import { Theme } from "../Theme.slint";
+import { Strings } from "../Strings.slint";
 import { NavItem } from "NavItem.slint";
 
 // File-private live search field (issue #88). A self-contained pill with a
@@ -80,7 +81,7 @@ component SearchField inherits Rectangle {
         x: root.text-x;
         width: root.text-width;
         height: 100%;
-        text: @tr("Search library");
+        text: Strings.navbar-search-placeholder;
         color: Theme.text-dim;
         font-size: Theme.font-label;
         vertical-alignment: center;
@@ -103,8 +104,8 @@ component SearchField inherits Rectangle {
         selection-foreground-color: Theme.text;
         text-cursor-width: Theme.nav-search-cursor;
         accessible-role: text-input;
-        accessible-label: @tr("Search library");
-        accessible-placeholder-text: @tr("Search library");
+        accessible-label: Strings.navbar-search-a11y;
+        accessible-placeholder-text: Strings.navbar-search-placeholder;
 
         // Each keystroke (re)arms the trailing debounce: stop any pending fire,
         // then restart the countdown, so the query callback fires ~120ms after
@@ -235,17 +236,17 @@ export component NavBar inherits Rectangle {
 
         NavItem {
             icon: root.file-icon;
-            a11y-label: @tr("Add files");
+            a11y-label: Strings.navbar-add-files-a11y;
             clicked => { root.add-files(); }
         }
         NavItem {
             icon: root.folder-icon;
-            a11y-label: @tr("Add folder");
+            a11y-label: Strings.navbar-add-folder-a11y;
             clicked => { root.add-folder(); }
         }
         NavItem {
             icon: root.settings-icon;
-            a11y-label: @tr("Settings");
+            a11y-label: Strings.settings-title;
             clicked => { root.settings(); }
         }
     }

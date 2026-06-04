@@ -115,3 +115,24 @@ authoring gotchas", "i18n test harness"):
   assets ⇒ programmer error), deliberately asymmetric to the gettext path's never-fatal warn.
 - The message-ID naming convention adopted here is recorded in
   [docs/conventions.md](../conventions.md) ("Fluent catalog message IDs").
+
+## Implementation notes (as-built deltas — PR-2, #113)
+
+PR-2 landed decision point 2 (the `global Strings` push) and removed every `@tr()` call-site; the
+gettext machinery is left INERT (not deleted) for rollback, so this ADR stays `Proposed` until the
+PR-4 (#115) cutover. Full harness in [docs/patterns.md](../patterns.md) ("The `Strings`-global
+push", "Word-order-safe composed a11y labels", "The gettext bundler is keyed by live `@tr()`").
+
+- **`Strings` global + `apply()` chokepoint.** `ui/Strings.slint` declares 61 string properties with
+  English-literal defaults; `Localizer::apply(&ui)` resolves them all via `fl!()` and pushes them at
+  boot and after each `switch()`. The global is re-exported from `ViewerWindow.slint` (the build
+  entry) or Slint generates no `ui.global::<Strings>()` accessor.
+- **`in`-property verdict (open question resolved):** plain `in property <string>` (NOT `in-out`)
+  suffices for Rust-side `set_*` on Slint 1.16.1 — verified empirically.
+- **Canary half-retired (decision point 3 interaction).** Removing all `@tr()` leaves the gettext
+  bundler with nothing to compile, so the OUT_DIR canary can no longer assert Japanese *text* in
+  generated code; it now asserts only that the `"ja"` locale slot is registered (a loud guard if the
+  build flags are ripped out early), and the text guarantee moved to the loader test
+  `ja_catalog_pins_spread_vocabulary`.
+- **Zero `@tr()` remain** in `.slint`, yet the `.po` + `build.rs` `with_bundled_translations` +
+  `select_ui_language` stay in place as an inert rollback surface until #115.

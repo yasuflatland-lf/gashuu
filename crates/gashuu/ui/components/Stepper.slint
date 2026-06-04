@@ -53,6 +53,12 @@ export component Stepper inherits Rectangle {
     in property <int> minimum;
     in property <int> maximum;
     in property <string> a11y-label;
+    // Pre-composed ± accessible labels ("Decrease …" / "Increase …"), pushed
+    // from Rust (Localizer::apply) via Fluent named args so verb and noun
+    // order correctly in every language (Japanese is verb-final) — never
+    // composed by Slint-side string concat.
+    in property <string> a11y-decrease-label;
+    in property <string> a11y-increase-label;
     callback edited(int);
 
     // ── Capsule ground ──────────────────────────────────────────────────────────
@@ -99,9 +105,7 @@ export component Stepper inherits Rectangle {
             min-width: Theme.space-xxl;
             horizontal-stretch: 0;
             glyph: "−";
-            // @tr with a placeholder (not string concat) so the verb and the
-            // label compose correctly in languages with different word order.
-            a11y-label: @tr("Decrease {}", root.a11y-label);
+            a11y-label: root.a11y-decrease-label;
             active: root.value > root.minimum;
             pressed => { fs.focus(); root.bump(-1); }
         }
@@ -124,7 +128,7 @@ export component Stepper inherits Rectangle {
             min-width: Theme.space-xxl;
             horizontal-stretch: 0;
             glyph: "+";
-            a11y-label: @tr("Increase {}", root.a11y-label);
+            a11y-label: root.a11y-increase-label;
             active: root.value < root.maximum;
             pressed => { fs.focus(); root.bump(1); }
         }

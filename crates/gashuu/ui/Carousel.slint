@@ -21,6 +21,7 @@
 // Key seams (handled in the FocusScope): Left/Right -> move(-1/+1),
 // Return -> open(focused-index), Down -> back().
 import { Theme } from "Theme.slint";
+import { Strings } from "Strings.slint";
 // Shared design-system components (P2 componentization, issue #71): the
 // reading-progress bar, the empty-state primary CTA button, and the shared
 // thumbnail cell used by all three thumbnail surfaces (page strip / scrubber
@@ -277,14 +278,14 @@ export component Carousel inherits Rectangle {
                   spacing: Theme.space-md;
                   padding: Theme.space-xl;
                   Text {
-                      text: @tr("Your library is empty");
+                      text: Strings.carousel-empty-title;
                       color: Theme.text;
                       font-size: Theme.font-title;
                       font-weight: Theme.weight-bold;
                       horizontal-alignment: center;
                   }
                   Text {
-                      text: @tr("Add books to start your shelf.");
+                      text: Strings.carousel-empty-subtitle;
                       color: Theme.text-muted;
                       font-size: Theme.font-micro;
                       horizontal-alignment: center;
@@ -297,7 +298,7 @@ export component Carousel inherits Rectangle {
                   HorizontalLayout {
                       alignment: center;
                       PrimaryButton {
-                          text: @tr("Select folders / files to add");
+                          text: Strings.carousel-empty-cta;
                           clicked => { root.add-files(); root.focus-self(); }
                       }
                   }
@@ -322,14 +323,14 @@ export component Carousel inherits Rectangle {
                   spacing: Theme.space-md;
                   padding: Theme.space-xl;
                   Text {
-                      text: @tr("No matching books");
+                      text: Strings.carousel-no-results-title;
                       color: Theme.text;
                       font-size: Theme.font-title;
                       font-weight: Theme.weight-bold;
                       horizontal-alignment: center;
                   }
                   Text {
-                      text: @tr("Try a different search.");
+                      text: Strings.carousel-no-results-hint;
                       color: Theme.text-muted;
                       font-size: Theme.font-micro;
                       horizontal-alignment: center;
