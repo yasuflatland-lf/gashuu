@@ -451,7 +451,7 @@ A second modal glass panel that lists the keyboard shortcuts read-only, reached 
 panel's **"⌨ Shortcuts"** footer link. It stacks **ON TOP of the still-open Settings Panel** (a layer,
 not a replacement). It clones the settings glass recipe EXACTLY — same `{components.settings-panel.width}`
 (360px) and `{components.settings-panel.rounded}` (21px), the same one-fake-glass-object build (top-sheen
-gradient fill + 1px rim + 1px top inner highlight + ONE `{elevation.float}` shadow), the same `Flickable`
+gradient fill + 1px rim + 1px top inner highlight + ONE `{colors.shadow-popover}` shadow), the same `Flickable`
 body + self-drawn scroll indicator. There is NO second glass token set; only the height differs.
 
 - **Layered sizing**: the panel is **466px** tall (`Theme.shortcuts-h`), deliberately SHORTER than the
