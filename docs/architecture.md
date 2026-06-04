@@ -219,6 +219,8 @@ natural title order on the next launch. The presentation layer (`carousel_data`,
 `cover_requests`) inherits this order by iterating `books()` — it does NOT sort independently,
 which keeps carousel row indices and cover-request indices aligned.
 
+`Library` also holds `last_opened: Option<PathBuf>` (private, `#[serde(default, skip_serializing_if = "Option::is_none")]`): the canonical path of the most recently opened book, or `None`. Invariant: when `Some`, the path is present in `books`. Set by `register_opened` immediately after the idempotent add; cleared by `remove`/`remove_many` when they remove the matching book; orphan entry (path no longer in `books`) cleared by `normalize()` on load. Public accessor: `last_opened() -> Option<&Path>`. Persisted by the existing `save()` leave points; no separate save — same recipe as `last_page`/`overrides`.
+
 Each `Book` also carries a `ViewOverride overrides` field (the per-book view-preference overrides;
 `#[serde(default, skip_serializing_if = "ViewOverride::is_empty")]`, so an all-`None` override emits
 no key and `library.json` stays byte-compatible with files written before this feature — see
@@ -305,7 +307,10 @@ variant is a compile error); `index_to_screen` clamps out-of-range to `Library`.
 `main.rs` holds the single `NavState` in `Rc<RefCell<…>>`; `go_to_library`/`go_to_viewer` seam
 functions are the single chokepoints that flip `NavState`, push `screen` to the UI, and restore
 focus. The Up arrow (`KeyCommand::GoToLibrary`, direction-independent) and the carousel
-`open`/`move`/`back` callbacks route through them.
+`open`/`move`/`back` callbacks route through them. `go_to_library` also rebuilds the carousel via
+`refresh_library_carousel` (so the `BookmarkRibbon` reflects the current `last_opened`) and
+one-shot-snaps the focused index to the last-opened book's visible row (resolved through the search
+projection; falls back to 0 when `None`, filtered out, or empty).
 
 ### app
 
@@ -366,7 +371,10 @@ keeps the derivation table-testable without a display backend. Each row is built
 `progress = ReadingProgress::fraction()` (guarded so an unknown/zero total → `0.0`, overshoot clamps
 to `1.0`); `total = ReadingProgress::total()` (now `Option<usize>`, #65). The free derivation no longer lives in `library_model`
 — it is centralised in `ReadingProgress` (see core entry below). `available` via
-`Library::is_available`. `carousel.rs`'s `to_carousel_item` adapter builds the `!Send`
+`Library::is_available`. `bookmarked: bool` is a pure derivation computed in
+`carousel_data_for_indices`: `book.path() == library.last_opened()` — true for at most one row
+(the last-opened book); the `BookmarkRibbon` atom in `CoverCard` shows when this is `true`.
+`carousel.rs`'s `to_carousel_item` adapter builds the `!Send`
 `slint::Image` (a `slint::Image::default()` placeholder, filled in asynchronously by `CoverController`)
 on the UI thread; `build_carousel_model` is the build+bind
 chokepoint returning the `Rc<VecModel>` so PR-V/PR-L mutate the same model. `total` comes from
@@ -453,18 +461,26 @@ replaces the docked TitleBar), `NavBar`
 highlight + drop shadow; Slint has no backdrop-blur so the glass effect is paint-only), `NavItem`
 (#83, NEW: one circular icon capsule inside `NavBar`; hover/press glow via `Theme.accent-glow`;
 non-focusable `TouchArea` with `accessible-role`/`accessible-label`/`accessible-action-default` for
-screen-reader support), and `Dropdown` (i18n PR, NEW: the Apple-HIG pull-down button used by the
+screen-reader support), `Dropdown` (i18n PR, NEW: the Apple-HIG pull-down button used by the
 language setting — the repo's first `PopupWindow`; the menu is lowered to the window root so the
-dialog's clipping Flickable can't cut it off — see docs/patterns.md). Each references `Theme.*` via `../Theme.slint`; consumers import via
+dialog's clipping Flickable can't cut it off — see docs/patterns.md), `SelectionBadge` (bulk-delete
+epic: top-RIGHT corner check mark over a cover, accent-filled circle; visible during multi-select),
+and `BookmarkRibbon` (continue-reading feature: display-only Image atom over a cover's top-LEFT
+corner, `@image-url("../assets/bookmark.svg")` recolored via `colorize: Theme.accent`, sized
+`Theme.space-huge²`; shown when `CarouselItem.bookmarked` is true — the single last-opened book
+resolved from `Library.last_opened`; accessible as `role: image` / label `Strings.continue-reading`;
+the two corner overlays are independent and can render simultaneously). Each references `Theme.*` via `../Theme.slint`; consumers import via
 `import { X } from "components/X.slint"`. `build.rs` is unchanged — it compiles the single entry
 `ui/ViewerWindow.slint` and import statements cascade. See [docs/conventions.md](conventions.md)
 for the component RULES.
 
 **`ui/assets/`** (#83, NEW): the repo's image assets — `file.svg`, `folder.svg` (#83), `plus.svg`
 (the macOS combined "Add books" capsule glyph), `carousel.svg`
-(the thumbnail-toggle icon in ViewerPill; replaced the original `slider.svg` glyph), and
+(the thumbnail-toggle icon in ViewerPill; replaced the original `slider.svg` glyph),
 `chevron-down.svg` (i18n PR, NEW: the `Dropdown`
-chevron; 96px intrinsic size per the HiDPI rasterization rule), each a
+chevron; 96px intrinsic size per the HiDPI rasterization rule), `check.svg` (bulk-delete epic:
+the SelectionBadge glyph), and `bookmark.svg` (continue-reading feature: Streamline "Bookmark Fill",
+96×96 intrinsic / viewBox 24; consumed by `BookmarkRibbon.slint`), each a
 single-path SVG recolored at runtime via Slint's `Image.colorize` property. Components reference
 them with `@image-url(...)` paths relative to the consuming `.slint` file. `build.rs` is unchanged
 (assets are reached transitively through the entry-file import cascade).
