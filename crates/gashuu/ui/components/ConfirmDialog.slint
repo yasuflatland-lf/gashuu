@@ -1,0 +1,358 @@
+// ConfirmDialog — a reusable confirm/cancel modal (issue 127).
+//
+// A GENERIC two-choice modal: it carries NO domain vocabulary. Every word on
+// screen arrives through a property (title / body-lines / info-text /
+// warning-text / confirm-label / cancel-label), so the same component serves any
+// confirm-or-cancel decision. It clones the SettingsDialog / ShortcutsOverlay
+// glass idiom exactly — the same scrim, the same ONE fake-glass object (NavBar's
+// four-layer idiom, with layer 1 promoted from a solid fill to a top-sheen FILL
+// gradient — the SettingsDialog promotion: a top-sheen FILL gradient + a 1px rim +
+// a 1px top inner highlight + ONE drop shadow), and the FirstRunGuide fluid-width
+// clamp. The
+// sheen is a FILL gradient, not an opacity layer (opacity blurs text/SVG on
+// HiDPI — docs/patterns.md); show/hide is `if`/`visible:` only, never `opacity`.
+//
+// DISMISS / KEY MODEL (docs/patterns.md FocusScope-ancestor + modal-key-trap):
+//   • Backdrop click  → cancel()  (scrim TouchArea outside the panel).
+//   • Esc             → cancel().
+//   • Enter / Return  → cancel().  A destructive action is NEVER bound to Enter:
+//     confirm is reachable ONLY by pointer click or by Tab→Space, so a reflexive
+//     Enter can never trigger it. This holds EVEN when the confirm button holds
+//     focus — its wrapping FocusScope rejects Enter/Esc so they bubble UP to the
+//     ancestor `fs`, which maps both to cancel().
+//   • Every OTHER key → swallowed (accept). This is a modal over live content:
+//     the ancestor `fs` consumes all unhandled keys so nothing leaks to whatever
+//     is mounted behind (same trap as ShortcutsOverlay's catch-all accept).
+// `fs` WRAPS the panel content so it is a genuine ANCESTOR of the buttons — Slint
+// walks a rejected key strictly UP the focused item's parent chain (i-slint-core
+// 1.16 window.rs); a SIBLING scope is never visited, so Esc/Enter would be
+// silently dead (gate-invisible — the cargo gates do NOT exercise .slint key
+// handling; verify by hand).
+//
+// DEFAULT FOCUS: Cancel (the safe choice). Set on BOTH `fs.init` AND
+// `changed focus-epoch`. USAGE CONTRACT: the parent MUST mount this component
+// behind an `if` gate, NOT merely toggle `visible:` — `init` fires only when the
+// subtree is (re)instantiated, so an `if` gate rebuilds it (and re-runs `init`)
+// on every open, whereas a `visible:` toggle would run `init` once and never
+// re-focus Cancel on reopen. `changed focus-epoch` then re-claims focus when the
+// parent bumps `focus-epoch` (e.g. after a stacked overlay closes). Both are
+// needed because Slint `changed` handlers do NOT fire on the initial binding —
+// only on subsequent changes (docs/patterns.md, "bump an epoch property the
+// dialog observes with `changed`").
+//
+// BUTTON FOCUS / Tab / Space: DangerButton and PrimaryButton are TouchArea-based
+// and therefore NON-focusable (repo convention — a TouchArea never steals
+// keyboard focus). To make them Tab-reachable and Space-activatable WITHOUT
+// editing the button atoms, each button is wrapped in a file-private FocusButton
+// (a FocusScope, one of the two focus stops) that draws the focus ring (the
+// Toggle/Segmented accent + accent-glow idiom) and fires `pressed` on Space.
+// Tab/Backtab, Enter and Esc are all REJECTED by the button scopes so they bubble
+// to the ancestor `fs`: `fs` maps Enter/Esc to cancel() and ROTATES focus between
+// the two stops on Tab/Backtab itself (it never defers to Slint's window-level Tab
+// navigation — that could carry focus out of the modal; see `fs.key-pressed`).
+
+import { Theme } from "../Theme.slint";
+import { DangerButton } from "DangerButton.slint";
+import { PrimaryButton } from "PrimaryButton.slint";
+
+// File-private focus wrapper: makes the non-focusable, TouchArea-based button
+// atom a Tab stop and Space-activatable WITHOUT editing the atom. Kept in this
+// file so ConfirmDialog stays a single export (NavBar/Stepper do the same with
+// their file-private SearchField / StepButton). Inherits FocusScope so the
+// parent reads `has-focus` and calls `focus()` directly (used by `fs` to rotate
+// focus between the two stops on Tab). Sizes to its slotted button via the
+// `@children` layout. Space fires `pressed`; Tab/Backtab/Enter/Esc are rejected
+// so they bubble to the ancestor `fs` (which owns the key model in ONE place).
+component FocusButton inherits FocusScope {
+    callback pressed;
+    width: slot.preferred-width;
+    height: slot.preferred-height;
+    key-pressed(event) => {
+        if (event.text == Key.Space) {
+            root.pressed();
+            return accept;
+        }
+        return reject;
+    }
+    // Focus ring: accent border + soft accent-glow halo (the Toggle/Segmented
+    // idiom), drawn just outside the button.
+    Rectangle {
+        x: -Theme.space-xxs;
+        y: -Theme.space-xxs;
+        width: parent.width + 2 * Theme.space-xxs;
+        height: parent.height + 2 * Theme.space-xxs;
+        background: transparent;
+        border-radius: Theme.radius-md + Theme.space-xxs;
+        border-width: parent.has-focus ? 1px : 0px;
+        border-color: parent.has-focus ? Theme.accent : transparent;
+        drop-shadow-color: parent.has-focus ? Theme.accent-glow : transparent;
+        drop-shadow-blur: parent.has-focus ? Theme.space-sm : 0px;
+        animate border-color { duration: Theme.motion-fast; }
+    }
+    slot := HorizontalLayout {
+        @children
+    }
+}
+
+export component ConfirmDialog inherits Rectangle {
+    // ── Public API (pinned — issue 127 signature) ─────────────────────────────
+    // Heading line.
+    in property <string> title;
+    // Optional itemized lines under the title (rendered one Text per entry).
+    in property <[string]> body-lines;
+    // Neutral explainer, drawn on a calm surface band. Empty ⇒ band hidden.
+    in property <string> info-text;
+    // Danger-colored caution line. Empty ⇒ hidden.
+    in property <string> warning-text;
+    // Affirmative button label.
+    in property <string> confirm-label;
+    // Dismiss button label.
+    in property <string> cancel-label;
+    // When true the confirm button is the destructive DangerButton; otherwise the
+    // neutral PrimaryButton.
+    in property <bool> danger: false;
+    // Bumped by the parent to (re)claim keyboard focus onto Cancel.
+    in property <int> focus-epoch: 0;
+    // Fired on the confirm button (pointer click or Tab→Space).
+    callback confirm();
+    // Fired on Esc, Return/Enter, backdrop click, or the Cancel button.
+    callback cancel();
+
+    // ── Full-area semi-transparent backdrop ───────────────────────────────────
+    background: Theme.scrim;
+
+    changed focus-epoch => {
+        // Re-claim focus onto Cancel when the parent bumps the epoch (the
+        // `changed`-doesn't-fire-on-init half; `init` below owns the open path).
+        cancel-scope.focus();
+    }
+
+    // ── Backdrop dismiss ──────────────────────────────────────────────────────
+    // A click anywhere on the scrim (outside the panel) cancels. Clicks inside
+    // the panel are absorbed by the panel's own lowest-layer TouchArea below, so
+    // they never reach this one.
+    TouchArea {
+        clicked => {
+            root.cancel();
+        }
+    }
+
+    // ── Glass panel ───────────────────────────────────────────────────────────
+    panel := Rectangle {
+        // Fluid width: caps on wide windows; shrinks to leave a gutter each side
+        // on narrow windows (FirstRunGuide clamp). Height hugs the content.
+        width: min(Theme.settings-w, parent.width - 2 * Theme.space-xl);
+        // `body-col` is a VerticalLayout whose preferred-height is computed
+        // bottom-up from its children, so reading it here does not create a
+        // binding cycle. Future trap: if `body-col` gains an explicit `height:`,
+        // the chain `panel.height → body-col.preferred-height` combined with
+        // `fs.height: parent.height` (= panel.height) could become circular —
+        // remove the explicit `body-col` height instead (SettingsDialog avoids
+        // this by assembling panel height from named sub-parts, not body-col).
+        height: body-col.preferred-height;
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+
+        // Glass layers 1, 2, 4: a top-sheen FILL gradient (not opacity), a 1px
+        // soft rim, and ONE drop shadow. No nested glass / no second shadow.
+        background: @linear-gradient(180deg, Theme.glass-sheen-top 0%, Theme.glass-fill 46%);
+        border-radius: Theme.settings-radius;
+        border-width: 1px;
+        border-color: Theme.glass-border;
+        drop-shadow-color: Theme.shadow-popover;
+        drop-shadow-blur: 22px;
+        drop-shadow-offset-y: 8px;
+
+        // Layer 3: 1px top inner highlight, inset horizontally by ~half the
+        // radius so it stays inside the rounded corners. Inset is `space-md`
+        // (the SettingsDialog idiom; NavBar uses `nav-pill-height / 2`).
+        Rectangle {
+            x: Theme.space-md;
+            y: 1px;
+            width: parent.width - 2 * Theme.space-md;
+            height: 1px;
+            background: Theme.glass-highlight;
+        }
+
+        // Panel click absorber: lowest interactive layer. Any click that lands on
+        // the panel (not on a control) stops here instead of bubbling to the
+        // backdrop TouchArea — so clicking the panel never dismisses the dialog.
+        TouchArea { }
+
+        // ── FocusScope: Esc/Enter → cancel, swallow everything else ────────────
+        // WRAPS the panel content so it is a genuine ANCESTOR of the button
+        // scopes (the rejected-key upward walk passes through here). It does NOT
+        // keep focus itself — `init` / the epoch handler hand focus to the Cancel
+        // button scope. Declared after the absorber, but FocusScope does not
+        // intercept pointer events, so empty-panel clicks fall through to the
+        // absorber regardless of declaration order.
+        fs := FocusScope {
+            x: 0;
+            y: 0;
+            width: parent.width;
+            height: parent.height;
+            init => {
+                cancel-scope.focus();
+            }
+            key-pressed(event) => {
+                // Esc and Return/Enter BOTH cancel — Return is deliberately the
+                // safe choice so a reflexive press can never fire confirm, even
+                // when the confirm button holds focus (the confirm button's scope
+                // rejects everything but Space via its catch-all `return reject`,
+                // so Return bubbles up to here).
+                if (event.text == Key.Escape
+                    || event.text == Key.Return) {
+                    root.cancel();
+                    return accept;
+                }
+                // Tab / Backtab: rotate focus BETWEEN the two button stops
+                // OURSELVES instead of rejecting to let Slint's window-level Tab
+                // navigation run. The button scopes reject Tab so it bubbles to
+                // this ancestor `fs`; if we accepted it here without moving focus
+                // (the old catch-all), the window navigation at i-slint-core 1.16
+                // window.rs:885-905 would NEVER fire (the upward key_event walk
+                // returns EventAccepted before it), so Confirm was unreachable by
+                // keyboard. We do NOT reject-and-defer to that window navigation
+                // either: with this modal mounted over a live, focusable backdrop
+                // (e.g. the carousel's FocusScope on the library screen, which stays
+                // live and focusable behind the modal), window navigation could carry
+                // focus OUT of the dialog. Keeping the rotation in-trap guarantees
+                // Tab cycles only Cancel↔Confirm. With exactly two stops, forward
+                // (Tab) and backward (Backtab) are the same toggle. Backtab can
+                // arrive as either Key.Backtab or Key.Tab+shift depending on the
+                // backend (window.rs:897-899 accepts both), but both fall into
+                // this single toggle, so we need not distinguish them.
+                if (event.text == Key.Tab || event.text == Key.Backtab) {
+                    if (cancel-scope.has-focus) {
+                        confirm-scope.focus();
+                    } else {
+                        // confirm-scope focused, or `fs` still holds the initial
+                        // focus before `init` handed it off — go to Cancel.
+                        cancel-scope.focus();
+                    }
+                    return accept;
+                }
+                // Catch-all: swallow every other key so nothing leaks to content
+                // mounted behind this modal.
+                return accept;
+            }
+
+            // ── Panel content: title, optional body lines, info band, warning,
+            //    and the action row ─────────────────────────────────────────────
+            body-col := VerticalLayout {
+                x: 0;
+                y: 0;
+                width: parent.width;
+                padding: Theme.space-xl;
+                spacing: Theme.space-lg;
+
+                // ── Title ──────────────────────────────────────────────────────
+                Text {
+                    text: root.title;
+                    font-size: Theme.font-title;
+                    font-weight: Theme.weight-semibold;
+                    color: Theme.text-high;
+                    horizontal-alignment: left;
+                    wrap: word-wrap;
+                    accessible-role: text;
+                    accessible-label: root.title;
+                }
+
+                // ── Optional itemized body lines ───────────────────────────────
+                // One Text per entry (e.g. a list of names). The parent truncates
+                // the model before binding; this component just renders what it
+                // is given.
+                if root.body-lines.length > 0 : VerticalLayout {
+                    spacing: Theme.space-xxs;
+                    for line in root.body-lines : Text {
+                        text: line;
+                        font-size: Theme.font-body;
+                        color: Theme.text-mid;
+                        horizontal-alignment: left;
+                        wrap: word-wrap;
+                    }
+                }
+
+                // ── Info band ──────────────────────────────────────────────────
+                // A neutral explainer on a calm raised-surface band. Hidden when
+                // empty. Uses `surface-raised` (not `error-surface`, whose
+                // red-tinted ground signals a failed-decode STATE — semantically
+                // wrong for a neutral, reassuring note).
+                if root.info-text != "" : Rectangle {
+                    background: Theme.surface-raised;
+                    border-radius: Theme.radius-md;
+                    HorizontalLayout {
+                        padding: Theme.space-md;
+                        Text {
+                            text: root.info-text;
+                            font-size: Theme.font-body;
+                            color: Theme.text-muted;
+                            horizontal-alignment: left;
+                            wrap: word-wrap;
+                        }
+                    }
+                }
+
+                // ── Warning line ───────────────────────────────────────────────
+                // Danger-colored caution. Hidden when empty (`if` gate).
+                if root.warning-text != "" : Text {
+                    text: root.warning-text;
+                    font-size: Theme.font-body;
+                    font-weight: Theme.weight-medium;
+                    color: Theme.danger;
+                    horizontal-alignment: left;
+                    wrap: word-wrap;
+                }
+
+                // ── Action row: [Cancel] [Confirm], pinned right ───────────────
+                // Default (stretch) alignment + a leading stretch spacer pin the
+                // buttons hard right (a literal `alignment:` would DISABLE the
+                // spacer's stretch — docs/patterns.md). Cancel is leftmost so the
+                // safe choice is the first Tab stop; Confirm is the rightmost,
+                // last-resort action.
+                HorizontalLayout {
+                    spacing: Theme.space-md;
+
+                    // Stretch spacer: pushes the buttons hard right.
+                    Rectangle { horizontal-stretch: 1; }
+
+                    // Cancel — holds the default focus on open. Space cancels;
+                    // Enter/Esc are rejected so the ancestor `fs` handles them (it
+                    // also maps both to cancel, so behavior is identical —
+                    // rejecting keeps the key model in ONE place).
+                    cancel-scope := FocusButton {
+                        pressed => { root.cancel(); }
+                        PrimaryButton {
+                            text: root.cancel-label;
+                            clicked => {
+                                root.cancel();
+                            }
+                        }
+                    }
+
+                    // Confirm — same wrapper, swapping DangerButton vs
+                    // PrimaryButton on `danger` (mutually-exclusive `if` gates, so
+                    // exactly one button shows). Space fires confirm; Enter/Esc
+                    // bubble to `fs` and map to cancel — so confirm can NEVER be
+                    // reached by Enter, only by a pointer click or a deliberate
+                    // Tab→Space.
+                    confirm-scope := FocusButton {
+                        pressed => { root.confirm(); }
+                        if root.danger : DangerButton {
+                            text: root.confirm-label;
+                            clicked => {
+                                root.confirm();
+                            }
+                        }
+                        if !root.danger : PrimaryButton {
+                            text: root.confirm-label;
+                            clicked => {
+                                root.confirm();
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

@@ -124,7 +124,7 @@ impl Localizer {
     /// every [`switch`] to keep the global in sync with the active locale.
     ///
     /// Slint batches property changes and repaints them together before the next
-    /// frame, so a sequential push of 63 setters cannot produce a half-translated
+    /// frame, so a sequential push of 64 setters cannot produce a half-translated
     /// frame — the entire swap is visually atomic.
     ///
     /// All `fl!()` calls resolve IDs against the `i18n.toml`-declared crate
@@ -135,7 +135,7 @@ impl Localizer {
     pub(crate) fn apply(&self, ui: &ViewerWindow) {
         let strings = ui.global::<Strings>();
 
-        // ---- 59 plain pushes (id == property name, no arguments) ----------
+        // ---- 60 plain pushes (id == property name, no arguments) ----------
         strings.set_settings_book_title(fl!(self.loader, "settings-book-title").into());
         strings.set_settings_title(fl!(self.loader, "settings-title").into());
         strings.set_settings_section_reading(fl!(self.loader, "settings-section-reading").into());
@@ -203,6 +203,7 @@ impl Localizer {
             fl!(self.loader, "viewer-pill-thumbnails-a11y").into(),
         );
         strings.set_common_close(fl!(self.loader, "common-close").into());
+        strings.set_confirm_delete_cancel(fl!(self.loader, "confirm-delete-cancel").into());
 
         // ---- 4 pre-composed Stepper labels --------------------------------
         //
