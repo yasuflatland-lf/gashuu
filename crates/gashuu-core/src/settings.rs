@@ -98,7 +98,7 @@ pub enum FitMode {
 /// UI display language. Global-only (never per-book overridden, so it is NOT
 /// part of `ViewOverride`). The snake_case serde tags double as IETF language
 /// tags ("en" / "ja"), so the persisted value maps 1:1 onto the locale names
-/// the presentation layer hands to Slint's bundled-translation selector.
+/// the presentation layer's Fluent localizer (`langid_for`) consumes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Language {
@@ -710,8 +710,8 @@ mod tests {
 
     #[test]
     fn language_serializes_as_ietf_tag() {
-        // The snake_case serde tags must stay "en"/"ja" — the presentation layer
-        // hands them to Slint's bundled-translation selector as locale names.
+        // The snake_case serde tags must stay "en"/"ja" — the presentation layer's
+        // Fluent localizer (`langid_for`) consumes them as locale identifiers.
         let json = Settings {
             language: Language::Ja,
             ..Default::default()

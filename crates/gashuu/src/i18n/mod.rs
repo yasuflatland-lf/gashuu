@@ -1,5 +1,9 @@
-//! Fluent localizer — a thin wrapper around [`FluentLanguageLoader`] that
-//! keeps the Fluent catalog in step with the gettext/Slint translation path.
+//! Fluent localizer — the sole i18n system for the crate.
+//!
+//! Owns the [`FluentLanguageLoader`] lifecycle behind [`Localizer`]: `new`
+//! loads a locale, `switch` swaps it atomically, `apply` pushes every static
+//! UI string into the Slint [`Strings`] global, and `loader` exposes the raw
+//! loader for dynamic strings resolved in [`dynamic`].
 //!
 //! [`FluentLanguageLoader`] uses interior mutability for its language state,
 //! so `&self` receivers on [`Localizer`] are sufficient; wrapping the whole
@@ -64,10 +68,10 @@ impl Localizer {
             });
 
         // Disable Unicode bidirectional isolation marks (FSI/PDI) around
-        // placeables.  The app is not bidirectional, and the legacy
-        // gettext/messages.rs strings are pinned byte-identical by tests;
-        // leaving isolation marks enabled would insert invisible codepoints
-        // that break those comparisons.
+        // placeables.  The app is not bidirectional, and the catalog values
+        // are pinned byte-identical by exact-equality tests; leaving isolation
+        // marks enabled would insert invisible codepoints that break those
+        // comparisons.
         //
         // Per `FluentLanguageLoader::set_use_isolating`'s doc note, this has
         // no effect until load_languages has been called; this call comes last.

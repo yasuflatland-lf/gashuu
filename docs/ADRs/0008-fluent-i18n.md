@@ -143,7 +143,7 @@ PR-3 landed decision point 1's Rust half (decision point 3 stays in force): ever
 call-site moved to `fl!()`, so dynamic strings are now served by Fluent. gettext is still inert (the
 `.po` + build flags survive for one more PR), so this ADR stayed `Proposed` until the PR-4 (#115)
 cutover. Full harness in [docs/patterns.md](../patterns.md) ("Neutral content structs", "`OpenOutcome`
-+ `finalize_open`", "dynamic.rs Fluent message functions").
++ `finalize_open`", "`fl!()` numeric arg type", "Word-order-safe composed a11y labels").
 
 - **`messages.rs` deleted, replaced by `src/i18n/dynamic.rs`.** The exhaustive-match Rust catalog
   (17 `msg_*` functions, each a `match` on `Language`) is gone; `dynamic.rs` exposes one typed
@@ -167,8 +167,9 @@ cutover. Full harness in [docs/patterns.md](../patterns.md) ("Neutral content st
 - **`OpenOutcome::Error(String)` pre-captures `format!("{e}")` at the `CoreError` site.** The error is
   flattened to a `String` inside `app.rs` (where `CoreError` is in scope) so no `CoreError` ever escapes
   the module as a type. Production formats the captured string via `open_error_str(&str)`; the
-  `open_error(&dyn Display)` flavor is reachable only from tests (`#[allow(dead_code)]`, the test-only
-  accessor convention), making the production-vs-test split compiler-enforced rather than documented.
+  `open_error(&dyn Display)` flavor is reachable only from tests (`#[cfg(test)]` — the function does
+  not exist in non-test builds), making the production-vs-test split compiler-enforced rather than
+  documented.
 - **`fl!()` numeric args require explicit `usize as i64` casts.** Fluent does not coerce `usize`; every
   numeric call-site (`page`, `n`, `skipped`) casts to `i64` first — consistent across `dynamic.rs`.
 - **Test-guarantee migration used a named-successor audit.** Byte-exact content pins, the
@@ -184,8 +185,9 @@ point 1 is complete and this ADR flips to `Accepted`. Full harness in
 - **The excision as executed.** `build.rs` lost `.with_bundled_translations("translations")` and
   `.with_default_translation_context(DefaultTranslationContext::None)`; the
   `crates/gashuu/translations/ja/LC_MESSAGES/gashuu.po` tree was deleted; `select_ui_language` and both
-  of its call-sites were removed. The `with_style("fluent-dark")` build flag STAYS — it is the Windows
-  visual style and an unrelated naming collision with Mozilla Fluent, not part of the i18n machinery.
+  of its call-sites were removed. The `with_style("fluent-dark")` build flag STAYS — it is the Slint
+  widget visual style (the cross-platform Fluent Design widget set) — an unrelated naming collision
+  with Mozilla Fluent, not part of the i18n machinery.
   Removing `select_ui_language` also retires the old "must run after the first component is created"
   ordering constraint: `Localizer` has no such requirement.
 - **OUT_DIR canary retired.** The `bundled_translations_compiled_into_generated_code` test (which
