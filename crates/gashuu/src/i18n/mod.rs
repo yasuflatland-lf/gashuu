@@ -11,7 +11,13 @@ mod loader;
 use gashuu_core::Language;
 use i18n_embed::fluent::{fluent_language_loader, FluentLanguageLoader};
 use i18n_embed::LanguageLoader as _;
+use i18n_embed_fl::fl;
 use loader::{langid_for, Localizations};
+// `ComponentHandle` must be in scope to call `.global::<T>()` on a Slint
+// component handle from within this submodule.  The `as _` form avoids an
+// unused-import warning when the trait name itself is never referenced directly.
+use crate::{Strings, ViewerWindow};
+use slint::ComponentHandle as _;
 
 /// Fluent localizer, wrapping a [`FluentLanguageLoader`].
 ///
@@ -90,6 +96,136 @@ impl Localizer {
         // `FluentLanguageLoader::set_use_isolating`'s doc note, the setting
         // takes effect only after load_languages.
         self.loader.set_use_isolating(false);
+    }
+
+    /// Push every Fluent-served static string into the [`Strings`] global on
+    /// `ui`.
+    ///
+    /// This is the single chokepoint between the Fluent catalog and the Slint
+    /// presentation layer: all [`fl!`] calls in the crate live here so they
+    /// remain easy to grep and audit.  Call it at boot (after [`new`]) and after
+    /// every [`switch`] to keep the global in sync with the active locale.
+    ///
+    /// Slint batches property changes and repaints them together before the next
+    /// frame, so a sequential push of 61 setters cannot produce a half-translated
+    /// frame — the entire swap is visually atomic.
+    ///
+    /// All `fl!()` calls resolve IDs against the `i18n.toml`-declared crate
+    /// catalog.  Keeping every `fl!` in this one module makes the complete set of
+    /// Fluent-sourced strings greppable at a glance.
+    ///
+    /// [`new`]: Localizer::new
+    /// [`switch`]: Localizer::switch
+    pub(crate) fn apply(&self, ui: &ViewerWindow) {
+        let strings = ui.global::<Strings>();
+
+        // ---- 57 plain pushes (id == property name, no arguments) ----------
+        strings.set_settings_book_title(fl!(self.loader, "settings-book-title").into());
+        strings.set_settings_title(fl!(self.loader, "settings-title").into());
+        strings.set_settings_section_reading(fl!(self.loader, "settings-section-reading").into());
+        strings.set_settings_section_display(fl!(self.loader, "settings-section-display").into());
+        strings.set_settings_section_performance(
+            fl!(self.loader, "settings-section-performance").into(),
+        );
+        strings.set_settings_section_general(fl!(self.loader, "settings-section-general").into());
+        strings.set_settings_direction_label(fl!(self.loader, "settings-direction-label").into());
+        strings.set_settings_direction_ltr(fl!(self.loader, "settings-direction-ltr").into());
+        strings.set_settings_direction_rtl(fl!(self.loader, "settings-direction-rtl").into());
+        strings.set_settings_direction_a11y(fl!(self.loader, "settings-direction-a11y").into());
+        strings.set_settings_spread_label(fl!(self.loader, "settings-spread-label").into());
+        strings.set_settings_spread_single(fl!(self.loader, "settings-spread-single").into());
+        strings.set_settings_spread_double(fl!(self.loader, "settings-spread-double").into());
+        strings.set_settings_spread_auto(fl!(self.loader, "settings-spread-auto").into());
+        strings.set_settings_spread_a11y(fl!(self.loader, "settings-spread-a11y").into());
+        strings.set_settings_cover_label(fl!(self.loader, "settings-cover-label").into());
+        strings.set_settings_cover_standalone(fl!(self.loader, "settings-cover-standalone").into());
+        strings.set_settings_cover_paired(fl!(self.loader, "settings-cover-paired").into());
+        strings.set_settings_cover_a11y(fl!(self.loader, "settings-cover-a11y").into());
+        strings.set_settings_fit_label(fl!(self.loader, "settings-fit-label").into());
+        strings.set_settings_fit_whole(fl!(self.loader, "settings-fit-whole").into());
+        strings.set_settings_fit_width(fl!(self.loader, "settings-fit-width").into());
+        strings.set_settings_fit_actual(fl!(self.loader, "settings-fit-actual").into());
+        strings.set_settings_fit_a11y(fl!(self.loader, "settings-fit-a11y").into());
+        strings.set_settings_cache_label(fl!(self.loader, "settings-cache-label").into());
+        strings.set_settings_cache_a11y(fl!(self.loader, "settings-cache-a11y").into());
+        strings.set_settings_preload_label(fl!(self.loader, "settings-preload-label").into());
+        strings.set_settings_preload_a11y(fl!(self.loader, "settings-preload-a11y").into());
+        strings.set_settings_track_recent_label(
+            fl!(self.loader, "settings-track-recent-label").into(),
+        );
+        strings
+            .set_settings_track_recent_a11y(fl!(self.loader, "settings-track-recent-a11y").into());
+        strings.set_settings_performance_note(fl!(self.loader, "settings-performance-note").into());
+        strings.set_settings_language_label(fl!(self.loader, "settings-language-label").into());
+        strings.set_settings_language_a11y(fl!(self.loader, "settings-language-a11y").into());
+        strings.set_settings_shortcuts_label(fl!(self.loader, "settings-shortcuts-label").into());
+        strings.set_settings_reset_to_global(fl!(self.loader, "settings-reset-to-global").into());
+        strings.set_shortcuts_title(fl!(self.loader, "shortcuts-title").into());
+        strings.set_guide_welcome(fl!(self.loader, "guide-welcome").into());
+        strings.set_guide_intro(fl!(self.loader, "guide-intro").into());
+        strings.set_guide_open(fl!(self.loader, "guide-open").into());
+        strings.set_guide_turn_pages(fl!(self.loader, "guide-turn-pages").into());
+        strings.set_guide_modes(fl!(self.loader, "guide-modes").into());
+        strings.set_guide_zoom_fit(fl!(self.loader, "guide-zoom-fit").into());
+        strings.set_guide_thumbnails(fl!(self.loader, "guide-thumbnails").into());
+        strings.set_guide_settings(fl!(self.loader, "guide-settings").into());
+        strings.set_guide_got_it(fl!(self.loader, "guide-got-it").into());
+        strings.set_carousel_empty_title(fl!(self.loader, "carousel-empty-title").into());
+        strings.set_carousel_empty_subtitle(fl!(self.loader, "carousel-empty-subtitle").into());
+        strings.set_carousel_empty_cta(fl!(self.loader, "carousel-empty-cta").into());
+        strings.set_carousel_no_results_title(fl!(self.loader, "carousel-no-results-title").into());
+        strings.set_carousel_no_results_hint(fl!(self.loader, "carousel-no-results-hint").into());
+        strings.set_navbar_search_placeholder(fl!(self.loader, "navbar-search-placeholder").into());
+        strings.set_navbar_search_a11y(fl!(self.loader, "navbar-search-a11y").into());
+        strings.set_navbar_add_files_a11y(fl!(self.loader, "navbar-add-files-a11y").into());
+        strings.set_navbar_add_folder_a11y(fl!(self.loader, "navbar-add-folder-a11y").into());
+        strings
+            .set_viewer_pill_goto_page_a11y(fl!(self.loader, "viewer-pill-goto-page-a11y").into());
+        strings.set_viewer_pill_thumbnails_a11y(
+            fl!(self.loader, "viewer-pill-thumbnails-a11y").into(),
+        );
+        strings.set_common_close(fl!(self.loader, "common-close").into());
+
+        // ---- 4 pre-composed Stepper labels --------------------------------
+        //
+        // Composed here via Fluent named args so verb/noun order survives
+        // Japanese verb-final grammar — never Slint-side string concatenation.
+        // English: "Decrease Cache size in pages"
+        // Japanese: "キャッシュサイズ（ページ数）を減らす"  (label comes first)
+        let cache_label = fl!(self.loader, "settings-cache-a11y");
+        strings.set_stepper_decrease_cache(
+            fl!(
+                self.loader,
+                "stepper-decrease",
+                label = cache_label.as_str()
+            )
+            .into(),
+        );
+        strings.set_stepper_increase_cache(
+            fl!(
+                self.loader,
+                "stepper-increase",
+                label = cache_label.as_str()
+            )
+            .into(),
+        );
+        let preload_label = fl!(self.loader, "settings-preload-a11y");
+        strings.set_stepper_decrease_preload(
+            fl!(
+                self.loader,
+                "stepper-decrease",
+                label = preload_label.as_str()
+            )
+            .into(),
+        );
+        strings.set_stepper_increase_preload(
+            fl!(
+                self.loader,
+                "stepper-increase",
+                label = preload_label.as_str()
+            )
+            .into(),
+        );
     }
 }
 
