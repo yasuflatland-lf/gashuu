@@ -456,7 +456,7 @@ fn main() -> color_eyre::Result<()> {
     // visible index → library path through the search projection (the SAME hop as
     // `on_carousel_open`), toggles the path in the selection set, then flips ONLY
     // that row's `selected` flag so its accent badge appears/disappears without a
-    // model rebuild. Out-of-range / desync indices are a no-op.
+    // model rebuild. Out-of-range / desync indices are a no-op (warn on desync).
     {
         let ui_weak = ui.as_weak();
         let library = Rc::clone(&library);
@@ -465,8 +465,16 @@ fn main() -> color_eyre::Result<()> {
         let localizer = Rc::clone(&localizer);
         ui.on_carousel_toggle_selection(move |index| {
             with_ui(&ui_weak, |ui| {
-                let path = visible_index_to_path(&library, &search, index);
-                let Some(path) = path else {
+                let Some(path) = visible_index_to_path(&library, &search, index) else {
+                    // Desync diagnostics (cold path): re-borrow is safe — the helper's borrows dropped.
+                    let visible_len = search.borrow().visible_indices().len();
+                    let library_len = library.borrow().books().len();
+                    tracing::warn!(
+                        index,
+                        visible_len,
+                        library_len,
+                        "carousel-toggle-selection: no book at index"
+                    );
                     return;
                 };
                 selection.borrow_mut().toggle(path.clone());
@@ -494,8 +502,16 @@ fn main() -> color_eyre::Result<()> {
                 if !ui.get_carousel_selection_mode() {
                     return; // normal mode: focus only, never open
                 }
-                let path = visible_index_to_path(&library, &search, index);
-                let Some(path) = path else {
+                let Some(path) = visible_index_to_path(&library, &search, index) else {
+                    // Desync diagnostics (cold path): re-borrow is safe — the helper's borrows dropped.
+                    let visible_len = search.borrow().visible_indices().len();
+                    let library_len = library.borrow().books().len();
+                    tracing::warn!(
+                        index,
+                        visible_len,
+                        library_len,
+                        "carousel-cover-clicked: no book at index in selection mode"
+                    );
                     return;
                 };
                 selection.borrow_mut().toggle(path.clone());
@@ -542,10 +558,11 @@ fn main() -> color_eyre::Result<()> {
         });
     }
 
-    // Carousel: leave selection mode (Esc). The Slint key arm already cleared
-    // `selection-mode`; here we clear the Rust selection set and re-apply the
-    // (now empty) flags over the visible rows so every badge disappears. A fresh
-    // re-entry into selection mode then starts with nothing selected.
+    // Carousel: leave selection mode (Esc or toolbar exit button). The Slint
+    // caller (Esc key arm or toolbar exit button) already cleared `selection-mode`;
+    // here we clear the Rust selection set and re-apply the (now empty) flags over
+    // the visible rows so every badge disappears. A fresh re-entry into selection
+    // mode then starts with nothing selected.
     {
         let ui_weak = ui.as_weak();
         let library = Rc::clone(&library);
@@ -1720,9 +1737,8 @@ fn visible_focus_index_for_path(
 /// so the toolbar strings are always current without a full refresh.
 ///
 /// Borrow discipline: `selection`, `search`, and `library` are distinct
-/// `RefCell`s; each shared borrow is confined to the argument expression that
-/// consumes it and drops at the `;` before the next statement acquires a
-/// different borrow.
+/// `RefCell`s; each set of shared borrows is confined to an explicit block
+/// scope that drops before the next borrow is acquired.
 fn push_selection_strings(
     ui: &ViewerWindow,
     localizer: &i18n::Localizer,
