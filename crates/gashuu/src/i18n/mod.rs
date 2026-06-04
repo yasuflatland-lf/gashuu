@@ -720,6 +720,128 @@ mod tests {
         }
     }
 
+    // ---- test 6e: composed stepper labels reproduce apply()'s two-step -------
+
+    /// Reproduces `apply()`'s exact two-step Stepper a11y composition end-to-end
+    /// so that a label cross-wire or a word-order regression fails loudly.
+    ///
+    /// Why this test exists:
+    ///
+    /// (a) `apply()` resolves `settings-cache-a11y` / `settings-preload-a11y`
+    ///     from the live catalog, then passes that string as the `label` named arg
+    ///     into `stepper-decrease` / `stepper-increase`.  A cross-wire — e.g.
+    ///     feeding `settings-cache-label` ("Cache size (pages)") instead of
+    ///     `settings-cache-a11y` ("Cache size in pages") — would produce a
+    ///     silently wrong composed string that the existing
+    ///     `parameterized_messages_embed_arguments` test (which hardcodes the
+    ///     label literal and only asserts starts_with/ends_with) would never catch.
+    ///
+    /// (b) The four English byte-exact literals below double as a compile-time pin
+    ///     for the composed English defaults in `ui/Strings.slint` (lines ~91-94).
+    ///     If `settings-cache-a11y` or `stepper-decrease` is edited in en.ftl
+    ///     without updating the Slint defaults, this test will fail, alerting
+    ///     the author to keep both in sync.
+    ///
+    /// Japanese byte-exact equality (not ends_with) is essential: verb-final word
+    /// order is the entire reason composition lives in Rust rather than Slint.
+    /// An `ends_with` check would mask a regression like
+    /// `減らす（{ $label }）` (reversed order).
+    #[test]
+    fn composed_stepper_labels_match_apply_composition() {
+        // ---- English -------------------------------------------------------
+        let en = Localizer::new(Language::En);
+
+        // Step 1: resolve the label from the catalog (mirrors apply()'s first fl!).
+        let en_cache = get(&en, "settings-cache-a11y");
+        let en_preload = get(&en, "settings-preload-a11y");
+
+        // Step 2: compose via named arg (mirrors apply()'s second fl!).
+        let mut args = HashMap::new();
+        args.insert("label", en_cache.clone());
+        assert_eq!(
+            get_args(&en, "stepper-decrease", args),
+            "Decrease Cache size in pages",
+            "En stepper-decrease(cache): composed string mismatch — \
+             check settings-cache-a11y and stepper-decrease in en.ftl \
+             and the Strings.slint stepper-decrease-cache default"
+        );
+
+        let mut args = HashMap::new();
+        args.insert("label", en_cache.clone());
+        assert_eq!(
+            get_args(&en, "stepper-increase", args),
+            "Increase Cache size in pages",
+            "En stepper-increase(cache): composed string mismatch — \
+             check settings-cache-a11y and stepper-increase in en.ftl \
+             and the Strings.slint stepper-increase-cache default"
+        );
+
+        let mut args = HashMap::new();
+        args.insert("label", en_preload.clone());
+        assert_eq!(
+            get_args(&en, "stepper-decrease", args),
+            "Decrease Preload radius",
+            "En stepper-decrease(preload): composed string mismatch — \
+             check settings-preload-a11y and stepper-decrease in en.ftl \
+             and the Strings.slint stepper-decrease-preload default"
+        );
+
+        let mut args = HashMap::new();
+        args.insert("label", en_preload.clone());
+        assert_eq!(
+            get_args(&en, "stepper-increase", args),
+            "Increase Preload radius",
+            "En stepper-increase(preload): composed string mismatch — \
+             check settings-preload-a11y and stepper-increase in en.ftl \
+             and the Strings.slint stepper-increase-preload default"
+        );
+
+        // ---- Japanese ------------------------------------------------------
+        // Byte-exact equality (not ends_with / starts_with): verb-final word
+        // order is the entire reason composition lives in Rust; a reorder like
+        // `減らす（{ $label }）` would still pass an ends_with check.
+        let ja = Localizer::new(Language::Ja);
+
+        let ja_cache = get(&ja, "settings-cache-a11y");
+        let ja_preload = get(&ja, "settings-preload-a11y");
+
+        let mut args = HashMap::new();
+        args.insert("label", ja_cache.clone());
+        assert_eq!(
+            get_args(&ja, "stepper-decrease", args),
+            "キャッシュサイズ（ページ数）を減らす",
+            "Ja stepper-decrease(cache): byte-exact composition mismatch — \
+             check settings-cache-a11y and stepper-decrease in ja.ftl"
+        );
+
+        let mut args = HashMap::new();
+        args.insert("label", ja_cache.clone());
+        assert_eq!(
+            get_args(&ja, "stepper-increase", args),
+            "キャッシュサイズ（ページ数）を増やす",
+            "Ja stepper-increase(cache): byte-exact composition mismatch — \
+             check settings-cache-a11y and stepper-increase in ja.ftl"
+        );
+
+        let mut args = HashMap::new();
+        args.insert("label", ja_preload.clone());
+        assert_eq!(
+            get_args(&ja, "stepper-decrease", args),
+            "先読みページ数を減らす",
+            "Ja stepper-decrease(preload): byte-exact composition mismatch — \
+             check settings-preload-a11y and stepper-decrease in ja.ftl"
+        );
+
+        let mut args = HashMap::new();
+        args.insert("label", ja_preload.clone());
+        assert_eq!(
+            get_args(&ja, "stepper-increase", args),
+            "先読みページ数を増やす",
+            "Ja stepper-increase(preload): byte-exact composition mismatch — \
+             check settings-preload-a11y and stepper-increase in ja.ftl"
+        );
+    }
+
     // ---- test 6c: duplicate-ID guard (integrated into existing test) --
     // Note: the duplicate-ID check is incorporated into
     // `all_ftl_ids_present_in_every_locale` above via a pre-collection
