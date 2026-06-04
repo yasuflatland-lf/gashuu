@@ -6,7 +6,9 @@
 #           notice-, common-.
 # A11y-only strings get an -a11y suffix.
 # Strings shared across screens live under the primary owner's prefix.
-# Translations are byte-identical to gashuu.po msgstrs and messages.rs Ja arms.
+# These values were lifted byte-for-byte from the original gettext catalog and
+# messages.rs Ja arms (both since removed); parity is pinned by the i18n
+# byte-oracle tests.
 
 # ---- settings ----
 
@@ -77,7 +79,7 @@ shortcuts-title = キーボードショートカット
 # Multi-line keyboard reference rendered read-only in ShortcutsOverlay.
 # File indentation: section headers 4 spaces, body lines 6 spaces.
 # Fluent strips the common 4-space prefix from block values, so delivered text
-# has: headers 0 spaces (flush), body lines 2 spaces — matching messages.rs arms.
+# has: headers 0 spaces (flush), body lines 2 spaces — formerly matched the deleted messages.rs arms.
 # Blank lines between sections are preserved naturally.
 # Line count must equal the English arm (test: key_bindings_help_is_translated_with_matching_shape).
 shortcuts-help =
@@ -159,7 +161,7 @@ stepper-increase = { $label }を増やす
 common-close = 閉じる
 
 # ---- viewer ----
-# Dynamic status-line messages (maps to msg_* functions in src/messages.rs).
+# Dynamic status-line messages (mapped to the former msg_* functions of the deleted src/messages.rs).
 
 # Static status strings
 viewer-no-folder = フォルダーが開かれていません
@@ -180,12 +182,12 @@ viewer-page-unavailable = （ページ { $page } は表示できません）
 viewer-decode-error = デコードエラー: { $error }
 
 # ---- notice ----
-# Parameterized notice strings (maps to msg_* functions in src/messages.rs).
+# Parameterized notice strings (mapped to the former msg_* functions of the deleted src/messages.rs).
 
 # No leading space for Japanese: full-width parens act as the separator.
-# (Matches messages.rs Ja arm exactly: "（zip-slip または上限超過）")
+# (Matched the deleted messages.rs Ja arm exactly: "（zip-slip または上限超過）")
 notice-skipped-detail-archive = （zip-slip または上限超過）
-# Space between { $n } and 件 matches messages.rs Ja arm exactly.
+# Space between { $n } and 件 matched the deleted messages.rs Ja arm exactly.
 notice-entries-skipped = { $n } 件のエントリをスキップしました{ $detail }
 notice-failed-save-settings = 設定を保存できませんでした: { $error }
 notice-failed-save-library = ライブラリを保存できませんでした: { $error }

@@ -75,14 +75,13 @@ labels live once and are read by both the settings dialog and the viewer status 
 strings. Prefer NAMED args (`{ $label }`) over positional placeholders — they are word-order-safe
 for verb-final Japanese; see [patterns.md](patterns.md) ("Fluent catalog authoring gotchas").
 
-### i18n load-failure policy: panic for the catalog we control, never-fatal for the gettext path
+### i18n load-failure policy: panic for the catalog we control
 
 The Fluent `Localizer` (`new`/`switch`) `panic!`s on a load failure: assets are
 compile-time-embedded and `langid_for` is exhaustive, so a failure is a programmer error, not a
-runtime condition — fail LOUD. This is deliberately asymmetric to `select_ui_language`'s
-never-fatal `tracing::warn` on the gettext/`@tr()` side; the asymmetry and its rationale (the repo's
-history of a silent gettext all-miss) are documented at the `main.rs` call site and in
-[patterns.md](patterns.md) ("Fluent loader").
+runtime condition — fail LOUD. (The former gettext path used a never-fatal `tracing::warn` instead;
+that asymmetry and its rationale — the repo's history of a silent gettext all-miss — are preserved in
+[patterns.md](patterns.md) ("Fluent loader").)
 
 ### Test fixtures (no committed binaries)
 

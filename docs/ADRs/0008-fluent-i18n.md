@@ -1,6 +1,6 @@
 # ADR-0008: Adopt Fluent (.ftl) as the single i18n catalog via i18n-embed
 
-- Status: Proposed
+- Status: Accepted
 - Decided: 2026-06-04
 - Related: [ADR-0001](0001-gui-framework-slint.md) (Slint's translation infrastructure is the key
   constraint), [ADR-0002](0002-layered-two-crate-architecture.md) (core↔UI boundary governs where
@@ -136,3 +136,66 @@ push", "Word-order-safe composed a11y labels", "The gettext bundler is keyed by 
   `ja_catalog_pins_spread_vocabulary`.
 - **Zero `@tr()` remain** in `.slint`, yet the `.po` + `build.rs` `with_bundled_translations` +
   `select_ui_language` stay in place as an inert rollback surface until #115.
+
+## Implementation notes (as-built deltas — PR-3, #114)
+
+PR-3 landed decision point 1's Rust half (decision point 3 stays in force): every `messages.rs`
+call-site moved to `fl!()`, so dynamic strings are now served by Fluent. gettext is still inert (the
+`.po` + build flags survive for one more PR), so this ADR stayed `Proposed` until the PR-4 (#115)
+cutover. Full harness in [docs/patterns.md](../patterns.md) ("Neutral content structs", "`OpenOutcome`
++ `finalize_open`", "`fl!()` numeric arg type", "Word-order-safe composed a11y labels").
+
+- **`messages.rs` deleted, replaced by `src/i18n/dynamic.rs`.** The exhaustive-match Rust catalog
+  (17 `msg_*` functions, each a `match` on `Language`) is gone; `dynamic.rs` exposes one typed
+  `pub(crate) fn` per former `msg_*`, each taking `&FluentLanguageLoader` and NO `Language` param —
+  the loader carries the active locale, so the per-function enum dispatch disappears (enum dispatch
+  survives only where the *argument* is an enum, e.g. `spread_label(SpreadMode)`).
+- **Neutral content structs decouple domain state from formatting — structurally, not by convention.**
+  `StatusContent`/`StatusKind` (in `viewer_state.rs`) and `NoticesContent`/`OpenOutcome`/`SkippedDetail`
+  (in `app.rs`) carry plain domain facts; the `fl!()` formatting lives only in `dynamic.rs`'s
+  aggregators (`format_status`, `format_notices`). Consequently `viewer_state.rs` and `app.rs` now have
+  ZERO `crate::i18n` imports — a single grep verifies the boundary, so the decoupling is enforced by
+  the import graph rather than by discipline.
+- **`refresh()` gained a `loader` parameter; `finalize_open()` deduplicates the three open-flow
+  call-sites.** Both helpers live in `main.rs` — the layer that owns BOTH the active locale (`Localizer`)
+  and the UI handle — so threading the loader there avoids a dependency cycle with `app.rs` (which stays
+  i18n-free per the delta above). `finalize_open` is the single place the `OpenOutcome` match + the
+  notice-append loop appear.
+- **`Localizer::loader()` getter added now — the defer-getters-until-consumed rule (PR-1) discharged.**
+  PR-1 deliberately did not expose the loader; PR-3 is its first real cross-file consumer (`dynamic.rs`),
+  so the getter landed exactly when a caller existed, not speculatively.
+- **`OpenOutcome::Error(String)` pre-captures `format!("{e}")` at the `CoreError` site.** The error is
+  flattened to a `String` inside `app.rs` (where `CoreError` is in scope) so no `CoreError` ever escapes
+  the module as a type. Production formats the captured string via `open_error_str(&str)`; the
+  `open_error(&dyn Display)` flavor is reachable only from tests (`#[cfg(test)]` — the function does
+  not exist in non-test builds), making the production-vs-test split compiler-enforced rather than
+  documented.
+- **`fl!()` numeric args require explicit `usize as i64` casts.** Fluent does not coerce `usize`; every
+  numeric call-site (`page`, `n`, `skipped`) casts to `i64` first — consistent across `dynamic.rs`.
+- **Test-guarantee migration used a named-successor audit.** Byte-exact content pins, the
+  cross-locale-differ assertions, and the args-embedded test families were each carried into the `i18n`
+  test module under named successors (no guarantee silently dropped). 515 tests passing at PR-3 HEAD.
+
+## Implementation notes (as-built deltas — PR-4, #115)
+
+PR-4 is the one-way door: it deletes the gettext scaffolding the prior PRs kept inert, so decision
+point 1 is complete and this ADR flips to `Accepted`. Full harness in
+[docs/patterns.md](../patterns.md).
+
+- **The excision as executed.** `build.rs` lost `.with_bundled_translations("translations")` and
+  `.with_default_translation_context(DefaultTranslationContext::None)`; the
+  `crates/gashuu/translations/ja/LC_MESSAGES/gashuu.po` tree was deleted; `select_ui_language` and both
+  of its call-sites were removed. The `with_style("fluent-dark")` build flag STAYS — it is the Slint
+  widget visual style (the cross-platform Fluent Design widget set) — an unrelated naming collision
+  with Mozilla Fluent, not part of the i18n machinery.
+  Removing `select_ui_language` also retires the old "must run after the first component is created"
+  ordering constraint: `Localizer` has no such requirement.
+- **OUT_DIR canary retired.** The `bundled_translations_compiled_into_generated_code` test (which
+  inspected the gettext bundler's generated code) was deleted; its guarantee is now carried by
+  `i18n::tests::ja_catalog_pins_spread_vocabulary` plus `fl!()`'s compile-time ID validation.
+- **Extra scope beyond the issue: `ftl_static_channel_covers_every_po_msgid` also deleted.** It
+  `include_str!`-read the `.po` file, so it could not survive the tree deletion. Its completeness
+  guarantee was already double-covered by `all_ftl_ids_present_in_every_locale` + `fl!()`'s compile
+  checks; the `.po` byte-oracle tests were transitional bridges by design.
+- **One-way door now closed.** There is no `@tr()`/`.po` surface left to revert onto; regressions in the
+  Fluent path are fixed forward, not rolled back.

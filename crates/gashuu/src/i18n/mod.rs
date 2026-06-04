@@ -1,5 +1,9 @@
-//! Fluent localizer — a thin wrapper around [`FluentLanguageLoader`] that
-//! keeps the Fluent catalog in step with the gettext/Slint translation path.
+//! Fluent localizer — the sole i18n system for the crate.
+//!
+//! Owns the [`FluentLanguageLoader`] lifecycle behind [`Localizer`]: `new`
+//! loads a locale, `switch` swaps it atomically, `apply` pushes every static
+//! UI string into the Slint [`Strings`] global, and `loader` exposes the raw
+//! loader for dynamic strings resolved in [`dynamic`].
 //!
 //! [`FluentLanguageLoader`] uses interior mutability for its language state,
 //! so `&self` receivers on [`Localizer`] are sufficient; wrapping the whole
@@ -64,10 +68,10 @@ impl Localizer {
             });
 
         // Disable Unicode bidirectional isolation marks (FSI/PDI) around
-        // placeables.  The app is not bidirectional, and the legacy
-        // gettext/messages.rs strings are pinned byte-identical by tests;
-        // leaving isolation marks enabled would insert invisible codepoints
-        // that break those comparisons.
+        // placeables.  The app is not bidirectional, and the catalog values
+        // are pinned byte-identical by exact-equality tests; leaving isolation
+        // marks enabled would insert invisible codepoints that break those
+        // comparisons.
         //
         // Per `FluentLanguageLoader::set_use_isolating`'s doc note, this has
         // no effect until load_languages has been called; this call comes last.
@@ -652,132 +656,6 @@ Library:
             !result.contains(PDI),
             "After switch(Ja): PDI mark found in stepper-decrease: {result:?}"
         );
-    }
-
-    // ---- test 6b: static FTL channel covers every .po msgid -----------
-
-    /// Guards catalog completeness between the legacy .po and en.ftl while
-    /// both i18n systems coexist (the .po is the live oracle for the static
-    /// channel).  This test asserts that every non-empty msgid in the .po has
-    /// a corresponding message value in en.ftl, so no string can silently
-    /// fall through the Fluent layer.
-    ///
-    /// The two Stepper msgids ("Decrease {}" / "Increase {}") use `{}` as the
-    /// positional placeholder in the .po but `{ $label }` in the Fluent
-    /// catalog; these are mapped explicitly.  All other msgids must appear
-    /// verbatim as Fluent message IDs — they are compared by VALUE (the
-    /// actual English string) to avoid depending on a stable msgid→Fluent-ID
-    /// mapping convention.
-    #[test]
-    fn ftl_static_channel_covers_every_po_msgid() {
-        // Collect all non-empty msgids from the .po file.
-        // The .po has no multi-line msgid continuations (all msgids are single
-        // quoted strings on one line), so a simple line-prefix scan is robust.
-        let po_src = include_str!("../../translations/ja/LC_MESSAGES/gashuu.po");
-        let mut po_msgids: Vec<String> = Vec::new();
-        for line in po_src.lines() {
-            if let Some(rest) = line.strip_prefix("msgid \"") {
-                if let Some(id) = rest.strip_suffix('"') {
-                    let id = id
-                        .replace("\\\"", "\"")
-                        .replace("\\\\", "\\")
-                        .replace("\\n", "\n");
-                    if !id.is_empty() {
-                        po_msgids.push(id);
-                    }
-                }
-            }
-        }
-
-        // Vacuous-pass guard: a silent zero is the exact failure this test
-        // exists to prevent.  If the line-prefix parser breaks (e.g. because
-        // the .po was reformatted with multi-line msgids), we want a loud
-        // failure rather than a green run that covers nothing.
-        assert!(
-            po_msgids.len() >= 50,
-            "po parser found only {} msgids — the .po was likely reformatted \
-             (multi-line msgids?) and the line-prefix parser broke",
-            po_msgids.len()
-        );
-
-        // Parse en.ftl and collect message VALUES (pattern text).
-        let en_ast = parse_ftl(include_str!("../../i18n/en/gashuu.ftl"));
-
-        use fluent_syntax::ast::{InlineExpression, PatternElement};
-
-        // Build a set of all en.ftl value strings for fast lookup.
-        // For simple text-only messages, the value is the concatenation of
-        // TextElements.  For the stepper messages which contain a placeable,
-        // we recognise them by the two known IDs and special-case them.
-        let mut en_values: std::collections::HashSet<String> = std::collections::HashSet::new();
-        let mut stepper_decrease_value: Option<String> = None;
-        let mut stepper_increase_value: Option<String> = None;
-
-        for entry in &en_ast.body {
-            if let Entry::Message(m) = entry {
-                if let Some(pattern) = &m.value {
-                    // Reconstruct the message value by joining text elements
-                    // and variable references.
-                    let value: String = pattern
-                        .elements
-                        .iter()
-                        .map(|elem| match elem {
-                            PatternElement::TextElement { value } => value.to_string(),
-                            PatternElement::Placeable { expression } => {
-                                // Render variable references as "{ $name }" and
-                                // string literals verbatim (e.g. {" "}).
-                                match expression {
-                                    fluent_syntax::ast::Expression::Inline(
-                                        InlineExpression::VariableReference { id },
-                                    ) => format!("{{ ${} }}", id.name),
-                                    fluent_syntax::ast::Expression::Inline(
-                                        InlineExpression::StringLiteral { value },
-                                    ) => value.to_string(),
-                                    other => panic!(
-                                        "unhandled Fluent placeable kind in ftl value \
-                                         reconstruction: {other:?} — extend this match arm \
-                                         to handle the new construct explicitly"
-                                    ),
-                                }
-                            }
-                        })
-                        .collect::<Vec<_>>()
-                        .join("");
-                    let trimmed = value.trim().to_string();
-                    if m.id.name == "stepper-decrease" {
-                        stepper_decrease_value = Some(trimmed.clone());
-                    } else if m.id.name == "stepper-increase" {
-                        stepper_increase_value = Some(trimmed.clone());
-                    }
-                    en_values.insert(trimmed);
-                }
-            }
-        }
-
-        // The stepper Fluent values ("Decrease { $label }" / "Increase { $label }")
-        // map from the .po's positional-placeholder form ("Decrease {}" / "Increase {}").
-        let stepper_decrease_ftl =
-            stepper_decrease_value.expect("en.ftl must have a 'stepper-decrease' message");
-        let stepper_increase_ftl =
-            stepper_increase_value.expect("en.ftl must have a 'stepper-increase' message");
-
-        for msgid in &po_msgids {
-            // Map .po stepper positional placeholders to their Fluent equivalents.
-            let check_value = if msgid == "Decrease {}" {
-                stepper_decrease_ftl.clone()
-            } else if msgid == "Increase {}" {
-                stepper_increase_ftl.clone()
-            } else {
-                msgid.clone()
-            };
-
-            assert!(
-                en_values.contains(&check_value),
-                "msgid {:?} (mapped to FTL value {:?}) has no corresponding value in en.ftl",
-                msgid,
-                check_value
-            );
-        }
     }
 
     // ---- test 6e: composed stepper labels reproduce apply()'s two-step -------

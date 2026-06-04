@@ -23,7 +23,7 @@ use enum_adapters::{
     reading_direction_to_index, spread_mode_to_index,
 };
 use gashuu_core::{
-    CacheConfig, DecodedImage, FitMode, Language, Library, ReadingDirection, Settings, ViewOverride,
+    CacheConfig, DecodedImage, FitMode, Library, ReadingDirection, Settings, ViewOverride,
 };
 use keymap::{map_key, KeyCommand};
 use library_model::LibrarySearchState;
@@ -77,13 +77,8 @@ fn main() -> color_eyre::Result<()> {
     };
 
     let ui = ViewerWindow::new()?;
-    // Apply the persisted UI language to the .slint side before the first paint
-    // (the Rust-composed strings read it from `ViewerState`/`Settings` instead).
-    select_ui_language(settings.language);
-    // Boot the Fluent localizer and immediately push every static string into
-    // the Strings global via `apply()`.  Both systems' language state stay in
-    // lockstep from the first frame; `select_ui_language` is kept as an inert
-    // surface for the gettext @tr() path until the gettext excision in issue 115.
+    // Boot the Fluent localizer with the persisted language; `apply()` pushes
+    // every static string into the Strings global before the first paint.
     let localizer = Rc::new(i18n::Localizer::new(settings.language));
     localizer.apply(&ui);
     let state = Rc::new(RefCell::new(ViewerState::from_settings(&settings)));
@@ -894,21 +889,15 @@ fn main() -> color_eyre::Result<()> {
                     return;
                 }
                 settings.borrow_mut().language = lang;
-                // Keep the Fluent loader in step with the gettext switch.
-                // Deliberate asymmetry: localizer.switch panics on load
-                // failure (compile-time-embedded catalogs + exhaustive
-                // langid_for make this theoretically unreachable) — loud
-                // programmer-error policy, intentionally diverging from
-                // select_ui_language's never-fatal tracing::warn path.
+                // Reload the Fluent catalog for the new language.
+                // Deliberate loud-panic policy: compile-time-embedded catalogs
+                // and exhaustive langid_for make a load failure theoretically
+                // unreachable; a panic surfaces programmer error immediately.
                 localizer.switch(lang);
                 // Push the newly loaded catalog into the Strings global so
                 // every Fluent-sourced label flips to the new language atomically
                 // before the next paint.
                 localizer.apply(&ui);
-                // `select_ui_language` is kept as an inert surface for the
-                // gettext @tr() path; zero @tr() bindings remain after
-                // issue 113.  The call stays until the gettext excision in issue 115.
-                select_ui_language(lang);
                 ui.set_key_bindings_text(
                     crate::i18n::dynamic::shortcuts_help(localizer.loader()).into(),
                 );
@@ -1302,30 +1291,6 @@ fn to_slint_image(decoded: &DecodedImage) -> slint::Image {
     slint::Image::from_rgba8(buffer)
 }
 
-/// Select the Slint bundled-translation locale for `lang`.
-///
-/// As of issue 113 (PR-2) no `@tr()` bindings remain in the UI, so this call
-/// has no observable effect on displayed strings — all static labels are now
-/// pushed via `Localizer::apply()` instead. The function and its two call sites
-/// are kept as an inert rollback surface for the gettext path until the gettext
-/// excision in issue 115.
-///
-/// Still-accurate operational notes:
-/// - "en" needs no catalog: Slint special-cases `"en"`/`""` to the source
-///   language, so selection cannot leave a stale locale behind.
-/// - Must be called AFTER the first component is created (Slint registers the
-///   bundled languages during component creation).
-/// - A failure is logged and the UI keeps its current strings — never fatal.
-fn select_ui_language(lang: Language) {
-    let locale = match lang {
-        Language::En => "en",
-        Language::Ja => "ja",
-    };
-    if let Err(e) = slint::select_bundled_translation(locale) {
-        tracing::warn!(error = ?e, locale, "failed to select bundled translation");
-    }
-}
-
 /// Copy the runtime-owned display settings into the persisted `Settings` just
 /// before saving. This is the SINGLE place `reading_direction`, `spread_mode`,
 /// `cover_mode`, and `fit_mode` are written back to `Settings`, so a new
@@ -1671,32 +1636,6 @@ fn add_books_and_refresh(
 mod tests {
     use super::*;
     use gashuu_core::{CoverMode, SpreadMode};
-
-    #[test]
-    fn bundled_translations_compiled_into_generated_code() {
-        // `slint::select_bundled_translation` cannot be exercised headlessly
-        // (the language registry is populated on first component creation), so
-        // pin the BUILD output instead: the generated code must still register
-        // the "ja" locale via the inert `with_bundled_translations` build flag
-        // that PR-2 deliberately leaves in place (a trivial rollback surface
-        // until the gettext excision in #115).
-        //
-        // Note: this test no longer asserts that Japanese catalog *text* (e.g.
-        // "見開き") is compiled into the generated code. Slint only bundles a
-        // `.po` entry whose msgid matches a live `@tr()` source string, and
-        // PR-2 removed every `@tr()` call from the `.slint` files (zero @tr()
-        // remain — an issue #113 acceptance criterion). With no `@tr()` source
-        // strings left, the gettext bundler matches nothing, so no Japanese
-        // text reaches the generated code by design. The "ja catalog actually
-        // says 見開き" guarantee now lives in PR-1's loader test
-        // `i18n::tests::ja_catalog_pins_spread_vocabulary`; this whole canary
-        // is scheduled for deletion alongside `select_ui_language` in #115.
-        let generated = include_str!(concat!(env!("OUT_DIR"), "/ViewerWindow.rs"));
-        assert!(
-            generated.contains("\"ja\""),
-            "ja locale missing from the bundled-languages table"
-        );
-    }
 
     #[test]
     fn reconcile_writes_runtime_modes_into_settings() {

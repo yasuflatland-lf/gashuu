@@ -127,8 +127,8 @@ RAR requires a C++ compiler on every OS (see [docs/toolchain.md](toolchain.md)).
 ### UI language switch — English / 日本語 (i18n)
 
 - The UI is bilingual with **immediate, no-restart switching** from a new "General → Language" pull-down in the settings dialog (the Apple-HIG-style `Dropdown` atom — the repo's first `PopupWindow`). The preference persists as `Settings.language` (`"en"`/`"ja"` serde tags doubling as the Slint locale names; `#[serde(default)]`; global-only — never per-book).
-- `.slint` strings live in an `export global Strings` (ui/Strings.slint) with English defaults and are pushed from the Fluent catalog by `Localizer::apply()` (i18n/{en,ja}/gashuu.ftl). Rust-composed strings (status line, open/save notices, decode errors, and the ShortcutsOverlay key-bindings reference) go through `src/messages.rs` (exhaustive per-language `match`).
-- **Fluent catalog migration in flight (ADR-0008, #112-#115):** PR-1 (#112) landed the additive foundation — a single `i18n/{en,ja}/gashuu.ftl` catalog (full vocabulary), an `i18n-embed` `Localizer`, and completeness/byte-oracle tests — with ZERO behavior change; gettext and `messages.rs` stay live and both systems coexist until the PR-4 (#115) cutover.
+- `.slint` strings live in an `export global Strings` (ui/Strings.slint) with English defaults and are pushed from the Fluent catalog by `Localizer::apply()` (i18n/{en,ja}/gashuu.ftl). Rust-composed strings (status line, open/save notices, decode errors, and the ShortcutsOverlay key-bindings reference) are resolved via `src/i18n/dynamic.rs` using the `fl!()` macro against the same catalog.
+- **Fluent is the sole i18n system (ADR-0008, Accepted).** The 4-PR migration (#112-#115) is complete: gettext, `.po` files, build flags, and `src/messages.rs` were fully excised in PR-4 (#115).
 
 ---
 

@@ -76,7 +76,7 @@ shortcuts-title = Keyboard shortcuts
 # Multi-line keyboard reference rendered read-only in ShortcutsOverlay.
 # File indentation: section headers 4 spaces, body lines 6 spaces.
 # Fluent strips the common 4-space prefix from block values, so delivered text
-# has: headers 0 spaces (flush), body lines 2 spaces — matching messages.rs arms.
+# has: headers 0 spaces (flush), body lines 2 spaces — formerly matching the deleted messages.rs arms.
 # Blank lines between sections are preserved naturally.
 shortcuts-help =
     Navigation:
@@ -157,7 +157,7 @@ stepper-increase = Increase { $label }
 common-close = Close
 
 # ---- viewer ----
-# Dynamic status-line messages (maps to msg_* functions in src/messages.rs).
+# Dynamic status-line messages (mapped to the former msg_* functions of the deleted src/messages.rs).
 
 # Static status strings
 viewer-no-folder = No folder opened
@@ -178,7 +178,7 @@ viewer-page-unavailable = (page { $page } unavailable)
 viewer-decode-error = Decode error: { $error }
 
 # ---- notice ----
-# Parameterized notice strings (maps to msg_* functions in src/messages.rs).
+# Parameterized notice strings (mapped to the former msg_* functions of the deleted src/messages.rs).
 
 # Fluent trims leading whitespace on values — the historical leading space of
 # this archive-skip suffix must be wrapped in a string-literal placeable.
