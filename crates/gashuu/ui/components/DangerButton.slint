@@ -1,0 +1,95 @@
+// DangerButton — DESIGN.md `components.button-danger`
+//
+// The filled destructive-action button (used by the bulk-delete epic). A
+// structural clone of PrimaryButton, swapping the accent ground for the deeper
+// `Theme.danger` red (white label passes WCAG AA on the dark canvas) and adding
+// a `Theme.danger-glow` hover/focus ring.
+//
+// Background : Theme.danger  (destructive red; red is scarce — buttons only)
+// Corner     : Theme.radius-md (8px)
+// Padding    : 16px vertical total, split 9 top / 7 bottom for optical
+//              centering / 16px horizontal (size to label + padding)
+// Label      : Theme.font-label (12px), Theme.weight-medium (500), Theme.text (white)
+// Hover      : background darkens via .darker(0.08) + danger-glow ring
+// Press      : background darkens further via .darker(0.20) + danger-glow ring
+// All colors are routed through Theme — no raw hex inline.
+
+import { Theme } from "../Theme.slint";
+
+export component DangerButton inherits Rectangle {
+    // ── Public API ────────────────────────────────────────────────────────────
+    in property <string> text;
+    callback clicked;
+
+    // ── Sizing: label + 16px horizontal / 8px vertical padding ───────────────
+    // The root Rectangle sizes itself to its content (HorizontalLayout min-size
+    // drives width; explicit padding drives height via the layout's padding).
+    // A min-height of 32px satisfies the DESIGN ≥ 32px hit-area requirement.
+    min-height: 32px;
+    horizontal-stretch: 0;
+    vertical-stretch: 0;
+
+    // ── Default appearance ────────────────────────────────────────────────────
+    background: Theme.danger;
+    border-radius: Theme.radius-md;
+
+    animate background { duration: Theme.motion-fast; }
+
+    // ── States: hover and press darken the danger background + light the glow ──
+    // Priority: pressed > hover (Slint evaluates first matching state wins, so
+    // list pressed before hover — same ordering used by PrimaryButton / NavItem).
+    // Only ROOT-level properties are set here: Slint 1.x cannot assign a child
+    // element's properties from a states[] block, but background and the
+    // drop-shadow-* glow are the root's own, so the danger-glow ring follows
+    // PrimaryButton's exact state idiom (NavItem uses the same drop-shadow trick).
+    states [
+        pressed when touch.pressed : {
+            root.background: Theme.danger.darker(0.20);
+            root.drop-shadow-color: Theme.danger-glow;
+            root.drop-shadow-blur: 12px;
+        }
+        hover when touch.has-hover : {
+            root.background: Theme.danger.darker(0.08);
+            root.drop-shadow-color: Theme.danger-glow;
+            root.drop-shadow-blur: 12px;
+        }
+    ]
+
+    // ── Label ─────────────────────────────────────────────────────────────────
+    HorizontalLayout {
+        padding-left: 16px;
+        padding-right: 16px;
+        // Optical centering (same correction as PrimaryButton / the Segmented
+        // labels): Slint metric-centers the full font line box, which sits a
+        // descender-less label ~1px high of the button's visual center. The label
+        // is a layout child whose y the LAYOUT owns, so the nudge lives in an
+        // asymmetric vertical-padding split (9/7 — the 16px total is unchanged),
+        // not a `y:` binding (docs/patterns.md optical-centering entry).
+        padding-top: 9px;
+        padding-bottom: 7px;
+        alignment: center;
+
+        Text {
+            text: root.text;
+            color: Theme.text;
+            font-size: Theme.font-label;
+            font-weight: Theme.weight-medium;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+        }
+    }
+
+    // ── Accessibility ─────────────────────────────────────────────────────────
+    accessible-role: button;
+    accessible-label: root.text;
+    // Let a screen-reader activation gesture fire the same callback as a click.
+    accessible-action-default => { root.clicked(); }
+
+    // ── Interaction ───────────────────────────────────────────────────────────
+    // TouchArea is non-focusable in Slint — it does NOT steal keyboard focus
+    // from any FocusScope in the parent hierarchy (established pattern, see
+    // docs/patterns.md "TouchArea click focus recovery").
+    touch := TouchArea {
+        clicked => { root.clicked(); }
+    }
+}
