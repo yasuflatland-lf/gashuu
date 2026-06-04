@@ -81,6 +81,11 @@ fn main() -> color_eyre::Result<()> {
     // every static string into the Strings global before the first paint.
     let localizer = Rc::new(i18n::Localizer::new(settings.language));
     localizer.apply(&ui);
+    // Platform capability, pushed once: macOS' NSOpenPanel picks files AND
+    // folders in one panel, so the Library NavBar collapses its two add
+    // capsules into a single combined one (the dialog flavor itself is decided
+    // in `on_add_books`). Compile-time constant — never changes at runtime.
+    ui.set_combined_add_picker(cfg!(target_os = "macos"));
     let state = Rc::new(RefCell::new(ViewerState::from_settings(&settings)));
     let viewport = Rc::new(RefCell::new(ViewportState::from_settings(&settings)));
     let settings = Rc::new(RefCell::new(settings));
@@ -220,21 +225,28 @@ fn main() -> color_eyre::Result<()> {
         });
     }
 
-    // Add Files button: pick one or more comic-archive files and add them to the
-    // library. Skips duplicates (via `add_paths`), persists, rebuilds the carousel
-    // model, and restores keyboard focus to the carousel.
+    // Add Books button: pick comic sources and add them to the library. On
+    // macOS a single NSOpenPanel picks archives AND folders together
+    // (`pick_files_or_folders` only compiles there); elsewhere this is the
+    // files-only picker paired with the separate Add Folder button below. Rust
+    // is the single authority for the dialog flavor — Slint only fires the
+    // intent. Skips duplicates (via `add_paths`), persists, rebuilds the
+    // carousel model, and restores keyboard focus to the carousel.
     {
         let ui_weak = ui.as_weak();
         let library = Rc::clone(&library);
         let covers = Rc::clone(&covers);
         let search = Rc::clone(&search);
         let localizer = Rc::clone(&localizer);
-        ui.on_add_files(move || {
+        ui.on_add_books(move || {
             with_ui(&ui_weak, |ui| {
-                let Some(files) = rfd::FileDialog::new()
-                    .add_filter("Comic archive", &["cbz", "zip", "cbr", "rar"])
-                    .pick_files()
-                else {
+                let dialog = rfd::FileDialog::new()
+                    .add_filter("Comic archive", &["cbz", "zip", "cbr", "rar"]);
+                #[cfg(target_os = "macos")]
+                let picked = dialog.pick_files_or_folders();
+                #[cfg(not(target_os = "macos"))]
+                let picked = dialog.pick_files();
+                let Some(paths) = picked else {
                     return;
                 };
                 add_books_and_refresh(
@@ -242,8 +254,8 @@ fn main() -> color_eyre::Result<()> {
                     &library,
                     &covers,
                     &search,
-                    files,
-                    "add-files",
+                    paths,
+                    "add-books",
                     localizer.loader(),
                 );
             })
@@ -252,7 +264,7 @@ fn main() -> color_eyre::Result<()> {
 
     // Add Folder button: pick a single folder and add it as one book to the
     // library. Wraps the folder in a `vec![]` so the same dedup/save/rebuild
-    // path as `on_add_files` is used. Persists and restores carousel focus.
+    // path as `on_add_books` is used. Persists and restores carousel focus.
     {
         let ui_weak = ui.as_weak();
         let library = Rc::clone(&library);
@@ -1565,7 +1577,7 @@ fn refresh_library_carousel(
 /// surface the outcome on the status line, restoring carousel focus in every
 /// case.
 ///
-/// Shared by the Add Files and Add Folder handlers; `op` distinguishes the two
+/// Shared by the Add Books and Add Folder handlers; `op` distinguishes the two
 /// only in the save-failure trace message. When nothing new is added there is
 /// nothing to persist or rebuild, so it short-circuits after the status update.
 ///
