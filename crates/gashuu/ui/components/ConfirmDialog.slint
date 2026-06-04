@@ -5,8 +5,8 @@
 // warning-text / confirm-label / cancel-label), so the same component serves any
 // confirm-or-cancel decision. It clones the SettingsDialog / ShortcutsOverlay
 // glass idiom exactly — the same scrim, the same ONE fake-glass object (NavBar's
-// four layers with layer 1 promoted from a solid fill to a top-sheen FILL
-// gradient, the SettingsDialog idiom: a top-sheen FILL gradient + a 1px rim +
+// four-layer idiom, with layer 1 promoted from a solid fill to a top-sheen FILL
+// gradient — the SettingsDialog promotion: a top-sheen FILL gradient + a 1px rim +
 // a 1px top inner highlight + ONE drop shadow), and the FirstRunGuide fluid-width
 // clamp. The
 // sheen is a FILL gradient, not an opacity layer (opacity blurs text/SVG on
@@ -37,7 +37,8 @@
 // re-focus Cancel on reopen. `changed focus-epoch` then re-claims focus when the
 // parent bumps `focus-epoch` (e.g. after a stacked overlay closes). Both are
 // needed because Slint `changed` handlers do NOT fire on the initial binding —
-// only on subsequent changes (docs/patterns.md epoch entry).
+// only on subsequent changes (docs/patterns.md, "bump an epoch property the
+// dialog observes with `changed`").
 //
 // BUTTON FOCUS / Tab / Space: DangerButton and PrimaryButton are TouchArea-based
 // and therefore NON-focusable (repo convention — a TouchArea never steals
@@ -75,7 +76,7 @@ export component ConfirmDialog inherits Rectangle {
     in property <int> focus-epoch: 0;
     // Fired on the confirm button (pointer click or Tab→Space).
     callback confirm();
-    // Fired on Esc, Enter, backdrop click, or the Cancel button.
+    // Fired on Esc, Return/Enter, backdrop click, or the Cancel button.
     callback cancel();
 
     // ── Full-area semi-transparent backdrop ───────────────────────────────────
@@ -102,6 +103,13 @@ export component ConfirmDialog inherits Rectangle {
         // Fluid width: caps on wide windows; shrinks to leave a gutter each side
         // on narrow windows (FirstRunGuide clamp). Height hugs the content.
         width: min(Theme.settings-w, parent.width - 2 * Theme.space-xl);
+        // `body-col` is a VerticalLayout whose preferred-height is computed
+        // bottom-up from its children, so reading it here does not create a
+        // binding cycle. Future trap: if `body-col` gains an explicit `height:`,
+        // the chain `panel.height → body-col.preferred-height` combined with
+        // `fs.height: parent.height` (= panel.height) could become circular —
+        // remove the explicit `body-col` height instead (SettingsDialog avoids
+        // this by assembling panel height from named sub-parts, not body-col).
         height: body-col.preferred-height;
         x: (parent.width - self.width) / 2;
         y: (parent.height - self.height) / 2;
@@ -148,10 +156,11 @@ export component ConfirmDialog inherits Rectangle {
                 cancel-scope.focus();
             }
             key-pressed(event) => {
-                // Esc and Enter/Return BOTH cancel — Enter is deliberately the
+                // Esc and Return/Enter BOTH cancel — Return is deliberately the
                 // safe choice so a reflexive press can never fire confirm, even
-                // when the confirm button holds focus (its scope rejects Enter so
-                // it bubbles up to here).
+                // when the confirm button holds focus (the confirm button's scope
+                // rejects everything but Space via its catch-all `return reject`,
+                // so Return bubbles up to here).
                 if (event.text == Key.Escape
                     || event.text == Key.Return) {
                     root.cancel();
@@ -166,7 +175,8 @@ export component ConfirmDialog inherits Rectangle {
                 // returns EventAccepted before it), so Confirm was unreachable by
                 // keyboard. We do NOT reject-and-defer to that window navigation
                 // either: with this modal mounted over a live, focusable backdrop
-                // (e.g. PR-5's carousel FocusScope), window navigation could carry
+                // (e.g. the carousel's FocusScope on the library screen, which stays
+                // live and focusable behind the modal), window navigation could carry
                 // focus OUT of the dialog. Keeping the rotation in-trap guarantees
                 // Tab cycles only Cancel↔Confirm. With exactly two stops, forward
                 // (Tab) and backward (Backtab) are the same toggle. Backtab can
