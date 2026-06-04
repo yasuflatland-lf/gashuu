@@ -41,6 +41,11 @@ tasteful a tool as a fine art book.
   knob to scrub; a thumbnail preview (one or two pages for single/double spreads) pops up
   during the drag — not-yet-decoded or failed thumbnails show distinct loading/error placeholders — and the page only changes on release. RTL-aware: in manga mode dragging
   left advances pages.
+- **Selection & bulk delete** — press `x` in the Library to enter selection mode, then
+  toggle books with `x` / `Space`, select all visible with `Cmd/Ctrl+A`, and delete the
+  selection with `Delete` or `Backspace`. A confirm dialog lists the titles and confirms
+  that files on disk are kept (only the library entry is removed). No undo; the confirm
+  dialog is the safety gate.
 - **Settings dialog & first-run guide** — change every active option from the toolbar
   without hand-editing config, and a one-time welcome overlay summarises the controls.
 - **Safe decoding** — oversized images and decompression bombs are rejected before
@@ -94,6 +99,20 @@ Open content from the toolbar — **Open Folder…** (PNG/JPG/JPEG) or **Open Ar
 Arrows follow the reading direction (LTR: `→` = next; RTL: `←` = next). `Space` and
 `Backspace` are always next/previous in reading order. `D` / `R` / `C` mode changes are
 remembered per book, so the book reopens the way you left it.
+
+**Selection mode (Library)**
+
+| Key | Action |
+|-----|--------|
+| `x` | Enter selection mode (also toggles the focused book) |
+| `x` / `Space` | Toggle the focused book's selection |
+| `Cmd/Ctrl+A` | Select all visible / deselect all visible |
+| `Delete` / `Backspace` | Delete selected books (opens confirm dialog) |
+| `Esc` | Exit selection mode |
+
+A confirm dialog lists the titles before deleting and notes that files on disk are kept —
+only the library entries are removed. The action is not undoable; `Enter` maps to Cancel
+so the destructive path is never a single keypress.
 
 The **page scrubber** (bottom bar) and **page-counter chip** (top-right) appear on
 mouse-move, arrow-key press, or scrubber drag, then fade after idle. Drag the knob to

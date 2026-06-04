@@ -228,6 +228,14 @@ convention as `set_last_page`/`set_page_count`) and `Library::overrides_for(path
 (returns `ViewOverride::none()` for an unknown path, so the caller can `resolve` unconditionally).
 There is NO `Book` setter — `Book::overrides()` is read-only.
 
+**PR-5 (#129)** added the bulk-delete rollback primitive: `Library::restore(books: Vec<Book>)` —
+re-inserts the supplied `Book` clones, de-duplicating by canonical path (an entry whose path is
+already present is skipped), then re-sorts via `book_order`. This is the counterpart to
+`remove_many`: a caller that captured clones before removal and then failed to persist can hand
+them back to recover the exact pre-removal shelf (byte-identical re-serialization). Avoids the
+`add()`-trap (which resets `last_page`/`page_count`) because the full clones carry all existing
+field values. Consumed exclusively by `remove_books_with_rollback` in `app.rs`.
+
 ---
 
 ## crates/gashuu (Slint presentation layer)
@@ -281,6 +289,13 @@ PR-S added two pure scrubber-support helpers:
 - `preview_is_double(page)` — returns whether a previewed page would land on a 2-page spread
   (using the same layout resolution the body uses) WITHOUT advancing the index; used by the
   scrubber preview to choose 1 vs 2 popover thumbnails.
+
+**PR-5 (#129)** added `close(&mut self)`: drops the cache and source, zeroes `page_count`/`index`,
+and clears `open_file` — returning `ViewerState` to the no-book-open state. Display modes
+(`reading_direction`/`spread_mode`/`cover_mode`) and `cache_config`/`viewport_aspect` are
+deliberately preserved (closing a book is not a settings reset). Called by
+`RemoveBooksUseCase::run` when the open book is among the deleted ones; `main.rs` separately
+blanks `current_book_name` via `ui.set_current_book_name("")` at the same call site.
 
 ### ViewportState
 
@@ -341,6 +356,32 @@ the outgoing book's per-book modes there; reconciling would clobber the global d
 [patterns.md](patterns.md), "Write-direction invariant audit"). It then applies the just-opened
 book's `ResolvedView` via `ViewerState::apply_resolved_view` (+ `ViewportState::set_fit`).
 
+**PR-5 (#129)** added the parallel destructive use case to the same module:
+
+- `RemoveBooksUseCase` — the "remove the selected books" use case. Holds four shared collaborators
+  as `Rc<RefCell<…>>` fields: `ViewerState`, `Library`, `LibrarySearchState`, and
+  `LibrarySelectionState`. `run(&self, ui) -> RemoveOutcome` executes the full destructive
+  transaction in the non-negotiable order: snapshot selected paths → mutate+save with rollback
+  (via `remove_books_with_rollback`) → best-effort cover purge (`ThumbnailCache::purge_for`,
+  current mtime, `COVER_MAX_SIDE=512`, `tracing::warn`-only on miss) → clear the viewer via
+  `ViewerState::close()` and blank the title bar when the open book was deleted → recompute the
+  search projection → clear the selection (success only; `SaveFailed` preserves it so the user can
+  retry). Returns `RemoveOutcome::NoSelection` (empty selection guard), `RemoveOutcome::SaveFailed
+  { error }` (shelf rolled back byte-identically via `Library::restore`; selection preserved), or
+  `RemoveOutcome::Removed { n, closed_open_book }`. The caller (`main.rs`) rebuilds the carousel,
+  clamps the focused index, and composes the status line from the outcome.
+- `remove_books_with_rollback(library, paths, save)` — the transaction primitive: captures full
+  `Book` clones before removal, calls `Library::remove_many`, then calls `save`; on `Err` calls
+  `Library::restore(removed_books)` (byte-identical rollback — avoids the `add()`-trap that would
+  reset `last_page`/`page_count`) and propagates the error. The injected `save` closure makes it
+  unit-testable against a failing or succeeding save.
+- `confirm_delete_content(loader, selection, search, library, open_file) -> ConfirmDeleteContent`
+  — pure (no I/O, no Slint) builder for the confirm dialog body: title with total count, up to 10
+  book titles in selection (BTreeSet path) order, an "…and M more" line when count > 10, an "N
+  selected outside the current search" line when filtered-out books are included, and a warning
+  when the open book is selected. The struct (`title`, `body_lines`, `info`, `warning`) is
+  language-free; each field is resolved via `i18n::dynamic` before being handed to the dialog.
+
 ### per-book view-override seam fns (`main.rs`)
 
 `pub(crate)` seam fns in `main.rs` (peers of `reconcile_settings`/`write_back_position`):
@@ -388,6 +429,23 @@ after every mutation: `set_query(query, &Library)` (clears forced paths, then re
 nor the forced set moved (startup seed, open-time backfill). `visible_indices()` is read-only and
 always consistent with the last mutation. Pure helpers `book_matches` / `matching_indices` live
 alongside it; `matching_indices` is the fast-path delegate when no paths are forced visible.
+
+### LibrarySelectionState
+
+Bulk-delete PR-2/PR-4 (#126/#128), `library_model.rs` (pub(crate) struct). Owns the active
+selection as a `BTreeSet<PathBuf>` keyed by canonical path — the same key `Library::add` uses —
+so the selection survives query changes and carousel rebuilds. Key mutators: `toggle(path)` (adds
+or removes one path); `select_visible(search, library)` / `deselect_visible(search, library)`
+(select/deselect only the visible projection — out-of-view selected paths are never touched,
+preserving the "selection is orthogonal to the query" invariant; used by the Select-all button and
+Cmd/Ctrl+A); `clear()` (success-path reset, called by `RemoveBooksUseCase` on success only). Key
+accessors: `count()` (total selection size, across the whole library); `selected() -> impl
+Iterator<Item=&Path>` (BTreeSet path-sorted order — deterministic for the confirm-dialog title
+list and the `RemoveBooksUseCase` removal snapshot); `contains(path) -> bool`;
+`all_visible_selected(search, library) -> bool` (drives the Select-all toggle direction).
+`visible_selected_count(search, library) -> usize` counts how many selected paths appear in the
+current visible projection (used by the toolbar's "N outside search" indicator and by
+`confirm_delete_content`). Used as a collaborator by `RemoveBooksUseCase` (PR-5 #129).
 
 ### carousel
 
@@ -465,13 +523,16 @@ alignment molecule — fixed label column + `@children` control slot spanning to
 rail; `trailing` flag pushes compact atoms onto the rail via a leading stretch spacer),
 `SelectionBadge` (bulk-delete PR-2: pure visual atom — accent disc with a centered white check mark,
 overlaid on selected covers in selection mode; both Carousel `for` passes include it, rendered only
-when `selected` is true), `SelectionToolbar` (bulk-delete PR-4: selection-mode organism — count
-pill / select-all capsule / exit capsule; glass-pill matching `NavBar`'s four-layer idiom, content-hugged
-width, overlaid below `NavBar` inside `Carousel` via an `if-gate`; all human-visible text passed
-from Rust via `in` properties — deliberately `Strings`-agnostic), and `DangerButton`
+when `selected` is true), `SelectionToolbar` (bulk-delete PR-4/PR-5: selection-mode organism — count
+pill / select-all capsule / exit capsule / **Delete (N)… `DangerButton`** (if-gated, hidden at
+N=0; the only red element in the app's chrome; PR-5 #129); glass-pill matching `NavBar`'s
+four-layer idiom, content-hugged width, overlaid below `NavBar` inside `Carousel` via an
+`if-gate`; all human-visible text passed from Rust via `in` properties — deliberately
+`Strings`-agnostic), and `DangerButton`
 (bulk-delete PR-1: destructive-action atom — structural clone of `PrimaryButton` swapping accent for
 `Theme.danger` red + `Theme.danger-glow` hover/focus ring; accessibility role/label/action-default
-added here, `PrimaryButton` backport pending; first consumed by the PR-3 ConfirmDialog). Each references `Theme.*` via `../Theme.slint`;
+added here, `PrimaryButton` backport pending; first consumed by the PR-3 `ConfirmDialog`, and now
+also the PR-5 `SelectionToolbar` delete button). Each references `Theme.*` via `../Theme.slint`;
 consumers import via `import { X } from "components/X.slint"`. `build.rs` is unchanged — it compiles
 the single entry `ui/ViewerWindow.slint` and import statements cascade. See
 [docs/conventions.md](conventions.md) for the component RULES.
@@ -564,7 +625,9 @@ persistence — drained via `Library::set_page_count` + `save` at the next `star
 **`SettingsDialog.slint`** (PR8b, NEW; issue 102 replaced its std-widgets `ComboBox`/`SpinBox`/`CheckBox` with the token-driven `Segmented`/`Stepper`/`Toggle`/`Dropdown` atoms): modal overlay editing active settings; two-way `current-index <=> in-out-prop` +
 `selected`/`edited`/`toggled` callbacks. Since issue 103/104 it is a **content-hug glass panel** (φ relocated into the component proportions; spec 2026-06-04) built from custom `components/` atoms; its footer "Shortcuts" link opens `ShortcutsOverlay`, and an `in property <int> focus-epoch` (bumped by `ViewerWindow.focus-settings()`) lets the parent re-focus this still-mounted dialog after the overlay closes.
 
-**`ShortcutsOverlay.slint`** (issue 104, PR-C, NEW): a second glass modal listing the keyboard shortcuts read-only, stacked OVER the still-mounted `SettingsDialog` (both `show-settings` and `show-shortcuts` true). Reuses the settings glass recipe (`settings-w`/`settings-radius` + all glass tokens; only `shortcuts-h` is new). Its ancestor `FocusScope` traps every key so focus can't leak to the dialog underneath; closing returns focus to the dialog via the epoch seam.
+**`ShortcutsOverlay.slint`** (issue 104, PR-C, NEW): a second glass modal listing the keyboard shortcuts read-only, stacked OVER the still-mounted `SettingsDialog` (both `show-settings` and `show-shortcuts` true). Reuses the settings glass recipe (`settings-w`/`settings-radius` + all glass tokens; only `shortcuts-h` is new). Its ancestor `FocusScope` traps every key so focus can't leak to the dialog underneath; closing returns focus to the dialog via the epoch seam. **PR-5 (#129)** extended the keyboard-shortcuts reference text to document the full selection grammar: `x`, `Space`, `Cmd/Ctrl+A`, `Delete`/`Backspace`, `Esc`.
+
+**`components/ConfirmDialog.slint`** (issue 127, PR-3, NEW; wired in `ViewerWindow` for the bulk-delete path by PR-5 #129): a GENERIC two-choice confirm/cancel modal — no domain vocabulary. Every string on screen arrives through `in` properties (`title`, `body-lines: [string]`, `info-text`, `warning-text`, `confirm-label`, `cancel-label`) so the same component is reusable across confirm decisions. Clones the `SettingsDialog` / `ShortcutsOverlay` glass idiom (scrim + four-layer fake-glass object). Mounted in `ViewerWindow` behind `if root.show-confirm-delete` (an `if`-gate so the node is constructed only when needed). Cancel / Esc / backdrop click fire the `cancel` callback (Slint-side: set `show-confirm-delete = false`, restore carousel focus — selection PRESERVED); the confirm `DangerButton` fires `accepted` (Rust-side: runs `RemoveBooksUseCase`, then dismisses the modal). `Enter` is wired to Cancel (the destructive action is never on `Enter`).
 
 **`FirstRunGuide.slint`** (PR8b, NEW): dismissable once-only overlay; a local `GuideLine`
 component dedupes the key-reference rows.

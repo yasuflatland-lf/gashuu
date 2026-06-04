@@ -543,6 +543,7 @@ HOW to apply in future Slint two-pass z-order components:
    Opaque layers are safe to double-draw at identical geometry (no visual artifact).
 3. If a focused-only GEOMETRY change is needed (scale, offset), apply it on pass-2;
    pass-1 always renders at the base geometry.
+4. **`TouchArea` lives on pass-1 ONLY — set `interactive: false` on the pass-2 copy (bulk-delete PR-2).** A `TouchArea` declared inside the shared `CoverCard` sub-component exists in BOTH passes; without a guard, a click on the focused card fires its handler twice (once from pass-1, once from pass-2). The fix: pass an `in property <bool> interactive` into `CoverCard`; the pass-1 `for` sets `interactive: true`, the pass-2 `for` sets `interactive: false` — the `cover-touch := TouchArea { enabled: root.interactive; … }` binding ensures only the always-visible backing copy fires. Badges and other NON-interactive children (like `SelectionBadge`) are safe to render in both passes because they carry no `TouchArea` and fire nothing. A future additional render pass MUST also set `interactive: false` to preserve the single-fire invariant.
 
 no `line-height` on `Text` in Slint 1.x — DESIGN's per-role `lineHeight` cannot be expressed and must not be faked (space elements apart instead). A shared PRIVATE (non-exported) sub-component (`component Foo inherits Rectangle { in property … }`) cleanly de-duplicates repeated markup WITHIN one file WITHOUT touching any exported struct/component contract, and works both absolutely positioned and as a layout child (PR-C used a file-private `ProgressBar` for the per-cover and focused-meta bars in `Carousel.slint`). When the same markup must be reused ACROSS files, promote it to an `export`ed component under `ui/components/` instead (#71 did exactly this — `ProgressBar` is now `components/ProgressBar.slint`, imported by `Carousel.slint`); keep the file-private form only when the reuse is confined to one file.
 
@@ -955,4 +956,37 @@ Two glass-pill components now demonstrate the two valid escapes from Slint's pre
 
 ### Desync-warn parity for index-taking carousel handlers — keep the single lookup seam, diagnose in the cold arm (bulk-delete PR-4, #128)
 
-`on_carousel_open` set the precedent of warning on a carousel/library desync with `(index, visible_len, library_len)`. PR-4 extends that to `on_carousel_toggle_selection` and `on_carousel_cover_clicked`: both keep `visible_index_to_path(&library, &search, index)` as the SINGLE visible-index→path lookup seam (the same projection hop as the open handler — see "Single visible-index projection for filtered views"), and put the diagnostics in the COLD `else` arm via a fresh re-borrow (`search.borrow().visible_indices().len()` / `library.borrow().books().len()`) — safe because the helper's borrows have already dropped by the time the `let-else` enters the else. ANTI-PATTERN caught in review: inlining the helper back into each handler to capture the two lengths inside one borrow (as `on_carousel_open` does) would have left `visible_index_to_path` with a single remaining caller and tempted a `#[allow(dead_code)]` band-aid — but `allow(dead_code)` marks a symbol *not-yet-consumed*, never *no-longer-consumed*; the right move is the cold-arm re-borrow that keeps the seam shared and live.
+`on_carousel_open` set the precedent of warning on a carousel/library desync with `(index, visible_len, library_len)`. PR-4 extends that to `on_carousel_toggle_selection` and `on_carousel_cover_clicked`: both keep `visible_index_to_path(&library, &search, index)` as the SINGLE visible-index→path lookup seam (the same projection hop as the open handler — see "Single visible-index projection for filtered views"), and put the diagnostics in the COLD `else` arm via a fresh re-borrow (`search.borrow().visible_indices().len()` / `library.borrow().books().len()`) — safe because the helper's borrows have already dropped by the time the `let-else` enters the else. ANTI-PATTERN caught in review: inlining the helper back into each handler to capture two lengths inside one borrow (as `on_carousel_open` does) would have left `visible_index_to_path` with a single remaining caller and tempted a `#[allow(dead_code)]` band-aid — but `allow(dead_code)` marks a symbol *not-yet-consumed*, never *no-longer-consumed*; the right move is the cold-arm re-borrow that keeps the seam shared and live.
+
+### Destructive-confirm dialog: Cancel default, Enter=Cancel, accounting-honest content, cancel preserves the selection (bulk-delete PR-5, #129)
+
+`ConfirmDialog` (issue 127, consumed by PR-5) encodes several non-negotiable rules for any destructive-action dialog.
+
+**Key model — Enter/Esc/backdrop are ALL cancel.** The destructive DangerButton is reachable ONLY by pointer click or a deliberate Tab→Space — never by Return/Enter. Mechanically: `ConfirmDialog`'s file-private `FocusButton` wrapper around the confirm button rejects every key EXCEPT Space, so Return bubbles up to the ancestor `fs` (`FocusScope`), which maps BOTH `Key.Return` and `Key.Escape` to `cancel()`. Backdrop click also calls `cancel()`. This holds even when the confirm button holds focus — the wrapper's catch-all `return reject` ensures Enter never fires confirm. Gate-invisible (the cargo gates do not exercise `.slint` key handling — verify by hand). Cross-ref the "Modal Tab containment" entry (~line 690) for the multi-stop Tab-rotation mechanics and the FocusScope-ancestor rule (~line 638).
+
+**Default focus: Cancel (the safe choice).** `ConfirmDialog` sets focus to `cancel-scope` on BOTH `init` (fires on every open, because the parent mounts it behind an `if` gate) and `changed focus-epoch` (re-claims focus after a stacked overlay closes). NEVER use a bare `visible:` toggle: `init` fires only on subtree reconstruction, so a `visible:` mount would focus Cancel once and then silently lose it on reopen.
+
+**Accounting-honest content.** The confirm body must show:
+- The TOTAL selection count in the title (counts ALL selected paths, even those outside the current search or without a resolvable library entry).
+- Up to `CONFIRM_DELETE_LIST_CAP` (10) book titles in the body, followed by an "…and M more" line when the selection exceeds the cap.
+- An "N selected outside the current search" line when some selected books are filtered out — so the user is not surprised that filtered-out books are also deleted.
+- A neutral info band ("Files on disk are kept") to reassure that only the library registration is removed, not the files.
+- A `Theme.danger`-colored warning line ONLY when the currently-open book is among the selection. Empty string when no open book is selected.
+
+**Cancel preserves the selection; confirm clears it.** Esc/backdrop/Cancel leaves the selection intact so the user can adjust and retry. Only the confirmed destructive action (via `RemoveBooksUseCase::run`) calls `selection.clear()` — and only on success (a rolled-back save leaves the selection untouched for the same reason).
+
+### Save-then-purge transaction boundary with in-memory rollback (bulk-delete PR-5, #129)
+
+`remove_books_with_rollback` (`app.rs`) and `RemoveBooksUseCase::run` implement the non-negotiable transaction order from issue §4:
+
+1. **Capture WHOLE `Book` clones BEFORE the retain pass.** Before calling `library.remove_many(paths)`, iterate `library.books()` and clone every entry whose path is in the removal set. These clones are the rollback payload — they carry `last_page`, `page_count`, and `overrides` intact.
+
+2. **`remove_many` drops the books in one retain pass** and returns a `RemovalReport` (paths removed vs. `not_found`).
+
+3. **`save()` is the transaction boundary.** On `Ok`: return the report; the caller (step 4+) proceeds to purge covers and clear the selection. On `Err`: call `library.restore(removed_books)` — this re-inserts the WHOLE clones and re-sorts to natural order — then return the error WITHOUT touching the covers or the selection.
+
+**Why `restore` and NOT `add()`.** `Library::add(path)` derives a FRESH `Book` from the path: `last_page` = 0, `page_count` = 0, `overrides` = none. A `restore` after a rolled-back add would silently reset reading progress and per-book view modes. The byte-identical `to_json` test (`restore_round_trips_to_byte_identical_json`) pins this contract.
+
+**Purge is best-effort warn-only (step 3 in `RemoveBooksUseCase::run`).** The persistent cover is keyed by `path + mtime + max_side`. An mtime drift (the file moved or was overwritten between cover-generation and removal) means `ThumbnailCache::purge_for` finds zero entries and logs `tracing::warn!` — a harmless orphan the cache's size cap reclaims later. This is never surfaced to the user. A `ThumbnailCache::new()` failure skips the purge entirely (same warn-only policy). The worst-case failure mode from reversing the order (purge BEFORE save) is: the library registration survives (save failed, shelf rolled back) but the cover is gone — a broken-cover placeholder for a book the user never asked to delete.
+
+**On `SaveFailed` the selection is PRESERVED** — `RemoveBooksUseCase::run` returns `RemoveOutcome::SaveFailed` without clearing the selection, so the user can retry without rebuilding the selection from scratch.
