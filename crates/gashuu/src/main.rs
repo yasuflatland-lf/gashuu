@@ -374,16 +374,23 @@ fn main() -> color_eyre::Result<()> {
             })
         });
     }
-    // Carousel: Down returns to the currently-open book (the Viewer). Only
-    // meaningful when a book is open; with no book open it still flips to the
-    // Viewer screen, which shows the "No folder opened" empty state (consistent
-    // with the existing initial view). PR-R refines the "only when a book is
-    // open" guard.
+    // Carousel: Down returns to the currently-open book (the Viewer). With no
+    // book open there is nothing to return to — the Viewer would render an
+    // all-black stage (it has no empty-state chrome of its own) — so the
+    // navigation is refused and the Library status strip explains why instead.
     {
         let ui_weak = ui.as_weak();
         let nav = Rc::clone(&nav);
+        let state = Rc::clone(&state);
+        let localizer = Rc::clone(&localizer);
         ui.on_carousel_back(move || {
             with_ui(&ui_weak, |ui| {
+                if state.borrow().open_file().is_none() {
+                    ui.set_status_text(
+                        crate::i18n::dynamic::no_open_book(localizer.loader()).into(),
+                    );
+                    return;
+                }
                 go_to_viewer(&ui, &nav);
             })
         });

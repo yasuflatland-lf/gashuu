@@ -29,6 +29,12 @@ pub(crate) fn no_images(loader: &FluentLanguageLoader) -> String {
     fl!(loader, "viewer-no-images")
 }
 
+/// Library-screen status when Down is pressed but no book is open (there is
+/// no Viewer content to return to, so the navigation is refused).
+pub(crate) fn no_open_book(loader: &FluentLanguageLoader) -> String {
+    fl!(loader, "viewer-no-open-book")
+}
+
 // ---- Enum-dispatch label functions ----------------------------------------
 
 /// Compact spread-mode label for the status line's `[mode · direction]` tail.
@@ -218,8 +224,10 @@ mod tests {
             let l = loc.loader();
             let no_folder = no_folder_opened(l);
             let no_images = no_images(l);
+            let no_open = no_open_book(l);
             assert!(!no_folder.is_empty(), "no_folder_opened must not be empty");
             assert!(!no_images.is_empty(), "no_images must not be empty");
+            assert!(!no_open.is_empty(), "no_open_book must not be empty");
         }
         // Differ across locales
         assert_ne!(
@@ -231,6 +239,11 @@ mod tests {
             no_images(en().loader()),
             no_images(ja().loader()),
             "no_images must differ between En and Ja"
+        );
+        assert_ne!(
+            no_open_book(en().loader()),
+            no_open_book(ja().loader()),
+            "no_open_book must differ between En and Ja"
         );
     }
 

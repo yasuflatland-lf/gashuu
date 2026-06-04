@@ -166,6 +166,8 @@ common-close = 閉じる
 # Static status strings
 viewer-no-folder = フォルダーが開かれていません
 viewer-no-images = フォルダーに画像がありません
+# Library-screen status when Down is pressed but no book is open yet.
+viewer-no-open-book = 開いている本がありません
 
 # Compact spread-mode labels for the status line's [mode · direction] tail
 viewer-spread-single = 単ページ
