@@ -16,6 +16,17 @@ TDD: keep the crate compiling at every save (write test + implementation so each
 
 Keep a PR ≤ ~1000 production LOC.
 
+### Commit messages
+
+Every commit subject MUST follow [Conventional Commits 1.0.0](https://www.conventionalcommits.org/ja/v1.0.0/) ([English version](https://www.conventionalcommits.org/en/v1.0.0/)): `type(scope): description` or `type: description`.
+
+- Allowed types (closed set — extend this list via a docs PR, not ad hoc): `feat`, `fix`, `refactor`, `test`, `docs`, `chore`, `style`, `perf`, `ci`, `build`.
+- Scope is optional; use the module or area touched (`i18n`, `ui`, `core`, `viewer_state`, `adr`, ...).
+- **Exactly one line.** No body, no footer, no `Co-Authored-By` or other trailers.
+- Aim for ≤72 characters, imperative mood, no trailing period, English.
+- Breaking changes use the `!` marker (`feat(core)!: ...`) — the `BREAKING CHANGE:` footer form is unavailable because messages are single-line.
+- GitHub-generated merge commits (`Merge pull request #N ...`) are exempt.
+
 ### UI styling tokens
 
 All visual tokens (colors, border radii, spacing, font sizes, component sizes, shadow colors) live in ONE `global Theme` at `crates/gashuu/ui/Theme.slint`, sourced from `/DESIGN.md`. UI components must reference `Theme.<token>` (e.g. `Theme.accent`, `Theme.radius-pill`, `Theme.shadow-popover`) and must **not** paste raw hex or length literals inline — `Theme.slint` is the only place those literals appear, so a restyle changes one file.
