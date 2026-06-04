@@ -9,14 +9,18 @@ import { Theme } from "Theme.slint";
 import { Scrubber } from "Scrubber.slint";
 import { ViewerPill } from "components/ViewerPill.slint";
 import { Strings } from "Strings.slint";
-import { DangerButton } from "components/DangerButton.slint";
+import { ConfirmDialog } from "components/ConfirmDialog.slint";
 
 // Re-export so Rust gets the `ui.global::<Strings>()` accessor — Slint only
 // generates global accessors for globals exported from the build entry point.
 export { Strings }
 
-// TEMP: compile-reachability guard only — remove when bulk-delete PR-3 (issue 127, ConfirmDialog) consumes DangerButton.
-export { DangerButton }
+// TEMP: compile-reachability guard only — remove when bulk-delete PR-5 wires
+// ConfirmDialog into the delete flow (it then becomes reachable from the markup
+// and no longer needs this re-export to be compiled). ConfirmDialog re-exports
+// DangerButton's reachability transitively (it imports it), so the prior TEMP
+// DangerButton export is dropped here.
+export { ConfirmDialog }
 
 export component ViewerWindow inherits Window {
     // Intentionally empty: the OS title bar shows no app name (the floating title label above the ViewerPill carries the current book name instead). See issue #85.
