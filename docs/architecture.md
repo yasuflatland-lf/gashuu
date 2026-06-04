@@ -380,8 +380,9 @@ book's `ResolvedView` via `ViewerState::apply_resolved_view` (+ `ViewportState::
   — pure (no I/O, no Slint) builder for the confirm dialog body: title with total count, up to 10
   book titles in selection (BTreeSet path) order, an "…and M more" line when count > 10, an "N
   selected outside the current search" line when filtered-out books are included, and a warning
-  when the open book is selected. The struct (`title`, `body_lines`, `info`, `warning`) is
-  language-free; each field is resolved via `i18n::dynamic` before being handed to the dialog.
+  when the open book is selected. The struct (`title`, `body_lines`, `info`, `warning`) holds
+  fully localized strings — each field is resolved via `i18n::dynamic` inside the builder and is
+  display-ready.
 
 ### per-book view-override seam fns (`main.rs`)
 

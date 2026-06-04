@@ -500,7 +500,7 @@ impl RemoveBooksUseCase {
     }
 }
 
-/// Language-free content for the bulk-delete confirmation dialog, built by
+/// Fully localized display content for the bulk-delete confirmation dialog, built by
 /// [`confirm_delete_content`] and rendered by the Slint `ConfirmDialog`. Each
 /// field is already localized (the builder resolves them via the active loader),
 /// but the struct itself carries no i18n logic — it is a plain data bundle so the

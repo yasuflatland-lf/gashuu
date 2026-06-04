@@ -583,8 +583,8 @@ fn main() -> color_eyre::Result<()> {
     // Carousel: a delete was requested (toolbar DangerButton or the Delete /
     // Backspace key arm). The Slint side fires this even at N=0 (the key arm is
     // unconditional by design), so an empty selection is a no-op here — the
-    // confirm dialog is never shown for nothing. Otherwise, build the language-
-    // free confirm-dialog content for the current selection and push it into the
+    // confirm dialog is never shown for nothing. Otherwise, build the localized
+    // confirm-dialog content for the current selection and push it into the
     // ConfirmDialog's in-out properties, then flip `show-confirm-delete` true to
     // mount the modal. Cancel/Esc/backdrop are handled purely in Slint (selection
     // PRESERVED); Rust only sees the accept (the handler below).
