@@ -460,7 +460,8 @@ dialog's clipping Flickable can't cut it off — see docs/patterns.md). Each ref
 `ui/ViewerWindow.slint` and import statements cascade. See [docs/conventions.md](conventions.md)
 for the component RULES.
 
-**`ui/assets/`** (#83, NEW): the repo's image assets — `file.svg`, `folder.svg` (#83), `carousel.svg`
+**`ui/assets/`** (#83, NEW): the repo's image assets — `file.svg`, `folder.svg` (#83), `plus.svg`
+(the macOS combined "Add books" capsule glyph), `carousel.svg`
 (the thumbnail-toggle icon in ViewerPill; replaced the original `slider.svg` glyph), and
 `chevron-down.svg` (i18n PR, NEW: the `Dropdown`
 chevron; 96px intrinsic size per the HiDPI rasterization rule), each a
@@ -469,7 +470,7 @@ them with `@image-url(...)` paths relative to the consuming `.slint` file. `buil
 (assets are reached transitively through the entry-file import cascade).
 
 **`ui/Strings.slint`** (Fluent i18n PR-2, #113, NEW): `export global Strings` — the Fluent-served
-static-string surface, 61 `in property <string>` slots (property name == Fluent message ID) with
+static-string surface, 63 `in property <string>` slots (property name == Fluent message ID) with
 English-literal defaults. Written exclusively from Rust by `Localizer::apply()`; `.slint` bindings
 read `Strings.<prop>` in place of the removed `@tr()` calls. `ViewerWindow.slint` re-exports it
 (`import` + `export { Strings }`) so Slint generates the `ui.global::<Strings>()` accessor. See
@@ -486,13 +487,15 @@ block, a grayed broken-cover placeholder for
 unavailable books, and the 0-book empty-state CTA. #71 also routes its covers and empty-state CTA
 through the shared `ThumbnailCell`/`PrimaryButton` components. Covers start as placeholders
 (`slint::Image::default()`); PR-V's `cover_loader.rs` streams the real cover images into the same
-model row-by-row. PR-L added the `add-files()`/`add-folder()` callbacks and wired the empty-state CTA
-to `add-files()` (each restores focus via `focus-self()` after firing); PR-L's original left-aligned
+model row-by-row. PR-L added the add callbacks (today `add-books()`/`add-folder()`; `add-books` was
+named `add-files` until the macOS combined picker landed) and wired the empty-state CTA
+to `add-books()` (each restores focus via `focus-self()` after firing); PR-L's original left-aligned
 two-`Button` text toolbar was REPLACED in #83 with a centered, icon-only glass-pill `NavBar` (two
-`file`/`folder` `NavItem` capsules). The `NavBar` is declared as a SEPARATE LAST layer in the
+`file`/`folder` `NavItem` capsules on Windows/Linux; on macOS a single combined `plus` capsule,
+gated by the Rust-pushed `combined-add-picker` flag). The `NavBar` is declared as a SEPARATE LAST layer in the
 component tree — paint order equals declaration order in Slint, so it renders on top of the cover-flow
 without a z-index — and kept OUTSIDE the `FocusScope` so keyboard navigation remains carousel-owned;
-the nav is mouse + screen-reader oriented. The `add-files()`/`add-folder()` callbacks and the
+the nav is mouse + screen-reader oriented. The `add-books()`/`add-folder()` callbacks and the
 `focus-self()`-after-fire behavior are unchanged; `NavBar` simply forwards into them. The cover-flow
 is rendered by a file-private `CoverCard` sub-component instantiated by TWO `for` passes over the model:
 pass 1 is the always-on BACKING layer (`show: true` for every book), pass 2 (declared after) paints ONLY
@@ -583,8 +586,12 @@ PR6 `on_open_archive` → `rfd` `pick_file` filtered to cbz/zip. PR7 extended th
 cbz/zip/cbr/rar — the ONLY UI change in PR7 since `open_path` already dispatched via
 `ArchiveLoader`. "Open Archive" button lives in `ViewerWindow.slint`.
 
-PR-L added Library-side pickers: `on_add_files` (`pick_files`, filtered cbz/zip/cbr/rar) and
-`on_add_folder` (`pick_folder`, folder-as-one-book). `main.rs` owns the library-add seam — `add_paths`
+PR-L added Library-side pickers: `on_add_books` (né `on_add_files`; filtered cbz/zip/cbr/rar —
+`pick_files_or_folders` on macOS, where one NSOpenPanel picks archives AND folders in a single
+panel, `pick_files` elsewhere; the platform split lives in `#[cfg]` blocks inside the one handler,
+and the matching `combined-add-picker` bool pushed at boot collapses the NavBar's two add capsules
+into one on macOS) and
+`on_add_folder` (`pick_folder`, folder-as-one-book; its capsule is hidden on macOS). `main.rs` owns the library-add seam — `add_paths`
 (dedup-aware insert, returns the count of NEW books), `build_carousel_model` (Library → `ModelRc<CarouselItem>`,
 0-based `last_page` → 1-based `current`, real `total`/`progress` from persisted `Book::page_count` (PR-La),
 placeholder cover), and the shared
