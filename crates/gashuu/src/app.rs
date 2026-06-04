@@ -457,11 +457,12 @@ impl RemoveBooksUseCase {
                 for path in &report.removed {
                     let removed = cache.purge_for(path, mtime_secs(path), &[COVER_MAX_SIDE]);
                     if removed == 0 {
-                        // Not an error: a missing file / drifted mtime leaves a
-                        // harmless orphan the cache's size cap reclaims later.
+                        // Not an error: a missing file / drifted mtime / unwritable
+                        // cache entry leaves a harmless orphan the cache's size cap
+                        // reclaims later.
                         tracing::warn!(
                             path = %path.display(),
-                            "no persistent cover purged for removed book (missing or mtime drift)"
+                            "no persistent cover purged for removed book (missing, mtime drift, or unwritable cache)"
                         );
                     }
                 }
@@ -872,6 +873,50 @@ mod tests {
     }
 
     #[test]
+    fn confirm_content_both_truncation_and_outside_search_lines_appended() {
+        // 12 books total; narrow the query to "book00" (exact-prefix, substring
+        // match) so only book00 is visible, but select all 12.
+        //   count(12) > CAP(10)           ⇒ "…and 2 more" line at index CAP.
+        //   visible_selected(1) < count   ⇒ outside-search line at index CAP+1.
+        // The two counts (M=2 vs N=11) are distinct, so the assertions are tight.
+        // Ordering contract: the "and M more" line ALWAYS precedes the
+        // outside-search line.
+        let (lib, mut search, mut sel) = delete_fixture(12);
+        // Only "book00" contains the literal "book00" as a substring (book01 etc.
+        // do not); the query is an exact substring match, case-insensitive.
+        search.set_query("book00".to_string(), &lib);
+        for i in 0..12 {
+            sel.toggle(PathBuf::from(format!("/manga/book{i:02}.cbz")));
+        }
+        let loc = en_loader();
+        let content = confirm_delete_content(loc.loader(), &sel, &search, &lib, None);
+
+        assert_eq!(
+            content.body_lines.len(),
+            CONFIRM_DELETE_LIST_CAP + 2,
+            "CAP titles + 'and M more' + outside-search line, got {:?}",
+            content.body_lines
+        );
+        // Index CAP must be the "…and M more" line (M = 12 - 10 = 2).
+        let more_line = &content.body_lines[CONFIRM_DELETE_LIST_CAP];
+        assert!(
+            more_line.contains('2'),
+            "'and M more' line at index CAP must carry M = 2, got {more_line:?}"
+        );
+        // Index CAP+1 must be the outside-search line (12 - 1 visible = 11).
+        let outside_line = &content.body_lines[CONFIRM_DELETE_LIST_CAP + 1];
+        assert!(
+            outside_line.contains("11"),
+            "outside-search line at index CAP+1 must carry 11, got {outside_line:?}"
+        );
+        assert!(
+            content.title.contains("12"),
+            "title carries the full selection count, got {:?}",
+            content.title
+        );
+    }
+
+    #[test]
     fn confirm_content_appends_outside_search_line() {
         // 3 books; narrow the query so only one is visible, but select all three.
         // count(3) > visible_selected(1) ⇒ an outside-search line is appended.
@@ -953,7 +998,15 @@ mod tests {
         let content = confirm_delete_content(loc.loader(), &sel, &search, &lib, None);
 
         // The single resolvable title leads the body; the unresolvable path never
-        // appears as its own title line.
+        // appears as its own title line.  The ghost is also outside the visible
+        // search projection, so an outside-search line is always appended after
+        // the single resolvable title: body_lines = [title, outside-search] → len 2.
+        assert_eq!(
+            content.body_lines.len(),
+            2,
+            "exactly one title line + one outside-search line, got {:?}",
+            content.body_lines
+        );
         assert_eq!(
             content.body_lines.first().map(String::as_str),
             Some("book00"),

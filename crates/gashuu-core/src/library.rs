@@ -619,13 +619,19 @@ mod tests {
 
     #[test]
     fn restore_preserves_per_book_data_that_add_would_lose() {
-        // The add()-trap: re-adding by path yields a FRESH book (last_page 0).
-        // restore must re-insert the WHOLE clone, keeping last_page/page_count.
+        // The add()-trap: re-adding by path yields a FRESH book (last_page 0,
+        // page_count None, overrides all-None).  restore must re-insert the WHOLE
+        // clone, keeping last_page / page_count / overrides.
         let mut lib = Library::new();
         let p = PathBuf::from("/manga/a.cbz");
         assert!(lib.add(p.clone()).is_some());
         assert!(lib.set_last_page(&p, 42));
         assert!(lib.set_page_count(&p, NonZeroUsize::new(100).unwrap()));
+        let ov = crate::view_override::ViewOverride {
+            reading_direction: Some(crate::settings::ReadingDirection::Rtl),
+            ..crate::view_override::ViewOverride::none()
+        };
+        assert!(lib.set_overrides(&p, ov));
 
         let clone: Vec<Book> = lib.books().to_vec();
         assert_eq!(lib.remove_many(std::slice::from_ref(&p)).removed.len(), 1);
@@ -639,6 +645,11 @@ mod tests {
             "restore keeps last_page (add would reset to 0)"
         );
         assert_eq!(lib.books()[0].page_count_opt(), Some(100));
+        assert_eq!(
+            lib.overrides_for(&p),
+            ov,
+            "restore keeps overrides (add would reset to all-None)"
+        );
     }
 
     #[test]
@@ -669,12 +680,21 @@ mod tests {
     fn restore_round_trips_to_byte_identical_json() {
         // The rollback contract: remove + restore must reproduce the EXACT
         // pre-removal serialization (the add()-trap would break this).
+        // A non-default ViewOverride on one of the removed books makes the
+        // comparison non-vacuous for the `overrides` field (a default/empty
+        // override is omitted by `skip_serializing_if`, so the byte-identical
+        // check would vacuously pass without this).
         let mut lib = Library::new();
         for name in ["a.cbz", "b.cbz", "c.cbz"] {
             assert!(lib.add(PathBuf::from(format!("/manga/{name}"))).is_some());
         }
         assert!(lib.set_last_page(Path::new("/manga/b.cbz"), 9));
         assert!(lib.set_page_count(Path::new("/manga/b.cbz"), NonZeroUsize::new(50).unwrap()));
+        let ov = crate::view_override::ViewOverride {
+            reading_direction: Some(crate::settings::ReadingDirection::Rtl),
+            ..crate::view_override::ViewOverride::none()
+        };
+        assert!(lib.set_overrides(Path::new("/manga/b.cbz"), ov));
         let before = lib.to_json().unwrap();
 
         let removed: Vec<Book> = lib
