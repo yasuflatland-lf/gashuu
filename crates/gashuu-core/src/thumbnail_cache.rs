@@ -317,6 +317,26 @@ mod tests {
     }
 
     #[test]
+    fn purge_for_empty_sides_removes_nothing() {
+        // An empty `max_sides` derives no keys, so there is nothing to purge: 0
+        // removed, and the seeded cover stays on disk untouched.
+        let dir = tempdir().unwrap();
+        let cache = ThumbnailCache::with_dir(dir.path().to_path_buf());
+        let path = Path::new("/manga/book.cbz");
+        let mtime = 1234;
+        let max_side = 320;
+        let key = cache_key(path, mtime, max_side);
+        cache.put(&key, &tiny_decoded_image()).expect("seed cover");
+
+        let removed = cache.purge_for(path, mtime, &[]);
+        assert_eq!(removed, 0, "no sides requested removes no cover");
+        assert!(
+            cache.get(&key).is_some(),
+            "the seeded cover is left intact when no sides are requested"
+        );
+    }
+
+    #[test]
     fn put_get_roundtrip_preserves_multicolor_pixels() {
         let dir = tempdir().unwrap();
         let cache = ThumbnailCache::with_dir(dir.path().to_path_buf());

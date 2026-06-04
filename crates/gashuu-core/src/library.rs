@@ -6,6 +6,7 @@
 use crate::reading_progress::ReadingProgress;
 use crate::view_override::ViewOverride;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeSet;
 use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 
@@ -195,18 +196,14 @@ impl Library {
     /// a stored book) and `not_found` (matched none); a path duplicated in `paths`
     /// is counted once, and empty input yields an empty report.
     pub fn remove_many(&mut self, paths: &[PathBuf]) -> RemovalReport {
-        // De-duplicate the requested paths so a repeated input is counted once in
-        // the report (the retain itself is already set-like — it drops a path's
-        // single stored book regardless of how many times it was requested).
-        let mut requested: Vec<&Path> = Vec::with_capacity(paths.len());
-        for path in paths {
-            if !requested.contains(&path.as_path()) {
-                requested.push(path.as_path());
-            }
-        }
+        // Collect the requested paths into a set: de-duplication falls out for
+        // free (a repeated input is counted once in the report), and the retain
+        // predicate below becomes an O(log M) membership test instead of an
+        // O(M) linear scan per surviving book.
+        let requested: BTreeSet<&Path> = paths.iter().map(PathBuf::as_path).collect();
         // Split into present (will be removed) and absent (reported not_found)
         // BEFORE the retain, while the books are still in the shelf to compare
-        // against. Order follows the de-duplicated request order.
+        // against. Iterate the set in its sorted order for a deterministic report.
         let mut report = RemovalReport::default();
         for &path in &requested {
             if self.books.iter().any(|b| b.path() == path) {
@@ -217,7 +214,7 @@ impl Library {
         }
         // ONE retain pass drops every requested book; survivors keep their relative
         // (already-sorted) order, so the natural-order invariant holds with no re-sort.
-        self.books.retain(|b| !requested.contains(&b.path()));
+        self.books.retain(|b| !requested.contains(b.path()));
         report
     }
 

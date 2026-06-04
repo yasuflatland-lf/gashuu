@@ -562,6 +562,25 @@ mod tests {
     }
 
     #[test]
+    fn selection_toggle_on_path_not_in_library_still_selects_and_deselects() {
+        // Selection is path-keyed, not library-keyed: a path that was never added
+        // to any Library still toggles cleanly. The selection state owns the set
+        // of selected paths independently of what books exist.
+        let mut sel = LibrarySelectionState::default();
+        let path = PathBuf::from("/manga/never-added.cbz");
+        assert!(!sel.contains(&path));
+
+        sel.toggle(path.clone());
+        assert!(
+            sel.contains(&path),
+            "toggling an absent path still selects it"
+        );
+
+        sel.toggle(path.clone());
+        assert!(!sel.contains(&path), "a second toggle deselects it");
+    }
+
+    #[test]
     fn selection_clear_drops_everything() {
         let mut sel = LibrarySelectionState::default();
         sel.toggle(PathBuf::from("/manga/a.cbz"));
