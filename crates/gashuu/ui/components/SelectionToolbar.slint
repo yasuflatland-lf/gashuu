@@ -12,10 +12,11 @@
 //                      fires exit(). No close SVG exists in assets/ so the glyph
 //                      is a Text element sized and colorized as a pseudo-icon.
 //
-// Width HUGS content (unlike NavBar's fixed token formula) — the pill sizes from
-// the HorizontalLayout's preferred width plus nav-pill-pad padding. This avoids
-// the binding-loop risk (see NavBar header) because the pill's width is driven by
-// a constant-derived expression, not by the layout's own preferred-width.
+// Width HUGS content (unlike NavBar's fixed token formula) — no explicit width
+// binding exists on the root; `horizontal-stretch: 0` lets Slint resolve the
+// preferred content size intrinsically from the HorizontalLayout. This avoids
+// the binding-loop risk (see NavBar header) because no expression reads the
+// layout's own preferred-width.
 //
 // Deliberately Strings-agnostic: the component does NOT import Strings. All
 // human-visible text (count-text, select-all-label, exit-a11y) is composed in
@@ -120,7 +121,7 @@ export component SelectionToolbar inherits Rectangle {
         // is always the accessible-label regardless of narrow/wide mode.
         select-all-capsule := Rectangle {
             height: Theme.nav-capsule;
-            // Circle floor in every mode; the inner layout auto-sizes the capsule above it from the label/icon.
+            // Circle floor in every mode; in wide mode the inner HorizontalLayout auto-sizes the capsule from the label width.
             min-width: Theme.nav-capsule;
             horizontal-stretch: 0;
             border-radius: Theme.radius-pill;

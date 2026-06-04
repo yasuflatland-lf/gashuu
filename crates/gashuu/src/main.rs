@@ -1737,8 +1737,10 @@ fn visible_focus_index_for_path(
 /// so the toolbar strings are always current without a full refresh.
 ///
 /// Borrow discipline: `selection`, `search`, and `library` are distinct
-/// `RefCell`s; each set of shared borrows is confined to an explicit block
-/// scope that drops before the next borrow is acquired.
+/// `RefCell`s. Multi-`Ref` groups are confined to an explicit block scope
+/// that drops before the next borrow is acquired; single-call borrows
+/// (e.g. `selection.borrow().count()`) are statement-level temporaries
+/// that drop at the `;`.
 fn push_selection_strings(
     ui: &ViewerWindow,
     localizer: &i18n::Localizer,
