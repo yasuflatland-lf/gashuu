@@ -161,15 +161,9 @@ fn main() -> color_eyre::Result<()> {
         true,
     );
     // Continue reading: the app boots on the Library screen, so override the
-    // refresh's reset-to-0 with a ONE-SHOT snap to the last-read book's visible
-    // row (falling back to 0 when there is none / it is filtered out / empty).
-    // This is a plain set at the entry moment — not a binding — so user
-    // navigation owns focus afterwards. Resolved through the empty-query visible
-    // set seeded above. The borrow is confined to the snap computation.
-    {
-        let lib = library.borrow();
-        ui.set_carousel_focused_index(entry_focus_index(&lib, search.borrow().visible_indices()));
-    }
+    // refresh's reset-to-0 with a one-shot snap to the last-read book's visible
+    // row, resolved through the empty-query visible set seeded above.
+    snap_carousel_focus_to_last_opened(&ui, &library, &search);
 
     // Top-level screen state machine. App boots to Library (the carousel home).
     // Held in an Rc<RefCell<…>> so the carousel callbacks and the Viewer's
@@ -1447,14 +1441,9 @@ fn go_to_library(ui: &ViewerWindow, nav: &Rc<RefCell<NavState>>, deps: &Carousel
     // Two writes: refresh_library_carousel sets focused-index to 0 (reset_focus =
     // true), then the snap below sets the real target — the second always wins.
     // Keeping reset_focus = true documents that entry owns the focus, not the
-    // residual viewer focus. The borrow is confined to the single statement that
-    // computes the snap index and drops before the UI set.
+    // residual viewer focus.
     refresh_library_carousel(ui, deps, true);
-    let focus = {
-        let lib = deps.library.borrow();
-        entry_focus_index(&lib, deps.search.borrow().visible_indices())
-    };
-    ui.set_carousel_focused_index(focus);
+    snap_carousel_focus_to_last_opened(ui, deps.library, deps.search);
     // Restore keyboard focus to the carousel so its key seams work immediately.
     ui.invoke_focus_carousel();
 }
@@ -1728,6 +1717,25 @@ fn entry_focus_index(lib: &Library, visible_indices: &[usize]) -> i32 {
         .and_then(|path| visible_focus_index_for_path(lib, visible_indices, path))
         .map(|index| index as i32)
         .unwrap_or(0)
+}
+
+/// Snap the carousel's `focused-index` to the last-read book ("continue reading")
+/// when ENTERING the Library screen. A plain set at the entry moment — NOT a
+/// binding — so user navigation owns focus afterwards. This OVERRIDES the
+/// refresh's reset-to-0: a caller that just ran `refresh_library_carousel` with
+/// `reset_focus = true` calls this immediately after, and the snap always wins.
+/// Resolved through the CURRENT visible set (`entry_focus_index`); the borrow is
+/// confined to the snap computation and drops before the UI set.
+fn snap_carousel_focus_to_last_opened(
+    ui: &ViewerWindow,
+    library: &Rc<RefCell<Library>>,
+    search: &Rc<RefCell<LibrarySearchState>>,
+) {
+    let focus = {
+        let lib = library.borrow();
+        entry_focus_index(&lib, search.borrow().visible_indices())
+    };
+    ui.set_carousel_focused_index(focus);
 }
 
 /// The shared collaborators a Library carousel refresh threads together
