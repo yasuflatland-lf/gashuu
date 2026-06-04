@@ -294,8 +294,9 @@ PR-S added two pure scrubber-support helpers:
 and clears `open_file` — returning `ViewerState` to the no-book-open state. Display modes
 (`reading_direction`/`spread_mode`/`cover_mode`) and `cache_config`/`viewport_aspect` are
 deliberately preserved (closing a book is not a settings reset). Called by
-`RemoveBooksUseCase::run` when the open book is among the deleted ones; `main.rs` separately
-blanks `current_book_name` via `ui.set_current_book_name("")` at the same call site.
+`RemoveBooksUseCase::run` when the open book is among the deleted ones; `RemoveBooksUseCase::run`
+itself also calls `ui.set_current_book_name("".into())` (`app.rs`~:481) — `main.rs` only sets
+this name at boot and on a successful open.
 
 ### ViewportState
 
@@ -627,7 +628,7 @@ persistence — drained via `Library::set_page_count` + `save` at the next `star
 
 **`ShortcutsOverlay.slint`** (issue 104, PR-C, NEW): a second glass modal listing the keyboard shortcuts read-only, stacked OVER the still-mounted `SettingsDialog` (both `show-settings` and `show-shortcuts` true). Reuses the settings glass recipe (`settings-w`/`settings-radius` + all glass tokens; only `shortcuts-h` is new). Its ancestor `FocusScope` traps every key so focus can't leak to the dialog underneath; closing returns focus to the dialog via the epoch seam. **PR-5 (#129)** extended the keyboard-shortcuts reference text to document the full selection grammar: `x`, `Space`, `Cmd/Ctrl+A`, `Delete`/`Backspace`, `Esc`.
 
-**`components/ConfirmDialog.slint`** (issue 127, PR-3, NEW; wired in `ViewerWindow` for the bulk-delete path by PR-5 #129): a GENERIC two-choice confirm/cancel modal — no domain vocabulary. Every string on screen arrives through `in` properties (`title`, `body-lines: [string]`, `info-text`, `warning-text`, `confirm-label`, `cancel-label`) so the same component is reusable across confirm decisions. Clones the `SettingsDialog` / `ShortcutsOverlay` glass idiom (scrim + four-layer fake-glass object). Mounted in `ViewerWindow` behind `if root.show-confirm-delete` (an `if`-gate so the node is constructed only when needed). Cancel / Esc / backdrop click fire the `cancel` callback (Slint-side: set `show-confirm-delete = false`, restore carousel focus — selection PRESERVED); the confirm `DangerButton` fires `accepted` (Rust-side: runs `RemoveBooksUseCase`, then dismisses the modal). `Enter` is wired to Cancel (the destructive action is never on `Enter`).
+**`components/ConfirmDialog.slint`** (issue 127, PR-3, NEW; wired in `ViewerWindow` for the bulk-delete path by PR-5 #129): a GENERIC two-choice confirm/cancel modal — no domain vocabulary. Every string on screen arrives through `in` properties (`title`, `body-lines: [string]`, `info-text`, `warning-text`, `confirm-label`, `cancel-label`) so the same component is reusable across confirm decisions. Clones the `SettingsDialog` / `ShortcutsOverlay` glass idiom (scrim + four-layer fake-glass object). Mounted in `ViewerWindow` behind `if root.show-confirm-delete` (an `if`-gate so the node is constructed only when needed). Cancel / Esc / backdrop click fire the `cancel` callback (Slint-side: set `show-confirm-delete = false`, restore carousel focus — selection PRESERVED); the confirm `DangerButton` fires the `confirm()` callback (`ConfirmDialog.slint:117`), which `ViewerWindow` forwards as `confirm => { root.confirm-delete-accepted(); }` (ViewerWindow.slint:591), and Rust registers on `ui.on_confirm_delete_accepted` to run `RemoveBooksUseCase` and dismiss the modal. `Enter` is wired to Cancel (the destructive action is never on `Enter`).
 
 **`FirstRunGuide.slint`** (PR8b, NEW): dismissable once-only overlay; a local `GuideLine`
 component dedupes the key-reference rows.

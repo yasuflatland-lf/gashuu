@@ -104,8 +104,8 @@ remembered per book, so the book reopens the way you left it.
 
 | Key | Action |
 |-----|--------|
-| `x` | Enter selection mode (also toggles the focused book) |
-| `x` / `Space` | Toggle the focused book's selection |
+| `x` | Enter selection mode and toggle the focused book |
+| `Space` | Toggle the focused book's selection (selection mode only) |
 | `Cmd/Ctrl+A` | Select all visible / deselect all visible |
 | `Delete` / `Backspace` | Delete selected books (opens confirm dialog) |
 | `Esc` | Exit selection mode |

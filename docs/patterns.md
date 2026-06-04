@@ -897,7 +897,7 @@ Slint's `@tr()` cannot consume Fluent (see ADR-0008). The sanctioned bridge: a S
 2. **`in` (not `in-out`) suffices for Rust-side `set_*` on Slint 1.16.1** — resolved empirically; this was an open question entering PR-2. Rust `set_<prop>()` setters are generated for plain `in` properties, so the global stays write-only-from-Rust / read-only-from-`.slint`, which is exactly the data direction.
 3. **English literal defaults are insurance, not decoration.** If a frame paints before the first `apply()`, or a wiring regression drops a push, the label shows STALE-ENGLISH rather than blank — visible degradation instead of an invisible empty string. That same property makes the defaults invisible in the En locale (stale-En == correct-En), which is WHY the composed defaults are test-pinned — see the i18n-test-harness entry below.
 4. **Property names == Fluent message IDs** (kebab in `.slint` ↔ snake in generated Rust setters), so `grep navbar-search-a11y` crosses the `.ftl` → `Strings.slint` → `apply()` boundary in one query.
-5. **A sequential 67-setter swap is visually atomic.** Slint batches property changes and repaints them together before the next frame, so pushing 66 setters one-by-one in `apply()` cannot produce a half-translated frame — no redraw hack, no double-buffer needed.
+5. **A sequential 67-setter swap is visually atomic.** Slint batches property changes and repaints them together before the next frame, so pushing 67 setters one-by-one in `apply()` cannot produce a half-translated frame — no redraw hack, no double-buffer needed.
 
 ### Word-order-safe composed a11y labels: compose in Rust via Fluent named args, bind a plain label prop on the component (Fluent i18n PR-2, #113)
 
