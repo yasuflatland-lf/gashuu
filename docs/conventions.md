@@ -32,6 +32,8 @@ Slint-specific: colors encode alpha as `#RRGGBBAA` (e.g. the `…40` byte is ~25
 
 **Golden-ratio radius tokens** (introduced/refined in PR#83 and PR#88): `Theme.nav-search-radius` (search field corner radius) and `Theme.nav-pill-radius` (outer glass pill) are computed as `height / φ²` (≈ 0.382 × height). A radius below `height / 2` yields a rounded rectangle; `Theme.radius-pill` (`9999px`) yields a stadium/oval. Deriving radii from component height via φ keeps proportions harmonious without hard-coding lengths — a concrete example of the token-driven, no-inline-values rule. The settings panel (issue 103, PR-B) extends the same φ discipline: `Theme.settings-radius` ALIASES `nav-pill-radius` (so the panel shares NavBar's glass corner language in one place), and the panel height is now content-hug (header + body + footer, Marcotte-clamped) with φ relocated into component proportions — toggle track ratio, the 8/14/22 spacing ladder, and segment padding (spec 2026-06-04).
 
+When REMOVING a token, sweep by name, literal value, AND concept phrase over `crates/`, `docs/`, and `DESIGN.md` together, and verify that every `{ns.key}` formula symbol in the DESIGN.md frontmatter is defined — a single name-only grep misses stragglers in docs. See [patterns.md](patterns.md) ("Removing a design token").
+
 ### Shared Slint components
 
 Reusable atoms/molecules live one per file under `crates/gashuu/ui/components/` (e.g. `ProgressBar`, `PrimaryButton`, `ThumbnailCell`, `ViewerPill`); see [docs/architecture.md](architecture.md) for the current inventory. Conventions for a component there:
