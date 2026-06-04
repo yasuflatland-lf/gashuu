@@ -536,19 +536,11 @@ impl ViewerState {
     /// Return a language-free description of the current status line.
     /// Format it via `i18n::dynamic::format_status(loader, &content)`.
     pub fn status_content(&self) -> StatusContent {
-        match (&self.cache, self.page_count) {
-            (None, _) => StatusContent {
-                pages: String::new(),
-                spread: self.spread_mode,
-                direction: self.reading_direction,
-                kind: StatusKind::NoFolder,
-            },
-            (Some(_), 0) => StatusContent {
-                pages: String::new(),
-                spread: self.spread_mode,
-                direction: self.reading_direction,
-                kind: StatusKind::NoImages,
-            },
+        // `spread`/`direction` are the same in every arm; only `pages`/`kind`
+        // vary, so compute that pair per-arm and build the struct once.
+        let (pages, kind) = match (&self.cache, self.page_count) {
+            (None, _) => (String::new(), StatusKind::NoFolder),
+            (Some(_), 0) => (String::new(), StatusKind::NoImages),
             (Some(_), _) => {
                 let s = self.spread_ctx().spread_at(self.index);
                 let pages = if let Some(t) = s.trailing {
@@ -556,13 +548,14 @@ impl ViewerState {
                 } else {
                     format!("{} / {}", s.leading + 1, self.page_count)
                 };
-                StatusContent {
-                    pages,
-                    spread: self.spread_mode,
-                    direction: self.reading_direction,
-                    kind: StatusKind::Pages,
-                }
+                (pages, StatusKind::Pages)
             }
+        };
+        StatusContent {
+            pages,
+            spread: self.spread_mode,
+            direction: self.reading_direction,
+            kind,
         }
     }
 }

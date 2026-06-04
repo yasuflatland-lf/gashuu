@@ -187,22 +187,8 @@ fn main() -> color_eyre::Result<()> {
                 let Some(dir) = rfd::FileDialog::new().pick_folder() else {
                     return;
                 };
-                match open_book.run(&ui, &dir, SkippedDetail::None) {
-                    app::OpenOutcome::Error(e_str) => {
-                        ui.set_status_text(
-                            crate::i18n::dynamic::open_error_str(localizer.loader(), &e_str).into(),
-                        );
-                    }
-                    app::OpenOutcome::Success(notices) => {
-                        refresh(&ui, &state.borrow(), &viewport, localizer.loader());
-                        for detail in
-                            crate::i18n::dynamic::format_notices(localizer.loader(), &notices)
-                        {
-                            let base = ui.get_status_text().to_string();
-                            ui.set_status_text(format!("{base} \u{2014} {detail}").into());
-                        }
-                    }
-                }
+                let outcome = open_book.run(&ui, &dir, SkippedDetail::None);
+                finalize_open(&ui, &state, &viewport, &localizer, outcome);
                 // Title-bar book name is derived from the AUTHORITATIVE post-open
                 // state (the canonical `open_file`), not the raw dialog path, so a
                 // FAILED open never shows the name of a book that did not open: on
@@ -228,22 +214,8 @@ fn main() -> color_eyre::Result<()> {
                 else {
                     return;
                 };
-                match open_book.run(&ui, &file, SkippedDetail::Archive) {
-                    app::OpenOutcome::Error(e_str) => {
-                        ui.set_status_text(
-                            crate::i18n::dynamic::open_error_str(localizer.loader(), &e_str).into(),
-                        );
-                    }
-                    app::OpenOutcome::Success(notices) => {
-                        refresh(&ui, &state.borrow(), &viewport, localizer.loader());
-                        for detail in
-                            crate::i18n::dynamic::format_notices(localizer.loader(), &notices)
-                        {
-                            let base = ui.get_status_text().to_string();
-                            ui.set_status_text(format!("{base} \u{2014} {detail}").into());
-                        }
-                    }
-                }
+                let outcome = open_book.run(&ui, &file, SkippedDetail::Archive);
+                finalize_open(&ui, &state, &viewport, &localizer, outcome);
                 // Title-bar book name is derived from the AUTHORITATIVE post-open
                 // state (the canonical `open_file`), so a FAILED open (corrupt /
                 // non-archive file) never shows the picked file's name: on failure
@@ -372,22 +344,8 @@ fn main() -> color_eyre::Result<()> {
                 };
                 // open_book.run writes back the OLD book's position first,
                 // then opens the new path and resumes its stored position.
-                match open_book.run(&ui, &path, SkippedDetail::None) {
-                    app::OpenOutcome::Error(e_str) => {
-                        ui.set_status_text(
-                            crate::i18n::dynamic::open_error_str(localizer.loader(), &e_str).into(),
-                        );
-                    }
-                    app::OpenOutcome::Success(notices) => {
-                        refresh(&ui, &state.borrow(), &viewport, localizer.loader());
-                        for detail in
-                            crate::i18n::dynamic::format_notices(localizer.loader(), &notices)
-                        {
-                            let base = ui.get_status_text().to_string();
-                            ui.set_status_text(format!("{base} \u{2014} {detail}").into());
-                        }
-                    }
-                }
+                let outcome = open_book.run(&ui, &path, SkippedDetail::None);
+                finalize_open(&ui, &state, &viewport, &localizer, outcome);
                 // Title-bar book name is derived from the AUTHORITATIVE post-open
                 // state (the canonical `open_file`), so a FAILED open (a Library
                 // book that was moved/deleted) never shows that book's name: on
@@ -1269,6 +1227,33 @@ pub(crate) fn refresh(
     let is_double = state.preview_is_double(state.index());
     ui.set_scrubber_double(is_double);
     ui.set_page_jump_text(format!("{}", current_1based).into());
+}
+
+/// Finalize an `open_book.run(...)` outcome on the UI. On failure, set the
+/// localized error status; on success, `refresh()` the view and append each
+/// localized notice to the status line. The single place the three open sites
+/// (Open Folder, Open Archive, carousel-open) share this UI wiring, so the
+/// `OpenOutcome` match + notice-append loop lives in exactly one spot.
+fn finalize_open(
+    ui: &ViewerWindow,
+    state: &Rc<RefCell<ViewerState>>,
+    viewport: &Rc<RefCell<ViewportState>>,
+    localizer: &i18n::Localizer,
+    outcome: app::OpenOutcome,
+) {
+    let loader = localizer.loader();
+    match outcome {
+        app::OpenOutcome::Error(e_str) => {
+            ui.set_status_text(crate::i18n::dynamic::open_error_str(loader, &e_str).into());
+        }
+        app::OpenOutcome::Success(notices) => {
+            refresh(ui, &state.borrow(), viewport, loader);
+            for detail in crate::i18n::dynamic::format_notices(loader, &notices) {
+                let base = ui.get_status_text().to_string();
+                ui.set_status_text(format!("{base} \u{2014} {detail}").into());
+            }
+        }
+    }
 }
 
 /// Returns the current 1-based page number (0 when no pages loaded).
