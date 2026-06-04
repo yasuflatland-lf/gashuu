@@ -214,12 +214,119 @@ impl LibrarySearchState {
     }
 }
 
+/// Crate-visible bulk-selection state for the Library carousel, sitting next to
+/// [`LibrarySearchState`]. Tracks which books the user has selected in selection
+/// mode (`x`) so PR-4 can bulk-delete them.
+///
+/// Keyed by `PathBuf`, NOT by carousel index: indices shift whenever the
+/// projection recomputes (a query change re-filters; a deletion compacts the
+/// shelf), so an index-keyed set would silently point at the wrong books after
+/// any such change. A path is stable identity. A `BTreeSet` keeps the selection
+/// in a deterministic (sorted-by-path) order, so [`selected`](Self::selected)
+/// yields a stable iteration order for the eventual bulk-removal call.
+///
+/// Selection is ORTHOGONAL to the search query: it lives here, not in
+/// `LibrarySearchState`, so changing the query (which recomputes the visible
+/// projection) never drops a selected book — a book filtered out of view stays
+/// selected and reappears selected when the query clears.
+#[derive(Debug, Default)]
+pub(crate) struct LibrarySelectionState {
+    selected: std::collections::BTreeSet<std::path::PathBuf>,
+}
+
+impl LibrarySelectionState {
+    /// Toggle `path`'s membership: select it if absent, deselect if present.
+    pub(crate) fn toggle(&mut self, path: std::path::PathBuf) {
+        if !self.selected.remove(&path) {
+            self.selected.insert(path);
+        }
+    }
+
+    /// Whether `path` is currently selected. Used by the carousel rebuild path to
+    /// set each `CarouselItem.selected` flag (so the accent check badge renders).
+    pub(crate) fn contains(&self, path: &std::path::Path) -> bool {
+        self.selected.contains(path)
+    }
+
+    /// Drop every selection (e.g. on Esc / leaving selection mode).
+    pub(crate) fn clear(&mut self) {
+        self.selected.clear();
+    }
+
+    /// How many books are currently selected (across the WHOLE library, not just
+    /// the visible slice). Drives the count-aware selection UI state.
+    pub(crate) fn count(&self) -> usize {
+        self.selected.len()
+    }
+
+    /// Iterate the selected paths in deterministic (`BTreeSet`, path-sorted) order.
+    // Consumed in PR-4 (#128) by the bulk-removal call (Library::remove_many over
+    // the selected paths); no PR-2 caller yet.
+    #[allow(dead_code)]
+    pub(crate) fn selected(&self) -> impl Iterator<Item = &std::path::Path> {
+        self.selected.iter().map(std::path::PathBuf::as_path)
+    }
+
+    /// Select every CURRENTLY VISIBLE book (the search state's projection),
+    /// leaving any already-selected non-visible books untouched.
+    // Consumed in PR-4 (#128) by the "select all visible" toolbar action.
+    #[allow(dead_code)]
+    pub(crate) fn select_visible(&mut self, search: &LibrarySearchState, library: &Library) {
+        for &index in search.visible_indices() {
+            if let Some(book) = library.books().get(index) {
+                self.selected.insert(book.path().to_path_buf());
+            }
+        }
+    }
+
+    /// Whether every currently visible book is selected. `false` when there are no
+    /// visible books (an empty projection has nothing to consider "all selected").
+    // Consumed in PR-4 (#128) to drive the "select all / clear" toolbar toggle.
+    #[allow(dead_code)]
+    pub(crate) fn all_visible_selected(
+        &self,
+        search: &LibrarySearchState,
+        library: &Library,
+    ) -> bool {
+        let visible = search.visible_indices();
+        if visible.is_empty() {
+            return false;
+        }
+        visible.iter().all(|&index| {
+            library
+                .books()
+                .get(index)
+                .is_some_and(|book| self.selected.contains(book.path()))
+        })
+    }
+
+    /// How many of the currently visible books are selected.
+    // Consumed in PR-4 (#128) by the toolbar's "N selected" visible-scope count.
+    #[allow(dead_code)]
+    pub(crate) fn visible_selected_count(
+        &self,
+        search: &LibrarySearchState,
+        library: &Library,
+    ) -> usize {
+        search
+            .visible_indices()
+            .iter()
+            .filter(|&&index| {
+                library
+                    .books()
+                    .get(index)
+                    .is_some_and(|book| self.selected.contains(book.path()))
+            })
+            .count()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use gashuu_core::Library;
     use std::num::NonZeroUsize;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
 
     /// Test helper: derive carousel rows for the WHOLE library in natural
     /// `Library::books()` order, exercising `carousel_data_for_book` (the single
@@ -434,5 +541,151 @@ mod tests {
         assert_eq!(matching_indices(&lib, "BONUS"), vec![0]);
         assert_eq!(matching_indices(&lib, ""), vec![0, 1, 2]);
         assert!(matching_indices(&lib, "missing").is_empty());
+    }
+
+    #[test]
+    fn selection_toggle_adds_then_removes() {
+        let mut sel = LibrarySelectionState::default();
+        let path = PathBuf::from("/manga/a.cbz");
+        assert!(!sel.contains(&path));
+        assert_eq!(sel.count(), 0);
+
+        sel.toggle(path.clone());
+        assert!(sel.contains(&path), "first toggle selects");
+        assert_eq!(sel.count(), 1);
+
+        sel.toggle(path.clone());
+        assert!(!sel.contains(&path), "second toggle deselects");
+        assert_eq!(sel.count(), 0);
+    }
+
+    #[test]
+    fn selection_clear_drops_everything() {
+        let mut sel = LibrarySelectionState::default();
+        sel.toggle(PathBuf::from("/manga/a.cbz"));
+        sel.toggle(PathBuf::from("/manga/b.cbz"));
+        assert_eq!(sel.count(), 2);
+        sel.clear();
+        assert_eq!(sel.count(), 0);
+        assert!(!sel.contains(Path::new("/manga/a.cbz")));
+    }
+
+    #[test]
+    fn selected_iterates_in_deterministic_path_order() {
+        // BTreeSet ⇒ path-sorted iteration regardless of insertion order.
+        let mut sel = LibrarySelectionState::default();
+        sel.toggle(PathBuf::from("/manga/c.cbz"));
+        sel.toggle(PathBuf::from("/manga/a.cbz"));
+        sel.toggle(PathBuf::from("/manga/b.cbz"));
+        let paths: Vec<&Path> = sel.selected().collect();
+        assert_eq!(
+            paths,
+            vec![
+                Path::new("/manga/a.cbz"),
+                Path::new("/manga/b.cbz"),
+                Path::new("/manga/c.cbz"),
+            ]
+        );
+    }
+
+    #[test]
+    fn selection_is_orthogonal_to_search_query() {
+        // Selecting a book then narrowing the query so it is filtered OUT of the
+        // visible set must NOT drop the selection: it stays selected and reappears
+        // when the query clears (selection lives independently of the projection).
+        let mut lib = Library::new();
+        assert!(lib.add(PathBuf::from("/manga/alpha.cbz")).is_some());
+        assert!(lib.add(PathBuf::from("/manga/beta.cbz")).is_some());
+        let beta_path = lib.books()[1].path().to_path_buf();
+
+        let mut search = LibrarySearchState::default();
+        search.set_query(String::new(), &lib); // everything visible
+        let mut sel = LibrarySelectionState::default();
+        sel.toggle(beta_path.clone());
+        assert!(sel.contains(&beta_path));
+
+        // Narrow to "alpha": beta is no longer visible, but stays selected.
+        search.set_query("alpha".to_string(), &lib);
+        assert_eq!(search.visible_indices(), &[0]);
+        assert!(
+            sel.contains(&beta_path),
+            "a query change must not drop a selection"
+        );
+
+        // Clear the query: beta is visible again and still selected.
+        search.set_query(String::new(), &lib);
+        assert_eq!(search.visible_indices(), &[0, 1]);
+        assert!(sel.contains(&beta_path));
+    }
+
+    #[test]
+    fn select_visible_selects_only_the_visible_projection() {
+        // With an active "alpha" filter, select_visible selects ONLY the visible
+        // (alpha) book; the filtered-out beta is left untouched.
+        let mut lib = Library::new();
+        assert!(lib.add(PathBuf::from("/manga/alpha.cbz")).is_some());
+        assert!(lib.add(PathBuf::from("/manga/beta.cbz")).is_some());
+        let alpha_path = lib.books()[0].path().to_path_buf();
+        let beta_path = lib.books()[1].path().to_path_buf();
+
+        let mut search = LibrarySearchState::default();
+        search.set_query("alpha".to_string(), &lib);
+        let mut sel = LibrarySelectionState::default();
+        sel.select_visible(&search, &lib);
+
+        assert!(sel.contains(&alpha_path), "visible book is selected");
+        assert!(!sel.contains(&beta_path), "filtered-out book is not");
+        assert_eq!(sel.count(), 1);
+    }
+
+    #[test]
+    fn all_visible_selected_flips_with_the_visible_set() {
+        let mut lib = Library::new();
+        assert!(lib.add(PathBuf::from("/manga/alpha.cbz")).is_some());
+        assert!(lib.add(PathBuf::from("/manga/beta.cbz")).is_some());
+        let alpha_path = lib.books()[0].path().to_path_buf();
+        let beta_path = lib.books()[1].path().to_path_buf();
+
+        let mut search = LibrarySearchState::default();
+        search.set_query(String::new(), &lib); // both visible
+        let mut sel = LibrarySelectionState::default();
+
+        assert!(
+            !sel.all_visible_selected(&search, &lib),
+            "nothing selected ⇒ not all-visible-selected"
+        );
+        sel.toggle(alpha_path.clone());
+        assert!(
+            !sel.all_visible_selected(&search, &lib),
+            "only one of two visible selected"
+        );
+        assert_eq!(sel.visible_selected_count(&search, &lib), 1);
+
+        sel.toggle(beta_path);
+        assert!(
+            sel.all_visible_selected(&search, &lib),
+            "both visible now selected ⇒ all-visible-selected"
+        );
+        assert_eq!(sel.visible_selected_count(&search, &lib), 2);
+
+        // Narrow to "alpha": only alpha visible and it IS selected ⇒ flips back to true.
+        search.set_query("alpha".to_string(), &lib);
+        assert!(sel.all_visible_selected(&search, &lib));
+        assert_eq!(sel.visible_selected_count(&search, &lib), 1);
+    }
+
+    #[test]
+    fn all_visible_selected_false_for_empty_projection() {
+        let mut lib = Library::new();
+        assert!(lib.add(PathBuf::from("/manga/alpha.cbz")).is_some());
+        let mut search = LibrarySearchState::default();
+        search.set_query("no-match".to_string(), &lib); // empty projection
+        assert!(search.visible_indices().is_empty());
+        let sel = LibrarySelectionState::default();
+        assert!(
+            !sel.all_visible_selected(&search, &lib),
+            "an empty visible set is not all-selected"
+        );
+        assert_eq!(sel.visible_selected_count(&search, &lib), 0);
     }
 }
