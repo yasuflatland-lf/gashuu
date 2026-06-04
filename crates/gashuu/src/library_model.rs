@@ -260,8 +260,8 @@ impl LibrarySelectionState {
     }
 
     /// Iterate the selected paths in deterministic (`BTreeSet`, path-sorted) order.
-    // Consumed in PR-4 (#128) by the bulk-removal call (Library::remove_many over
-    // the selected paths); no PR-2 caller yet.
+    // Consumed in PR-5 (#129) by the bulk-removal call (Library::remove_many over
+    // the selected paths).
     #[allow(dead_code)]
     pub(crate) fn selected(&self) -> impl Iterator<Item = &std::path::Path> {
         self.selected.iter().map(std::path::PathBuf::as_path)
@@ -828,5 +828,64 @@ mod tests {
             "an empty visible set is not all-selected"
         );
         assert_eq!(sel.visible_selected_count(&search, &lib), 0);
+    }
+
+    #[test]
+    fn deselect_visible_after_query_pivot_removes_only_new_projection() {
+        // Production sequence: select_visible with broad/empty query (all books
+        // selected), then set_query narrowing the projection to a subset, then
+        // deselect_visible — only the narrowed projection's books must be removed;
+        // books outside the narrowed projection must remain selected.
+        //
+        // Library: alpha, beta, gamma (natural sort order).
+        // Step 1: empty query → all 3 visible → select_visible selects all.
+        // Step 2: narrow to "alpha" → only alpha visible.
+        // Step 3: deselect_visible → only alpha removed; beta and gamma stay.
+        let mut lib = Library::new();
+        assert!(lib.add(PathBuf::from("/manga/alpha.cbz")).is_some());
+        assert!(lib.add(PathBuf::from("/manga/beta.cbz")).is_some());
+        assert!(lib.add(PathBuf::from("/manga/gamma.cbz")).is_some());
+        let alpha_path = lib.books()[0].path().to_path_buf();
+        let beta_path = lib.books()[1].path().to_path_buf();
+        let gamma_path = lib.books()[2].path().to_path_buf();
+
+        let mut search = LibrarySearchState::default();
+        // Step 1: broad (empty) query — all books visible.
+        search.set_query(String::new(), &lib);
+        assert_eq!(search.visible_indices().len(), 3);
+
+        let mut sel = LibrarySelectionState::default();
+        sel.select_visible(&search, &lib);
+        assert_eq!(
+            sel.count(),
+            3,
+            "all three books must be selected after select_visible"
+        );
+
+        // Step 2: narrow to "alpha" — only alpha is visible now.
+        search.set_query("alpha".to_string(), &lib);
+        assert_eq!(search.visible_indices(), &[0], "only alpha index visible");
+
+        // Step 3: deselect_visible removes ONLY alpha (the new projection).
+        sel.deselect_visible(&search, &lib);
+
+        assert!(
+            !sel.contains(&alpha_path),
+            "alpha (in narrowed projection) must be deselected"
+        );
+        assert!(
+            sel.contains(&beta_path),
+            "beta (outside narrowed projection) must remain selected"
+        );
+        assert!(
+            sel.contains(&gamma_path),
+            "gamma (outside narrowed projection) must remain selected"
+        );
+        // Exactly the two out-of-projection books remain.
+        assert_eq!(
+            sel.count(),
+            2,
+            "count must equal the books outside the narrowed projection"
+        );
     }
 }

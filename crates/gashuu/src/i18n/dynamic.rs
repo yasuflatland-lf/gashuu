@@ -319,6 +319,12 @@ mod tests {
                 !result.is_empty(),
                 "selection_count_text(3,3) must not be empty"
             );
+            // n=3 must appear in the rendered output (guards against a dropped { $n }
+            // placeholder in the ftl template).
+            assert!(
+                result.contains('3'),
+                "plain form must contain count n=3, got: {result:?}"
+            );
         }
         // En != Ja
         assert_ne!(
