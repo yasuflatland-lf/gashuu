@@ -255,6 +255,8 @@ impl LibrarySelectionState {
 
     /// How many books are currently selected (across the WHOLE library, not just
     /// the visible slice). Drives the count-aware selection UI state.
+    // Consumed in PR-4 (#128) by the selection toolbar's "N selected" count text.
+    #[allow(dead_code)]
     pub(crate) fn count(&self) -> usize {
         self.selected.len()
     }

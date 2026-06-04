@@ -452,12 +452,8 @@ fn main() -> color_eyre::Result<()> {
                     return;
                 };
                 selection.borrow_mut().toggle(path.clone());
-                let (selected, count) = {
-                    let sel = selection.borrow();
-                    (sel.contains(&path), sel.count())
-                };
+                let selected = selection.borrow().contains(&path);
                 set_carousel_selected(&ui, index as usize, selected);
-                ui.set_carousel_selection_count(count as i32);
             })
         });
     }
@@ -483,12 +479,8 @@ fn main() -> color_eyre::Result<()> {
                     return;
                 };
                 selection.borrow_mut().toggle(path.clone());
-                let (selected, count) = {
-                    let sel = selection.borrow();
-                    (sel.contains(&path), sel.count())
-                };
+                let selected = selection.borrow().contains(&path);
                 set_carousel_selected(&ui, index as usize, selected);
-                ui.set_carousel_selection_count(count as i32);
             })
         });
     }
@@ -508,7 +500,6 @@ fn main() -> color_eyre::Result<()> {
                 let lib = library.borrow();
                 let indices = search.borrow().visible_indices().to_vec();
                 apply_selection_flags(&ui, &lib, &indices, |_| false);
-                ui.set_carousel_selection_count(0);
             })
         });
     }

@@ -240,10 +240,6 @@ export component Carousel inherits Rectangle {
     // selection and leaves the mode (Esc). All three are forwarded through
     // ViewerWindow to main.rs (mirrors the open/move/back forwarding).
     in-out property <bool> selection-mode;
-    // Count of selected books (whole library), pushed from Rust on each change.
-    // PR-4 wires the delete toolbar to it; surfaced here so selection-aware chrome
-    // has a single observable signal without re-deriving it from the items model.
-    in property <int> selection-count;
     callback toggle-selection(int);   // visible carousel index to toggle
     callback cover-clicked(int);      // visible carousel index whose cover was clicked
     callback exit-selection();        // Esc: clear selection + leave selection mode

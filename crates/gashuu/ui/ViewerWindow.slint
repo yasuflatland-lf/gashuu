@@ -183,10 +183,6 @@ export component ViewerWindow inherits Window {
     // window surface to Rust — see docs/patterns.md — so each child seam needs a
     // forwarded root twin.)
     in-out property <bool> carousel-selection-mode;
-    // Count of selected books (whole library), pushed from Rust after each toggle
-    // / clear so selection-aware chrome can read it. PR-4 wires the delete toolbar
-    // to it; in PR-2 it is the single observable signal that selection changed.
-    in property <int> carousel-selection-count;
     callback carousel-toggle-selection(int);
     callback carousel-cover-clicked(int);
     callback carousel-exit-selection();
@@ -251,7 +247,6 @@ export component ViewerWindow inherits Window {
         add-folder() => { root.add-folder(); }
         // Bulk-selection (PR-2): mirror the mode locally and forward the seams.
         selection-mode <=> root.carousel-selection-mode;
-        selection-count: root.carousel-selection-count;
         toggle-selection(i) => { root.carousel-toggle-selection(i); }
         cover-clicked(i) => { root.carousel-cover-clicked(i); }
         exit-selection() => { root.carousel-exit-selection(); }
