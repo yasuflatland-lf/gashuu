@@ -1737,10 +1737,9 @@ fn visible_focus_index_for_path(
 /// so the toolbar strings are always current without a full refresh.
 ///
 /// Borrow discipline: `selection`, `search`, and `library` are distinct
-/// `RefCell`s. Multi-`Ref` groups are confined to an explicit block scope
-/// that drops before the next borrow is acquired; single-call borrows
-/// (e.g. `selection.borrow().count()`) are statement-level temporaries
-/// that drop at the `;`.
+/// `RefCell`s, so the three shared `Ref`s are taken together in one block scope
+/// (both projection reads need the same trio) and drop at the block's `}` before
+/// the UI setters run.
 fn push_selection_strings(
     ui: &ViewerWindow,
     localizer: &i18n::Localizer,
@@ -1749,18 +1748,18 @@ fn push_selection_strings(
     library: &Rc<RefCell<Library>>,
 ) {
     let loader = localizer.loader();
-    let total = selection.borrow().count();
-    let visible_selected = {
+    // One shared-borrow group: `selection`, `search`, and `library` are distinct
+    // `RefCell`s, so holding all three immutable `Ref`s at once is safe, and both
+    // projection reads need the same trio. The group drops at the block's `}`.
+    let (total, visible_selected, all_visible) = {
         let sel = selection.borrow();
         let srch = search.borrow();
         let lib = library.borrow();
-        sel.visible_selected_count(&srch, &lib)
-    };
-    let all_visible = {
-        let sel = selection.borrow();
-        let srch = search.borrow();
-        let lib = library.borrow();
-        sel.all_visible_selected(&srch, &lib)
+        (
+            sel.count(),
+            sel.visible_selected_count(&srch, &lib),
+            sel.all_visible_selected(&srch, &lib),
+        )
     };
     ui.set_carousel_selection_count_text(
         crate::i18n::dynamic::selection_count_text(loader, total, visible_selected).into(),

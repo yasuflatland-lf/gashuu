@@ -165,12 +165,11 @@ pub(crate) fn selection_count_text(
     total: usize,
     visible_selected: usize,
 ) -> String {
+    let n = total as i64;
     if total > visible_selected {
-        let n = total as i64;
         let m = (total - visible_selected) as i64;
         fl!(loader, "selection-count-outside", n = n, m = m)
     } else {
-        let n = total as i64;
         fl!(loader, "selection-count", n = n)
     }
 }
