@@ -198,3 +198,19 @@ notice-load-failed = Could not load { $what }; starting fresh.
 notice-already-in-library = Already in library — no new books added.
 notice-added-books = Added { $n } book(s)
 notice-added-books-save-failed = Added { $n } book(s), but could not save library: { $error }
+
+# ---- selection ----
+
+# Toolbar count label when all selected books are in the current visible projection.
+selection-count = { $n } selected
+# Toolbar count label when some selected books are outside the visible search projection.
+# $m is the number of selected books that are outside (off-screen / filtered out).
+selection-count-outside = { $n } selected ({ $m } outside search)
+# Toolbar toggle button: select all visible books.
+selection-select-all = Select all
+# Toolbar toggle button: deselect all visible books (shown when all visible are selected).
+selection-deselect-all = Deselect all
+# NavBar button that enters selection mode.
+selection-enter = Select
+# A11y label for the toolbar button that exits selection mode.
+selection-exit-a11y = Exit selection mode

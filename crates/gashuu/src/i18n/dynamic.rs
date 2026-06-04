@@ -149,6 +149,54 @@ pub(crate) fn added_books_save_failed(
     )
 }
 
+// ---- Selection toolbar messages -------------------------------------------
+
+/// Toolbar count label.
+///
+/// When `total > visible_selected`, some selected books are outside the visible
+/// projection (filtered out by the current search query). The "(M outside search)"
+/// form is shown to prevent silent off-screen deletion — it must appear ONLY when
+/// `total` exceeds `visible_selected`.
+///
+/// When `total == visible_selected` (boundary: all selected books are visible),
+/// the plain "N selected" form is used.
+// Consumed by the PR-4 (#128) main.rs selection toolbar wiring; no caller yet in
+// this PR phase.
+#[allow(dead_code)]
+pub(crate) fn selection_count_text(
+    loader: &FluentLanguageLoader,
+    total: usize,
+    visible_selected: usize,
+) -> String {
+    if total > visible_selected {
+        let n = total as i64;
+        let m = (total - visible_selected) as i64;
+        fl!(loader, "selection-count-outside", n = n, m = m)
+    } else {
+        let n = total as i64;
+        fl!(loader, "selection-count", n = n)
+    }
+}
+
+/// Toolbar select-all / deselect-all toggle label.
+///
+/// Returns the "Deselect all" label when `all_visible_selected` is `true`
+/// (all currently visible books are already selected), otherwise returns
+/// "Select all".
+// Consumed by the PR-4 (#128) main.rs selection toolbar wiring; no caller yet in
+// this PR phase.
+#[allow(dead_code)]
+pub(crate) fn select_all_label(
+    loader: &FluentLanguageLoader,
+    all_visible_selected: bool,
+) -> String {
+    if all_visible_selected {
+        fl!(loader, "selection-deselect-all")
+    } else {
+        fl!(loader, "selection-select-all")
+    }
+}
+
 // ---- Shortcuts help -------------------------------------------------------
 
 /// Multi-line keyboard-shortcuts reference rendered read-only in the
@@ -265,6 +313,89 @@ mod tests {
                 dir
             );
         }
+    }
+
+    #[test]
+    fn selection_count_text_plain_when_total_equals_visible() {
+        // Boundary: total == visible_selected ⇒ plain "N selected" form.
+        for loc in [en(), ja()] {
+            let l = loc.loader();
+            let result = selection_count_text(l, 3, 3);
+            assert!(
+                !result.is_empty(),
+                "selection_count_text(3,3) must not be empty"
+            );
+        }
+        // En != Ja
+        assert_ne!(
+            selection_count_text(en().loader(), 3, 3),
+            selection_count_text(ja().loader(), 3, 3),
+            "selection_count_text plain form must differ between En and Ja"
+        );
+        // Plain form must NOT contain the computed m (0 outside) in English.
+        let en_plain = selection_count_text(en().loader(), 3, 3);
+        assert!(
+            !en_plain.contains("outside"),
+            "plain form must not mention 'outside', got: {en_plain:?}"
+        );
+    }
+
+    #[test]
+    fn selection_count_text_outside_form_when_total_greater_than_visible() {
+        // total > visible_selected: shows the "outside search" form with computed m.
+        // total=5, visible_selected=3 ⇒ m = 5 - 3 = 2.
+        for loc in [en(), ja()] {
+            let l = loc.loader();
+            let result = selection_count_text(l, 5, 3);
+            assert!(
+                !result.is_empty(),
+                "selection_count_text outside form must not be empty"
+            );
+            // m = 2 must appear in the output.
+            assert!(
+                result.contains('2'),
+                "outside form must contain computed m=2, got: {result:?}"
+            );
+        }
+        // En != Ja
+        assert_ne!(
+            selection_count_text(en().loader(), 5, 3),
+            selection_count_text(ja().loader(), 5, 3),
+            "selection_count_text outside form must differ between En and Ja"
+        );
+    }
+
+    #[test]
+    fn select_all_label_flips_between_the_two_keys() {
+        // false ⇒ "Select all"; true ⇒ "Deselect all"
+        for loc in [en(), ja()] {
+            let l = loc.loader();
+            let select = select_all_label(l, false);
+            let deselect = select_all_label(l, true);
+            assert!(
+                !select.is_empty(),
+                "select_all_label(false) must not be empty"
+            );
+            assert!(
+                !deselect.is_empty(),
+                "select_all_label(true) must not be empty"
+            );
+            assert_ne!(
+                select, deselect,
+                "select and deselect labels must differ within a locale"
+            );
+        }
+        // En != Ja for both keys
+        assert_ne!(
+            select_all_label(en().loader(), false),
+            select_all_label(ja().loader(), false),
+            "select_all_label(false) must differ between En and Ja"
+        );
+        assert_ne!(
+            select_all_label(en().loader(), true),
+            select_all_label(ja().loader(), true),
+            "select_all_label(true) must differ between En and Ja"
+        );
     }
 
     #[test]

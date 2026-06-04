@@ -204,6 +204,10 @@ impl Localizer {
         );
         strings.set_common_close(fl!(self.loader, "common-close").into());
 
+        // ---- SelectionToolbar static strings --------------------------------
+        strings.set_selection_enter(fl!(self.loader, "selection-enter").into());
+        strings.set_selection_exit_a11y(fl!(self.loader, "selection-exit-a11y").into());
+
         // ---- 4 pre-composed Stepper labels --------------------------------
         //
         // Composed here via Fluent named args so verb/noun order survives
