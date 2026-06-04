@@ -132,8 +132,14 @@ component CoverCard inherits Rectangle {
         // `elevated: false`, else the semi-transparent shadow composites twice.
         drop-shadow-blur: (root.focused && root.elevated) ? 22px : 0px;
         drop-shadow-color: Theme.shadow-card;
-        // Focus ring: 3px accent outline on the focused cover only.
-        border-width: root.focused ? root.ring-width : 0px;
+        // Focus ring: 3px accent outline on the focused cover. In selection mode
+        // ONLY, a non-focused cover also gets a thin 1px accent ring while hovered
+        // (§2.4 selection-mode hover affordance) — a pointer hint that the cover is
+        // a selectable target. `cover-touch` is the pass-1-only cover TouchArea
+        // (enabled: root.interactive); since it is non-interactive on pass 2 it
+        // reports no hover there, so the hover ring is single-source like the
+        // click. Normal mode (selection-mode false) shows nothing on hover.
+        border-width: root.focused ? root.ring-width : (root.selection-mode && cover-touch.has-hover ? 1px : 0px);
         border-color: Theme.accent;
 
         // Cover image via the shared ThumbnailCell (DESIGN.md rule 6: one
@@ -165,12 +171,17 @@ component CoverCard inherits Rectangle {
             }
         }
 
-        // Bulk-selection check badge (PR-2). Rendered inside `cover` so it sits on
-        // the artwork, pinned to the top-right with a small inset. Drawn in BOTH
-        // z-order passes (pass-2's focused copy paints over pass-1, so the badge
-        // must live on both or it would vanish on the focused card). Accent disc +
-        // white check — RED stays reserved for the PR-5 delete button.
-        if root.selected : SelectionBadge {
+        // Bulk-selection check badge (PR-2; two-state §2.3). Rendered inside
+        // `cover` so it sits on the artwork, pinned to the top-right with a small
+        // inset. Drawn in BOTH z-order passes (pass-2's focused copy paints over
+        // pass-1, so the badge must live on both or it would vanish on the focused
+        // card) — this block is the shared CoverCard body, so both passes get it.
+        // Gated on `selection-mode` (not `selected`) so EVERY cover shows a badge
+        // while selecting; `checked` then renders the filled (selected) disc or the
+        // hollow (unselected) ring. Accent disc + white check — RED stays reserved
+        // for the PR-5 delete button.
+        if root.selection-mode : SelectionBadge {
+            checked: root.selected;
             x: parent.width - self.width - Theme.space-xs;
             y: Theme.space-xs;
         }
