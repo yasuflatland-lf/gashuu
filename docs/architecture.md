@@ -487,7 +487,7 @@ them with `@image-url(...)` paths relative to the consuming `.slint` file. `buil
 (assets are reached transitively through the entry-file import cascade).
 
 **`ui/Strings.slint`** (Fluent i18n PR-2, #113, NEW): `export global Strings` — the Fluent-served
-static-string surface, 65 `in property <string>` slots (property name == Fluent message ID) with
+static-string surface, 66 `in property <string>` slots (property name == Fluent message ID) with
 English-literal defaults. Written exclusively from Rust by `Localizer::apply()`; `.slint` bindings
 read `Strings.<prop>` in place of the removed `@tr()` calls. `ViewerWindow.slint` re-exports it
 (`import` + `export { Strings }`) so Slint generates the `ui.global::<Strings>()` accessor. See
