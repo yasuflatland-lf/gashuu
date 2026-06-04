@@ -31,7 +31,7 @@ export component SelectionToolbar inherits Rectangle {
     in property <string> count-text;
     // Flips between "Select all" and "Deselect all" based on Rust state.
     in property <string> select-all-label;
-    // Consumer binds Strings.selection-exit-a11y (parallel agent owns Strings.slint).
+    // Consumer binds Strings.selection-exit-a11y.
     in property <string> exit-a11y;
     // Consumer binds Carousel's narrow breakpoint; collapses select-all to icon-only.
     in property <bool> narrow;
@@ -39,14 +39,9 @@ export component SelectionToolbar inherits Rectangle {
     callback exit();
 
     // ── Shape & size ──────────────────────────────────────────────────────────
-    // Width hugs content: count pill + select-all capsule + exit capsule + two
-    // inter-item gaps + left/right padding. The select-all capsule has a variable
-    // text width — in wide mode it's roughly nav-search-width; in narrow mode it
-    // collapses to nav-capsule. To avoid a preferred-width binding loop (NavBar
-    // header rationale) we compute a conservative constant-derived width and let
-    // the HorizontalLayout clip excess space. In practice Slint lays out the
-    // HorizontalLayout at its preferred size, and we set `horizontal-stretch: 0`
-    // so the pill never expands beyond that.
+    // With `horizontal-stretch: 0` and no explicit width, the root adopts its
+    // preferred content size from the HorizontalLayout — no binding-loop risk
+    // because no width binding reads the layout's own preferred-width.
     height: Theme.nav-pill-height;
     horizontal-stretch: 0;
     vertical-stretch: 0;
@@ -125,8 +120,8 @@ export component SelectionToolbar inherits Rectangle {
         // is always the accessible-label regardless of narrow/wide mode.
         select-all-capsule := Rectangle {
             height: Theme.nav-capsule;
-            // Wide: auto-size to the label text + padding; narrow: exact circle.
-            min-width: root.narrow ? Theme.nav-capsule : Theme.nav-capsule;
+            // Circle floor in every mode; the inner layout auto-sizes the capsule above it from the label/icon.
+            min-width: Theme.nav-capsule;
             horizontal-stretch: 0;
             border-radius: Theme.radius-pill;
 

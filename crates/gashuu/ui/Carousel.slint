@@ -250,7 +250,7 @@ export component Carousel inherits Rectangle {
     callback exit-selection();        // Esc: clear selection + leave selection mode
     // ── SelectionToolbar seams (bulk-delete epic, PR-4) ───────────────────────
     // `selection-count-text` is the pre-composed count label from Rust (e.g.
-    // "3 selected"); `select-all-label` flips between the "Select all"/"Deselect
+    // "3 selected" or "5 selected (2 outside search)"); `select-all-label` flips between the "Select all"/"Deselect
     // all" wording. `select-all()` fires from BOTH the toolbar button and the
     // Cmd/Ctrl+A key arm (Rust decides select-vs-deselect). All three are forwarded
     // through ViewerWindow to main.rs (mirrors the PR-2 seams above).
