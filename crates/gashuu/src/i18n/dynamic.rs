@@ -160,9 +160,6 @@ pub(crate) fn added_books_save_failed(
 ///
 /// When `total == visible_selected` (boundary: all selected books are visible),
 /// the plain "N selected" form is used.
-// Consumed by the PR-4 (#128) main.rs selection toolbar wiring; no caller yet in
-// this PR phase.
-#[allow(dead_code)]
 pub(crate) fn selection_count_text(
     loader: &FluentLanguageLoader,
     total: usize,
@@ -183,9 +180,6 @@ pub(crate) fn selection_count_text(
 /// Returns the "Deselect all" label when `all_visible_selected` is `true`
 /// (all currently visible books are already selected), otherwise returns
 /// "Select all".
-// Consumed by the PR-4 (#128) main.rs selection toolbar wiring; no caller yet in
-// this PR phase.
-#[allow(dead_code)]
 pub(crate) fn select_all_label(
     loader: &FluentLanguageLoader,
     all_visible_selected: bool,

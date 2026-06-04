@@ -255,8 +255,6 @@ impl LibrarySelectionState {
 
     /// How many books are currently selected (across the WHOLE library, not just
     /// the visible slice). Drives the count-aware selection UI state.
-    // Consumed in PR-4 (#128) by the selection toolbar's "N selected" count text.
-    #[allow(dead_code)]
     pub(crate) fn count(&self) -> usize {
         self.selected.len()
     }
@@ -271,8 +269,6 @@ impl LibrarySelectionState {
 
     /// Select every CURRENTLY VISIBLE book (the search state's projection),
     /// leaving any already-selected non-visible books untouched.
-    // Consumed in PR-4 (#128) by the "select all visible" toolbar action.
-    #[allow(dead_code)]
     pub(crate) fn select_visible(&mut self, search: &LibrarySearchState, library: &Library) {
         for &index in search.visible_indices() {
             if let Some(book) = library.books().get(index) {
@@ -287,9 +283,6 @@ impl LibrarySelectionState {
     /// Selection is ORTHOGONAL to the search query (invariant): only paths in the
     /// visible projection are removed; paths that are selected but outside the
     /// current visible set are never touched.
-    // Consumed by the PR-4 (#128) main.rs "deselect all visible" toolbar wiring;
-    // no caller yet in this PR phase.
-    #[allow(dead_code)]
     pub(crate) fn deselect_visible(&mut self, search: &LibrarySearchState, library: &Library) {
         for &index in search.visible_indices() {
             if let Some(book) = library.books().get(index) {
@@ -300,8 +293,6 @@ impl LibrarySelectionState {
 
     /// Whether every currently visible book is selected. `false` when there are no
     /// visible books (an empty projection has nothing to consider "all selected").
-    // Consumed in PR-4 (#128) to drive the "select all / clear" toolbar toggle.
-    #[allow(dead_code)]
     pub(crate) fn all_visible_selected(
         &self,
         search: &LibrarySearchState,
@@ -320,8 +311,6 @@ impl LibrarySelectionState {
     }
 
     /// How many of the currently visible books are selected.
-    // Consumed in PR-4 (#128) by the toolbar's "N selected" visible-scope count.
-    #[allow(dead_code)]
     pub(crate) fn visible_selected_count(
         &self,
         search: &LibrarySearchState,
