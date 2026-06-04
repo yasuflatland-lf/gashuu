@@ -6,6 +6,7 @@
 use crate::reading_progress::ReadingProgress;
 use crate::view_override::ViewOverride;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeSet;
 use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 
@@ -113,6 +114,20 @@ pub struct Library {
     books: Vec<Book>,
 }
 
+/// Outcome of [`Library::remove_many`]: the canonical paths actually removed and
+/// the inputs that matched no stored book. A pure value report — never a bare
+/// count, so the caller can both surface "removed N" feedback AND distinguish a
+/// stale/already-gone selection (`not_found`) from a real removal. The two vecs
+/// partition the de-duplicated input: a path appears in exactly one of them, and
+/// a duplicated input path is counted once.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct RemovalReport {
+    /// The paths that matched a stored book and were unregistered.
+    pub removed: Vec<PathBuf>,
+    /// The input paths that matched no stored book (already gone / never present).
+    pub not_found: Vec<PathBuf>,
+}
+
 /// Outcome of [`Library::register_opened`]: where to resume reading and whether the
 /// stored page count changed (so the caller can decide whether to rebuild the
 /// carousel). A pure value — no I/O implied.
@@ -166,6 +181,41 @@ impl Library {
         let before = self.books.len();
         self.books.retain(|b| b.path() != path);
         self.books.len() != before
+    }
+
+    /// Remove every book whose path is in `paths`, in ONE retain pass, and report
+    /// the outcome. The natural-order invariant is preserved by construction:
+    /// `retain` keeps the surviving books in their existing relative order, so the
+    /// shelf stays sorted without a re-sort.
+    ///
+    /// Path identity uses the SAME comparison `remove` does (`Book::path() ==`),
+    /// against the canonical paths stored at `add` time. Selection always
+    /// originates from [`books()`](Library::books), so the inputs are already the
+    /// stored canonical paths — no canonicalization happens here. The returned
+    /// [`RemovalReport`] partitions the de-duplicated input into `removed` (matched
+    /// a stored book) and `not_found` (matched none); a path duplicated in `paths`
+    /// is counted once, and empty input yields an empty report.
+    pub fn remove_many(&mut self, paths: &[PathBuf]) -> RemovalReport {
+        // Collect the requested paths into a set: de-duplication falls out for
+        // free (a repeated input is counted once in the report), and the retain
+        // predicate below becomes an O(log M) membership test instead of an
+        // O(M) linear scan per surviving book.
+        let requested: BTreeSet<&Path> = paths.iter().map(PathBuf::as_path).collect();
+        // Split into present (will be removed) and absent (reported not_found)
+        // BEFORE the retain, while the books are still in the shelf to compare
+        // against. Iterate the set in its sorted order for a deterministic report.
+        let mut report = RemovalReport::default();
+        for &path in &requested {
+            if self.books.iter().any(|b| b.path() == path) {
+                report.removed.push(path.to_path_buf());
+            } else {
+                report.not_found.push(path.to_path_buf());
+            }
+        }
+        // ONE retain pass drops every requested book; survivors keep their relative
+        // (already-sorted) order, so the natural-order invariant holds with no re-sort.
+        self.books.retain(|b| !requested.contains(b.path()));
+        report
     }
 
     /// The last-viewed leading page index for `path` (0 when unknown).
@@ -416,6 +466,89 @@ mod tests {
     fn remove_absent_returns_false() {
         let mut lib = Library::new();
         assert!(!lib.remove(Path::new("/manga/missing.cbz")));
+    }
+
+    #[test]
+    fn remove_many_removes_multiple_and_reports_them() {
+        let mut lib = Library::new();
+        for name in ["a.cbz", "b.cbz", "c.cbz"] {
+            assert!(lib.add(PathBuf::from(format!("/manga/{name}"))).is_some());
+        }
+        let report =
+            lib.remove_many(&[PathBuf::from("/manga/a.cbz"), PathBuf::from("/manga/c.cbz")]);
+        assert_eq!(
+            report.removed,
+            vec![PathBuf::from("/manga/a.cbz"), PathBuf::from("/manga/c.cbz")]
+        );
+        assert!(report.not_found.is_empty());
+        let titles: Vec<&str> = lib.books().iter().map(|b| b.title()).collect();
+        assert_eq!(titles, vec!["b"], "only the unremoved book survives");
+    }
+
+    #[test]
+    fn remove_many_preserves_natural_order_of_survivors() {
+        // Survivors must stay in natural title order after a bulk removal (the
+        // retain keeps relative order, so no re-sort is needed).
+        let mut lib = Library::new();
+        for name in ["vol 1.cbz", "vol 2.cbz", "vol 10.cbz", "vol 11.cbz"] {
+            assert!(lib.add(PathBuf::from(format!("/manga/{name}"))).is_some());
+        }
+        // Remove the two middle volumes; vol 1 and vol 11 must remain in order.
+        let report = lib.remove_many(&[
+            PathBuf::from("/manga/vol 2.cbz"),
+            PathBuf::from("/manga/vol 10.cbz"),
+        ]);
+        assert_eq!(report.removed.len(), 2);
+        let titles: Vec<&str> = lib.books().iter().map(|b| b.title()).collect();
+        assert_eq!(
+            titles,
+            vec!["vol 1", "vol 11"],
+            "survivors keep natural title order"
+        );
+    }
+
+    #[test]
+    fn remove_many_splits_not_found() {
+        let mut lib = Library::new();
+        assert!(lib.add(PathBuf::from("/manga/a.cbz")).is_some());
+        let report = lib.remove_many(&[
+            PathBuf::from("/manga/a.cbz"),
+            PathBuf::from("/manga/missing.cbz"),
+        ]);
+        assert_eq!(report.removed, vec![PathBuf::from("/manga/a.cbz")]);
+        assert_eq!(
+            report.not_found,
+            vec![PathBuf::from("/manga/missing.cbz")],
+            "an input matching no book is reported, not removed"
+        );
+        assert!(lib.books().is_empty());
+    }
+
+    #[test]
+    fn remove_many_empty_input_yields_empty_report() {
+        let mut lib = Library::new();
+        assert!(lib.add(PathBuf::from("/manga/a.cbz")).is_some());
+        let report = lib.remove_many(&[]);
+        assert_eq!(report, RemovalReport::default());
+        assert!(report.removed.is_empty());
+        assert!(report.not_found.is_empty());
+        assert_eq!(lib.books().len(), 1, "no input removes nothing");
+    }
+
+    #[test]
+    fn remove_many_counts_duplicate_input_once() {
+        let mut lib = Library::new();
+        assert!(lib.add(PathBuf::from("/manga/a.cbz")).is_some());
+        // The same path passed twice must be removed once and reported once.
+        let report =
+            lib.remove_many(&[PathBuf::from("/manga/a.cbz"), PathBuf::from("/manga/a.cbz")]);
+        assert_eq!(
+            report.removed,
+            vec![PathBuf::from("/manga/a.cbz")],
+            "a duplicated input path is counted once"
+        );
+        assert!(report.not_found.is_empty());
+        assert!(lib.books().is_empty());
     }
 
     #[test]

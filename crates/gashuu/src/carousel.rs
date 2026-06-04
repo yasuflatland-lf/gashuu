@@ -25,6 +25,10 @@ fn to_carousel_item(data: &CarouselData) -> CarouselItem {
         total: data.total,
         progress: data.progress,
         available: data.available,
+        // Selection is orthogonal to the row derivation: the model is built
+        // unselected, then the bulk-selection flags are applied over the visible
+        // rows by `apply_selection_flags` (selection survives query changes).
+        selected: false,
     }
 }
 
@@ -57,6 +61,47 @@ pub(crate) fn bind_carousel_model(
 ) -> Rc<VecModel<CarouselItem>> {
     ui.set_carousel_items(ModelRc::from(model.clone()));
     model
+}
+
+/// Set the `selected` flag of carousel row `row`, on the UI thread. The
+/// bulk-selection counterpart of `cover_loader::set_cover` — same `!Send`
+/// `VecModel`-via-`ui` re-fetch and row-bounds check (tolerating a model that
+/// shrank since the click was scheduled), swapping ONLY the row's `selected` so
+/// the accent check badge appears/disappears without rebuilding the model or
+/// restarting the cover stream.
+pub(crate) fn set_carousel_selected(ui: &ViewerWindow, row: usize, selected: bool) {
+    use slint::Model;
+    let model = ui.get_carousel_items();
+    let Some(vm) = model.as_any().downcast_ref::<VecModel<CarouselItem>>() else {
+        return;
+    };
+    if row < vm.row_count() {
+        let mut item = vm.row_data(row).expect("row < row_count checked above");
+        item.selected = selected;
+        vm.set_row_data(row, item);
+    }
+}
+
+/// Re-apply the bulk-selection flags over the CURRENTLY VISIBLE carousel rows:
+/// for each visible row, set its `selected` flag from whether the underlying
+/// book's path is in `is_selected`. Called after a model rebuild (the rebuilt
+/// model starts unselected) so a selection survives a search-query change — the
+/// projection recomputes, but the selection (keyed by path) is reprojected onto
+/// the new rows. `indices` is the search state's visible projection, in the SAME
+/// order the model was built from, so visible row `r` maps to `indices[r]`.
+pub(crate) fn apply_selection_flags<F>(
+    ui: &ViewerWindow,
+    library: &Library,
+    indices: &[usize],
+    is_selected: F,
+) where
+    F: Fn(&std::path::Path) -> bool,
+{
+    for (row, &library_index) in indices.iter().enumerate() {
+        if let Some(book) = library.books().get(library_index) {
+            set_carousel_selected(ui, row, is_selected(book.path()));
+        }
+    }
 }
 
 /// Build one `CoverRequest` per visible library `index`, with `row` re-based to

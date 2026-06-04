@@ -1,0 +1,36 @@
+// SelectionBadge — the bulk-selection check badge (atom).
+//
+// An accent-filled circle with a centered white check mark, overlaid on a
+// selected cover in selection mode (bulk-delete epic, PR-2). Selection is
+// ACCENT (Theme.accent, blue); RED stays reserved for the delete button (PR-5),
+// so this badge must never use an error/red token.
+//
+// Sizing comes from Theme.* length tokens only (DESIGN.md rule 2): the circle is
+// Theme.space-huge across, the check glyph Theme.space-lg, leaving an even ring
+// of accent around the mark. The glyph is the single-path check.svg recolored to
+// Theme.text (white) via `colorize` — the SVG's own fill is ignored (see
+// docs/patterns.md "First image assets: @image-url + colorize"). Authored at a
+// generous intrinsic size (96px / viewBox 24) so it stays crisp on HiDPI.
+//
+// Colors / lengths come from Theme.* only — NO inline brand hex (DESIGN.md
+// rule 2; scripts/check-tokens.sh enforces this). Theme lives one directory up.
+import { Theme } from "../Theme.slint";
+
+export component SelectionBadge inherits Rectangle {
+    // The accent disc.
+    width: Theme.space-huge;
+    height: Theme.space-huge;
+    border-radius: Theme.radius-pill;
+    background: Theme.accent;
+
+    // Centered white check mark, recolored from the single-path SVG.
+    Image {
+        source: @image-url("../assets/check.svg");
+        width: Theme.space-lg;
+        height: Theme.space-lg;
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        image-fit: contain;
+        colorize: Theme.text;
+    }
+}

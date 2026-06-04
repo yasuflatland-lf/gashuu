@@ -31,8 +31,12 @@ import { ProgressBar } from "components/ProgressBar.slint";
 import { PrimaryButton } from "components/PrimaryButton.slint";
 import { ThumbnailCell } from "components/ThumbnailCell.slint";
 import { NavBar } from "components/NavBar.slint";
+import { SelectionBadge } from "components/SelectionBadge.slint";
 
 // Frozen by PR-0b; populated by PR-C (covers via PR-V). One book in the shelf.
+// `selected` (bulk-delete PR-2) marks the book as picked in selection mode, so
+// the cover renders an accent check badge; populated from `LibrarySelectionState`
+// in the carousel rebuild path and on every toggle.
 export struct CarouselItem {
     cover: image,
     title: string,
@@ -40,6 +44,7 @@ export struct CarouselItem {
     total: int,
     progress: float,  // 0.0 .. 1.0
     available: bool,
+    selected: bool,
 }
 
 // File-private cover-flow card: de-duplicates the per-cover animated card so the
@@ -83,6 +88,14 @@ component CoverCard inherits Rectangle {
     in property <image> cover-source;
     in property <bool> available;
     in property <float> progress;
+    // Bulk-selection (PR-2). `selected` draws the accent check badge;
+    // `selection-mode` is forwarded for future selection-only chrome. `interactive`
+    // gates the cover TouchArea so only the pass-1 backing copy fires the click
+    // (the pass-2 top copy of the focused card sets it false — see the two for-loops).
+    in property <bool> selected;
+    in property <bool> selection-mode;
+    in property <bool> interactive;
+    callback clicked;
 
     // Position/size/opacity: identical bindings to the former for-item Rectangle.
     x: root.row-width / 2 + root.delta * root.cover-step - self.width / 2;
@@ -149,6 +162,16 @@ component CoverCard inherits Rectangle {
                 vertical-alignment: center;
             }
         }
+
+        // Bulk-selection check badge (PR-2). Rendered inside `cover` so it sits on
+        // the artwork, pinned to the top-right with a small inset. Drawn in BOTH
+        // z-order passes (pass-2's focused copy paints over pass-1, so the badge
+        // must live on both or it would vanish on the focused card). Accent disc +
+        // white check — RED stays reserved for the PR-5 delete button.
+        if root.selected : SelectionBadge {
+            x: parent.width - self.width - Theme.space-xs;
+            y: Theme.space-xs;
+        }
     }
 
     // Per-cover progress bar (under the cover). `parent` is this CoverCard.
@@ -157,6 +180,24 @@ component CoverCard inherits Rectangle {
         y: parent.height + Theme.space-xs;
         width: parent.width;
         progress: root.progress;
+    }
+
+    // ── Cover click target (PR-2 — the repo's FIRST cover pointer interaction) ──
+    // An INVISIBLE `cover-step`-wide rectangle (NOT the shrunken artwork) so a
+    // neighbor cover is a comfortable click target even at neighbor-scale. Pinned
+    // centered on the card. `enabled: root.interactive` ensures ONLY the pass-1
+    // backing copy fires (pass-2's focused copy passes `interactive: false`, so a
+    // click on the focused card is handled exactly once — see the two for-loops in
+    // Carousel). The TouchArea is non-focusable (repo convention, see NavItem /
+    // docs/patterns.md "TouchArea click focus recovery"), so keyboard focus stays
+    // on the carousel FocusScope; main.rs restores carousel focus after handling.
+    cover-touch := TouchArea {
+        enabled: root.interactive;
+        width: root.cover-step;
+        height: parent.height;
+        x: (parent.width - self.width) / 2;
+        y: 0;
+        clicked => { root.clicked(); }
     }
 }
 
@@ -189,6 +230,20 @@ export component Carousel inherits Rectangle {
     // act on the carousel underneath the modal (mirrors the Viewer FocusScope
     // guard in ViewerWindow.slint). Bound by ViewerWindow to the same condition.
     in property <bool> modal-open;
+
+    // ── Bulk-selection seams (bulk-delete epic, PR-2) ─────────────────────────
+    // `selection-mode` tracks whether the carousel is in selection mode (entered
+    // by `x`, exited by Esc). It is `in-out` so the key arms below flip it locally
+    // AND ViewerWindow/Rust can observe/reset it. `toggle-selection(int)` toggles
+    // the focused book's membership (keyboard `x`/Space); `cover-clicked(int)` is
+    // the pointer entry (a cover TouchArea click). `exit-selection()` clears the
+    // selection and leaves the mode (Esc). All three are forwarded through
+    // ViewerWindow to main.rs (mirrors the open/move/back forwarding).
+    in-out property <bool> selection-mode;
+    callback toggle-selection(int);   // visible carousel index to toggle
+    callback cover-clicked(int);      // visible carousel index whose cover was clicked
+    callback exit-selection();        // Esc: clear selection + leave selection mode
+
     // Move keyboard focus into the NavBar search field (carousel `/` and click).
     public function focus-search() { nav.focus-search(); }
 
@@ -244,6 +299,31 @@ export component Carousel inherits Rectangle {
         key-pressed(event) => {
             // Suppress background navigation while a modal overlay is open.
             if (root.modal-open) { return reject; }
+            // ── Bulk-selection arms (PR-2). Placed AFTER the modal reject so
+            //    modals keep priority; the existing arms below are untouched.
+            //    Return deliberately stays "open" in BOTH modes (handled below).
+            // `x` enters selection mode (from normal) and toggles the focused book;
+            // in selection mode it just toggles. `Space` toggles only in selection
+            // mode (normal-mode Space falls through / rejects as before).
+            if (event.text == "x") {
+                root.selection-mode = true;
+                root.toggle-selection(root.focused-index);
+                return accept;
+            }
+            if (root.selection-mode && event.text == " ") {
+                root.toggle-selection(root.focused-index);
+                return accept;
+            }
+            // Esc clears the selection and leaves selection mode (no-op / reject
+            // when not in selection mode, so an ancestor could still handle Esc).
+            if (event.text == Key.Escape) {
+                if (root.selection-mode) {
+                    root.selection-mode = false;
+                    root.exit-selection();
+                    return accept;
+                }
+                return reject;
+            }
             // `/` focuses the search field — but ONLY while the carousel owns
             // focus. Once the search field has focus, `/` is ordinary text input
             // (this FocusScope no longer receives the key).
@@ -368,8 +448,16 @@ export component Carousel inherits Rectangle {
                   cover-source: item.cover;
                   available: item.available;
                   progress: item.progress;
+                  selected: item.selected;
+                  selection-mode: root.selection-mode;
+                  // PR-2: ONLY the always-on pass-1 backing copy is click-interactive,
+                  // so each cover (including the focused one, whose pass-2 copy below
+                  // sets interactive:false) fires its TouchArea exactly once.
+                  interactive: true;
+                  clicked => { root.cover-clicked(idx); }
               }
               // Pass 2: focused card only, on top (elevated: true default → shadow painted once).
+              // Any future additional render pass MUST also set interactive: false (single-fire invariant).
               for item[idx] in root.items : CoverCard {
                   show: idx == root.focused-index;
                   focused: idx == root.focused-index;
@@ -386,6 +474,12 @@ export component Carousel inherits Rectangle {
                   cover-source: item.cover;
                   available: item.available;
                   progress: item.progress;
+                  selected: item.selected;
+                  selection-mode: root.selection-mode;
+                  // PR-2: the pass-2 TOP copy of the focused card is NON-interactive
+                  // so the focused cover does not double-fire — its click is handled
+                  // by the pass-1 backing copy above (which is always shown).
+                  interactive: false;
               }
 
               // ── Focused-book meta block (centered, below the cover row) ───────
