@@ -124,7 +124,7 @@ impl Localizer {
     /// every [`switch`] to keep the global in sync with the active locale.
     ///
     /// Slint batches property changes and repaints them together before the next
-    /// frame, so a sequential push of 61 setters cannot produce a half-translated
+    /// frame, so a sequential push of 63 setters cannot produce a half-translated
     /// frame — the entire swap is visually atomic.
     ///
     /// All `fl!()` calls resolve IDs against the `i18n.toml`-declared crate
@@ -135,7 +135,7 @@ impl Localizer {
     pub(crate) fn apply(&self, ui: &ViewerWindow) {
         let strings = ui.global::<Strings>();
 
-        // ---- 57 plain pushes (id == property name, no arguments) ----------
+        // ---- 59 plain pushes (id == property name, no arguments) ----------
         strings.set_settings_book_title(fl!(self.loader, "settings-book-title").into());
         strings.set_settings_title(fl!(self.loader, "settings-title").into());
         strings.set_settings_section_reading(fl!(self.loader, "settings-section-reading").into());
@@ -189,12 +189,14 @@ impl Localizer {
         strings.set_carousel_empty_title(fl!(self.loader, "carousel-empty-title").into());
         strings.set_carousel_empty_subtitle(fl!(self.loader, "carousel-empty-subtitle").into());
         strings.set_carousel_empty_cta(fl!(self.loader, "carousel-empty-cta").into());
+        strings.set_carousel_empty_cta_files(fl!(self.loader, "carousel-empty-cta-files").into());
         strings.set_carousel_no_results_title(fl!(self.loader, "carousel-no-results-title").into());
         strings.set_carousel_no_results_hint(fl!(self.loader, "carousel-no-results-hint").into());
         strings.set_navbar_search_placeholder(fl!(self.loader, "navbar-search-placeholder").into());
         strings.set_navbar_search_a11y(fl!(self.loader, "navbar-search-a11y").into());
         strings.set_navbar_add_files_a11y(fl!(self.loader, "navbar-add-files-a11y").into());
         strings.set_navbar_add_folder_a11y(fl!(self.loader, "navbar-add-folder-a11y").into());
+        strings.set_navbar_add_books_a11y(fl!(self.loader, "navbar-add-books-a11y").into());
         strings
             .set_viewer_pill_goto_page_a11y(fl!(self.loader, "viewer-pill-goto-page-a11y").into());
         strings.set_viewer_pill_thumbnails_a11y(

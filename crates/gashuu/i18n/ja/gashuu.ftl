@@ -120,6 +120,8 @@ guide-got-it = わかりました
 carousel-empty-title = ライブラリは空です
 carousel-empty-subtitle = 本を追加して本棚を始めましょう。
 carousel-empty-cta = 追加するフォルダー / ファイルを選択
+# Files-only CTA wording for platforms without the combined picker (non-macOS).
+carousel-empty-cta-files = 追加するファイルを選択
 
 # No-results state (library has books but active filter matches none)
 carousel-no-results-title = 一致する本がありません
@@ -131,9 +133,12 @@ carousel-no-results-hint = 別のキーワードで検索してください。
 navbar-search-placeholder = ライブラリを検索
 navbar-search-a11y = ライブラリを検索
 
-# NavItem a11y labels for the three action capsules
+# NavItem a11y labels for the action capsules. add-books labels the single
+# combined capsule on macOS (one NSOpenPanel picks files and folders);
+# add-files/add-folder label the two separate capsules on other platforms.
 navbar-add-files-a11y = ファイルを追加
 navbar-add-folder-a11y = フォルダーを追加
+navbar-add-books-a11y = 本を追加
 
 # NavBar settings capsule a11y — deduped to settings-title.
 

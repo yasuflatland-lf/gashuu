@@ -5,11 +5,12 @@
 // centered focused-book meta block, and a grayed broken-cover placeholder for
 // unavailable books. Falls back to an empty-state CTA when there are 0 books.
 // PR-L added the always-visible "Add files… / Add folder…" toolbar and wired
-// the empty-state CTA to the folder/file picker (via add-files()).
+// the empty-state CTA to the folder/file picker (via add-books(), né
+// add-files() — renamed when macOS gained the combined files+folders panel).
 //
 // The public contract — the `CarouselItem` struct, the `Carousel` component,
 // its `items`/`focused-index` properties, the `open(int)`/`move(int)`/`back()`
-// callbacks (plus PR-L's `add-files()`/`add-folder()`), and `focus-self()` —
+// callbacks (plus PR-L's `add-books()`/`add-folder()`), and `focus-self()` —
 // is frozen and MUST NOT change here. PR-V streams real cover images into the
 // model (covers are placeholders until then).
 //
@@ -208,8 +209,11 @@ export component Carousel inherits Rectangle {
     callback open(int);       // index — Return on the focused book
     callback move(int);       // delta (-1 / +1) — Left / Right
     callback back();          // Down — return to the currently-open book
-    callback add-files();     // opens a file picker (rfd); wired to on_add_files in main.rs
+    callback add-books();     // opens the add picker (rfd); wired to on_add_books in main.rs
     callback add-folder();    // opens a folder picker (rfd); wired to on_add_folder in main.rs
+    // True when one native dialog picks files AND folders (macOS): the NavBar
+    // shows a single combined add capsule. Pushed once from Rust at boot.
+    in property <bool> combined-add-picker;
 
     // ── Library search seams (issue #88) ──────────────────────────────────────
     // `search-query` mirrors the NavBar field; `library-book-count` is the TOTAL
@@ -339,7 +343,7 @@ export component Carousel inherits Rectangle {
           //    (DESIGN.md "Empty Library"). Gated on the total book count, NOT on
           //    the filtered `items` length, so an active search that hides every
           //    book shows the no-results panel below instead of this add CTA. The
-          //    CTA button fires add-files() via a TouchArea (wired in PR-L) and
+          //    CTA button fires add-books() via a TouchArea (wired in PR-L) and
           //    restores keyboard focus to the carousel. ─────────────────────────
           if root.library-book-count == 0 : Rectangle {
               // Fluid panel width (DESIGN.md "Responsive Behavior"): clamp the
@@ -370,7 +374,7 @@ export component Carousel inherits Rectangle {
                       font-size: Theme.font-micro;
                       horizontal-alignment: center;
                   }
-                  // CTA button: fires add-files() on click and restores keyboard
+                  // CTA button: fires add-books() on click and restores keyboard
                   // focus to the carousel. The hand-built accent Rectangle was
                   // replaced by the shared PrimaryButton (DESIGN.md
                   // components.button-primary): same accent background, same label
@@ -378,8 +382,12 @@ export component Carousel inherits Rectangle {
                   HorizontalLayout {
                       alignment: center;
                       PrimaryButton {
-                          text: Strings.carousel-empty-cta;
-                          clicked => { root.add-files(); root.focus-self(); }
+                          // Wording tracks the dialog flavor behind add-books():
+                          // combined files+folders on macOS, files-only elsewhere.
+                          text: root.combined-add-picker
+                              ? Strings.carousel-empty-cta
+                              : Strings.carousel-empty-cta-files;
+                          clicked => { root.add-books(); root.focus-self(); }
                       }
                   }
               }
@@ -524,11 +532,13 @@ export component Carousel inherits Rectangle {
         search-query <=> root.search-query;
         file-icon: @image-url("assets/file.svg");
         folder-icon: @image-url("assets/folder.svg");
+        plus-icon: @image-url("assets/plus.svg");
         search-icon: @image-url("assets/search.svg");
         settings-icon: @image-url("assets/settings.svg");
+        combined-add-picker: root.combined-add-picker;
         search-changed(q) => { root.search-changed(q); }
         search-exit => { root.focus-self(); }
-        add-files => { root.add-files(); root.focus-self(); }
+        add-books => { root.add-books(); root.focus-self(); }
         add-folder => { root.add-folder(); root.focus-self(); }
         settings => { root.settings(); }
     }

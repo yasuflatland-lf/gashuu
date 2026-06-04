@@ -1,6 +1,8 @@
 // NavBar — the top, centered "glass pill" holding the live library search field
-// (left), a thin divider, and the three icon-only NavItems (Add files / Add
-// folder / Settings) on the right.
+// (left), a thin divider, and the icon-only NavItems on the right: Add files /
+// Add folder / Settings, or — when `combined-add-picker` is set (macOS, where
+// one NSOpenPanel picks files AND folders) — a single Add books capsule plus
+// Settings.
 //
 // Slint 1.x has NO backdrop-blur, so the frosted-glass look is APPROXIMATED,
 // not rendered, with four cheap layers that read as glass without sampling
@@ -11,10 +13,10 @@
 //                            fakes light catching the upper lip of the glass
 //   4. drop shadow         — Theme.shadow-popover, lifting the pill off content
 //
-// The width is sized explicitly from tokens (search field + three capsules +
-// the inter-item gaps + divider + left/right padding) rather than from a
-// layout's preferred width: binding the root width to its own content layout
-// would create a width binding loop.
+// The width is sized explicitly from tokens (search field + the two or three
+// capsules + the inter-item gaps + divider + left/right padding) rather than
+// from a layout's preferred width: binding the root width to its own content
+// layout would create a width binding loop.
 //
 // Colors / lengths come from Theme.* only — NO inline brand hex (DESIGN.md
 // rule 2; scripts/check-tokens.sh enforces this). Theme lives one directory up.
@@ -159,10 +161,15 @@ export component NavBar inherits Rectangle {
     // ── Public API ────────────────────────────────────────────────────────────
     in property <image> file-icon;
     in property <image> folder-icon;
+    in property <image> plus-icon;
     in property <image> search-icon;
     in property <image> settings-icon;
+    // True when the platform's native open panel can pick files AND folders in
+    // one dialog (macOS): the two add capsules collapse into a single combined
+    // one. Pushed once from Rust at boot — never changes at runtime.
+    in property <bool> combined-add-picker;
     in-out property <string> search-query;
-    callback add-files();
+    callback add-books();
     callback add-folder();
     callback settings();
     callback search-changed(string);
@@ -174,13 +181,16 @@ export component NavBar inherits Rectangle {
     // ── Shape & size ──────────────────────────────────────────────────────────
     // Width is computed from tokens so the pill hugs its content WITHOUT a
     // layout-preferred-width binding loop. Children left→right: search field,
-    // 1px divider, three icon capsules → five children → four inter-item gaps.
-    //   search-width + 3*capsule + divider + 4*gap + 2*pad.
+    // 1px divider, then the icon capsules — three of them (five children, four
+    // gaps), or two when the combined add capsule replaces the file/folder pair
+    // (four children, three gaps).
+    //   combined (macOS): search + 2*capsule + divider + 3*gap + 2*pad
+    //   split (elsewhere): search + 3*capsule + divider + 4*gap + 2*pad
     height: Theme.nav-pill-height;
     width: Theme.nav-search-width
-        + 3 * Theme.nav-capsule
+        + (root.combined-add-picker ? 2 : 3) * Theme.nav-capsule
         + Theme.nav-divider-width
-        + 4 * Theme.nav-item-gap
+        + (root.combined-add-picker ? 3 : 4) * Theme.nav-item-gap
         + 2 * Theme.nav-pill-pad;
     horizontal-stretch: 0;
     vertical-stretch: 0;
@@ -234,12 +244,21 @@ export component NavBar inherits Rectangle {
             }
         }
 
-        NavItem {
+        // Both the combined capsule and the files capsule fire the SAME
+        // `add-books()` intent: Rust is the single authority for which dialog
+        // flavor backs it (files+folders on macOS, files-only elsewhere).
+        // NavItem is TouchArea-based with no FocusScope id, so `if` is safe.
+        if root.combined-add-picker : NavItem {
+            icon: root.plus-icon;
+            a11y-label: Strings.navbar-add-books-a11y;
+            clicked => { root.add-books(); }
+        }
+        if !root.combined-add-picker : NavItem {
             icon: root.file-icon;
             a11y-label: Strings.navbar-add-files-a11y;
-            clicked => { root.add-files(); }
+            clicked => { root.add-books(); }
         }
-        NavItem {
+        if !root.combined-add-picker : NavItem {
             icon: root.folder-icon;
             a11y-label: Strings.navbar-add-folder-a11y;
             clicked => { root.add-folder(); }

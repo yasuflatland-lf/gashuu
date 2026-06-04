@@ -190,9 +190,14 @@ export component ViewerWindow inherits Window {
     callback carousel-toggle-selection(int);
     callback carousel-cover-clicked(int);
     callback carousel-exit-selection();
-    // File/folder picker triggers forwarded from the Carousel toolbar and CTA.
-    callback add-files();
+    // Add-picker triggers forwarded from the Carousel toolbar and CTA. Rust
+    // decides the dialog flavor behind add-books (files+folders on macOS,
+    // files-only elsewhere — see `combined-add-picker`).
+    callback add-books();
     callback add-folder();
+    // True when one native dialog picks files AND folders (macOS): the Library
+    // NavBar collapses its two add capsules into one. Pushed once at boot.
+    in property <bool> combined-add-picker;
     public function focus-carousel() { carousel.focus-self(); }
     // Forwarded navigation token: "left" | "right" | "space" | "backspace" |
     // "d" | "r" | "c" | "+" | "=" | "-" | "0" | "1" | "f".
@@ -236,6 +241,7 @@ export component ViewerWindow inherits Window {
         focused-index <=> root.carousel-focused-index;
         search-query <=> root.library-search-query;
         library-book-count: root.library-book-count;
+        combined-add-picker: root.combined-add-picker;
         // Suppress the carousel's keyboard seams while a modal overlays the
         // Library — same condition the Viewer FocusScope uses (see `fs` below).
         modal-open: root.show-settings || root.show-guide || root.show-shortcuts;
@@ -247,7 +253,7 @@ export component ViewerWindow inherits Window {
         open(i) => { root.carousel-open(i); }
         move(delta) => { root.carousel-move(delta); }
         back() => { root.carousel-back(); }
-        add-files() => { root.add-files(); }
+        add-books() => { root.add-books(); }
         add-folder() => { root.add-folder(); }
         // Bulk-selection (PR-2): mirror the mode locally and forward the seams.
         selection-mode <=> root.carousel-selection-mode;
