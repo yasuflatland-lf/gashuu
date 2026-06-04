@@ -9,13 +9,35 @@
 //! `reading_direction`; this state only exposes the leading/trailing images.
 
 use crate::keymap::NavAction;
-use crate::messages;
 use gashuu_core::{
     ArchiveLoader, CacheConfig, CoreError, CoverMode, DecodedImage, ImageCache, Language,
     PageSource, ReadingDirection, ResolvedView, Settings, SpreadContext, SpreadLayout, SpreadMode,
 };
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+
+/// Discriminates the three content shapes of the viewer status line.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum StatusKind {
+    /// No source has been opened yet.
+    NoFolder,
+    /// A source is open but contains no displayable images.
+    NoImages,
+    /// A source is open and has pages; spread info applies.
+    Pages,
+}
+
+/// Language-free content produced by [`ViewerState::status_content`].
+/// Formatted into a localized string by `i18n::dynamic::format_status`.
+#[derive(Debug, Clone)]
+pub(crate) struct StatusContent {
+    /// Page range string, e.g. `"2\u{2013}3 / 6"` or `"1 / 100"`.
+    /// Empty when `kind` is `NoFolder` or `NoImages`.
+    pub(crate) pages: String,
+    pub(crate) spread: SpreadMode,
+    pub(crate) direction: ReadingDirection,
+    pub(crate) kind: StatusKind,
+}
 
 /// One displayed unit: the leading image and, in two-page modes, an optional
 /// trailing image. Both are `Arc<DecodedImage>` so a cache hit never copies the
@@ -83,7 +105,8 @@ pub struct ViewerState {
     reading_direction: ReadingDirection,
     /// UI display language, mirrored from the global `Settings` (the same
     /// dual-write `cache_config` uses: the settings handler updates both).
-    /// Read by `status_text` so the status line renders in the UI language.
+    /// Retained for the language getter; the status line itself is now language-free
+    /// (`status_content`) and localized by `i18n::dynamic::format_status`.
     language: Language,
     /// Window aspect ratio (width / height) used to resolve `SpreadMode::Auto`
     /// into a concrete `SpreadLayout`. Ignored by Single/Double. Defaults to
@@ -447,9 +470,10 @@ impl ViewerState {
     }
 
     /// Mirror the UI display language from the global `Settings` (set by the
-    /// settings-dialog language handler, never per-book). Affects only how
-    /// `status_text` renders. Idempotent: returns `false` when already set —
-    /// the dropdown's selection self-fire is absorbed by this guard.
+    /// settings-dialog language handler, never per-book). The status line is now
+    /// localized externally via `i18n::dynamic`, so this only keeps the getter in
+    /// step. Idempotent: returns `false` when already set — the dropdown's
+    /// selection self-fire is absorbed by this guard.
     pub fn set_language(&mut self, lang: Language) -> bool {
         if self.language == lang {
             return false;
@@ -458,9 +482,16 @@ impl ViewerState {
         true
     }
 
-    /// The UI display language currently mirrored into this state. Used by
-    /// `refresh` in `main.rs` for the Rust-composed strings it pushes (decode
-    /// errors, the trailing-page-unavailable marker).
+    /// The UI display language currently mirrored into this state.
+    ///
+    /// The status line and Rust-composed strings are now localized externally
+    /// via `i18n::dynamic` (driven by the `Localizer`'s `FluentLanguageLoader`),
+    /// so this getter has no production caller after the Fluent migration. It is
+    /// retained as the read side of the mirrored `language` field — written by
+    /// `set_language` whose "changed" return still gates the language dropdown's
+    /// self-fire in `main.rs`. `#[allow(dead_code)]` follows the same convention
+    /// as the other currently-unwired accessors in this module.
+    #[allow(dead_code)]
     pub fn language(&self) -> Language {
         self.language
     }
@@ -502,14 +533,22 @@ impl ViewerState {
         self.cover_mode
     }
 
-    /// Status line: "No folder opened", "Folder contains no images", or a page
-    /// range plus a mode label, e.g. "2\u{2013}3 / 6  [double \u{00b7} LTR]" or
-    /// "1 / 100  [single \u{00b7} LTR]". Rendered in the mirrored UI `language`
-    /// via the `messages` catalog (the page-range arithmetic is language-free).
-    pub fn status_text(&self) -> String {
+    /// Return a language-free description of the current status line.
+    /// Format it via `i18n::dynamic::format_status(loader, &content)`.
+    pub fn status_content(&self) -> StatusContent {
         match (&self.cache, self.page_count) {
-            (None, _) => messages::msg_no_folder_opened(self.language).to_string(),
-            (Some(_), 0) => messages::msg_no_images(self.language).to_string(),
+            (None, _) => StatusContent {
+                pages: String::new(),
+                spread: self.spread_mode,
+                direction: self.reading_direction,
+                kind: StatusKind::NoFolder,
+            },
+            (Some(_), 0) => StatusContent {
+                pages: String::new(),
+                spread: self.spread_mode,
+                direction: self.reading_direction,
+                kind: StatusKind::NoImages,
+            },
             (Some(_), _) => {
                 let s = self.spread_ctx().spread_at(self.index);
                 let pages = if let Some(t) = s.trailing {
@@ -517,10 +556,12 @@ impl ViewerState {
                 } else {
                     format!("{} / {}", s.leading + 1, self.page_count)
                 };
-                let mode_label = messages::msg_spread_label(self.language, self.spread_mode);
-                let dir_label =
-                    messages::msg_direction_label(self.language, self.reading_direction);
-                format!("{pages}  [{mode_label} \u{00b7} {dir_label}]")
+                StatusContent {
+                    pages,
+                    spread: self.spread_mode,
+                    direction: self.reading_direction,
+                    kind: StatusKind::Pages,
+                }
             }
         }
     }
