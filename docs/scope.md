@@ -128,6 +128,7 @@ RAR requires a C++ compiler on every OS (see [docs/toolchain.md](toolchain.md)).
 
 - The UI is bilingual with **immediate, no-restart switching** from a new "General → Language" pull-down in the settings dialog (the Apple-HIG-style `Dropdown` atom — the repo's first `PopupWindow`). The preference persists as `Settings.language` (`"en"`/`"ja"` serde tags doubling as the Slint locale names; `#[serde(default)]`; global-only — never per-book).
 - `.slint` strings are `@tr()`-wrapped and translated via a bundled gettext catalog (`crates/gashuu/translations/ja/LC_MESSAGES/gashuu.po`, compiled in by `build.rs` — see docs/patterns.md for the msgctxt gotcha). Rust-composed strings (status line, open/save notices, decode errors, and the ShortcutsOverlay key-bindings reference) go through `src/messages.rs` (exhaustive per-language `match`).
+- **Fluent catalog migration in flight (ADR-0008, #112-#115):** PR-1 (#112) landed the additive foundation — a single `i18n/{en,ja}/gashuu.ftl` catalog (full vocabulary), an `i18n-embed` `Localizer`, and completeness/byte-oracle tests — with ZERO behavior change; gettext and `messages.rs` stay live and both systems coexist until the PR-4 (#115) cutover.
 
 ---
 

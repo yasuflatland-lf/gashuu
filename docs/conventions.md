@@ -63,6 +63,27 @@ Two rules validated by PR67 (extracting the open-a-book use case into `app::Open
 
 2. **`pub(crate)` bridge for module extraction under parallel writers.** Keep shared helpers (`refresh`/`reconcile_settings`/`write_back_position`) in `main.rs` but raise them to `pub(crate)` so the new module calls them via `crate::`. This lets a 2-file split (new module ∥ caller edit) be written by parallel no-cargo agents against an exact API contract, then verified once by the gates.
 
+### Fluent catalog message IDs
+
+The single Fluent catalog (`crates/gashuu/i18n/<lang>/gashuu.ftl`; ADR-0008) names every message
+`<screen>-<element>[-<variant>]` in kebab-case. Established prefixes: `settings-`, `guide-`,
+`carousel-`, `navbar-`, `shortcuts-`, `viewer-pill-`, `stepper-`, `viewer-`, `notice-`, `common-`.
+Accessibility-only strings take an `-a11y` suffix (e.g. `navbar-open-a11y`). A string shared across
+screens is ONE message under its PRIMARY owner's prefix — not duplicated per screen (the spread-mode
+labels live once and are read by both the settings dialog and the viewer status line; pinned by
+`ja_catalog_pins_spread_vocabulary`). This convention governs PR-2..4 (#113-#115) and all new
+strings. Prefer NAMED args (`{ $label }`) over positional placeholders — they are word-order-safe
+for verb-final Japanese; see [patterns.md](patterns.md) ("Fluent catalog authoring gotchas").
+
+### i18n load-failure policy: panic for the catalog we control, never-fatal for the gettext path
+
+The Fluent `Localizer` (`new`/`switch`) `panic!`s on a load failure: assets are
+compile-time-embedded and `langid_for` is exhaustive, so a failure is a programmer error, not a
+runtime condition — fail LOUD. This is deliberately asymmetric to `select_ui_language`'s
+never-fatal `tracing::warn` on the gettext/`@tr()` side; the asymmetry and its rationale (the repo's
+history of a silent gettext all-miss) are documented at the `main.rs` call site and in
+[patterns.md](patterns.md) ("Fluent loader").
+
 ### Test fixtures (no committed binaries)
 
 Tests synthesize fixtures in memory (the `image` crate makes tiny PNGs) plus `tempfile` for filesystem cases — **no committed binary fixtures.** Two exceptions, both committed TEXT not binaries: insta `.snap` files (see [docs/patterns.md](patterns.md)), and (PR7) the base64-encoded RAR `.cbr` fixtures in `crates/gashuu-core/src/test_fixtures.rs` (RAR has no Rust encoder, so they cannot be synthesized in-memory like PNGs/ZIPs).

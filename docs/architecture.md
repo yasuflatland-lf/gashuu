@@ -395,6 +395,27 @@ PR-58, `enum_adapters.rs`. The 10 `pub(crate)` enum↔index adapters (the first 
 
 i18n PR, `messages.rs`. PURE (Slint-free) Rust-side user-facing string catalog: one `msg_*` function per message (status line, open/save notices, decode errors, the ShortcutsOverlay key-bindings reference), each an exhaustive `match` on `gashuu_core::Language` — adding a language variant is a compile error in every message until its translation is supplied. Covers ONLY strings composed in Rust; `.slint` strings go through `@tr()` + the bundled gettext catalog (`crates/gashuu/translations/<lang>/LC_MESSAGES/gashuu.po`, wired by `build.rs` — see docs/patterns.md for the msgctxt gotcha). The Japanese spread/direction vocabulary is pinned to the `.po`'s by `japanese_labels_match_the_po_vocabulary`.
 
+### i18n
+
+Fluent i18n PR-1 (#112), `i18n/` module (`mod.rs` + `loader.rs`). The Fluent localizer that runs
+ALONGSIDE the legacy gettext/`messages.rs` path during the staged migration (ADR-0008; both systems
+coexist until PR-4 / #115). `Localizer` wraps an `i18n_embed::fluent::FluentLanguageLoader`; its
+`new(lang)`/`switch(lang)` call `load_languages` then re-apply `set_use_isolating(false)`, and
+`panic!` on a load failure (compile-time-embedded assets ⇒ programmer error — see
+[patterns.md](patterns.md), "Fluent loader"). All mutating methods take `&self` (the loader has
+interior mutability), so `main.rs` shares one `Rc<Localizer>` into the Slint callbacks without a
+`RefCell`. `loader.rs` holds the `#[derive(RustEmbed)] struct Localizations` (embeds `i18n/`) and
+the exhaustive `langid_for(Language) -> LanguageIdentifier` (no wildcard — the compile-time gate
+replacing `messages.rs`'s exhaustive match). The completeness/parity/byte-oracle integration tests
+live in `mod.rs`'s `#[cfg(test)]`. The `Language` enum stays in headless `gashuu-core`; ALL Fluent
+machinery is UI-crate-only, per [ADR-0002](ADRs/0002-layered-two-crate-architecture.md). PR-2 (#113)
+will add the `Strings`-global push that consumes this localizer.
+
+**`i18n/` assets + `i18n.toml`** (crate root): one Fluent catalog per locale,
+`i18n/{en,ja}/gashuu.ftl`, carrying the FULL vocabulary (both the former gettext msgids and the
+former `msg_*` messages); `i18n.toml` declares `fallback_language = "en"` and `assets_dir = "i18n"`.
+Message-ID naming convention: [conventions.md](conventions.md), "Fluent catalog message IDs".
+
 ### page_jump
 
 `page_jump.rs`. PURE (Slint-free, table-tested) parser for the `ViewerPill` page-jump field:

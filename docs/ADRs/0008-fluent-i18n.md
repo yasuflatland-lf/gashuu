@@ -93,3 +93,25 @@ Migrate to ONE Fluent `.ftl` catalog per locale (`en`, `ja`) under
 - `fluent-rs` is pre-1.0; crate versions are pinned and APIs may drift across minor releases.
 - Fluent trims leading whitespace from message patterns. Values that must begin with whitespace
   (e.g. ` • item`) require a string-literal placeable (`{" "} • item`).
+
+## Implementation notes (as-built deltas — PR-1, #112)
+
+PR-1 landed the foundation only (deps, `en`/`ja` catalogs with full vocabulary, the `i18n/`
+localizer module, and the completeness/parity tests); gettext and `messages.rs` are still live, so
+this ADR stays `Proposed` until the PR-4 (#115) cutover. Deltas found while building the loader,
+with the full harness in [docs/patterns.md](../patterns.md) ("Fluent loader", "Fluent catalog
+authoring gotchas", "i18n test harness"):
+
+- **No `load_fallback_language` preload.** `i18n-embed` 0.16's `load_languages` already auto-appends
+  the `en` fallback and atomically REPLACES all loader state, so a preceding fallback load is
+  redundant (its effect is discarded). The fallback is structurally guaranteed but not reported by
+  `current_languages()` and not behaviorally observable while catalogs are in ID lockstep.
+- **`set_use_isolating(false)` is re-applied after EVERY `load_languages`** (decision point 4): the
+  swap rebuilds bundles with the default (isolating on), so a single boot-time call is insufficient.
+- **Two-tier safety net beyond the design (decision point 3):** alongside `fl!()` and the ID-set
+  completeness test, PR-1 added a cross-locale `$arg`-set parity test (catches a per-locale arg-name
+  typo `fl!()` can't see) and a duplicate-message-ID guard (the parser does not error on duplicates).
+- **Load-failure policy:** `Localizer::new`/`switch` `panic!` on a load error (compile-time-embedded
+  assets ⇒ programmer error), deliberately asymmetric to the gettext path's never-fatal warn.
+- The message-ID naming convention adopted here is recorded in
+  [docs/conventions.md](../conventions.md) ("Fluent catalog message IDs").
