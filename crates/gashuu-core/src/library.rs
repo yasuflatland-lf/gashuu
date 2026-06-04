@@ -200,7 +200,7 @@ impl Library {
         // single stored book regardless of how many times it was requested).
         let mut requested: Vec<&Path> = Vec::with_capacity(paths.len());
         for path in paths {
-            if !requested.iter().any(|p| *p == path.as_path()) {
+            if !requested.contains(&path.as_path()) {
                 requested.push(path.as_path());
             }
         }
@@ -217,8 +217,7 @@ impl Library {
         }
         // ONE retain pass drops every requested book; survivors keep their relative
         // (already-sorted) order, so the natural-order invariant holds with no re-sort.
-        self.books
-            .retain(|b| !requested.iter().any(|p| *p == b.path()));
+        self.books.retain(|b| !requested.contains(&b.path()));
         report
     }
 
