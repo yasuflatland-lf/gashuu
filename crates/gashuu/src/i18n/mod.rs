@@ -96,10 +96,12 @@ impl Localizer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use fluent_syntax::ast::{Entry, Resource};
+    use fluent_syntax::parser::parse;
     use gashuu_core::Language;
     use std::collections::HashMap;
 
-    // ---- helper -------------------------------------------------------
+    // ---- helpers ------------------------------------------------------
 
     /// Resolve a no-arg message from the loader for the given language.
     fn get(localizer: &Localizer, id: &str) -> String {
@@ -113,6 +115,23 @@ mod tests {
         localizer.loader.get_args(id, args_ref)
     }
 
+    /// Parse an embedded .ftl source into an AST, panicking on a parse error.
+    fn parse_ftl(src: &str) -> Resource<&str> {
+        parse(src).expect(".ftl failed to parse")
+    }
+
+    /// Collect message IDs from an AST in source order, so callers can detect
+    /// duplicates (a set alone would silently absorb them).
+    fn message_ids<'a>(ast: &'a Resource<&'a str>) -> Vec<&'a str> {
+        ast.body
+            .iter()
+            .filter_map(|entry| match entry {
+                Entry::Message(m) => Some(m.id.name),
+                _ => None,
+            })
+            .collect()
+    }
+
     // ---- test 1: all FTL IDs present in every locale -----------------
 
     /// Parses both .ftl files and asserts that the message-ID sets are equal in
@@ -124,59 +143,34 @@ mod tests {
     /// this guard must be explicit.
     #[test]
     fn all_ftl_ids_present_in_every_locale() {
-        use fluent_syntax::parser::parse;
+        use std::collections::BTreeSet;
 
-        let en_src = include_str!("../../i18n/en/gashuu.ftl");
-        let ja_src = include_str!("../../i18n/ja/gashuu.ftl");
+        let en_ast = parse_ftl(include_str!("../../i18n/en/gashuu.ftl"));
+        let ja_ast = parse_ftl(include_str!("../../i18n/ja/gashuu.ftl"));
 
-        let en_ast = parse(en_src).expect("En .ftl failed to parse");
-        let ja_ast = parse(ja_src).expect("Ja .ftl failed to parse");
-
-        use fluent_syntax::ast::Entry;
-
-        // Collect message IDs as Vecs first so duplicates are visible.
-        let en_ids_vec: Vec<&str> = en_ast
-            .body
-            .iter()
-            .filter_map(|entry| {
-                if let Entry::Message(m) = entry {
-                    Some(m.id.name)
-                } else {
-                    None
-                }
-            })
-            .collect();
-        let ja_ids_vec: Vec<&str> = ja_ast
-            .body
-            .iter()
-            .filter_map(|entry| {
-                if let Entry::Message(m) = entry {
-                    Some(m.id.name)
-                } else {
-                    None
-                }
-            })
-            .collect();
+        // Collect IDs as Vecs so duplicates remain visible before deduping.
+        let en_ids = message_ids(&en_ast);
+        let ja_ids = message_ids(&ja_ast);
 
         // Duplicate-ID guard: Vec length must equal set length per file.
-        let en_ids_set: std::collections::BTreeSet<&str> = en_ids_vec.iter().copied().collect();
-        let ja_ids_set: std::collections::BTreeSet<&str> = ja_ids_vec.iter().copied().collect();
+        let en_set: BTreeSet<&str> = en_ids.iter().copied().collect();
+        let ja_set: BTreeSet<&str> = ja_ids.iter().copied().collect();
 
         assert_eq!(
-            en_ids_vec.len(),
-            en_ids_set.len(),
+            en_ids.len(),
+            en_set.len(),
             "duplicate message ID in en/gashuu.ftl"
         );
         assert_eq!(
-            ja_ids_vec.len(),
-            ja_ids_set.len(),
+            ja_ids.len(),
+            ja_set.len(),
             "duplicate message ID in ja/gashuu.ftl"
         );
 
         // IDs in En but missing from Ja
-        let missing_in_ja: Vec<&&str> = en_ids_set.difference(&ja_ids_set).collect();
+        let missing_in_ja: Vec<&&str> = en_set.difference(&ja_set).collect();
         // IDs in Ja but missing from En
-        let missing_in_en: Vec<&&str> = ja_ids_set.difference(&en_ids_set).collect();
+        let missing_in_en: Vec<&&str> = ja_set.difference(&en_set).collect();
 
         assert!(
             missing_in_ja.is_empty(),
@@ -480,8 +474,6 @@ mod tests {
     /// mapping convention.
     #[test]
     fn ftl_static_channel_covers_every_po_msgid() {
-        use fluent_syntax::parser::parse;
-
         // Collect all non-empty msgids from the .po file.
         // The .po has no multi-line msgid continuations (all msgids are single
         // quoted strings on one line), so a simple line-prefix scan is robust.
@@ -513,10 +505,9 @@ mod tests {
         );
 
         // Parse en.ftl and collect message VALUES (pattern text).
-        let en_src = include_str!("../../i18n/en/gashuu.ftl");
-        let en_ast = parse(en_src).expect("en.ftl failed to parse");
+        let en_ast = parse_ftl(include_str!("../../i18n/en/gashuu.ftl"));
 
-        use fluent_syntax::ast::{Entry, InlineExpression, PatternElement};
+        use fluent_syntax::ast::{InlineExpression, PatternElement};
 
         // Build a set of all en.ftl value strings for fast lookup.
         // For simple text-only messages, the value is the concatenation of
@@ -606,15 +597,11 @@ mod tests {
     /// would otherwise surface only as a runtime log + malformed string in PR-3.
     #[test]
     fn message_arguments_match_across_locales() {
-        use fluent_syntax::ast::{Entry, Expression, InlineExpression, PatternElement};
-        use fluent_syntax::parser::parse;
+        use fluent_syntax::ast::{Expression, InlineExpression, PatternElement};
         use std::collections::{BTreeSet, HashMap};
 
-        let en_src = include_str!("../../i18n/en/gashuu.ftl");
-        let ja_src = include_str!("../../i18n/ja/gashuu.ftl");
-
-        let en_ast = parse(en_src).expect("en.ftl failed to parse");
-        let ja_ast = parse(ja_src).expect("ja.ftl failed to parse");
+        let en_ast = parse_ftl(include_str!("../../i18n/en/gashuu.ftl"));
+        let ja_ast = parse_ftl(include_str!("../../i18n/ja/gashuu.ftl"));
 
         /// Collect all `$variable` names from a pattern's elements (top-level
         /// placeables only; attributes are not used in this catalog).
@@ -634,24 +621,22 @@ mod tests {
                 .collect()
         }
 
-        // Build ID → arg-set maps for each locale.
-        let mut en_args: HashMap<&str, BTreeSet<String>> = HashMap::new();
-        for entry in &en_ast.body {
-            if let Entry::Message(m) = entry {
-                if let Some(pattern) = &m.value {
-                    en_args.insert(m.id.name, collect_vars(&pattern.elements));
-                }
-            }
+        /// Build an ID → arg-set map for one locale's AST.
+        fn arg_sets<'a>(ast: &'a Resource<&'a str>) -> HashMap<&'a str, BTreeSet<String>> {
+            ast.body
+                .iter()
+                .filter_map(|entry| match entry {
+                    Entry::Message(m) => {
+                        let pattern = m.value.as_ref()?;
+                        Some((m.id.name, collect_vars(&pattern.elements)))
+                    }
+                    _ => None,
+                })
+                .collect()
         }
 
-        let mut ja_args: HashMap<&str, BTreeSet<String>> = HashMap::new();
-        for entry in &ja_ast.body {
-            if let Entry::Message(m) = entry {
-                if let Some(pattern) = &m.value {
-                    ja_args.insert(m.id.name, collect_vars(&pattern.elements));
-                }
-            }
-        }
+        let en_args = arg_sets(&en_ast);
+        let ja_args = arg_sets(&ja_ast);
 
         // Compare arg sets for all IDs present in both locales.
         for (id, en_vars) in &en_args {
