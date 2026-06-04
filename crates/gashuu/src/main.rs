@@ -4,6 +4,7 @@ mod app;
 mod carousel;
 mod cover_loader;
 mod enum_adapters;
+mod i18n;
 mod keymap;
 mod library_model;
 mod messages;
@@ -80,6 +81,10 @@ fn main() -> color_eyre::Result<()> {
     // Apply the persisted UI language to the .slint side before the first paint
     // (the Rust-composed strings read it from `ViewerState`/`Settings` instead).
     select_ui_language(settings.language);
+    // Boot the Fluent localizer alongside the gettext path. Nothing consumes
+    // its output until PR-2 wires the `Strings` global; constructing it here
+    // keeps the two systems' language state in lockstep from the start.
+    let localizer = Rc::new(i18n::Localizer::new(settings.language));
     let state = Rc::new(RefCell::new(ViewerState::from_settings(&settings)));
     let viewport = Rc::new(RefCell::new(ViewportState::from_settings(&settings)));
     let settings = Rc::new(RefCell::new(settings));
@@ -842,6 +847,7 @@ fn main() -> color_eyre::Result<()> {
         let state = Rc::clone(&state);
         let settings = Rc::clone(&settings);
         let viewport = Rc::clone(&viewport);
+        let localizer = Rc::clone(&localizer);
         ui.on_set_language(move |i| {
             with_ui(&ui_weak, |ui| {
                 let lang = index_to_language(i);
@@ -853,6 +859,9 @@ fn main() -> color_eyre::Result<()> {
                     return;
                 }
                 settings.borrow_mut().language = lang;
+                // Keep the Fluent loader in step with the gettext switch
+                // (output unconsumed until PR-2).
+                localizer.switch(lang);
                 // Flip the .slint side first (all @tr() bindings re-evaluate
                 // immediately), then re-push the Rust-composed strings — the
                 // status line via refresh and the shortcuts reference (seeded
