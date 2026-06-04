@@ -35,14 +35,14 @@ fn empty_state_shows_nothing() {
     assert_eq!(state.page_count(), 0);
     assert_eq!(state.index(), 0);
     assert!(state.current_spread().is_none());
-    assert_eq!(state.status_text(), "No folder opened");
+    assert_eq!(state.status_content().kind, StatusKind::NoFolder);
 }
 
 #[test]
 fn empty_folder_status_distinguishes_from_no_folder() {
     let mut state = ViewerState::new();
     state.set_source(mock_with(0));
-    assert_eq!(state.status_text(), "Folder contains no images");
+    assert_eq!(state.status_content().kind, StatusKind::NoImages);
     assert!(state.current_spread().is_none());
 }
 
@@ -119,9 +119,13 @@ fn current_spread_propagates_source_error() {
 fn status_text_is_one_based() {
     let mut state = ViewerState::new();
     state.set_source(mock_with(100));
-    assert_eq!(state.status_text(), "1 / 100  [single \u{00b7} LTR]");
+    let c = state.status_content();
+    assert_eq!(c.kind, StatusKind::Pages);
+    assert_eq!(c.pages, "1 / 100");
+    assert_eq!(c.spread, SpreadMode::Single);
+    assert_eq!(c.direction, ReadingDirection::Ltr);
     state.apply(NavAction::Next);
-    assert_eq!(state.status_text(), "2 / 100  [single \u{00b7} LTR]");
+    assert_eq!(state.status_content().pages, "2 / 100");
 }
 
 #[test]
@@ -130,7 +134,9 @@ fn status_text_at_last_page() {
     state.set_source(mock_with(3));
     state.apply(NavAction::Next);
     state.apply(NavAction::Next);
-    assert_eq!(state.status_text(), "3 / 3  [single \u{00b7} LTR]");
+    let c = state.status_content();
+    assert_eq!(c.pages, "3 / 3");
+    assert_eq!(c.spread, SpreadMode::Single);
 }
 
 #[test]
@@ -314,7 +320,11 @@ fn status_text_double_form_shows_range_and_label() {
     state.set_source(mock_with(6));
     state.apply(NavAction::Next);
     assert_eq!(state.index(), 1);
-    assert_eq!(state.status_text(), "2\u{2013}3 / 6  [double \u{00b7} LTR]");
+    let c = state.status_content();
+    assert_eq!(c.kind, StatusKind::Pages);
+    assert_eq!(c.pages, "2\u{2013}3 / 6");
+    assert_eq!(c.spread, SpreadMode::Double);
+    assert_eq!(c.direction, ReadingDirection::Ltr);
 }
 
 #[test]
@@ -322,7 +332,9 @@ fn status_text_double_standalone_cover_is_single_form() {
     // Cover page in Double mode renders as a single page number.
     let mut state = double_state();
     state.set_source(mock_with(6));
-    assert_eq!(state.status_text(), "1 / 6  [double \u{00b7} LTR]");
+    let c = state.status_content();
+    assert_eq!(c.pages, "1 / 6");
+    assert_eq!(c.spread, SpreadMode::Double);
 }
 
 #[test]
@@ -335,7 +347,9 @@ fn status_text_reflects_rtl_label() {
     });
     state.set_source(mock_with(6));
     state.apply(NavAction::Next);
-    assert_eq!(state.status_text(), "2\u{2013}3 / 6  [double \u{00b7} RTL]");
+    let c = state.status_content();
+    assert_eq!(c.pages, "2\u{2013}3 / 6");
+    assert_eq!(c.direction, ReadingDirection::Rtl);
 }
 
 // ---- Trailing-page decode failure fallback (FIX 4/5) --------------------
@@ -565,7 +579,9 @@ fn status_text_auto_label() {
     state.set_source(mock_with(6));
     state.apply(NavAction::Next);
     assert_eq!(state.index(), 1);
-    assert_eq!(state.status_text(), "2\u{2013}3 / 6  [auto \u{00b7} LTR]");
+    let c = state.status_content();
+    assert_eq!(c.pages, "2\u{2013}3 / 6");
+    assert_eq!(c.spread, SpreadMode::Auto);
 
     // Auto + portrait => "auto" label and a single page number (Single).
     let mut state = auto_state();
@@ -573,7 +589,7 @@ fn status_text_auto_label() {
     state.set_source(mock_with(6));
     state.apply(NavAction::Next);
     assert_eq!(state.index(), 1);
-    assert_eq!(state.status_text(), "2 / 6  [auto \u{00b7} LTR]");
+    assert_eq!(state.status_content().pages, "2 / 6");
 }
 
 #[test]

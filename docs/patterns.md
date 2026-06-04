@@ -166,9 +166,10 @@ clamped value, so a trivial infallible ctor is correct and there is nothing to e
    so the cargo gates never exercise it. PR67 lifted the status-compose decision into
    `pub(crate) fn status_notices(skipped, skipped_detail, settings_save, library_save) -> Vec<String>`
    — pure, so the "skipped, then settings-save failure, then library-save failure" order is unit-tested
-   without a UI (mirrors the `position_to_write_back` precedent). The `run` body just iterates
-   `status_notices(...)` and appends each onto the current status; the old `append_status` closure is
-   gone.
+   without a UI (mirrors the `position_to_write_back` precedent). In PR-3 (#114) this was superseded
+   by `OpenOutcome::Success(NoticesContent)` — `run()` now returns the neutral `NoticesContent` struct
+   and `main.rs::finalize_open` formats it via `i18n::dynamic::format_notices`. The unit-test surface
+   moved to the private `notices_content(...)` fn and its `#[cfg(test)]` block in `app.rs`.
 
 3. **Preserve borrow discipline EXACTLY** (the moved body carries the same RefCell-drop choreography):
    single-statement `reconcile_settings(&state.borrow(), &viewport.borrow(), &mut s)`;
@@ -402,7 +403,7 @@ There is no Rust RAR encoder, so a store-format generator emits just a container
 
 ### Surface skipped count in the status bar for BOTH folder and archive opens
 
-`ViewerState::last_open_skipped()` + `main.rs` appending it (after `refresh`, via `get_status_text`/`set_status_text`). WHY: `tracing::warn!` alone is invisible in a GUI run (`RUST_LOG` is usually unset).
+`NoticesContent.skipped` (carried by `OpenOutcome::Success`) + `finalize_open` in `main.rs` appending the formatted notice after `refresh()`, via `get_status_text`/`set_status_text`. WHY: `tracing::warn!` alone is invisible in a GUI run (`RUST_LOG` is usually unset). (Pre-PR-3 this used `ViewerState::last_open_skipped()` — that getter is gone; the skip count now flows through `NoticesContent` as a pure data field.)
 
 ### `ArchiveLoader` dispatch is `ext_kind` (no I/O) → `magic_kind` sniff (PR7 replaced the old `is_zip`/`read_exact` probe)
 
@@ -816,7 +817,7 @@ The settings dialog's scroll body is a clipping `Flickable`, so an in-tree dropd
 
 ### Bundled translations: the default msgctxt is the COMPONENT NAME — disable it or every lookup silently misses (i18n PR)
 
-`@tr()` + `slint_build`'s `with_bundled_translations` compiles gettext catalogs (`translations/<lang>/LC_MESSAGES/<crate>.po`) into the binary; `slint::select_bundled_translation` then switches every `@tr()` binding at runtime. Call it AFTER the first component is created (the language registry is populated during component creation); `"en"`/`""` are special-cased to the source language, so English needs no catalog. THE TRAP: Slint's default translation context is the enclosing component name, sent as gettext `msgctxt` — a flat `.po` without `msgctxt` entries then matches NOTHING, every string silently falls back to English, and the build stays green. `build.rs` sets `.with_default_translation_context(DefaultTranslationContext::None)` for one flat msgid namespace (a string reused across components needs one entry, not one per component). Because this failure mode is total and invisible to the cargo gates, `bundled_translations_compiled_into_generated_code` pins the generated `$OUT_DIR/ViewerWindow.rs`: it must register the `"ja"` locale AND contain matched Japanese catalog text. Adding a user-visible string = wrap it in `@tr()` + add the byte-exact msgid to `gashuu.po`; Rust-composed strings instead go through `src/messages.rs`, whose exhaustive `match` makes a new `Language` variant a compile error per message.
+`@tr()` + `slint_build`'s `with_bundled_translations` compiles gettext catalogs (`translations/<lang>/LC_MESSAGES/<crate>.po`) into the binary; `slint::select_bundled_translation` then switches every `@tr()` binding at runtime. Call it AFTER the first component is created (the language registry is populated during component creation); `"en"`/`""` are special-cased to the source language, so English needs no catalog. THE TRAP: Slint's default translation context is the enclosing component name, sent as gettext `msgctxt` — a flat `.po` without `msgctxt` entries then matches NOTHING, every string silently falls back to English, and the build stays green. `build.rs` sets `.with_default_translation_context(DefaultTranslationContext::None)` for one flat msgid namespace (a string reused across components needs one entry, not one per component). Because this failure mode is total and invisible to the cargo gates, `bundled_translations_compiled_into_generated_code` pins the generated `$OUT_DIR/ViewerWindow.rs`: it must register the `"ja"` locale AND contain matched Japanese catalog text. Adding a user-visible string = wrap it in `@tr()` + add the byte-exact msgid to `gashuu.po`; Rust-composed strings instead go through `src/i18n/dynamic.rs` (via `fl!()`, compile-checked against `en.ftl`) — `messages.rs` was deleted in PR-3 (#114).
 
 ### Removing a design token: sweep by NAME, VALUE, and CONCEPT to a fixed point (settings visual polish, spec 2026-06-04)
 
@@ -824,7 +825,7 @@ When a token is deleted (e.g. the fixed `Theme.settings-h` φ panel-height const
 
 ### Fluent loader (i18n-embed 0.16): `load_languages` REPLACES, auto-appends fallback, and resets bundle config (Fluent i18n PR-1, #112)
 
-This is the *Fluent* side of i18n; the gettext/Slint `@tr()` side (msgctxt trap, OUT_DIR canary, `messages.rs` exhaustive match) is a separate concern — see "Bundled translations: the default msgctxt is the COMPONENT NAME" above and do NOT re-derive it here. Both catalogs coexist until PR-4 (#115); ADR-0008 has the staging.
+This is the *Fluent* side of i18n; the gettext/Slint `@tr()` side (msgctxt trap, OUT_DIR canary) is a separate concern — see "Bundled translations: the default msgctxt is the COMPONENT NAME" above and do NOT re-derive it here. The `messages.rs` exhaustive-match catalog was deleted in PR-3 (#114); the compile-time gate equivalent is now `langid_for(Language)` in `loader.rs`. Both catalog systems coexist until PR-4 (#115); ADR-0008 has the staging.
 
 `FluentLanguageLoader::load_languages(&assets, &[requested])` is a TOTAL replace, not a layering: it AUTO-APPENDS the fallback language (`en`, from `i18n.toml`) when absent, then atomically swaps ALL loader state via `ArcSwap`. Three consequences, each verified against the vendored 0.16 source (`fluent.rs:543-582`) and pinned by tests:
 
@@ -836,9 +837,9 @@ On a missing message, `loader.get*` returns the literal `No localization for id:
 
 **Load-failure policy is deliberately LOUD and asymmetric.** `Localizer::new`/`switch` `panic!` on a load error: assets are compile-time-embedded (`RustEmbed`) and `langid_for` is an exhaustive `match`, so a failure is a programmer error, not a runtime condition. This intentionally diverges from `select_ui_language`'s never-fatal `tracing::warn` (the gettext path), and the asymmetry is documented at the `switch` call site in `main.rs` — the rationale is the repo's history of a silent gettext all-miss (the msgctxt trap above): for the catalog we control end-to-end, fail fast.
 
-### Fluent catalog authoring gotchas (verified by exact-equality tests vs the `messages.rs` byte oracle)
+### Fluent catalog authoring gotchas (verified by exact-equality tests vs the former `messages.rs` byte oracle)
 
-The Fluent `.ftl` values are pinned byte-identical to the legacy `messages.rs` arms by exact-equality tests (`shortcuts_help_matches_legacy_catalog_byte_for_byte`, `already_in_library_preserves_em_dash`, `skipped_detail_preserves_leading_space`). Authoring traps surfaced empirically:
+The Fluent `.ftl` values were pinned byte-identical to the legacy `messages.rs` arms by exact-equality tests (`shortcuts_help_matches_legacy_catalog_byte_for_byte`, `already_in_library_preserves_em_dash`, `skipped_detail_preserves_leading_space`). `messages.rs` was deleted in PR-3 (#114); the byte pins remain as standalone FTL-content tests. Authoring traps surfaced empirically:
 
 - **Leading whitespace in a value is trimmed.** To keep a historical leading space (e.g. ` (zip-slip or oversized)`), wrap it in a string-literal placeable: `{" "}(...)`. (ADR-0008 §Consequences notes this; the test above pins the exact byte value.)
 - **Multiline block values strip the COMMON indentation, but KEEP interior blank lines.** A block authored at 4sp (headers) / 6sp (body) delivers 0sp / 2sp; blank lines *inside* the block survive as real newlines with no `{""}` encoding needed. This is why a `shortcuts-help` block reproduces the legacy 2-space-indented text exactly.
@@ -847,18 +848,18 @@ The Fluent `.ftl` values are pinned byte-identical to the legacy `messages.rs` a
 
 ### i18n test harness: the legacy catalog as a byte oracle; floors and loud catch-alls against vacuous passes (Fluent i18n PR-1, #112)
 
-While both i18n systems coexist, the legacy catalogs are LIVE ORACLES for migration fidelity — richer than shape tests:
+While both i18n systems coexisted (PRs 1–2), the legacy catalogs were LIVE ORACLES for migration fidelity — richer than shape tests. `messages.rs` was deleted in PR-3 (#114); the byte pins remain as standalone FTL-content tests (see "Test guarantee migration discipline" below):
 
-- **`messages.rs` as a byte-identity oracle.** Exact-equality tests against the `msg_*` arms pin the migration far better than line-count/shape tests (a shape test passes on a reworded translation). Keep both kinds: a line-count test localizes a diff, the byte test catches the content drift.
+- **`messages.rs` as a byte-identity oracle (historical).** Exact-equality tests against the `msg_*` arms pin the migration far better than line-count/shape tests (a shape test passes on a reworded translation). Keep both kinds: a line-count test localizes a diff, the byte test catches the content drift. After deletion the same byte pins live in `i18n::dynamic::tests`.
 - **A `.po`-msgids-⊆-`en.ftl`-values coverage test MUST carry a vacuous-pass FLOOR.** `ftl_static_channel_covers_every_po_msgid` parses the `.po` by line-prefix and asserts `po_msgids.len() >= 50` BEFORE the subset check — a reformat of the `.po` (e.g. multi-line msgids) would otherwise break the parser, find zero msgids, and pass a check over an empty set. The floor is the test's reason to exist.
 - **AST-walk catch-alls in test reconstruction PANIC, never return empty.** The `_ =>`/`other =>` arm when reconstructing an `.ftl` value from its AST `panic!`s with "extend this match arm" — a silent truncation (returning `""` for an unhandled placeable kind) would false-pass the coverage test.
 - **Cross-locale `$arg`-set parity via the AST** (`message_arguments_match_across_locales`: same `$var` name set per shared ID in `en` and `ja`) closes a gap that neither `fl!()` (fallback-only compile check, can't see `ja`) nor ID-parity (`all_ftl_ids_present_in_every_locale`, IDs only, not args) covers — a `$lable`/`$label` typo in one locale would otherwise surface only as a runtime log + malformed string in PR-3.
-- **The exhaustive `langid_for(Language)` match (no wildcard)** is the compile-time gate that replaces `messages.rs`'s exhaustive-match safety: a new `Language` variant fails compilation until a catalog `langid` is wired.
+- **The exhaustive `langid_for(Language)` match (no wildcard)** is the compile-time gate that replaced `messages.rs`'s exhaustive-match safety: a new `Language` variant fails compilation until a catalog `langid` is wired.
 - **(PR-2, #113) An end-to-end composition pin doubles as cross-file default reconciliation.** `composed_stepper_labels_match_apply_composition` reproduces `apply()`'s EXACT two-step Stepper a11y compose — resolve `settings-cache-a11y` FROM the catalog, then feed it as the `label` named arg into `stepper-decrease`. This catches what the PR-1 `parameterized_messages_embed_arguments` test cannot: that test hardcodes the label literal and only asserts `starts_with`/`ends_with`, so it is blind to a label CROSS-WIRE (feeding `settings-cache-label` "Cache size (pages)" instead of `settings-cache-a11y` "Cache size in pages") and, for Ja, to a verb-final word-ORDER regression (`減らす（{ $label }）` still passes an `ends_with`). The pin asserts BYTE-EXACT composed strings for both locales. Second duty: its four English literals are deliberately the SAME strings as `Strings.slint`'s composed `stepper-*` defaults — so an `en.ftl` edit that orphans the `.slint` defaults (the stale-En blind spot the literal-default insurance creates) fails this test instead of shipping silently.
 
-### Don't add a `pub(crate)` getter for a future consumer — it trips `dead_code` now; same-module tests read private fields directly (Fluent i18n PR-1, #112)
+### Don't add a `pub(crate)` getter for a future consumer — it trips `dead_code` now; add it in the PR that has the real consumer (Fluent i18n PR-1, #112 / resolved PR-3, #114)
 
-`Localizer` wraps a private `loader` field. A `pub(crate) fn loader()` getter intended for PR-2's `Strings`-push call sites would be flagged `dead_code` under `--all-targets -D warnings` TODAY: in a *binary* crate `pub(crate)` is not an API surface, and a getter used ONLY by same-crate `#[cfg(test)]` code does not count as a live use (contrast the test-only-accessor `#[allow(dead_code)]` entries above — those accessors EXIST and are documented in place; here the right move is to NOT introduce the getter at all). The same-module `#[cfg(test)] mod tests` reaches the private field directly (`localizer.loader.get(...)`), so no getter is needed for the tests. Add the getter in the PR that has the real consumer, not speculatively — a getter with no non-test caller is either an `#[allow]` you have to justify or a gate failure. (PR-2/#113 vindicated this: `apply()` — the real consumer — landed INSIDE `i18n/mod.rs`, so it too reads `self.loader` directly and the getter was never needed.)
+`Localizer` wraps a private `loader` field. A `pub(crate) fn loader()` getter intended for PR-2's `Strings`-push call sites would be flagged `dead_code` under `--all-targets -D warnings` TODAY: in a *binary* crate `pub(crate)` is not an API surface, and a getter used ONLY by same-crate `#[cfg(test)]` code does not count as a live use. The right move is to NOT introduce the getter at all until the real consumer lands. The same-module `#[cfg(test)] mod tests` reaches the private field directly (`localizer.loader.get(...)`), so no getter is needed for the tests. PR-2 vindicated this: `apply()` (the real consumer) landed inside `i18n/mod.rs` and reads `self.loader` directly. PR-3 (#114) finally added the `pub(crate) fn loader()` getter because `i18n/dynamic.rs` is in a SIBLING file (`i18n/dynamic.rs` vs `i18n/mod.rs`) — no longer the same module — and is the real cross-file consumer; the getter now has a non-test caller and is gate-clean.
 
 ### The `Strings`-global push: serve Fluent strings to Slint through one Rust chokepoint (Fluent i18n PR-2, #113)
 
@@ -877,3 +878,30 @@ A parameterized a11y string ("Decrease {label}") must be composed in RUST via a 
 ### The gettext bundler is keyed by LIVE `@tr()` call-sites, not by the `.po` — so a guard that asserts on the bundled BYPRODUCT dies when `@tr()` is removed (Fluent i18n PR-2, #113)
 
 Slint's `with_bundled_translations` compiles ONLY the `.po` entries whose msgid matches a live `@tr()` source string at compile time — the `.po` file alone contributes nothing. PR-2 removed every `@tr()` from `.slint` (zero remain, an issue-113 acceptance criterion) while deliberately KEEPING the `.po` + `build.rs` `with_bundled_translations` flag inert as a rollback surface. Consequence for the PR-1 OUT_DIR canary (`bundled_translations_compiled_into_generated_code`): with no `@tr()` source strings, the gettext bundler matches nothing, so NO Japanese catalog *text* (`見開き`) reaches generated code anymore. The canary was half-retired, not deleted: it now asserts ONLY that the `"ja"` locale slot is registered (still fails loudly if someone rips the build flags out early), and the "the ja catalog actually SAYS 見開き" guarantee moved to the loader-level test `i18n::tests::ja_catalog_pins_spread_vocabulary`. Generalizable lesson: a guard that asserts on a BYPRODUCT of consumption (here, bundled gettext text) breaks when consumption moves — re-anchor the guarantee to the new consumer (the Fluent loader) rather than weakening or deleting the guard wholesale.
+
+### Neutral content structs: decouple domain logic from i18n formatting (Fluent i18n PR-3, #114)
+
+`viewer_state.rs` and `app.rs` contain zero `crate::i18n` imports. Instead each exposes a "neutral" content struct that carries formatting inputs without locale: `ViewerState::status_content() -> StatusContent` (holds `StatusKind`, the page-range `String`, `SpreadMode`, `ReadingDirection`) and `OpenBookUseCase::run()` returns `OpenOutcome::Success(NoticesContent)` (holds skip count, `SkippedDetail`, optional pre-captured error strings). The formatting boundary lives entirely in `i18n::dynamic`: `format_status(loader, &StatusContent)` and `format_notices(loader, &NoticesContent)`. The gain: domain tests exercise the struct fields without constructing a `Localizer`; i18n tests exercise formatting functions with fixed structs, keeping the two concerns orthogonal. Applicable to any Rust project where UI formatting needs to be separated from domain state.
+
+### `OpenOutcome` pattern: defer i18n and UI wiring to the call site (Fluent i18n PR-3, #114)
+
+When a use-case `run()` must stay i18n-free, return an `enum OpenOutcome { Error(String), Success(Data) }`. The `Error(String)` payload pre-captures `format!("{e}")` at the earliest point inside the module boundary so `CoreError` never leaks out; the `String` is already display-ready and does not need a type alias outside the module. `main.rs::finalize_open` then wraps it in `i18n::dynamic::open_error_str(loader, &e_str)`. This keeps the error's source-module from needing a `crate::i18n` import while still giving the caller a formatted, localized string. The pattern generalizes: any fallible use case that would otherwise need a locale parameter can return `Error(String)` + `Success(NeutralData)` and let the immediate caller supply the locale.
+
+### `finalize_open` helper: extract the shared `OpenOutcome` match when it appears at N call sites (Fluent i18n PR-3, #114)
+
+`main.rs` has three open handlers (`on_open_folder`, `on_open_archive`, `on_carousel_open`); all three do the identical `match outcome { Error → set status, Success → refresh + append notices }`. Extract `fn finalize_open(ui, state, viewport, localizer, outcome)` in `main.rs` — NOT in `app.rs` — so `app.rs` stays free of `crate::i18n`. The helper belongs to the layer that owns both the outcome type AND the locale.
+
+### `fl!()` numeric arg type: `usize` needs explicit `as i64` cast (Fluent i18n PR-3, #114)
+
+`fl!()` numeric args must be `i64`. `usize` does not coerce automatically. Pattern: `let n = n as i64; fl!(loader, "msg-id", n = n)`. Applied to `page_unavailable`, `added_books`, and `added_books_save_failed` in `dynamic.rs`.
+
+### `open_error` dual-form: `&dyn Display` for tests, `&str` for production (Fluent i18n PR-3, #114)
+
+`open_error(loader, &dyn Display)` formats an error at call time and is only needed by tests that construct the message directly from an error value. Production always goes through `OpenOutcome::Error(String)` — the error was pre-captured as a `String` by `run()` — so the production path calls `open_error_str(loader, &str)` which takes the already-formatted string. The `&dyn Display` form is therefore `#[cfg(test)]`, keeping it out of the release binary and making the test/production split explicit and enforced by the compiler.
+
+### Test guarantee migration discipline: named successors for every deleted test (Fluent i18n PR-3, #114)
+
+When `messages.rs` was deleted its tests needed named successors in `i18n::dynamic::tests`. The mapping table in the PR description is the audit trail. Core obligations that MUST survive the deletion:
+- "English historical strings" — byte-exact pins for messages that carry invisible whitespace or em dashes (e.g. ` (zip-slip or oversized)`, `—`). These pins are not redundant; they guard authoring regressions in the `.ftl`.
+- "Cross-locale differ" — asserts `en_string != ja_string` per message family, proving the catalog is not English-only. A test that passes on a catalog that has only one locale is vacuous.
+- "Args are embedded" — `assert!(formatted.contains(arg_value))` per parameterized function. Covers the `fl!()` arg-name wiring without byte-pinning translated text.

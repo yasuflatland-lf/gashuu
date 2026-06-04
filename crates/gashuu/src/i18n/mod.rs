@@ -6,6 +6,7 @@
 //! struct in an `Rc<Localizer>` (rather than `Rc<RefCell<Localizer>>`) is safe
 //! and lets Slint callbacks clone the `Rc` without a runtime borrow-check.
 
+pub(crate) mod dynamic;
 mod loader;
 
 use gashuu_core::Language;
@@ -96,6 +97,18 @@ impl Localizer {
         // `FluentLanguageLoader::set_use_isolating`'s doc note, the setting
         // takes effect only after load_languages.
         self.loader.set_use_isolating(false);
+    }
+
+    /// Return a shared reference to the underlying [`FluentLanguageLoader`].
+    ///
+    /// Callers in [`dynamic`] borrow this to call `fl!()` directly, keeping
+    /// the loader private to this module while still allowing the dynamic
+    /// message functions to resolve strings without going through [`apply`].
+    ///
+    /// [`dynamic`]: super::dynamic
+    /// [`apply`]: Localizer::apply
+    pub(crate) fn loader(&self) -> &FluentLanguageLoader {
+        &self.loader
     }
 
     /// Push every Fluent-served static string into the [`Strings`] global on
@@ -445,25 +458,67 @@ mod tests {
 
     // ---- test 5a: shortcuts-help byte-identical to legacy catalog -----
 
-    /// Asserts that the Fluent `shortcuts-help` output is byte-identical to
-    /// `crate::messages::msg_key_bindings_help` for both languages.
+    /// Asserts that the Fluent `shortcuts-help` output is byte-identical to the
+    /// historical `messages.rs::msg_key_bindings_help` arms for both languages.
+    /// Those arms are pinned here as literals so the guarantee survives the
+    /// deletion of `messages.rs`.
     ///
     /// Empirically verifies that:
     /// (a) Fluent's block-value indentation stripping produces the same
-    ///     2-space-indented text as the messages.rs static string arms.
+    ///     2-space-indented text as the legacy static string arms.
     /// (b) Blank lines between sections are preserved (Fluent gotcha: blank
     ///     continuation lines in block values are kept verbatim, not dropped).
     #[test]
     fn shortcuts_help_matches_legacy_catalog_byte_for_byte() {
+        // The pre-Fluent `messages.rs::msg_key_bindings_help` arms, verbatim.
+        let legacy_en = "\
+Navigation:
+  Space = next page    Backspace = previous page
+  Arrows follow the reading direction (LTR: \u{2192} next; RTL: \u{2190} next)
+
+Modes:
+  D = spread (single \u{2192} double \u{2192} auto)
+  R = reading direction (LTR / RTL)
+  C = cover layout (standalone / paired)
+
+Zoom & fit:
+  + / - = zoom in / out    0 = reset view    1 = actual size    f = cycle fit
+
+View:
+  T = toggle thumbnail strip
+
+Library:
+  Up = return to the library";
+        let legacy_ja = "\
+ナビゲーション:
+  Space = 次のページ    Backspace = 前のページ
+  矢印キーは読む方向に従います (左から右: \u{2192} が次 / 右から左: \u{2190} が次)
+
+モード:
+  D = ページ表示 (単ページ \u{2192} 見開き \u{2192} 自動)
+  R = 読む方向 (左から右 / 右から左)
+  C = 表紙レイアウト (単独 / ペア)
+
+ズームとフィット:
+  + / - = ズームイン / アウト    0 = 表示リセット    1 = 原寸    f = フィット切替
+
+表示:
+  T = サムネイル一覧の表示切替
+
+ライブラリ:
+  Up = ライブラリに戻る";
         for lang in [Language::En, Language::Ja] {
             let loc = Localizer::new(lang);
             let fluent_text = get(&loc, "shortcuts-help");
-            let legacy_text = crate::messages::msg_key_bindings_help(lang);
+            let legacy_text = match lang {
+                Language::En => legacy_en,
+                Language::Ja => legacy_ja,
+            };
 
             assert_eq!(
                 fluent_text,
                 legacy_text,
-                "lang={lang:?}: Fluent 'shortcuts-help' does not match messages.rs arm.\n\
+                "lang={lang:?}: Fluent 'shortcuts-help' does not match the legacy arm.\n\
                  Fluent ({} chars):\n{fluent_text:?}\n\
                  Legacy ({} chars):\n{legacy_text:?}",
                 fluent_text.len(),
@@ -499,14 +554,20 @@ mod tests {
     // ---- test 5c: already-in-library em-dash preserved ---------------
 
     /// Asserts that `notice-already-in-library` is byte-identical to the
-    /// corresponding `crate::messages::msg_already_in_library` arms for both
-    /// locales, including the em dash (U+2014).
+    /// historical strings (pinned here as literals, including the em dash
+    /// U+2014) for both locales. These literals are the pre-Fluent
+    /// `messages.rs::msg_already_in_library` arms, kept here so the byte-for-byte
+    /// guarantee survives the deletion of `messages.rs`.
     #[test]
     fn already_in_library_preserves_em_dash() {
+        let expected = |lang: Language| match lang {
+            Language::En => "Already in library \u{2014} no new books added.",
+            Language::Ja => "すでにライブラリにあります \u{2014} 新しい本は追加されませんでした。",
+        };
         for lang in [Language::En, Language::Ja] {
             let loc = Localizer::new(lang);
             let fluent_text = get(&loc, "notice-already-in-library");
-            let legacy_text = crate::messages::msg_already_in_library(lang);
+            let legacy_text = expected(lang);
 
             assert_eq!(
                 fluent_text, legacy_text,
@@ -838,6 +899,158 @@ mod tests {
             "先読みページ数を増やす",
             "Ja stepper-increase(preload): byte-exact composition mismatch — \
              check settings-preload-a11y and stepper-increase in ja.ftl"
+        );
+    }
+
+    // ---- test 7: japanese notices render in japanese ---------------------
+
+    /// Successor to the deleted `app::tests::japanese_notices_render_in_japanese`.
+    /// Exercises `dynamic::format_notices` with a ja-switched loader.
+    #[test]
+    fn japanese_notices_render_in_japanese() {
+        use crate::app::{NoticesContent, SkippedDetail};
+        let loc = Localizer::new(Language::Ja);
+        let content = NoticesContent {
+            skipped: 3,
+            skipped_detail: SkippedDetail::Archive,
+            settings_save_err: None,
+            library_save_err: None,
+        };
+        let notices = crate::i18n::dynamic::format_notices(loc.loader(), &content);
+        assert_eq!(notices.len(), 1);
+        assert!(
+            notices[0].contains('3'),
+            "expected count in notice, got {:?}",
+            notices[0]
+        );
+        assert!(
+            notices[0].contains("スキップ"),
+            "expected Japanese notice, got {:?}",
+            notices[0]
+        );
+    }
+
+    // ---- test 8: english dynamic fns preserve historical strings ----------
+
+    /// Successor to `messages::tests::english_arms_preserve_the_historical_strings`.
+    /// Pins exact English output of `dynamic::` fns against the historical strings.
+    #[test]
+    fn english_dynamic_fns_preserve_historical_strings() {
+        use crate::app::{NoticesContent, SkippedDetail};
+        use crate::viewer_state::{StatusContent, StatusKind};
+        use gashuu_core::{ReadingDirection, SpreadMode};
+
+        let loc = Localizer::new(Language::En);
+        let l = loc.loader();
+
+        // Static status strings
+        let no_folder = crate::i18n::dynamic::format_status(
+            l,
+            &StatusContent {
+                pages: String::new(),
+                spread: SpreadMode::Single,
+                direction: ReadingDirection::Ltr,
+                kind: StatusKind::NoFolder,
+            },
+        );
+        assert_eq!(no_folder, "No folder opened");
+
+        let no_images = crate::i18n::dynamic::format_status(
+            l,
+            &StatusContent {
+                pages: String::new(),
+                spread: SpreadMode::Single,
+                direction: ReadingDirection::Ltr,
+                kind: StatusKind::NoImages,
+            },
+        );
+        assert_eq!(no_images, "Folder contains no images");
+
+        // Notice fn pins
+        let n3_archive = NoticesContent {
+            skipped: 3,
+            skipped_detail: SkippedDetail::Archive,
+            settings_save_err: None,
+            library_save_err: None,
+        };
+        let notices = crate::i18n::dynamic::format_notices(l, &n3_archive);
+        assert_eq!(notices, vec!["3 entries skipped (zip-slip or oversized)"]);
+
+        assert_eq!(crate::i18n::dynamic::added_books(l, 2), "Added 2 book(s)");
+        assert_eq!(
+            crate::i18n::dynamic::decode_error(l, &"x"),
+            "Decode error: x"
+        );
+
+        let n_settings_err = NoticesContent {
+            skipped: 0,
+            skipped_detail: SkippedDetail::None,
+            settings_save_err: Some("x".to_string()),
+            library_save_err: None,
+        };
+        let notices = crate::i18n::dynamic::format_notices(l, &n_settings_err);
+        assert_eq!(notices, vec!["Failed to save settings: x"]);
+
+        let n_lib_err = NoticesContent {
+            skipped: 0,
+            skipped_detail: SkippedDetail::None,
+            settings_save_err: None,
+            library_save_err: Some("x".to_string()),
+        };
+        let notices = crate::i18n::dynamic::format_notices(l, &n_lib_err);
+        assert_eq!(notices, vec!["Failed to save library: x"]);
+
+        // Pages branch: verify composed shape for a known spread/direction
+        let pages_status = crate::i18n::dynamic::format_status(
+            l,
+            &StatusContent {
+                pages: "2\u{2013}3 / 6".to_string(),
+                spread: SpreadMode::Double,
+                direction: ReadingDirection::Ltr,
+                kind: StatusKind::Pages,
+            },
+        );
+        assert_eq!(pages_status, "2\u{2013}3 / 6  [double \u{00b7} LTR]");
+
+        // Pin exact English string for could_not_save_settings
+        assert_eq!(
+            crate::i18n::dynamic::could_not_save_settings(l, &"x"),
+            "Could not save settings: x"
+        );
+    }
+
+    // ---- test 8b: format_notices ordering -----------------------------------
+
+    /// Successor to app::tests::all_three_failures_emit_in_skipped_settings_library_order.
+    /// Asserts that format_notices produces notices in the canonical order:
+    /// skipped entries FIRST, then settings-save failure, then library-save failure.
+    #[test]
+    fn format_notices_preserves_skipped_settings_library_order() {
+        use crate::app::{NoticesContent, SkippedDetail};
+        let loc = Localizer::new(Language::En);
+        let l = loc.loader();
+        let all_three = NoticesContent {
+            skipped: 2,
+            skipped_detail: SkippedDetail::Archive,
+            settings_save_err: Some("se".to_string()),
+            library_save_err: Some("le".to_string()),
+        };
+        let notices = crate::i18n::dynamic::format_notices(l, &all_three);
+        assert_eq!(notices.len(), 3, "expected 3 notices, got {:?}", notices);
+        assert!(
+            notices[0].contains('2'),
+            "skipped notice must be first, got {:?}",
+            notices[0]
+        );
+        assert!(
+            notices[1].contains("settings"),
+            "settings notice must be second, got {:?}",
+            notices[1]
+        );
+        assert!(
+            notices[2].contains("library"),
+            "library notice must be third, got {:?}",
+            notices[2]
         );
     }
 

@@ -312,21 +312,27 @@ focus. The Up arrow (`KeyCommand::GoToLibrary`, direction-independent) and the c
 `app.rs`. `OpenBookUseCase` — the open-a-book application use case extracted from `main.rs` in
 #67. Holds six shared collaborators as `Rc<RefCell<…>>` fields: `ViewerState`, `Settings`,
 `ViewportState`, `Library`, `ThumbnailController` (`Rc`), and `CoverController` (`Rc`). There
-is NO `NavState` field — `NavState` stays in `main.rs`. Exposes two items:
+is NO `NavState` field — `NavState` stays in `main.rs`. **PR-3 (#114)** replaced the former
+`(Vec<String>, Option<String>)` return value with two new types and a revised single export:
 
-- `run(&self, ui, path, skipped_detail)` — writes back the previous book's position; opens
-  the source; reconciles + saves settings (only when `track_recent_files` is on); registers the
-  book in `Library` and jumps to the resume page; calls `refresh`; composes status notices via
-  the pure `status_notices` fn; rebuilds the carousel model only when the page count changed;
-  and launches thumbnail generation. **`run` does NOT transition screens** — it never calls
-  `go_to_viewer`.
-- Pure `status_notices(…) -> Vec<String>` extracted for unit tests.
+- `run(&self, path, skipped_detail) -> OpenOutcome` — writes back the previous book's position;
+  opens the source; reconciles + saves settings; registers the book in `Library` and jumps to the
+  resume page; rebuilds the carousel model; launches thumbnails. On failure returns
+  `OpenOutcome::Error(String)` (pre-captured `format!("{e}")`); on success returns
+  `OpenOutcome::Success(NoticesContent)`. **`run` does NOT transition screens** and contains ZERO
+  `crate::i18n` imports — all formatting is deferred to `main.rs::finalize_open`.
+- `NoticesContent` — neutral data struct (skipped count, `SkippedDetail`, optional save-error
+  strings) passed to `i18n::dynamic::format_notices` in `finalize_open`. No locale logic inside.
+- `OpenOutcome` / `SkippedDetail` / `NoticesContent` are in scope for `main.rs` via
+  `use crate::app::{NoticesContent, OpenOutcome, SkippedDetail}`.
 
 `main.rs` constructs one instance and shares it (`Rc`) into the three open-handler closures:
-`on_open_folder`, `on_open_archive`, and `on_carousel_open`. Only `on_carousel_open` calls
-`go_to_viewer(&ui, &nav)` after `run` returns, using the `nav: Rc<RefCell<NavState>>` that
-stays in `main.rs`. Lives in the UI crate because it coordinates Slint components;
-`gashuu-core` is untouched.
+`on_open_folder`, `on_open_archive`, and `on_carousel_open`. All three call
+`finalize_open(&ui, &state, &viewport, &localizer, outcome)` after `run` returns; only
+`on_carousel_open` also calls `go_to_viewer`. See [patterns.md](patterns.md),
+"OpenOutcome pattern" and "finalize_open helper".
+
+Lives in the UI crate because it coordinates Slint components; `gashuu-core` is untouched.
 
 `run` writes back the OUTGOING book's per-book view override (`write_back_view_override`) right
 beside the position write-back at its top, and — per the per-book-overrides feature — does NOT
@@ -391,28 +397,35 @@ PR-58, `carousel.rs`. UI-thread adapter layer between `library_model` and Slint:
 
 PR-58, `enum_adapters.rs`. The 10 `pub(crate)` enum↔index adapters (the first 8 were previously inline in `main.rs`): `reading_direction_to_index`/`index_to_reading_direction`, `spread_mode_to_index`/`index_to_spread_mode`, `cover_mode_to_index`/`index_to_cover_mode`, `fit_mode_to_index`/`index_to_fit_mode`, and `language_to_index`/`index_to_language` (i18n PR). Each `index_to_*` clamps out-of-range to the first variant, mirroring the `index_to_screen` clamp policy in `navigation.rs`.
 
-### messages
-
-i18n PR, `messages.rs`. PURE (Slint-free) Rust-side user-facing string catalog: one `msg_*` function per message (status line, open/save notices, decode errors, the ShortcutsOverlay key-bindings reference), each an exhaustive `match` on `gashuu_core::Language` — adding a language variant is a compile error in every message until its translation is supplied. Covers ONLY strings composed in Rust; `.slint` strings go through `@tr()` + the bundled gettext catalog (`crates/gashuu/translations/<lang>/LC_MESSAGES/gashuu.po`, wired by `build.rs` — see docs/patterns.md for the msgctxt gotcha). The Japanese spread/direction vocabulary is pinned to the `.po`'s by `japanese_labels_match_the_po_vocabulary`.
-
 ### i18n
 
-Fluent i18n PR-1 (#112), `i18n/` module (`mod.rs` + `loader.rs`). The Fluent localizer that runs
-ALONGSIDE the legacy gettext/`messages.rs` path during the staged migration (ADR-0008; both systems
-coexist until PR-4 / #115). `Localizer` wraps an `i18n_embed::fluent::FluentLanguageLoader`; its
-`new(lang)`/`switch(lang)` call `load_languages` then re-apply `set_use_isolating(false)`, and
-`panic!` on a load failure (compile-time-embedded assets ⇒ programmer error — see
-[patterns.md](patterns.md), "Fluent loader"). All mutating methods take `&self` (the loader has
-interior mutability), so `main.rs` shares one `Rc<Localizer>` into the Slint callbacks without a
-`RefCell`. `loader.rs` holds the `#[derive(RustEmbed)] struct Localizations` (embeds `i18n/`) and
-the exhaustive `langid_for(Language) -> LanguageIdentifier` (no wildcard — the compile-time gate
-replacing `messages.rs`'s exhaustive match). The completeness/parity/byte-oracle integration tests
-live in `mod.rs`'s `#[cfg(test)]`. The `Language` enum stays in headless `gashuu-core`; ALL Fluent
+Fluent i18n PR-1 (#112), `i18n/` module (`mod.rs` + `loader.rs` + `dynamic.rs`). **`messages.rs`
+was deleted in PR-3 (#114)** — all runtime-composed strings now live in `i18n/dynamic.rs` (see
+below). `Localizer` wraps an `i18n_embed::fluent::FluentLanguageLoader`; its `new(lang)`/`switch(lang)`
+call `load_languages` then re-apply `set_use_isolating(false)`, and `panic!` on a load failure
+(compile-time-embedded assets ⇒ programmer error — see [patterns.md](patterns.md), "Fluent loader").
+All mutating methods take `&self` (the loader has interior mutability), so `main.rs` shares one
+`Rc<Localizer>` into the Slint callbacks without a `RefCell`. `pub(crate) fn loader()` getter was
+added in PR-3 (justified by `dynamic.rs` as the real consumer; per the dead-code-getter rule in
+[patterns.md](patterns.md), this was deferred until the getter had a non-test caller). `loader.rs`
+holds the `#[derive(RustEmbed)] struct Localizations` (embeds `i18n/`) and the exhaustive
+`langid_for(Language) -> LanguageIdentifier` (no wildcard — the compile-time gate replacing the
+former `messages.rs` exhaustive match). The completeness/parity/byte-oracle integration tests live
+in `mod.rs`'s `#[cfg(test)]`. The `Language` enum stays in headless `gashuu-core`; ALL Fluent
 machinery is UI-crate-only, per [ADR-0002](ADRs/0002-layered-two-crate-architecture.md). PR-2 (#113)
 added `Localizer::apply(&self, ui: &ViewerWindow)` to `mod.rs`: the single chokepoint that resolves
 every Fluent-served static string via `fl!()` and pushes it into the `Strings` global (next entry);
 `main.rs` calls it at boot and after each `switch()` — see [patterns.md](patterns.md), "The
 `Strings`-global push".
+
+**`i18n/dynamic.rs`** (Fluent i18n PR-3, #114, NEW): Fluent-backed dynamic message functions that
+replaced the deleted `messages.rs`. Each function takes a `&FluentLanguageLoader` borrowed from
+`Localizer::loader()` and returns a freshly formatted `String`. Two aggregators drive the presentation
+layer: `format_status(loader, &StatusContent) -> String` and `format_notices(loader, &NoticesContent)
+-> Vec<String>` — they take the language-free content structs from `viewer_state.rs` and `app.rs`
+respectively and apply the locale (see [patterns.md](patterns.md), "Neutral content structs" and
+"OpenOutcome pattern"). `open_error` (`&dyn Display` form) is `#[cfg(test)]`-only; production always
+goes through `open_error_str` with the pre-captured `OpenOutcome::Error(String)` payload.
 
 **`i18n/` assets + `i18n.toml`** (crate root): one Fluent catalog per locale,
 `i18n/{en,ja}/gashuu.ftl`, carrying the FULL vocabulary (both the former gettext msgids and the
