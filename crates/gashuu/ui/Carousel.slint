@@ -196,17 +196,27 @@ component CoverCard inherits Rectangle {
     }
 
     // ── Cover click target (PR-2 — the repo's FIRST cover pointer interaction) ──
-    // An INVISIBLE `cover-step`-wide rectangle (NOT the shrunken artwork) so a
-    // neighbor cover is a comfortable click target even at neighbor-scale. Pinned
-    // centered on the card. `enabled: root.interactive` ensures ONLY the pass-1
-    // backing copy fires (pass-2's focused copy passes `interactive: false`, so a
-    // click on the focused card is handled exactly once — see the two for-loops in
-    // Carousel). The TouchArea is non-focusable (repo convention, see NavItem /
-    // docs/patterns.md "TouchArea click focus recovery"), so keyboard focus stays
-    // on the carousel FocusScope; main.rs restores carousel focus after handling.
+    // An INVISIBLE click rectangle (NOT the shrunken artwork), pinned centered on
+    // the card. Width = max(cover-step, card width):
+    //   - NEIGHBOR cards (width == cover-w * neighbor-scale): cover-step wins, so a
+    //     shrunken side cover is still a comfortable `cover-step`-wide click target.
+    //   - FOCUSED card (width == cover-w): the card width wins, so the WHOLE focused
+    //     cover is clickable — including the selection badge pinned to its top-right
+    //     corner. A bare `cover-step`-wide target (cover-step < cover-w when focused)
+    //     left the badge in a dead zone, so clicking it in selection mode toggled
+    //     nothing; the always-visible selection-mode rings then advertised a target
+    //     the focused cover's hit-area never reached (badge inset + space-xs all sit
+    //     right of a cover-step-wide centered target). Math.max fixes that without
+    //     shrinking the deliberate neighbor target.
+    // `enabled: root.interactive` ensures ONLY the pass-1 backing copy fires
+    // (pass-2's focused copy passes `interactive: false`, so a click on the focused
+    // card is handled exactly once — see the two for-loops in Carousel). The
+    // TouchArea is non-focusable (repo convention, see NavItem / docs/patterns.md
+    // "TouchArea click focus recovery"), so keyboard focus stays on the carousel
+    // FocusScope; main.rs restores carousel focus after handling.
     cover-touch := TouchArea {
         enabled: root.interactive;
-        width: root.cover-step;
+        width: Math.max(root.cover-step, parent.width);
         height: parent.height;
         x: (parent.width - self.width) / 2;
         y: 0;
