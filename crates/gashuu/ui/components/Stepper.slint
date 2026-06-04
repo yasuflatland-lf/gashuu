@@ -57,6 +57,10 @@ export component Stepper inherits Rectangle {
 
     // ── Capsule ground ──────────────────────────────────────────────────────────
     height: Theme.settings-control-h;
+    // Compact atom: keeps its preferred width on the right rail (the SettingRow
+    // trailing spacer owns the slack; without this pin a stretch-aligned row
+    // could widen the capsule).
+    horizontal-stretch: 0;
     background: Theme.surface-sunken;
     border-radius: Theme.radius-sm;
     border-width: 1px;
@@ -103,6 +107,11 @@ export component Stepper inherits Rectangle {
         }
         Text {
             horizontal-stretch: 1;
+            // Floor the value slot at 3 tabular digits so the two settings
+            // steppers (50 / 3) render the SAME width — the right rail reads as
+            // a column, not stairs. A 4-digit cache value may widen its capsule;
+            // accepted in the spec.
+            min-width: Theme.space-huge;
             text: "\{root.value}";
             horizontal-alignment: center;
             vertical-alignment: center;

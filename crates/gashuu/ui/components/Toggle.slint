@@ -16,8 +16,9 @@ export component Toggle inherits Rectangle {
     in property <string> a11y-label;
     callback toggled(bool);
 
-    // ── Pill (fixed size: ~1.8:1; the consumer must not stretch it) ──────────────
-    min-width: Theme.settings-control-h * 1.8;
+    // ── Pill (fixed φ-proportion track — Apple's 51×31 switch ratio; the
+    //    consumer must not stretch it) ──────────────────────────────────────────
+    min-width: Theme.toggle-track-w;
     min-height: Theme.settings-control-h;
     horizontal-stretch: 0;
     vertical-stretch: 0;
@@ -36,12 +37,12 @@ export component Toggle inherits Rectangle {
 
     // ── Knob: white circle that slides via an animated x (no opacity) ────────────
     Rectangle {
-        height: root.height - 2 * Theme.space-xxs;
+        height: root.height - 2 * Theme.toggle-knob-inset;
         width: self.height;
         y: (root.height - self.height) / 2;
         x: root.checked
-            ? root.width - self.width - Theme.space-xxs
-            : Theme.space-xxs;
+            ? root.width - self.width - Theme.toggle-knob-inset
+            : Theme.toggle-knob-inset;
         background: Theme.text;
         border-radius: Theme.radius-pill;
         animate x { duration: Theme.motion-fast; }
