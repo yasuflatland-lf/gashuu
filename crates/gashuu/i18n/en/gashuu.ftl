@@ -162,6 +162,8 @@ common-close = Close
 # Static status strings
 viewer-no-folder = No folder opened
 viewer-no-images = Folder contains no images
+# Library-screen status when Down is pressed but no book is open yet.
+viewer-no-open-book = No book is open
 
 # Compact spread-mode labels for the status line's [mode · direction] tail
 viewer-spread-single = single

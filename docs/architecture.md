@@ -460,8 +460,9 @@ dialog's clipping Flickable can't cut it off — see docs/patterns.md). Each ref
 `ui/ViewerWindow.slint` and import statements cascade. See [docs/conventions.md](conventions.md)
 for the component RULES.
 
-**`ui/assets/`** (#83, NEW): the repo's image assets — `file.svg`, `folder.svg` (#83), `slider.svg`
-(the thumbnail-toggle icon in ViewerPill), and `chevron-down.svg` (i18n PR, NEW: the `Dropdown`
+**`ui/assets/`** (#83, NEW): the repo's image assets — `file.svg`, `folder.svg` (#83), `carousel.svg`
+(the thumbnail-toggle icon in ViewerPill; replaced the original `slider.svg` glyph), and
+`chevron-down.svg` (i18n PR, NEW: the `Dropdown`
 chevron; 96px intrinsic size per the HiDPI rasterization rule), each a
 single-path SVG recolored at runtime via Slint's `Image.colorize` property. Components reference
 them with `@image-url(...)` paths relative to the consuming `.slint` file. `build.rs` is unchanged
