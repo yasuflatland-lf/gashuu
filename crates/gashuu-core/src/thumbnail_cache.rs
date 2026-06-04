@@ -91,6 +91,28 @@ impl ThumbnailCache {
 
         Ok(())
     }
+
+    /// Best-effort delete the cover PNGs cached for `path`, across each of the
+    /// given `max_sides` variants, and return how many files were removed.
+    ///
+    /// The cover for a book is keyed on `(path, mtime, max_side)` via the private
+    /// [`cache_key`] derivation reused here, so the caller passes the CURRENT
+    /// `mtime_secs` (the same value the cover was generated under). If the file's
+    /// mtime has since drifted, the recomputed key no longer matches the stored
+    /// PNG; that PNG is then an undeletable-but-harmless orphan (the LRU/size cap
+    /// reclaims it later). This is best-effort by design: a missing file (cache
+    /// miss) and any I/O error are SILENTLY skipped — callers may warn, never
+    /// error — so the count is only the files actually unlinked.
+    pub fn purge_for(&self, path: &Path, mtime_secs: i64, max_sides: &[u32]) -> usize {
+        max_sides
+            .iter()
+            .filter(|&&max_side| {
+                let key = cache_key(path, mtime_secs, max_side);
+                let target = self.dir.join(format!("{key}.png"));
+                std::fs::remove_file(&target).is_ok()
+            })
+            .count()
+    }
 }
 
 #[cfg(test)]
@@ -233,6 +255,65 @@ mod tests {
             second.rgba(),
             "overwrite must return the latest bytes"
         );
+    }
+
+    #[test]
+    fn purge_for_removes_the_cover_cached_under_the_current_mtime() {
+        // Seed a cover under the exact key purge_for derives, then purge: the file
+        // is unlinked and counted, and a follow-up get misses.
+        let dir = tempdir().unwrap();
+        let cache = ThumbnailCache::with_dir(dir.path().to_path_buf());
+        let path = Path::new("/manga/book.cbz");
+        let mtime = 1234;
+        let max_side = 320;
+        let key = cache_key(path, mtime, max_side);
+        cache.put(&key, &tiny_decoded_image()).expect("seed cover");
+
+        let removed = cache.purge_for(path, mtime, &[max_side]);
+        assert_eq!(removed, 1, "the matching cover is removed and counted");
+        assert!(cache.get(&key).is_none(), "the cover is gone after purge");
+    }
+
+    #[test]
+    fn purge_for_drifted_mtime_removes_nothing_and_does_not_error() {
+        // The cover was generated under one mtime; purging with a DRIFTED mtime
+        // derives a different key, so nothing matches: 0 removed, no error, and the
+        // original orphan stays on disk (harmless — reclaimed by the size cap later).
+        let dir = tempdir().unwrap();
+        let cache = ThumbnailCache::with_dir(dir.path().to_path_buf());
+        let path = Path::new("/manga/book.cbz");
+        let max_side = 320;
+        let stored_key = cache_key(path, 1234, max_side);
+        cache
+            .put(&stored_key, &tiny_decoded_image())
+            .expect("seed cover");
+
+        let removed = cache.purge_for(path, 9999, &[max_side]);
+        assert_eq!(removed, 0, "a drifted mtime matches no cover");
+        assert!(
+            cache.get(&stored_key).is_some(),
+            "the orphan stays (best-effort, never an error)"
+        );
+    }
+
+    #[test]
+    fn purge_for_removes_across_multiple_sides() {
+        // A book can have covers at several max_side variants; purge_for removes
+        // every present variant and counts only the ones that existed.
+        let dir = tempdir().unwrap();
+        let cache = ThumbnailCache::with_dir(dir.path().to_path_buf());
+        let path = Path::new("/manga/book.cbz");
+        let mtime = 42;
+        // Seed two of the three requested sides; the third (480) is absent.
+        for side in [160, 320] {
+            let key = cache_key(path, mtime, side);
+            cache.put(&key, &tiny_decoded_image()).expect("seed cover");
+        }
+
+        let removed = cache.purge_for(path, mtime, &[160, 320, 480]);
+        assert_eq!(removed, 2, "only the two present sides are removed/counted");
+        assert!(cache.get(&cache_key(path, mtime, 160)).is_none());
+        assert!(cache.get(&cache_key(path, mtime, 320)).is_none());
     }
 
     #[test]
