@@ -231,10 +231,7 @@ pub(crate) fn deleted_books(loader: &FluentLanguageLoader, n: usize) -> String {
 
 /// Notice when the library save failed after a bulk delete, meaning nothing
 /// was actually removed.
-pub(crate) fn delete_save_failed(
-    loader: &FluentLanguageLoader,
-    e: &dyn std::fmt::Display,
-) -> String {
+pub(crate) fn delete_save_failed(loader: &FluentLanguageLoader, e: &dyn Display) -> String {
     let error = e.to_string();
     fl!(loader, "notice-delete-save-failed", error = error.as_str())
 }

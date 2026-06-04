@@ -619,11 +619,11 @@ fn main() -> color_eyre::Result<()> {
                 ui.set_confirm_delete_title(content.title.into());
                 // `confirm-delete-body-lines` is a Slint `[string]` property, so its
                 // setter takes a `ModelRc<SharedString>`; wrap the owned lines in a
-                // `VecModel` (mirrors `bind_carousel_model`'s `ModelRc::from`).
+                // one-shot `VecModel` (mirrors `carousel::model`'s `ModelRc::new`).
                 let body_lines: Vec<slint::SharedString> =
                     content.body_lines.into_iter().map(Into::into).collect();
-                ui.set_confirm_delete_body_lines(slint::ModelRc::from(std::rc::Rc::new(
-                    slint::VecModel::from(body_lines),
+                ui.set_confirm_delete_body_lines(slint::ModelRc::new(slint::VecModel::from(
+                    body_lines,
                 )));
                 ui.set_confirm_delete_info(content.info.into());
                 ui.set_confirm_delete_warning(content.warning.into());

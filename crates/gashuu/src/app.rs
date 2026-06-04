@@ -375,10 +375,7 @@ pub(crate) fn remove_books_with_rollback(
 /// open; comparison is by canonical path identity (the same key the selection
 /// and the library store under).
 pub(crate) fn removed_contains_open(open_file: Option<&Path>, removed: &[PathBuf]) -> bool {
-    match open_file {
-        Some(open) => removed.iter().any(|p| p.as_path() == open),
-        None => false,
-    }
+    open_file.is_some_and(|open| removed.iter().any(|p| p.as_path() == open))
 }
 
 /// Coordinates the "remove the selected books" use case. Mirrors
