@@ -97,6 +97,12 @@ shortcuts-help =
     Library:
       Up = return to the library
 
+    Selection:
+      x = enter selection mode    Space = toggle focused
+      Cmd/Ctrl+A = select all visible / deselect all
+      Delete / Backspace = delete selected books
+      Esc = exit selection mode
+
 # ---- guide ----
 
 # FirstRunGuide overlay
@@ -166,6 +172,23 @@ common-close = Close
 # Cancel button in the bulk-delete confirmation dialog.
 confirm-delete-cancel = Cancel
 
+# Dialog title: { $n } is the count of books to delete.
+confirm-delete-title = Delete { $n } book(s)?
+
+# Overflow line when the preview list is truncated: { $n } is the number of
+# books not shown in the preview.
+confirm-delete-more = …and { $n } more
+
+# Explanatory body: what gets removed and what stays on disk.
+confirm-delete-keep-files = Removes the library entry, reading position, per-book settings, and cached covers. The files on disk are kept.
+
+# Warning shown when the currently open book is in the delete set.
+confirm-delete-open-book = The currently open book is included — it will be closed.
+
+# Warning shown when the selection spans books outside the current search filter.
+# { $n } is the count of books outside the search projection.
+confirm-delete-outside-search = Includes { $n } book(s) outside the current search.
+
 # ---- viewer ----
 # Dynamic status-line messages (mapped to the former msg_* functions of the deleted src/messages.rs).
 
@@ -204,6 +227,13 @@ notice-already-in-library = Already in library — no new books added.
 notice-added-books = Added { $n } book(s)
 notice-added-books-save-failed = Added { $n } book(s), but could not save library: { $error }
 
+# Notice after a successful bulk delete. { $n } is the count of books deleted.
+notice-deleted-books = Deleted { $n } book(s)
+
+# Notice when the library save failed after a bulk delete, meaning nothing was
+# actually removed. { $error } is the error detail.
+notice-delete-save-failed = Could not save the library: { $error } — nothing was deleted; your files are untouched.
+
 # ---- selection ----
 
 # Toolbar count label when all selected books are in the current visible projection.
@@ -219,3 +249,7 @@ selection-deselect-all = Deselect all
 selection-enter = Select
 # A11y label for the toolbar button that exits selection mode.
 selection-exit-a11y = Exit selection mode
+
+# DangerButton label in the SelectionToolbar; also the confirm-button label in
+# the bulk-delete ConfirmDialog (bound via Strings.selection-delete).
+selection-delete = Delete
