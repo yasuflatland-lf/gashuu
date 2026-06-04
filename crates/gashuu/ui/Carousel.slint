@@ -608,20 +608,34 @@ export component Carousel inherits Rectangle {
     // settings/guide/shortcuts modal suppresses the toolbar's pointer targets
     // too. `exit` reproduces the Esc arm EXACTLY: clear the local mode flag and
     // fire exit-selection().
-    if root.selection-mode && !root.modal-open : SelectionToolbar {
-        x: (parent.width - self.width) / 2;
-        y: nav.y + nav.height + Theme.space-sm;
-        count-text: root.selection-count-text;
-        select-all-label: root.select-all-label;
-        exit-a11y: Strings.selection-exit-a11y;
-        narrow: root.narrow;
-        // Delete (PR-5): pre-composed label + has-selection gate down, the
-        // request-delete action up (Rust opens the ConfirmDialog).
-        delete-label: root.delete-label;
-        has-selection: root.has-selection;
-        select-all => { root.select-all(); }
-        request-delete => { root.request-delete(); }
-        exit => { root.selection-mode = false; root.exit-selection(); }
+    //
+    // The toolbar is wrapped in a full-width CENTERING layout, not positioned
+    // with an x formula: the pill's content-hug width only resolves when it is
+    // a LAYOUT CHILD — absolutely positioned, it defaults to the PARENT's width
+    // and the glass pill spanned the whole window (docs/patterns.md "An element
+    // placed OUTSIDE a layout…"). The wrapper itself is manually offset, so it
+    // pins its own height (same patterns.md entry); `alignment: center` packs
+    // the toolbar at its preferred width.
+    if root.selection-mode && !root.modal-open : HorizontalLayout {
+        x: 0;
+        y: nav.y + nav.height + Theme.nav-item-gap;
+        width: 100%;
+        height: Theme.nav-pill-height;
+        alignment: center;
+
+        SelectionToolbar {
+            count-text: root.selection-count-text;
+            select-all-label: root.select-all-label;
+            exit-a11y: Strings.selection-exit-a11y;
+            narrow: root.narrow;
+            // Delete (PR-5): pre-composed label + has-selection gate down, the
+            // request-delete action up (Rust opens the ConfirmDialog).
+            delete-label: root.delete-label;
+            has-selection: root.has-selection;
+            select-all => { root.select-all(); }
+            request-delete => { root.request-delete(); }
+            exit => { root.selection-mode = false; root.exit-selection(); }
+        }
     }
 
     // "Select" entry pill — the MOUSE entry point into selection mode, shown in
@@ -634,16 +648,19 @@ export component Carousel inherits Rectangle {
     // the `x` key's job). No FocusScope, so keyboard focus stays on the carousel.
     if !root.selection-mode && !root.modal-open && root.items.length > 0 : select-pill := Rectangle {
         x: (parent.width - self.width) / 2;
-        y: nav.y + nav.height + Theme.space-sm;
-        width: select-label.preferred-width + Theme.nav-pill-pad * 2;
+        y: nav.y + nav.height + Theme.nav-item-gap;
+        width: select-label.preferred-width + Theme.nav-capsule-pad * 2;
         height: Theme.nav-capsule;
-        border-radius: Theme.radius-pill;
+        // TRUE capsule (radius = height/2): radius-pill renders an ELLIPSE on a
+        // non-square rect (femtovg per-axis clamp, docs/patterns.md).
+        border-radius: Theme.nav-capsule-radius;
 
-        // Default appearance: transparent fill + reserved transparent 1px ring,
-        // so the hover ring appears with no reflow (NavItem idiom).
-        background: transparent;
+        // Default appearance: HIG "bordered" — chip ground + hairline ring, so
+        // the entry point reads as a button at rest; the 1px ring slot is
+        // reserved, so the hover restyle causes no reflow.
+        background: Theme.chip;
         border-width: 1px;
-        border-color: transparent;
+        border-color: Theme.hairline-float;
         animate background, border-color { duration: Theme.motion-fast; }
 
         // States: pressed > hover (NavItem ordering; this pill's own props only —
