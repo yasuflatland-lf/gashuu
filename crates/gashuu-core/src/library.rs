@@ -218,6 +218,28 @@ impl Library {
         report
     }
 
+    /// Re-insert previously removed `Book` entries and restore natural order.
+    ///
+    /// Unlike [`add`](Library::add), which derives a FRESH `Book` from a path
+    /// (losing `last_page` / `page_count` / `overrides`), this re-inserts WHOLE
+    /// `Book` values, so it can undo a [`remove_many`](Library::remove_many) with
+    /// no data loss. It is the rollback primitive: a caller that removed a set of
+    /// books, kept clones, and then failed to persist can hand the clones back to
+    /// recover the exact pre-removal shelf (byte-identical re-serialization).
+    ///
+    /// De-duplicates by canonical path against the books already present (an entry
+    /// whose path is already on the shelf is skipped, never duplicated), then
+    /// re-sorts via the same `book_order` invariant `add` uses — the aggregate
+    /// owns its ordering, callers never re-sort. Empty input is a no-op.
+    pub fn restore(&mut self, books: Vec<Book>) {
+        for book in books {
+            if !self.books.iter().any(|b| b.path() == book.path()) {
+                self.books.push(book);
+            }
+        }
+        self.books.sort_by(book_order);
+    }
+
     /// The last-viewed leading page index for `path` (0 when unknown).
     pub fn last_page(&self, path: &Path) -> usize {
         self.books
@@ -549,6 +571,125 @@ mod tests {
         );
         assert!(report.not_found.is_empty());
         assert!(lib.books().is_empty());
+    }
+
+    #[test]
+    fn restore_reinserts_full_books_and_restores_natural_order() {
+        // remove_many returns only paths; the rollback primitive must put back
+        // WHOLE books (carrying last_page/page_count/overrides) and re-sort.
+        let mut lib = Library::new();
+        for name in ["vol 1.cbz", "vol 2.cbz", "vol 10.cbz"] {
+            assert!(lib.add(PathBuf::from(format!("/manga/{name}"))).is_some());
+        }
+        // Give the middle volume a non-default reading position before removal.
+        assert!(lib.set_last_page(Path::new("/manga/vol 2.cbz"), 7));
+        assert!(lib.set_page_count(
+            Path::new("/manga/vol 2.cbz"),
+            NonZeroUsize::new(20).unwrap()
+        ));
+
+        // Clone the two outer volumes, remove them, then restore the clones.
+        let removed: Vec<Book> = lib
+            .books()
+            .iter()
+            .filter(|b| {
+                b.path() == Path::new("/manga/vol 1.cbz")
+                    || b.path() == Path::new("/manga/vol 10.cbz")
+            })
+            .cloned()
+            .collect();
+        let report = lib.remove_many(&[
+            PathBuf::from("/manga/vol 1.cbz"),
+            PathBuf::from("/manga/vol 10.cbz"),
+        ]);
+        assert_eq!(report.removed.len(), 2);
+        let titles: Vec<&str> = lib.books().iter().map(|b| b.title()).collect();
+        assert_eq!(titles, vec!["vol 2"], "only the unremoved book survives");
+
+        lib.restore(removed);
+        let titles: Vec<&str> = lib.books().iter().map(|b| b.title()).collect();
+        assert_eq!(
+            titles,
+            vec!["vol 1", "vol 2", "vol 10"],
+            "restore re-inserts and restores natural order"
+        );
+        // The untouched middle volume kept its position; the restored ones are intact.
+        assert_eq!(lib.last_page(Path::new("/manga/vol 2.cbz")), 7);
+    }
+
+    #[test]
+    fn restore_preserves_per_book_data_that_add_would_lose() {
+        // The add()-trap: re-adding by path yields a FRESH book (last_page 0).
+        // restore must re-insert the WHOLE clone, keeping last_page/page_count.
+        let mut lib = Library::new();
+        let p = PathBuf::from("/manga/a.cbz");
+        assert!(lib.add(p.clone()).is_some());
+        assert!(lib.set_last_page(&p, 42));
+        assert!(lib.set_page_count(&p, NonZeroUsize::new(100).unwrap()));
+
+        let clone: Vec<Book> = lib.books().to_vec();
+        assert_eq!(lib.remove_many(std::slice::from_ref(&p)).removed.len(), 1);
+        assert!(lib.books().is_empty());
+
+        lib.restore(clone);
+        assert_eq!(lib.books().len(), 1);
+        assert_eq!(
+            lib.last_page(&p),
+            42,
+            "restore keeps last_page (add would reset to 0)"
+        );
+        assert_eq!(lib.books()[0].page_count_opt(), Some(100));
+    }
+
+    #[test]
+    fn restore_is_duplicate_safe() {
+        // Restoring a book whose path is already present must NOT duplicate it.
+        let mut lib = Library::new();
+        let p = PathBuf::from("/manga/a.cbz");
+        assert!(lib.add(p.clone()).is_some());
+        let clone: Vec<Book> = lib.books().to_vec();
+        // The book is still present; restoring its clone is a no-op (dedup by path).
+        lib.restore(clone);
+        assert_eq!(
+            lib.books().len(),
+            1,
+            "restore must not duplicate an existing path"
+        );
+    }
+
+    #[test]
+    fn restore_empty_input_is_noop() {
+        let mut lib = Library::new();
+        assert!(lib.add(PathBuf::from("/manga/a.cbz")).is_some());
+        lib.restore(Vec::new());
+        assert_eq!(lib.books().len(), 1, "empty restore changes nothing");
+    }
+
+    #[test]
+    fn restore_round_trips_to_byte_identical_json() {
+        // The rollback contract: remove + restore must reproduce the EXACT
+        // pre-removal serialization (the add()-trap would break this).
+        let mut lib = Library::new();
+        for name in ["a.cbz", "b.cbz", "c.cbz"] {
+            assert!(lib.add(PathBuf::from(format!("/manga/{name}"))).is_some());
+        }
+        assert!(lib.set_last_page(Path::new("/manga/b.cbz"), 9));
+        assert!(lib.set_page_count(Path::new("/manga/b.cbz"), NonZeroUsize::new(50).unwrap()));
+        let before = lib.to_json().unwrap();
+
+        let removed: Vec<Book> = lib
+            .books()
+            .iter()
+            .filter(|b| b.path() != Path::new("/manga/a.cbz"))
+            .cloned()
+            .collect();
+        lib.remove_many(&[PathBuf::from("/manga/b.cbz"), PathBuf::from("/manga/c.cbz")]);
+        lib.restore(removed);
+        assert_eq!(
+            lib.to_json().unwrap(),
+            before,
+            "remove + restore must be byte-identical"
+        );
     }
 
     #[test]
