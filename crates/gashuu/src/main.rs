@@ -4,6 +4,7 @@ mod app;
 mod carousel;
 mod cover_loader;
 mod enum_adapters;
+mod i18n;
 mod keymap;
 mod library_model;
 mod messages;
@@ -80,6 +81,11 @@ fn main() -> color_eyre::Result<()> {
     // Apply the persisted UI language to the .slint side before the first paint
     // (the Rust-composed strings read it from `ViewerState`/`Settings` instead).
     select_ui_language(settings.language);
+    // Boot the Fluent localizer alongside the gettext path so both systems'
+    // language state stay in lockstep from the first frame.  The Strings-global
+    // push (PR-2, #113) will consume the localizer's output; wiring it here
+    // rather than at that PR's call site avoids a split-brain window.
+    let localizer = Rc::new(i18n::Localizer::new(settings.language));
     let state = Rc::new(RefCell::new(ViewerState::from_settings(&settings)));
     let viewport = Rc::new(RefCell::new(ViewportState::from_settings(&settings)));
     let settings = Rc::new(RefCell::new(settings));
@@ -842,6 +848,7 @@ fn main() -> color_eyre::Result<()> {
         let state = Rc::clone(&state);
         let settings = Rc::clone(&settings);
         let viewport = Rc::clone(&viewport);
+        let localizer = Rc::clone(&localizer);
         ui.on_set_language(move |i| {
             with_ui(&ui_weak, |ui| {
                 let lang = index_to_language(i);
@@ -853,6 +860,13 @@ fn main() -> color_eyre::Result<()> {
                     return;
                 }
                 settings.borrow_mut().language = lang;
+                // Keep the Fluent loader in step with the gettext switch.
+                // Deliberate asymmetry: localizer.switch panics on load
+                // failure (compile-time-embedded catalogs + exhaustive
+                // langid_for make this theoretically unreachable) — loud
+                // programmer-error policy, intentionally diverging from
+                // select_ui_language's never-fatal tracing::warn path.
+                localizer.switch(lang);
                 // Flip the .slint side first (all @tr() bindings re-evaluate
                 // immediately), then re-push the Rust-composed strings — the
                 // status line via refresh and the shortcuts reference (seeded
