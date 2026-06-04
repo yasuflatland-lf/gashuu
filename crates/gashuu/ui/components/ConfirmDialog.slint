@@ -5,8 +5,10 @@
 // warning-text / confirm-label / cancel-label), so the same component serves any
 // confirm-or-cancel decision. It clones the SettingsDialog / ShortcutsOverlay
 // glass idiom exactly — the same scrim, the same ONE fake-glass object (NavBar's
-// four-layer structure: a top-sheen FILL gradient + a 1px rim + a 1px top inner
-// highlight + ONE drop shadow), and the FirstRunGuide fluid-width clamp. The
+// four layers with layer 1 promoted from a solid fill to a top-sheen FILL
+// gradient, the SettingsDialog idiom: a top-sheen FILL gradient + a 1px rim +
+// a 1px top inner highlight + ONE drop shadow), and the FirstRunGuide fluid-width
+// clamp. The
 // sheen is a FILL gradient, not an opacity layer (opacity blurs text/SVG on
 // HiDPI — docs/patterns.md); show/hide is `if`/`visible:` only, never `opacity`.
 //
@@ -28,19 +30,25 @@
 // handling; verify by hand).
 //
 // DEFAULT FOCUS: Cancel (the safe choice). Set on BOTH `fs.init` AND
-// `changed focus-epoch` — `init` fires on open (the component is `if`-gated by
-// the parent, so its subtree rebuilds each open), and `changed` re-claims focus
-// when the parent bumps `focus-epoch` (e.g. after a stacked overlay closes).
-// Both are needed because Slint `changed` handlers do NOT fire on the initial
-// binding — only on subsequent changes (docs/patterns.md epoch entry).
+// `changed focus-epoch`. USAGE CONTRACT: the parent MUST mount this component
+// behind an `if` gate, NOT merely toggle `visible:` — `init` fires only when the
+// subtree is (re)instantiated, so an `if` gate rebuilds it (and re-runs `init`)
+// on every open, whereas a `visible:` toggle would run `init` once and never
+// re-focus Cancel on reopen. `changed focus-epoch` then re-claims focus when the
+// parent bumps `focus-epoch` (e.g. after a stacked overlay closes). Both are
+// needed because Slint `changed` handlers do NOT fire on the initial binding —
+// only on subsequent changes (docs/patterns.md epoch entry).
 //
 // BUTTON FOCUS / Tab / Space: DangerButton and PrimaryButton are TouchArea-based
 // and therefore NON-focusable (repo convention — a TouchArea never steals
 // keyboard focus). To make them Tab-reachable and Space-activatable WITHOUT
-// editing the button atoms, each button is wrapped in a FocusScope that owns the
-// Tab stop, draws the focus ring (the Toggle/Segmented accent + accent-glow
-// idiom), and fires the button's callback on Space. Enter and Esc are rejected
-// by the button scopes so they reach the ancestor `fs` and map to cancel().
+// editing the button atoms, each button is wrapped in a FocusScope (the two
+// focus stops) that draws the focus ring (the Toggle/Segmented accent +
+// accent-glow idiom) and fires the button's callback on Space. Tab/Backtab,
+// Enter and Esc are all REJECTED by the button scopes so they bubble to the
+// ancestor `fs`: `fs` maps Enter/Esc to cancel() and ROTATES focus between the
+// two stops on Tab/Backtab itself (it never defers to Slint's window-level Tab
+// navigation — that could carry focus out of the modal; see `fs.key-pressed`).
 
 import { Theme } from "../Theme.slint";
 import { DangerButton } from "DangerButton.slint";
@@ -109,7 +117,8 @@ export component ConfirmDialog inherits Rectangle {
         drop-shadow-offset-y: 8px;
 
         // Layer 3: 1px top inner highlight, inset horizontally by ~half the
-        // radius so it stays inside the rounded corners (NavBar idiom).
+        // radius so it stays inside the rounded corners. Inset is `space-md`
+        // (the SettingsDialog idiom; NavBar uses `nav-pill-height / 2`).
         Rectangle {
             x: Theme.space-md;
             y: 1px;
@@ -148,9 +157,34 @@ export component ConfirmDialog inherits Rectangle {
                     root.cancel();
                     return accept;
                 }
-                // Catch-all: swallow every other key (incl. Tab navigation keys
-                // that reach here unhandled) so nothing leaks to content mounted
-                // behind this modal.
+                // Tab / Backtab: rotate focus BETWEEN the two button stops
+                // OURSELVES instead of rejecting to let Slint's window-level Tab
+                // navigation run. The button scopes reject Tab so it bubbles to
+                // this ancestor `fs`; if we accepted it here without moving focus
+                // (the old catch-all), the window navigation at i-slint-core 1.16
+                // window.rs:885-905 would NEVER fire (the upward key_event walk
+                // returns EventAccepted before it), so Confirm was unreachable by
+                // keyboard. We do NOT reject-and-defer to that window navigation
+                // either: with this modal mounted over a live, focusable backdrop
+                // (e.g. PR-5's carousel FocusScope), window navigation could carry
+                // focus OUT of the dialog. Keeping the rotation in-trap guarantees
+                // Tab cycles only Cancel↔Confirm. With exactly two stops, forward
+                // (Tab) and backward (Backtab) are the same toggle. Backtab can
+                // arrive as either Key.Backtab or Key.Tab+shift depending on the
+                // backend (window.rs:897-899 accepts both), but both fall into
+                // this single toggle, so we need not distinguish them.
+                if (event.text == Key.Tab || event.text == Key.Backtab) {
+                    if (cancel-scope.has-focus) {
+                        confirm-scope.focus();
+                    } else {
+                        // confirm-scope focused, or `fs` still holds the initial
+                        // focus before `init` handed it off — go to Cancel.
+                        cancel-scope.focus();
+                    }
+                    return accept;
+                }
+                // Catch-all: swallow every other key so nothing leaks to content
+                // mounted behind this modal.
                 return accept;
             }
 
