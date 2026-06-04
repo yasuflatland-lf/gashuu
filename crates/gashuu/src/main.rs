@@ -84,7 +84,7 @@ fn main() -> color_eyre::Result<()> {
     // Boot the Fluent localizer and immediately push every static string into
     // the Strings global via `apply()`.  Both systems' language state stay in
     // lockstep from the first frame; `select_ui_language` is kept as an inert
-    // no-op surface for the gettext @tr() path until the gettext excision in #115.
+    // surface for the gettext @tr() path until the gettext excision in issue 115.
     let localizer = Rc::new(i18n::Localizer::new(settings.language));
     localizer.apply(&ui);
     let state = Rc::new(RefCell::new(ViewerState::from_settings(&settings)));
@@ -872,9 +872,9 @@ fn main() -> color_eyre::Result<()> {
                 // every Fluent-sourced label flips to the new language atomically
                 // before the next paint.
                 localizer.apply(&ui);
-                // `select_ui_language` is kept as an inert no-op surface for
-                // the gettext @tr() path; zero @tr() bindings remain after
-                // PR-2.  The call stays until the gettext excision in #115.
+                // `select_ui_language` is kept as an inert surface for the
+                // gettext @tr() path; zero @tr() bindings remain after
+                // issue 113.  The call stays until the gettext excision in issue 115.
                 select_ui_language(lang);
                 ui.set_key_bindings_text(messages::msg_key_bindings_help(lang).into());
                 refresh(&ui, &state.borrow(), &viewport);
@@ -1236,13 +1236,20 @@ fn to_slint_image(decoded: &DecodedImage) -> slint::Image {
     slint::Image::from_rgba8(buffer)
 }
 
-/// Select the Slint bundled-translation locale for `lang`, switching every
-/// `@tr()` binding in the running UI. "en" needs no catalog: Slint
-/// special-cases `"en"`/`""` to the source language (the `@tr()` literals are
-/// English), so selection cannot leave a stale language behind. Must be called
-/// AFTER the first component is created (Slint registers the bundled languages
-/// during component creation). A failure is logged and the UI keeps its
-/// current strings — never fatal.
+/// Select the Slint bundled-translation locale for `lang`.
+///
+/// As of issue 113 (PR-2) no `@tr()` bindings remain in the UI, so this call
+/// has no observable effect on displayed strings — all static labels are now
+/// pushed via `Localizer::apply()` instead. The function and its two call sites
+/// are kept as an inert rollback surface for the gettext path until the gettext
+/// excision in issue 115.
+///
+/// Still-accurate operational notes:
+/// - "en" needs no catalog: Slint special-cases `"en"`/`""` to the source
+///   language, so selection cannot leave a stale locale behind.
+/// - Must be called AFTER the first component is created (Slint registers the
+///   bundled languages during component creation).
+/// - A failure is logged and the UI keeps its current strings — never fatal.
 fn select_ui_language(lang: Language) {
     let locale = match lang {
         Language::En => "en",

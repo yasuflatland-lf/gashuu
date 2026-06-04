@@ -1,6 +1,7 @@
 // Fluent-served static-string surface (issue 113, PR-2/4).
 //
-// Property names equal the Fluent message IDs from i18n/en/gashuu.ftl (kebab-case).
+// Property names equal the Fluent message IDs from i18n/en/gashuu.ftl (kebab-case),
+// except the four `stepper-*` labels, which are composed in Rust (see below).
 // Rust gets generated `set_snake_case` setters and pushes values via
 // `Localizer::apply()` on every locale change.
 //
