@@ -496,9 +496,8 @@ persistence — drained via `Library::set_page_count` + `save` at the next `star
 `Rc<RefCell<Library>>`, hence the queue). Callers build the `CoverRequest` list BEFORE `start` so the
 `library.borrow()` is released before `start`'s persistence `borrow_mut`.
 
-**`SettingsDialog.slint`** (PR8b, NEW): modal overlay editing active settings via std-widgets
-`ComboBox`/`SpinBox`/`CheckBox`; two-way `current-index <=> in-out-prop` +
-`selected`/`edited`/`toggled` callbacks. std-widgets now render dark via the build style set in `build.rs` (`with_style("fluent-dark")`, #70). Since issue 103/104 it is a **content-hug glass panel** (φ relocated into the component proportions; spec 2026-06-04) built from custom `components/` atoms; its footer "Shortcuts" link opens `ShortcutsOverlay`, and an `in property <int> focus-epoch` (bumped by `ViewerWindow.focus-settings()`) lets the parent re-focus this still-mounted dialog after the overlay closes.
+**`SettingsDialog.slint`** (PR8b, NEW; issue 102 replaced its std-widgets `ComboBox`/`SpinBox`/`CheckBox` with the token-driven `Segmented`/`Stepper`/`Toggle`/`Dropdown` atoms): modal overlay editing active settings; two-way `current-index <=> in-out-prop` +
+`selected`/`edited`/`toggled` callbacks. Since issue 103/104 it is a **content-hug glass panel** (φ relocated into the component proportions; spec 2026-06-04) built from custom `components/` atoms; its footer "Shortcuts" link opens `ShortcutsOverlay`, and an `in property <int> focus-epoch` (bumped by `ViewerWindow.focus-settings()`) lets the parent re-focus this still-mounted dialog after the overlay closes.
 
 **`ShortcutsOverlay.slint`** (issue 104, PR-C, NEW): a second glass modal listing the keyboard shortcuts read-only, stacked OVER the still-mounted `SettingsDialog` (both `show-settings` and `show-shortcuts` true). Reuses the settings glass recipe (`settings-w`/`settings-radius` + all glass tokens; only `shortcuts-h` is new). Its ancestor `FocusScope` traps every key so focus can't leak to the dialog underneath; closing returns focus to the dialog via the epoch seam.
 

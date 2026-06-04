@@ -2,9 +2,12 @@
 //
 // Drop-in replacement for the std-widgets `CheckBox` row in the settings dialog:
 // SAME `checked` (two-way) + `toggled(bool)` shape, painted from `Theme.*`. A
-// pill (radius-pill) whose track is `accent` when on / `track` when off; a white
-// knob slides left↔right by animating its `x` (NOT opacity — HiDPI blur). In the
-// PR-A interim layout it is paired with a sibling label `Text`.
+// pill (radius-pill) whose track is `accent` when on / `track-prog` when off
+// (the darker `track` tone sat too close to the glass fill to read as a track —
+// HIG switches keep the off state plainly visible); a white knob with a subtle
+// depth shadow slides left↔right by animating its `x` (NOT opacity — HiDPI
+// blur) on the Carousel's spring curve. In the PR-A interim layout it is paired
+// with a sibling label `Text`.
 //
 // Keyboard (when focused): Space/Enter toggles. Focus shows an `accent` border +
 // a soft `accent-glow` halo. All colors/lengths are `Theme.*` (check-tokens.sh).
@@ -16,14 +19,17 @@ export component Toggle inherits Rectangle {
     in property <string> a11y-label;
     callback toggled(bool);
 
-    // ── Pill (fixed φ-proportion track — Apple's 51×31 switch ratio; the
-    //    consumer must not stretch it) ──────────────────────────────────────────
-    min-width: Theme.toggle-track-w;
-    min-height: Theme.settings-control-h;
+    // ── Pill (fixed φ-proportion track — Apple's 51×31 switch ratio). WIDTH and
+    //    HEIGHT are explicit bindings, not min-*: a layout stretches children
+    //    across its cross axis past min-height, so inside the SettingRow slot the
+    //    30px track inflated to the 34px row height (breaking φ and bloating the
+    //    knob) — the atom pins its own size. ────────────────────────────────────
+    width: Theme.toggle-track-w;
+    height: Theme.settings-control-h;
     horizontal-stretch: 0;
     vertical-stretch: 0;
     border-radius: Theme.radius-pill;
-    background: root.checked ? Theme.accent : Theme.track;
+    background: root.checked ? Theme.accent : Theme.track-prog;
     border-width: 1px;
     border-color: fs.has-focus ? Theme.accent : Theme.hairline-float;
     drop-shadow-color: fs.has-focus ? Theme.accent-glow : transparent;
@@ -45,7 +51,15 @@ export component Toggle inherits Rectangle {
             : Theme.toggle-knob-inset;
         background: Theme.text;
         border-radius: Theme.radius-pill;
-        animate x { duration: Theme.motion-fast; }
+        // HIG knob depth: one subtle drop shadow lifts the knob off the track
+        // (the Scrubber knob's single-shadow idiom; the focus halo lives on the
+        // root, so each element still carries at most one shadow).
+        drop-shadow-color: Theme.shadow-popover;
+        drop-shadow-blur: 4px;
+        drop-shadow-offset-y: 1px;
+        // Spring slide — the Carousel's curve; Slint has no <easing> property
+        // type, so the cubic-bezier is repeated inline (Theme.slint motion note).
+        animate x { duration: Theme.motion-fast; easing: cubic-bezier(0.16, 1, 0.3, 1); }
     }
 
     // ── a11y ──────────────────────────────────────────────────────────────────

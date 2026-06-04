@@ -5,11 +5,15 @@
 // paints every pixel from `Theme.*` so it sits in the dark glass palette instead
 // of the native light ComboBox (mirrors how NavBar dropped `LineEdit` for a raw
 // `TextInput`, issue #88). One capsule (surface-sunken ground, 1px hairline-float
-// border, radius-md; cells rounded concentrically via seg-cell-radius) holds N
-// equal cells that FILL the row (horizontal-stretch: 1 — spanning the SettingRow
-// seam to the right rail, HIG equal-width segments; spec 2026-06-04); the
-// selected cell fills with `accent` and its label goes white + semibold, idle
-// cells stay `text-muted`.
+// border, radius-md) holds N equal cells that FILL the row (horizontal-stretch: 1
+// — spanning the SettingRow seam to the right rail, HIG equal-width segments;
+// spec 2026-06-04). The selected cell shows an `accent` PILL — a child Rectangle
+// inset seg-pill-inset within the full-height cell, rounded concentrically via
+// seg-cell-radius (a consecutive-Fibonacci 3/5/8 triple: inset → pill radius →
+// capsule radius). The label spans the FULL 30px cell so its ascenders never
+// clip, plus a 1px downward optical-centering nudge (metric centering sits
+// descender-less labels high); its color goes white + semibold when selected,
+// `text-muted` idle.
 //
 // Keyboard (when focused): Left/Right move the selection (clamped, fires
 // `selected`), Space/Enter re-confirm the current selection. Focus shows an
@@ -83,13 +87,27 @@ export component Segmented inherits Rectangle {
 
     // ── Cells: equal-width segments so the right edge is a regular rhythm ─────────
     HorizontalLayout {
-        padding: Theme.space-xxs;
+        // HORIZONTAL padding only — a lone `padding:` also insets top/bottom,
+        // which squeezed the cells to 22px and clipped the labels' ascenders
+        // (docs/patterns.md "HorizontalLayout padding insets all sides").
+        padding-left: Theme.seg-pill-inset;
+        padding-right: Theme.seg-pill-inset;
         spacing: 0px;
         for item[idx] in root.model : Rectangle {
             horizontal-stretch: 1;
-            background: idx == root.current-index ? Theme.accent : transparent;
-            border-radius: Theme.seg-cell-radius;
-            animate background { duration: Theme.motion-fast; }
+            background: transparent;
+
+            // Selected pill: vertically inset within the full-height cell (HIG
+            // segmented controls inset the selected platter on all sides). The
+            // pill — not the cell — carries the accent fill so the label below
+            // keeps the whole 30px for vertical centering.
+            Rectangle {
+                y: Theme.seg-pill-inset;
+                height: parent.height - 2 * Theme.seg-pill-inset;
+                background: idx == root.current-index ? Theme.accent : transparent;
+                border-radius: Theme.seg-cell-radius;
+                animate background { duration: Theme.motion-fast; }
+            }
 
             // a11y: each cell is a selectable list item; AT activation selects it
             // (the same path a click takes).
@@ -103,6 +121,14 @@ export component Segmented inherits Rectangle {
             Text {
                 width: 100%;
                 height: 100%;
+                // Optical centering: Slint's vertical-alignment centers the
+                // font's FULL line box (ascent + descent), but these labels
+                // have no descenders, so the glyph mass sits ~1px high of the
+                // pill's visual center (measured 7px above vs 9px below the
+                // caps). Nudge down half the 12px font's descent so the
+                // GLYPHS — not the em box — read centered (Apple optically
+                // centers control labels the same way).
+                y: 1px;
                 text: item;
                 horizontal-alignment: center;
                 vertical-alignment: center;

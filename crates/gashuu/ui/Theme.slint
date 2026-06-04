@@ -70,9 +70,11 @@ export global Theme {
     // Shared visible-capsule height for Segmented / Stepper / Toggle. The DESIGN
     // ~32px hit area is met by the surrounding row (see PR-B); the capsule is 30.
     out property <length> settings-control-h: 30px;
-    // Segmented cell rounding: concentric with the radius-md capsule across the
-    // space-xxs inset (inner radius = outer radius − inset; Apple's nested-corner rule).
-    out property <length> seg-cell-radius: radius-md - space-xxs;
+    // Segmented selected-pill inset — with the derived cell radius below this is a
+    // CONSECUTIVE-FIBONACCI concentric triple: inset 3 → pill radius 5 → capsule
+    // radius-md 8 (inner radius = outer radius − inset; Apple's nested-corner rule).
+    out property <length> seg-pill-inset: 3px;
+    out property <length> seg-cell-radius: radius-md - seg-pill-inset;
     // Toggle track: width / height = φ — the same proportion as Apple's 51×31 switch.
     out property <length> toggle-track-w: settings-control-h * phi;
     // Toggle knob inset (Apple's switch keeps a 2px rim around the knob).
@@ -151,6 +153,11 @@ export global Theme {
     out property <color> glass-fill: #10141fd1;      // surface-float @ ~82% alpha
     out property <color> glass-border: #2f3850b3;    // hairline-float @ ~70% alpha
     out property <color> glass-highlight: #dde5f51f; // text-high @ ~12% — top inner rim
+    // Resting search-field rim — the hairline-float hue at threshold-of-visibility
+    // alpha (~15%), a hair above glass-highlight's ~12% so the cooler hue reads at
+    // the same faint level. Barely visible at rest; the field brightens to accent on
+    // focus. Dedicated so glass-border (shared by 5 components) stays untouched.
+    out property <color> search-border-rest: #2f385026; // hairline-float @ ~15% alpha
     out property <color> viewer-pill-fill: #10141fb3;   // surface-float @ ~70% alpha (viewer pill, slightly more transparent than glass-fill)
     // Glow color for the book-title label. Slint 1.x Text has no text-shadow, so
     // the title is rendered as 1px-offset duplicates in this color behind a crisp
