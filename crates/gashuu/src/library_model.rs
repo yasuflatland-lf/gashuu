@@ -40,6 +40,9 @@ pub struct CarouselData {
     /// path no longer resolves. Unavailable books stay in the shelf, rendered
     /// grayed with a broken-cover placeholder.
     pub available: bool,
+    /// True when this book is the last-opened book (`book.path() == library.last_opened()`).
+    /// Drives the BookmarkRibbon overlay on the cover card. Pure derivation — no I/O.
+    pub bookmarked: bool,
 }
 
 /// Case-insensitive substring match of `query` against a book's display title
@@ -67,10 +70,12 @@ pub(crate) fn book_matches(book: &Book, query: &str) -> bool {
 /// `total == 0` yields `0.0` (never NaN/inf); `total` comes from
 /// `ReadingProgress::total() -> Option<usize>` via `Book::page_count_opt()` —
 /// `None` (unknown) is mapped to `0` when the book has never been opened,
-/// the real persisted count once it has been opened. This is the single
-/// construction site for a `CarouselData`, shared by both the full-library and
-/// filtered-index mappings.
-fn carousel_data_for_book(book: &Book) -> CarouselData {
+/// the real persisted count once it has been opened. `bookmarked` is the
+/// caller-supplied flag (`book.path() == library.last_opened()`), derived at
+/// the `carousel_data_for_indices` call site where the `Library` is available.
+/// This is the single construction site for a `CarouselData`, shared by both
+/// the full-library and filtered-index mappings.
+fn carousel_data_for_book(book: &Book, bookmarked: bool) -> CarouselData {
     let progress = book.progress();
     // 1-based display page; saturate the i32 cast for a pathological value.
     let current = clamp_to_i32(progress.current());
@@ -88,6 +93,7 @@ fn carousel_data_for_book(book: &Book) -> CarouselData {
         total,
         progress: fraction,
         available: Library::is_available(book),
+        bookmarked,
     }
 }
 
@@ -111,11 +117,19 @@ pub(crate) fn matching_indices(library: &Library, query: &str) -> Vec<usize> {
 /// order of `indices`. Out-of-range indices are skipped via
 /// `Library::books().get(index)` rather than panicking; all production indices
 /// come from the shared [`LibrarySearchState`] projection, so they are valid.
+///
+/// `bookmarked` for each row is derived here: `book.path() == library.last_opened()`.
+/// The `Library` is available at this call site, so the comparison is pure and
+/// avoids threading a per-row flag through `carousel_data_for_book`'s callers.
 pub fn carousel_data_for_indices(library: &Library, indices: &[usize]) -> Vec<CarouselData> {
+    let last_opened = library.last_opened();
     indices
         .iter()
         .filter_map(|&index| library.books().get(index))
-        .map(carousel_data_for_book)
+        .map(|book| {
+            let bookmarked = last_opened.is_some_and(|p| p == book.path());
+            carousel_data_for_book(book, bookmarked)
+        })
         .collect()
 }
 
@@ -708,5 +722,55 @@ mod tests {
             "an empty visible set is not all-selected"
         );
         assert_eq!(sel.visible_selected_count(&search, &lib), 0);
+    }
+
+    // ── bookmarked derivation tests ───────────────────────────────────────────
+
+    #[test]
+    fn carousel_data_bookmarked_matches_last_opened_book() {
+        // The row for the last-opened book must have bookmarked == true.
+        // `register_opened` both adds the book and sets `last_opened`.
+        let mut lib = Library::new();
+        let path = PathBuf::from("/manga/alpha.cbz");
+        lib.register_opened(&path, None);
+
+        let rows = carousel_data_for_indices(&lib, &[0]);
+        assert_eq!(rows.len(), 1);
+        assert!(
+            rows[0].bookmarked,
+            "the last-opened book must be bookmarked"
+        );
+    }
+
+    #[test]
+    fn carousel_data_bookmarked_false_for_other_rows() {
+        // Only the last-opened book is bookmarked; all other rows are false.
+        // Natural sort: "alpha" < "beta", so alpha is index 0, beta is index 1.
+        let mut lib = Library::new();
+        let alpha = PathBuf::from("/manga/alpha.cbz");
+        let beta = PathBuf::from("/manga/beta.cbz");
+        lib.register_opened(&alpha, None); // adds alpha + sets last_opened = alpha
+        lib.add(beta); // adds beta (not last_opened)
+
+        let rows = carousel_data_for_indices(&lib, &[0, 1]);
+        assert_eq!(rows.len(), 2);
+        assert!(rows[0].bookmarked, "alpha is the last-opened book");
+        assert!(!rows[1].bookmarked, "beta is NOT last-opened");
+    }
+
+    #[test]
+    fn carousel_data_bookmarked_false_when_last_opened_is_none() {
+        // When no book has ever been opened (last_opened == None),
+        // every row must have bookmarked == false.
+        let mut lib = Library::new();
+        assert!(lib.add(PathBuf::from("/manga/alpha.cbz")).is_some());
+        assert!(lib.add(PathBuf::from("/manga/beta.cbz")).is_some());
+        assert_eq!(lib.last_opened(), None, "no book opened yet");
+
+        let rows = carousel_data_for_indices(&lib, &[0, 1]);
+        assert!(
+            rows.iter().all(|r| !r.bookmarked),
+            "no row should be bookmarked when last_opened is None"
+        );
     }
 }

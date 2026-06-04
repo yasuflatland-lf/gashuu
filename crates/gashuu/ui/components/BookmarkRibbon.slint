@@ -26,10 +26,9 @@ export component BookmarkRibbon inherits Image {
     colorize: Theme.accent;
 
     // ── Accessibility ─────────────────────────────────────────────────────────
-    // Display-only signifier: expose a label to assistive technology without
-    // entering the keyboard focus chain.  `text` is the closest non-interactive,
-    // non-focusable role available in this codebase (see SettingsDialog.slint,
-    // ShortcutsOverlay.slint precedents).
-    accessible-role: text;
+    // `image` is the semantically correct non-interactive, non-focusable role
+    // for a pure visual signifier rendered from SVG; the label below supplies
+    // the meaning for assistive technology.
+    accessible-role: image;
     accessible-label: Strings.continue-reading;
 }
