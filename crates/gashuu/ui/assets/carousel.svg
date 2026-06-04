@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="96" height="96" viewBox="0 0 24 24" fill="none">
+  <!-- View-carousel glyph (center card flanked by two partial side cards) for the
+       ViewerPill thumbnail-strip toggle. Intrinsic size is 96 (viewBox kept at 24)
+       per docs/patterns.md: Slint rasterizes an SVG at its INTRINSIC size before
+       scaling, so a small intrinsic size blurs on HiDPI. The fill is ignored at
+       use — NavItem recolors via `colorize:` with Theme tokens. -->
+  <path fill="#f1f1f1" d="M2 16.875v-9.75h3.5v9.75H2ZM7 19V5h10v14H7Zm11.5 -2.125v-9.75h3.5v9.75h-3.5Z"/>
+</svg>
