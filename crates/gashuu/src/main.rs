@@ -7,7 +7,6 @@ mod enum_adapters;
 mod i18n;
 mod keymap;
 mod library_model;
-mod messages;
 mod navigation;
 mod page_jump;
 mod thumbnail_strip;
@@ -158,15 +157,16 @@ fn main() -> color_eyre::Result<()> {
 
     // Initial paint so rtl/single/status are all initialized before the first
     // folder is opened (refresh shows "No folder opened" and clears the images).
-    refresh(&ui, &state.borrow(), &viewport);
+    refresh(&ui, &state.borrow(), &viewport, localizer.loader());
 
     // Surface any load failures AFTER the initial refresh, which overwrites
     // status-text with "No folder opened". The carousel/home screen is visible
     // at this point, so the user sees the notice immediately. Missing files
     // return Ok(default), so this fires only on genuine failures.
     if !load_errs.is_empty() {
-        let lang = settings.borrow().language;
-        ui.set_status_text(messages::msg_load_failed(lang, &load_errs.join(" and ")).into());
+        ui.set_status_text(
+            crate::i18n::dynamic::load_failed(localizer.loader(), &load_errs.join(" and ")).into(),
+        );
     }
 
     // First-run guide: show the overlay exactly once. `seen_guide` is flipped and
@@ -180,12 +180,29 @@ fn main() -> color_eyre::Result<()> {
         let ui_weak = ui.as_weak();
         let open_book = Rc::clone(&open_book);
         let state = Rc::clone(&state);
+        let viewport = Rc::clone(&viewport);
+        let localizer = Rc::clone(&localizer);
         ui.on_open_folder(move || {
             with_ui(&ui_weak, |ui| {
                 let Some(dir) = rfd::FileDialog::new().pick_folder() else {
                     return;
                 };
-                open_book.run(&ui, &dir, SkippedDetail::None);
+                match open_book.run(&ui, &dir, SkippedDetail::None) {
+                    app::OpenOutcome::Error(e_str) => {
+                        ui.set_status_text(
+                            crate::i18n::dynamic::open_error_str(localizer.loader(), &e_str).into(),
+                        );
+                    }
+                    app::OpenOutcome::Success(notices) => {
+                        refresh(&ui, &state.borrow(), &viewport, localizer.loader());
+                        for detail in
+                            crate::i18n::dynamic::format_notices(localizer.loader(), &notices)
+                        {
+                            let base = ui.get_status_text().to_string();
+                            ui.set_status_text(format!("{base} \u{2014} {detail}").into());
+                        }
+                    }
+                }
                 // Title-bar book name is derived from the AUTHORITATIVE post-open
                 // state (the canonical `open_file`), not the raw dialog path, so a
                 // FAILED open never shows the name of a book that did not open: on
@@ -201,6 +218,8 @@ fn main() -> color_eyre::Result<()> {
         let ui_weak = ui.as_weak();
         let open_book = Rc::clone(&open_book);
         let state = Rc::clone(&state);
+        let viewport = Rc::clone(&viewport);
+        let localizer = Rc::clone(&localizer);
         ui.on_open_archive(move || {
             with_ui(&ui_weak, |ui| {
                 let Some(file) = rfd::FileDialog::new()
@@ -209,7 +228,22 @@ fn main() -> color_eyre::Result<()> {
                 else {
                     return;
                 };
-                open_book.run(&ui, &file, SkippedDetail::Archive);
+                match open_book.run(&ui, &file, SkippedDetail::Archive) {
+                    app::OpenOutcome::Error(e_str) => {
+                        ui.set_status_text(
+                            crate::i18n::dynamic::open_error_str(localizer.loader(), &e_str).into(),
+                        );
+                    }
+                    app::OpenOutcome::Success(notices) => {
+                        refresh(&ui, &state.borrow(), &viewport, localizer.loader());
+                        for detail in
+                            crate::i18n::dynamic::format_notices(localizer.loader(), &notices)
+                        {
+                            let base = ui.get_status_text().to_string();
+                            ui.set_status_text(format!("{base} \u{2014} {detail}").into());
+                        }
+                    }
+                }
                 // Title-bar book name is derived from the AUTHORITATIVE post-open
                 // state (the canonical `open_file`), so a FAILED open (corrupt /
                 // non-archive file) never shows the picked file's name: on failure
@@ -227,7 +261,7 @@ fn main() -> color_eyre::Result<()> {
         let library = Rc::clone(&library);
         let covers = Rc::clone(&covers);
         let search = Rc::clone(&search);
-        let settings = Rc::clone(&settings);
+        let localizer = Rc::clone(&localizer);
         ui.on_add_files(move || {
             with_ui(&ui_weak, |ui| {
                 let Some(files) = rfd::FileDialog::new()
@@ -236,8 +270,15 @@ fn main() -> color_eyre::Result<()> {
                 else {
                     return;
                 };
-                let lang = settings.borrow().language;
-                add_books_and_refresh(&ui, &library, &covers, &search, files, "add-files", lang);
+                add_books_and_refresh(
+                    &ui,
+                    &library,
+                    &covers,
+                    &search,
+                    files,
+                    "add-files",
+                    localizer.loader(),
+                );
             })
         });
     }
@@ -250,13 +291,12 @@ fn main() -> color_eyre::Result<()> {
         let library = Rc::clone(&library);
         let covers = Rc::clone(&covers);
         let search = Rc::clone(&search);
-        let settings = Rc::clone(&settings);
+        let localizer = Rc::clone(&localizer);
         ui.on_add_folder(move || {
             with_ui(&ui_weak, |ui| {
                 let Some(folder) = rfd::FileDialog::new().pick_folder() else {
                     return;
                 };
-                let lang = settings.borrow().language;
                 add_books_and_refresh(
                     &ui,
                     &library,
@@ -264,7 +304,7 @@ fn main() -> color_eyre::Result<()> {
                     &search,
                     vec![folder],
                     "add-folder",
-                    lang,
+                    localizer.loader(),
                 );
             })
         });
@@ -301,6 +341,8 @@ fn main() -> color_eyre::Result<()> {
         let open_book = Rc::clone(&open_book);
         let state = Rc::clone(&state);
         let search = Rc::clone(&search);
+        let viewport = Rc::clone(&viewport);
+        let localizer = Rc::clone(&localizer);
         ui.on_carousel_open(move |index| {
             with_ui(&ui_weak, |ui| {
                 // Resolve the focused VISIBLE carousel index to a Library book
@@ -330,7 +372,22 @@ fn main() -> color_eyre::Result<()> {
                 };
                 // open_book.run writes back the OLD book's position first,
                 // then opens the new path and resumes its stored position.
-                open_book.run(&ui, &path, SkippedDetail::None);
+                match open_book.run(&ui, &path, SkippedDetail::None) {
+                    app::OpenOutcome::Error(e_str) => {
+                        ui.set_status_text(
+                            crate::i18n::dynamic::open_error_str(localizer.loader(), &e_str).into(),
+                        );
+                    }
+                    app::OpenOutcome::Success(notices) => {
+                        refresh(&ui, &state.borrow(), &viewport, localizer.loader());
+                        for detail in
+                            crate::i18n::dynamic::format_notices(localizer.loader(), &notices)
+                        {
+                            let base = ui.get_status_text().to_string();
+                            ui.set_status_text(format!("{base} \u{2014} {detail}").into());
+                        }
+                    }
+                }
                 // Title-bar book name is derived from the AUTHORITATIVE post-open
                 // state (the canonical `open_file`), so a FAILED open (a Library
                 // book that was moved/deleted) never shows that book's name: on
@@ -385,10 +442,11 @@ fn main() -> color_eyre::Result<()> {
         let ui_weak = ui.as_weak();
         let state = Rc::clone(&state);
         let viewport = Rc::clone(&viewport);
+        let localizer = Rc::clone(&localizer);
         ui.on_thumbnail_clicked(move |page| {
             with_ui(&ui_weak, |ui| {
                 if state.borrow_mut().jump_to(page as usize) {
-                    refresh(&ui, &state.borrow(), &viewport);
+                    refresh(&ui, &state.borrow(), &viewport, localizer.loader());
                 }
                 ui.invoke_focus_pages();
             })
@@ -401,13 +459,14 @@ fn main() -> color_eyre::Result<()> {
         let ui_weak = ui.as_weak();
         let state = Rc::clone(&state);
         let viewport = Rc::clone(&viewport);
+        let localizer = Rc::clone(&localizer);
         ui.on_page_jump_request(move |text: slint::SharedString| {
             with_ui(&ui_weak, |ui| {
                 let total = state.borrow().page_count();
                 let did_jump = if let Some(page_0based) = parse_page_jump(text.as_str(), total) {
                     let moved = state.borrow_mut().jump_to(page_0based);
                     if moved {
-                        refresh(&ui, &state.borrow(), &viewport);
+                        refresh(&ui, &state.borrow(), &viewport, localizer.loader());
                         // Belt-and-suspenders: if refresh gains an early-return path,
                         // the field still shows the canonical post-jump page.
                         ui.set_page_jump_text(
@@ -510,6 +569,7 @@ fn main() -> color_eyre::Result<()> {
         let ui_weak = ui.as_weak();
         let state = Rc::clone(&state);
         let viewport = Rc::clone(&viewport);
+        let localizer = Rc::clone(&localizer);
         ui.on_scrub_commit(move |frac| {
             with_ui(&ui_weak, |ui| {
                 // Single source of rounding: resolve the raw release fraction to a
@@ -524,7 +584,7 @@ fn main() -> color_eyre::Result<()> {
                 // re-seeds the scrubber knob + counter to the committed spread, even when
                 // the resolved leading equals the current index (a no-op jump).
                 let _moved = state.borrow_mut().jump_to(page);
-                refresh(&ui, &state.borrow(), &viewport);
+                refresh(&ui, &state.borrow(), &viewport, localizer.loader());
                 ui.invoke_focus_pages();
             })
         });
@@ -553,6 +613,7 @@ fn main() -> color_eyre::Result<()> {
         let state = Rc::clone(&state);
         let settings = Rc::clone(&settings);
         let viewport = Rc::clone(&viewport);
+        let localizer = Rc::clone(&localizer);
         ui.on_open_settings(move || {
             with_ui(&ui_weak, |ui| {
                 // screen 1 = Viewer (per-book), screen 0 = Library (global defaults).
@@ -575,7 +636,9 @@ fn main() -> color_eyre::Result<()> {
                 ui.set_preload_pages(s.preload_pages as i32);
                 ui.set_track_recent(s.track_recent_files);
                 ui.set_language_index(language_to_index(s.language));
-                ui.set_key_bindings_text(messages::msg_key_bindings_help(s.language).into());
+                ui.set_key_bindings_text(
+                    crate::i18n::dynamic::shortcuts_help(localizer.loader()).into(),
+                );
                 ui.set_settings_per_book(per_book);
                 ui.set_show_settings(true);
             })
@@ -598,6 +661,7 @@ fn main() -> color_eyre::Result<()> {
         let settings = Rc::clone(&settings);
         let viewport = Rc::clone(&viewport);
         let library = Rc::clone(&library);
+        let localizer = Rc::clone(&localizer);
         ui.on_close_settings(move || {
             with_ui(&ui_weak, |ui| {
                 ui.set_show_settings(false);
@@ -611,8 +675,10 @@ fn main() -> color_eyre::Result<()> {
                     );
                     if let Err(e) = settings.borrow().save() {
                         tracing::error!(error = %e, "failed to save settings from dialog");
-                        let lang = settings.borrow().language;
-                        ui.set_status_text(messages::msg_could_not_save_settings(lang, &e).into());
+                        ui.set_status_text(
+                            crate::i18n::dynamic::could_not_save_settings(localizer.loader(), &e)
+                                .into(),
+                        );
                     }
                     ui.invoke_focus_carousel();
                 } else {
@@ -623,8 +689,10 @@ fn main() -> color_eyre::Result<()> {
                     write_back_view_override(&state, &viewport, &library);
                     if let Err(e) = settings.borrow().save() {
                         tracing::error!(error = %e, "failed to save settings from dialog");
-                        let lang = settings.borrow().language;
-                        ui.set_status_text(messages::msg_could_not_save_settings(lang, &e).into());
+                        ui.set_status_text(
+                            crate::i18n::dynamic::could_not_save_settings(localizer.loader(), &e)
+                                .into(),
+                        );
                     }
                     ui.invoke_focus_pages();
                 }
@@ -679,6 +747,7 @@ fn main() -> color_eyre::Result<()> {
         let settings = Rc::clone(&settings);
         let viewport = Rc::clone(&viewport);
         let library = Rc::clone(&library);
+        let localizer = Rc::clone(&localizer);
         ui.on_reset_overrides(move || {
             with_ui(&ui_weak, |ui| {
                 if let Some(path) = state.borrow().open_file().map(|p| p.to_path_buf()) {
@@ -688,13 +757,15 @@ fn main() -> color_eyre::Result<()> {
                     }
                     if let Err(e) = library.borrow().save() {
                         tracing::error!(error = %e, "failed to save library on override reset");
-                        let lang = settings.borrow().language;
-                        ui.set_status_text(messages::msg_could_not_save_settings(lang, &e).into());
+                        ui.set_status_text(
+                            crate::i18n::dynamic::could_not_save_settings(localizer.loader(), &e)
+                                .into(),
+                        );
                     }
                 }
                 // Apply the global defaults to the runtime + view.
                 apply_global_view_to_runtime(&settings, &state, &viewport);
-                refresh(&ui, &state.borrow(), &viewport);
+                refresh(&ui, &state.borrow(), &viewport, localizer.loader());
                 // Sync the open dialog's combos to the now-global values.
                 let st = state.borrow();
                 ui.set_reading_direction_index(reading_direction_to_index(st.reading_direction()));
@@ -734,6 +805,7 @@ fn main() -> color_eyre::Result<()> {
         let ui_weak = ui.as_weak();
         let state = Rc::clone(&state);
         let viewport = Rc::clone(&viewport);
+        let localizer = Rc::clone(&localizer);
         ui.on_set_reading_direction(move |i| {
             with_ui(&ui_weak, |ui| {
                 let dir = index_to_reading_direction(i);
@@ -742,7 +814,7 @@ fn main() -> color_eyre::Result<()> {
                 // `write_back_view_override` at the next viewer leave point, not into
                 // the global `Settings`.
                 if state.borrow_mut().set_reading_direction(dir) {
-                    refresh(&ui, &state.borrow(), &viewport);
+                    refresh(&ui, &state.borrow(), &viewport, localizer.loader());
                 }
             })
         });
@@ -751,6 +823,7 @@ fn main() -> color_eyre::Result<()> {
         let ui_weak = ui.as_weak();
         let state = Rc::clone(&state);
         let viewport = Rc::clone(&viewport);
+        let localizer = Rc::clone(&localizer);
         ui.on_set_spread_mode(move |i| {
             with_ui(&ui_weak, |ui| {
                 let mode = index_to_spread_mode(i);
@@ -759,7 +832,7 @@ fn main() -> color_eyre::Result<()> {
                 // `write_back_view_override` at the next viewer leave point, not into
                 // the global `Settings`.
                 if state.borrow_mut().set_spread_mode(mode) {
-                    refresh(&ui, &state.borrow(), &viewport);
+                    refresh(&ui, &state.borrow(), &viewport, localizer.loader());
                 }
             })
         });
@@ -768,6 +841,7 @@ fn main() -> color_eyre::Result<()> {
         let ui_weak = ui.as_weak();
         let state = Rc::clone(&state);
         let viewport = Rc::clone(&viewport);
+        let localizer = Rc::clone(&localizer);
         ui.on_set_cover_mode(move |i| {
             with_ui(&ui_weak, |ui| {
                 let mode = index_to_cover_mode(i);
@@ -776,7 +850,7 @@ fn main() -> color_eyre::Result<()> {
                 // `write_back_view_override` at the next viewer leave point, not into
                 // the global `Settings`.
                 if state.borrow_mut().set_cover_mode(mode) {
-                    refresh(&ui, &state.borrow(), &viewport);
+                    refresh(&ui, &state.borrow(), &viewport, localizer.loader());
                 }
             })
         });
@@ -785,6 +859,7 @@ fn main() -> color_eyre::Result<()> {
         let ui_weak = ui.as_weak();
         let state = Rc::clone(&state);
         let viewport = Rc::clone(&viewport);
+        let localizer = Rc::clone(&localizer);
         ui.on_set_fit_mode(move |i| {
             with_ui(&ui_weak, |ui| {
                 let mode = index_to_fit_mode(i);
@@ -797,7 +872,7 @@ fn main() -> color_eyre::Result<()> {
                 // the global `Settings`.
                 if viewport.borrow().fit_mode() != mode {
                     viewport.borrow_mut().set_fit(mode);
-                    refresh(&ui, &state.borrow(), &viewport);
+                    refresh(&ui, &state.borrow(), &viewport, localizer.loader());
                 }
             })
         });
@@ -876,8 +951,10 @@ fn main() -> color_eyre::Result<()> {
                 // gettext @tr() path; zero @tr() bindings remain after
                 // issue 113.  The call stays until the gettext excision in issue 115.
                 select_ui_language(lang);
-                ui.set_key_bindings_text(messages::msg_key_bindings_help(lang).into());
-                refresh(&ui, &state.borrow(), &viewport);
+                ui.set_key_bindings_text(
+                    crate::i18n::dynamic::shortcuts_help(localizer.loader()).into(),
+                );
+                refresh(&ui, &state.borrow(), &viewport, localizer.loader());
             })
         });
     }
@@ -938,6 +1015,7 @@ fn main() -> color_eyre::Result<()> {
         let viewport = Rc::clone(&viewport);
         let nav = Rc::clone(&nav);
         let library = Rc::clone(&library);
+        let localizer = Rc::clone(&localizer);
         ui.on_nav(move |token| {
             with_ui(&ui_weak, |ui| {
                 let dir = state.borrow().reading_direction();
@@ -949,7 +1027,7 @@ fn main() -> color_eyre::Result<()> {
                     KeyCommand::Turn(action) => {
                         let moved = state.borrow_mut().apply(action);
                         if moved {
-                            refresh(&ui, &state.borrow(), &viewport);
+                            refresh(&ui, &state.borrow(), &viewport, localizer.loader());
                         }
                         // Log every page-turn latency (cache hits target <50ms; the
                         // first visit to a page also includes a synchronous decode).
@@ -967,17 +1045,17 @@ fn main() -> color_eyre::Result<()> {
                     // save (no per-key Settings write).
                     KeyCommand::ToggleSpread => {
                         if state.borrow_mut().toggle_spread() {
-                            refresh(&ui, &state.borrow(), &viewport);
+                            refresh(&ui, &state.borrow(), &viewport, localizer.loader());
                         }
                     }
                     KeyCommand::ToggleReadingDirection => {
                         if state.borrow_mut().toggle_reading_direction() {
-                            refresh(&ui, &state.borrow(), &viewport);
+                            refresh(&ui, &state.borrow(), &viewport, localizer.loader());
                         }
                     }
                     KeyCommand::ToggleCover => {
                         if state.borrow_mut().toggle_cover() {
-                            refresh(&ui, &state.borrow(), &viewport);
+                            refresh(&ui, &state.borrow(), &viewport, localizer.loader());
                         }
                     }
                     // Zoom/fit commands mutate `ViewportState`, then push geometry.
@@ -1039,10 +1117,11 @@ fn main() -> color_eyre::Result<()> {
         let ui_weak = ui.as_weak();
         let state = Rc::clone(&state);
         let viewport = Rc::clone(&viewport);
+        let localizer = Rc::clone(&localizer);
         ui.on_resized(move |w, h| {
             with_ui(&ui_weak, |ui| {
                 if state.borrow_mut().set_viewport_size(w, h) {
-                    refresh(&ui, &state.borrow(), &viewport);
+                    refresh(&ui, &state.borrow(), &viewport, localizer.loader());
                 }
             })
         });
@@ -1093,8 +1172,10 @@ pub(crate) fn refresh(
     ui: &ViewerWindow,
     state: &ViewerState,
     viewport: &Rc<RefCell<ViewportState>>,
+    loader: &i18n_embed::fluent::FluentLanguageLoader,
 ) {
-    let status = state.status_text();
+    let content = state.status_content();
+    let status = crate::i18n::dynamic::format_status(loader, &content);
     ui.set_rtl(matches!(state.reading_direction(), ReadingDirection::Rtl));
     match state.current_spread() {
         Some(Ok(spread)) => {
@@ -1133,7 +1214,7 @@ pub(crate) fn refresh(
                 Some(failed) => ui.set_status_text(
                     format!(
                         "{status}  {}",
-                        messages::msg_page_unavailable(state.language(), failed + 1)
+                        crate::i18n::dynamic::page_unavailable(loader, failed + 1)
                     )
                     .into(),
                 ),
@@ -1149,7 +1230,7 @@ pub(crate) fn refresh(
         }
         Some(Err(e)) => {
             tracing::error!(error = %e, "failed to decode page");
-            ui.set_status_text(messages::msg_decode_error(state.language(), &e).into());
+            ui.set_status_text(crate::i18n::dynamic::decode_error(loader, &e).into());
             ui.set_leading_page(slint::Image::default());
             ui.set_trailing_page(slint::Image::default());
             ui.set_single(true);
@@ -1537,12 +1618,12 @@ fn add_books_and_refresh(
     search: &Rc<RefCell<LibrarySearchState>>,
     paths: Vec<std::path::PathBuf>,
     op: &'static str,
-    lang: Language,
+    loader: &i18n_embed::fluent::FluentLanguageLoader,
 ) {
     let added_paths = add_paths(&mut library.borrow_mut(), paths);
     if added_paths.is_empty() {
         // Everything picked was already in the library: nothing to persist or rebuild.
-        ui.set_status_text(messages::msg_already_in_library(lang).into());
+        ui.set_status_text(crate::i18n::dynamic::already_in_library(loader).into());
         ui.invoke_focus_carousel();
         return;
     }
@@ -1565,11 +1646,11 @@ fn add_books_and_refresh(
         Err(e) => {
             tracing::error!(error = %e, "failed to save library after {op}");
             ui.set_status_text(
-                messages::msg_added_books_save_failed(lang, added_paths.len(), &e).into(),
+                crate::i18n::dynamic::added_books_save_failed(loader, added_paths.len(), &e).into(),
             );
         }
         Ok(()) => {
-            ui.set_status_text(messages::msg_added_books(lang, added_paths.len()).into());
+            ui.set_status_text(crate::i18n::dynamic::added_books(loader, added_paths.len()).into());
         }
     }
     // Focus the first newly added book by its VISIBLE row (the carousel renders

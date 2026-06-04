@@ -12,36 +12,51 @@ use std::num::NonZeroUsize;
 use std::path::Path;
 use std::rc::Rc;
 
-use gashuu_core::{CoreError, Language, Library, Settings};
+use gashuu_core::{CoreError, Library, Settings};
 use slint::ComponentHandle;
 
 use crate::carousel::{bind_carousel_model, build_carousel_model, cover_requests};
 use crate::cover_loader::CoverController;
 use crate::library_model::LibrarySearchState;
-use crate::messages;
 use crate::thumbnail_strip::ThumbnailController;
 use crate::viewer_state::ViewerState;
 use crate::viewport::ViewportState;
-use crate::{refresh, write_back_position, write_back_view_override, ViewerWindow};
+use crate::{write_back_position, write_back_view_override, ViewerWindow};
+
+/// Neutral content description of notices to append to the status line after
+/// an open. No i18n; all string formatting happens in `i18n::dynamic`.
+///
+/// `settings_save_err` is `None` if no save was attempted (tracking off) or
+/// if the save succeeded. `library_save_err` is `None` on success.
+/// Error details are pre-captured as `String` (via `Display`) so no
+/// `CoreError` needs to escape this module.
+#[derive(Debug, PartialEq)]
+pub(crate) struct NoticesContent {
+    pub(crate) skipped: usize,
+    pub(crate) skipped_detail: SkippedDetail,
+    pub(crate) settings_save_err: Option<String>,
+    pub(crate) library_save_err: Option<String>,
+}
+
+/// Result of [`OpenBookUseCase::run`]. Carries enough information for
+/// `main.rs` to finalize the UI without any i18n logic in this module.
+pub(crate) enum OpenOutcome {
+    /// The open failed with this pre-captured error detail (untranslated).
+    /// `main.rs` wraps it in `i18n::dynamic::open_error_str(loader, &e_str)`.
+    Error(String),
+    /// The open succeeded. `main.rs` should call `refresh()` and then
+    /// `i18n::dynamic::format_notices(loader, &notices)` to finalize status.
+    Success(NoticesContent),
+}
 
 /// Which "entries skipped" detail suffix the open path appends to the skipped
 /// notice: folder opens add nothing; archive opens name the skip reasons
 /// (zip-slip / oversized entries). Carried as data (not a pre-formatted string)
-/// so `status_notices` can render it in the active UI language.
+/// so the formatting layer can render it in the active UI language.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SkippedDetail {
     None,
     Archive,
-}
-
-impl SkippedDetail {
-    /// The language-matched suffix text appended to the skipped-entries notice.
-    fn text(self, lang: Language) -> &'static str {
-        match self {
-            SkippedDetail::None => "",
-            SkippedDetail::Archive => messages::msg_skipped_detail_archive(lang),
-        }
-    }
 }
 
 /// Coordinates the "open a book" use case. The collaborators it threads are
@@ -82,12 +97,21 @@ impl OpenBookUseCase {
 
     /// Open `path` and present it: write back the previous position, open the
     /// source, reconcile + save settings (when recent-files tracking is on),
-    /// register + save the library, refresh, compose status notices, rebuild
-    /// the carousel, and launch thumbnails.
+    /// register + save the library, rebuild the carousel, and launch thumbnails.
+    ///
+    /// Returns [`OpenOutcome::Error`] with a pre-captured error string on failure,
+    /// or [`OpenOutcome::Success`] with neutral [`NoticesContent`] on success.
+    /// The caller (`main.rs`) is responsible for calling `refresh()` and
+    /// formatting notices via `i18n::dynamic`.
     ///
     /// `skipped_detail` is [`SkippedDetail::None`] for folders and
     /// [`SkippedDetail::Archive`] for archives.
-    pub(crate) fn run(&self, ui: &ViewerWindow, path: &Path, skipped_detail: SkippedDetail) {
+    pub(crate) fn run(
+        &self,
+        ui: &ViewerWindow,
+        path: &Path,
+        skipped_detail: SkippedDetail,
+    ) -> OpenOutcome {
         // Alias the fields so the moved body reads identically at its call
         // sites. In the old free fn `thumbs`/`covers` were `&ThumbnailController`
         // / `&CoverController`; here they are `&Rc<ThumbnailController>` /
@@ -143,9 +167,7 @@ impl OpenBookUseCase {
             }
             Err(e) => {
                 tracing::error!(error = %e, "failed to open source");
-                let lang = settings.borrow().language;
-                ui.set_status_text(messages::msg_open_error(lang, &e).into());
-                return;
+                return OpenOutcome::Error(format!("{e}"));
             }
         };
         // The CANONICAL key the source was opened under (read from `open_file`),
@@ -211,24 +233,6 @@ impl OpenBookUseCase {
         if let Err(e) = &library_save {
             tracing::error!(error = %e, "failed to save library on open");
         }
-        refresh(ui, &state.borrow(), viewport);
-        // Compose extra notices onto the status line WITHOUT replacing it (the
-        // refresh above set the base spread status). Each notice chains onto the
-        // current text as `{base} — {detail}` (mirrors the skipped-entries
-        // pattern). WHICH notices appear — order: skipped, then settings-save
-        // failure, then library-save failure — is the pure `status_notices`
-        // decision below, unit-tested without a UI (mirrors `position_to_write_back`).
-        let skipped = state.borrow().last_open_skipped();
-        for detail in status_notices(
-            settings.borrow().language,
-            skipped,
-            skipped_detail,
-            settings_save.as_ref(),
-            &library_save,
-        ) {
-            let base = ui.get_status_text().to_string();
-            ui.set_status_text(format!("{base} \u{2014} {detail}").into());
-        }
         // When the stored page count was just back-filled/updated, rebuild the
         // carousel model so the home screen reflects the real total/progress when
         // the user returns to the library. Preserve the ACTIVE filter: recompute
@@ -262,37 +266,33 @@ impl OpenBookUseCase {
             state.borrow().current_source(),
             state.borrow().page_count(),
         );
+        let skipped = state.borrow().last_open_skipped();
+        OpenOutcome::Success(notices_content(
+            skipped,
+            skipped_detail,
+            settings_save.as_ref(),
+            &library_save,
+        ))
     }
 }
 
-/// The extra status notices appended after `refresh` set the base spread
-/// status, in display order: skipped entries, then a settings-save failure,
-/// then a library-save failure. Pure so the compose order is unit-tested
-/// without a UI. `None` `settings_save` means no save was attempted
-/// (recent-files tracking off) and therefore adds no notice. Rendered in
-/// `lang` via the `messages` catalog.
-pub(crate) fn status_notices(
-    lang: Language,
+/// Collect neutral open-result notices without i18n. Formatting is deferred
+/// to `i18n::dynamic::format_notices`.
+///
+/// Order: skipped entries → settings-save failure → library-save failure.
+/// `None` `settings_save` means tracking was off (no save attempted).
+pub(crate) fn notices_content(
     skipped: usize,
     skipped_detail: SkippedDetail,
     settings_save: Option<&Result<(), CoreError>>,
     library_save: &Result<(), CoreError>,
-) -> Vec<String> {
-    let mut notices = Vec::new();
-    if skipped > 0 {
-        notices.push(messages::msg_entries_skipped(
-            lang,
-            skipped,
-            skipped_detail.text(lang),
-        ));
+) -> NoticesContent {
+    NoticesContent {
+        skipped,
+        skipped_detail,
+        settings_save_err: settings_save.and_then(|r| r.as_ref().err().map(|e| format!("{e}"))),
+        library_save_err: library_save.as_ref().err().map(|e| format!("{e}")),
     }
-    if let Some(Err(e)) = settings_save {
-        notices.push(messages::msg_failed_save_settings(lang, e));
-    }
-    if let Err(e) = library_save {
-        notices.push(messages::msg_failed_save_library(lang, e));
-    }
-    notices
 }
 
 #[cfg(test)]
@@ -308,115 +308,68 @@ mod tests {
 
     #[test]
     fn clean_open_emits_no_notices() {
-        // skipped=0, no settings save attempted, library saved fine -> nothing.
-        assert!(status_notices(Language::En, 0, SkippedDetail::None, None, &Ok(())).is_empty());
-        // skipped=0 even with an archive detail present -> still nothing (the
-        // detail only matters once `skipped > 0`).
-        assert!(status_notices(Language::En, 0, SkippedDetail::Archive, None, &Ok(())).is_empty());
+        let c = notices_content(0, SkippedDetail::None, None, &Ok(()));
+        assert_eq!(c.skipped, 0);
+        assert!(c.settings_save_err.is_none());
+        assert!(c.library_save_err.is_none());
+        let c2 = notices_content(0, SkippedDetail::Archive, None, &Ok(()));
+        assert_eq!(c2.skipped, 0);
     }
 
     #[test]
     fn skipped_only_emits_skipped_notice() {
-        let notices = status_notices(
-            Language::En,
-            3,
-            SkippedDetail::Archive,
-            Some(&Ok(())),
-            &Ok(()),
-        );
-        assert_eq!(notices, vec!["3 entries skipped (zip-slip or oversized)"]);
+        let c = notices_content(3, SkippedDetail::Archive, Some(&Ok(())), &Ok(()));
+        assert_eq!(c.skipped, 3);
+        assert_eq!(c.skipped_detail, SkippedDetail::Archive);
+        assert!(c.settings_save_err.is_none());
+        assert!(c.library_save_err.is_none());
     }
 
     #[test]
     fn settings_failure_only_emits_settings_notice() {
-        let settings_err = Err(err());
-        let notices = status_notices(
-            Language::En,
-            0,
-            SkippedDetail::None,
-            Some(&settings_err),
-            &Ok(()),
-        );
-        assert_eq!(notices.len(), 1);
-        assert!(notices[0].starts_with("Failed to save settings: "));
+        let c = notices_content(0, SkippedDetail::None, Some(&Err(err())), &Ok(()));
+        assert_eq!(c.skipped, 0);
+        assert!(c.settings_save_err.is_some());
+        assert!(c.library_save_err.is_none());
     }
 
     #[test]
     fn library_failure_only_emits_library_notice() {
-        let library_err = Err(err());
-        let notices = status_notices(
-            Language::En,
-            0,
-            SkippedDetail::None,
-            Some(&Ok(())),
-            &library_err,
-        );
-        assert_eq!(notices.len(), 1);
-        assert!(notices[0].starts_with("Failed to save library: "));
+        let c = notices_content(0, SkippedDetail::None, Some(&Ok(())), &Err(err()));
+        assert_eq!(c.skipped, 0);
+        assert!(c.settings_save_err.is_none());
+        assert!(c.library_save_err.is_some());
     }
 
     #[test]
-    fn all_three_failures_emit_in_skipped_settings_library_order() {
-        let settings_err = Err(err());
-        let library_err = Err(err());
-        let notices = status_notices(
-            Language::En,
-            2,
-            SkippedDetail::Archive,
-            Some(&settings_err),
-            &library_err,
-        );
-        assert_eq!(notices.len(), 3);
-        assert!(notices[0].starts_with("2 entries skipped"));
-        assert!(notices[1].starts_with("Failed to save settings: "));
-        assert!(notices[2].starts_with("Failed to save library: "));
+    fn all_three_failures_captured() {
+        let c = notices_content(2, SkippedDetail::Archive, Some(&Err(err())), &Err(err()));
+        assert_eq!(c.skipped, 2);
+        assert_eq!(c.skipped_detail, SkippedDetail::Archive);
+        assert!(c.settings_save_err.is_some());
+        assert!(c.library_save_err.is_some());
     }
 
     #[test]
-    fn settings_none_with_library_failure_emits_only_library_notice() {
-        // Tracking-off (`None` settings_save) adds no settings notice even when
-        // the library save fails.
-        let library_err = Err(err());
-        let notices = status_notices(Language::En, 0, SkippedDetail::None, None, &library_err);
-        assert_eq!(notices.len(), 1);
-        assert!(notices[0].starts_with("Failed to save library: "));
+    fn settings_none_with_library_failure() {
+        let c = notices_content(0, SkippedDetail::None, None, &Err(err()));
+        assert!(c.settings_save_err.is_none());
+        assert!(c.library_save_err.is_some());
     }
 
     #[test]
-    fn skipped_and_library_failure_without_settings_tracking_preserves_order() {
-        let library_err = Err(err());
-        let notices = status_notices(Language::En, 1, SkippedDetail::Archive, None, &library_err);
-        assert_eq!(notices.len(), 2);
-        assert!(notices[0].starts_with("1 entries skipped (zip-slip or oversized)"));
-        assert!(notices[1].starts_with("Failed to save library: "));
+    fn skipped_and_library_failure_without_settings_tracking() {
+        let c = notices_content(1, SkippedDetail::Archive, None, &Err(err()));
+        assert_eq!(c.skipped, 1);
+        assert!(c.settings_save_err.is_none());
+        assert!(c.library_save_err.is_some());
     }
 
     #[test]
-    fn skipped_and_settings_failure_preserves_order() {
-        let settings_err = Err(err());
-        let notices = status_notices(
-            Language::En,
-            1,
-            SkippedDetail::None,
-            Some(&settings_err),
-            &Ok(()),
-        );
-        assert_eq!(notices.len(), 2);
-        assert!(notices[0].starts_with("1 entries skipped"));
-        assert!(notices[1].starts_with("Failed to save settings: "));
-    }
-
-    #[test]
-    fn japanese_notices_render_in_japanese() {
-        // The same notice pipeline renders Japanese when the language says so —
-        // the skipped notice embeds the count and the Japanese archive detail.
-        let notices = status_notices(Language::Ja, 3, SkippedDetail::Archive, None, &Ok(()));
-        assert_eq!(notices.len(), 1);
-        assert!(notices[0].contains('3'));
-        assert!(
-            notices[0].contains("スキップ"),
-            "expected a Japanese notice, got {:?}",
-            notices[0]
-        );
+    fn skipped_and_settings_failure_captured() {
+        let c = notices_content(1, SkippedDetail::None, Some(&Err(err())), &Ok(()));
+        assert_eq!(c.skipped, 1);
+        assert!(c.settings_save_err.is_some());
+        assert!(c.library_save_err.is_none());
     }
 }
