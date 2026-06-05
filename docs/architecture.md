@@ -375,9 +375,9 @@ carousel rebuild / thumbnail start all bypassed (so an empty book never re-enter
 `register_opened`); it removes the book if present (`Library::remove`, idempotent bool), re-saves,
 and pre-captures any save error. The recents push + settings save are DEFERRED past this check so
 they fire only for a non-empty book (see [patterns.md](patterns.md), "Insert a guard before X").
-`title` prefers the stored `Book::title`, falling back to `derive_title` — a pinned byte-for-byte
-replica of `gashuu_core::Book::from_path` (the core derivation is `pub(crate)` and unreachable from
-this crate; see [patterns.md](patterns.md), "Replicate-and-PIN"). `finalize_open` handles the variant
+`title` prefers the stored `Book::title`, falling back to `gashuu_core::display_title` (the core
+derivation rule made public in Wave 1 #149; the Wave-2 #150 switchover dissolved the UI replica —
+see [patterns.md](patterns.md), "Replicate-and-PIN" for the pattern's endgame). `finalize_open` handles the variant
 by rebuilding the carousel (the active search filter preserved) and showing the notice ONLY when
 `removed == true`; it does NOT switch screens, and the carousel-open / continue-reading sites guard
 their `go_to_viewer` with an `enter_viewer` check so the user stays on a refreshed Library. The
@@ -409,8 +409,9 @@ just-opened book's `ResolvedView` via `ViewerState::apply_resolved_view` (+ `Vie
   as `Rc<RefCell<…>>` fields: `ViewerState`, `Library`, `LibrarySearchState`, and
   `LibrarySelectionState`. `run(&self, ui) -> RemoveOutcome` executes the full destructive
   transaction in the non-negotiable order: snapshot selected paths → mutate+save with rollback
-  (via `remove_books_with_rollback`) → best-effort cover purge (`ThumbnailCache::purge_for`,
-  current mtime, `COVER_MAX_SIDE=512`, `tracing::warn`-only on miss) → clear the viewer via
+  (via `remove_books_with_rollback`) → best-effort cover purge via `cover_loader::purge_cover`
+  (the single home of the cover-key recipe; `mtime_secs` and `COVER_MAX_SIDE` are private to
+  `cover_loader.rs`; `tracing::warn`-only on miss) → clear the viewer via
   `ViewerState::close()` and blank the title bar when the open book was deleted → recompute the
   search projection → clear the selection (success only; `SaveFailed` preserves it so the user can
   retry). Returns `RemoveOutcome::NoSelection` (empty selection guard), `RemoveOutcome::SaveFailed
