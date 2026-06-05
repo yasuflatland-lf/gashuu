@@ -1185,9 +1185,9 @@ fn main() -> color_eyre::Result<()> {
     // FocusScope: the page area on the Viewer, the carousel on the Library.
     // Restoring `focus-pages()` unconditionally would focus the hidden Viewer
     // scope when closing over the Library, leaving the carousel keys dead.
-    // All three temporaries (state.borrow(), viewport.borrow(), settings.borrow_mut())
-    // are argument expressions in the single reconcile_settings(...) call and drop
-    // together at its `;`, before save()'s fresh settings.borrow() on the next line.
+    // `persist_view_modes` takes `&Rc` handles and confines every `borrow()` /
+    // `borrow_mut()` inside the call, so no borrow outlives it — the following
+    // `settings.borrow().save()` always gets a fresh, unconflicted borrow.
     {
         let ui_weak = ui.as_weak();
         let state = Rc::clone(&state);
@@ -1199,12 +1199,15 @@ fn main() -> color_eyre::Result<()> {
             with_ui(&ui_weak, |ui| {
                 ui.set_show_settings(false);
                 // screen 0 = Library (edits GLOBAL defaults), 1 = Viewer (edits the
-                // CURRENT book's per-book override).
+                // CURRENT book's per-book override). Routing lives in
+                // `persist_view_modes` (ADR-0007 clobber-trap).
                 if ui.get_screen() == 0 {
-                    reconcile_settings(
-                        &state.borrow(),
-                        &viewport.borrow(),
-                        &mut settings.borrow_mut(),
+                    persist_view_modes(
+                        ViewModeRoute::DialogClosedOnLibrary,
+                        &state,
+                        &viewport,
+                        &settings,
+                        &library,
                     );
                     if let Err(e) = settings.borrow().save() {
                         tracing::error!(error = %e, "failed to save settings from dialog");
@@ -1219,7 +1222,13 @@ fn main() -> color_eyre::Result<()> {
                     // cache/preload/track fields are global; save Settings too so a
                     // change to them in the viewer dialog is not lost (the view-mode
                     // fields in Settings are untouched because we did NOT reconcile).
-                    write_back_view_override(&state, &viewport, &library);
+                    persist_view_modes(
+                        ViewModeRoute::DialogClosedOnViewer,
+                        &state,
+                        &viewport,
+                        &settings,
+                        &library,
+                    );
                     if let Err(e) = settings.borrow().save() {
                         tracing::error!(error = %e, "failed to save settings from dialog");
                         ui.set_status_text(
@@ -1558,6 +1567,9 @@ fn main() -> color_eyre::Result<()> {
         let nav = Rc::clone(&nav);
         let library = Rc::clone(&library);
         let localizer = Rc::clone(&localizer);
+        // `settings` is captured only to satisfy `persist_view_modes`'s signature
+        // on the GoToLibrary leave point; the LeaveViewer route never reads it.
+        let settings = Rc::clone(&settings);
         // The carousel-refresh collaborators are captured because the GoToLibrary
         // arm rebuilds the carousel on entry (continue-reading freshness +
         // focus snap) through `go_to_library` / `refresh_library_carousel`.
@@ -1589,8 +1601,9 @@ fn main() -> color_eyre::Result<()> {
                         ui.invoke_reveal_chrome_now();
                     }
                     // Runtime state is the single source of truth for these modes;
-                    // `reconcile_settings` mirrors them into `Settings` at the next
-                    // save (no per-key Settings write).
+                    // `persist_view_modes` routes them into `Settings` or the
+                    // per-book override at the next leave point (no per-key
+                    // Settings write).
                     KeyCommand::ToggleSpread => {
                         if state.borrow_mut().toggle_spread() {
                             refresh(&ui, &state.borrow(), &viewport, localizer.loader());
@@ -1607,11 +1620,11 @@ fn main() -> color_eyre::Result<()> {
                         }
                     }
                     // Zoom/fit commands mutate `ViewportState`, then push geometry.
-                    // The viewport owns `fit_mode` at runtime; `reconcile_settings`
-                    // mirrors it into `Settings` at the next save (zoom/pan stay
-                    // session-only). Each mutates in its own statement, then applies
-                    // geometry with a fresh immutable borrow (never hold borrow_mut
-                    // across apply).
+                    // The viewport owns `fit_mode` at runtime; `persist_view_modes`
+                    // routes it into `Settings` or the per-book override at the
+                    // next leave point (zoom/pan stay session-only). Each mutates
+                    // in its own statement, then applies geometry with a fresh
+                    // immutable borrow (never hold borrow_mut across apply).
                     KeyCommand::ZoomIn => {
                         viewport.borrow_mut().zoom_step(true);
                         apply_viewport(&ui, &viewport.borrow());
@@ -1625,8 +1638,8 @@ fn main() -> color_eyre::Result<()> {
                         apply_viewport(&ui, &viewport.borrow());
                     }
                     // Fit changes reset zoom + re-center. The viewport owns `fit_mode`;
-                    // `reconcile_settings` persists it at the next save (zoom/pan are
-                    // NOT persisted — session-only).
+                    // `persist_view_modes` persists it at the next leave point
+                    // (zoom/pan are NOT persisted — session-only).
                     KeyCommand::FitActual => {
                         viewport.borrow_mut().set_fit(FitMode::Actual);
                         apply_viewport(&ui, &viewport.borrow());
@@ -1647,10 +1660,17 @@ fn main() -> color_eyre::Result<()> {
                         // Write the current position AND this book's view modes back
                         // before leaving the viewer, so a D/R/C/fit toggle made while
                         // reading persists to the book even without opening settings.
-                        // Each helper confines its borrows to single statements; both
-                        // drop before go_to_library borrows the UI.
+                        // View-mode routing goes through `persist_view_modes`
+                        // (ADR-0007). Both confine their borrows to single statements,
+                        // dropping before go_to_library borrows the UI.
                         write_back_position(&state, &library);
-                        write_back_view_override(&state, &viewport, &library);
+                        persist_view_modes(
+                            ViewModeRoute::LeaveViewer,
+                            &state,
+                            &viewport,
+                            &settings,
+                            &library,
+                        );
                         // `go_to_library` rebuilds the carousel on entry so the
                         // continue-reading ribbon reflects the `last_opened` just
                         // persisted above, and snaps focus to that book. The
@@ -1699,20 +1719,17 @@ fn main() -> color_eyre::Result<()> {
     // The `state` and `library` RefCells are no longer borrowed (the event
     // loop has exited), so there is no borrow conflict here.
     write_back_position(&state, &library);
-    // Persist the open book's view modes to its override on exit (no-op if no book
-    // is open), so a toggle made right before quitting is not lost.
-    write_back_view_override(&state, &viewport, &library);
-    // Only mirror runtime display modes into the GLOBAL Settings when NO book is
-    // open — otherwise the open book's per-book modes would clobber the global
-    // defaults (its modes were just saved to its override above). cache/preload/
-    // track and seen_guide are saved unconditionally below.
-    if state.borrow().open_file().is_none() {
-        reconcile_settings(
-            &state.borrow(),
-            &viewport.borrow(),
-            &mut settings.borrow_mut(),
-        );
-    }
+    // Persist the open book's view modes to its override on exit, then mirror into
+    // the GLOBAL Settings only when no book is open (the ADR-0007 clobber guard
+    // lives inside `persist_view_modes`). cache/preload/track and seen_guide are
+    // saved unconditionally below.
+    persist_view_modes(
+        ViewModeRoute::AppExit,
+        &state,
+        &viewport,
+        &settings,
+        &library,
+    );
     if let Err(e) = settings.borrow().save() {
         tracing::error!(error = %e, "failed to save settings on exit");
     }
@@ -1980,16 +1997,88 @@ fn to_slint_image(decoded: &DecodedImage) -> slint::Image {
     slint::Image::from_rgba8(buffer)
 }
 
+/// The leave/close point at which runtime view modes are persisted, naming WHERE
+/// the runtime came from so [`persist_view_modes`] can route to the right sink.
+/// One variant per production call site of the old write helpers.
+pub(crate) enum ViewModeRoute {
+    /// Settings dialog closed on the Library screen (screen 0): the dialog edits
+    /// the GLOBAL defaults, so the runtime is reconciled into `Settings`.
+    DialogClosedOnLibrary,
+    /// Settings dialog closed on the Viewer screen (screen 1): the dialog edits
+    /// the CURRENT book's per-book override.
+    DialogClosedOnViewer,
+    /// Leaving the viewer for the Library (↑): persist the open book's override.
+    LeaveViewer,
+    /// Opening a different book while one is open (`OpenBookUseCase::run`):
+    /// persist the OUTGOING book's override before the source is replaced.
+    OpenDifferentBook,
+    /// App exit: persist the open book's override, then reconcile into the GLOBAL
+    /// defaults ONLY when no book is open.
+    AppExit,
+}
+
+/// THE single chokepoint that routes runtime view modes (direction/spread/cover/
+/// fit) to their persistence sink. It is the ONLY caller of `reconcile_settings`
+/// (runtime → GLOBAL `Settings`) and the only main.rs caller of
+/// `write_back_view_override` (runtime → PER-BOOK override).
+///
+/// ADR-0007 clobber-trap, made structural here (it once shipped as a real bug):
+/// once view modes became per-book with a global fallback, EVERY "copy runtime →
+/// global" op (`reconcile_settings`) became a potential CLOBBER — the runtime may
+/// hold a per-book value, so reconciling it would overwrite the GLOBAL default
+/// with one book's preference. The routing match below is the invariant: the
+/// GLOBAL sink is written ONLY by (a) the Library-screen settings dialog close and
+/// (b) the no-book-open exit path; the PER-BOOK sink is written ONLY at leave
+/// points (the Viewer-screen settings dialog close, the ↑ leave-viewer key, and
+/// opening a different book while one is open). Note (a): the Library dialog
+/// legitimately reconciles into global even while a book is loaded in
+/// `ViewerState`, because the runtime was global-seeded
+/// by `apply_global_view_to_runtime` at dialog open — so this path must NOT be
+/// blanket-guarded on `open_file().is_none()`, or Library-dialog edits would be
+/// dropped. The exit path keeps the per-book write FIRST, then the open-state
+/// guard on the global reconcile.
+pub(crate) fn persist_view_modes(
+    route: ViewModeRoute,
+    state: &Rc<RefCell<ViewerState>>,
+    viewport: &Rc<RefCell<ViewportState>>,
+    settings: &Rc<RefCell<Settings>>,
+    library: &Rc<RefCell<Library>>,
+) {
+    match route {
+        ViewModeRoute::DialogClosedOnLibrary => {
+            reconcile_settings(
+                &state.borrow(),
+                &viewport.borrow(),
+                &mut settings.borrow_mut(),
+            );
+        }
+        ViewModeRoute::DialogClosedOnViewer
+        | ViewModeRoute::LeaveViewer
+        | ViewModeRoute::OpenDifferentBook => {
+            write_back_view_override(state, viewport, library);
+        }
+        ViewModeRoute::AppExit => {
+            // Per-book override FIRST (no-op if no book is open), so the open
+            // book's modes are saved before the open-state-guarded global reconcile.
+            write_back_view_override(state, viewport, library);
+            if state.borrow().open_file().is_none() {
+                reconcile_settings(
+                    &state.borrow(),
+                    &viewport.borrow(),
+                    &mut settings.borrow_mut(),
+                );
+            }
+        }
+    }
+}
+
 /// Copy the runtime-owned display settings into the persisted `Settings` just
 /// before saving. This is the SINGLE place `reading_direction`, `spread_mode`,
 /// `cover_mode`, and `fit_mode` are written back to `Settings`, so a new
 /// mode-mutation site can never "forget to mirror" — it only changes runtime
-/// state, and the next save reconciles automatically.
-pub(crate) fn reconcile_settings(
-    state: &ViewerState,
-    viewport: &ViewportState,
-    settings: &mut Settings,
-) {
+/// state, and the next save reconciles automatically. Reached only via
+/// [`persist_view_modes`] (the routing chokepoint).
+fn reconcile_settings(state: &ViewerState, viewport: &ViewportState, settings: &mut Settings) {
     settings.reading_direction = state.reading_direction();
     settings.spread_mode = state.spread_mode();
     settings.cover_mode = state.cover_mode();
@@ -2135,16 +2224,16 @@ fn view_override_to_write_back(
 }
 
 /// Write the current runtime view modes back to the OPEN book's override and
-/// persist. Called at every viewer leave point (↑ to Library, opening a
-/// different book, app exit) and on viewer-context settings-dialog close, so a
-/// bare keyboard toggle (D/R/C/fit) persists per-book without opening the dialog.
+/// persist. Reached ONLY via [`persist_view_modes`] (the routing chokepoint) for
+/// the viewer leave/close, open-a-different-book, and exit paths, so a bare
+/// keyboard toggle (D/R/C/fit) persists per-book without opening the dialog.
 /// No-op when no book is open.
 ///
 /// Borrow discipline (mirrors `write_back_position`): the `state`/`viewport`
 /// shared borrows are confined to the leading block expression and drop before
 /// `library.borrow_mut()`. `state` and `viewport` are distinct `RefCell`s, so
 /// holding shared borrows of both at once is fine.
-pub(crate) fn write_back_view_override(
+fn write_back_view_override(
     state: &Rc<RefCell<ViewerState>>,
     viewport: &Rc<RefCell<ViewportState>>,
     library: &Rc<RefCell<Library>>,

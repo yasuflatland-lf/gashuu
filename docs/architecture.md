@@ -395,12 +395,13 @@ See [patterns.md](patterns.md), "OpenOutcome pattern" and "finalize_open helper"
 
 Lives in the UI crate because it coordinates Slint components; `gashuu-core` is untouched.
 
-`run` writes back the OUTGOING book's per-book view override (`write_back_view_override`) right
-beside the position write-back at its top, and — per the per-book-overrides feature — does NOT
-reconcile runtime modes into the GLOBAL `Settings` on its open-time save (the runtime still holds
-the outgoing book's per-book modes there; reconciling would clobber the global defaults — see
-[patterns.md](patterns.md), "Write-direction invariant audit"). It then applies the just-opened
-book's `ResolvedView` via `ViewerState::apply_resolved_view` (+ `ViewportState::set_fit`).
+`run` writes back the OUTGOING book's per-book view override through the persistence chokepoint —
+`persist_view_modes(ViewModeRoute::OpenDifferentBook, …)` right beside the position write-back at
+its top — and that route writes ONLY the per-book sink, so — per the per-book-overrides feature —
+it does NOT reconcile runtime modes into the GLOBAL `Settings` on its open-time save (the runtime
+still holds the outgoing book's per-book modes there; reconciling would clobber the global
+defaults — see [patterns.md](patterns.md), "Write-direction invariant audit"). It then applies the
+just-opened book's `ResolvedView` via `ViewerState::apply_resolved_view` (+ `ViewportState::set_fit`).
 
 **PR-5 (#129)** added the parallel destructive use case to the same module:
 
@@ -429,17 +430,19 @@ book's `ResolvedView` via `ViewerState::apply_resolved_view` (+ `ViewportState::
   fully localized strings — each field is resolved via `i18n::dynamic` inside the builder and is
   display-ready.
 
-### per-book view-override seam fns (`main.rs`)
+### view-mode persistence seam (`main.rs`)
 
-`pub(crate)` seam fns in `main.rs` (peers of `reconcile_settings`/`write_back_position`):
-`write_back_view_override(&state, &viewport, &library)` snapshots the open book's four runtime
-modes into its `ViewOverride` and saves the library — called at EVERY leave point (nav-away,
-open-another, exit, Viewer settings-dialog close); a no-op when no book is open.
-`apply_global_view_to_runtime(&settings, &state, &viewport)` mirrors the GLOBAL `Settings` view
-modes into the runtime so the Library-screen settings dialog seeds from global (the inverse of
-`reconcile_settings`). The shared `SettingsDialog` routes by `ui.get_screen()`: `0` (Library) →
-`reconcile_settings` into global; `1` (Viewer) → `write_back_view_override` into the current book.
-The exit-path `reconcile_settings` is gated on `open_file().is_none()`. See
+The `pub(crate)` seam is `persist_view_modes(route: ViewModeRoute, &state, &viewport, &settings,
+&library)` (peer of `write_back_position`) — the ONE chokepoint that routes runtime view modes to
+their sink. The former write helpers `reconcile_settings` (runtime → GLOBAL `Settings`) and
+`write_back_view_override` (runtime → the open book's `ViewOverride`, saving the library) are now
+PRIVATE and called ONLY inside its routing match: `DialogClosedOnLibrary` → global reconcile;
+`DialogClosedOnViewer` / `LeaveViewer` / `OpenDifferentBook` → per-book write-back; `AppExit` →
+per-book write-back FIRST, then a global reconcile ONLY when `open_file().is_none()`. So the GLOBAL
+sink is reached only via the Library-dialog close and the no-book-open exit; every leave point hits
+the per-book sink (a no-op when no book is open). `apply_global_view_to_runtime(&settings, &state,
+&viewport)` (still `pub(crate)`) mirrors the GLOBAL `Settings` view modes into the runtime so the
+Library-screen settings dialog seeds from global (the inverse of `reconcile_settings`). See
 [patterns.md](patterns.md), "Per-book view overrides: write-back-at-leave-point + screen-scoped
 dialog routing".
 

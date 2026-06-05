@@ -104,3 +104,11 @@ remove + notify".
 - **No new dependencies; `LIBRARY_VERSION` unchanged.** `CoreError::EmptyBook` is the only new public
   surface in core; the three notices (`notice-added-books-skipped`, `notice-no-books-added-empty`,
   `notice-empty-book-removed`) are added to the Fluent catalog (en + ja) via `i18n/dynamic.rs`.
+- **Related book-identity limitation (Wave-1 DDD refactor).** Decision 4 keeps `Library::add` I/O-free,
+  but `add`'s path-identity is the add-time `canonicalize().unwrap_or(verbatim)` snapshot (the de-dup
+  key now computed in the private `add_canonical` seam). A book added while its file was MISSING keeps a
+  non-canonical identity, so a later re-add under the canonical form can create a DUPLICATE entry with
+  separate `last_page` / `page_count` / `overrides`. This is a distinct concern from emptiness
+  (identity, not page count) and is recorded as a known limitation in
+  [patterns.md](../patterns.md), "book identity is the add-time canonical snapshot"; re-canonicalization
+  + duplicate merge in `normalize()` is DEFERRED (separate-PR scale).

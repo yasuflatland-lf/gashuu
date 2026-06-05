@@ -27,7 +27,7 @@ pub use cache::{ImageCache, DEFAULT_CAPACITY, DEFAULT_PREFETCH_RADIUS};
 pub use cache_config::CacheConfig;
 pub use error::CoreError;
 pub use image_ops::{check_pixel_limit, decode, decode_thumbnail, DecodedImage, MAX_PIXELS};
-pub use library::{Book, Library, OpenRegistration, RemovalReport};
+pub use library::{display_title, Book, Library, OpenRegistration, RemovalReport};
 pub use library_store::LIBRARY_VERSION;
 pub use page_source::{FolderSource, PageEntry, PageSource, RarSource, ZipSource};
 pub use reading_progress::ReadingProgress;

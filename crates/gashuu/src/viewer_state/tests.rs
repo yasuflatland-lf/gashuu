@@ -1522,3 +1522,29 @@ fn close_is_idempotent_from_boot_state() {
     assert!(state.open_file().is_none());
     assert_eq!(state.status_content().kind, StatusKind::NoFolder);
 }
+
+// ---- page_count_opt() (DDD Wave 1) --------------------------------------
+
+#[test]
+fn page_count_opt_is_none_when_empty() {
+    // No source open: the 0 sentinel maps to None (mirrors Book::page_count_opt).
+    let state = ViewerState::new();
+    assert_eq!(state.page_count(), 0);
+    assert!(state.page_count_opt().is_none());
+
+    // An open source with zero displayable pages is also "empty" -> None.
+    let mut state = ViewerState::new();
+    state.set_source(mock_with(0));
+    assert_eq!(state.page_count(), 0);
+    assert!(state.page_count_opt().is_none());
+}
+
+#[test]
+fn page_count_opt_is_some_with_real_count() {
+    // A positive page count surfaces as Some(NonZeroUsize) with the exact value,
+    // while the raw page_count() accessor stays in lockstep.
+    let mut state = ViewerState::new();
+    state.set_source(mock_with(5));
+    assert_eq!(state.page_count(), 5);
+    assert_eq!(state.page_count_opt().map(NonZeroUsize::get), Some(5));
+}

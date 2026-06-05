@@ -13,6 +13,7 @@ use gashuu_core::{
     ArchiveLoader, CacheConfig, CoreError, CoverMode, DecodedImage, ImageCache, Language,
     PageSource, ReadingDirection, ResolvedView, Settings, SpreadContext, SpreadLayout, SpreadMode,
 };
+use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -222,10 +223,10 @@ impl ViewerState {
     /// `false`) when no source is loaded or the resolved leading equals the
     /// current index. Out-of-range `page` is clamped.
     pub fn jump_to(&mut self, page: usize) -> bool {
-        if self.page_count == 0 {
+        let Some(count) = self.page_count_opt() else {
             return false;
-        }
-        let target = self.spread_ctx().normalize(page.min(self.page_count - 1));
+        };
+        let target = self.spread_ctx().normalize(page.min(count.get() - 1));
         let moved = target != self.index;
         self.index = target;
         moved
@@ -237,11 +238,11 @@ impl ViewerState {
     /// current modes, then asks the pure `spread_at` whether that spread has a
     /// trailing page. Returns `false` when no source is loaded.
     pub fn preview_is_double(&self, page: usize) -> bool {
-        if self.page_count == 0 {
+        let Some(count) = self.page_count_opt() else {
             return false;
-        }
+        };
         let ctx = self.spread_ctx();
-        let lead = ctx.normalize(page.min(self.page_count - 1));
+        let lead = ctx.normalize(page.min(count.get() - 1));
         ctx.spread_at(lead).trailing.is_some()
     }
 
@@ -303,6 +304,16 @@ impl ViewerState {
     /// the unit tests below.
     pub fn page_count(&self) -> usize {
         self.page_count
+    }
+
+    /// The current source's page count as a domain-typed `Option`, mirroring the
+    /// core's `Book::page_count_opt` convention: the `0` "no book / no pages"
+    /// sentinel maps to `None`, any positive count to `Some(NonZeroUsize)`. This
+    /// types the rule the methods below guard on so callers never re-interpret the
+    /// raw `0`. (`page_count()` is kept for the Slint boundary, which needs the
+    /// plain count.)
+    pub(crate) fn page_count_opt(&self) -> Option<NonZeroUsize> {
+        NonZeroUsize::new(self.page_count)
     }
 
     /// The current spread's leading page index. Used by the highlight wiring in
