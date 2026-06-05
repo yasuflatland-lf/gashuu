@@ -1,8 +1,8 @@
 // NavBar — the top, centered "glass pill" holding the live library search field
 // (left), a thin divider, and the icon-only NavItems on the right: Add files /
-// Add folder / Select / Settings, or — when `combined-add-picker` is set (macOS,
-// where one NSOpenPanel picks files AND folders) — a single Add books capsule
-// plus Select plus Settings.
+// Add folder / Select / Bookmark / Settings, or — when `combined-add-picker` is
+// set (macOS, where one NSOpenPanel picks files AND folders) — a single Add books
+// capsule plus Select plus Bookmark plus Settings.
 //
 // Slint 1.x has NO backdrop-blur, so the frosted-glass look is APPROXIMATED,
 // not rendered, with four cheap layers that read as glass without sampling
@@ -166,6 +166,8 @@ export component NavBar inherits Rectangle {
     in property <image> settings-icon;
     // The checkbox glyph for the bulk-selection capsule.
     in property <image> select-icon;
+    // The bookmark glyph for the continue-reading capsule.
+    in property <image> bookmark-icon;
     // Mirrors the carousel's selection mode; drives the capsule's persistent
     // active ring (the toggle affordance: re-click exits selection).
     in property <bool> selection-active;
@@ -190,6 +192,10 @@ export component NavBar inherits Rectangle {
     callback search-exit();
     // Enter/exit bulk-selection.
     callback toggle-selection();
+    // Jump to the continue-reading book (resume at its saved page). ALWAYS
+    // enabled: with no bookmark the click intentionally answers with a status
+    // notice, so a faint capsule would hide the affordance instead of inviting it.
+    callback continue-reading();
 
     // Move keyboard focus into the search field (carousel `/` and click).
     public function focus-search() { search.focus-self(); }
@@ -197,16 +203,16 @@ export component NavBar inherits Rectangle {
     // ── Shape & size ──────────────────────────────────────────────────────────
     // Width is computed from tokens so the pill hugs its content WITHOUT a
     // layout-preferred-width binding loop. Children left→right: search field,
-    // 1px divider, then the icon capsules — four of them (six children, five
-    // gaps), or three when the combined add capsule replaces the file/folder
-    // pair (five children, four gaps).
-    //   combined (macOS): search + 3*capsule + divider + 4*gap + 2*pad
-    //   split (elsewhere): search + 4*capsule + divider + 5*gap + 2*pad
+    // 1px divider, then the icon capsules — five of them (seven children, six
+    // gaps), or four when the combined add capsule replaces the file/folder
+    // pair (six children, five gaps).
+    //   combined (macOS): search + 4*capsule + divider + 5*gap + 2*pad
+    //   split (elsewhere): search + 5*capsule + divider + 6*gap + 2*pad
     height: Theme.nav-pill-height;
     width: Theme.nav-search-width
-        + (root.combined-add-picker ? 3 : 4) * Theme.nav-capsule
+        + (root.combined-add-picker ? 4 : 5) * Theme.nav-capsule
         + Theme.nav-divider-width
-        + (root.combined-add-picker ? 4 : 5) * Theme.nav-item-gap
+        + (root.combined-add-picker ? 5 : 6) * Theme.nav-item-gap
         + 2 * Theme.nav-pill-pad;
     horizontal-stretch: 0;
     vertical-stretch: 0;
@@ -232,7 +238,7 @@ export component NavBar inherits Rectangle {
         background: Theme.glass-highlight;
     }
 
-    // ── Items: search field, divider, then the four icon-only capsules ────────
+    // ── Items: search field, divider, then the five icon-only capsules ────────
     HorizontalLayout {
         spacing: Theme.nav-item-gap;
         padding: Theme.nav-pill-pad;
@@ -291,6 +297,14 @@ export component NavBar inherits Rectangle {
             active: root.selection-active;
             enabled: root.select-enabled;
             clicked => { root.toggle-selection(); }
+        }
+        // Jump to the continue-reading book. ALWAYS enabled — with no bookmark
+        // the click intentionally answers with a status notice, so a faint
+        // capsule would hide the affordance rather than invite the press.
+        NavItem {
+            icon: root.bookmark-icon;
+            a11y-label: Strings.continue-reading;
+            clicked => { root.continue-reading(); }
         }
         NavItem {
             icon: root.settings-icon;

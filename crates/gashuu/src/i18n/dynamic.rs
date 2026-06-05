@@ -127,6 +127,12 @@ pub(crate) fn already_in_library(loader: &FluentLanguageLoader) -> String {
     fl!(loader, "notice-already-in-library")
 }
 
+/// Notice when the NavBar bookmark capsule is clicked but no continue-reading
+/// bookmark is registered (or it points at a book no longer in the library).
+pub(crate) fn bookmark_none(loader: &FluentLanguageLoader) -> String {
+    fl!(loader, "notice-bookmark-none")
+}
+
 /// Notice after a successful add. `n` is the number of books added.
 pub(crate) fn added_books(loader: &FluentLanguageLoader, n: usize) -> String {
     let n = n as i64;
@@ -428,6 +434,23 @@ mod tests {
         assert_ne!(
             en_one, ja_one,
             "library_count_text must differ between En and Ja"
+        );
+    }
+
+    #[test]
+    fn bookmark_none_is_non_empty_and_translated() {
+        // The no-bookmark notice must render in both locales and differ between
+        // them (en "No bookmark registered" vs ja「ブックマークが登録されていません」).
+        for loc in [en(), ja()] {
+            assert!(
+                !bookmark_none(loc.loader()).is_empty(),
+                "bookmark_none must not be empty"
+            );
+        }
+        assert_ne!(
+            bookmark_none(en().loader()),
+            bookmark_none(ja().loader()),
+            "bookmark_none must differ between En and Ja"
         );
     }
 

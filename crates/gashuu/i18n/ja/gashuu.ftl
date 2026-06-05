@@ -244,6 +244,9 @@ notice-could-not-save-settings = 設定を保存できませんでした: { $err
 notice-load-failed = { $what } を読み込めませんでした。初期状態で起動します。
 # Em dash (U+2014) preserved byte-identically from messages.rs.
 notice-already-in-library = すでにライブラリにあります — 新しい本は追加されませんでした。
+# Notice when the NavBar bookmark capsule is clicked but no continue-reading
+# bookmark is registered (or it points at a book no longer in the library).
+notice-bookmark-none = ブックマークが登録されていません
 notice-added-books = { $n } 冊の本を追加しました
 notice-added-books-save-failed = { $n } 冊の本を追加しましたが、ライブラリを保存できませんでした: { $error }
 

@@ -179,6 +179,11 @@ export component ViewerWindow inherits Window {
     callback carousel-open(int);
     callback carousel-move(int);
     callback carousel-back();
+    // The NavBar bookmark capsule: jump to the continue-reading book, or surface
+    // a no-bookmark notice. Same root-twin reason as the seams below — Slint
+    // exposes only the root window surface to Rust, so the carousel's
+    // `continue-reading` needs a forwarded root twin for main.rs to handle.
+    callback carousel-continue-reading();
     // Bulk-selection seams (bulk-delete epic, PR-2). `carousel-selection-mode` is
     // the root twin of the Carousel's `selection-mode`. The toggle/cover-clicked
     // callbacks forward the focused/clicked VISIBLE carousel index to main.rs;
@@ -283,6 +288,7 @@ export component ViewerWindow inherits Window {
         open(i) => { root.carousel-open(i); }
         move(delta) => { root.carousel-move(delta); }
         back() => { root.carousel-back(); }
+        continue-reading() => { root.carousel-continue-reading(); }
         add-books() => { root.add-books(); }
         add-folder() => { root.add-folder(); }
         // Bulk-selection (PR-2): mirror the mode locally and forward the seams.

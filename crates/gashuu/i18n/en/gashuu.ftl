@@ -237,6 +237,9 @@ notice-failed-save-library = Failed to save library: { $error }
 notice-could-not-save-settings = Could not save settings: { $error }
 notice-load-failed = Could not load { $what }; starting fresh.
 notice-already-in-library = Already in library — no new books added.
+# Notice when the NavBar bookmark capsule is clicked but no continue-reading
+# bookmark is registered (or it points at a book no longer in the library).
+notice-bookmark-none = No bookmark registered
 notice-added-books = Added { $n } book(s)
 notice-added-books-save-failed = Added { $n } book(s), but could not save library: { $error }
 

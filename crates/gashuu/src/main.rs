@@ -411,6 +411,53 @@ fn main() -> color_eyre::Result<()> {
             })
         });
     }
+
+    // NavBar bookmark capsule: jump to the continue-reading book. The bookmark IS
+    // the library's `last_opened` book (the same path the continue-reading ribbon
+    // marks). When it names a book still present in the library, open it through
+    // the SAME path a Return-on-cover open uses — open_book.run resumes its stored
+    // page for free — then transition to the Viewer. When there is no bookmark
+    // (None) OR it names a book no longer in the library (a stale path purged from
+    // `books`), there is nothing to jump to: surface the no-bookmark notice instead.
+    {
+        let ui_weak = ui.as_weak();
+        let library = Rc::clone(&library);
+        let nav = Rc::clone(&nav);
+        let open_book = Rc::clone(&open_book);
+        let state = Rc::clone(&state);
+        let viewport = Rc::clone(&viewport);
+        let localizer = Rc::clone(&localizer);
+        ui.on_carousel_continue_reading(move || {
+            with_ui(&ui_weak, |ui| {
+                // Resolve the bookmark to a present-in-library book path. A None
+                // `last_opened`, or one whose path is no longer in `books` (the
+                // book was purged), both yield None here and count as no bookmark.
+                let path = {
+                    let lib = library.borrow();
+                    lib.last_opened()
+                        .filter(|p| lib.books().iter().any(|book| book.path() == *p))
+                        .map(std::path::Path::to_path_buf)
+                };
+                let Some(path) = path else {
+                    // No registered bookmark — answer the click with a notice so
+                    // the always-enabled capsule still gives feedback.
+                    ui.set_status_text(
+                        crate::i18n::dynamic::bookmark_none(localizer.loader()).into(),
+                    );
+                    return;
+                };
+                // Same open sequence as on_carousel_open: open_book.run writes back
+                // the OLD book's position, opens the bookmarked path, and resumes
+                // its stored page; a failed open (file moved/deleted) is handled by
+                // run itself (leaves open_file unchanged + sets an `Error:` status).
+                let outcome = open_book.run(&ui, &path, SkippedDetail::None);
+                finalize_open(&ui, &state, &viewport, &localizer, outcome);
+                ui.set_current_book_name(current_book_name(&state).into());
+                go_to_viewer(&ui, &nav);
+            })
+        });
+    }
+
     // Carousel: Left/Right move the focused cover by `delta` (-1 / +1). Clamp
     // into the shelf bounds — the row ends are hard stops (no wrap), so Left on
     // the first book and Right on the last are inert. An empty shelf is a no-op
