@@ -24,7 +24,8 @@ use enum_adapters::{
     reading_direction_to_index, spread_mode_to_index,
 };
 use gashuu_core::{
-    CacheConfig, DecodedImage, FitMode, Library, ReadingDirection, Settings, ViewOverride,
+    ArchiveLoader, CacheConfig, CoreError, DecodedImage, FitMode, Library, ReadingDirection,
+    Settings, ViewOverride,
 };
 use keymap::{map_key, KeyCommand};
 use library_model::{LibrarySearchState, LibrarySelectionState};
@@ -1928,16 +1929,58 @@ pub(crate) fn write_back_view_override(
     }
 }
 
-/// Add every path in `paths` to `lib`. Each path is added via `Library::add`,
-/// which canonicalizes, dedups, and re-sorts the library on insert.
-/// Returns the canonical paths of the books actually inserted (new books only);
-/// duplicates within the batch and paths already present are skipped, since
-/// `Library::add` returns `None` in those cases.
-fn add_paths(lib: &mut Library, paths: Vec<std::path::PathBuf>) -> Vec<std::path::PathBuf> {
-    paths
-        .into_iter()
-        .filter_map(|path| lib.add(path).map(std::path::Path::to_path_buf))
-        .collect()
+/// Outcome of an add batch: the canonical paths actually inserted (new books
+/// only, in INPUT order) and the count of paths REJECTED because they could not
+/// be opened as a book — either a source with zero image pages (the empty-book
+/// rule) or an unreadable / unsupported source. Duplicates are NOT counted in
+/// `skipped`: a path already in the library (or repeated within the batch) is
+/// neither added nor rejected, mirroring `Library::add`'s `None`.
+struct AddReport {
+    added: Vec<std::path::PathBuf>,
+    skipped: usize,
+}
+
+/// Add every path in `paths` to `lib`, rejecting sources that contain no images
+/// before they ever enter the library.
+///
+/// Each path is FIRST probed with [`ArchiveLoader::probe_page_count`]:
+/// - `Err(CoreError::EmptyBook { .. })` — the source opened but has zero image
+///   pages: skip it and count it in `skipped` (the empty-book rule).
+/// - `Err(other)` (I/O, `UnsupportedFormat`, …) — the source cannot be opened at
+///   all: skip it, count it in `skipped`, and `warn!` with the error. A book that
+///   cannot be opened is never added.
+/// - `Ok(count)` — add via `Library::add` (which canonicalizes, dedups, and
+///   re-sorts). On a genuine insert (`Some(canonical)`) the page count is recorded
+///   immediately so a freshly added book shows "1 / N" without waiting for its
+///   first open; a duplicate (`None`) is silently dropped (neither added nor
+///   skipped).
+fn add_paths(lib: &mut Library, paths: Vec<std::path::PathBuf>) -> AddReport {
+    let mut added = Vec::new();
+    let mut skipped = 0usize;
+    for path in paths {
+        match ArchiveLoader::probe_page_count(&path) {
+            Err(CoreError::EmptyBook { .. }) => {
+                skipped += 1;
+                tracing::debug!(path = %path.display(), "skipping empty source (no image pages)");
+            }
+            Err(e) => {
+                skipped += 1;
+                tracing::warn!(error = %e, path = %path.display(), "skipping unreadable source");
+            }
+            Ok(count) => {
+                if let Some(canonical) = lib.add(path).map(std::path::Path::to_path_buf) {
+                    // Record the probed count on the freshly inserted book so it
+                    // shows "1 / N" before its first open. `set_page_count`
+                    // re-finds the book by its canonical path.
+                    lib.set_page_count(&canonical, count);
+                    added.push(canonical);
+                }
+                // `None` here means a duplicate (within the batch or already
+                // present): neither added nor skipped, as before.
+            }
+        }
+    }
+    AddReport { added, skipped }
 }
 
 /// Resolve a VISIBLE carousel `index` to its underlying library book path,
@@ -2172,6 +2215,11 @@ fn refresh_library_carousel(ui: &ViewerWindow, deps: &CarouselRefresh, reset_foc
 /// only in the save-failure trace message. When nothing new is added there is
 /// nothing to persist or rebuild, so it short-circuits after the status update.
 ///
+/// Sources with no image pages (or that cannot be opened) are rejected by
+/// `add_paths` before they enter the library; the status notice names how many
+/// were skipped (added-some-skipped-some, or none-added-all-empty), falling back
+/// to the already-in-library message only when the skip count is zero.
+///
 /// Newly added books are FORCED visible under the active filter (so an add never
 /// silently hides the new book behind a non-matching query); the filter text
 /// stays in place, and the forced override is cleared on the next user query
@@ -2183,10 +2231,21 @@ fn add_books_and_refresh(
     op: &'static str,
     loader: &i18n_embed::fluent::FluentLanguageLoader,
 ) {
-    let added_paths = add_paths(&mut deps.library.borrow_mut(), paths);
+    let AddReport {
+        added: added_paths,
+        skipped,
+    } = add_paths(&mut deps.library.borrow_mut(), paths);
     if added_paths.is_empty() {
-        // Everything picked was already in the library: nothing to persist or rebuild.
-        ui.set_status_text(crate::i18n::dynamic::already_in_library(loader).into());
+        // Nothing new entered the library: nothing to persist or rebuild. The
+        // notice distinguishes "every path was rejected as empty/unreadable"
+        // (skipped > 0) from "everything picked was already in the library"
+        // (skipped == 0, the previous behavior).
+        let notice = if skipped > 0 {
+            crate::i18n::dynamic::no_books_added_empty(loader, skipped)
+        } else {
+            crate::i18n::dynamic::already_in_library(loader)
+        };
+        ui.set_status_text(notice.into());
         ui.invoke_focus_carousel();
         return;
     }
@@ -2213,7 +2272,15 @@ fn add_books_and_refresh(
             );
         }
         Ok(()) => {
-            ui.set_status_text(crate::i18n::dynamic::added_books(loader, added_paths.len()).into());
+            // Some books were added; if any sibling paths were rejected as
+            // empty/unreadable, name both counts, otherwise use the plain
+            // added-books notice (unchanged from before the empty-book rule).
+            let notice = if skipped > 0 {
+                crate::i18n::dynamic::added_books_skipped(loader, added_paths.len(), skipped)
+            } else {
+                crate::i18n::dynamic::added_books(loader, added_paths.len())
+            };
+            ui.set_status_text(notice.into());
         }
     }
     // Focus the first newly added book by its VISIBLE row (the carousel renders
@@ -2404,47 +2471,73 @@ mod tests {
         assert_eq!(ov.fit_mode, Some(FitMode::Actual));
     }
 
+    // ---- add_paths (empty-book rule) -------------------------------------
+    //
+    // Since the empty-book rule, `add_paths` PROBES each source before insert:
+    // a source must contain at least one image page to be added. A folder is the
+    // cheapest fixture — a zero-byte `*.png` counts as a page (listing is
+    // extension-based), an empty folder probes to `EmptyBook`, and a nonexistent
+    // path probes to an I/O error. These helpers build real temp dirs so probing
+    // sees a genuine filesystem (the same reason the older tests already used
+    // tempdirs: `Library::add` canonicalizes).
+
+    /// Create a fresh temp directory under `parent/<name>` holding `pages`
+    /// zero-byte `*.png` files (so it probes to a `pages`-page book). With
+    /// `pages == 0` the directory is empty and probes to `EmptyBook`. Returns the
+    /// directory path (its canonical form is what `Library::add` stores).
+    fn make_book_dir(parent: &std::path::Path, name: &str, pages: usize) -> std::path::PathBuf {
+        let dir = parent.join(name);
+        std::fs::create_dir_all(&dir).expect("create book dir");
+        for i in 0..pages {
+            std::fs::write(dir.join(format!("page{i:03}.png")), []).expect("write page");
+        }
+        dir
+    }
+
+    /// Canonicalize a path the same way `Library::add` does, so test expectations
+    /// match the stored/returned canonical paths.
+    fn canon(path: &std::path::Path) -> std::path::PathBuf {
+        path.canonicalize().expect("canonicalize existing path")
+    }
+
     #[test]
     fn add_paths_empty_vec_returns_zero() {
         let mut lib = gashuu_core::Library::new();
-        let added = add_paths(&mut lib, vec![]);
-        assert!(added.is_empty());
+        let report = add_paths(&mut lib, vec![]);
+        assert!(report.added.is_empty());
+        assert_eq!(report.skipped, 0);
         assert_eq!(lib.books().len(), 0);
     }
 
     #[test]
     fn add_paths_new_paths_counted() {
         let mut lib = gashuu_core::Library::new();
-        let paths = vec![
-            std::path::PathBuf::from("nonexistent/vol1.cbz"),
-            std::path::PathBuf::from("nonexistent/vol2.cbz"),
-        ];
-        let added = add_paths(&mut lib, paths);
-        assert_eq!(added.len(), 2);
+        let root = tempfile::tempdir().expect("tempdir");
+        let vol1 = make_book_dir(root.path(), "vol1", 1);
+        let vol2 = make_book_dir(root.path(), "vol2", 2);
+        let report = add_paths(&mut lib, vec![vol1.clone(), vol2.clone()]);
+        assert_eq!(report.added.len(), 2);
+        assert_eq!(report.skipped, 0);
         assert_eq!(lib.books().len(), 2);
-        // Nonexistent paths cannot be canonicalized, so `Library::add` stores the
-        // verbatim path; the returned vec therefore equals the input, in input order.
-        assert_eq!(
-            added,
-            vec![
-                std::path::PathBuf::from("nonexistent/vol1.cbz"),
-                std::path::PathBuf::from("nonexistent/vol2.cbz"),
-            ]
-        );
+        // The returned vec holds the CANONICAL paths in INPUT order.
+        assert_eq!(report.added, vec![canon(&vol1), canon(&vol2)]);
     }
 
     #[test]
     fn add_paths_dedup_within_batch() {
         let mut lib = gashuu_core::Library::new();
-        let paths = vec![
-            std::path::PathBuf::from("nonexistent/vol1.cbz"),
-            std::path::PathBuf::from("nonexistent/vol1.cbz"),
-        ];
-        let added = add_paths(&mut lib, paths);
+        let root = tempfile::tempdir().expect("tempdir");
+        let vol1 = make_book_dir(root.path(), "vol1", 1);
+        let report = add_paths(&mut lib, vec![vol1.clone(), vol1.clone()]);
         assert_eq!(
-            added.len(),
+            report.added.len(),
             1,
             "duplicate within the batch must not be double-counted"
+        );
+        // A duplicate is neither added nor rejected, so it is NOT counted as skipped.
+        assert_eq!(
+            report.skipped, 0,
+            "a duplicate is not an empty/unreadable skip"
         );
         assert_eq!(lib.books().len(), 1);
     }
@@ -2452,16 +2545,19 @@ mod tests {
     #[test]
     fn add_paths_dedup_against_existing() {
         let mut lib = gashuu_core::Library::new();
-        lib.add(std::path::PathBuf::from("nonexistent/vol1.cbz"));
-        let paths = vec![
-            std::path::PathBuf::from("nonexistent/vol1.cbz"),
-            std::path::PathBuf::from("nonexistent/vol2.cbz"),
-        ];
-        let added = add_paths(&mut lib, paths);
+        let root = tempfile::tempdir().expect("tempdir");
+        let vol1 = make_book_dir(root.path(), "vol1", 1);
+        let vol2 = make_book_dir(root.path(), "vol2", 1);
+        lib.add(vol1.clone());
+        let report = add_paths(&mut lib, vec![vol1.clone(), vol2.clone()]);
         assert_eq!(
-            added.len(),
+            report.added.len(),
             1,
             "a path already in the library must not be counted"
+        );
+        assert_eq!(
+            report.skipped, 0,
+            "an existing path is not an empty/unreadable skip"
         );
         assert_eq!(lib.books().len(), 2);
     }
@@ -2470,10 +2566,14 @@ mod tests {
     fn add_paths_returns_canonical_paths_and_skips_duplicates() {
         let mut lib = gashuu_core::Library::new();
         let root = tempfile::tempdir().expect("tempdir");
-        let first = root.path().join(".");
-        let expected = root.path().canonicalize().expect("canonicalize tempdir");
-        let added = add_paths(&mut lib, vec![first.clone(), first.clone()]);
-        assert_eq!(added, vec![expected.clone()]);
+        let vol1 = make_book_dir(root.path(), "vol1", 1);
+        // `vol1/.` and `vol1` canonicalize to the same path, so the second is a
+        // duplicate and dropped.
+        let with_dot = vol1.join(".");
+        let expected = canon(&vol1);
+        let report = add_paths(&mut lib, vec![with_dot.clone(), with_dot.clone()]);
+        assert_eq!(report.added, vec![expected.clone()]);
+        assert_eq!(report.skipped, 0);
         assert_eq!(lib.books().len(), 1);
         assert_eq!(lib.books()[0].path(), expected.as_path());
     }
@@ -2481,18 +2581,94 @@ mod tests {
     #[test]
     fn add_paths_all_existing_returns_zero() {
         let mut lib = gashuu_core::Library::new();
-        lib.add(std::path::PathBuf::from("nonexistent/vol1.cbz"));
-        lib.add(std::path::PathBuf::from("nonexistent/vol2.cbz"));
+        let root = tempfile::tempdir().expect("tempdir");
+        let vol1 = make_book_dir(root.path(), "vol1", 1);
+        let vol2 = make_book_dir(root.path(), "vol2", 1);
+        lib.add(vol1.clone());
+        lib.add(vol2.clone());
         let before = lib.books().len();
-        let added = add_paths(
-            &mut lib,
-            vec![
-                std::path::PathBuf::from("nonexistent/vol1.cbz"),
-                std::path::PathBuf::from("nonexistent/vol2.cbz"),
-            ],
-        );
-        assert!(added.is_empty(), "all-duplicate batch must return 0");
+        let report = add_paths(&mut lib, vec![vol1.clone(), vol2.clone()]);
+        assert!(report.added.is_empty(), "all-duplicate batch must add 0");
+        assert_eq!(report.skipped, 0, "duplicates are not skips");
         assert_eq!(lib.books().len(), before, "books count must not change");
+    }
+
+    #[test]
+    fn add_paths_mixed_batch_counts_added_and_skipped() {
+        // A valid book, an empty folder, and a duplicate of the valid book:
+        // 1 added, 1 skipped (the empty), and the duplicate dropped silently.
+        let mut lib = gashuu_core::Library::new();
+        let root = tempfile::tempdir().expect("tempdir");
+        let valid = make_book_dir(root.path(), "valid", 1);
+        let empty = make_book_dir(root.path(), "empty", 0);
+        let report = add_paths(&mut lib, vec![valid.clone(), empty.clone(), valid.clone()]);
+        assert_eq!(
+            report.added,
+            vec![canon(&valid)],
+            "only the valid book is added"
+        );
+        assert_eq!(report.skipped, 1, "the empty folder is the one skip");
+        assert_eq!(lib.books().len(), 1);
+        assert_eq!(lib.books()[0].path(), canon(&valid).as_path());
+    }
+
+    #[test]
+    fn add_paths_all_empty_batch_adds_zero_skips_all() {
+        // Every picked source is empty: nothing added, all counted as skipped.
+        let mut lib = gashuu_core::Library::new();
+        let root = tempfile::tempdir().expect("tempdir");
+        let e1 = make_book_dir(root.path(), "e1", 0);
+        let e2 = make_book_dir(root.path(), "e2", 0);
+        let e3 = make_book_dir(root.path(), "e3", 0);
+        let report = add_paths(&mut lib, vec![e1, e2, e3]);
+        assert!(
+            report.added.is_empty(),
+            "no book added from an all-empty batch"
+        );
+        assert_eq!(report.skipped, 3, "all three empty sources are skipped");
+        assert_eq!(lib.books().len(), 0);
+    }
+
+    #[test]
+    fn add_paths_unreadable_path_is_skipped() {
+        // A nonexistent path cannot be opened (I/O error), so it is rejected as a
+        // skip — never added (an "unreadable" source is NOT classified as empty,
+        // but is still kept out of the library).
+        let mut lib = gashuu_core::Library::new();
+        let report = add_paths(
+            &mut lib,
+            vec![std::path::PathBuf::from(
+                "/nonexistent_gashuu_add_paths_unreadable",
+            )],
+        );
+        assert!(report.added.is_empty(), "an unreadable path is never added");
+        assert_eq!(
+            report.skipped, 1,
+            "the unreadable path is counted as skipped"
+        );
+        assert_eq!(lib.books().len(), 0);
+    }
+
+    #[test]
+    fn add_paths_sets_page_count_immediately() {
+        // A freshly added book carries its probed page count so the carousel can
+        // show "1 / N" before the book is ever opened.
+        let mut lib = gashuu_core::Library::new();
+        let root = tempfile::tempdir().expect("tempdir");
+        let three = make_book_dir(root.path(), "three", 3);
+        let report = add_paths(&mut lib, vec![three.clone()]);
+        assert_eq!(report.added.len(), 1);
+        assert_eq!(report.skipped, 0);
+        let book = lib
+            .books()
+            .iter()
+            .find(|b| b.path() == canon(&three))
+            .expect("added book present");
+        assert_eq!(
+            book.page_count_opt(),
+            Some(3),
+            "the probed page count is recorded on add"
+        );
     }
 
     #[test]
@@ -2596,17 +2772,17 @@ mod tests {
     fn add_paths_returns_input_order_while_books_are_natural_order() {
         // Focus follows the FIRST input path, not natural order: `add_paths`
         // returns the inserted paths in INPUT order, whereas `lib.books()` keeps
-        // them in NATURAL (sorted) order. Nonexistent paths cannot be
-        // canonicalized, so `Library::add` falls back to the verbatim path and the
-        // returned paths equal the verbatim input paths.
+        // them in NATURAL (sorted) order. Both share one parent dir so their leaf
+        // names (vol1, vol10) drive the natural sort.
         let mut lib = gashuu_core::Library::new();
-        let vol10 = std::path::PathBuf::from("nonexistent/vol10.cbz");
-        let vol1 = std::path::PathBuf::from("nonexistent/vol1.cbz");
-        let added = add_paths(&mut lib, vec![vol10.clone(), vol1.clone()]);
+        let root = tempfile::tempdir().expect("tempdir");
+        let vol10 = canon(&make_book_dir(root.path(), "vol10", 1));
+        let vol1 = canon(&make_book_dir(root.path(), "vol1", 1));
+        let report = add_paths(&mut lib, vec![vol10.clone(), vol1.clone()]);
 
         // Returned vec is in INPUT order (vol10 first, vol1 second).
-        assert_eq!(added[0], vol10);
-        assert_eq!(added[1], vol1);
+        assert_eq!(report.added[0], vol10);
+        assert_eq!(report.added[1], vol1);
 
         // The library itself is in NATURAL order (vol1 before vol10).
         let books: Vec<_> = lib
