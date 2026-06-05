@@ -373,7 +373,8 @@ removed, save_error }`, returned when the source opens CLEANLY but counts zero p
 HERE — before `register_opened`, with the recents push / settings save / per-book view resolve /
 carousel rebuild / thumbnail start all bypassed (so an empty book never re-enters via
 `register_opened`); it removes the book if present (`Library::remove`, idempotent bool), re-saves,
-and pre-captures any save error. The recents push + settings save are DEFERRED past this check so
+best-effort purges the removed book's cover (via the shared `app::remove_empty_book`; Wave-2 #150
+closed the old open-path purge gap), and pre-captures any save error. The recents push + settings save are DEFERRED past this check so
 they fire only for a non-empty book (see [patterns.md](patterns.md), "Insert a guard before X").
 `title` prefers the stored `Book::title`, falling back to `gashuu_core::display_title` (the core
 derivation rule made public in Wave 1 #149; the Wave-2 #150 switchover dissolved the UI replica —
