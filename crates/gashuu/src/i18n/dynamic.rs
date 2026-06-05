@@ -153,6 +153,9 @@ pub(crate) fn added_books_save_failed(
 
 /// Toolbar count label.
 ///
+/// When `total == 0`, returns the mode-indicator string (the
+/// `selection-mode-label` FTL key, e.g. "Selection mode") rather than a count.
+///
 /// When `total > visible_selected`, some selected books are outside the visible
 /// projection (filtered out by the current search query). The "(M outside search)"
 /// form is shown to prevent silent off-screen deletion — it must appear ONLY when

@@ -73,7 +73,10 @@ export component SelectionToolbar inherits Rectangle {
     horizontal-stretch: 0;
     vertical-stretch: 0;
 
-    // ── Glass approximation (layers 1, 2, 4 — verbatim from NavBar lines 189–195) ──
+    // ── Glass approximation (layers 1, 2, 4 — same anatomy as NavBar's glass recipe,
+    //    with two intentional departures: border-color is Theme.accent for
+    //    mode-context differentiation (spec §2.5), and the drop shadow is
+    //    active-gated to stop bleed from the parked position) ──────────────────
     background: Theme.glass-fill;
     border-radius: Theme.nav-pill-radius;
     border-width: 1px;
@@ -93,9 +96,9 @@ export component SelectionToolbar inherits Rectangle {
     drop-shadow-offset-y: 8px;
 
     // ── Glass approximation (layer 3): top inner highlight rim ────────────────
-    // A 1px decorative line just below the top edge, inset horizontally by
-    // ~half the height so it stays inside the rounded corners (NavBar idiom,
-    // lines 201–207).
+    // A 1px decorative line just below the top edge (y: 1px), inset
+    // horizontally by half the pill height so it stays inside the rounded
+    // corners (NavBar idiom — same geometry).
     Rectangle {
         x: Theme.nav-pill-height / 2;
         y: 1px;
