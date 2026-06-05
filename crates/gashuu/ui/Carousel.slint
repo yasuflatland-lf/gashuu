@@ -193,14 +193,25 @@ component CoverCard inherits Rectangle {
             y: Theme.space-xs;
         }
 
-        // Continue-reading ribbon (BookmarkRibbon). Pinned to the TOP-LEFT so it
-        // does NOT conflict with SelectionBadge's top-right corner: both render
-        // simultaneously when a bookmarked book is also selected (edge case 5).
+        // Continue-reading ribbon (BookmarkRibbon). CARD-EXTERNAL PROTRUSION: the
+        // ribbon floats above the cover top edge (negative y), in the same family as
+        // the ProgressBar that renders below the cover at `y: parent.height + …`.
+        // No ancestor clips this region, so a negative y is safe.
+        // The area above the cover is always covered by the dark stage gradient, so
+        // the white glyph keeps contrast regardless of cover art — that is why the
+        // ribbon moved outside the card.
+        // The `space-xs` (6 px) overlap plants the bottom notch INTO the cover edge;
+        // even if a light cover visually swallows the white notch, it still reads as
+        // "tucked into the pages" — self-healing by design.
+        // TOP-LEFT placement does NOT conflict with SelectionBadge's top-right corner:
+        // both render simultaneously when a bookmarked book is also selected (edge
+        // case 5); the spatial separation actually improves now that the ribbon sits
+        // outside the card boundary.
         // Rendered regardless of `available` — a file-gone book still shows its
         // "continue reading" status (edge case 4).
         if root.bookmarked : BookmarkRibbon {
             x: Theme.space-xs;
-            y: 0;
+            y: -self.height + Theme.space-xs;
         }
     }
 
