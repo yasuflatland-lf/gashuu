@@ -2076,33 +2076,16 @@ pub(crate) fn apply_global_view_to_runtime(
 ///   - failure with a prior book still open -> that book's name (still shown);
 ///   - failure with nothing open / boot -> `""`.
 ///
-/// `open_file` is a real filesystem path, so `is_dir()` reliably discriminates a
-/// folder from an archive for the name component. Borrow discipline: the single
-/// `state.borrow()` `Ref` is confined to this function and drops on return.
+/// `open_file` is a real filesystem path; the folder/archive discrimination
+/// happens inside `gashuu_core::display_title`, which checks `is_dir()` live
+/// on the same real path. Borrow discipline: the single `state.borrow()` `Ref`
+/// is confined to this function and drops on return.
 fn current_book_name(state: &Rc<RefCell<ViewerState>>) -> String {
     let s = state.borrow();
     match s.open_file() {
-        Some(path) => book_name_for(path, path.is_dir()),
+        Some(path) => gashuu_core::display_title(path),
         None => String::new(),
     }
-}
-
-/// Derive a book's display name from its path, mirroring the `Book::from_path`
-/// convention: a folder shows its directory name (last path component), an
-/// archive shows its file stem (extension dropped so `.cbz`/`.zip` don't clutter
-/// the title). Falls back to the lossy full path so the name is never empty.
-/// `is_dir` is the folder/archive discriminator. `to_string_lossy` never panics
-/// on a non-UTF-8 path.
-fn book_name_for(path: &std::path::Path, is_dir: bool) -> String {
-    let component = if is_dir {
-        path.file_name()
-    } else {
-        path.file_stem()
-    };
-    component
-        .map(|s| s.to_string_lossy().into_owned())
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| path.to_string_lossy().into_owned())
 }
 
 /// Pure helper: decide if and what to write back to the Library.
