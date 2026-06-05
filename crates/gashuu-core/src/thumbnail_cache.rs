@@ -23,6 +23,11 @@ pub fn cache_key(path: &Path, mtime_secs: i64, max_side: u32) -> String {
 const FNV_OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
 const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
 
+/// Age past which a `.{key}.tmp` file is a crash leftover, not an in-flight
+/// `put` (whose temp-write-then-rename lives milliseconds). [`ThumbnailCache::prune`]
+/// reclaims tmp files older than this regardless of the size cap.
+const TMP_STALE_SECS: u64 = 60 * 60;
+
 // Fold `bytes` into `hash` using the FNV-1a step (xor then multiply).
 fn fnv1a(hash: &mut u64, bytes: &[u8]) {
     for &byte in bytes {
@@ -56,10 +61,22 @@ impl ThumbnailCache {
     /// Reads `<dir>/<key>.png` and decodes it into a `DecodedImage`. Returns
     /// `None` if the file is missing, unreadable, or not a valid image; it
     /// never panics.
+    ///
+    /// A hit refreshes the file's mtime (touch-on-get), which is what makes
+    /// [`prune`](Self::prune)'s mtime-ascending eviction near-LRU: live covers
+    /// are re-touched every launch while a key-orphaned or corrupt entry keeps
+    /// aging. The touch runs only AFTER a successful decode (corrupt files must
+    /// age out) and is best-effort — a failure (entry pruned mid-read, read-only
+    /// fs) costs nothing but eviction-order precision.
     pub fn get(&self, key: &str) -> Option<DecodedImage> {
         let path = self.dir.join(format!("{key}.png"));
         let bytes = std::fs::read(&path).ok()?;
-        crate::image_ops::decode(&bytes).ok()
+        let img = crate::image_ops::decode(&bytes).ok()?;
+        let _ = std::fs::File::options()
+            .write(true)
+            .open(&path)
+            .and_then(|f| f.set_modified(std::time::SystemTime::now()));
+        Some(img)
     }
 
     /// Store a thumbnail in the cache.
@@ -99,8 +116,9 @@ impl ThumbnailCache {
     /// [`cache_key`] derivation reused here, so the caller passes the CURRENT
     /// `mtime_secs` (the same value the cover was generated under). If the file's
     /// mtime has since drifted, the recomputed key no longer matches the stored
-    /// PNG; that PNG is then an undeletable-but-harmless orphan (the LRU/size cap
-    /// reclaims it later). This is best-effort by design: a missing file (cache
+    /// PNG; that PNG is then an undeletable-but-harmless orphan ([`prune`](Self::prune)
+    /// reclaims it later — never `get`-touched, it ages to the front of the
+    /// eviction order). This is best-effort by design: a missing file (cache
     /// miss) and any I/O error are SILENTLY skipped — callers may warn, never
     /// error — so the count is only the files actually unlinked.
     pub fn purge_for(&self, path: &Path, mtime_secs: i64, max_sides: &[u32]) -> usize {
@@ -113,14 +131,135 @@ impl ThumbnailCache {
             })
             .count()
     }
+
+    /// Sweep the cache directory down to `max_bytes` of stored `*.png` payload,
+    /// evicting in ascending `(mtime, file name)` order — oldest first, the name
+    /// as a deterministic tie-break. `get` refreshes a hit's mtime, so this order
+    /// is near-LRU: a key-orphaned cover (its source's mtime drifted) is never
+    /// read again, ages to the front, and is reclaimed once the cap is hit.
+    ///
+    /// Best-effort like [`purge_for`](Self::purge_for): a missing directory is a
+    /// zero report (first launch), unreadable entries are skipped, a failed
+    /// unlink is skipped (not counted) and the sweep continues. Files the cache
+    /// did not write (neither `*.png` nor its tmp shape) are NEVER touched.
+    pub fn prune(&self, max_bytes: u64) -> PruneReport {
+        let mut report = PruneReport::default();
+        let Ok(entries) = std::fs::read_dir(&self.dir) else {
+            // Missing/unreadable dir (e.g. first launch, cache never written):
+            // nothing to sweep, never an error.
+            return report;
+        };
+
+        // One stored thumbnail, as the eviction pass needs it: unlink target,
+        // size for the running total, and the (mtime, name) sort key.
+        struct CacheEntry {
+            path: PathBuf,
+            size: u64,
+            mtime: std::time::SystemTime,
+            name: std::ffi::OsString,
+        }
+
+        let now = std::time::SystemTime::now();
+        let mut pngs: Vec<CacheEntry> = Vec::new();
+        for entry in entries.flatten() {
+            let Ok(meta) = entry.metadata() else {
+                continue;
+            };
+            if !meta.is_file() {
+                continue;
+            }
+            let name = entry.file_name();
+            let lossy = name.to_string_lossy();
+            // A `put` interrupted between temp write and rename strands its
+            // `.{key}.tmp` forever. Reclaim ones past the stale threshold; a
+            // younger tmp may be an in-flight write on another thread, so the
+            // age guard protects it (an unreadable age counts as fresh).
+            if lossy.starts_with('.') && lossy.ends_with(".tmp") {
+                let mtime = meta.modified().unwrap_or(now);
+                let stale = now
+                    .duration_since(mtime)
+                    .map(|age| age.as_secs() >= TMP_STALE_SECS)
+                    .unwrap_or(false);
+                if stale && std::fs::remove_file(entry.path()).is_ok() {
+                    report.removed_files += 1;
+                    report.removed_bytes += meta.len();
+                }
+                continue;
+            }
+            if lossy.ends_with(".png") {
+                pngs.push(CacheEntry {
+                    path: entry.path(),
+                    size: meta.len(),
+                    // An unreadable mtime sorts as the epoch — evicted first,
+                    // which is the safe end for an entry we know nothing about.
+                    mtime: meta.modified().unwrap_or(std::time::UNIX_EPOCH),
+                    name,
+                });
+            }
+        }
+
+        let mut total: u64 = pngs.iter().map(|e| e.size).sum();
+        pngs.sort_by(|a, b| a.mtime.cmp(&b.mtime).then_with(|| a.name.cmp(&b.name)));
+        let mut victims = pngs.into_iter();
+        while total > max_bytes {
+            let Some(entry) = victims.next() else {
+                // Every remaining unlink failed; the leftover bytes stay counted.
+                break;
+            };
+            if std::fs::remove_file(&entry.path).is_ok() {
+                report.removed_files += 1;
+                report.removed_bytes += entry.size;
+                total -= entry.size;
+            }
+        }
+        report.retained_bytes = total;
+        report
+    }
+}
+
+/// Result of one [`ThumbnailCache::prune`] sweep. A named struct (not a tuple)
+/// so call sites read; the caller (UI) logs these — core stays log-free.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct PruneReport {
+    /// Files actually unlinked by the sweep.
+    pub removed_files: usize,
+    /// Sum of the unlinked files' sizes, in bytes.
+    pub removed_bytes: u64,
+    /// Post-sweep total of the surviving `*.png` payload, in bytes — lets the
+    /// caller log "under the cap" without re-scanning the directory.
+    pub retained_bytes: u64,
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{cache_key, ThumbnailCache};
+    use super::{cache_key, PruneReport, ThumbnailCache};
     use crate::image_ops::DecodedImage;
     use std::path::Path;
     use tempfile::tempdir;
+
+    /// Set `path`'s mtime to the exact `target` instant. Tests needing EQUAL
+    /// mtimes across files must share one target (two `now()` reads differ).
+    fn set_mtime(path: &Path, target: std::time::SystemTime) {
+        std::fs::File::options()
+            .write(true)
+            .open(path)
+            .and_then(|f| f.set_modified(target))
+            .expect("set fixture mtime");
+    }
+
+    /// Back-date `path`'s mtime by `secs_ago` seconds, so a test controls the
+    /// eviction order `prune` sees (and the age `get`'s touch must advance).
+    fn back_date(path: &Path, secs_ago: u64) {
+        let target = std::time::SystemTime::now() - std::time::Duration::from_secs(secs_ago);
+        set_mtime(path, target);
+    }
+
+    /// On-disk size of the cached PNG for `key` (seeded via `put`).
+    fn png_size(dir: &Path, key: &str) -> u64 {
+        std::fs::metadata(dir.join(format!("{key}.png")))
+            .expect("seeded png exists")
+            .len()
+    }
 
     #[test]
     fn cache_key_is_stable_for_same_inputs() {
@@ -278,7 +417,7 @@ mod tests {
     fn purge_for_drifted_mtime_removes_nothing_and_does_not_error() {
         // The cover was generated under one mtime; purging with a DRIFTED mtime
         // derives a different key, so nothing matches: 0 removed, no error, and the
-        // original orphan stays on disk (harmless — reclaimed by the size cap later).
+        // original orphan stays on disk (harmless — reclaimed by `prune` later).
         let dir = tempdir().unwrap();
         let cache = ThumbnailCache::with_dir(dir.path().to_path_buf());
         let path = Path::new("/manga/book.cbz");
@@ -334,6 +473,194 @@ mod tests {
             cache.get(&key).is_some(),
             "the seeded cover is left intact when no sides are requested"
         );
+    }
+
+    #[test]
+    fn prune_missing_dir_returns_zero_report() {
+        // First launch: the cache directory was never written. Prune must be a
+        // no-op zero report, never an error or a panic.
+        let dir = tempdir().unwrap();
+        let cache = ThumbnailCache::with_dir(dir.path().join("never_created"));
+
+        let report = cache.prune(0);
+
+        assert_eq!(report, PruneReport::default(), "missing dir prunes nothing");
+    }
+
+    #[test]
+    fn prune_under_cap_removes_nothing() {
+        // Total payload exactly at the cap: nothing is evicted and the report
+        // carries the surviving total so the caller can log it.
+        let dir = tempdir().unwrap();
+        let cache = ThumbnailCache::with_dir(dir.path().to_path_buf());
+        cache.put("aaaa", &tiny_decoded_image()).expect("seed");
+        cache.put("bbbb", &tiny_decoded_image()).expect("seed");
+        let total = png_size(dir.path(), "aaaa") + png_size(dir.path(), "bbbb");
+
+        let report = cache.prune(total);
+
+        assert_eq!(report.removed_files, 0, "at-cap total evicts nothing");
+        assert_eq!(report.removed_bytes, 0);
+        assert_eq!(report.retained_bytes, total, "report carries the total");
+        assert!(cache.get("aaaa").is_some(), "both entries survive");
+        assert!(cache.get("bbbb").is_some());
+    }
+
+    #[test]
+    fn prune_over_cap_removes_oldest_first_until_under_cap() {
+        // Three entries, distinct ages. A cap that fits exactly the two newest
+        // must evict ONLY the oldest, and the report carries the exact numbers.
+        let dir = tempdir().unwrap();
+        let cache = ThumbnailCache::with_dir(dir.path().to_path_buf());
+        for (key, age) in [("oldest", 3000), ("middle", 2000), ("newest", 1000)] {
+            cache.put(key, &tiny_decoded_image()).expect("seed");
+            back_date(&dir.path().join(format!("{key}.png")), age);
+        }
+        let oldest = png_size(dir.path(), "oldest");
+        let cap = png_size(dir.path(), "middle") + png_size(dir.path(), "newest");
+
+        let report = cache.prune(cap);
+
+        assert_eq!(report.removed_files, 1, "only the oldest is evicted");
+        assert_eq!(report.removed_bytes, oldest);
+        assert_eq!(report.retained_bytes, cap, "survivors sum to the cap");
+        assert!(cache.get("oldest").is_none(), "oldest entry is gone");
+        assert!(cache.get("middle").is_some(), "newer entries survive");
+        assert!(cache.get("newest").is_some());
+    }
+
+    #[test]
+    fn prune_equal_mtime_tie_breaks_by_file_name() {
+        // Two entries with the SAME mtime and a cap that fits only one: the
+        // file-name tie-break makes the eviction deterministic (ascending name
+        // order, so "aaaa.png" goes first).
+        let dir = tempdir().unwrap();
+        let cache = ThumbnailCache::with_dir(dir.path().to_path_buf());
+        // ONE shared instant: per-file `now()` reads would differ by microseconds
+        // and turn this into an mtime-order test instead of a tie-break test.
+        let shared = std::time::SystemTime::now() - std::time::Duration::from_secs(2000);
+        for key in ["bbbb", "aaaa"] {
+            cache.put(key, &tiny_decoded_image()).expect("seed");
+            set_mtime(&dir.path().join(format!("{key}.png")), shared);
+        }
+        let cap = png_size(dir.path(), "bbbb");
+
+        let report = cache.prune(cap);
+
+        assert_eq!(report.removed_files, 1);
+        assert!(
+            cache.get("aaaa").is_none(),
+            "name tie-break evicts aaaa first"
+        );
+        assert!(cache.get("bbbb").is_some());
+    }
+
+    #[test]
+    fn prune_zero_cap_removes_all_pngs() {
+        // Degenerate cap: every cached PNG goes; the directory itself stays.
+        let dir = tempdir().unwrap();
+        let cache = ThumbnailCache::with_dir(dir.path().to_path_buf());
+        cache.put("aaaa", &tiny_decoded_image()).expect("seed");
+        cache.put("bbbb", &tiny_decoded_image()).expect("seed");
+
+        let report = cache.prune(0);
+
+        assert_eq!(report.removed_files, 2, "cap 0 evicts every entry");
+        assert_eq!(report.retained_bytes, 0);
+        assert!(cache.get("aaaa").is_none());
+        assert!(cache.get("bbbb").is_none());
+    }
+
+    #[test]
+    fn prune_ignores_files_that_are_not_cache_entries() {
+        // Safety pin: the sweep only ever deletes what the cache itself writes
+        // (`*.png`, stale tmp). A stray foreign file survives even a zero cap.
+        let dir = tempdir().unwrap();
+        let cache = ThumbnailCache::with_dir(dir.path().to_path_buf());
+        let stray = dir.path().join("README.txt");
+        std::fs::write(&stray, b"not a cache entry").unwrap();
+        back_date(&stray, 9999);
+
+        let report = cache.prune(0);
+
+        assert_eq!(report.removed_files, 0, "foreign files are never touched");
+        assert!(stray.exists(), "the stray file survives the sweep");
+    }
+
+    #[test]
+    fn prune_removes_stale_tmp_even_under_cap() {
+        // A crash between `put`'s temp write and rename leaves `.{key}.tmp`
+        // behind forever. The sweep reclaims tmp files older than the stale
+        // threshold regardless of the cap (they are garbage, not payload).
+        let dir = tempdir().unwrap();
+        let cache = ThumbnailCache::with_dir(dir.path().to_path_buf());
+        cache.put("aaaa", &tiny_decoded_image()).expect("seed");
+        let stale_tmp = dir.path().join(".deadbeef.tmp");
+        std::fs::write(&stale_tmp, b"torn write leftover").unwrap();
+        back_date(&stale_tmp, 2 * 60 * 60); // 2 h old: well past the threshold
+
+        let report = cache.prune(u64::MAX);
+
+        assert_eq!(report.removed_files, 1, "the stale tmp is reclaimed");
+        assert_eq!(report.removed_bytes, b"torn write leftover".len() as u64);
+        assert!(!stale_tmp.exists(), "the stale tmp is gone");
+        assert!(cache.get("aaaa").is_some(), "the cached PNG is untouched");
+    }
+
+    #[test]
+    fn prune_keeps_fresh_tmp() {
+        // A tmp file younger than the stale threshold may be an in-flight `put`
+        // on another thread — the age guard protects it, even under a zero cap.
+        let dir = tempdir().unwrap();
+        let cache = ThumbnailCache::with_dir(dir.path().to_path_buf());
+        let fresh_tmp = dir.path().join(".cafebabe.tmp");
+        std::fs::write(&fresh_tmp, b"write in flight").unwrap();
+
+        let report = cache.prune(0);
+
+        assert_eq!(report.removed_files, 0, "an in-flight tmp is protected");
+        assert!(fresh_tmp.exists(), "the fresh tmp survives the sweep");
+    }
+
+    #[test]
+    fn get_hit_advances_file_mtime() {
+        // The near-LRU contract: a HIT refreshes the file's mtime so `prune`'s
+        // mtime-ascending eviction order approximates least-recently-USED, and a
+        // cover read every launch outlives an orphan written yesterday.
+        let dir = tempdir().unwrap();
+        let cache = ThumbnailCache::with_dir(dir.path().to_path_buf());
+        cache.put("aaaa", &tiny_decoded_image()).expect("seed");
+        let png = dir.path().join("aaaa.png");
+        back_date(&png, 1000);
+        let before = std::fs::metadata(&png).unwrap().modified().unwrap();
+
+        assert!(cache.get("aaaa").is_some(), "pre-condition: a cache hit");
+
+        let after = std::fs::metadata(&png).unwrap().modified().unwrap();
+        assert!(
+            after > before,
+            "a hit must advance the mtime (touch-on-get)"
+        );
+    }
+
+    #[test]
+    fn get_on_corrupt_file_does_not_touch_mtime() {
+        // A corrupt entry must KEEP its old mtime: touching it would push the
+        // garbage to the back of the eviction order and keep it alive forever.
+        let dir = tempdir().unwrap();
+        let cache = ThumbnailCache::with_dir(dir.path().to_path_buf());
+        let png = dir.path().join("aaaa.png");
+        std::fs::write(&png, b"this is not a PNG").unwrap();
+        back_date(&png, 1000);
+        let before = std::fs::metadata(&png).unwrap().modified().unwrap();
+
+        assert!(
+            cache.get("aaaa").is_none(),
+            "pre-condition: a decode failure"
+        );
+
+        let after = std::fs::metadata(&png).unwrap().modified().unwrap();
+        assert_eq!(after, before, "a failed decode must not refresh the mtime");
     }
 
     #[test]
