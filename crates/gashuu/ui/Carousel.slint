@@ -53,30 +53,31 @@ export struct CarouselItem {
     bookmarked: bool, // true = last-opened book; shows the BookmarkRibbon overlay
 }
 
-// File-private cover-flow card: de-duplicates the per-cover animated card so the
+// File-private cover-flow card: de-duplicates the per-cover card so the
 // two z-order passes in `Carousel` can share ONE body (DESIGN.md covers; the
 // patterns.md "shared PRIVATE sub-component within one file" tool). NOT exported,
 // so the frozen public contract is untouched.
 //
 // Why two passes instead of `z`: Slint 1.16.1 cannot set per-Repeater-item z
-// (docs/patterns.md), so the focused cover is layered on top purely by DRAW
+// (docs/patterns.md), so the centered cover is layered on top purely by DRAW
 // ORDER. Pass 1 is the always-on BACKING layer (`show: true`, every book);
-// pass 2, declared AFTER pass 1, redraws ONLY the focused card on top so it
+// pass 2, declared AFTER pass 1, redraws ONLY the centered card on top so it
 // wins z-order. This prevents a fast Left/Right sweep from toggling a
 // passed-through book's only instance off-then-on (which blanked its cover for
-// one frame — the "gap-toothed" bug). Both passes bind identical geometry so
-// the slide animation is preserved with no pop.
+// one frame — the "gap-toothed" bug). Both passes bind identical geometry —
+// pure functions of the same `flow-position` scalar (see the cover-flow row) —
+// so the pass hand-off lands at matching positions with no pop.
 component CoverCard inherits Rectangle {
     // Layer gate + per-card state (all driven by the enclosing `for`).
     in property <bool> show;       // this pass should draw this card
-    in property <bool> focused;    // idx == focused-index: full size/opacity, ring + shadow
-    // Only the pass-2 TOP copy of the focused card paints the drop-shadow; the
-    // pass-1 backing copy sets `elevated: false` so the focused book's
+    in property <bool> centered;   // idx == round(flow-position): the card at the VISUAL center; ring + shadow
+    // Only the pass-2 TOP copy of the centered card paints the drop-shadow; the
+    // pass-1 backing copy sets `elevated: false` so the centered book's
     // semi-transparent shadow (Theme.shadow-card) is not composited
     // twice (which would darken it). Neighbors never carry a shadow regardless
-    // (gated by `focused`).
+    // (gated by `centered`).
     in property <bool> elevated: true;
-    in property <int> delta;       // idx - focused-index: signed distance from center
+    in property <float> flow-delta; // idx - flow-position: signed FLOAT distance from the visual center
     // Geometry tunables, forwarded from the Carousel root.
     in property <length> cover-w;
     in property <length> cover-h;
@@ -97,7 +98,7 @@ component CoverCard inherits Rectangle {
     // Bulk-selection (PR-2). `selected` draws the accent check badge;
     // `selection-mode` is forwarded for future selection-only chrome. `interactive`
     // gates the cover TouchArea so only the pass-1 backing copy fires the click
-    // (the pass-2 top copy of the focused card sets it false — see the two for-loops).
+    // (the pass-2 top copy of the centered card sets it false — see the two for-loops).
     in property <bool> selected;
     in property <bool> selection-mode;
     in property <bool> interactive;
@@ -106,47 +107,59 @@ component CoverCard inherits Rectangle {
     in property <bool> bookmarked;
     callback clicked;
 
-    // Position/size/opacity: identical bindings to the former for-item Rectangle.
-    x: root.row-width / 2 + root.delta * root.cover-step - self.width / 2;
+    // Position/size/opacity: every value below is a PURE function of `flow-delta`
+    // — the card carries NO `animate` blocks. The cover-flow row animates ONE
+    // scalar (`flow-position`) and each card merely tracks it, so rapid
+    // Left/Right input retargets a single animation instead of restarting N
+    // per-card 480ms timers (the old per-card `animate x` left the center slot
+    // empty during a fast sweep — docs/patterns.md "animation altitude").
+    x: root.row-width / 2 + root.flow-delta * root.cover-step - self.width / 2;
     y: root.row-cy - self.height / 2;
-    width: root.focused ? root.cover-w : root.cover-w * root.neighbor-scale;
-    height: root.focused ? root.cover-h : root.cover-h * root.neighbor-scale;
-    opacity: root.focused ? 1.0 : root.neighbor-opacity;
+    // Size/opacity interpolate CONTINUOUSLY with the float distance from the
+    // visual center: full size/opacity at d == 0, neighbor scale/opacity from
+    // d >= 1 outward (the clamp floor). `scale-factor` single-sources the size
+    // interpolation (the Scrubber's named-derived-value style); opacity keeps
+    // its own clamp because its floor is `neighbor-opacity`, not the scale.
+    // Because `width` is slaved to the same scalar as `x`, the x formula's
+    // `self.width / 2` term no longer chases a mid-animation width (the old
+    // second-order lag).
+    private property <float> scale-factor: Math.clamp(
+        1.0 - Math.abs(root.flow-delta) * (1.0 - root.neighbor-scale),
+        root.neighbor-scale, 1.0);
+    width: root.cover-w * root.scale-factor;
+    height: root.cover-h * root.scale-factor;
+    opacity: Math.clamp(
+        1.0 - Math.abs(root.flow-delta) * (1.0 - root.neighbor-opacity),
+        root.neighbor-opacity, 1.0);
     // Layer gate AND the narrow-window neighbor-drop (DESIGN.md "Responsive
-    // Behavior / Carousel"): at/below the threshold only the focused cover ± one
-    // neighbor stay visible. Hidden instances stay instantiated and keep
-    // animating, so a focus change slides instead of snapping.
-    visible: root.show && (!root.narrow || Math.abs(root.delta) <= 1);
-    animate x {
-        duration: Theme.motion-cinematic;
-        easing: cubic-bezier(0.16, 1, 0.3, 1);
-    }
-    animate width, height, opacity {
-        duration: Theme.motion-cinematic-fade;
-        easing: cubic-bezier(0.16, 1, 0.3, 1);
-    }
+    // Behavior / Carousel"): at/below the threshold only the centered cover ± one
+    // neighbor stay visible. The 1.5 threshold keys on the FLOAT distance so a
+    // card appears/disappears half a step beyond its resting neighbor slot
+    // (mid-travel), never while parked at it. Hidden instances stay instantiated,
+    // so the pass hand-off still lands at matching geometry.
+    visible: root.show && (!root.narrow || Math.abs(root.flow-delta) <= 1.5);
 
-    // The cover card: rounded, card shadow on the focused cover only, accent ring.
+    // The cover card: rounded, card shadow on the centered cover only, accent ring.
     cover := Rectangle {
         width: 100%;
         height: 100%;
         border-radius: Theme.radius-sm;               // DESIGN.md covers 6px
         background: Theme.surface-raised;             // placeholder backing
-        // Card shadow on the FOCUSED cover only (DESIGN.md elevation.card).
+        // Card shadow on the CENTERED cover only (DESIGN.md elevation.card).
         // Neighbors sit at 0.45 opacity and don't need one — dropping it keeps the
         // cover-flow GPU-cheap. Also gated on `elevated` so only the pass-2 top
-        // copy paints it: the pass-1 backing copy of the focused book sets
+        // copy paints it: the pass-1 backing copy of the centered book sets
         // `elevated: false`, else the semi-transparent shadow composites twice.
-        drop-shadow-blur: (root.focused && root.elevated) ? 22px : 0px;
+        drop-shadow-blur: (root.centered && root.elevated) ? 22px : 0px;
         drop-shadow-color: Theme.shadow-card;
-        // Focus ring: 3px accent outline on the focused cover. In selection mode
-        // ONLY, a non-focused cover also gets a thin 1px accent ring while hovered
+        // Focus ring: 3px accent outline on the centered cover. In selection mode
+        // ONLY, a non-centered cover also gets a thin 1px accent ring while hovered
         // (§2.4 selection-mode hover affordance) — a pointer hint that the cover is
         // a selectable target. `cover-touch` is the pass-1-only cover TouchArea
         // (enabled: root.interactive); since it is non-interactive on pass 2 it
         // reports no hover there, so the hover ring is single-source like the
         // click. Normal mode (selection-mode false) shows nothing on hover.
-        border-width: root.focused ? root.ring-width : (root.selection-mode && cover-touch.has-hover ? 1px : 0px);
+        border-width: root.centered ? root.ring-width : (root.selection-mode && cover-touch.has-hover ? 1px : 0px);
         border-color: Theme.accent;
 
         // Cover image via the shared ThumbnailCell (DESIGN.md rule 6: one
@@ -180,8 +193,8 @@ component CoverCard inherits Rectangle {
 
         // Bulk-selection check badge (PR-2; two-state §2.3). Rendered inside
         // `cover` so it sits on the artwork, pinned to the top-right with a small
-        // inset. Drawn in BOTH z-order passes (pass-2's focused copy paints over
-        // pass-1, so the badge must live on both or it would vanish on the focused
+        // inset. Drawn in BOTH z-order passes (pass-2's centered copy paints over
+        // pass-1, so the badge must live on both or it would vanish on the centered
         // card) — this block is the shared CoverCard body, so both passes get it.
         // Gated on `selection-mode` (not `selected`) so EVERY cover shows a badge
         // while selecting; `checked` then renders the filled (selected) disc or the
@@ -227,18 +240,18 @@ component CoverCard inherits Rectangle {
     // ── Cover click target (PR-2 — the repo's FIRST cover pointer interaction) ──
     // An INVISIBLE click rectangle (NOT the shrunken artwork), pinned centered on
     // the card. Width = max(cover-step, card width):
-    //   - NEIGHBOR cards (width == cover-w * neighbor-scale): cover-step wins, so a
-    //     shrunken side cover is still a comfortable `cover-step`-wide click target.
-    //   - FOCUSED card (width == cover-w): the card width wins, so the WHOLE focused
-    //     cover is clickable — including the selection badge pinned to its top-right
-    //     corner. A bare `cover-step`-wide target (cover-step < cover-w when focused)
+    //   - NEIGHBOR cards (width == cover-w * neighbor-scale at rest): cover-step wins,
+    //     so a shrunken side cover is still a comfortable `cover-step`-wide click target.
+    //   - CENTERED card (width == cover-w at rest): the card width wins, so the WHOLE
+    //     centered cover is clickable — including the selection badge pinned to its
+    //     top-right corner. A bare `cover-step`-wide target (cover-step < cover-w)
     //     left the badge in a dead zone, so clicking it in selection mode toggled
     //     nothing; the always-visible selection-mode rings then advertised a target
-    //     the focused cover's hit-area never reached (badge inset + space-xs all sit
+    //     the centered cover's hit-area never reached (badge inset + space-xs all sit
     //     right of a cover-step-wide centered target). Math.max fixes that without
     //     shrinking the deliberate neighbor target.
     // `enabled: root.interactive` ensures ONLY the pass-1 backing copy fires
-    // (pass-2's focused copy passes `interactive: false`, so a click on the focused
+    // (pass-2's centered copy passes `interactive: false`, so a click on the centered
     // card is handled exactly once — see the two for-loops in Carousel). The
     // TouchArea is non-focusable (repo convention, see NavItem / docs/patterns.md
     // "TouchArea click focus recovery"), so keyboard focus stays on the carousel
@@ -328,31 +341,32 @@ export component Carousel inherits Rectangle {
     public function focus-self() { fs.focus(); }
 
     // ── Cover-flow geometry (local tunables; colors/spacing come from Theme) ──
-    // Covers are laid out centered on `focused-index`; each cover's horizontal
-    // offset from the focused one drives its position, scale, and opacity.
+    // Covers are laid out centered on `flow-position` (the animated float that
+    // chases `focused-index`; see the cover-flow row); each cover's float
+    // distance from the visual center drives its position, scale, and opacity.
     //
-    // RESPONSIVE (DESIGN.md "Responsive Behavior / Carousel"): the focused cover
+    // RESPONSIVE (DESIGN.md "Responsive Behavior / Carousel"): the centered cover
     // width tracks the live window width instead of a fixed 200px. It scales as a
     // fraction of `root.width`, clamped to a usable band so it never collapses on
     // a narrow window nor balloons on an ultra-wide one. The 7:10 manga aspect is
     // preserved by deriving `cover-h` from `cover-w`. `cover-step` is recomputed
-    // from the live `cover-w` so neighbor spacing follows the focused size.
-    private property <length> cover-w: Math.clamp(root.width * 0.26, 140px, 240px); // focused cover width (responsive)
+    // from the live `cover-w` so neighbor spacing follows the centered size.
+    private property <length> cover-w: Math.clamp(root.width * 0.26, 140px, 240px); // centered cover width (responsive)
     private property <length> cover-h: root.cover-w * 1.4;  // 7:10 manga cover aspect (280/200 = 1.4)
     private property <length> cover-margin: 4px;       // visible gap between two side (neighbor) covers
-    private property <float> neighbor-scale: 0.618;    // side covers shrink to 1/φ (focused : neighbor = φ : 1)
+    private property <float> neighbor-scale: 0.618;    // side covers shrink to 1/φ (centered : neighbor = φ : 1)
     private property <float> neighbor-opacity: 0.45;   // DESIGN.md components.cover.sideOpacity
     // Step between adjacent cover centers. Sized so two SIDE covers (each at
     // `neighbor-scale`) clear each other by exactly `cover-margin` — that is the
     // boundary the eye reads as "books overlapping" in the cover row. Step =
-    // one neighbor's full width + the gap. The focused cover is full-size, so it
+    // one neighbor's full width + the gap. The centered cover is full-size, so it
     // still overlaps its immediate neighbors and is drawn on top (z-order pass 2),
     // preserving the cover-flow depth; only the side-to-side overlap is removed.
     private property <length> cover-step: root.cover-w * root.neighbor-scale + root.cover-margin;
     private property <length> ring-width: 3px;         // DESIGN.md cover.focusOutline 3px
     // Neighbor-drop threshold (DESIGN.md: "Below a minimum width, neighbors may
     // drop to one per side."). Above the threshold the cover-flow renders all
-    // model items; at/below it, only the focused cover ± one neighbor are shown.
+    // model items; at/below it, only the centered cover ± one neighbor are shown.
     private property <length> narrow-threshold: 560px;
     private property <bool> narrow: root.width <= root.narrow-threshold;
 
@@ -537,18 +551,41 @@ export component Carousel inherits Rectangle {
               height: 100%;
 
               // Vertical anchor for the cover row (leaves room for the meta block
-              // below). Covers are centered horizontally on focused-index.
+              // below). Covers are centered horizontally on flow-position.
               property <length> row-cy: parent.height / 2 - 28px;
+
+              // ── Animation altitude: ONE animated scalar drives the whole row ──
+              // `flow-position` chases `focused-index` (int -> float binding) on
+              // the cinematic curve, and ALL card geometry derives from it as pure
+              // bindings (see CoverCard) — no per-card animations. A retarget
+              // mid-flight continues from the CURRENT animated value, so rapid
+              // Left/Right input keeps the row moving as one coherent band instead
+              // of leaving the center slot empty while N per-card timers restart.
+              // The card at Math.round(flow-position) is the VISUAL center: pass-2
+              // z-order, the accent ring, and the card shadow hand off card-by-card
+              // during a sweep, while `focused-index` stays the LOGICAL truth (the
+              // Return target and the meta block below). The easing never
+              // overshoots (control-point y's within [0, 1]), so the round can
+              // never land outside the Rust-clamped index range.
+              property <float> flow-position: root.focused-index;
+              animate flow-position {
+                  duration: Theme.motion-cinematic;
+                  easing: cubic-bezier(0.16, 1, 0.3, 1);
+              }
+              // The card index at the visual center — single-sources the
+              // Math.round so the three pass bindings below cannot drift apart.
+              property <int> visual-center: Math.round(self.flow-position);
 
               // ── Cover-flow z-order: two passes (Slint 1.16.1 has no per-item z) ─
               // Pass 1: backing layer, every book always visible (gap-toothed-bug fix).
-              // Pass 2: focused card redrawn on top; shadow painted there only (elevated default).
+              // Pass 2: the CENTERED card (round(flow-position)) redrawn on top;
+              // shadow painted there only (elevated default).
               // See CoverCard header for full rationale.
               for item[idx] in root.items : CoverCard {
                   show: true;
                   elevated: false;
-                  focused: idx == root.focused-index;
-                  delta: idx - root.focused-index;
+                  centered: idx == parent.visual-center;
+                  flow-delta: idx - parent.flow-position;
                   cover-w: root.cover-w;
                   cover-h: root.cover-h;
                   cover-step: root.cover-step;
@@ -565,17 +602,17 @@ export component Carousel inherits Rectangle {
                   selection-mode: root.selection-mode;
                   bookmarked: item.bookmarked;
                   // PR-2: ONLY the always-on pass-1 backing copy is click-interactive,
-                  // so each cover (including the focused one, whose pass-2 copy below
+                  // so each cover (including the centered one, whose pass-2 copy below
                   // sets interactive:false) fires its TouchArea exactly once.
                   interactive: true;
                   clicked => { root.cover-clicked(idx); }
               }
-              // Pass 2: focused card only, on top (elevated: true default → shadow painted once).
+              // Pass 2: centered card only, on top (elevated: true default → shadow painted once).
               // Any future additional render pass MUST also set interactive: false (single-fire invariant).
               for item[idx] in root.items : CoverCard {
-                  show: idx == root.focused-index;
-                  focused: idx == root.focused-index;
-                  delta: idx - root.focused-index;
+                  show: idx == parent.visual-center;
+                  centered: idx == parent.visual-center;
+                  flow-delta: idx - parent.flow-position;
                   cover-w: root.cover-w;
                   cover-h: root.cover-h;
                   cover-step: root.cover-step;
@@ -591,8 +628,8 @@ export component Carousel inherits Rectangle {
                   selected: item.selected;
                   selection-mode: root.selection-mode;
                   bookmarked: item.bookmarked;
-                  // PR-2: the pass-2 TOP copy of the focused card is NON-interactive
-                  // so the focused cover does not double-fire — its click is handled
+                  // PR-2: the pass-2 TOP copy of the centered card is NON-interactive
+                  // so the centered cover does not double-fire — its click is handled
                   // by the pass-1 backing copy above (which is always shown).
                   interactive: false;
               }
