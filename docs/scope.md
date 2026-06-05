@@ -161,7 +161,7 @@ RAR requires a C++ compiler on every OS (see [docs/toolchain.md](toolchain.md)).
 - **Focus-first dispatch.** `prioritize_by_focus(requests, focus_row)` (pure, unit-tested) reorders requests by `abs_diff` from the carousel's focused row before dispatch, so the covers the user is looking at stream in first on a large library; `refresh_library_carousel` reads `carousel_focused_index` after its reset-focus step.
 - **`pending_counts` element is the named `ResolvedCount { path, count }`** (was a bare `(PathBuf, NonZeroUsize)` tuple).
 - `start` logs `dispatched` + `elapsed_us` at debug level — the UI-thread cost of a refresh is now measurable and independent of cache state.
-- Follow-ups deliberately NOT done here (filed as issues): #140 page-turn miss-decode analysis, #141 raw-RGBA/QOI cover-cache v2, #142 batched cover marshaling, #143 ThumbnailCache size cap/GC, #144 failed-cover state.
+- Follow-ups deliberately NOT done here (filed as issues): #140 page-turn miss-decode analysis, #141 raw-RGBA/QOI cover-cache v2, #142 batched cover marshaling, #143 ThumbnailCache size cap/GC (since shipped — see the cover-cache GC section below), #144 failed-cover state.
 - No new dependencies. The worker path stays coverage-exempt (same policy as the thumbnail strip); `prioritize_by_focus` is unit-tested headlessly.
 
 ### Reject empty books (reject-empty-books, 2026-06-05)
@@ -175,6 +175,18 @@ A source with no image pages (an empty folder, an archive with only non-image en
 - **A missing-path book is NOT removed** — the existing `is_available()` gray-out is preserved (a temporarily unmounted drive must not lose data). Removal happens only when a scan SUCCEEDS and confirms zero images.
 - Notices: `notice-added-books-skipped`, `notice-no-books-added-empty`, `notice-empty-book-removed` (en + ja, via `i18n/dynamic.rs`).
 - No new dependencies. Add-time probing is synchronous on the UI thread (light: zip reads only the central directory, folder probing is a shallow walk); a follow-up to move it off-thread is deferred (YAGNI) unless it proves slow on huge network-drive batches.
+
+### Cover-cache GC — size cap + near-LRU prune (#143, 2026-06-05)
+
+The on-disk cover cache is now bounded. Core's `ThumbnailCache::prune(max_bytes) -> PruneReport`
+sweeps the cache directory down to the cap in ascending `(mtime, file name)` order and reclaims
+stale `.{key}.tmp` crash leftovers (older than 1 h, age-guarded so in-flight writes survive);
+`get` refreshes a hit's mtime (touch-on-get, after a successful decode only), making eviction
+near-LRU so mtime-orphaned covers — never read again — age out first. The cap POLICY is the app
+layer's: `cover_loader::COVER_CACHE_MAX_BYTES` (256 MiB) + `spawn_cache_prune()`, one rayon job
+dispatched at startup after the initial cover stream (no UI-thread I/O). `purge_for` semantics
+unchanged. Deferred: re-pruning inside a session (overflow waits for the next launch), a Settings
+field / UI for the cap.
 
 ---
 

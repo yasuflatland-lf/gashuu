@@ -545,8 +545,8 @@ impl RemoveBooksUseCase {
                     let removed = cache.purge_for(path, mtime_secs(path), &[COVER_MAX_SIDE]);
                     if removed == 0 {
                         // Not an error: a missing file / drifted mtime / unwritable
-                        // cache entry leaves a harmless orphan the cache's size cap
-                        // reclaims later.
+                        // cache entry leaves a harmless orphan the startup prune
+                        // sweep reclaims later (issue 143).
                         tracing::warn!(
                             path = %path.display(),
                             "no persistent cover purged for removed book (missing, mtime drift, or unwritable cache)"
