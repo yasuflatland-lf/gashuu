@@ -120,9 +120,6 @@ export global Theme {
     out property <color> scrim-strong: #000000c0;   // denser first-run backdrop (~75% black)
     out property <color> scrim-soft: #00000060;     // lighter recede veil (~38% black); scrim is too dense for a NavBar recede
 
-    // ── Elevation: page-image shadow (DESIGN elevation.page 0 6px 18px rgba(0,0,0,.50)) ──
-    out property <color> shadow-page: #00000080;
-
     // ── Neutral placeholder fill (thumbnail still-loading) ────────────────────
     out property <color> placeholder: #2a3243;      // neutral loading fill (= track hue)
 
@@ -150,12 +147,10 @@ export global Theme {
 
     // ── Motion ────────────────────────────────────────────────────────────────
     out property <duration> motion-fast: 180ms;     // chrome fades (existing value)
-    out property <duration> motion-standard: 240ms; // generic chrome transitions (no active carousel consumer)
     // The easing lives in the animate block — Slint has no <easing> property type,
     // so cubic-bezier(0.16, 1, 0.3, 1) cannot be stored as a Theme token and must
     // be repeated at each animate site.
     out property <duration> motion-cinematic: 480ms;       // Carousel flow-position — the ONE animated scalar the cover-flow row chases; long enough for the eye to follow a full-width translation
-    out property <duration> motion-cinematic-fade: 300ms;  // generic cinematic fade (no active consumer — was CoverCard scale/opacity until the flow-position rework slaved size to the slide scalar)
 
     // ── Typography weights (DESIGN typography roles) ──────────────────────────
     // Line-height is intentionally omitted: Slint 1.x Text has no line-height
