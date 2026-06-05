@@ -465,13 +465,21 @@ hover.
 Cover overlays occupy two distinct corners and can render simultaneously:
 
 - **BookmarkRibbon** (top-LEFT): a display-only bookmark-shape image (`bookmark.svg`, `colorize:
-  {colors.accent}`, sized `{spacing.huge}²` = 26×26 px) that hangs from the top edge of the cover.
-  It appears on the single book whose path equals `Library.last_opened` — the "continue reading"
-  signifier that explains why that cover is automatically focused when entering the Library. Color
-  and shape are the semantic differentiators: the accent hue means "interactive / where you are",
-  and the ribbon shape (as opposed to the circular SelectionBadge) specifically means "resume here".
+  {colors.text}` — white — sized `{spacing.huge}²` = 26×26 px) that floats FULLY ABOVE the cover's
+  top edge. Clearance = `{spacing.md}` (10px ≈ `{spacing.huge}` / φ², the nav-search-radius
+  derivation); zero overlap with the cover art. The area above the card is the dark stage gradient
+  (`{colors.stage-top}` → `{colors.canvas}`), so the white glyph keeps contrast regardless of cover
+  art — the reason the ribbon sits outside the card. It appears on the single book whose path equals
+  `Library.last_opened` — the "continue reading" signifier that explains why that cover is
+  automatically focused when entering the Library. White is a passive status color borrowed from the
+  typography token ladder; the accent returns to interactive-only duty. Shape is the semantic
+  differentiator: the ribbon form (as opposed to the circular SelectionBadge) specifically means
+  "resume here". If the ribbon ever needs its own hue, `colorize: {colors.text}` in
+  `BookmarkRibbon.slint` is the documented re-mint point.
 - **SelectionBadge** (top-RIGHT): the bulk-selection check mark. Occupies the opposite corner so
-  both overlays can be visible at the same time without overlapping.
+  both overlays can be visible at the same time without overlapping. The ribbon now sitting OUTSIDE
+  the card further improves their separation — the badge is inside top-right, the ribbon outside
+  top-left.
 
 ### Reading Progress Bar — `components.progress-bar`
 A 4px ambient bar (rounded 2px) directly under every cover and under the focused book's meta.
@@ -533,7 +541,7 @@ The badge shows on **every cover** while selection mode is active — the simult
 ### SelectionToolbar — `components.selection-toolbar`
 An organism shown **below the NavBar**, centered, only while selection mode is active and no modal is open (bulk-delete epic, PR-4; slide transition in the UI-polish pass). Not in the keyboard focus chain; mouse + screen-reader only (keyboard navigation stays carousel-owned).
 
-**Slide transition** (§2.6): the select pill ⇄ SelectionToolbar swap is a vertical y-slide, not an instant `if`-gate. Both bars are always instantiated inside a `clip: true` strip (`{nav-pill-height}` band) anchored at `nav.y + nav.height + {nav-item-gap}` (13px). Each bar slides between `y=0` (visible) and `y=-height` (tucked under the NavBar, clipped away); `animate y` at `motion-fast`. **No `opacity` is used anywhere** (HiDPI child-blur gotcha — see `docs/patterns.md`); the reveal is pure geometry plus the NavBar recede veil. Input guards are ANDed on both bars so a slid-away bar never takes pointer/screen-reader input even if clipping leaks.
+**Slide transition** (§2.6): the SelectionToolbar slides via a vertical y-slide into and out of a `clip: true` strip (`{nav-pill-height}` band) anchored at `nav.y + nav.height + {nav-item-gap}` (13px). The toolbar slides between `y=0` (visible) and `y=-height` (tucked under the NavBar, clipped away); `animate y` at `motion-fast`. The strip hosts **only** the SelectionToolbar — the former Select entry pill has been removed and selection entry now lives in the NavBar itself. **No `opacity` is used anywhere** (HiDPI child-blur gotcha — see `docs/patterns.md`); the reveal is pure geometry plus the NavBar recede veil. The toolbar's input guard (`active` flag) ensures a slid-away toolbar never takes pointer/screen-reader input even if clipping leaks.
 
 **Glass pill**: the NavBar's four-layer glass idiom — `{colors.glass-fill}` background, 1px `{colors.accent}` rim (mode-context differentiation: accent rim rather than `glass-border` signals the active selection mode), 1px `{colors.glass-highlight}` top inner highlight, `{colors.shadow-popover}` drop shadow (blur 22 / y-offset 8; suppressed to `transparent` while the toolbar is parked/slid away — a parked toolbar's offset-down shadow would bleed into the visible strip through the `clip: true` band, so the shadow is active-gated and drawn only while this bar is the visible one) — at `{nav-pill-height}` (55px) height. Width **hugs content** via the root's intrinsic preferred width, which only resolves when the pill is a **layout child**: Carousel wraps it in a full-width centering `HorizontalLayout` (absolutely positioned, a Slint element defaults to its parent's width and the pill spans the window). Still no binding-loop risk — no expression reads the layout's own preferred width.
 
@@ -547,12 +555,19 @@ An organism shown **below the NavBar**, centered, only while selection mode is a
 
 4. **Exit capsule**: circular `{nav-capsule}` (34px) × `{nav-capsule}`, `{rounded.pill}`. Same hover/press states as the select-all capsule. Icon is `close.svg` (Streamline "Cancel Fill" — filled disc with knocked-out ✕, 96px intrinsic / viewBox 24) rendered via `@image-url` + `colorize`: idle `{colors.text-mid}`, hover/press `{colors.text-high}`, sized `Theme.nav-icon` (21px). Bare-✕ fallback remains an open author visual-check decision (disc-in-capsule legibility). Fires `exit()` — equivalent to pressing Esc in the carousel.
 
-### Select Entry Pill — `components.selection-entry-pill`
-A small mouse-only affordance shown in **normal mode** (not selection mode, no modal, library has at least one visible book), in the same `clip: true` slide-strip as the SelectionToolbar (see slide transition above). Not in the keyboard focus chain.
+### Select Entry — NavBar capsule (formerly: Select Entry Pill)
+Selection mode is entered via the **Select capsule inside the NavBar** (the `checkbox.svg`
+`NavItem` — see Library Nav above). The separate text pill that formerly lived in the slide-strip
+below the NavBar has been removed; it no longer exists as a component or a spec entry. The
+`components.selection-entry-pill` token block in the front-matter above is retained for historical
+reference (it describes the removed pill's look) but has no live consumers.
 
-`{nav-capsule}` (34px) height, width hugs the label (`Strings.selection-enter` = "Select") plus `{nav-capsule-pad}` (21px = capsule/φ) horizontal padding on each side. TRUE capsule corners (`nav-capsule / 2` = 17px; `{rounded.pill}` would render an ellipse). Idle: HIG "bordered" — `{colors.chip}` fill + 1px `{colors.hairline-float}` ring, so the entry point reads as a button at rest. Hover: `{colors.accent-glow}` fill + 1px `{colors.accent}` border + accent glow. Pressed: slightly darker fill. Text `{colors.text-mid}` at idle, `{colors.text-high}` on hover/press. Clicking enters selection mode only (does NOT toggle the focused book — that is the `x` key's job). No FocusScope; keyboard focus stays on the carousel.
+The slide-strip below the NavBar now hosts **only** the `SelectionToolbar`. Exit paths for
+selection mode are: the toolbar ✕, Esc, and re-clicking the NavBar Select capsule.
 
-**Placement rule (both toolbar and entry pill)**: both are suppressed while any modal (settings / shortcuts / first-run guide) is open — the `!modal-open` guard mirrors the carousel `FocusScope`'s modal-reject arm so pointer targets under a modal are always unreachable.
+**Placement rule (toolbar)**: the toolbar is suppressed while any modal (settings / shortcuts /
+first-run guide) is open — the `!modal-open` guard mirrors the carousel `FocusScope`'s
+modal-reject arm so pointer targets under a modal are always unreachable.
 
 ### ConfirmDialog — `components.confirm-dialog`
 A reusable two-choice modal (issue 127, consumed by the bulk-delete epic PR-5). Generic: carries NO domain vocabulary — every word arrives through properties so the same component serves any confirm-or-cancel decision.
@@ -590,20 +605,34 @@ A reusable two-choice modal (issue 127, consumed by the bulk-delete epic PR-5). 
 | Delete / Backspace | — (no-op / falls through) | Open `ConfirmDialog` (no-op if N=0) |
 | Esc | — (reject, no-op) | Clear selection + exit selection mode |
 | Return | Open focused book | Open focused book (unchanged in both modes) |
-| Cover click | Enter selection mode (via "Select" entry pill click) | Toggle clicked book |
+| Cover click | Enter selection mode (via NavBar Select capsule click) | Toggle clicked book |
 
-Return is **never repurposed** — it always opens the focused book, in both modes. The `x` key is the primary keyboard entry into selection mode; the "Select" entry pill is the mouse entry point (it enters mode only, does NOT toggle the focused book).
+Return is **never repurposed** — it always opens the focused book, in both modes. The `x` key is the primary keyboard entry into selection mode; the NavBar **Select capsule** is the mouse entry point (it enters mode only on first click, exits on re-click — does NOT toggle the focused book).
 
 **Toolbar placement rationale**: the `SelectionToolbar` is a separate overlay anchored immediately below the `NavBar` (`y = nav.y + nav.height + {nav-item-gap}` — 13px), NOT embedded in the NavBar itself. This keeps the NavBar's chrome and the add-books pill visually and interactively untouched — the destructive control is separated from the constructive ones by a deliberate spatial gap. The DangerButton is the rightmost element of the toolbar, as far as possible from the accent-only count pill and capsules on the left, reinforcing the "destructive is at the end of the row" HIG convention.
 
 ### Library Nav — `components.nav-bar`
-A **top, centered glass pill** floating over the Library carousel for adding books. It is drawn
-on top of the stage; its bottom edge may slightly overlap the focused cover so the background
-shows through — reinforcing the "glass" read.
+A **top, centered glass pill** floating over the Library carousel. It is drawn on top of the
+stage; its bottom edge may slightly overlap the focused cover so the background shows through —
+reinforcing the "glass" read.
 
-- **Content**: ICON-ONLY twin capsules — `file` (Add files) and `folder` (Add folder). There are
-  **no on-screen text labels** (accessible-label only) and **no tooltips**.
-- **Each capsule** is circular; only the hovered/pressed cell glows softly with
+- **Content**: the search field (left), a thin divider, then FIVE icon-only circular capsules
+  right-of-divider — `file` (Add files), `folder` (Add folder), `select` (checkbox.svg; bulk-select
+  toggle), `bookmark` (bookmark.svg; continue-reading jump), and `settings` (rightmost, unchanged).
+  On macOS, where the OS panel picks files and folders in one dialog, the file + folder pair
+  collapse into a single combined `plus` (Add books) capsule, giving FOUR capsules total.
+  **No on-screen text labels** (accessible-label only) and **no tooltips**.
+- **Select capsule** (`checkbox.svg`): toggles bulk-selection mode. While selection mode is on, it
+  shows a persistent accent ring (`{colors.accent}` border + `{colors.accent-glow}` fill — the
+  hover look, held) so the active mode is legible even through the recede veil. On an empty library
+  the capsule dims to `{colors.text-faint}` icon and its `TouchArea` is inert, but it stays mounted
+  so the pill width never jumps. Re-clicking exits selection mode (symmetric to the toolbar ✕ and
+  Esc exit paths).
+- **Bookmark capsule** (`bookmark.svg`): jumps to the continue-reading book via the same open path
+  a cover click uses. Always enabled — with no bookmark, the click answers with a status notice in
+  the bottom strip; a faint/disabled capsule would hide the affordance instead of inviting the
+  press.
+- **Each capsule** is circular; only the hovered/pressed/active cell glows softly with
   `{colors.accent-glow}`, and its icon brightens `{colors.text-mid}` → `{colors.text-high}`.
 - **Search field** (left of the divider): a barely-visible 1px `{colors.search-border-rest}` rim at
   rest — held at threshold-of-visibility so the field reads as part of the glass — animating to a
@@ -613,7 +642,9 @@ shows through — reinforcing the "glass" read.
   (blur 22 / y-offset 8). **No backdrop-blur** — Slint 1.x cannot blur what's behind it, so the
   glass is faked with translucent fill + rim + top highlight + shadow.
 - **Golden-ratio sizing** (phi ≈ 1.618, stepped through consecutive Fibonacci px): icon 21px →
-  circular capsule diameter 34px → pill height 55px; item gap 13px; pill padding 11px.
+  circular capsule diameter 34px → pill height 55px; item gap 13px; pill padding 11px. Pill width
+  is computed from tokens: search field + (4 combined / 5 split) capsules + divider + (5 / 6) gaps
+  + 2 × pill padding — no layout-preferred-width binding loop.
 - **Interaction model**: mouse + screen-reader oriented. The pill is **NOT keyboard-reachable** —
   keyboard navigation stays owned by the carousel. Clicking a capsule fires the OS file/folder
   picker (`rfd`) and returns focus to the carousel.
@@ -624,6 +655,21 @@ shows through — reinforcing the "glass" read.
 - **Intentional deltas from the reference**: gashuu uses its own dark translucency (not blue
   glass), and **FILLED** icons (not outline) — a filled mass reads better on the dark canvas and
   resists low-DPI degradation.
+
+### Library Bottom Status Strip
+A full-width, bottom-pinned `{typography.ui-micro}` text line (`{colors.text-muted}`, centered,
+`{spacing.md}` inset from the window bottom), visible only on the Library screen. It shares the
+same `status-text` / `library-count-text` channel as the Viewer toolbar notices.
+
+**Two states, one Text element** — transient notices always take precedence:
+- **Idle** (when `status-text` is empty): shows the **total library count** — "N book(s)" (en) /
+  "N 冊" (ja), Fluent-composed and pushed from Rust. Hidden entirely at 0 books (an empty library
+  already shows the CTA; an idle "0 books" would be noise).
+- **Active notice** (when `status-text` is non-empty): shows the transient feedback string
+  ("Added N book(s)", "Deleted…", "No bookmark registered", open errors, etc.). The count resumes
+  automatically the next time `status-text` is cleared.
+
+This is not a new chrome element — it reuses the existing notice channel and its position tokens.
 
 ### Settings Panel — `components.settings-panel`
 A modal **content-hug glass panel** centered over the dimmed screen: 360px wide, exactly as tall as
