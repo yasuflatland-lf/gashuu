@@ -233,6 +233,14 @@ export component ViewerWindow inherits Window {
     // True when one native dialog picks files AND folders (macOS): the Library
     // NavBar collapses its two add capsules into one. Pushed once at boot.
     in property <bool> combined-add-picker;
+    // Fired by Rust (cover loader) when a background worker opens a book's source
+    // CLEANLY but finds ZERO pages: the empty book must be removed, its cover
+    // cache purged, the carousel rebuilt, and a notice shown. The argument is the
+    // book's canonical filesystem path. Distinct from an open ERROR (unreadable),
+    // which keeps the placeholder + log behavior and fires NO event. main.rs binds
+    // the handler (on_empty_book_detected); the loader invokes it via
+    // invoke_empty_book_detected.
+    callback empty-book-detected(/* canonical path */ string);
     public function focus-carousel() { carousel.focus-self(); }
     // Forwarded navigation token: "left" | "right" | "space" | "backspace" |
     // "d" | "r" | "c" | "+" | "=" | "-" | "0" | "1" | "f".

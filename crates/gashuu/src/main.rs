@@ -24,7 +24,8 @@ use enum_adapters::{
     reading_direction_to_index, spread_mode_to_index,
 };
 use gashuu_core::{
-    CacheConfig, DecodedImage, FitMode, Library, ReadingDirection, Settings, ViewOverride,
+    ArchiveLoader, CacheConfig, CoreError, DecodedImage, FitMode, Library, ReadingDirection,
+    Settings, ViewOverride,
 };
 use keymap::{map_key, KeyCommand};
 use library_model::{LibrarySearchState, LibrarySelectionState};
@@ -204,13 +205,31 @@ fn main() -> color_eyre::Result<()> {
         let state = Rc::clone(&state);
         let viewport = Rc::clone(&viewport);
         let localizer = Rc::clone(&localizer);
+        // `finalize_open` may rebuild the carousel (empty-book auto-removal), so it
+        // needs the full carousel-refresh deps, not just the localizer.
+        let library = Rc::clone(&library);
+        let covers = Rc::clone(&covers);
+        let search = Rc::clone(&search);
+        let selection = Rc::clone(&selection);
         ui.on_open_folder(move || {
             with_ui(&ui_weak, |ui| {
                 let Some(dir) = rfd::FileDialog::new().pick_folder() else {
                     return;
                 };
                 let outcome = open_book.run(&ui, &dir, SkippedDetail::None);
-                finalize_open(&ui, &state, &viewport, &localizer, outcome);
+                finalize_open(
+                    &ui,
+                    &state,
+                    &viewport,
+                    &CarouselRefresh {
+                        library: &library,
+                        covers: &covers,
+                        search: &search,
+                        selection: &selection,
+                        localizer: &localizer,
+                    },
+                    outcome,
+                );
                 // Title-bar book name is derived from the AUTHORITATIVE post-open
                 // state (the canonical `open_file`), not the raw dialog path, so a
                 // FAILED open never shows the name of a book that did not open: on
@@ -228,6 +247,12 @@ fn main() -> color_eyre::Result<()> {
         let state = Rc::clone(&state);
         let viewport = Rc::clone(&viewport);
         let localizer = Rc::clone(&localizer);
+        // `finalize_open` may rebuild the carousel (empty-book auto-removal), so it
+        // needs the full carousel-refresh deps, not just the localizer.
+        let library = Rc::clone(&library);
+        let covers = Rc::clone(&covers);
+        let search = Rc::clone(&search);
+        let selection = Rc::clone(&selection);
         ui.on_open_archive(move || {
             with_ui(&ui_weak, |ui| {
                 let Some(file) = rfd::FileDialog::new()
@@ -237,7 +262,19 @@ fn main() -> color_eyre::Result<()> {
                     return;
                 };
                 let outcome = open_book.run(&ui, &file, SkippedDetail::Archive);
-                finalize_open(&ui, &state, &viewport, &localizer, outcome);
+                finalize_open(
+                    &ui,
+                    &state,
+                    &viewport,
+                    &CarouselRefresh {
+                        library: &library,
+                        covers: &covers,
+                        search: &search,
+                        selection: &selection,
+                        localizer: &localizer,
+                    },
+                    outcome,
+                );
                 // Title-bar book name is derived from the AUTHORITATIVE post-open
                 // state (the canonical `open_file`), so a FAILED open (corrupt /
                 // non-archive file) never shows the picked file's name: on failure
@@ -252,8 +289,9 @@ fn main() -> color_eyre::Result<()> {
     // (`pick_files_or_folders` only compiles there); elsewhere this is the
     // files-only picker paired with the separate Add Folder button below. Rust
     // is the single authority for the dialog flavor — Slint only fires the
-    // intent. Skips duplicates (via `add_paths`), persists, rebuilds the
-    // carousel model, and restores keyboard focus to the carousel.
+    // intent. Skips duplicates and rejects image-free or unreadable sources
+    // (via `add_paths`), persists, rebuilds the carousel model, and restores
+    // keyboard focus to the carousel.
     {
         let ui_weak = ui.as_weak();
         let library = Rc::clone(&library);
@@ -291,7 +329,9 @@ fn main() -> color_eyre::Result<()> {
 
     // Add Folder button: pick a single folder and add it as one book to the
     // library. Wraps the folder in a `vec![]` so the same dedup/save/rebuild
-    // path as `on_add_books` is used. Persists and restores carousel focus.
+    // path as `on_add_books` is used. Skips duplicates and rejects image-free
+    // or unreadable sources (via `add_paths`), persists, and restores carousel
+    // focus.
     {
         let ui_weak = ui.as_weak();
         let library = Rc::clone(&library);
@@ -369,6 +409,10 @@ fn main() -> color_eyre::Result<()> {
         let search = Rc::clone(&search);
         let viewport = Rc::clone(&viewport);
         let localizer = Rc::clone(&localizer);
+        // `finalize_open` may rebuild the carousel (empty-book auto-removal), so it
+        // needs the full carousel-refresh deps.
+        let covers = Rc::clone(&covers);
+        let selection = Rc::clone(&selection);
         ui.on_carousel_open(move |index| {
             with_ui(&ui_weak, |ui| {
                 // Resolve the focused VISIBLE carousel index to a Library book
@@ -399,15 +443,34 @@ fn main() -> color_eyre::Result<()> {
                 // open_book.run writes back the OLD book's position first,
                 // then opens the new path and resumes its stored position.
                 let outcome = open_book.run(&ui, &path, SkippedDetail::None);
-                finalize_open(&ui, &state, &viewport, &localizer, outcome);
+                // An empty source is removed instead of opened: stay on the
+                // Library (the rebuilt carousel no longer shows it) rather than
+                // switching to an empty viewer.
+                let enter_viewer = !matches!(outcome, app::OpenOutcome::EmptyBookRemoved { .. });
+                finalize_open(
+                    &ui,
+                    &state,
+                    &viewport,
+                    &CarouselRefresh {
+                        library: &library,
+                        covers: &covers,
+                        search: &search,
+                        selection: &selection,
+                        localizer: &localizer,
+                    },
+                    outcome,
+                );
                 // Title-bar book name is derived from the AUTHORITATIVE post-open
                 // state (the canonical `open_file`), so a FAILED open (a Library
                 // book that was moved/deleted) never shows that book's name: on
                 // failure `open_file` is unchanged and `run` already set an
-                // `Error:` status. The pre-existing `go_to_viewer` navigation is
-                // intentionally left unchanged (out of scope here).
+                // `Error:` status. Enter the viewer only when the open actually
+                // produced a book to show — an empty source was auto-removed and
+                // `finalize_open` left us on a refreshed Library.
                 ui.set_current_book_name(current_book_name(&state).into());
-                go_to_viewer(&ui, &nav);
+                if enter_viewer {
+                    go_to_viewer(&ui, &nav);
+                }
             })
         });
     }
@@ -427,6 +490,11 @@ fn main() -> color_eyre::Result<()> {
         let state = Rc::clone(&state);
         let viewport = Rc::clone(&viewport);
         let localizer = Rc::clone(&localizer);
+        // `finalize_open` may rebuild the carousel (empty-book auto-removal), so it
+        // needs the full carousel-refresh deps.
+        let covers = Rc::clone(&covers);
+        let search = Rc::clone(&search);
+        let selection = Rc::clone(&selection);
         ui.on_carousel_continue_reading(move || {
             with_ui(&ui_weak, |ui| {
                 // Resolve the bookmark to a present-in-library book path. A None
@@ -451,9 +519,27 @@ fn main() -> color_eyre::Result<()> {
                 // its stored page; a failed open (file moved/deleted) is handled by
                 // run itself (leaves open_file unchanged + sets an `Error:` status).
                 let outcome = open_book.run(&ui, &path, SkippedDetail::None);
-                finalize_open(&ui, &state, &viewport, &localizer, outcome);
+                // An empty source is removed instead of opened: stay on the
+                // Library (the rebuilt carousel no longer shows it) rather than
+                // switching to an empty viewer.
+                let enter_viewer = !matches!(outcome, app::OpenOutcome::EmptyBookRemoved { .. });
+                finalize_open(
+                    &ui,
+                    &state,
+                    &viewport,
+                    &CarouselRefresh {
+                        library: &library,
+                        covers: &covers,
+                        search: &search,
+                        selection: &selection,
+                        localizer: &localizer,
+                    },
+                    outcome,
+                );
                 ui.set_current_book_name(current_book_name(&state).into());
-                go_to_viewer(&ui, &nav);
+                if enter_viewer {
+                    go_to_viewer(&ui, &nav);
+                }
             })
         });
     }
@@ -775,6 +861,105 @@ fn main() -> color_eyre::Result<()> {
                         ui.invoke_focus_carousel();
                     }
                 }
+            })
+        });
+    }
+
+    // Carousel: a cover-loading worker found a book whose source has zero image
+    // pages (an empty folder, an archive emptied since it was added, …). The
+    // worker invokes this with the book's canonical path (epoch-guarded on its
+    // side so a stale in-flight result is dropped). Auto-remove the now-empty
+    // book from the library, persist, purge its cached cover, rebuild the
+    // carousel (the rebuild's epoch bump drops any sibling covers still
+    // streaming for it), and surface a notice. Idempotent: a second signal for a
+    // book already removed (`Library::remove` returns false) is a silent no-op.
+    {
+        let ui_weak = ui.as_weak();
+        let library = Rc::clone(&library);
+        let covers = Rc::clone(&covers);
+        let search = Rc::clone(&search);
+        let selection = Rc::clone(&selection);
+        let localizer = Rc::clone(&localizer);
+        ui.on_empty_book_detected(move |path_str| {
+            with_ui(&ui_weak, |ui| {
+                let loader = localizer.loader();
+                let path = std::path::PathBuf::from(path_str.as_str());
+                // Look up the display title BEFORE removal — once removed the book
+                // is gone from `books`, so the title must be captured first. A
+                // signal for a path no longer present yields `None`; the removal
+                // below then returns false and we bail out silently.
+                let title = {
+                    let lib = library.borrow();
+                    lib.books()
+                        .iter()
+                        .find(|book| book.path() == path.as_path())
+                        .map(|book| book.title().to_string())
+                };
+                let removed = library.borrow_mut().remove(&path);
+                if !removed {
+                    // Idempotency / race: the book was already removed by another
+                    // path (its notice + rebuild already ran), so nothing to do.
+                    return;
+                }
+                // `removed == true` guarantees `title` was Some (the book existed
+                // when we read it just above), but fall back to the path's file
+                // name defensively so the notice never shows an empty title.
+                let title = title.unwrap_or_else(|| {
+                    path.file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_default()
+                });
+                // Persist the removal. A save failure is surfaced (appended to the
+                // notice), not just traced, mirroring the add/delete save-failure
+                // handling; the in-memory removal stands either way.
+                let save_error = match library.borrow().save() {
+                    Ok(()) => None,
+                    Err(e) => {
+                        tracing::error!(error = %e, "failed to save library after empty-book auto-removal");
+                        Some(format!("{e}"))
+                    }
+                };
+                // Best-effort purge of the removed book's persistent cover,
+                // mirroring the bulk-delete purge (mtime drift / missing file is
+                // expected and only warned, never surfaced).
+                match gashuu_core::ThumbnailCache::new() {
+                    Ok(cache) => {
+                        let purged = cache.purge_for(
+                            &path,
+                            cover_loader::mtime_secs(&path),
+                            &[cover_loader::COVER_MAX_SIDE],
+                        );
+                        if purged == 0 {
+                            tracing::warn!(
+                                path = %path.display(),
+                                "no persistent cover purged for auto-removed empty book (missing, mtime drift, or unwritable cache)"
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!(error = %e, "cover cache unavailable; skipping cover purge on empty-book removal");
+                    }
+                }
+                // Rebuild the carousel so the removed book disappears and the
+                // cover-epoch bump drops any sibling cover still streaming for it;
+                // the active search filter is preserved by the chokepoint. No focus
+                // reset — the user's focus stays where it was.
+                refresh_library_carousel(
+                    &ui,
+                    &CarouselRefresh {
+                        library: &library,
+                        covers: &covers,
+                        search: &search,
+                        selection: &selection,
+                        localizer: &localizer,
+                    },
+                    false,
+                );
+                // Notice LAST (status-last ordering, as in add/delete): the
+                // auto-removal message, with the save-failure detail appended when
+                // the persist failed.
+                let status = empty_book_removed_status(loader, &title, save_error.as_deref());
+                ui.set_status_text(status.into());
             })
         });
     }
@@ -1643,6 +1828,29 @@ pub(crate) fn refresh(
     ui.set_page_jump_text(format!("{}", current_1based).into());
 }
 
+/// Build the empty-book auto-removal status line: the localized
+/// `empty_book_removed` notice, with the localized library-save-failure detail
+/// appended via the shared `format!("{base} \u{2014} {detail}")` pattern when
+/// `save_error` is `Some`. Shared by the two removal paths (the open-time
+/// `finalize_open` arm and the cover-time `on_empty_book_detected` handler) so
+/// the compose-and-append logic lives in one spot; the formatting stays in
+/// `main.rs` (per the spec) while `empty_book_removed` / `failed_save_library`
+/// remain the pure `dynamic.rs` notice seams.
+fn empty_book_removed_status(
+    loader: &i18n_embed::fluent::FluentLanguageLoader,
+    title: &str,
+    save_error: Option<&str>,
+) -> String {
+    let base = crate::i18n::dynamic::empty_book_removed(loader, title);
+    match save_error {
+        Some(e) => {
+            let detail = crate::i18n::dynamic::failed_save_library(loader, &e);
+            format!("{base} \u{2014} {detail}")
+        }
+        None => base,
+    }
+}
+
 /// Finalize an `open_book.run(...)` outcome on the UI. On failure, set the
 /// localized error status; on success, `refresh()` the view and append each
 /// localized notice to the status line. The single place the four open sites
@@ -1653,10 +1861,10 @@ fn finalize_open(
     ui: &ViewerWindow,
     state: &Rc<RefCell<ViewerState>>,
     viewport: &Rc<RefCell<ViewportState>>,
-    localizer: &i18n::Localizer,
+    deps: &CarouselRefresh,
     outcome: app::OpenOutcome,
 ) {
-    let loader = localizer.loader();
+    let loader = deps.localizer.loader();
     match outcome {
         app::OpenOutcome::Error(e_str) => {
             ui.set_status_text(crate::i18n::dynamic::open_error_str(loader, &e_str).into());
@@ -1667,6 +1875,32 @@ fn finalize_open(
                 let base = ui.get_status_text().to_string();
                 ui.set_status_text(format!("{base} \u{2014} {detail}").into());
             }
+        }
+        app::OpenOutcome::EmptyBookRemoved {
+            title,
+            removed,
+            save_error,
+        } => {
+            // The source opened cleanly but has zero pages: the use case already
+            // removed it from the library (if present) and re-saved. This arm does
+            // NOT switch screens — the open-folder/archive sites only switch on a
+            // user gesture, and the carousel-open/bookmark sites skip their
+            // `go_to_viewer` for this variant (see the `enter_viewer` guard there),
+            // so the user is left on a refreshed Library. Rebuild the carousel
+            // through the shared chokepoint so the removed book disappears and the
+            // cover-epoch bump drops any in-flight cover for it; the active search
+            // filter is preserved by the chokepoint. Do NOT reset focus.
+            refresh_library_carousel(ui, deps, false);
+            if removed {
+                // `removed == true` means THIS path performed the removal, so it
+                // owns the notice. A concurrent path that already removed+notified
+                // yields `removed == false` (idempotent) and stays silent below.
+                let status = empty_book_removed_status(loader, &title, save_error.as_deref());
+                ui.set_status_text(status.into());
+            }
+            // `removed == false`: another path already removed+notified this book
+            // (race idempotency), so add no notice — but the carousel rebuild
+            // above still ran, keeping this screen consistent.
         }
     }
 }
@@ -1928,16 +2162,58 @@ pub(crate) fn write_back_view_override(
     }
 }
 
-/// Add every path in `paths` to `lib`. Each path is added via `Library::add`,
-/// which canonicalizes, dedups, and re-sorts the library on insert.
-/// Returns the canonical paths of the books actually inserted (new books only);
-/// duplicates within the batch and paths already present are skipped, since
-/// `Library::add` returns `None` in those cases.
-fn add_paths(lib: &mut Library, paths: Vec<std::path::PathBuf>) -> Vec<std::path::PathBuf> {
-    paths
-        .into_iter()
-        .filter_map(|path| lib.add(path).map(std::path::Path::to_path_buf))
-        .collect()
+/// Outcome of an add batch: the canonical paths actually inserted (new books
+/// only, in INPUT order) and the count of paths REJECTED because they could not
+/// be opened as a book — either a source with zero image pages (the empty-book
+/// rule) or an unreadable / unsupported source. Duplicates are NOT counted in
+/// `skipped`: a path already in the library (or repeated within the batch) is
+/// neither added nor rejected, mirroring `Library::add`'s `None`.
+struct AddReport {
+    added: Vec<std::path::PathBuf>,
+    skipped: usize,
+}
+
+/// Add every path in `paths` to `lib`, rejecting sources that contain no images
+/// before they ever enter the library.
+///
+/// Each path is FIRST probed with [`ArchiveLoader::probe_page_count`]:
+/// - `Err(CoreError::EmptyBook { .. })` — the source opened but has zero image
+///   pages: skip it and count it in `skipped` (the empty-book rule).
+/// - `Err(other)` (I/O, `UnsupportedFormat`, …) — the source cannot be opened at
+///   all: skip it, count it in `skipped`, and `warn!` with the error. A book that
+///   cannot be opened is never added.
+/// - `Ok(count)` — add via `Library::add` (which canonicalizes, dedups, and
+///   re-sorts). On a genuine insert (`Some(canonical)`) the page count is recorded
+///   immediately so a freshly added book shows "1 / N" without waiting for its
+///   first open; a duplicate (`None`) is silently dropped (neither added nor
+///   skipped).
+fn add_paths(lib: &mut Library, paths: Vec<std::path::PathBuf>) -> AddReport {
+    let mut added = Vec::new();
+    let mut skipped = 0usize;
+    for path in paths {
+        match ArchiveLoader::probe_page_count(&path) {
+            Err(CoreError::EmptyBook { .. }) => {
+                skipped += 1;
+                tracing::debug!(path = %path.display(), "skipping empty source (no image pages)");
+            }
+            Err(e) => {
+                skipped += 1;
+                tracing::warn!(error = %e, path = %path.display(), "skipping unreadable source");
+            }
+            Ok(count) => {
+                if let Some(canonical) = lib.add(path).map(std::path::Path::to_path_buf) {
+                    // Record the probed count on the freshly inserted book so it
+                    // shows "1 / N" before its first open. `set_page_count`
+                    // re-finds the book by its canonical path.
+                    lib.set_page_count(&canonical, count);
+                    added.push(canonical);
+                }
+                // `None` here means a duplicate (within the batch or already
+                // present): neither added nor skipped, as before.
+            }
+        }
+    }
+    AddReport { added, skipped }
 }
 
 /// Resolve a VISIBLE carousel `index` to its underlying library book path,
@@ -2164,6 +2440,37 @@ fn refresh_library_carousel(ui: &ViewerWindow, deps: &CarouselRefresh, reset_foc
     );
 }
 
+/// Which status notice to surface after `add_books_and_refresh` calls `add_paths`.
+///
+/// The four arms cover the full 2×2 of (added==0 vs added>0) × (skipped==0 vs
+/// skipped>0).  The save-failure arm is handled separately in
+/// `add_books_and_refresh` and is NOT part of this enum.
+#[derive(Debug, PartialEq)]
+enum AddNotice {
+    /// All picked paths were already in the library (no new additions, no rejections).
+    AlreadyInLibrary,
+    /// Every path was rejected (no images or unreadable); nothing was added.
+    NoneAddedAllSkipped { skipped: usize },
+    /// Some books were added and some paths were rejected.
+    AddedWithSkips { added: usize, skipped: usize },
+    /// All picked paths were added successfully; none were rejected.
+    Added { added: usize },
+}
+
+/// Pure decision function: maps the `(added, skipped)` counts from `add_paths`
+/// to the appropriate [`AddNotice`] variant.  No I/O, no side-effects.
+fn select_add_notice(added: usize, skipped: usize) -> AddNotice {
+    match (added, skipped) {
+        (0, 0) => AddNotice::AlreadyInLibrary,
+        (0, s) => AddNotice::NoneAddedAllSkipped { skipped: s },
+        (n, 0) => AddNotice::Added { added: n },
+        (n, s) => AddNotice::AddedWithSkips {
+            added: n,
+            skipped: s,
+        },
+    }
+}
+
 /// Add `paths` to the library, persist, rebuild the filtered carousel, and
 /// surface the outcome on the status line, restoring carousel focus in every
 /// case.
@@ -2171,6 +2478,11 @@ fn refresh_library_carousel(ui: &ViewerWindow, deps: &CarouselRefresh, reset_foc
 /// Shared by the Add Books and Add Folder handlers; `op` distinguishes the two
 /// only in the save-failure trace message. When nothing new is added there is
 /// nothing to persist or rebuild, so it short-circuits after the status update.
+///
+/// Sources with no image pages (or that cannot be opened) are rejected by
+/// `add_paths` before they enter the library; the status notice names how many
+/// were skipped (added-some-skipped-some, or none-added-all-empty), falling back
+/// to the already-in-library message only when the skip count is zero.
 ///
 /// Newly added books are FORCED visible under the active filter (so an add never
 /// silently hides the new book behind a non-matching query); the filter text
@@ -2183,10 +2495,20 @@ fn add_books_and_refresh(
     op: &'static str,
     loader: &i18n_embed::fluent::FluentLanguageLoader,
 ) {
-    let added_paths = add_paths(&mut deps.library.borrow_mut(), paths);
+    let AddReport {
+        added: added_paths,
+        skipped,
+    } = add_paths(&mut deps.library.borrow_mut(), paths);
     if added_paths.is_empty() {
-        // Everything picked was already in the library: nothing to persist or rebuild.
-        ui.set_status_text(crate::i18n::dynamic::already_in_library(loader).into());
+        // Nothing new entered the library: nothing to persist or rebuild. Route
+        // through the pure decision fn so every branch is testable without Slint.
+        let notice = match select_add_notice(0, skipped) {
+            AddNotice::NoneAddedAllSkipped { skipped: s } => {
+                crate::i18n::dynamic::no_books_added_empty(loader, s)
+            }
+            _ => crate::i18n::dynamic::already_in_library(loader),
+        };
+        ui.set_status_text(notice.into());
         ui.invoke_focus_carousel();
         return;
     }
@@ -2213,7 +2535,19 @@ fn add_books_and_refresh(
             );
         }
         Ok(()) => {
-            ui.set_status_text(crate::i18n::dynamic::added_books(loader, added_paths.len()).into());
+            // Some books were added; route through the pure decision fn so the
+            // 4-way mapping is testable without Slint.
+            let notice = match select_add_notice(added_paths.len(), skipped) {
+                AddNotice::AddedWithSkips {
+                    added: n,
+                    skipped: s,
+                } => crate::i18n::dynamic::added_books_skipped(loader, n, s),
+                AddNotice::Added { added: n } => crate::i18n::dynamic::added_books(loader, n),
+                // added_paths is non-empty here, so AlreadyInLibrary and
+                // NoneAddedAllSkipped are unreachable; exhaustive for safety.
+                _ => crate::i18n::dynamic::added_books(loader, added_paths.len()),
+            };
+            ui.set_status_text(notice.into());
         }
     }
     // Focus the first newly added book by its VISIBLE row (the carousel renders
@@ -2404,47 +2738,73 @@ mod tests {
         assert_eq!(ov.fit_mode, Some(FitMode::Actual));
     }
 
+    // ---- add_paths (empty-book rule) -------------------------------------
+    //
+    // Since the empty-book rule, `add_paths` PROBES each source before insert:
+    // a source must contain at least one image page to be added. A folder is the
+    // cheapest fixture — a zero-byte `*.png` counts as a page (listing is
+    // extension-based), an empty folder probes to `EmptyBook`, and a nonexistent
+    // path probes to an I/O error. These helpers build real temp dirs so probing
+    // sees a genuine filesystem (the same reason the older tests already used
+    // tempdirs: `Library::add` canonicalizes).
+
+    /// Create a fresh temp directory under `parent/<name>` holding `pages`
+    /// zero-byte `*.png` files (so it probes to a `pages`-page book). With
+    /// `pages == 0` the directory is empty and probes to `EmptyBook`. Returns the
+    /// directory path (its canonical form is what `Library::add` stores).
+    fn make_book_dir(parent: &std::path::Path, name: &str, pages: usize) -> std::path::PathBuf {
+        let dir = parent.join(name);
+        std::fs::create_dir_all(&dir).expect("create book dir");
+        for i in 0..pages {
+            std::fs::write(dir.join(format!("page{i:03}.png")), []).expect("write page");
+        }
+        dir
+    }
+
+    /// Canonicalize a path the same way `Library::add` does, so test expectations
+    /// match the stored/returned canonical paths.
+    fn canon(path: &std::path::Path) -> std::path::PathBuf {
+        path.canonicalize().expect("canonicalize existing path")
+    }
+
     #[test]
     fn add_paths_empty_vec_returns_zero() {
         let mut lib = gashuu_core::Library::new();
-        let added = add_paths(&mut lib, vec![]);
-        assert!(added.is_empty());
+        let report = add_paths(&mut lib, vec![]);
+        assert!(report.added.is_empty());
+        assert_eq!(report.skipped, 0);
         assert_eq!(lib.books().len(), 0);
     }
 
     #[test]
     fn add_paths_new_paths_counted() {
         let mut lib = gashuu_core::Library::new();
-        let paths = vec![
-            std::path::PathBuf::from("nonexistent/vol1.cbz"),
-            std::path::PathBuf::from("nonexistent/vol2.cbz"),
-        ];
-        let added = add_paths(&mut lib, paths);
-        assert_eq!(added.len(), 2);
+        let root = tempfile::tempdir().expect("tempdir");
+        let vol1 = make_book_dir(root.path(), "vol1", 1);
+        let vol2 = make_book_dir(root.path(), "vol2", 2);
+        let report = add_paths(&mut lib, vec![vol1.clone(), vol2.clone()]);
+        assert_eq!(report.added.len(), 2);
+        assert_eq!(report.skipped, 0);
         assert_eq!(lib.books().len(), 2);
-        // Nonexistent paths cannot be canonicalized, so `Library::add` stores the
-        // verbatim path; the returned vec therefore equals the input, in input order.
-        assert_eq!(
-            added,
-            vec![
-                std::path::PathBuf::from("nonexistent/vol1.cbz"),
-                std::path::PathBuf::from("nonexistent/vol2.cbz"),
-            ]
-        );
+        // The returned vec holds the CANONICAL paths in INPUT order.
+        assert_eq!(report.added, vec![canon(&vol1), canon(&vol2)]);
     }
 
     #[test]
     fn add_paths_dedup_within_batch() {
         let mut lib = gashuu_core::Library::new();
-        let paths = vec![
-            std::path::PathBuf::from("nonexistent/vol1.cbz"),
-            std::path::PathBuf::from("nonexistent/vol1.cbz"),
-        ];
-        let added = add_paths(&mut lib, paths);
+        let root = tempfile::tempdir().expect("tempdir");
+        let vol1 = make_book_dir(root.path(), "vol1", 1);
+        let report = add_paths(&mut lib, vec![vol1.clone(), vol1.clone()]);
         assert_eq!(
-            added.len(),
+            report.added.len(),
             1,
             "duplicate within the batch must not be double-counted"
+        );
+        // A duplicate is neither added nor rejected, so it is NOT counted as skipped.
+        assert_eq!(
+            report.skipped, 0,
+            "a duplicate is not an empty/unreadable skip"
         );
         assert_eq!(lib.books().len(), 1);
     }
@@ -2452,16 +2812,19 @@ mod tests {
     #[test]
     fn add_paths_dedup_against_existing() {
         let mut lib = gashuu_core::Library::new();
-        lib.add(std::path::PathBuf::from("nonexistent/vol1.cbz"));
-        let paths = vec![
-            std::path::PathBuf::from("nonexistent/vol1.cbz"),
-            std::path::PathBuf::from("nonexistent/vol2.cbz"),
-        ];
-        let added = add_paths(&mut lib, paths);
+        let root = tempfile::tempdir().expect("tempdir");
+        let vol1 = make_book_dir(root.path(), "vol1", 1);
+        let vol2 = make_book_dir(root.path(), "vol2", 1);
+        lib.add(vol1.clone());
+        let report = add_paths(&mut lib, vec![vol1.clone(), vol2.clone()]);
         assert_eq!(
-            added.len(),
+            report.added.len(),
             1,
             "a path already in the library must not be counted"
+        );
+        assert_eq!(
+            report.skipped, 0,
+            "an existing path is not an empty/unreadable skip"
         );
         assert_eq!(lib.books().len(), 2);
     }
@@ -2470,10 +2833,14 @@ mod tests {
     fn add_paths_returns_canonical_paths_and_skips_duplicates() {
         let mut lib = gashuu_core::Library::new();
         let root = tempfile::tempdir().expect("tempdir");
-        let first = root.path().join(".");
-        let expected = root.path().canonicalize().expect("canonicalize tempdir");
-        let added = add_paths(&mut lib, vec![first.clone(), first.clone()]);
-        assert_eq!(added, vec![expected.clone()]);
+        let vol1 = make_book_dir(root.path(), "vol1", 1);
+        // `vol1/.` and `vol1` canonicalize to the same path, so the second is a
+        // duplicate and dropped.
+        let with_dot = vol1.join(".");
+        let expected = canon(&vol1);
+        let report = add_paths(&mut lib, vec![with_dot.clone(), with_dot.clone()]);
+        assert_eq!(report.added, vec![expected.clone()]);
+        assert_eq!(report.skipped, 0);
         assert_eq!(lib.books().len(), 1);
         assert_eq!(lib.books()[0].path(), expected.as_path());
     }
@@ -2481,18 +2848,94 @@ mod tests {
     #[test]
     fn add_paths_all_existing_returns_zero() {
         let mut lib = gashuu_core::Library::new();
-        lib.add(std::path::PathBuf::from("nonexistent/vol1.cbz"));
-        lib.add(std::path::PathBuf::from("nonexistent/vol2.cbz"));
+        let root = tempfile::tempdir().expect("tempdir");
+        let vol1 = make_book_dir(root.path(), "vol1", 1);
+        let vol2 = make_book_dir(root.path(), "vol2", 1);
+        lib.add(vol1.clone());
+        lib.add(vol2.clone());
         let before = lib.books().len();
-        let added = add_paths(
-            &mut lib,
-            vec![
-                std::path::PathBuf::from("nonexistent/vol1.cbz"),
-                std::path::PathBuf::from("nonexistent/vol2.cbz"),
-            ],
-        );
-        assert!(added.is_empty(), "all-duplicate batch must return 0");
+        let report = add_paths(&mut lib, vec![vol1.clone(), vol2.clone()]);
+        assert!(report.added.is_empty(), "all-duplicate batch must add 0");
+        assert_eq!(report.skipped, 0, "duplicates are not skips");
         assert_eq!(lib.books().len(), before, "books count must not change");
+    }
+
+    #[test]
+    fn add_paths_mixed_batch_counts_added_and_skipped() {
+        // A valid book, an empty folder, and a duplicate of the valid book:
+        // 1 added, 1 skipped (the empty), and the duplicate dropped silently.
+        let mut lib = gashuu_core::Library::new();
+        let root = tempfile::tempdir().expect("tempdir");
+        let valid = make_book_dir(root.path(), "valid", 1);
+        let empty = make_book_dir(root.path(), "empty", 0);
+        let report = add_paths(&mut lib, vec![valid.clone(), empty.clone(), valid.clone()]);
+        assert_eq!(
+            report.added,
+            vec![canon(&valid)],
+            "only the valid book is added"
+        );
+        assert_eq!(report.skipped, 1, "the empty folder is the one skip");
+        assert_eq!(lib.books().len(), 1);
+        assert_eq!(lib.books()[0].path(), canon(&valid).as_path());
+    }
+
+    #[test]
+    fn add_paths_all_empty_batch_adds_zero_skips_all() {
+        // Every picked source is empty: nothing added, all counted as skipped.
+        let mut lib = gashuu_core::Library::new();
+        let root = tempfile::tempdir().expect("tempdir");
+        let e1 = make_book_dir(root.path(), "e1", 0);
+        let e2 = make_book_dir(root.path(), "e2", 0);
+        let e3 = make_book_dir(root.path(), "e3", 0);
+        let report = add_paths(&mut lib, vec![e1, e2, e3]);
+        assert!(
+            report.added.is_empty(),
+            "no book added from an all-empty batch"
+        );
+        assert_eq!(report.skipped, 3, "all three empty sources are skipped");
+        assert_eq!(lib.books().len(), 0);
+    }
+
+    #[test]
+    fn add_paths_unreadable_path_is_skipped() {
+        // A nonexistent path cannot be opened (I/O error), so it is rejected as a
+        // skip — never added (an "unreadable" source is NOT classified as empty,
+        // but is still kept out of the library).
+        let mut lib = gashuu_core::Library::new();
+        let report = add_paths(
+            &mut lib,
+            vec![std::path::PathBuf::from(
+                "/nonexistent_gashuu_add_paths_unreadable",
+            )],
+        );
+        assert!(report.added.is_empty(), "an unreadable path is never added");
+        assert_eq!(
+            report.skipped, 1,
+            "the unreadable path is counted as skipped"
+        );
+        assert_eq!(lib.books().len(), 0);
+    }
+
+    #[test]
+    fn add_paths_sets_page_count_immediately() {
+        // A freshly added book carries its probed page count so the carousel can
+        // show "1 / N" before the book is ever opened.
+        let mut lib = gashuu_core::Library::new();
+        let root = tempfile::tempdir().expect("tempdir");
+        let three = make_book_dir(root.path(), "three", 3);
+        let report = add_paths(&mut lib, vec![three.clone()]);
+        assert_eq!(report.added.len(), 1);
+        assert_eq!(report.skipped, 0);
+        let book = lib
+            .books()
+            .iter()
+            .find(|b| b.path() == canon(&three))
+            .expect("added book present");
+        assert_eq!(
+            book.page_count_opt(),
+            Some(3),
+            "the probed page count is recorded on add"
+        );
     }
 
     #[test]
@@ -2596,17 +3039,17 @@ mod tests {
     fn add_paths_returns_input_order_while_books_are_natural_order() {
         // Focus follows the FIRST input path, not natural order: `add_paths`
         // returns the inserted paths in INPUT order, whereas `lib.books()` keeps
-        // them in NATURAL (sorted) order. Nonexistent paths cannot be
-        // canonicalized, so `Library::add` falls back to the verbatim path and the
-        // returned paths equal the verbatim input paths.
+        // them in NATURAL (sorted) order. Both share one parent dir so their leaf
+        // names (vol1, vol10) drive the natural sort.
         let mut lib = gashuu_core::Library::new();
-        let vol10 = std::path::PathBuf::from("nonexistent/vol10.cbz");
-        let vol1 = std::path::PathBuf::from("nonexistent/vol1.cbz");
-        let added = add_paths(&mut lib, vec![vol10.clone(), vol1.clone()]);
+        let root = tempfile::tempdir().expect("tempdir");
+        let vol10 = canon(&make_book_dir(root.path(), "vol10", 1));
+        let vol1 = canon(&make_book_dir(root.path(), "vol1", 1));
+        let report = add_paths(&mut lib, vec![vol10.clone(), vol1.clone()]);
 
         // Returned vec is in INPUT order (vol10 first, vol1 second).
-        assert_eq!(added[0], vol10);
-        assert_eq!(added[1], vol1);
+        assert_eq!(report.added[0], vol10);
+        assert_eq!(report.added[1], vol1);
 
         // The library itself is in NATURAL order (vol1 before vol10).
         let books: Vec<_> = lib
@@ -2623,4 +3066,35 @@ mod tests {
     // (length, 1-based `current`, availability, natural `Library::books()` order)
     // are covered by `library_model::tests` against the pure `carousel_data` /
     // `carousel_data_for_indices` helpers that the builder delegates to.
+
+    // ---- select_add_notice (reject-empty-books status routing) --------------
+
+    #[test]
+    fn select_add_notice_already_in_library_when_both_zero() {
+        assert_eq!(select_add_notice(0, 0), AddNotice::AlreadyInLibrary);
+    }
+
+    #[test]
+    fn select_add_notice_none_added_all_skipped_when_added_zero_skipped_nonzero() {
+        assert_eq!(
+            select_add_notice(0, 3),
+            AddNotice::NoneAddedAllSkipped { skipped: 3 }
+        );
+    }
+
+    #[test]
+    fn select_add_notice_added_with_skips_when_both_nonzero() {
+        assert_eq!(
+            select_add_notice(2, 1),
+            AddNotice::AddedWithSkips {
+                added: 2,
+                skipped: 1
+            }
+        );
+    }
+
+    #[test]
+    fn select_add_notice_added_when_added_nonzero_skipped_zero() {
+        assert_eq!(select_add_notice(5, 0), AddNotice::Added { added: 5 });
+    }
 }

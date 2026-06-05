@@ -5,6 +5,7 @@
 use crate::error::CoreError;
 use crate::page_source::{FolderSource, PageSource, RarSource, ZipSource};
 use std::io::Read;
+use std::num::NonZeroUsize;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -33,6 +34,26 @@ enum Kind {
 pub struct ArchiveLoader;
 
 impl ArchiveLoader {
+    /// Count the displayable image pages in `path`, enforcing the domain rule that
+    /// a valid book has at least one image page.
+    ///
+    /// Returns `Ok(NonZeroUsize)` when one or more image pages are found.
+    /// Returns `Err(CoreError::EmptyBook)` when the source opens successfully but
+    /// contains zero image pages — an empty folder, a zip with only non-image
+    /// entries, etc.
+    ///
+    /// I/O errors and `UnsupportedFormat` propagate unchanged. "Empty" and
+    /// "unreadable" are strictly distinct: an unreadable source (I/O failure,
+    /// corrupt archive header, unsupported file type) is never classified as empty.
+    pub fn probe_page_count(path: impl AsRef<Path>) -> Result<NonZeroUsize, CoreError> {
+        let path = path.as_ref();
+        let source = Self::open(path)?;
+        let count = source.list_pages().len();
+        NonZeroUsize::new(count).ok_or_else(|| CoreError::EmptyBook {
+            path: path.display().to_string(),
+        })
+    }
+
     /// Open `path` as the most appropriate [`PageSource`].
     ///
     /// Returns `Err(CoreError::UnsupportedFormat)` when the path is a file that
@@ -526,5 +547,149 @@ mod tests {
             matches!(err, CoreError::UnsupportedFormat { .. }),
             "expected UnsupportedFormat, got: {err:?}"
         );
+    }
+
+    // ------------------------------------------------------------------
+    // probe_page_count tests
+    // ------------------------------------------------------------------
+
+    /// Build a text-only ZIP (no image entries) in memory.
+    fn text_only_zip_bytes() -> Vec<u8> {
+        use zip::write::SimpleFileOptions;
+        use zip::{CompressionMethod, ZipWriter};
+
+        let mut buf = Vec::new();
+        {
+            let cursor = std::io::Cursor::new(&mut buf);
+            let mut zw = ZipWriter::new(cursor);
+            let opts = SimpleFileOptions::default().compression_method(CompressionMethod::Stored);
+            zw.start_file("readme.txt", opts).expect("start_file");
+            zw.write_all(b"this is not an image").expect("write text");
+            zw.finish().expect("finish zip");
+        }
+        buf
+    }
+
+    #[test]
+    fn probe_page_count_folder_with_images_returns_count() {
+        // A folder with N image files → Ok(N). Zero-byte .png files count as pages
+        // because FolderSource detects by extension only.
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(dir.path().join("a.png"), b"").expect("write a.png");
+        std::fs::write(dir.path().join("b.png"), b"").expect("write b.png");
+        std::fs::write(dir.path().join("c.jpg"), b"").expect("write c.jpg");
+
+        let n = ArchiveLoader::probe_page_count(dir.path()).expect("probe ok");
+        assert_eq!(n.get(), 3);
+    }
+
+    #[test]
+    fn probe_page_count_folder_images_in_subfolder_only_returns_empty_book() {
+        // Images in a subdirectory only: FolderSource uses max_depth(1) so they are
+        // excluded, making the top level effectively empty → EmptyBook.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let sub = dir.path().join("sub");
+        std::fs::create_dir(&sub).expect("mkdir sub");
+        std::fs::write(sub.join("hidden.png"), b"").expect("write hidden.png");
+
+        let Err(err) = ArchiveLoader::probe_page_count(dir.path()) else {
+            panic!("expected EmptyBook for images-only-in-subfolder");
+        };
+        assert!(
+            matches!(err, CoreError::EmptyBook { .. }),
+            "expected EmptyBook, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn probe_page_count_folder_uppercase_extension_is_counted() {
+        // Uppercase .PNG must be detected by FolderSource (eq_ignore_ascii_case).
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(dir.path().join("COVER.PNG"), b"").expect("write COVER.PNG");
+
+        let n = ArchiveLoader::probe_page_count(dir.path()).expect("probe ok");
+        assert_eq!(n.get(), 1);
+    }
+
+    #[test]
+    fn probe_page_count_empty_folder_returns_empty_book() {
+        let dir = tempfile::tempdir().expect("tempdir");
+
+        let Err(err) = ArchiveLoader::probe_page_count(dir.path()) else {
+            panic!("expected EmptyBook for empty folder");
+        };
+        assert!(
+            matches!(err, CoreError::EmptyBook { .. }),
+            "expected EmptyBook, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn probe_page_count_zip_with_image_returns_one() {
+        let mut f = tempfile::Builder::new()
+            .suffix(".zip")
+            .tempfile()
+            .expect("tempfile");
+        f.write_all(&tiny_zip_bytes()).expect("write zip");
+        f.flush().expect("flush");
+
+        let n = ArchiveLoader::probe_page_count(f.path()).expect("probe ok");
+        assert_eq!(n.get(), 1);
+    }
+
+    #[test]
+    fn probe_page_count_zip_without_images_returns_empty_book() {
+        // A ZIP containing only a .txt entry → EmptyBook.
+        let mut f = tempfile::Builder::new()
+            .suffix(".zip")
+            .tempfile()
+            .expect("tempfile");
+        f.write_all(&text_only_zip_bytes())
+            .expect("write text-only zip");
+        f.flush().expect("flush");
+
+        let Err(err) = ArchiveLoader::probe_page_count(f.path()) else {
+            panic!("expected EmptyBook for text-only zip");
+        };
+        assert!(
+            matches!(err, CoreError::EmptyBook { .. }),
+            "expected EmptyBook, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn probe_page_count_nonexistent_path_returns_io_error() {
+        let err = ArchiveLoader::probe_page_count("/nonexistent/path/that/cannot/exist.zip")
+            .expect_err("should fail for nonexistent path");
+        assert!(
+            matches!(err, CoreError::Io(_)),
+            "expected CoreError::Io, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn probe_page_count_plain_text_file_returns_unsupported_format() {
+        let mut f = tempfile::Builder::new()
+            .suffix(".txt")
+            .tempfile()
+            .expect("tempfile");
+        f.write_all(b"not an archive").expect("write text");
+        f.flush().expect("flush");
+
+        let Err(err) = ArchiveLoader::probe_page_count(f.path()) else {
+            panic!("expected UnsupportedFormat for plain text file");
+        };
+        assert!(
+            matches!(err, CoreError::UnsupportedFormat { .. }),
+            "expected UnsupportedFormat, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn probe_page_count_cbr_fixture_returns_real_count() {
+        // SAMPLE_CBR_B64 contains 4 image pages (verified by cbr_extension_opens_rar_source).
+        let cbr = write_cbr_with_suffix(SAMPLE_CBR_B64, ".cbr");
+        let n = ArchiveLoader::probe_page_count(cbr.path()).expect("probe cbr ok");
+        assert_eq!(n.get(), 4);
     }
 }

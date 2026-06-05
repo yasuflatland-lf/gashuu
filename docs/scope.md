@@ -72,7 +72,7 @@ RAR requires a C++ compiler on every OS (see [docs/toolchain.md](toolchain.md)).
 
 - The Library screen (the PR-0b two-screen shell) now RENDERS the cover-flow carousel from the `Library` model: focused cover with accent ring, scaled/dimmed neighbors, per-cover + focused-meta reading-progress bars, a grayed broken-cover placeholder for unavailable books, and the 0-book empty-state CTA. Built from the pure `library_model::carousel_data` mapping via the `carousel::to_carousel_item` UI-thread adapter (covers via `slint::Image::default()` for now). No new deps.
 - **Covers start as placeholders** — PR-V (below) streams the real cover images in (into the same `VecModel<CarouselItem>`, using the PR8a `invoke_from_event_loop` pattern).
-- Per-book page `total` was a placeholder `0` in PR-C; **PR-La now persists it** (`Book::page_count`, back-filled and saved on open) and the carousel shows the real `total` + `current / total` progress fraction once a book has been opened. See "Per-book page totals, fallible save, and load-failure notice (PR-La)" below. (Later: `CoverController` ALSO prefetches the count for never-opened books in the background, so the carousel no longer shows `1 / 0` before first open — see "Cover sharpness, page-count prefetch, cover-flow z-order" below.)
+- Per-book page `total` was a placeholder `0` in PR-C; **PR-La now persists it** (`Book::page_count`, back-filled and saved on open) and the carousel shows the real `total` + `current / total` progress fraction once a book has been opened. See "Per-book page totals, fallible save, and load-failure notice (PR-La)" below. (Later: `CoverController` ALSO prefetches the count for never-opened books in the background, so the carousel no longer shows `1 / 0` before first open — see "Cover sharpness, page-count prefetch, cover-flow z-order" below. Later still: the reject-empty-books feature persists the probed count at ADD time, so a freshly added book shows its real `total` immediately without waiting for the prefetch — see "Reject empty books" below.)
 - The empty-state CTA is wired to the file/folder picker by PR-L (see below).
 
 ### Thumbnail disk cache (PR-T)
@@ -88,13 +88,13 @@ RAR requires a C++ compiler on every OS (see [docs/toolchain.md](toolchain.md)).
 ### Multi-file loading via picker (PR-L)
 
 - **Add files** (`rfd` `pick_files`, filtered cbz/zip/cbr/rar) and **Add folder** (`pick_folder`, folder-as-one-book) toolbar buttons on the Library screen, plus an interactive empty-state CTA that fires the file picker.
-- Adds route through `add_paths` (dedup via `Library::add`, skipping books already present and duplicates within the batch), then persist the library, rebuild the carousel model (`build_carousel_model`), and surface the outcome on a Library-screen status line.
+- Adds route through `add_paths` (dedup via `Library::add`, skipping books already present and duplicates within the batch; since the reject-empty-books feature it ALSO probes each source first and rejects any with no image pages or that cannot be opened — see "Reject empty books" below), then persist the library, rebuild the carousel model (`build_carousel_model`), and surface the outcome on a Library-screen status line.
 - Library is loaded at startup (corrupt/unreadable → empty library, same UI-layer recovery policy as `Settings`) and the carousel is seeded from it on boot.
 - No new deps (reuses `rfd`).
 
 ### Per-book page totals, fallible save, and load-failure notice (PR-La)
 
-- **Per-book page totals are modeled + persisted.** `Book::page_count` (a `#[serde(default)]` field, no `LIBRARY_VERSION` bump) is back-filled from the opened source's page count and saved to `library.json` on open, so the count survives relaunch. The cover-flow carousel (`carousel_data`) now shows the REAL `total` / `current` / progress fraction for any opened book (`0` = never opened until prefetched — see below). Same-session visibility comes from a carousel rebuild on the open path when the count was just back-filled. Cover images remain placeholders until PR-V.
+- **Per-book page totals are modeled + persisted.** `Book::page_count` (a `#[serde(default)]` field, no `LIBRARY_VERSION` bump) is back-filled from the opened source's page count and saved to `library.json` on open, so the count survives relaunch. The cover-flow carousel (`carousel_data`) now shows the REAL `total` / `current` / progress fraction for any opened book (`0` = unknown: never opened AND not yet prefetched; since the reject-empty-books feature, a book ADDED after that feature lands has its count persisted at add time, so a fresh add shows its real total immediately — see "Reject empty books" below). Same-session visibility comes from a carousel rebuild on the open path when the count was just back-filled. Cover images remain placeholders until PR-V.
 - **Save is fallible end-to-end** — `Library::to_json -> Result` (symmetric with `from_json`); `save`/`save_to` propagate via `?`. No serialize step is silently swallowed, so a save can no longer write a truncated file while the UI reports success.
 - **Startup load failures surface on the home screen.** A genuine `Library`/`Settings` load failure (corrupt data / I/O / `NoDataDir`; missing files still return `Ok(default)`) is collected and shown on the Library status line after the initial refresh. Closes the PR-L gap where library load failure was tracing-only.
 - No new deps.
@@ -163,6 +163,18 @@ RAR requires a C++ compiler on every OS (see [docs/toolchain.md](toolchain.md)).
 - `start` logs `dispatched` + `elapsed_us` at debug level — the UI-thread cost of a refresh is now measurable and independent of cache state.
 - Follow-ups deliberately NOT done here (filed as issues): #140 page-turn miss-decode analysis, #141 raw-RGBA/QOI cover-cache v2, #142 batched cover marshaling, #143 ThumbnailCache size cap/GC, #144 failed-cover state.
 - No new dependencies. The worker path stays coverage-exempt (same policy as the thumbnail strip); `prioritize_by_focus` is unit-tested headlessly.
+
+### Reject empty books (reject-empty-books, 2026-06-05)
+
+A source with no image pages (an empty folder, an archive with only non-image entries, a folder whose images live only in subfolders since the walk is `max_depth(1)`) is no longer treatable as a book. The domain rule "a valid book has >= 1 image page" lives once in core; three UI hook points enforce it. See [ADR-0009](ADRs/0009-reject-empty-books.md) for the decision and [docs/patterns.md](patterns.md) for the harnesses.
+
+- **The rule lives in core.** `ArchiveLoader::probe_page_count(path) -> Result<NonZeroUsize, CoreError>` opens the source and counts pages; `0` → `Err(CoreError::EmptyBook { path })` (a new `#[non_exhaustive]` variant), `1+` → `Ok(NonZeroUsize)`. I/O / `UnsupportedFormat` errors propagate UNCHANGED — "empty" and "unreadable" are strictly distinct. `Library::add` / `register_opened` are unchanged (no I/O enters the collection layer).
+- **Add time.** `add_paths` probes each path and rejects empty OR unreadable sources before they enter the library (the notice says how many were skipped; mixed batches still add the valid books). On a genuine insert it persists the probed count via `set_page_count`, so a fresh add shows "1 / N" immediately. Return type is `AddReport { added, skipped }`.
+- **Open time.** `OpenBookUseCase::run` returns `OpenOutcome::EmptyBookRemoved { title, removed, save_error }` for a clean open that counts zero pages: it removes the book (if present), re-saves, and the recents push / settings save / `register_opened` are all bypassed; `main.rs` stays on the Library, rebuilds the carousel, and shows a notice (never enters the viewer).
+- **Cover-load time.** A cover worker that opens a book cleanly with zero pages fires the `empty-book-detected(string)` Slint callback; `main.rs::on_empty_book_detected` removes the book, purges its cover cache, rebuilds the carousel, and notifies. Idempotent with the open-time path via `Library::remove`'s bool (a race loser stays silent).
+- **A missing-path book is NOT removed** — the existing `is_available()` gray-out is preserved (a temporarily unmounted drive must not lose data). Removal happens only when a scan SUCCEEDS and confirms zero images.
+- Notices: `notice-added-books-skipped`, `notice-no-books-added-empty`, `notice-empty-book-removed` (en + ja, via `i18n/dynamic.rs`).
+- No new dependencies. Add-time probing is synchronous on the UI thread (light: zip reads only the central directory, folder probing is a shallow walk); a follow-up to move it off-thread is deferred (YAGNI) unless it proves slow on huge network-drive batches.
 
 ---
 

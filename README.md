@@ -20,7 +20,9 @@ tasteful a tool as a fine art book.
   subfolders are included. Extraction is in-memory (nothing is written to disk); unsafe,
   oversized, or corrupt entries are skipped and counted in the status bar.
 - **Library** — added books are shown in natural title order (numeric-aware, so *vol 1*,
-  *vol 2*, *vol 10* sort in that order rather than lexically). The NavBar includes a live
+  *vol 2*, *vol 10* sort in that order rather than lexically). A folder or archive with no
+  images is not a book: it is rejected on add (the status bar reports how many were skipped),
+  and if one turns up empty later it is auto-removed with a notice. The NavBar includes a live
   search field that filters books by title or filesystem path as you type; freshly-added
   books stay visible until the query changes.
 - **Spreads** — single page, two-page spread, or **auto** (picks single/double from the
