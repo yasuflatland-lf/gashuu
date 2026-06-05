@@ -521,7 +521,7 @@ replaces the docked TitleBar), `NavBar`
 highlight + drop shadow; Slint has no backdrop-blur so the glass effect is paint-only), `NavItem`
 (#83, NEW: one circular icon capsule inside `NavBar`; hover/press glow via `Theme.accent-glow`;
 non-focusable `TouchArea` with `accessible-role`/`accessible-label`/`accessible-action-default` for
-screen-reader support), `Dropdown` (i18n PR, NEW: the Apple-HIG pull-down button used by the
+screen-reader support; `feat/library-chrome-polish` added two opt-in props: `in property <bool> active: false` — holds a persistent accent ring + `accent-glow` fill, priority pressed > hover > active; and `in property <bool> enabled: true` — gates the `TouchArea` and `accessible-action-default`, drops the icon to `text-faint` when false; existing call sites are untouched via their defaults), `Dropdown` (i18n PR, NEW: the Apple-HIG pull-down button used by the
 language setting — the repo's first `PopupWindow`; the menu is lowered to the window root so the
 dialog's clipping Flickable can't cut it off — see docs/patterns.md), `Segmented` (issue 102,
 PR-A: token-driven horizontal segmented control replacing the std-widgets `ComboBox`; equal-width
@@ -541,18 +541,15 @@ UI-polish pass §2.6: selection-mode organism — count pill / select-all capsul
 PR-5 #129); glass-pill following `NavBar`'s four-layer idiom with two intentional departures
 (accent border-color for mode context; `active`-gated drop shadow to suppress bleed from the
 parked position); content-hugged width; mounted ALWAYS inside a `clip: true` slide-strip below the
-NavBar in `Carousel` (y-slide transition — NOT an `if`-gate so the animation is continuous); takes
+NavBar in `Carousel` (y-slide transition — NOT an `if`-gate so the animation is continuous; as of `feat/library-chrome-polish` 2026-06-05 this strip is toolbar-only — the "Select" entry pill that previously shared the strip was replaced by the NavBar Select capsule); takes
 an `active` flag ANDed into every `TouchArea`/a11y guard; all human-visible text passed from Rust
 via `in` properties — deliberately `Strings`-agnostic), and `DangerButton`
 (bulk-delete PR-1: destructive-action atom — structural clone of `PrimaryButton` swapping accent for
 `Theme.danger` red + `Theme.danger-glow` hover/focus ring; accessibility role/label/action-default
 added here, `PrimaryButton` backport pending; first consumed by the PR-3 `ConfirmDialog`, and now
 also the PR-5 `SelectionToolbar` delete button), and `BookmarkRibbon` (continue-reading feature:
-display-only Image atom over a cover's top-LEFT corner, `@image-url("../assets/bookmark.svg")`
-recolored via `colorize: Theme.accent`, sized `Theme.space-huge²`; shown when
-`CarouselItem.bookmarked` is true — the single last-opened book resolved from `Library.last_opened`;
-accessible as `role: image` / label `Strings.continue-reading`; the two corner overlays are
-independent and can render simultaneously alongside `SelectionBadge`'s top-RIGHT badge).
+display-only Image atom floating ABOVE the cover's top-LEFT corner, `@image-url("../assets/bookmark.svg")`
+recolored via `colorize: Theme.text` white — a quiet non-interactive status color (not accent, which is reserved for interactive elements; `feat/library-chrome-polish` swapped from accent + tucked-in to text-white + fully detached); placement `x: Theme.space-xs; y: -self.height - Theme.space-md` (~10 px clearance ≈ ribbon height / φ²; zero cover overlap; dark stage guarantees contrast); sized `Theme.space-huge²`; shown when `CarouselItem.bookmarked` is true — the single last-opened book resolved from `Library.last_opened`; accessible as `role: image` / label `Strings.continue-reading`; the ribbon sits outside the card above-left while `SelectionBadge` sits inside the card top-right; both can render simultaneously).
 Each references `Theme.*` via `../Theme.slint`;
 consumers import via `import { X } from "components/X.slint"`. `build.rs` is unchanged — it compiles
 the single entry `ui/ViewerWindow.slint` and import statements cascade. See
@@ -567,8 +564,7 @@ via `colorize` to `Theme.text` white inside `SelectionBadge`), `close.svg` (UI-p
 Cancel Fill glyph — disc + knocked-out ✕ — used by the `SelectionToolbar` exit capsule, recolored
 via `colorize`; replaced the former `Text` pseudo-icon), `delete.svg` (UI-polish pass, NEW:
 trash glyph shown as the `DangerButton` leading icon in `SelectionToolbar`, recolored via
-`colorize`), and `bookmark.svg` (continue-reading feature: Streamline "Bookmark Fill", 96×96
-intrinsic / viewBox 24; consumed by `BookmarkRibbon.slint`, recolored to `Theme.accent`), each a
+`colorize`), `checkbox.svg` (`feat/library-chrome-polish`, NEW: Streamline "Check Box Fill" — the NavBar Select capsule glyph; solid shape chosen to survive 21px femtovg rendering where dashed marquee glyphs blur; recolored via `colorize`), and `bookmark.svg` (continue-reading feature: Streamline "Bookmark Check Fill" glyph since `feat/library-chrome-polish` — same SVG install point, glyph swapped from plain Bookmark Fill to Bookmark Check Fill; 96×96 intrinsic / viewBox 24; consumed by `BookmarkRibbon.slint` recolored to `Theme.text` white, and by the NavBar bookmark capsule via `@image-url("assets/bookmark.svg")` in `Carousel.slint`), each a
 single-path SVG recolored at runtime via Slint's `Image.colorize` property. Components reference
 them with `@image-url(...)` paths relative to the consuming `.slint` file. `build.rs` is unchanged
 (assets are reached transitively through the entry-file import cascade).
@@ -596,7 +592,7 @@ named `add-files` until the macOS combined picker landed) and wired the empty-st
 to `add-books()` (each restores focus via `focus-self()` after firing); PR-L's original left-aligned
 two-`Button` text toolbar was REPLACED in #83 with a centered, icon-only glass-pill `NavBar` (two
 `file`/`folder` `NavItem` capsules on Windows/Linux; on macOS a single combined `plus` capsule,
-gated by the Rust-pushed `combined-add-picker` flag). The `NavBar` is declared as a SEPARATE LAST layer in the
+gated by the Rust-pushed `combined-add-picker` flag). `feat/library-chrome-polish` extended the NavBar with two additional capsules: a **Select capsule** (`checkbox.svg`; API: `select-icon`, `selection-active`, `select-enabled`, `toggle-selection()`) that toggles bulk-selection mode (disabled — not removed — when the library is empty; modal-input blocked by the existing backdrop absorber like all other NavBar controls); and a **bookmark capsule** (`bookmark.svg`; API: `bookmark-icon`, `continue-reading()`) that jumps to the continue-reading book — always enabled, using the status strip to respond when no bookmark exists. Capsule order: `[search | add capsule(s) | select | bookmark | settings]`; width formula was updated atomically in both `combined` and non-`combined` branches (4/5 capsules, 5/6 gaps). The `NavBar` is declared as a SEPARATE LAST layer in the
 component tree — paint order equals declaration order in Slint, so it renders on top of the cover-flow
 without a z-index — and kept OUTSIDE the `FocusScope` so keyboard navigation remains carousel-owned;
 the nav is mouse + screen-reader oriented. The `add-books()`/`add-folder()` callbacks and the
@@ -684,7 +680,7 @@ reason); Settings/Guide overlays remain viewer-scoped. Extended again in PR-S to
 driven by a `chrome-shown` bool + an idle `Timer`; chrome is revealed on pointer-move (via
 `PageView.reveal()`), arrow-key presses, and scrubber drag. #71 mounted the shared `TitleBar`
 component (bound to a new `current-book-name` in-prop — derived in `main.rs` from the post-open
-`ViewerState::open_file()`, see [patterns.md](patterns.md)), and set a `min-width`/`min-height` floor on the window.
+`ViewerState::open_file()`, see [patterns.md](patterns.md)), and set a `min-width`/`min-height` floor on the window. `feat/library-chrome-polish` added `in property <string> library-count-text` (the pre-composed total book count for the Library screen's bottom status strip idle state); the strip's `Text` resolves `text: root.status-text == "" ? root.library-count-text : root.status-text` — transient notices always win; and forwarded the Carousel's `continue-reading()` callback up to the window level for Rust handling.
 
 ### rfd file/folder picker
 
