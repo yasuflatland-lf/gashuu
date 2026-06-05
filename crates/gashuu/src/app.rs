@@ -8,7 +8,6 @@
 //! text, carousel rebuild, thumbnail launch), so it lives in the UI crate.
 
 use std::cell::RefCell;
-use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
@@ -183,9 +182,9 @@ impl OpenBookUseCase {
         // the same key `last_page`/`set_page_count`/`write_back_position` use. The
         // `state.borrow()` `Ref` drops at the `;`.
         let canonical = state.borrow().open_file().map(Path::to_path_buf);
-        // `page_count()` returns a `Copy` `usize`; the `state.borrow()` drops at the
+        // `page_count_opt()` returns a `Copy` `Option<NonZeroUsize>`; the `state.borrow()` drops at the
         // `;` so it cannot conflict with the `library.borrow_mut()` below.
-        let page_count = state.borrow().page_count();
+        let page_count = state.borrow().page_count_opt();
         // Reject an empty book: the source opened cleanly but has zero pages, so it
         // must NOT be entered in the viewer. Bail out HERE, before `register_opened`,
         // so the bypassed side effects pinned by the spec never run — no recents
@@ -199,7 +198,7 @@ impl OpenBookUseCase {
         // Reviewer note: `ViewerState` still holds this empty source after the
         // bail-out; that is inert (page_count == 0, the viewer is never shown) and
         // the next successful open replaces it — by design, with no restore machinery.
-        if page_count == 0 {
+        if page_count.is_none() {
             if let Some(c) = canonical.as_deref() {
                 // The shared transaction: title capture → remove → save → cover
                 // purge. Wave-2 #150 DELIBERATELY added the purge here — the old
@@ -239,18 +238,17 @@ impl OpenBookUseCase {
         };
         // `register_opened` performs the idempotent add, the page-count back-fill,
         // and the resume lookup as one domain rule. The unknown total is carried by
-        // the type: `NonZeroUsize::new(page_count)`. A zero-page open never reaches
-        // here (the empty-book bail-out above returned for it), so this is always
-        // `Some(page_count)` in practice; the `NonZeroUsize` wrapping keeps the type
-        // honest without a `> 0` guard / `debug_assert` at this call site. Borrow
-        // discipline: it holds
-        // `library.borrow_mut()` only for the `let reg = ...` line (released at its
-        // `;`, before the `jump_to` below); `state.borrow_mut().jump_to(...)` is a
-        // separate statement on a distinct `RefCell`.
+        // the type END-TO-END: `page_count_opt()` produced the `Option<NonZeroUsize>`
+        // at the read boundary, so there is no wrapping at this call site. A
+        // zero-page open never reaches here (the empty-book bail-out above returned
+        // for `None`), so `page_count` is always `Some(…)` in practice; the type
+        // keeps the contract honest without a `> 0` guard / `debug_assert` here.
+        // Borrow discipline: it holds `library.borrow_mut()` only for the
+        // `let reg = ...` line (released at its `;`, before the `jump_to` below);
+        // `state.borrow_mut().jump_to(...)` is a separate statement on a distinct
+        // `RefCell`.
         let count_changed = if let Some(c) = canonical.as_deref() {
-            let reg = library
-                .borrow_mut()
-                .register_opened(c, NonZeroUsize::new(page_count));
+            let reg = library.borrow_mut().register_opened(c, page_count);
             // Resume at the recorded position; for a never-read book `reached` is 0
             // and `jump_to(0)` is a no-op when the index is already 0.
             state.borrow_mut().jump_to(reg.resume.reached());
@@ -709,6 +707,7 @@ pub(crate) fn confirm_delete_content(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::num::NonZeroUsize;
 
     /// Build a real failing `CoreError` for the save-result arguments. Uses the
     /// `Io` variant (the simplest existing variant; `CoreError: From<io::Error>`),

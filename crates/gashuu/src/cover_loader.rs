@@ -361,12 +361,14 @@ fn marshal_empty_book(
 
 /// Worker-side decision: should opening a book's source and counting its pages
 /// raise the "empty book" signal? `true` only when the source opened CLEANLY
-/// (`Ok`) AND has zero pages — an open ERROR is unreadable, NOT empty, and keeps
-/// the placeholder + log behavior with no signal. Pure and `Send`-free so the
-/// decision is unit-testable without a Slint/UI event loop. The generic `E`
-/// avoids a dependency on `ArchiveLoader`'s concrete error type in tests.
-fn should_signal_empty<S, E>(open_result: &Result<S, E>, page_count: usize) -> bool {
-    open_result.is_ok() && page_count == 0
+/// (`Ok`) AND counts no pages (`None` — the raw probe count converts to the
+/// emptiness vocabulary at the call-site boundary) — an open ERROR is
+/// unreadable, NOT empty, and keeps the placeholder + log behavior with no
+/// signal. Pure and `Send`-free so the decision is unit-testable without a
+/// Slint/UI event loop. The generic `E` avoids a dependency on
+/// `ArchiveLoader`'s concrete error type in tests.
+fn should_signal_empty<S, E>(open_result: &Result<S, E>, page_count: Option<NonZeroUsize>) -> bool {
+    open_result.is_ok() && page_count.is_none()
 }
 
 /// Worker-side: record a resolved page `count` for `path`/`row`. Queues `(path,
@@ -513,7 +515,7 @@ impl CoverController {
                             // Opened cleanly but zero pages: signal the empty book
                             // (count == 0 also means push_and_marshal_count below
                             // queues nothing — NonZeroUsize::new(0) is None).
-                            if should_signal_empty(&open_result, count) {
+                            if should_signal_empty(&open_result, NonZeroUsize::new(count)) {
                                 marshal_empty_book(&weak, &epoch, my_epoch, req.path.clone());
                             }
                             push_and_marshal_count(
@@ -550,23 +552,19 @@ impl CoverController {
                 }
             };
             // The same open yields the page count for free; capture it BEFORE
-            // `source` moves into generate_cover (always — the count gates the
-            // empty-book check below; it is only PERSISTED when the row needs it).
-            let page_count = source.list_pages().len();
-            // Opened cleanly but zero pages: signal the empty book and stop. No
-            // cover to generate (page 0 does not exist), no count to persist
-            // (NonZeroUsize::new(0) is None) — skipping generate_cover avoids a
-            // pointless open-and-fail. This branch inlines the same decision as
-            // `should_signal_empty`'s Ok-arm rather than calling it (kept for the
-            // HIT path's `Result` shape); if that helper's rule changes, update
-            // this branch too.
-            if page_count == 0 {
+            // `source` moves into generate_cover. Convert to the emptiness
+            // vocabulary at the probe boundary: `None` IS "opened cleanly but
+            // zero pages" — the same decision as `should_signal_empty`'s Ok arm
+            // (the HIT path keeps the helper for its `Result` shape). Signal the
+            // empty book and stop: no cover to generate (page 0 does not exist),
+            // no count to persist.
+            let Some(page_count) = NonZeroUsize::new(source.list_pages().len()) else {
                 if !cancel.load(Relaxed) {
                     marshal_empty_book(&weak, &epoch, my_epoch, req.path);
                 }
                 return;
-            }
-            let count = req.needs_count.then_some(page_count);
+            };
+            let count = req.needs_count.then_some(page_count.get());
             let decoded = match generate_cover(source, COVER_MAX_SIDE) {
                 Ok(d) => d,
                 Err(e) => {
@@ -746,22 +744,22 @@ mod tests {
 
     /// A unit type and error stand in for `ArchiveLoader::open`'s `Ok`/`Err`,
     /// since `should_signal_empty` is generic over the source and error types —
-    /// the decision is purely "opened cleanly AND zero pages".
+    /// the decision is "opened cleanly AND no pages (`None`)".
     type OpenResult = Result<(), &'static str>;
 
-    /// Opened cleanly with zero pages IS an empty book: signal.
+    /// Opened cleanly with zero pages (`None`) IS an empty book: signal.
     #[test]
     fn signal_empty_on_open_success_zero_pages() {
         let open: OpenResult = Ok(());
-        assert!(should_signal_empty(&open, 0));
+        assert!(should_signal_empty(&open, None));
     }
 
     /// Opened cleanly with pages is a normal book: no signal.
     #[test]
     fn no_signal_on_open_success_with_pages() {
         let open: OpenResult = Ok(());
-        assert!(!should_signal_empty(&open, 5));
-        assert!(!should_signal_empty(&open, 1));
+        assert!(!should_signal_empty(&open, NonZeroUsize::new(5)));
+        assert!(!should_signal_empty(&open, NonZeroUsize::new(1)));
     }
 
     /// An open ERROR is unreadable, NOT empty — even if the (unused) count is
@@ -769,7 +767,7 @@ mod tests {
     #[test]
     fn no_signal_on_open_error() {
         let open: OpenResult = Err("unreadable");
-        assert!(!should_signal_empty(&open, 0));
-        assert!(!should_signal_empty(&open, 5));
+        assert!(!should_signal_empty(&open, None));
+        assert!(!should_signal_empty(&open, NonZeroUsize::new(5)));
     }
 }
