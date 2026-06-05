@@ -67,7 +67,13 @@ PR6, `archive_loader.rs`. `open(path) -> Arc<dyn PageSource>` dispatch — direc
 else a `Kind {Zip, Rar}` enum resolved by `ext_kind` (no I/O; `.cbz`/`.zip`→Zip,
 `.cbr`/`.rar`→Rar, case-insensitive) preferred, else `magic_kind` sniff (`PK` ZIP
 signatures→`ZipSource`; `Rar!\x1A\x07`→`RarSource`), else `UnsupportedFormat` (returns `Arc` not
-`Box` to fit `set_source`).
+`Box` to fit `set_source`). The reject-empty-books feature added the associated fn
+`probe_page_count(path) -> Result<NonZeroUsize, CoreError>`: it `open`s the source, counts
+`list_pages().len()`, and returns `Err(CoreError::EmptyBook { path })` on a clean open with zero
+pages — the SINGLE home of the domain rule "a valid book has >= 1 image page". I/O /
+`UnsupportedFormat` errors propagate unchanged ("empty" and "unreadable" are strictly distinct).
+See [ADR-0009](ADRs/0009-reject-empty-books.md) and [patterns.md](patterns.md) ("Lift a domain rule
+into ONE core type at the boundary").
 
 ### image_ops::decode
 
@@ -158,6 +164,7 @@ lives in the UI (`main.rs`); core only returns typed `CoreError`:
 - PR5 added `ImageTooLarge`
 - PR6 added `Zip(#[from] ::zip::result::ZipError)`, `EntryTooLarge { name, max }`, `UnsupportedFormat { path }`
 - PR7 added `Rar(#[from] ::unrar::error::UnrarError)` (Display prefix `"rar archive error: "`)
+- reject-empty-books added `EmptyBook { path }` (Display `"no images found in {path}"`) — raised by `ArchiveLoader::probe_page_count` on a clean open with zero image pages, distinct from the unreadable-source errors above
 
 Errors are typed with `thiserror` (`CoreError`, `#[non_exhaustive]`).
 
@@ -204,7 +211,10 @@ boundary, so there is no `debug_assert` in core and no `page_count > 0` guard at
 (#65). The reader side maps stored counts through `Book::page_count_opt() -> Option<usize>`
 (stored `0 → None`), the accessor that `progress()` and `carousel_data` consume. `main.rs` now
 just calls `register_opened` and `jump_to(reg.resume.reached())`, converting at the boundary with
-`NonZeroUsize::new(page_count)` (a zero-page open → `None` → back-fill skipped), keeping the
+`NonZeroUsize::new(page_count)` (a zero-page open → `None` → back-fill skipped — though since the
+reject-empty-books feature the open path bails out at `EmptyBookRemoved` BEFORE `register_opened` for
+a zero-page source, so this `None` arm is now a defensive type-honesty wrapper rather than a live
+path; see ADR-0009), keeping the
 domain rule out of the presentation layer (aligns with the core↔UI boundary, ADR-0002).
 `count_changed` tells the caller whether to rebuild the carousel. `Book::progress() ->
 ReadingProgress` is the per-book accessor that `carousel_data` and `register_opened` both use;
@@ -347,11 +357,30 @@ is NO `NavState` field — `NavState` stays in `main.rs`. **PR-3 (#114)** replac
 - `OpenOutcome` / `SkippedDetail` / `NoticesContent` are in scope for `main.rs` via
   `use crate::app::{NoticesContent, OpenOutcome, SkippedDetail}`.
 
-`main.rs` constructs one instance and shares it (`Rc`) into the three open-handler closures:
-`on_open_folder`, `on_open_archive`, and `on_carousel_open`. All three call
-`finalize_open(&ui, &state, &viewport, &localizer, outcome)` after `run` returns; only
-`on_carousel_open` also calls `go_to_viewer`. See [patterns.md](patterns.md),
-"OpenOutcome pattern" and "finalize_open helper".
+The reject-empty-books feature added a third `OpenOutcome` variant: `EmptyBookRemoved { title,
+removed, save_error }`, returned when the source opens CLEANLY but counts zero pages. `run` bails out
+HERE — before `register_opened`, with the recents push / settings save / per-book view resolve /
+carousel rebuild / thumbnail start all bypassed (so an empty book never re-enters via
+`register_opened`); it removes the book if present (`Library::remove`, idempotent bool), re-saves,
+and pre-captures any save error. The recents push + settings save are DEFERRED past this check so
+they fire only for a non-empty book (see [patterns.md](patterns.md), "Insert a guard before X").
+`title` prefers the stored `Book::title`, falling back to `derive_title` — a pinned byte-for-byte
+replica of `gashuu_core::Book::from_path` (the core derivation is `pub(crate)` and unreachable from
+this crate; see [patterns.md](patterns.md), "Replicate-and-PIN"). `finalize_open` handles the variant
+by rebuilding the carousel (the active search filter preserved) and showing the notice ONLY when
+`removed == true`; it does NOT switch screens, and the carousel-open / continue-reading sites guard
+their `go_to_viewer` with an `enter_viewer` check so the user stays on a refreshed Library. The
+open-time and cover-time removal paths share `main.rs::empty_book_removed_status` for the
+notice-plus-save-failure compose.
+
+`main.rs` constructs one instance and shares it (`Rc`) into the open-handler closures:
+`on_open_folder`, `on_open_archive`, `on_carousel_open`, and `on_carousel_continue_reading`. All call
+`finalize_open(&ui, &state, &viewport, &CarouselRefresh { … }, outcome)` after `run` returns — the
+signature gained the full `CarouselRefresh` deps (was just `&localizer`) because the
+`EmptyBookRemoved` arm may rebuild the carousel. The carousel-open / continue-reading sites also call
+`go_to_viewer`, but BOTH guard it with `enter_viewer = !matches!(outcome, EmptyBookRemoved { .. })`
+so an auto-removed empty source leaves the user on a refreshed Library instead of an empty viewer.
+See [patterns.md](patterns.md), "OpenOutcome pattern" and "finalize_open helper".
 
 Lives in the UI crate because it coordinates Slint components; `gashuu-core` is untouched.
 
@@ -422,9 +451,11 @@ to `1.0`); `total = ReadingProgress::total()` (now `Option<usize>`, #65). The fr
 on the UI thread; `build_carousel_model` is the build+bind
 chokepoint returning the `Rc<VecModel>` so PR-V/PR-L mutate the same model. `total` comes from
 the persisted `Book::page_count` (PR-La): `0` until the count is known
-(`progress` guarded to `0.0`), the real saved count afterwards — known either by opening the book or,
-for a never-opened book, by `CoverController`'s background page-count prefetch (see `cover_loader.rs`),
-which streams the count into this `total` and persists it. The `total: clamp_to_i32(total)`
+(`progress` guarded to `0.0`), the real saved count afterwards — known by opening the book; for a
+never-opened book added BEFORE the reject-empty-books feature, by `CoverController`'s background
+page-count prefetch (see `cover_loader.rs`), which streams the count into this `total` and persists
+it; for a book ADDED after that feature, persisted at add time by `add_paths` (so a fresh add shows
+its real `total` without waiting for the prefetch — see ADR-0009). The `total: clamp_to_i32(total)`
 saturating cast is unchanged.
 
 ### LibrarySearchState
@@ -649,7 +680,16 @@ and a `ResolvedCount { path, count }` is queued in `pending_counts` for UI-threa
 via `Library::set_page_count` + `save` at the next `start` and at shutdown (`flush_counts`), so the
 count survives a relaunch (a worker can't touch the `!Send` `Rc<RefCell<Library>>`, hence the queue).
 Callers build the `CoverRequest` list BEFORE `start` so the `library.borrow()` is released before
-`start`'s persistence `borrow_mut`.
+`start`'s persistence `borrow_mut`. The reject-empty-books feature added empty-book DETECTION to the
+worker: a worker that opens a book CLEANLY but counts zero pages (the pure `should_signal_empty`
+decision = `open_result.is_ok() && count == 0`) calls `marshal_empty_book`, which fires the root
+`empty-book-detected(string)` Slint callback under the same epoch guard as `marshal_total` (the
+worker holds only a `Send` `PathBuf`; the `!Send` removal work runs on the UI thread in
+`main.rs::on_empty_book_detected`). An open ERROR is unreadable, NOT empty — it keeps the placeholder
++ log behavior and fires no signal. A dropped stale-epoch signal cannot lose the detection (a zero
+count is never persisted, so the next generation re-detects), and a removed book is absent from the
+next generation's requests (no loop). See [patterns.md](patterns.md), "Worker → UI ACTION via a
+Slint callback", and [ADR-0009](ADRs/0009-reject-empty-books.md).
 
 **`SettingsDialog.slint`** (PR8b, NEW; issue 102 replaced its std-widgets `ComboBox`/`SpinBox`/`CheckBox` with the token-driven `Segmented`/`Stepper`/`Toggle`/`Dropdown` atoms): modal overlay editing active settings; two-way `current-index <=> in-out-prop` +
 `selected`/`edited`/`toggled` callbacks. Since issue 103/104 it is a **content-hug glass panel** (φ relocated into the component proportions; spec 2026-06-04) built from custom `components/` atoms; its footer "Shortcuts" link opens `ShortcutsOverlay`, and an `in property <int> focus-epoch` (bumped by `ViewerWindow.focus-settings()`) lets the parent re-focus this still-mounted dialog after the overlay closes.
@@ -701,11 +741,15 @@ panel, `pick_files` elsewhere; the platform split lives in `#[cfg]` blocks insid
 and the matching `combined-add-picker` bool pushed at boot collapses the NavBar's two add capsules
 into one on macOS) and
 `on_add_folder` (`pick_folder`, folder-as-one-book; its capsule is hidden on macOS). `main.rs` owns the library-add seam — `add_paths`
-(dedup-aware insert, returns the count of NEW books), `build_carousel_model` (Library → `ModelRc<CarouselItem>`,
+(probes each path via `ArchiveLoader::probe_page_count`, rejects empty/unreadable sources, dedup-aware
+insert, persists the probed count on each genuine insert, and returns `AddReport { added, skipped }` —
+see ADR-0009), `build_carousel_model` (Library → `ModelRc<CarouselItem>`,
 0-based `last_page` → 1-based `current`, real `total`/`progress` from persisted `Book::page_count` (PR-La),
 placeholder cover), and the shared
 `add_books_and_refresh` handler (insert → save → rebuild carousel → status line → restore carousel
-focus; short-circuits when nothing new was added). The persisted `Library` lives in `main.rs` as
+focus; short-circuits when nothing new was added). The 4-way add notice is chosen by the pure
+`select_add_notice(added, skipped) -> AddNotice` selector (testable without Slint; see
+[patterns.md](patterns.md), "Pure-selector seam"). The persisted `Library` lives in `main.rs` as
 `Rc<RefCell<Library>>`, loaded at startup and seeded into `carousel-items` on boot.
 
 ### RGBA conversion

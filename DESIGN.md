@@ -666,7 +666,8 @@ same `status-text` / `library-count-text` channel as the Viewer toolbar notices.
   "N 冊" (ja), Fluent-composed and pushed from Rust. Hidden entirely at 0 books (an empty library
   already shows the CTA; an idle "0 books" would be noise).
 - **Active notice** (when `status-text` is non-empty): shows the transient feedback string
-  ("Added N book(s)", "Deleted…", "No bookmark registered", open errors, etc.). The count resumes
+  ("Added N book(s)", "Added N, skipped M with no images", "Removed … — no images found",
+  "Deleted…", "No bookmark registered", open errors, etc.). The count resumes
   automatically the next time `status-text` is cleared.
 
 This is not a new chrome element — it reuses the existing notice channel and its position tokens.

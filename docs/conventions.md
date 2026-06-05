@@ -97,7 +97,7 @@ that asymmetry and its rationale — the repo's history of a silent gettext all-
 
 ### Test fixtures (no committed binaries)
 
-Tests synthesize fixtures in memory (the `image` crate makes tiny PNGs) plus `tempfile` for filesystem cases — **no committed binary fixtures.** Two exceptions, both committed TEXT not binaries: insta `.snap` files (see [docs/patterns.md](patterns.md)), and (PR7) the base64-encoded RAR `.cbr` fixtures in `crates/gashuu-core/src/test_fixtures.rs` (RAR has no Rust encoder, so they cannot be synthesized in-memory like PNGs/ZIPs).
+Tests synthesize fixtures in memory (the `image` crate makes tiny PNGs) plus `tempfile` for filesystem cases — **no committed binary fixtures.** Two exceptions, both committed TEXT not binaries: insta `.snap` files (see [docs/patterns.md](patterns.md)), and (PR7) the base64-encoded RAR `.cbr` fixtures in `crates/gashuu-core/src/test_fixtures.rs` (RAR has no Rust encoder, so they cannot be synthesized in-memory like PNGs/ZIPs). Even cheaper for PAGE-COUNTING / empty-book tests: a ZERO-BYTE file named `*.png` counts as a page, because `FolderSource` lists by EXTENSION (case-insensitive, `max_depth(1)`) and does not read the bytes — so a temp dir of empty `*.png` files probes to an N-page book, an empty dir probes to `EmptyBook`, and no real image data is needed (used by the `probe_page_count` / `add_paths` tests).
 
 ### Validated value objects must not derive `Deserialize`
 
