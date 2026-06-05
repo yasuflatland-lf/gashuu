@@ -1,8 +1,8 @@
 // NavBar — the top, centered "glass pill" holding the live library search field
 // (left), a thin divider, and the icon-only NavItems on the right: Add files /
-// Add folder / Settings, or — when `combined-add-picker` is set (macOS, where
-// one NSOpenPanel picks files AND folders) — a single Add books capsule plus
-// Settings.
+// Add folder / Select / Bookmark / Settings, or — when `combined-add-picker` is
+// set (macOS, where one NSOpenPanel picks files AND folders) — a single Add books
+// capsule plus Select plus Bookmark plus Settings.
 //
 // Slint 1.x has NO backdrop-blur, so the frosted-glass look is APPROXIMATED,
 // not rendered, with four cheap layers that read as glass without sampling
@@ -164,6 +164,16 @@ export component NavBar inherits Rectangle {
     in property <image> plus-icon;
     in property <image> search-icon;
     in property <image> settings-icon;
+    // The checkbox glyph for the bulk-selection capsule.
+    in property <image> select-icon;
+    // The bookmark glyph for the continue-reading capsule.
+    in property <image> bookmark-icon;
+    // Mirrors the carousel's selection mode; drives the capsule's persistent
+    // active ring (the toggle affordance: re-click exits selection).
+    in property <bool> selection-active;
+    // False on an empty library — the capsule dims/faints instead of
+    // disappearing, so the computed pill width never jumps.
+    in property <bool> select-enabled: true;
     // True when the platform's native open panel can pick files AND folders in
     // one dialog (macOS): the two add capsules collapse into a single combined
     // one. Pushed once from Rust at boot — never changes at runtime.
@@ -180,6 +190,12 @@ export component NavBar inherits Rectangle {
     callback settings();
     callback search-changed(string);
     callback search-exit();
+    // Enter/exit bulk-selection.
+    callback toggle-selection();
+    // Jump to the continue-reading book (resume at its saved page). ALWAYS
+    // enabled: with no bookmark the click intentionally answers with a status
+    // notice, so a faint capsule would hide the affordance instead of inviting it.
+    callback continue-reading();
 
     // Move keyboard focus into the search field (carousel `/` and click).
     public function focus-search() { search.focus-self(); }
@@ -187,16 +203,16 @@ export component NavBar inherits Rectangle {
     // ── Shape & size ──────────────────────────────────────────────────────────
     // Width is computed from tokens so the pill hugs its content WITHOUT a
     // layout-preferred-width binding loop. Children left→right: search field,
-    // 1px divider, then the icon capsules — three of them (five children, four
-    // gaps), or two when the combined add capsule replaces the file/folder pair
-    // (four children, three gaps).
-    //   combined (macOS): search + 2*capsule + divider + 3*gap + 2*pad
-    //   split (elsewhere): search + 3*capsule + divider + 4*gap + 2*pad
+    // 1px divider, then the icon capsules — five of them (seven children, six
+    // gaps), or four when the combined add capsule replaces the file/folder
+    // pair (six children, five gaps).
+    //   combined (macOS): search + 4*capsule + divider + 5*gap + 2*pad
+    //   split (elsewhere): search + 5*capsule + divider + 6*gap + 2*pad
     height: Theme.nav-pill-height;
     width: Theme.nav-search-width
-        + (root.combined-add-picker ? 2 : 3) * Theme.nav-capsule
+        + (root.combined-add-picker ? 4 : 5) * Theme.nav-capsule
         + Theme.nav-divider-width
-        + (root.combined-add-picker ? 3 : 4) * Theme.nav-item-gap
+        + (root.combined-add-picker ? 5 : 6) * Theme.nav-item-gap
         + 2 * Theme.nav-pill-pad;
     horizontal-stretch: 0;
     vertical-stretch: 0;
@@ -222,7 +238,7 @@ export component NavBar inherits Rectangle {
         background: Theme.glass-highlight;
     }
 
-    // ── Items: search field, divider, then the three icon-only capsules ───────
+    // ── Items: search field, divider, then the five icon-only capsules ────────
     HorizontalLayout {
         spacing: Theme.nav-item-gap;
         padding: Theme.nav-pill-pad;
@@ -268,6 +284,27 @@ export component NavBar inherits Rectangle {
             icon: root.folder-icon;
             a11y-label: Strings.navbar-add-folder-a11y;
             clicked => { root.add-folder(); }
+        }
+        // Bulk-selection entry/exit toggle; gated by select-enabled (empty
+        // library faints the capsule rather than removing it, so pill width is
+        // stable). Intentionally NOT gated on modal state — like the sibling
+        // capsules it relies on the modal backdrop absorber to block input;
+        // folding a modal flag into `enabled` would flicker the capsule faint
+        // under the scrim.
+        NavItem {
+            icon: root.select-icon;
+            a11y-label: Strings.selection-enter;
+            active: root.selection-active;
+            enabled: root.select-enabled;
+            clicked => { root.toggle-selection(); }
+        }
+        // Jump to the continue-reading book. ALWAYS enabled — with no bookmark
+        // the click intentionally answers with a status notice, so a faint
+        // capsule would hide the affordance rather than invite the press.
+        NavItem {
+            icon: root.bookmark-icon;
+            a11y-label: Strings.continue-reading;
+            clicked => { root.continue-reading(); }
         }
         NavItem {
             icon: root.settings-icon;

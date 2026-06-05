@@ -127,6 +127,12 @@ pub(crate) fn already_in_library(loader: &FluentLanguageLoader) -> String {
     fl!(loader, "notice-already-in-library")
 }
 
+/// Notice when the NavBar bookmark capsule is clicked but no continue-reading
+/// bookmark is registered (or it points at a book no longer in the library).
+pub(crate) fn bookmark_none(loader: &FluentLanguageLoader) -> String {
+    fl!(loader, "notice-bookmark-none")
+}
+
 /// Notice after a successful add. `n` is the number of books added.
 pub(crate) fn added_books(loader: &FluentLanguageLoader, n: usize) -> String {
     let n = n as i64;
@@ -147,6 +153,21 @@ pub(crate) fn added_books_save_failed(
         n = n,
         error = error.as_str()
     )
+}
+
+// ---- Library screen messages ----------------------------------------------
+
+/// Idle bottom-strip label on the Library screen: the total library book count.
+///
+/// Returns `String::new()` when `n == 0`: the empty-state panel already explains
+/// an empty library, so an idle "0 books" in the strip would be noise. For
+/// `n > 0` the count is rendered via the `library-count` Fluent plural select.
+pub(crate) fn library_count_text(loader: &FluentLanguageLoader, n: usize) -> String {
+    if n == 0 {
+        return String::new();
+    }
+    let n = n as i64;
+    fl!(loader, "library-count", n = n)
 }
 
 // ---- Selection toolbar messages -------------------------------------------
@@ -367,6 +388,70 @@ mod tests {
                 dir
             );
         }
+    }
+
+    #[test]
+    fn library_count_text_zero_returns_empty() {
+        // n == 0 ⇒ "" (the empty-state panel already explains an empty library,
+        // so an idle "0 books" would be noise). Both locales return empty.
+        for loc in [en(), ja()] {
+            let l = loc.loader();
+            assert_eq!(
+                library_count_text(l, 0),
+                "",
+                "library_count_text(0) must be empty"
+            );
+        }
+    }
+
+    #[test]
+    fn library_count_text_renders_count_per_locale() {
+        // n > 0: the count digit must appear, en singular/plural must differ in
+        // their unit word, and en != ja.
+        let en_one = library_count_text(en().loader(), 1);
+        let en_many = library_count_text(en().loader(), 2);
+        let ja_one = library_count_text(ja().loader(), 1);
+        // Count digit is embedded (guards a dropped { $n } placeholder).
+        assert!(
+            en_one.contains('1'),
+            "en singular must contain 1: {en_one:?}"
+        );
+        assert!(
+            en_many.contains('2'),
+            "en plural must contain 2: {en_many:?}"
+        );
+        assert!(ja_one.contains('1'), "ja must contain 1: {ja_one:?}");
+        // English plural select: "1 book" (singular) vs "2 books" (plural).
+        assert!(
+            en_one.ends_with("book"),
+            "en singular must use 'book', got: {en_one:?}"
+        );
+        assert!(
+            en_many.ends_with("books"),
+            "en plural must use 'books', got: {en_many:?}"
+        );
+        // En != Ja for the same count.
+        assert_ne!(
+            en_one, ja_one,
+            "library_count_text must differ between En and Ja"
+        );
+    }
+
+    #[test]
+    fn bookmark_none_is_non_empty_and_translated() {
+        // The no-bookmark notice must render in both locales and differ between
+        // them (en "No bookmark registered" vs ja「ブックマークが登録されていません」).
+        for loc in [en(), ja()] {
+            assert!(
+                !bookmark_none(loc.loader()).is_empty(),
+                "bookmark_none must not be empty"
+            );
+        }
+        assert_ne!(
+            bookmark_none(en().loader()),
+            bookmark_none(ja().loader()),
+            "bookmark_none must differ between En and Ja"
+        );
     }
 
     #[test]

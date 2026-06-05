@@ -133,6 +133,16 @@ carousel-empty-cta-files = 追加するファイルを選択
 carousel-no-results-title = 一致する本がありません
 carousel-no-results-hint = 別のキーワードで検索してください。
 
+# Idle bottom-strip label: total library size, shown when no transient notice
+# occupies the strip. { $n } は蔵書の総冊数（n > 0 のときのみ合成）。
+# Japanese has no plural inflection, so a single *[other] variant carries every
+# count. The select wrapper mirrors the English plural shape so the en/ja
+# argument-set parity test sees a matching select selector on both sides.
+library-count =
+    { $n ->
+       *[other] { $n } 冊
+    }
+
 # ---- navbar ----
 
 # SearchField placeholder and a11y labels (all three uses in NavBar.slint)
@@ -234,6 +244,9 @@ notice-could-not-save-settings = 設定を保存できませんでした: { $err
 notice-load-failed = { $what } を読み込めませんでした。初期状態で起動します。
 # Em dash (U+2014) preserved byte-identically from messages.rs.
 notice-already-in-library = すでにライブラリにあります — 新しい本は追加されませんでした。
+# Notice when the NavBar bookmark capsule is clicked but no continue-reading
+# bookmark is registered (or it points at a book no longer in the library).
+notice-bookmark-none = ブックマークが登録されていません
 notice-added-books = { $n } 冊の本を追加しました
 notice-added-books-save-failed = { $n } 冊の本を追加しましたが、ライブラリを保存できませんでした: { $error }
 

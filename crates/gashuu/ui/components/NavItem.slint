@@ -2,8 +2,8 @@
 //
 // A single action button (e.g. Add files / Add folder) rendered as a circular
 // "capsule": just a centered, colorized icon over a transparent ground. The
-// capsule reserves a transparent 1px border by default so the layout stays
-// stable when the accent ring appears on hover (no reflow / size jump).
+// capsule reserves a transparent 1px border by default so the hover ring can
+// appear without shifting the icon or changing the capsule's footprint.
 //
 // Shape   : circular — Theme.nav-capsule diameter, Theme.radius-pill rounding
 // Icon    : Theme.nav-icon, image-fit contain, Theme.text-mid by default
@@ -11,6 +11,12 @@
 //           icon brightens to Theme.text-high
 // Press   : stronger fill (accent-glow darkened) + accent ring;
 //           icon brightens to Theme.text-high — no positional shift
+// Active  : persistent accent ring + glow while a mode owns the capsule
+//           (e.g. the Select capsule while selection mode is on); opt-in via
+//           `active: true`. Looks identical to the hover state but stays lit
+//           when the pointer leaves.
+// Enabled=false: faint icon, no states, no input — capsule stays mounted so
+//           the NavBar width never jumps.
 //
 // Colors / lengths come from Theme.* only — NO inline brand hex (DESIGN.md
 // rule 2; scripts/check-tokens.sh enforces this). Theme lives one directory up.
@@ -24,6 +30,14 @@ export component NavItem inherits Rectangle {
     // Exposed so a container can keep its auto-hiding chrome visible while the
     // pointer rests on this capsule.
     out property <bool> hovered: touch.has-hover;
+    // Opt-in: hold the hover look persistently (accent ring + glow) while a
+    // mode is active (e.g. selection mode). Defaults to false so existing call
+    // sites (file/folder/plus/settings capsules) are unaffected.
+    in property <bool> active: false;
+    // Opt-in: when false the capsule is fully inert — no input, no lit states,
+    // faint icon — but stays mounted so the NavBar width never jumps. Defaults
+    // to true so existing call sites are unaffected.
+    in property <bool> enabled: true;
 
     // ── Shape: a circular capsule with a stable, reserved 1px ring ────────────
     width: Theme.nav-capsule;
@@ -42,19 +56,23 @@ export component NavItem inherits Rectangle {
     // version-fragile, so the glow is a discrete state change.
     animate background, border-color { duration: Theme.motion-fast; }
 
-    // ── States: hover and press light up the accent ring / glow ──────────────
-    // Priority: pressed > hover (Slint applies the first matching state, so list
-    // pressed before hover — same ordering used by PrimaryButton / fluent Button).
-    // Only ROOT-level properties are set here. Child-element properties cannot be
-    // assigned from a `states[]` block in Slint 1.x (no `parent`/sibling access
-    // inside the block), so the icon's colorize is a binding on the Image below
-    // that reads the touch state directly.
+    // ── States: hover/active and press light up the accent ring / glow ───────
+    // Priority: pressed > lit (Slint applies the first matching state, so list
+    // pressed first — same ordering used by PrimaryButton / fluent Button). The
+    // `lit` state fires on hover OR persistent `active`: both paint the identical
+    // accent ring + glow, so they share one state body rather than duplicating it.
+    // Only ROOT-level properties are set here. Child-element properties cannot
+    // be assigned from a `states[]` block in Slint 1.x (no `parent`/sibling
+    // access inside the block), so the icon's colorize is a binding on the
+    // Image below that reads the touch state directly.
+    // Every `when` condition folds in `&& root.enabled` so no state can light up
+    // while the capsule is disabled.
     states [
-        pressed when touch.pressed : {
+        pressed when touch.pressed && root.enabled : {
             root.background: Theme.accent-glow.darker(0.10);
             root.border-color: Theme.accent;
         }
-        hover when touch.has-hover : {
+        lit when (touch.has-hover || root.active) && root.enabled : {
             root.background: Theme.accent-glow;
             root.border-color: Theme.accent;
             root.drop-shadow-color: Theme.accent-glow;
@@ -70,9 +88,12 @@ export component NavItem inherits Rectangle {
         x: (parent.width - self.width) / 2;
         y: (parent.height - self.height) / 2;
         image-fit: contain;
-        // Brighten on hover/press; default to the calmer mid tone. Driven by a
-        // binding (not a states[] assignment) because the icon is a child element.
-        colorize: touch.has-hover || touch.pressed ? Theme.text-high : Theme.text-mid;
+        // Brighten on hover/press/active; faint when disabled; default to the
+        // calmer mid tone. Driven by a binding (not a states[] assignment)
+        // because the icon is a child element.
+        colorize: !root.enabled ? Theme.text-faint
+                : (touch.has-hover || touch.pressed || root.active) ? Theme.text-high
+                : Theme.text-mid;
     }
 
     // ── Accessibility ─────────────────────────────────────────────────────────
@@ -81,13 +102,16 @@ export component NavItem inherits Rectangle {
     accessible-label: root.a11y-label;
     // Let a screen-reader activation gesture fire the same callback as a click,
     // so AT users can both read the label AND trigger the action.
-    accessible-action-default => { root.clicked(); }
+    // Guard: only fire when the capsule is enabled so AT cannot invoke a
+    // disabled action.
+    accessible-action-default => { if (root.enabled) { root.clicked(); } }
 
     // ── Interaction ───────────────────────────────────────────────────────────
     // TouchArea is non-focusable in Slint — it does NOT steal keyboard focus
     // from the carousel FocusScope (established pattern, see docs/patterns.md
     // "TouchArea click focus recovery").
     touch := TouchArea {
+        enabled: root.enabled;
         clicked => { root.clicked(); }
     }
 }

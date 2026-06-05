@@ -129,6 +129,14 @@ carousel-empty-cta-files = Select files to add
 carousel-no-results-title = No matching books
 carousel-no-results-hint = Try a different search.
 
+# Idle bottom-strip label: total library size, shown when no transient notice
+# occupies the strip. { $n } is the total book count (only composed for n > 0).
+library-count =
+    { $n ->
+        [one] { $n } book
+       *[other] { $n } books
+    }
+
 # ---- navbar ----
 
 # SearchField placeholder and a11y labels (all three uses in NavBar.slint)
@@ -229,6 +237,9 @@ notice-failed-save-library = Failed to save library: { $error }
 notice-could-not-save-settings = Could not save settings: { $error }
 notice-load-failed = Could not load { $what }; starting fresh.
 notice-already-in-library = Already in library — no new books added.
+# Notice when the NavBar bookmark capsule is clicked but no continue-reading
+# bookmark is registered (or it points at a book no longer in the library).
+notice-bookmark-none = No bookmark registered
 notice-added-books = Added { $n } book(s)
 notice-added-books-save-failed = Added { $n } book(s), but could not save library: { $error }
 
