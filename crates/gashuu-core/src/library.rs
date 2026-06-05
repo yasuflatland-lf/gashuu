@@ -196,16 +196,33 @@ impl Library {
     /// canonical path of the newly stored book, or `None` if the path was already
     /// present (duplicate, no-op).
     pub fn add(&mut self, path: PathBuf) -> Option<&Path> {
+        let (canonical, added) = self.add_canonical(path);
+        // Preserve the public contract: `Some` only for a newly stored book,
+        // `None` for an already-present duplicate.
+        added.then(|| {
+            self.books
+                .iter()
+                .find(|b| b.path() == canonical)
+                .map(Book::path)
+                .expect("just-added book must be present")
+        })
+    }
+
+    /// Canonicalize `path` and ensure it is on the shelf, returning the stored
+    /// canonical identity together with whether this call newly added it. The
+    /// returned `PathBuf` is the shelf's identity for the book in BOTH cases —
+    /// newly added or already present — so a caller that needs to look the book
+    /// up after a subsequent `&mut self` call (e.g. `register_opened`) has an
+    /// owned key that always matches a stored entry. Internal seam shared by
+    /// `add`; not part of the public surface.
+    fn add_canonical(&mut self, path: PathBuf) -> (PathBuf, bool) {
         let canonical = path.canonicalize().unwrap_or(path);
         if self.books.iter().any(|b| b.path() == canonical) {
-            return None;
+            return (canonical, false);
         }
         self.books.push(Book::from_path(canonical.clone()));
         self.books.sort_by(book_order);
-        self.books
-            .iter()
-            .find(|b| b.path() == canonical)
-            .map(Book::path)
+        (canonical, true)
     }
 
     /// Re-sort the shelf into natural title order (with canonical path tie-break)
@@ -374,36 +391,32 @@ impl Library {
     /// position (the book's `ReadingProgress`) and whether the stored count
     /// changed, so the caller can decide to rebuild the carousel.
     /// No persistence I/O; the only filesystem touch is the best-effort
-    /// `canonicalize` inside `add`, which is idempotent when `canonical` is already
-    /// canonical (the result is unchanged, though the syscall still runs; as it is
-    /// when read from `open_file`). `canonical` is the
+    /// `canonicalize` inside `add_canonical`, which is idempotent when `canonical`
+    /// is already canonical (the result is unchanged, though the syscall still
+    /// runs; as it is when read from `open_file`). `canonical` is the
     /// canonicalized open key (the same key `last_page`/`set_page_count` use).
     pub fn register_opened(
         &mut self,
         canonical: &Path,
         page_count: Option<NonZeroUsize>,
     ) -> OpenRegistration {
-        self.add(canonical.to_path_buf());
-        let count_changed = page_count.is_some_and(|c| self.set_page_count(canonical, c));
-        // Resolve both outputs from the book actually stored in `books` so the
-        // `last_opened` invariant (it is a member of `books`) holds by construction:
-        // `add` canonicalizes internally, so the stored path may differ from the raw
-        // `canonical` argument when the caller passes a non-canonical path. Extract
-        // owned values (an owned path + the `Copy` progress) before assigning, so the
-        // immutable borrow of `self` ends before `self.last_opened` is set. When the
-        // lookup returns None (divergence: `canonical` does not match the stored
-        // canonical key), `last_opened` stays None and resume defaults to the start —
-        // invariant-preserving degradation rather than a stale bookmark.
-        let found = self
+        // `add_canonical` returns the shelf's identity for this book — the same
+        // owned `PathBuf` whether the book was newly added or already present —
+        // so the subsequent lookup can never miss. Capturing it as an owned value
+        // also ends the borrow on `self` before the `&mut self` calls below.
+        let (stored, _added) = self.add_canonical(canonical.to_path_buf());
+        let count_changed = page_count.is_some_and(|c| self.set_page_count(&stored, c));
+        // Resolve the resume position from the book actually stored under `stored`
+        // (the shelf's canonical identity), so the `last_opened` invariant (it is a
+        // member of `books`) holds by construction. The lookup is total: `stored`
+        // is exactly the key `add_canonical` placed (or found) in `books`.
+        let resume = self
             .books
             .iter()
-            .find(|b| b.path() == canonical)
-            .map(|b| (b.path().to_path_buf(), b.progress()));
-        let (last_opened, resume) = match found {
-            Some((path, progress)) => (Some(path), progress),
-            None => (None, ReadingProgress::new(0, None)),
-        };
-        self.last_opened = last_opened;
+            .find(|b| b.path() == stored)
+            .map(Book::progress)
+            .expect("registered book must be present");
+        self.last_opened = Some(stored);
         OpenRegistration {
             resume,
             count_changed,
@@ -1043,10 +1056,13 @@ mod tests {
 
     #[test]
     fn register_opened_with_non_canonical_path_keeps_invariant() {
-        // Invariant: last_opened, when Some, must equal a books[].path() entry.
-        // We exercise this with a real file reached via a non-canonical route (a
-        // path containing a `..` component). On macOS, /tmp → /private/tmp also
-        // exercises symlink divergence when tempdir lives there.
+        // Invariant: after register_opened, last_opened is ALWAYS Some and points
+        // at a stored book — even when the caller passes a non-canonical path that
+        // diverges from the stored canonical key. We exercise this with a real file
+        // reached via a `..` detour. On macOS, /tmp → /private/tmp also exercises
+        // symlink divergence when tempdir lives there. Resolving the resume target
+        // from the stored canonical identity (not the raw argument) is what makes
+        // the lookup total; this previously degraded to None on divergence.
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("Book.cbz");
         std::fs::write(&file, []).unwrap();
@@ -1060,28 +1076,21 @@ mod tests {
         let mut lib = Library::new();
         lib.register_opened(&non_canonical, None);
 
-        // Core invariant: if last_opened is Some, its path must be in books.
-        if let Some(lo) = lib.last_opened() {
-            assert!(
-                lib.books().iter().any(|b| b.path() == lo),
-                "last_opened must point at a book actually in the shelf"
-            );
-            // On hosts where canonicalize resolves the `..`, the stored path
-            // should equal the canonical form.
-            if let Ok(canonical) = non_canonical.canonicalize() {
-                assert_eq!(
-                    lo,
-                    canonical.as_path(),
-                    "last_opened must equal the canonicalized path stored by add"
-                );
-            }
-        } else {
-            // last_opened is None only when add's canonicalization diverged from
-            // the lookup key. That is still invariant-preserving: None is safe.
-            // Confirm the book was still added.
-            assert!(
-                !lib.books().is_empty(),
-                "the book must still have been added even when last_opened is None"
+        // last_opened is set, and its path is a book actually in the shelf.
+        let lo = lib
+            .last_opened()
+            .expect("register_opened must always set last_opened")
+            .to_path_buf();
+        assert!(
+            lib.books().iter().any(|b| b.path() == lo),
+            "last_opened must point at a book actually in the shelf"
+        );
+        // On hosts where canonicalize resolves the `..`, the stored path equals
+        // the canonical form.
+        if let Ok(canonical) = non_canonical.canonicalize() {
+            assert_eq!(
+                lo, canonical,
+                "last_opened must equal the canonicalized path stored by add"
             );
         }
     }
