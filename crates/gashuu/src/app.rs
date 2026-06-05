@@ -191,44 +191,25 @@ impl OpenBookUseCase {
         // so the bypassed side effects pinned by the spec never run — no recents
         // push, no settings save (deferred below), no `register_opened`, no per-book
         // view resolve, no library-save-on-open, no carousel rebuild, no thumbnail
-        // start, no cover purge (cover purge happens only in the cover-load path, by
-        // design). When `canonical` is None we cannot identify the book, so we keep
-        // the existing behavior and fall through to the warning branch below.
+        // start. The cover purge now happens HERE too, inside `remove_empty_book`
+        // (deliberate Wave-2 #150 change). When `canonical` is None we cannot
+        // identify the book, so we keep the existing behavior and fall through to the
+        // warning branch below.
         //
         // Reviewer note: `ViewerState` still holds this empty source after the
         // bail-out; that is inert (page_count == 0, the viewer is never shown) and
         // the next successful open replaces it — by design, with no restore machinery.
         if page_count == 0 {
             if let Some(c) = canonical.as_deref() {
-                // Prefer the stored Book's title; fall back to the path-derived
-                // title (matching `Book`'s derivation) when the book was never added.
-                let title = library
-                    .borrow()
-                    .books()
-                    .iter()
-                    .find(|b| b.path() == c)
-                    .map(|b| b.title().to_string())
-                    .unwrap_or_else(|| derive_title(c));
-                // `Library::remove` is idempotent and returns false when the book is
-                // absent; it also clears `last_opened` when it pointed at this book.
-                let removed = library.borrow_mut().remove(c);
-                // Persist only when something was actually removed; otherwise the
-                // shelf is unchanged so there is nothing to save.
-                let save_error = if removed {
-                    match library.borrow().save() {
-                        Ok(()) => None,
-                        Err(e) => {
-                            tracing::error!(error = %e, "failed to save library after removing empty book");
-                            Some(format!("{e}"))
-                        }
-                    }
-                } else {
-                    None
-                };
+                // The shared transaction: title capture → remove → save → cover
+                // purge. Wave-2 #150 DELIBERATELY added the purge here — the old
+                // "purge only in the cover-load path" asymmetry left a removed
+                // book's cached cover as unreachable garbage.
+                let removal = remove_empty_book(library, c);
                 return OpenOutcome::EmptyBookRemoved {
-                    title,
-                    removed,
-                    save_error,
+                    title: removal.title,
+                    removed: removal.removed,
+                    save_error: removal.save_error,
                 };
             }
         }
@@ -374,24 +355,77 @@ pub(crate) fn notices_content(
     }
 }
 
-/// Derive a display title from a path, mirroring `gashuu_core::Book`'s own
-/// derivation: the directory name for a folder, the file stem for a file, and
-/// the lossy full path string as a last-resort fallback so the title is never
-/// empty. Used by the empty-book reject path only when the source was never
-/// added to the library (so no stored `Book::title` exists to reuse). `Book`'s
-/// derivation is `pub(crate)` to `gashuu-core` and therefore not reachable from
-/// this crate, so the logic is replicated here rather than imported.
-fn derive_title(path: &Path) -> String {
-    if path.is_dir() {
-        path.file_name()
-            .map(|s| s.to_string_lossy().into_owned())
-            .filter(|s| !s.is_empty())
-    } else {
-        path.file_stem()
-            .map(|s| s.to_string_lossy().into_owned())
-            .filter(|s| !s.is_empty())
+/// Result of [`remove_empty_book`]: the removed book's display title (captured
+/// BEFORE removal), whether the book was actually present (and thus removed),
+/// and the pre-captured (untranslated) library-save error — `None` when nothing
+/// was removed (no save attempted) or the save succeeded.
+pub(crate) struct EmptyBookRemoval {
+    pub(crate) title: String,
+    pub(crate) removed: bool,
+    pub(crate) save_error: Option<String>,
+}
+
+/// The single home of the empty-book removal transaction: capture the display
+/// title (stored `Book::title` preferred, `gashuu_core::display_title` fallback
+/// when the book was never added) → `Library::remove` (idempotent) → save (only
+/// when something was removed) → best-effort cover purge. Both the open-time
+/// bail-out and the cover-load signal handler call this; callers compose
+/// notices / rebuild the carousel from the returned data.
+pub(crate) fn remove_empty_book(library: &RefCell<Library>, path: &Path) -> EmptyBookRemoval {
+    // The `borrow_mut` is confined to this statement and drops at the `;`.
+    let removal = remove_empty_book_with(&mut library.borrow_mut(), path, |l| l.save());
+    // Best-effort purge, OUTSIDE the seam so the transaction logic stays
+    // headless-testable. mtime drift / missing file is expected and only
+    // warned inside `purge_cover`; cache-construction failure skips it.
+    if removal.removed {
+        match ThumbnailCache::new() {
+            Ok(cache) => purge_cover(&cache, path),
+            Err(e) => {
+                tracing::warn!(error = %e, "cover cache unavailable; skipping cover purge on empty-book removal");
+            }
+        }
     }
-    .unwrap_or_else(|| path.to_string_lossy().into_owned())
+    removal
+}
+
+/// Effect-seam twin of [`remove_empty_book`] (same shape as
+/// `remove_books_with_rollback`): the save is injected so the transaction's
+/// decisions — title preference, save-only-when-removed, error pre-capture —
+/// are unit-testable without disk I/O or a cover cache.
+fn remove_empty_book_with(
+    lib: &mut Library,
+    path: &Path,
+    save: impl FnOnce(&Library) -> Result<(), CoreError>,
+) -> EmptyBookRemoval {
+    // Prefer the stored Book's title; fall back to the core path-derivation
+    // when the book was never added. Captured BEFORE removal.
+    let title = lib
+        .books()
+        .iter()
+        .find(|b| b.path() == path)
+        .map(|b| b.title().to_string())
+        .unwrap_or_else(|| gashuu_core::display_title(path));
+    // `Library::remove` is idempotent and returns false when the book is
+    // absent; it also clears `last_opened` when it pointed at this book.
+    let removed = lib.remove(path);
+    // Persist only when something was actually removed; otherwise the shelf
+    // is unchanged so there is nothing to save.
+    let save_error = if removed {
+        match save(lib) {
+            Ok(()) => None,
+            Err(e) => {
+                tracing::error!(error = %e, "failed to save library after removing empty book");
+                Some(format!("{e}"))
+            }
+        }
+    } else {
+        None
+    };
+    EmptyBookRemoval {
+        title,
+        removed,
+        save_error,
+    }
 }
 
 // The bulk-remove surface below (RemoveBooksUseCase + RemoveOutcome +
@@ -1109,49 +1143,59 @@ mod tests {
         );
     }
 
-    // ---- derive_title (empty-book fallback derivation) --------------------
-    //
-    // `derive_title` is the path-only fallback the empty-book reject path uses
-    // when the source was never added (so no stored `Book::title` exists). It
-    // must mirror `gashuu_core::Book::from_path`'s derivation exactly: directory
-    // name for a folder, file stem for a file, lossy full path as a last resort.
+    // ---- remove_empty_book_with (the empty-book removal transaction) -------
 
     #[test]
-    fn derive_title_uses_file_stem_for_a_file() {
-        // A non-existent file path is treated as a file (is_dir() is false), so
-        // the title is the stem with the extension dropped — matching Book.
+    fn remove_empty_book_removes_saves_and_reports_stored_title() {
+        let mut lib = Library::new();
+        let path = PathBuf::from("/manga/Empty Vol.cbz");
+        lib.add(path.clone());
+        let expected_title = lib
+            .books()
+            .iter()
+            .find(|b| b.path() == path.as_path())
+            .map(|b| b.title().to_string())
+            .expect("just added");
+        let saves = std::cell::Cell::new(0);
+        let removal = remove_empty_book_with(&mut lib, &path, |_| {
+            saves.set(saves.get() + 1);
+            Ok(())
+        });
+        assert!(removal.removed);
+        assert_eq!(removal.title, expected_title, "stored title preferred");
+        assert_eq!(removal.save_error, None);
+        assert_eq!(saves.get(), 1, "removal must persist exactly once");
+        assert!(lib.books().is_empty());
+    }
+
+    #[test]
+    fn remove_empty_book_absent_book_skips_save_and_derives_title() {
+        let mut lib = Library::new();
+        let path = PathBuf::from("/manga/Never Added.cbz");
+        let removal = remove_empty_book_with(&mut lib, &path, |_| -> Result<(), CoreError> {
+            panic!("save must not be attempted when nothing was removed")
+        });
+        assert!(!removal.removed);
+        assert_eq!(removal.save_error, None);
         assert_eq!(
-            derive_title(Path::new("/manga/Cool Title.cbz")),
-            "Cool Title"
+            removal.title,
+            gashuu_core::display_title(&path),
+            "fallback is the core derivation"
         );
     }
 
     #[test]
-    fn derive_title_drops_only_the_last_extension() {
-        // `file_stem` drops a single trailing extension, leaving any earlier dots
-        // intact — the same behavior `Book` inherits from `Path::file_stem`.
-        assert_eq!(derive_title(Path::new("/manga/Vol.1.cbz")), "Vol.1");
-    }
-
-    #[test]
-    fn derive_title_uses_directory_name_for_a_folder() {
-        // A real on-disk directory takes the is_dir() branch and yields its final
-        // component (no extension stripping), matching Book's folder derivation.
-        let root = tempfile::tempdir().expect("tempdir");
-        let folder = root.path().join("My Series");
-        std::fs::create_dir(&folder).expect("create folder");
-        assert_eq!(derive_title(&folder), "My Series");
-    }
-
-    #[test]
-    fn derive_title_falls_back_to_full_path_when_no_stem() {
-        // A path with no file stem (e.g. the root) falls back to the lossy full
-        // path string so the title is never empty — Book's final fallback.
-        let title = derive_title(Path::new("/"));
+    fn remove_empty_book_captures_save_error_and_keeps_removal() {
+        let mut lib = Library::new();
+        let path = PathBuf::from("/manga/Empty.cbz");
+        lib.add(path.clone());
+        let removal = remove_empty_book_with(&mut lib, &path, |_| Err(err()));
         assert!(
-            !title.is_empty(),
-            "the derived title must never be empty, got {title:?}"
+            removal.removed,
+            "the in-memory removal stands on save failure"
         );
+        let detail = removal.save_error.expect("failure must be pre-captured");
+        assert!(!detail.is_empty());
     }
 
     // ---- OpenOutcome::EmptyBookRemoved (shape the formatter consumes) ------

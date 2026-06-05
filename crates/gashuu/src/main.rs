@@ -889,48 +889,14 @@ fn main() -> color_eyre::Result<()> {
             with_ui(&ui_weak, |ui| {
                 let loader = localizer.loader();
                 let path = std::path::PathBuf::from(path_str.as_str());
-                // Look up the display title BEFORE removal — once removed the book
-                // is gone from `books`, so the title must be captured first. A
-                // signal for a path no longer present yields `None`; the removal
-                // below then returns false and we bail out silently.
-                let title = {
-                    let lib = library.borrow();
-                    lib.books()
-                        .iter()
-                        .find(|book| book.path() == path.as_path())
-                        .map(|book| book.title().to_string())
-                };
-                let removed = library.borrow_mut().remove(&path);
-                if !removed {
-                    // Idempotency / race: the book was already removed by another
-                    // path (its notice + rebuild already ran), so nothing to do.
+                // The shared transaction (single home in app.rs): title capture
+                // BEFORE removal → `Library::remove` → save → best-effort cover
+                // purge. `removed == false` is the idempotency race — the book
+                // was already removed by another path (its notice + rebuild
+                // already ran), so bail out silently.
+                let removal = app::remove_empty_book(&library, &path);
+                if !removal.removed {
                     return;
-                }
-                // `removed == true` guarantees `title` was Some (the book existed
-                // when we read it just above), but fall back to the path's file
-                // name defensively so the notice never shows an empty title.
-                let title = title.unwrap_or_else(|| {
-                    path.file_name()
-                        .map(|n| n.to_string_lossy().into_owned())
-                        .unwrap_or_default()
-                });
-                // Persist the removal. A save failure is surfaced (appended to the
-                // notice), not just traced, mirroring the add/delete save-failure
-                // handling; the in-memory removal stands either way.
-                let save_error = match library.borrow().save() {
-                    Ok(()) => None,
-                    Err(e) => {
-                        tracing::error!(error = %e, "failed to save library after empty-book auto-removal");
-                        Some(format!("{e}"))
-                    }
-                };
-                // Best-effort purge of the removed book's persistent cover via the
-                // shared `purge_cover` helper (mirrors the bulk-delete purge).
-                match gashuu_core::ThumbnailCache::new() {
-                    Ok(cache) => cover_loader::purge_cover(&cache, &path),
-                    Err(e) => {
-                        tracing::warn!(error = %e, "cover cache unavailable; skipping cover purge on empty-book removal");
-                    }
                 }
                 // Rebuild the carousel so the removed book disappears and the
                 // cover-epoch bump drops any sibling cover still streaming for it;
@@ -950,7 +916,11 @@ fn main() -> color_eyre::Result<()> {
                 // Notice LAST (status-last ordering, as in add/delete): the
                 // auto-removal message, with the save-failure detail appended when
                 // the persist failed.
-                let status = empty_book_removed_status(loader, &title, save_error.as_deref());
+                let status = empty_book_removed_status(
+                    loader,
+                    &removal.title,
+                    removal.save_error.as_deref(),
+                );
                 ui.set_status_text(status.into());
             })
         });
