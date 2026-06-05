@@ -111,6 +111,17 @@ mtime_secs, max_side)` derives a stable 16-hex-char filename via FNV-1a (NOT `De
 docs/patterns.md). Headless (no slint/tracing). The cover carousel consumes it via the UI's
 `cover_loader.rs` (PR-V, shipped).
 
+Issue 143 adds the GC half: `prune(max_bytes) -> PruneReport` sweeps the directory down to
+`max_bytes` of `*.png` payload in ascending `(mtime, file name)` order, and reclaims stale
+`.{key}.tmp` crash leftovers (older than an hour) regardless of the cap. `get` refreshes a hit's
+mtime (touch-on-get, only after a successful decode), which makes the eviction order near-LRU —
+key-orphaned covers (source mtime drifted past `purge_for`) are never read again, age to the
+front, and disappear once the cap bites. Best-effort throughout (missing dir → zero report,
+failed unlink skipped, foreign files never touched); the caller logs the returned `PruneReport`
+(core stays log-free). The cap POLICY is the app layer's: `cover_loader.rs` owns
+`COVER_CACHE_MAX_BYTES` (256 MiB) and `spawn_cache_prune()`, dispatched once at startup on a
+rayon worker right after the initial cover stream.
+
 ### cache::ImageCache
 
 LRU of `Arc<DecodedImage>` up to `DEFAULT_CAPACITY`=50 + background ±`DEFAULT_PREFETCH_RADIUS`=3
