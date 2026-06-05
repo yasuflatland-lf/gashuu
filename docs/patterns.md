@@ -532,7 +532,7 @@ Slint scopes an id declared inside an `if`/`for` branch to a child the enclosing
 
 ### Slint 1.16.1 accepted syntax + limitations (verified at impl time, PR-C)
 
-Confirmed ACCEPTED by the pinned Slint 1.16.1 (future work need not re-verify): `Math.clamp(x, lo, hi)`, `overflow: elide` on `Text`, `color.with-alpha(f)`, 8-digit `#rrggbbaa` hex, and `@linear-gradient(deg, stop% … )`. NOT supported: per-`Repeater`-item z-order is not settable in Slint 1.x — layer a focused item via opacity/size/accent-ring, not z. To force a focused `for`-item to paint ON TOP of its overlapping neighbors (which model-index draw order otherwise leaves partly covered), render the model with TWO `for` passes over the SAME model into one shared file-private sub-component: pass 1 paints the neighbors (`show: idx != focused-index`), pass 2 — declared AFTER pass 1, so painted later/above — paints ONLY the focused item (`show: idx == focused-index`); `show` gates `visible`, nothing else. Because BOTH passes bind identical geometry, each item keeps a persistent instance in each pass, so a focus-change SLIDE still animates (a `visible:false` Repeater instance keeps computing/animating its geometry, so the hand-off between passes lands at matching positions — no pop). Cost: 2N instances (invisible ones aren't drawn). Do NOT instead reorder the model or use a standalone always-centered focused element — both destroy the slide (a new/destroyed instance snaps with no transition). `Carousel.slint`'s `CoverCard` two-pass does exactly this.
+Confirmed ACCEPTED by the pinned Slint 1.16.1 (future work need not re-verify): `Math.clamp(x, lo, hi)`, `overflow: elide` on `Text`, `color.with-alpha(f)`, 8-digit `#rrggbbaa` hex, and `@linear-gradient(deg, stop% … )`. NOT supported: per-`Repeater`-item z-order is not settable in Slint 1.x — layer a focused item via opacity/size/accent-ring, not z. To force a focused `for`-item to paint ON TOP of its overlapping neighbors (which model-index draw order otherwise leaves partly covered), render the model with TWO `for` passes over the SAME model into one shared file-private sub-component. (HISTORICAL — the original formulation below is superseded by the CORRECTED block that follows; do NOT copy these `show` conditions:) pass 1 painted the neighbors (`show: idx != focused-index`), pass 2 — declared AFTER pass 1, so painted later/above — painted ONLY the focused item (`show: idx == focused-index`); `show` gates `visible`, nothing else. Because BOTH passes bind identical geometry, each item keeps a persistent instance in each pass, so a focus-change SLIDE still animates (a `visible:false` Repeater instance keeps computing its geometry — since the flow-position rework that geometry is a PURE binding on the row's one animated scalar, see the animation-altitude entry below — so the hand-off between passes lands at matching positions, no pop). Cost: 2N instances (invisible ones aren't drawn). Do NOT instead reorder the model or use a standalone always-centered focused element — both destroy the slide (a new/destroyed instance snaps with no transition). `Carousel.slint`'s `CoverCard` two-pass does exactly this — in its CORRECTED, flow-position form below.
 
 **CORRECTED two-pass z-order pattern — always-on pass-1 backing layer (fast-scroll gap fix):**
 
@@ -546,9 +546,11 @@ The CORRECTED pattern:
 - **Pass 1 is an always-on BACKING layer**: `show: true` (every book, every frame).
   Set `elevated: false` (or equivalent flag) so semi-transparent overlay effects
   (shadow, tint, highlight ring) only apply to the pass-2 copy.
-- **Pass 2 paints only the focused card on top**: unchanged — `show: idx == focused-index`,
-  declared AFTER pass 1 so it paints above it; carries `elevated: true` and all
-  focus-specific effects.
+- **Pass 2 paints only the front card on top**: `show: idx == focused-index` originally;
+  since the flow-position rework the front card is the VISUAL center —
+  `show: idx == Math.round(flow-position)`, still exactly one match at any instant (see the
+  animation-altitude entry below). Declared AFTER pass 1 so it paints above it; carries
+  `elevated: true` and all front-card effects.
 
 WHY the always-on approach fixes the gap:
 - No book ever loses its only visible instance during a sweep — pass-1 always covers every
@@ -568,6 +570,45 @@ HOW to apply in future Slint two-pass z-order components:
 4. **`TouchArea` lives on pass-1 ONLY — set `interactive: false` on the pass-2 copy (bulk-delete PR-2).** A `TouchArea` declared inside the shared `CoverCard` sub-component exists in BOTH passes; without a guard, a click on the focused card fires its handler twice (once from pass-1, once from pass-2). The fix: pass an `in property <bool> interactive` into `CoverCard`; the pass-1 `for` sets `interactive: true`, the pass-2 `for` sets `interactive: false` — the `cover-touch := TouchArea { enabled: root.interactive; … }` binding ensures only the always-visible backing copy fires. Badges and other NON-interactive children (like `SelectionBadge`) are safe to render in both passes because they carry no `TouchArea` and fire nothing. A future additional render pass MUST also set `interactive: false` to preserve the single-fire invariant.
 
 no `line-height` on `Text` in Slint 1.x — DESIGN's per-role `lineHeight` cannot be expressed and must not be faked (space elements apart instead). A shared PRIVATE (non-exported) sub-component (`component Foo inherits Rectangle { in property … }`) cleanly de-duplicates repeated markup WITHIN one file WITHOUT touching any exported struct/component contract, and works both absolutely positioned and as a layout child (PR-C used a file-private `ProgressBar` for the per-cover and focused-meta bars in `Carousel.slint`). When the same markup must be reused ACROSS files, promote it to an `export`ed component under `ui/components/` instead (#71 did exactly this — `ProgressBar` is now `components/ProgressBar.slint`, imported by `Carousel.slint`); keep the file-private form only when the reuse is confined to one file.
+
+### Animation altitude: animate ONE formation scalar, derive per-item geometry as pure bindings (cover-flow `flow-position`)
+
+Per-card `animate x` (plus `animate width, height, opacity` keyed on a focused bool) made rapid
+Left/Right input retarget N INDEPENDENT animations: every `focused-index` change restarted every
+card's 480ms timer from its in-flight position, so the newly-focused cover chased the center from
+several steps away (even off-screen) and the center slot sat EMPTY for the whole sweep. A
+second-order lag compounded it: the x formula's `self.width / 2` term read a `width` that was
+itself mid-animation, so x chased a moving target. Gate-invisible — compiles clean, all cargo
+gates green; visible only when driving the carousel fast.
+
+THE FIX — raise the animation one altitude level:
+- The cover-flow row owns ONE animated scalar, `property <float> flow-position: root.focused-index;`
+  with the cinematic `animate` block. The int property auto-converts into the float binding
+  (slint 1.16.1 `langtype.rs` `can_convert` accepts Int32→Float32), and a retarget continues from
+  the CURRENT animated value (`i-slint-core` `properties_animations.rs` captures the in-flight
+  value as `from_value` on rebind) — so rapid input retargets one animation instead of restarting N.
+- EVERY per-card value (x / width / height / opacity / narrow-mode visibility) is a PURE binding
+  on `flow-delta = idx - flow-position` — `CoverCard` carries NO `animate` blocks at all. The row
+  moves as one coherent band, and size/opacity interpolate CONTINUOUSLY with the float distance:
+  `Math.clamp(1.0 - Math.abs(d) * (1.0 - neighbor-value), neighbor-value, 1.0)` — full at d=0,
+  neighbor from d>=1 outward. Slaving `width` to the same scalar as `x` also kills the
+  second-order `self.width / 2` chase.
+- The VISUAL center is `idx == Math.round(flow-position)` (`Math.round(Float32) -> Int32` exists
+  in 1.16.1 — `lookup.rs` registers `Round`); pass-2 `show`, the accent ring, and the card shadow
+  key on it (the card prop is named `centered`), so the front-of-stack treatment hands off
+  card-by-card as the row streams and the center slot is NEVER empty. `focused-index` stays the
+  LOGICAL truth: Return's open target, the meta block, and every Rust handler are untouched — the
+  whole fix is pure `.slint`.
+- The cinematic easing cubic-bezier(0.16, 1, 0.3, 1) never overshoots (control-point y's within
+  [0, 1]), so `Math.round(flow-position)` cannot land outside the Rust-clamped index range.
+- Narrow-mode culling keys on the float distance with a 1.5 threshold (was int `<= 1`): a card
+  pops in/out half a step beyond its resting neighbor slot, mid-travel, never while parked at it.
+
+HARNESS: when a row/strip of repeated items animates as a FORMATION, animate the formation's
+scalar and derive each item's geometry as pure bindings — never give each item its own `animate`
+on a target the formation's state recomputes (rapid input then restarts N timers and the
+formation tears). Per-item `animate` is for genuinely per-item state (hover grow, knob drag),
+not for shared motion.
 
 ### `states[]` cannot assign a child element's property or read `parent`/sibling geometry (#83, slint 1.16.1)
 

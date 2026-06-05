@@ -154,8 +154,8 @@ export global Theme {
     // The easing lives in the animate block — Slint has no <easing> property type,
     // so cubic-bezier(0.16, 1, 0.3, 1) cannot be stored as a Theme token and must
     // be repeated at each animate site.
-    out property <duration> motion-cinematic: 480ms;       // CoverCard x-slide — long enough for the eye to follow a full-width translation
-    out property <duration> motion-cinematic-fade: 300ms;  // CoverCard scale/opacity — shorter so size settles before the slide ends
+    out property <duration> motion-cinematic: 480ms;       // Carousel flow-position — the ONE animated scalar the cover-flow row chases; long enough for the eye to follow a full-width translation
+    out property <duration> motion-cinematic-fade: 300ms;  // generic cinematic fade (no active consumer — was CoverCard scale/opacity until the flow-position rework slaved size to the slide scalar)
 
     // ── Typography weights (DESIGN typography roles) ──────────────────────────
     // Line-height is intentionally omitted: Slint 1.x Text has no line-height

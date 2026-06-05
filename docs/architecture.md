@@ -630,11 +630,14 @@ the nav is mouse + screen-reader oriented. The `add-books()`/`add-folder()` call
 `focus-self()`-after-fire behavior are unchanged; `NavBar` simply forwards into them. The cover-flow
 is rendered by a file-private `CoverCard` sub-component instantiated by TWO `for` passes over the model:
 pass 1 is the always-on BACKING layer (`show: true` for every book), pass 2 (declared after) paints ONLY
-the focused card so it draws ON TOP of its backing twin — Slint 1.x cannot set per-`Repeater`-item z, so
-draw order is the only lever. Both passes bind identical geometry (each book keeps a persistent instance
-in each pass), so the Left/Right slide still animates continuously with a seamless layer hand-off. The
-enclosing row's `width`/`row-cy` are passed into `CoverCard` as `in` properties because a component ROOT
-cannot read `parent`.
+the centered card (`Math.round(flow-position)`, the visual center of the animated row) so it draws ON TOP
+of its backing twin — Slint 1.x cannot set per-`Repeater`-item z, so draw order is the only lever. The
+Left/Right slide is driven by ONE animated float (`flow-position`, chasing `focused-index` on the
+cinematic curve); every per-card value is a pure binding on it, so rapid input retargets a single
+animation and the row moves as one band (docs/patterns.md "animation altitude"). Both passes bind
+identical geometry (each book keeps a persistent instance in each pass), so the layer hand-off is
+seamless. The enclosing row's `width`/`row-cy` are passed into `CoverCard` as `in` properties because a
+component ROOT cannot read `parent`.
 
 **`Theme.slint`** (PR-0b, NEW; #83 extended): single `global Theme` of visual tokens (colors, spacing,
 radii, font sizes); components reference `Theme.<token>` instead of inline hex literals. #83 added the
