@@ -242,6 +242,12 @@ notice-already-in-library = Already in library — no new books added.
 notice-bookmark-none = No bookmark registered
 notice-added-books = Added { $n } book(s)
 notice-added-books-save-failed = Added { $n } book(s), but could not save library: { $error }
+# Some books were added but some paths had no images and were skipped.
+notice-added-books-skipped = Added { $n } book(s), skipped { $skipped } with no images
+# All picked paths had no images; nothing was added to the library.
+notice-no-books-added-empty = No books added — { $skipped } item(s) had no images
+# An existing library entry was auto-removed because its source has no images.
+notice-empty-book-removed = Removed "{ $title }" — no images found
 
 # Notice after a successful bulk delete. { $n } is the count of books deleted.
 notice-deleted-books = Deleted { $n } book(s)

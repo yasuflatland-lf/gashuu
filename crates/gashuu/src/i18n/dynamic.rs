@@ -155,6 +155,37 @@ pub(crate) fn added_books_save_failed(
     )
 }
 
+/// Notice when some books were added but some paths had no images and were
+/// skipped. `n` is the number of books successfully added; `skipped` is the
+/// number of paths rejected because they contained no images.
+pub(crate) fn added_books_skipped(
+    loader: &FluentLanguageLoader,
+    n: usize,
+    skipped: usize,
+) -> String {
+    let n = n as i64;
+    let skipped = skipped as i64;
+    fl!(
+        loader,
+        "notice-added-books-skipped",
+        n = n,
+        skipped = skipped
+    )
+}
+
+/// Notice when all picked paths had no images and nothing was added to the
+/// library. `skipped` is the total number of rejected paths.
+pub(crate) fn no_books_added_empty(loader: &FluentLanguageLoader, skipped: usize) -> String {
+    let skipped = skipped as i64;
+    fl!(loader, "notice-no-books-added-empty", skipped = skipped)
+}
+
+/// Notice when an existing library entry is auto-removed because its source
+/// has no images. `title` is the book's display title.
+pub(crate) fn empty_book_removed(loader: &FluentLanguageLoader, title: &str) -> String {
+    fl!(loader, "notice-empty-book-removed", title = title)
+}
+
 // ---- Library screen messages ----------------------------------------------
 
 /// Idle bottom-strip label on the Library screen: the total library book count.
@@ -674,6 +705,70 @@ mod tests {
             selection_delete_label(en().loader(), 1),
             selection_delete_label(ja().loader(), 1),
             "selection_delete_label must differ between En and Ja"
+        );
+    }
+
+    #[test]
+    fn added_books_skipped_embeds_both_args() {
+        // n and skipped must both appear in the output; both locales must be
+        // non-empty; en must differ from ja.
+        for loc in [en(), ja()] {
+            let l = loc.loader();
+            let result = added_books_skipped(l, 5, 3);
+            assert!(!result.is_empty(), "added_books_skipped must not be empty");
+            assert!(
+                result.contains('5'),
+                "added_books_skipped must contain n=5, got: {result:?}"
+            );
+            assert!(
+                result.contains('3'),
+                "added_books_skipped must contain skipped=3, got: {result:?}"
+            );
+        }
+        assert_ne!(
+            added_books_skipped(en().loader(), 5, 3),
+            added_books_skipped(ja().loader(), 5, 3),
+            "added_books_skipped must differ between En and Ja"
+        );
+    }
+
+    #[test]
+    fn no_books_added_empty_embeds_skipped_arg() {
+        // skipped must appear in the output; both locales must be non-empty;
+        // en must differ from ja.
+        for loc in [en(), ja()] {
+            let l = loc.loader();
+            let result = no_books_added_empty(l, 4);
+            assert!(!result.is_empty(), "no_books_added_empty must not be empty");
+            assert!(
+                result.contains('4'),
+                "no_books_added_empty must contain skipped=4, got: {result:?}"
+            );
+        }
+        assert_ne!(
+            no_books_added_empty(en().loader(), 4),
+            no_books_added_empty(ja().loader(), 4),
+            "no_books_added_empty must differ between En and Ja"
+        );
+    }
+
+    #[test]
+    fn empty_book_removed_embeds_title_arg() {
+        // title must appear in the output; both locales must be non-empty;
+        // en must differ from ja.
+        for loc in [en(), ja()] {
+            let l = loc.loader();
+            let result = empty_book_removed(l, "My Manga");
+            assert!(!result.is_empty(), "empty_book_removed must not be empty");
+            assert!(
+                result.contains("My Manga"),
+                "empty_book_removed must contain title, got: {result:?}"
+            );
+        }
+        assert_ne!(
+            empty_book_removed(en().loader(), "My Manga"),
+            empty_book_removed(ja().loader(), "My Manga"),
+            "empty_book_removed must differ between En and Ja"
         );
     }
 }
