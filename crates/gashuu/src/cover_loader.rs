@@ -436,8 +436,10 @@ impl CoverController {
             // Opened cleanly but zero pages: signal the empty book and stop. No
             // cover to generate (page 0 does not exist), no count to persist
             // (NonZeroUsize::new(0) is None) — skipping generate_cover avoids a
-            // pointless open-and-fail. The open already succeeded here, so the
-            // `Ok`-only branch of should_signal_empty is the page_count == 0 test.
+            // pointless open-and-fail. This branch inlines the same decision as
+            // `should_signal_empty`'s Ok-arm rather than calling it (kept for the
+            // HIT path's `Result` shape); if that helper's rule changes, update
+            // this branch too.
             if page_count == 0 {
                 if !cancel.load(Relaxed) {
                     marshal_empty_book(&weak, &epoch, my_epoch, req.path);

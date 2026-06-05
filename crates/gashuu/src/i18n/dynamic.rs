@@ -155,9 +155,11 @@ pub(crate) fn added_books_save_failed(
     )
 }
 
-/// Notice when some books were added but some paths had no images and were
-/// skipped. `n` is the number of books successfully added; `skipped` is the
-/// number of paths rejected because they contained no images.
+/// Notice when some books were added but some paths were rejected and skipped.
+/// `n` is the number of books successfully added; `skipped` is the number of
+/// paths rejected because they could not be opened as a book (no image pages,
+/// or unreadable/unsupported); the user-facing wording says "no images" as a
+/// deliberate simplification.
 pub(crate) fn added_books_skipped(
     loader: &FluentLanguageLoader,
     n: usize,
@@ -173,8 +175,10 @@ pub(crate) fn added_books_skipped(
     )
 }
 
-/// Notice when all picked paths had no images and nothing was added to the
-/// library. `skipped` is the total number of rejected paths.
+/// Notice when all picked paths were rejected and nothing was added to the
+/// library. `skipped` is the total number of paths rejected because they could
+/// not be opened as a book (no image pages, or unreadable/unsupported); the
+/// user-facing wording says "no images" as a deliberate simplification.
 pub(crate) fn no_books_added_empty(loader: &FluentLanguageLoader, skipped: usize) -> String {
     let skipped = skipped as i64;
     fl!(loader, "notice-no-books-added-empty", skipped = skipped)

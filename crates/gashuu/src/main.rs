@@ -289,8 +289,9 @@ fn main() -> color_eyre::Result<()> {
     // (`pick_files_or_folders` only compiles there); elsewhere this is the
     // files-only picker paired with the separate Add Folder button below. Rust
     // is the single authority for the dialog flavor — Slint only fires the
-    // intent. Skips duplicates (via `add_paths`), persists, rebuilds the
-    // carousel model, and restores keyboard focus to the carousel.
+    // intent. Skips duplicates and rejects image-free or unreadable sources
+    // (via `add_paths`), persists, rebuilds the carousel model, and restores
+    // keyboard focus to the carousel.
     {
         let ui_weak = ui.as_weak();
         let library = Rc::clone(&library);
@@ -328,7 +329,9 @@ fn main() -> color_eyre::Result<()> {
 
     // Add Folder button: pick a single folder and add it as one book to the
     // library. Wraps the folder in a `vec![]` so the same dedup/save/rebuild
-    // path as `on_add_books` is used. Persists and restores carousel focus.
+    // path as `on_add_books` is used. Skips duplicates and rejects image-free
+    // or unreadable sources (via `add_paths`), persists, and restores carousel
+    // focus.
     {
         let ui_weak = ui.as_weak();
         let library = Rc::clone(&library);
