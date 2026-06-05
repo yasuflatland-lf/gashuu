@@ -26,8 +26,10 @@
 // centering `HorizontalLayout { alignment: center; }`. Still no binding-loop risk
 // (see NavBar header) because no expression reads the layout's own preferred-width.
 // The text cells carry explicit widths measured from their labels' preferred-width
-// (the select-pill idiom): an `if`-gated inner layout does NOT propagate preferred
-// width to its parent Rectangle, which is what clipped the select-all label.
+// (the explicit-width idiom, established by the former select pill, which now lives
+// in the NavBar as a capsule): an `if`-gated inner layout does NOT propagate
+// preferred width to its parent Rectangle, which is what clipped the select-all
+// label.
 //
 // Deliberately Strings-agnostic: the component does NOT import Strings. All
 // human-visible text (count-text, select-all-label, exit-a11y) is composed in
@@ -120,7 +122,7 @@ export component SelectionToolbar inherits Rectangle {
         // button). Never red/danger — selection is strictly accent language.
         count-pill := Rectangle {
             height: Theme.nav-capsule;
-            // Explicit width measured from the label (select-pill idiom) with the
+            // Explicit width measured from the label (explicit-width idiom) with the
             // HIG capsule inset; the Math.max floor keeps the pill from collapsing
             // below a circle on an empty string (Slint rejects width + min-width
             // on the same element, so the floor lives inside the expression).
@@ -162,7 +164,7 @@ export component SelectionToolbar inherits Rectangle {
         // accessible-label regardless of narrow/wide mode.
         select-all-capsule := Rectangle {
             height: Theme.nav-capsule;
-            // Explicit width (select-pill idiom): a circle in narrow mode; the
+            // Explicit width (explicit-width idiom): a circle in narrow mode; the
             // measured label + HIG capsule inset in wide mode. The label Text is
             // UNCONDITIONAL (visible-gated) so it stays measurable — an if-gated
             // inner layout does not propagate preferred width, which is what let
