@@ -22,7 +22,7 @@ use crate::library_model::{LibrarySearchState, LibrarySelectionState};
 use crate::thumbnail_strip::ThumbnailController;
 use crate::viewer_state::ViewerState;
 use crate::viewport::ViewportState;
-use crate::{write_back_position, write_back_view_override, ViewerWindow};
+use crate::{persist_view_modes, write_back_position, ViewModeRoute, ViewerWindow};
 
 /// Neutral content description of notices to append to the status line after
 /// an open. No i18n; all string formatting happens in `i18n::dynamic`.
@@ -149,8 +149,15 @@ impl OpenBookUseCase {
         // Also capture the OUTGOING book's runtime view modes into its per-book
         // override before the source is replaced, so a bare D/R/C/fit toggle
         // persists even when the settings dialog was never opened. No-op when no
-        // book is open (open_file() is None).
-        write_back_view_override(state, viewport, library);
+        // book is open. View-mode routing goes through `persist_view_modes`
+        // (ADR-0007 clobber-trap); `settings` is unread on this per-book route.
+        persist_view_modes(
+            ViewModeRoute::OpenDifferentBook,
+            state,
+            viewport,
+            settings,
+            library,
+        );
         // Bind the result first so the `state.borrow_mut()` temporary drops before the
         // `Ok` arm reads `state` again (a borrow held across the match would
         // double-borrow-panic at the `canonical = state.borrow().open_file()...` read
