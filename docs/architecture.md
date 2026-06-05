@@ -624,25 +624,32 @@ generation, resets the model to `page_count` placeholders, and spawns the backgr
 constructs the controller once and calls `thumbs.start(...)` in every open handler, with no thumbnail
 bookkeeping inline.
 
-**`cover_loader.rs`** (`CoverController`, PR-V): a structural TWIN of `ThumbnailController` for the
-Library carousel. Streams each book's real cover into the shared `VecModel<CarouselItem>`: derive
-`cache_key(path, mtime, max_side)`, try `ThumbnailCache::get` (hit → set the row's `cover` on the UI
-thread now), miss → `rayon::spawn` a worker that opens via `ArchiveLoader`, calls core `generate_cover`,
-`ThumbnailCache::put`, then `invoke_from_event_loop` to set the row — under the SAME epoch + cancel
-double-guard and Send/!Send discipline as the thumbnail strip (see [patterns.md](patterns.md)). The
-cancel-rotation lives in a shared-shape private `rotate_cancel(&self) -> Arc<AtomicBool>` helper kept
-IDENTICAL in both controllers. Covers render at `COVER_MAX_SIDE = 512` px — DECOUPLED from the strip's
+**`cover_loader.rs`** (`CoverController`, PR-V; reworked by `perf/async-cover-loading`): a structural
+TWIN of `ThumbnailController` for the Library carousel. Streams each book's real cover into the shared
+`VecModel<CarouselItem>`. `start` is DISPATCH-ONLY on the UI thread: every `CoverRequest` becomes one
+`rayon::spawn` worker (`spawn_load`), and the worker does ALL the per-book I/O — derive
+`cache_key(path, mtime, max_side)` (the mtime `fs::metadata` happens on the worker), try
+`ThumbnailCache::get` (a HIT reads + decodes the cached PNG on the worker), or on a MISS open via
+`ArchiveLoader`, call core `generate_cover`, `ThumbnailCache::put` — then `invoke_from_event_loop` to
+set the row. Hit and miss share this one worker path (a warm 500-book start used to decode 500 PNGs
+inline on the event loop), under the SAME epoch + cancel double-guard and Send/!Send discipline as the
+thumbnail strip (see [patterns.md](patterns.md)). The cancel-rotation lives in a shared-shape private
+`rotate_cancel(&self) -> Arc<AtomicBool>` helper kept IDENTICAL in both controllers. Requests are
+dispatched focus-first: `prioritize_by_focus(requests, focus_row)` (pure, unit-tested) sorts by
+`abs_diff` from the carousel's focused row so the visible neighbourhood streams in before off-screen
+rows. Covers render at `COVER_MAX_SIDE = 512` px — DECOUPLED from the strip's
 `DEFAULT_THUMB_MAX_SIDE = 160` (a focused cover slot is far larger than a strip cell, so 160 px upscaled
 blurry); `max_side` is in the cache key, so raising it auto-regenerates stale 160 px covers. The
 controller ALSO prefetches each unopened book's REAL page count (fixing the "1 / 0" display): a request
-flagged `needs_count` (`Book::page_count_opt() == None`) resolves the count in the background — the
+flagged `needs_count` (`Book::page_count_opt() == None`) resolves the count on the same worker — the
 cover-MISS worker reuses its archive open (`source.list_pages().len()` before `generate_cover`), a
-cover-cache HIT spawns a count-only open (`spawn_count_only`). `marshal_total` streams the count to the
-row's `total` for immediate display, and the `(path, count)` is queued in `pending_counts` for UI-thread
-persistence — drained via `Library::set_page_count` + `save` at the next `start` and at shutdown
-(`flush_counts`), so the count survives a relaunch (a worker can't touch the `!Send`
-`Rc<RefCell<Library>>`, hence the queue). Callers build the `CoverRequest` list BEFORE `start` so the
-`library.borrow()` is released before `start`'s persistence `borrow_mut`.
+cover-cache HIT opens the archive once for the count AFTER marshalling the cover (so the count never
+delays the visible image). `marshal_total` streams the count to the row's `total` for immediate display,
+and a `ResolvedCount { path, count }` is queued in `pending_counts` for UI-thread persistence — drained
+via `Library::set_page_count` + `save` at the next `start` and at shutdown (`flush_counts`), so the
+count survives a relaunch (a worker can't touch the `!Send` `Rc<RefCell<Library>>`, hence the queue).
+Callers build the `CoverRequest` list BEFORE `start` so the `library.borrow()` is released before
+`start`'s persistence `borrow_mut`.
 
 **`SettingsDialog.slint`** (PR8b, NEW; issue 102 replaced its std-widgets `ComboBox`/`SpinBox`/`CheckBox` with the token-driven `Segmented`/`Stepper`/`Toggle`/`Dropdown` atoms): modal overlay editing active settings; two-way `current-index <=> in-out-prop` +
 `selected`/`edited`/`toggled` callbacks. Since issue 103/104 it is a **content-hug glass panel** (φ relocated into the component proportions; spec 2026-06-04) built from custom `components/` atoms; its footer "Shortcuts" link opens `ShortcutsOverlay`, and an `in property <int> focus-epoch` (bumped by `ViewerWindow.focus-settings()`) lets the parent re-focus this still-mounted dialog after the overlay closes.
