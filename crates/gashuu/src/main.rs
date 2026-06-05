@@ -958,14 +958,7 @@ fn main() -> color_eyre::Result<()> {
                 // Notice LAST (status-last ordering, as in add/delete): the
                 // auto-removal message, with the save-failure detail appended when
                 // the persist failed.
-                let base = crate::i18n::dynamic::empty_book_removed(loader, &title);
-                let status = match save_error {
-                    Some(e) => {
-                        let detail = crate::i18n::dynamic::failed_save_library(loader, &e);
-                        format!("{base} \u{2014} {detail}")
-                    }
-                    None => base,
-                };
+                let status = empty_book_removed_status(loader, &title, save_error.as_deref());
                 ui.set_status_text(status.into());
             })
         });
@@ -1835,6 +1828,29 @@ pub(crate) fn refresh(
     ui.set_page_jump_text(format!("{}", current_1based).into());
 }
 
+/// Build the empty-book auto-removal status line: the localized
+/// `empty_book_removed` notice, with the localized library-save-failure detail
+/// appended via the shared `format!("{base} \u{2014} {detail}")` pattern when
+/// `save_error` is `Some`. Shared by the two removal paths (the open-time
+/// `finalize_open` arm and the cover-time `on_empty_book_detected` handler) so
+/// the compose-and-append logic lives in one spot; the formatting stays in
+/// `main.rs` (per the spec) while `empty_book_removed` / `failed_save_library`
+/// remain the pure `dynamic.rs` notice seams.
+fn empty_book_removed_status(
+    loader: &i18n_embed::fluent::FluentLanguageLoader,
+    title: &str,
+    save_error: Option<&str>,
+) -> String {
+    let base = crate::i18n::dynamic::empty_book_removed(loader, title);
+    match save_error {
+        Some(e) => {
+            let detail = crate::i18n::dynamic::failed_save_library(loader, &e);
+            format!("{base} \u{2014} {detail}")
+        }
+        None => base,
+    }
+}
+
 /// Finalize an `open_book.run(...)` outcome on the UI. On failure, set the
 /// localized error status; on success, `refresh()` the view and append each
 /// localized notice to the status line. The single place the four open sites
@@ -1879,14 +1895,7 @@ fn finalize_open(
                 // `removed == true` means THIS path performed the removal, so it
                 // owns the notice. A concurrent path that already removed+notified
                 // yields `removed == false` (idempotent) and stays silent below.
-                let base = crate::i18n::dynamic::empty_book_removed(loader, &title);
-                let status = match save_error {
-                    Some(e) => {
-                        let detail = crate::i18n::dynamic::failed_save_library(loader, &e);
-                        format!("{base} \u{2014} {detail}")
-                    }
-                    None => base,
-                };
+                let status = empty_book_removed_status(loader, &title, save_error.as_deref());
                 ui.set_status_text(status.into());
             }
             // `removed == false`: another path already removed+notified this book
