@@ -32,6 +32,10 @@ fn to_carousel_item(data: &CarouselData) -> CarouselItem {
         // Continue-reading: propagated from CarouselData (pure derivation in
         // `carousel_data_for_indices`; drives the BookmarkRibbon overlay).
         bookmarked: data.bookmarked,
+        // Cover loading starts (or restarts, on a rebuild) un-failed: the row
+        // shows the neutral loading placeholder until `CoverController` either
+        // streams a cover in or marks the load failed (issue 144).
+        cover_failed: false,
     }
 }
 
@@ -385,6 +389,27 @@ mod tests {
         assert!(
             item.bookmarked,
             "unavailable last-opened book must still be bookmarked"
+        );
+    }
+
+    /// Rows are built with `cover_failed == false`: a fresh model row shows the
+    /// neutral loading placeholder until the cover controller either streams in
+    /// a cover or marks the row failed (issue 144 — the rebuilt model resets any
+    /// prior generation's failed flags, so a refresh retries the load cleanly).
+    #[test]
+    fn build_carousel_model_rows_start_unfailed() {
+        use slint::Model;
+
+        let mut lib = Library::new();
+        assert!(lib
+            .add(std::path::PathBuf::from("/manga/alpha.cbz"))
+            .is_some());
+
+        let model = build_carousel_model(&lib, &[0]);
+        assert_eq!(model.row_count(), 1);
+        assert!(
+            !model.row_data(0).unwrap().cover_failed,
+            "fresh rows must start un-failed (neutral loading placeholder)"
         );
     }
 

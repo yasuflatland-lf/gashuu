@@ -9,7 +9,11 @@
 //! `ThumbnailCache::put`. Either way the cover is marshalled back to the row via
 //! `invoke_from_event_loop`. Hit and miss share this single worker path so a
 //! large library can never freeze the event loop (a 500-book warm start used to
-//! decode 500 cached PNGs inline on the UI thread).
+//! decode 500 cached PNGs inline on the UI thread). A PERMANENT failure (open
+//! or decode error) is marshalled too: `marshal_failed` flips the row's
+//! `cover_failed` flag so the card renders the shared failed treatment instead
+//! of an indefinite loading placeholder (issue 144 — parity with the page
+//! strip's failed cell).
 //!
 //! Correctness across library refreshes is the SAME epoch + cancel double-guard
 //! as `ThumbnailController` (see `thumbnail_strip.rs`): `start` bumps an
@@ -185,6 +189,34 @@ fn set_cover(ui: &ViewerWindow, row: usize, img: slint::Image) {
     }
 }
 
+/// Mark carousel row `row`'s cover load as FAILED in `vm` (issue 144): swaps
+/// only the row's `cover_failed` flag so the card renders the shared failed
+/// treatment instead of the indistinguishable-from-loading placeholder. The
+/// headless model core of [`set_cover_failed`] (split out so the bounds
+/// tolerance and the single-field swap are unit-testable without a window —
+/// see docs/quality-gates.md "A function returning ModelRc<T>"); the same
+/// row-bounds check as `set_cover` tolerates a model that shrank since the
+/// request was dispatched.
+fn mark_cover_failed(vm: &VecModel<CarouselItem>, row: usize) {
+    if row < vm.row_count() {
+        let mut item = vm.row_data(row).expect("row < row_count checked above");
+        item.cover_failed = true;
+        vm.set_row_data(row, item);
+    }
+}
+
+/// Set the `cover_failed` flag of carousel row `row`, on the UI thread. The
+/// failed-state counterpart of `set_cover`: same `!Send`-`VecModel`-via-`ui`
+/// re-fetch (never moved across threads), then the headless
+/// [`mark_cover_failed`] does the bounds-checked single-field swap.
+fn set_cover_failed(ui: &ViewerWindow, row: usize) {
+    let model = ui.get_carousel_items();
+    let Some(vm) = model.as_any().downcast_ref::<VecModel<CarouselItem>>() else {
+        return;
+    };
+    mark_cover_failed(vm, row);
+}
+
 /// Set the displayed `total` of carousel row `row`, on the UI thread. The cover
 /// counterpart of `set_cover`: same `!Send`-`VecModel`-via-`ui` re-fetch and same
 /// row-bounds check (tolerating a model that shrank since the request was built),
@@ -226,6 +258,34 @@ fn marshal_cover(
         set_cover(&ui, row, to_slint_image(&img));
     }) {
         tracing::debug!(row, error = %e, "dropped cover update; event loop gone");
+    }
+}
+
+/// Marshal a FAILED cover load onto the UI thread for carousel row `row`
+/// (issue 144): the event-loop closure applies the same epoch-guard + upgrade
+/// preamble as `marshal_cover`, then flips the row's `cover_failed` flag via
+/// `set_cover_failed`. Fired by a worker whose source open or cover decode
+/// failed permanently, so the card renders the shared failed treatment instead
+/// of an indefinite loading placeholder — the cover counterpart of the strip's
+/// failed cell (docs/patterns.md "Per-page thumbnail failure → distinct FAILED
+/// cell"). A model rebuild resets the flag, so the next generation retries.
+fn marshal_failed(
+    weak: slint::Weak<ViewerWindow>,
+    epoch: Arc<AtomicUsize>,
+    my_epoch: usize,
+    row: usize,
+) {
+    if let Err(e) = slint::invoke_from_event_loop(move || {
+        // Drop results from a superseded generation (library refreshed since).
+        if epoch.load(Relaxed) != my_epoch {
+            return;
+        }
+        let Some(ui) = weak.upgrade() else {
+            return;
+        };
+        set_cover_failed(&ui, row);
+    }) {
+        tracing::debug!(row, error = %e, "dropped cover-failed update; event loop gone");
     }
 }
 
@@ -397,7 +457,8 @@ impl CoverController {
     /// try the disk cache. HIT → marshal the decoded cover to the row, then, when
     /// the count is still unknown, resolve it with one archive open. MISS → open
     /// the source, capture the count from the same open (when needed), generate +
-    /// store the cover, then marshal count and cover. Cancel is polled before each
+    /// store the cover, then marshal count and cover; an open or decode FAILURE
+    /// marshals the row failed instead (issue 144). Cancel is polled before each
     /// heavy step and re-checked before crossing to the UI thread; every crossing
     /// goes through the epoch-guarded marshal helpers. Capture rule: only `Send`
     /// values enter the closure.
@@ -451,19 +512,31 @@ impl CoverController {
                             );
                         }
                         Err(e) => {
+                            // A count-open failure is NOT a cover failure: the
+                            // cached cover was already marshalled above, so the
+                            // row keeps it (no failed marking, log only).
                             tracing::warn!(path = %req.path.display(), error = %e, "cover: count open failed");
                         }
                     }
                 }
                 return;
             }
-            // MISS: open the source for THIS book. A missing/unsupported file
-            // leaves the row a placeholder — log and return, never panic.
+            // MISS: open the source for THIS book. An unreadable file marks the
+            // row FAILED (issue 144) so the user can tell a permanent failure
+            // from a still-loading placeholder — log and marshal, never panic.
+            // Cancel re-check before crossing (mirrors marshal_empty_book's
+            // gate); the epoch guard inside marshal_failed drops superseded
+            // generations. An UNAVAILABLE (file-gone) book also lands here, but
+            // its card renders the distinct broken-cover treatment regardless —
+            // the flag is set yet never consulted (the two states stay separate).
             let open_result = ArchiveLoader::open(&req.path);
             let source = match open_result {
                 Ok(s) => s,
                 Err(e) => {
                     tracing::warn!(path = %req.path.display(), error = %e, "cover: open failed");
+                    if !cancel.load(Relaxed) {
+                        marshal_failed(weak, epoch, my_epoch, req.row);
+                    }
                     return;
                 }
             };
@@ -489,6 +562,10 @@ impl CoverController {
                 Ok(d) => d,
                 Err(e) => {
                     tracing::warn!(path = %req.path.display(), error = %e, "cover: generate failed");
+                    // Decode failure: same FAILED marking as the open-error arm.
+                    if !cancel.load(Relaxed) {
+                        marshal_failed(weak, epoch, my_epoch, req.row);
+                    }
                     return;
                 }
             };
@@ -567,6 +644,53 @@ impl CoverController {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A fully-populated row with every flag SET (except `cover_failed`), so the
+    /// preserve-other-fields assertion below cannot pass vacuously on defaults.
+    fn carousel_item(title: &str) -> CarouselItem {
+        CarouselItem {
+            cover: slint::Image::default(),
+            title: title.into(),
+            current: 3,
+            total: 10,
+            progress: 0.3,
+            available: true,
+            selected: true,
+            bookmarked: true,
+            cover_failed: false,
+        }
+    }
+
+    /// Marking a row failed flips ONLY `cover_failed`; every other field (title,
+    /// counters, selection, bookmark) survives the read-modify-write untouched,
+    /// and sibling rows are not touched at all.
+    #[test]
+    fn mark_cover_failed_sets_only_the_flag() {
+        let vm = VecModel::from(vec![carousel_item("alpha"), carousel_item("beta")]);
+        mark_cover_failed(&vm, 1);
+        assert!(
+            !vm.row_data(0).expect("row 0").cover_failed,
+            "sibling row must stay un-failed"
+        );
+        let failed = vm.row_data(1).expect("row 1");
+        assert!(failed.cover_failed, "marked row must read failed");
+        assert_eq!(failed.title, "beta");
+        assert_eq!(failed.current, 3);
+        assert_eq!(failed.total, 10);
+        assert!(failed.available);
+        assert!(failed.selected);
+        assert!(failed.bookmarked);
+    }
+
+    /// A row beyond the model (shrunk since the request was scheduled, e.g. a
+    /// book removed between dispatch and delivery) is a no-op — the same
+    /// tolerance as `set_cover`'s bounds check; no panic, no write.
+    #[test]
+    fn mark_cover_failed_out_of_range_is_noop() {
+        let vm = VecModel::from(vec![carousel_item("alpha")]);
+        mark_cover_failed(&vm, 5);
+        assert!(!vm.row_data(0).expect("row 0").cover_failed);
+    }
 
     fn req(row: usize) -> CoverRequest {
         CoverRequest {
