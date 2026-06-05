@@ -17,7 +17,7 @@ use i18n_embed::fluent::FluentLanguageLoader;
 use slint::ComponentHandle;
 
 use crate::carousel::{bind_carousel_model, build_carousel_model, cover_requests};
-use crate::cover_loader::{mtime_secs, CoverController, COVER_MAX_SIDE};
+use crate::cover_loader::{purge_cover, CoverController};
 use crate::library_model::{LibrarySearchState, LibrarySelectionState};
 use crate::thumbnail_strip::ThumbnailController;
 use crate::viewer_state::ViewerState;
@@ -542,23 +542,12 @@ impl RemoveBooksUseCase {
             }
         };
 
-        // 3. Best-effort purge of each removed book's persistent cover. mtime
-        //    drift is EXPECTED (the file may be gone, or its mtime changed since
-        //    the cover was generated) and never surfaced to the user — only
-        //    `tracing::warn!`. A cache-construction failure skips the purge wholesale.
+        // 3. Best-effort purge of each removed book's persistent cover.
+        //    A cache-construction failure skips the purge wholesale.
         match ThumbnailCache::new() {
             Ok(cache) => {
                 for path in &report.removed {
-                    let removed = cache.purge_for(path, mtime_secs(path), &[COVER_MAX_SIDE]);
-                    if removed == 0 {
-                        // Not an error: a missing file / drifted mtime / unwritable
-                        // cache entry leaves a harmless orphan the startup prune
-                        // sweep reclaims later (issue 143).
-                        tracing::warn!(
-                            path = %path.display(),
-                            "no persistent cover purged for removed book (missing, mtime drift, or unwritable cache)"
-                        );
-                    }
+                    purge_cover(&cache, path);
                 }
             }
             Err(e) => {

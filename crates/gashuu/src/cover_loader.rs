@@ -51,11 +51,9 @@ use std::sync::{Arc, Mutex};
 /// `max_side` is part of the cache key, so raising it transparently invalidates
 /// and regenerates every stale 160 px cover on the next run.
 ///
-/// `pub(crate)` so the bulk-removal purge in `app.rs` passes the SAME single
-/// persistent cover side to `ThumbnailCache::purge_for`, instead of duplicating
-/// the literal — strip thumbnails are RAM-only and never persisted, so 512 is the
-/// only on-disk cover variant a removed book can have.
-pub(crate) const COVER_MAX_SIDE: u32 = 512;
+/// Private — external purge sites route through [`purge_cover`], which owns the
+/// complete key recipe, so the `max_side` ingredient never leaks to callers.
+const COVER_MAX_SIDE: u32 = 512;
 
 /// Size cap, in bytes, for the on-disk cover cache; the startup sweep prunes
 /// down to this. 256 MiB holds roughly 650-1700 covers at `COVER_MAX_SIDE` 512
@@ -159,17 +157,28 @@ impl Default for CoverController {
 /// the file is missing / has no readable mtime (an unavailable book still gets a
 /// stable, if degenerate, cache key). This is one of the three `cache_key` inputs
 /// so a modified file regenerates its cover automatically (the cache owns hashing).
-///
-/// `pub(crate)` so the bulk-removal purge in `app.rs` derives the cover's cache
-/// key under the book's CURRENT mtime (the same value the cover was generated
-/// under, modulo drift) when calling `ThumbnailCache::purge_for`.
-pub(crate) fn mtime_secs(path: &std::path::Path) -> i64 {
+fn mtime_secs(path: &std::path::Path) -> i64 {
     std::fs::metadata(path)
         .and_then(|m| m.modified())
         .ok()
         .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0)
+}
+
+/// Best-effort removal of `path`'s persistent cover — the single home of the
+/// cover-key purge recipe (`purge_for(path, mtime_secs(path), &[COVER_MAX_SIDE])`),
+/// so the key ingredients never leak to callers. A zero purge count is EXPECTED
+/// (missing file, mtime drift, unwritable cache entry) and only warned: the
+/// orphan is harmless and the startup prune sweep reclaims it later (issue 143).
+pub(crate) fn purge_cover(cache: &ThumbnailCache, path: &std::path::Path) {
+    let removed = cache.purge_for(path, mtime_secs(path), &[COVER_MAX_SIDE]);
+    if removed == 0 {
+        tracing::warn!(
+            path = %path.display(),
+            "no persistent cover purged for removed book (missing, mtime drift, or unwritable cache)"
+        );
+    }
 }
 
 /// Set the `cover` image of carousel row `row` to `img`, on the UI thread.

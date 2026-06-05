@@ -924,23 +924,10 @@ fn main() -> color_eyre::Result<()> {
                         Some(format!("{e}"))
                     }
                 };
-                // Best-effort purge of the removed book's persistent cover,
-                // mirroring the bulk-delete purge (mtime drift / missing file is
-                // expected and only warned, never surfaced).
+                // Best-effort purge of the removed book's persistent cover via the
+                // shared `purge_cover` helper (mirrors the bulk-delete purge).
                 match gashuu_core::ThumbnailCache::new() {
-                    Ok(cache) => {
-                        let purged = cache.purge_for(
-                            &path,
-                            cover_loader::mtime_secs(&path),
-                            &[cover_loader::COVER_MAX_SIDE],
-                        );
-                        if purged == 0 {
-                            tracing::warn!(
-                                path = %path.display(),
-                                "no persistent cover purged for auto-removed empty book (missing, mtime drift, or unwritable cache)"
-                            );
-                        }
-                    }
+                    Ok(cache) => cover_loader::purge_cover(&cache, &path),
                     Err(e) => {
                         tracing::warn!(error = %e, "cover cache unavailable; skipping cover purge on empty-book removal");
                     }
