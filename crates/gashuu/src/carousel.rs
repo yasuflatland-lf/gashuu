@@ -15,8 +15,8 @@ use std::rc::Rc;
 /// Adapt a pure `CarouselData` row into the Slint `CarouselItem` the carousel
 /// renders. Runs on the UI thread (it builds a `slint::Image`). The cover field
 /// starts as a placeholder (`slint::Image::default()`); `CoverController` fills
-/// it in asynchronously via `invoke_from_event_loop` (a cache hit paints
-/// immediately; a miss streams in after a background decode).
+/// it in asynchronously via `invoke_from_event_loop` (hit and miss both stream
+/// in from background workers — a cache hit just arrives sooner).
 fn to_carousel_item(data: &CarouselData) -> CarouselItem {
     CarouselItem {
         cover: slint::Image::default(),
@@ -112,8 +112,8 @@ pub(crate) fn apply_selection_flags<F>(
 /// align with the filtered carousel model built by [`build_carousel_model`] from
 /// the same `indices`. Out-of-range indices are skipped via
 /// `Library::books().get(index)`. The cover controller resolves each book's
-/// cache key from its path + mtime and either serves a cached cover or generates
-/// one in the background.
+/// cache key from its path + mtime on a background worker and either serves the
+/// cached cover or generates one — both off the UI thread.
 ///
 /// `needs_count` is set for a book whose page count is still unknown
 /// (`Book::page_count_opt() == None` — never opened, no persisted total). The

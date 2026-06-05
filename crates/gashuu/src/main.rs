@@ -2150,7 +2150,18 @@ fn refresh_library_carousel(ui: &ViewerWindow, deps: &CarouselRefresh, reset_foc
         deps.search,
         deps.library,
     );
-    deps.covers.start(ui.as_weak(), deps.library, cover_reqs);
+    // Dispatch covers nearest the focused row first: on a large library the
+    // visible neighbourhood streams in immediately instead of queueing behind
+    // hundreds of off-screen rows. Read the focus AFTER the reset above so a
+    // reset-focus refresh starts from row 0. (The add path moves focus to the
+    // new book only after this refresh; its cover is a fresh miss either way,
+    // so ordering by the pre-add focus is fine there.)
+    let focus_row = ui.get_carousel_focused_index().max(0) as usize;
+    deps.covers.start(
+        ui.as_weak(),
+        deps.library,
+        cover_loader::prioritize_by_focus(cover_reqs, focus_row),
+    );
 }
 
 /// Add `paths` to the library, persist, rebuild the filtered carousel, and
