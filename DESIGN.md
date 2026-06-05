@@ -556,7 +556,7 @@ An organism shown **below the NavBar**, centered, only while selection mode is a
 4. **Exit capsule**: circular `{nav-capsule}` (34px) × `{nav-capsule}`, `{rounded.pill}`. Same hover/press states as the select-all capsule. Icon is `close.svg` (Streamline "Cancel Fill" — filled disc with knocked-out ✕, 96px intrinsic / viewBox 24) rendered via `@image-url` + `colorize`: idle `{colors.text-mid}`, hover/press `{colors.text-high}`, sized `Theme.nav-icon` (21px). Bare-✕ fallback remains an open author visual-check decision (disc-in-capsule legibility). Fires `exit()` — equivalent to pressing Esc in the carousel.
 
 ### Select Entry — NavBar capsule (formerly: Select Entry Pill)
-Selection mode is entered via the **Select capsule inside the NavBar** (the `checkbox.svg`
+Selection mode is entered via the **Select capsule inside the NavBar** (the `filter.svg`
 `NavItem` — see Library Nav above). The separate text pill that formerly lived in the slide-strip
 below the NavBar has been removed; it no longer exists as a component or a spec entry. The
 `components.selection-entry-pill` token block in the front-matter above is retained for historical
@@ -617,12 +617,12 @@ stage; its bottom edge may slightly overlap the focused cover so the background 
 reinforcing the "glass" read.
 
 - **Content**: the search field (left), a thin divider, then FIVE icon-only circular capsules
-  right-of-divider — `file` (Add files), `folder` (Add folder), `select` (checkbox.svg; bulk-select
+  right-of-divider — `file` (Add files), `folder` (Add folder), `select` (filter.svg; bulk-select
   toggle), `bookmark` (bookmark.svg; continue-reading jump), and `settings` (rightmost, unchanged).
   On macOS, where the OS panel picks files and folders in one dialog, the file + folder pair
   collapse into a single combined `plus` (Add books) capsule, giving FOUR capsules total.
   **No on-screen text labels** (accessible-label only) and **no tooltips**.
-- **Select capsule** (`checkbox.svg`): toggles bulk-selection mode. While selection mode is on, it
+- **Select capsule** (`filter.svg`): toggles bulk-selection mode. While selection mode is on, it
   shows a persistent accent ring (`{colors.accent}` border + `{colors.accent-glow}` fill — the
   hover look, held) so the active mode is legible even through the recede veil. On an empty library
   the capsule dims to `{colors.text-faint}` icon and its `TouchArea` is inert, but it stays mounted
