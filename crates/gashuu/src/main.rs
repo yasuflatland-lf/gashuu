@@ -502,15 +502,13 @@ fn main() -> color_eyre::Result<()> {
         let selection = Rc::clone(&selection);
         ui.on_carousel_continue_reading(move || {
             with_ui(&ui_weak, |ui| {
-                // Resolve the bookmark to a present-in-library book path. A None
-                // `last_opened`, or one whose path is no longer in `books` (the
-                // book was purged), both yield None here and count as no bookmark.
-                let path = {
-                    let lib = library.borrow();
-                    lib.last_opened()
-                        .filter(|p| lib.books().iter().any(|book| book.path() == *p))
-                        .map(std::path::Path::to_path_buf)
-                };
+                // `Library::bookmark()` returns `last_opened` only when it is
+                // still on the shelf — books purged from the library yield None,
+                // which counts as no bookmark and triggers the notice below.
+                let path = library
+                    .borrow()
+                    .bookmark()
+                    .map(std::path::Path::to_path_buf);
                 let Some(path) = path else {
                     // No registered bookmark — answer the click with a notice so
                     // the always-enabled capsule still gives feedback.
