@@ -523,14 +523,19 @@ keyboard Up/Down), `Toggle` (issue 102, PR-A: token-driven on/off switch replaci
 track accent-on / `track-prog`-off, spring-animated knob), `SettingRow` (issue 103, PR-B: L1
 alignment molecule — fixed label column + `@children` control slot spanning to the shared right
 rail; `trailing` flag pushes compact atoms onto the rail via a leading stretch spacer),
-`SelectionBadge` (bulk-delete PR-2: pure visual atom — accent disc with a centered white check mark,
-overlaid on selected covers in selection mode; both Carousel `for` passes include it, rendered only
-when `selected` is true), `SelectionToolbar` (bulk-delete PR-4/PR-5: selection-mode organism — count
-pill / select-all capsule / exit capsule / **Delete (N)… `DangerButton`** (if-gated, hidden at
-N=0; the only red element in the app's chrome; PR-5 #129); glass-pill matching `NavBar`'s
-four-layer idiom, content-hugged width, overlaid below `NavBar` inside `Carousel` via an
-`if-gate`; all human-visible text passed from Rust via `in` properties — deliberately
-`Strings`-agnostic), and `DangerButton`
+`SelectionBadge` (bulk-delete PR-2; two-state added in the UI-polish pass: pure visual atom overlaid
+on EVERY cover while selection mode is active — `checked == true` renders the original accent-filled
+disc + centered white check glyph; `checked == false` renders a hollow hairline ring over a faint
+glass backing so unselected covers are clearly afforded as targets; both Carousel `for` passes
+include it, gated on `selection-mode` not `selected`), `SelectionToolbar` (bulk-delete PR-4/PR-5;
+UI-polish pass §2.6: selection-mode organism — count pill / select-all capsule / exit capsule /
+**Delete (N)… `DangerButton`** (if-gated, hidden at N=0; the only red element in the app's chrome;
+PR-5 #129); glass-pill following `NavBar`'s four-layer idiom with two intentional departures
+(accent border-color for mode context; `active`-gated drop shadow to suppress bleed from the
+parked position); content-hugged width; mounted ALWAYS inside a `clip: true` slide-strip below the
+NavBar in `Carousel` (y-slide transition — NOT an `if`-gate so the animation is continuous); takes
+an `active` flag ANDed into every `TouchArea`/a11y guard; all human-visible text passed from Rust
+via `in` properties — deliberately `Strings`-agnostic), and `DangerButton`
 (bulk-delete PR-1: destructive-action atom — structural clone of `PrimaryButton` swapping accent for
 `Theme.danger` red + `Theme.danger-glow` hover/focus ring; accessibility role/label/action-default
 added here, `PrimaryButton` backport pending; first consumed by the PR-3 `ConfirmDialog`, and now
@@ -543,10 +548,13 @@ the single entry `ui/ViewerWindow.slint` and import statements cascade. See
 (the macOS combined "Add books" capsule glyph), `carousel.svg`
 (the thumbnail-toggle icon in ViewerPill; replaced the original `slider.svg` glyph),
 `chevron-down.svg` (i18n PR, NEW: the `Dropdown` chevron; 96px intrinsic size per the HiDPI
-rasterization rule), and `check.svg` (bulk-delete PR-2, NEW: the single-path check mark recolored
-via `colorize` to `Theme.text` white inside `SelectionBadge`), each a single-path SVG recolored at
-runtime via Slint's `Image.colorize` property. Components reference
-them with `@image-url(...)` paths relative to the consuming `.slint` file. `build.rs` is unchanged
+rasterization rule), `check.svg` (bulk-delete PR-2, NEW: the single-path check mark recolored
+via `colorize` to `Theme.text` white inside `SelectionBadge`), `close.svg` (UI-polish pass, NEW:
+Cancel Fill glyph — disc + knocked-out ✕ — used by the `SelectionToolbar` exit capsule, recolored
+via `colorize`; replaced the former `Text` pseudo-icon), and `delete.svg` (UI-polish pass, NEW:
+trash glyph shown as the `DangerButton` leading icon in `SelectionToolbar`, recolored via
+`colorize`), each a single-path SVG recolored at runtime via Slint's `Image.colorize` property.
+Components reference them with `@image-url(...)` paths relative to the consuming `.slint` file. `build.rs` is unchanged
 (assets are reached transitively through the entry-file import cascade).
 
 **`ui/Strings.slint`** (Fluent i18n PR-2, #113, NEW): `export global Strings` — the Fluent-served
