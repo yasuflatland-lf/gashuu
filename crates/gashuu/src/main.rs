@@ -1165,10 +1165,11 @@ fn main() -> color_eyre::Result<()> {
                         &library,
                     );
                     if let Err(e) = settings.borrow().save() {
-                        tracing::error!(error = %e, "failed to save settings from dialog");
-                        ui.set_status_text(
-                            crate::i18n::dynamic::could_not_save_settings(localizer.loader(), &e)
-                                .into(),
+                        report_save_error(
+                            &ui,
+                            localizer.loader(),
+                            &e,
+                            "failed to save settings from dialog",
                         );
                     }
                     ui.invoke_focus_carousel();
@@ -1185,10 +1186,11 @@ fn main() -> color_eyre::Result<()> {
                         &library,
                     );
                     if let Err(e) = settings.borrow().save() {
-                        tracing::error!(error = %e, "failed to save settings from dialog");
-                        ui.set_status_text(
-                            crate::i18n::dynamic::could_not_save_settings(localizer.loader(), &e)
-                                .into(),
+                        report_save_error(
+                            &ui,
+                            localizer.loader(),
+                            &e,
+                            "failed to save settings from dialog",
                         );
                     }
                     ui.invoke_focus_pages();
@@ -1253,11 +1255,7 @@ fn main() -> color_eyre::Result<()> {
                         tracing::warn!(path = %path.display(), "reset override: open book not found in library");
                     }
                     if let Err(e) = library.borrow().save() {
-                        tracing::error!(error = %e, "failed to save library on override reset");
-                        ui.set_status_text(
-                            crate::i18n::dynamic::could_not_save_settings(localizer.loader(), &e)
-                                .into(),
-                        );
+                        report_save_error(&ui, localizer.loader(), &e, "failed to save library on override reset");
                     }
                 }
                 // Apply the global defaults to the runtime + view.
@@ -1698,6 +1696,23 @@ fn with_ui(weak: &slint::Weak<ViewerWindow>, f: impl FnOnce(ViewerWindow)) {
     if let Some(ui) = weak.upgrade() {
         f(ui);
     }
+}
+
+/// Log a failed persistence save and surface it on the status line — the single
+/// home of the direct log+status save-failure shape. The aggregation paths keep
+/// their own composition and do NOT route through this: `NoticesContent`
+/// (app.rs, pre-captured `Option<String>` composed in `finalize_open`), the
+/// add-batch report (`add_books_and_refresh`), the bulk-delete rollback
+/// (`RemoveOutcome::SaveFailed`), and the log-only sites where no status line
+/// is wanted (guide dismiss, exit, write-backs).
+fn report_save_error(
+    ui: &ViewerWindow,
+    loader: &i18n_embed::fluent::FluentLanguageLoader,
+    e: &CoreError,
+    context: &'static str,
+) {
+    tracing::error!(error = %e, "{context}");
+    ui.set_status_text(crate::i18n::dynamic::could_not_save_settings(loader, e).into());
 }
 
 /// Push the current spread + status into the UI, then re-anchor the viewport to
