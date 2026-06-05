@@ -37,22 +37,31 @@ pub struct Book {
     overrides: ViewOverride,
 }
 
+/// Derive a book's display title from its path. For a folder the title is the
+/// directory name; for a file it is the file stem (e.g. `Cool Title` from
+/// `Cool Title.cbz`). Either source is rejected when empty, and the lossy full
+/// path string is the fallback so the title is never empty. This is the single
+/// home of the title rule; `Book::from_path` (and, in later waves, the UI
+/// replicas) delegate to it.
+pub fn display_title(path: &Path) -> String {
+    if path.is_dir() {
+        path.file_name()
+            .map(|s| s.to_string_lossy().into_owned())
+            .filter(|s| !s.is_empty())
+    } else {
+        path.file_stem()
+            .map(|s| s.to_string_lossy().into_owned())
+            .filter(|s| !s.is_empty())
+    }
+    .unwrap_or_else(|| path.to_string_lossy().into_owned())
+}
+
 impl Book {
-    /// Build a `Book` from a path, deriving the display title. The title is the
-    /// file stem (e.g. `Cool Title` from `Cool Title.cbz`) or the directory name
-    /// for an extension-less folder, falling back to the lossy full path string
-    /// so the title is never empty.
+    /// Build a `Book` from a path, deriving the display title via
+    /// [`display_title`] (file stem for a file, directory name for a folder,
+    /// lossy full path as a never-empty fallback).
     pub(crate) fn from_path(path: PathBuf) -> Self {
-        let title = if path.is_dir() {
-            path.file_name()
-                .map(|s| s.to_string_lossy().into_owned())
-                .filter(|s| !s.is_empty())
-        } else {
-            path.file_stem()
-                .map(|s| s.to_string_lossy().into_owned())
-                .filter(|s| !s.is_empty())
-        }
-        .unwrap_or_else(|| path.to_string_lossy().into_owned());
+        let title = display_title(&path);
         Self {
             path,
             title,
@@ -428,6 +437,56 @@ mod tests {
         // path string so the title is never empty.
         let book = Book::from_path(PathBuf::from("/"));
         assert!(!book.title().is_empty());
+    }
+
+    // --- display_title tests (the title rule Book::from_path delegates to) ---
+
+    #[test]
+    fn display_title_uses_dir_name_for_real_folder() {
+        // A real existing folder: the rule takes the directory name, not the stem
+        // (which would strip a dotted suffix).
+        let dir = tempfile::tempdir().unwrap();
+        let folder = dir.path().join("Series.1997");
+        std::fs::create_dir(&folder).unwrap();
+        assert_eq!(display_title(&folder), "Series.1997");
+    }
+
+    #[test]
+    fn display_title_uses_file_stem_for_archive_path() {
+        // A file path (non-directory): the rule takes the file stem, dropping the
+        // extension.
+        assert_eq!(
+            display_title(Path::new("/manga/Cool Title.cbz")),
+            "Cool Title"
+        );
+    }
+
+    #[test]
+    fn display_title_keeps_leading_dot_name_as_stem() {
+        // A dotfile like `.cbz` is NOT a hidden-extension case to `file_stem`: the
+        // whole `.cbz` is the stem (non-empty), so the empty filter does not fire
+        // and the title is the dotfile name verbatim — never the lossy fallback.
+        assert_eq!(display_title(Path::new("/manga/.cbz")), ".cbz");
+    }
+
+    #[test]
+    fn display_title_falls_back_to_lossy_path_when_no_file_component() {
+        // A non-dir path whose `file_stem` is None (a trailing `..` component) hits
+        // the empty/None fallback arm: the lossy full path string is used so the
+        // title is never empty. This is the same fallback the empty filter feeds
+        // into, exercised via the only route `std::path` actually produces.
+        let title = display_title(Path::new("/manga/.."));
+        assert!(!title.is_empty());
+        assert_eq!(title, "/manga/..");
+    }
+
+    #[test]
+    fn display_title_falls_back_to_lossy_path_for_root() {
+        // A root-ish path has no file_name / file_stem at all, so the rule falls
+        // back to the lossy full path string.
+        let title = display_title(Path::new("/"));
+        assert!(!title.is_empty());
+        assert_eq!(title, "/");
     }
 
     #[test]
