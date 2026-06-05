@@ -862,6 +862,112 @@ fn main() -> color_eyre::Result<()> {
         });
     }
 
+    // Carousel: a cover-loading worker found a book whose source has zero image
+    // pages (an empty folder, an archive emptied since it was added, …). The
+    // worker invokes this with the book's canonical path (epoch-guarded on its
+    // side so a stale in-flight result is dropped). Auto-remove the now-empty
+    // book from the library, persist, purge its cached cover, rebuild the
+    // carousel (the rebuild's epoch bump drops any sibling covers still
+    // streaming for it), and surface a notice. Idempotent: a second signal for a
+    // book already removed (`Library::remove` returns false) is a silent no-op.
+    {
+        let ui_weak = ui.as_weak();
+        let library = Rc::clone(&library);
+        let covers = Rc::clone(&covers);
+        let search = Rc::clone(&search);
+        let selection = Rc::clone(&selection);
+        let localizer = Rc::clone(&localizer);
+        ui.on_empty_book_detected(move |path_str| {
+            with_ui(&ui_weak, |ui| {
+                let loader = localizer.loader();
+                let path = std::path::PathBuf::from(path_str.as_str());
+                // Look up the display title BEFORE removal — once removed the book
+                // is gone from `books`, so the title must be captured first. A
+                // signal for a path no longer present yields `None`; the removal
+                // below then returns false and we bail out silently.
+                let title = {
+                    let lib = library.borrow();
+                    lib.books()
+                        .iter()
+                        .find(|book| book.path() == path.as_path())
+                        .map(|book| book.title().to_string())
+                };
+                let removed = library.borrow_mut().remove(&path);
+                if !removed {
+                    // Idempotency / race: the book was already removed by another
+                    // path (its notice + rebuild already ran), so nothing to do.
+                    return;
+                }
+                // `removed == true` guarantees `title` was Some (the book existed
+                // when we read it just above), but fall back to the path's file
+                // name defensively so the notice never shows an empty title.
+                let title = title.unwrap_or_else(|| {
+                    path.file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_default()
+                });
+                // Persist the removal. A save failure is surfaced (appended to the
+                // notice), not just traced, mirroring the add/delete save-failure
+                // handling; the in-memory removal stands either way.
+                let save_error = match library.borrow().save() {
+                    Ok(()) => None,
+                    Err(e) => {
+                        tracing::error!(error = %e, "failed to save library after empty-book auto-removal");
+                        Some(format!("{e}"))
+                    }
+                };
+                // Best-effort purge of the removed book's persistent cover,
+                // mirroring the bulk-delete purge (mtime drift / missing file is
+                // expected and only warned, never surfaced).
+                match gashuu_core::ThumbnailCache::new() {
+                    Ok(cache) => {
+                        let purged = cache.purge_for(
+                            &path,
+                            cover_loader::mtime_secs(&path),
+                            &[cover_loader::COVER_MAX_SIDE],
+                        );
+                        if purged == 0 {
+                            tracing::warn!(
+                                path = %path.display(),
+                                "no persistent cover purged for auto-removed empty book (missing, mtime drift, or unwritable cache)"
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!(error = %e, "cover cache unavailable; skipping cover purge on empty-book removal");
+                    }
+                }
+                // Rebuild the carousel so the removed book disappears and the
+                // cover-epoch bump drops any sibling cover still streaming for it;
+                // the active search filter is preserved by the chokepoint. No focus
+                // reset — the user's focus stays where it was.
+                refresh_library_carousel(
+                    &ui,
+                    &CarouselRefresh {
+                        library: &library,
+                        covers: &covers,
+                        search: &search,
+                        selection: &selection,
+                        localizer: &localizer,
+                    },
+                    false,
+                );
+                // Notice LAST (status-last ordering, as in add/delete): the
+                // auto-removal message, with the save-failure detail appended when
+                // the persist failed.
+                let base = crate::i18n::dynamic::empty_book_removed(loader, &title);
+                let status = match save_error {
+                    Some(e) => {
+                        let detail = crate::i18n::dynamic::failed_save_library(loader, &e);
+                        format!("{base} \u{2014} {detail}")
+                    }
+                    None => base,
+                };
+                ui.set_status_text(status.into());
+            })
+        });
+    }
+
     // Thumbnail click: jump to the clicked page's spread, refresh, then restore
     // focus to the page area so keyboard navigation keeps working.
     {
