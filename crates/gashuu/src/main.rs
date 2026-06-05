@@ -205,13 +205,31 @@ fn main() -> color_eyre::Result<()> {
         let state = Rc::clone(&state);
         let viewport = Rc::clone(&viewport);
         let localizer = Rc::clone(&localizer);
+        // `finalize_open` may rebuild the carousel (empty-book auto-removal), so it
+        // needs the full carousel-refresh deps, not just the localizer.
+        let library = Rc::clone(&library);
+        let covers = Rc::clone(&covers);
+        let search = Rc::clone(&search);
+        let selection = Rc::clone(&selection);
         ui.on_open_folder(move || {
             with_ui(&ui_weak, |ui| {
                 let Some(dir) = rfd::FileDialog::new().pick_folder() else {
                     return;
                 };
                 let outcome = open_book.run(&ui, &dir, SkippedDetail::None);
-                finalize_open(&ui, &state, &viewport, &localizer, outcome);
+                finalize_open(
+                    &ui,
+                    &state,
+                    &viewport,
+                    &CarouselRefresh {
+                        library: &library,
+                        covers: &covers,
+                        search: &search,
+                        selection: &selection,
+                        localizer: &localizer,
+                    },
+                    outcome,
+                );
                 // Title-bar book name is derived from the AUTHORITATIVE post-open
                 // state (the canonical `open_file`), not the raw dialog path, so a
                 // FAILED open never shows the name of a book that did not open: on
@@ -229,6 +247,12 @@ fn main() -> color_eyre::Result<()> {
         let state = Rc::clone(&state);
         let viewport = Rc::clone(&viewport);
         let localizer = Rc::clone(&localizer);
+        // `finalize_open` may rebuild the carousel (empty-book auto-removal), so it
+        // needs the full carousel-refresh deps, not just the localizer.
+        let library = Rc::clone(&library);
+        let covers = Rc::clone(&covers);
+        let search = Rc::clone(&search);
+        let selection = Rc::clone(&selection);
         ui.on_open_archive(move || {
             with_ui(&ui_weak, |ui| {
                 let Some(file) = rfd::FileDialog::new()
@@ -238,7 +262,19 @@ fn main() -> color_eyre::Result<()> {
                     return;
                 };
                 let outcome = open_book.run(&ui, &file, SkippedDetail::Archive);
-                finalize_open(&ui, &state, &viewport, &localizer, outcome);
+                finalize_open(
+                    &ui,
+                    &state,
+                    &viewport,
+                    &CarouselRefresh {
+                        library: &library,
+                        covers: &covers,
+                        search: &search,
+                        selection: &selection,
+                        localizer: &localizer,
+                    },
+                    outcome,
+                );
                 // Title-bar book name is derived from the AUTHORITATIVE post-open
                 // state (the canonical `open_file`), so a FAILED open (corrupt /
                 // non-archive file) never shows the picked file's name: on failure
@@ -370,6 +406,10 @@ fn main() -> color_eyre::Result<()> {
         let search = Rc::clone(&search);
         let viewport = Rc::clone(&viewport);
         let localizer = Rc::clone(&localizer);
+        // `finalize_open` may rebuild the carousel (empty-book auto-removal), so it
+        // needs the full carousel-refresh deps.
+        let covers = Rc::clone(&covers);
+        let selection = Rc::clone(&selection);
         ui.on_carousel_open(move |index| {
             with_ui(&ui_weak, |ui| {
                 // Resolve the focused VISIBLE carousel index to a Library book
@@ -400,15 +440,34 @@ fn main() -> color_eyre::Result<()> {
                 // open_book.run writes back the OLD book's position first,
                 // then opens the new path and resumes its stored position.
                 let outcome = open_book.run(&ui, &path, SkippedDetail::None);
-                finalize_open(&ui, &state, &viewport, &localizer, outcome);
+                // An empty source is removed instead of opened: stay on the
+                // Library (the rebuilt carousel no longer shows it) rather than
+                // switching to an empty viewer.
+                let enter_viewer = !matches!(outcome, app::OpenOutcome::EmptyBookRemoved { .. });
+                finalize_open(
+                    &ui,
+                    &state,
+                    &viewport,
+                    &CarouselRefresh {
+                        library: &library,
+                        covers: &covers,
+                        search: &search,
+                        selection: &selection,
+                        localizer: &localizer,
+                    },
+                    outcome,
+                );
                 // Title-bar book name is derived from the AUTHORITATIVE post-open
                 // state (the canonical `open_file`), so a FAILED open (a Library
                 // book that was moved/deleted) never shows that book's name: on
                 // failure `open_file` is unchanged and `run` already set an
-                // `Error:` status. The pre-existing `go_to_viewer` navigation is
-                // intentionally left unchanged (out of scope here).
+                // `Error:` status. Enter the viewer only when the open actually
+                // produced a book to show — an empty source was auto-removed and
+                // `finalize_open` left us on a refreshed Library.
                 ui.set_current_book_name(current_book_name(&state).into());
-                go_to_viewer(&ui, &nav);
+                if enter_viewer {
+                    go_to_viewer(&ui, &nav);
+                }
             })
         });
     }
@@ -428,6 +487,11 @@ fn main() -> color_eyre::Result<()> {
         let state = Rc::clone(&state);
         let viewport = Rc::clone(&viewport);
         let localizer = Rc::clone(&localizer);
+        // `finalize_open` may rebuild the carousel (empty-book auto-removal), so it
+        // needs the full carousel-refresh deps.
+        let covers = Rc::clone(&covers);
+        let search = Rc::clone(&search);
+        let selection = Rc::clone(&selection);
         ui.on_carousel_continue_reading(move || {
             with_ui(&ui_weak, |ui| {
                 // Resolve the bookmark to a present-in-library book path. A None
@@ -452,9 +516,27 @@ fn main() -> color_eyre::Result<()> {
                 // its stored page; a failed open (file moved/deleted) is handled by
                 // run itself (leaves open_file unchanged + sets an `Error:` status).
                 let outcome = open_book.run(&ui, &path, SkippedDetail::None);
-                finalize_open(&ui, &state, &viewport, &localizer, outcome);
+                // An empty source is removed instead of opened: stay on the
+                // Library (the rebuilt carousel no longer shows it) rather than
+                // switching to an empty viewer.
+                let enter_viewer = !matches!(outcome, app::OpenOutcome::EmptyBookRemoved { .. });
+                finalize_open(
+                    &ui,
+                    &state,
+                    &viewport,
+                    &CarouselRefresh {
+                        library: &library,
+                        covers: &covers,
+                        search: &search,
+                        selection: &selection,
+                        localizer: &localizer,
+                    },
+                    outcome,
+                );
                 ui.set_current_book_name(current_book_name(&state).into());
-                go_to_viewer(&ui, &nav);
+                if enter_viewer {
+                    go_to_viewer(&ui, &nav);
+                }
             })
         });
     }
@@ -1654,10 +1736,10 @@ fn finalize_open(
     ui: &ViewerWindow,
     state: &Rc<RefCell<ViewerState>>,
     viewport: &Rc<RefCell<ViewportState>>,
-    localizer: &i18n::Localizer,
+    deps: &CarouselRefresh,
     outcome: app::OpenOutcome,
 ) {
-    let loader = localizer.loader();
+    let loader = deps.localizer.loader();
     match outcome {
         app::OpenOutcome::Error(e_str) => {
             ui.set_status_text(crate::i18n::dynamic::open_error_str(loader, &e_str).into());
@@ -1668,6 +1750,39 @@ fn finalize_open(
                 let base = ui.get_status_text().to_string();
                 ui.set_status_text(format!("{base} \u{2014} {detail}").into());
             }
+        }
+        app::OpenOutcome::EmptyBookRemoved {
+            title,
+            removed,
+            save_error,
+        } => {
+            // The source opened cleanly but has zero pages: the use case already
+            // removed it from the library (if present) and re-saved. This arm does
+            // NOT switch screens — the open-folder/archive sites only switch on a
+            // user gesture, and the carousel-open/bookmark sites skip their
+            // `go_to_viewer` for this variant (see the `enter_viewer` guard there),
+            // so the user is left on a refreshed Library. Rebuild the carousel
+            // through the shared chokepoint so the removed book disappears and the
+            // cover-epoch bump drops any in-flight cover for it; the active search
+            // filter is preserved by the chokepoint. Do NOT reset focus.
+            refresh_library_carousel(ui, deps, false);
+            if removed {
+                // `removed == true` means THIS path performed the removal, so it
+                // owns the notice. A concurrent path that already removed+notified
+                // yields `removed == false` (idempotent) and stays silent below.
+                let base = crate::i18n::dynamic::empty_book_removed(loader, &title);
+                let status = match save_error {
+                    Some(e) => {
+                        let detail = crate::i18n::dynamic::failed_save_library(loader, &e);
+                        format!("{base} \u{2014} {detail}")
+                    }
+                    None => base,
+                };
+                ui.set_status_text(status.into());
+            }
+            // `removed == false`: another path already removed+notified this book
+            // (race idempotency), so add no notice — but the carousel rebuild
+            // above still ran, keeping this screen consistent.
         }
     }
 }

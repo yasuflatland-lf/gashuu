@@ -49,6 +49,22 @@ pub(crate) enum OpenOutcome {
     /// The open succeeded. `main.rs` should call `refresh()` and then
     /// `i18n::dynamic::format_notices(loader, &notices)` to finalize status.
     Success(NoticesContent),
+    /// The source opened cleanly but has zero pages, so the book must NOT be
+    /// entered in the viewer. The book has been removed from the library (if it
+    /// was present) and the library re-saved. `main.rs` stays on the Library
+    /// screen, rebuilds the carousel, and shows a notice built from this data.
+    ///
+    /// `title` is the removed book's display title (looked up from the stored
+    /// `Book` when present, otherwise derived from the path the same way `Book`
+    /// derives it). `removed` is whether the book was actually in the library
+    /// (false when opening a never-added empty source). `save_error` carries the
+    /// pre-captured (untranslated) library-save error, `None` when the save
+    /// succeeded or no save was attempted (nothing removed).
+    EmptyBookRemoved {
+        title: String,
+        removed: bool,
+        save_error: Option<String>,
+    },
 }
 
 /// Which "entries skipped" detail suffix the open path appends to the skipped
@@ -140,38 +156,21 @@ impl OpenBookUseCase {
         // double-borrow-panic at the `canonical = state.borrow().open_file()...` read
         // below).
         let opened = state.borrow_mut().open_folder(path);
-        // The settings-save outcome, captured so it can be surfaced AFTER refresh
-        // (composing onto the status line). `None` when no save was attempted
-        // (recent-files tracking off); `Some(result)` otherwise. Surfacing before
-        // refresh would be clobbered by the spread/status push.
-        let settings_save: Option<Result<(), CoreError>> = match opened {
+        // Discriminate the open result only — the recents push + settings save are
+        // DEFERRED until after the empty-book check below, so a zero-page source
+        // pushes nothing to recents and triggers no settings save (the spec pins
+        // these side effects as bypassed for an empty book). For a non-empty book
+        // the deferred save runs at the original point in the flow, preserving the
+        // exact behavior (and the AFTER-refresh surfacing of its outcome).
+        match opened {
             Ok(()) => {
                 tracing::info!(path = %path.display(), "opened source");
-                let mut s = settings.borrow_mut();
-                if s.track_recent_files {
-                    // Persist the recents update (and the global Settings as-is) on
-                    // open. We intentionally do NOT reconcile the runtime view modes
-                    // into Settings here — the runtime currently holds the
-                    // just-opened/outgoing book's per-book modes, not the global
-                    // defaults; global view modes change only via the Library settings
-                    // dialog and the no-book-open exit path. This save writes the
-                    // recents list + cache/preload/track plus the UNCHANGED global
-                    // view-mode fields.
-                    s.push_recent(path.to_path_buf());
-                    let result = s.save();
-                    if let Err(e) = &result {
-                        tracing::error!(error = %e, "failed to save settings on open");
-                    }
-                    Some(result)
-                } else {
-                    None
-                }
             }
             Err(e) => {
                 tracing::error!(error = %e, "failed to open source");
                 return OpenOutcome::Error(format!("{e}"));
             }
-        };
+        }
         // The CANONICAL key the source was opened under (read from `open_file`),
         // not the raw dialog `path`, which may be a non-canonical dialog path. It is
         // the same key `last_page`/`set_page_count`/`write_back_position` use. The
@@ -180,12 +179,83 @@ impl OpenBookUseCase {
         // `page_count()` returns a `Copy` `usize`; the `state.borrow()` drops at the
         // `;` so it cannot conflict with the `library.borrow_mut()` below.
         let page_count = state.borrow().page_count();
+        // Reject an empty book: the source opened cleanly but has zero pages, so it
+        // must NOT be entered in the viewer. Bail out HERE, before `register_opened`,
+        // so the bypassed side effects pinned by the spec never run — no recents
+        // push, no settings save (deferred below), no `register_opened`, no per-book
+        // view resolve, no library-save-on-open, no carousel rebuild, no thumbnail
+        // start, no cover purge (cover purge happens only in the cover-load path, by
+        // design). When `canonical` is None we cannot identify the book, so we keep
+        // the existing behavior and fall through to the warning branch below.
+        //
+        // Reviewer note: `ViewerState` still holds this empty source after the
+        // bail-out; that is inert (page_count == 0, the viewer is never shown) and
+        // the next successful open replaces it — by design, with no restore machinery.
+        if page_count == 0 {
+            if let Some(c) = canonical.as_deref() {
+                // Prefer the stored Book's title; fall back to the path-derived
+                // title (matching `Book`'s derivation) when the book was never added.
+                let title = library
+                    .borrow()
+                    .books()
+                    .iter()
+                    .find(|b| b.path() == c)
+                    .map(|b| b.title().to_string())
+                    .unwrap_or_else(|| derive_title(c));
+                // `Library::remove` is idempotent and returns false when the book is
+                // absent; it also clears `last_opened` when it pointed at this book.
+                let removed = library.borrow_mut().remove(c);
+                // Persist only when something was actually removed; otherwise the
+                // shelf is unchanged so there is nothing to save.
+                let save_error = if removed {
+                    match library.borrow().save() {
+                        Ok(()) => None,
+                        Err(e) => {
+                            tracing::error!(error = %e, "failed to save library after removing empty book");
+                            Some(format!("{e}"))
+                        }
+                    }
+                } else {
+                    None
+                };
+                return OpenOutcome::EmptyBookRemoved {
+                    title,
+                    removed,
+                    save_error,
+                };
+            }
+        }
+        // The non-empty path resumes here. Run the DEFERRED recents push + settings
+        // save now that we know the book has pages — this is the same persistence
+        // the open-Ok arm used to do inline, moved past the empty-book bail-out so it
+        // is bypassed for a zero-page source. Behavior for a non-empty book is
+        // unchanged: `None` when recents tracking is off, `Some(result)` otherwise,
+        // surfaced AFTER refresh (composing onto the status line). We intentionally
+        // do NOT reconcile the runtime view modes into Settings here — the runtime
+        // currently holds the just-opened/outgoing book's per-book modes, not the
+        // global defaults; global view modes change only via the Library settings
+        // dialog and the no-book-open exit path. This save writes the recents list +
+        // cache/preload/track plus the UNCHANGED global view-mode fields.
+        let settings_save: Option<Result<(), CoreError>> = {
+            let mut s = settings.borrow_mut();
+            if s.track_recent_files {
+                s.push_recent(path.to_path_buf());
+                let result = s.save();
+                if let Err(e) = &result {
+                    tracing::error!(error = %e, "failed to save settings on open");
+                }
+                Some(result)
+            } else {
+                None
+            }
+        };
         // `register_opened` performs the idempotent add, the page-count back-fill,
-        // and the resume lookup as one domain rule. The unknown total is now carried
-        // by the type: `NonZeroUsize::new(page_count)` maps a zero-page open (the
-        // unknown sentinel an empty folder or a fully skipped archive opens with) to
-        // `None`, so `register_opened` skips the back-fill for it — no more `> 0`
-        // guard / `debug_assert` at this call site. Borrow discipline: it holds
+        // and the resume lookup as one domain rule. The unknown total is carried by
+        // the type: `NonZeroUsize::new(page_count)`. A zero-page open never reaches
+        // here (the empty-book bail-out above returned for it), so this is always
+        // `Some(page_count)` in practice; the `NonZeroUsize` wrapping keeps the type
+        // honest without a `> 0` guard / `debug_assert` at this call site. Borrow
+        // discipline: it holds
         // `library.borrow_mut()` only for the `let reg = ...` line (released at its
         // `;`, before the `jump_to` below); `state.borrow_mut().jump_to(...)` is a
         // separate statement on a distinct `RefCell`.
@@ -295,6 +365,26 @@ pub(crate) fn notices_content(
         settings_save_err: settings_save.and_then(|r| r.as_ref().err().map(|e| format!("{e}"))),
         library_save_err: library_save.as_ref().err().map(|e| format!("{e}")),
     }
+}
+
+/// Derive a display title from a path, mirroring `gashuu_core::Book`'s own
+/// derivation: the directory name for a folder, the file stem for a file, and
+/// the lossy full path string as a last-resort fallback so the title is never
+/// empty. Used by the empty-book reject path only when the source was never
+/// added to the library (so no stored `Book::title` exists to reuse). `Book`'s
+/// derivation is `pub(crate)` to `gashuu-core` and therefore not reachable from
+/// this crate, so the logic is replicated here rather than imported.
+fn derive_title(path: &Path) -> String {
+    if path.is_dir() {
+        path.file_name()
+            .map(|s| s.to_string_lossy().into_owned())
+            .filter(|s| !s.is_empty())
+    } else {
+        path.file_stem()
+            .map(|s| s.to_string_lossy().into_owned())
+            .filter(|s| !s.is_empty())
+    }
+    .unwrap_or_else(|| path.to_string_lossy().into_owned())
 }
 
 // The bulk-remove surface below (RemoveBooksUseCase + RemoveOutcome +
@@ -1021,5 +1111,98 @@ mod tests {
             "title still counts the unresolvable selection, got {:?}",
             content.title
         );
+    }
+
+    // ---- derive_title (empty-book fallback derivation) --------------------
+    //
+    // `derive_title` is the path-only fallback the empty-book reject path uses
+    // when the source was never added (so no stored `Book::title` exists). It
+    // must mirror `gashuu_core::Book::from_path`'s derivation exactly: directory
+    // name for a folder, file stem for a file, lossy full path as a last resort.
+
+    #[test]
+    fn derive_title_uses_file_stem_for_a_file() {
+        // A non-existent file path is treated as a file (is_dir() is false), so
+        // the title is the stem with the extension dropped — matching Book.
+        assert_eq!(
+            derive_title(Path::new("/manga/Cool Title.cbz")),
+            "Cool Title"
+        );
+    }
+
+    #[test]
+    fn derive_title_drops_only_the_last_extension() {
+        // `file_stem` drops a single trailing extension, leaving any earlier dots
+        // intact — the same behavior `Book` inherits from `Path::file_stem`.
+        assert_eq!(derive_title(Path::new("/manga/Vol.1.cbz")), "Vol.1");
+    }
+
+    #[test]
+    fn derive_title_uses_directory_name_for_a_folder() {
+        // A real on-disk directory takes the is_dir() branch and yields its final
+        // component (no extension stripping), matching Book's folder derivation.
+        let root = tempfile::tempdir().expect("tempdir");
+        let folder = root.path().join("My Series");
+        std::fs::create_dir(&folder).expect("create folder");
+        assert_eq!(derive_title(&folder), "My Series");
+    }
+
+    #[test]
+    fn derive_title_falls_back_to_full_path_when_no_stem() {
+        // A path with no file stem (e.g. the root) falls back to the lossy full
+        // path string so the title is never empty — Book's final fallback.
+        let title = derive_title(Path::new("/"));
+        assert!(
+            !title.is_empty(),
+            "the derived title must never be empty, got {title:?}"
+        );
+    }
+
+    // ---- OpenOutcome::EmptyBookRemoved (shape the formatter consumes) ------
+
+    #[test]
+    fn empty_book_removed_outcome_constructs_and_matches() {
+        // Pin the variant shape `main.rs`'s finalize_open formats against: the
+        // three named fields (title, removed, save_error) destructure as expected.
+        let outcome = OpenOutcome::EmptyBookRemoved {
+            title: "Empty Book".to_string(),
+            removed: true,
+            save_error: Some("disk full".to_string()),
+        };
+        match outcome {
+            OpenOutcome::EmptyBookRemoved {
+                title,
+                removed,
+                save_error,
+            } => {
+                assert_eq!(title, "Empty Book");
+                assert!(removed);
+                assert_eq!(save_error.as_deref(), Some("disk full"));
+            }
+            other => panic!("expected EmptyBookRemoved, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn empty_book_removed_outcome_carries_not_removed_no_error() {
+        // The "never added" case: nothing removed, so no save was attempted and
+        // save_error stays None.
+        let outcome = OpenOutcome::EmptyBookRemoved {
+            title: "Ghost".to_string(),
+            removed: false,
+            save_error: None,
+        };
+        match outcome {
+            OpenOutcome::EmptyBookRemoved {
+                title,
+                removed,
+                save_error,
+            } => {
+                assert_eq!(title, "Ghost");
+                assert!(!removed);
+                assert!(save_error.is_none());
+            }
+            other => panic!("expected EmptyBookRemoved, got {other:?}"),
+        }
     }
 }
