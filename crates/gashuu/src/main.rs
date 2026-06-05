@@ -2428,6 +2428,37 @@ fn refresh_library_carousel(ui: &ViewerWindow, deps: &CarouselRefresh, reset_foc
     );
 }
 
+/// Which status notice to surface after `add_books_and_refresh` calls `add_paths`.
+///
+/// The four arms cover the full 2×2 of (added==0 vs added>0) × (skipped==0 vs
+/// skipped>0).  The save-failure arm is handled separately in
+/// `add_books_and_refresh` and is NOT part of this enum.
+#[derive(Debug, PartialEq)]
+enum AddNotice {
+    /// All picked paths were already in the library (no new additions, no rejections).
+    AlreadyInLibrary,
+    /// Every path was rejected (no images or unreadable); nothing was added.
+    NoneAddedAllSkipped { skipped: usize },
+    /// Some books were added and some paths were rejected.
+    AddedWithSkips { added: usize, skipped: usize },
+    /// All picked paths were added successfully; none were rejected.
+    Added { added: usize },
+}
+
+/// Pure decision function: maps the `(added, skipped)` counts from `add_paths`
+/// to the appropriate [`AddNotice`] variant.  No I/O, no side-effects.
+fn select_add_notice(added: usize, skipped: usize) -> AddNotice {
+    match (added, skipped) {
+        (0, 0) => AddNotice::AlreadyInLibrary,
+        (0, s) => AddNotice::NoneAddedAllSkipped { skipped: s },
+        (n, 0) => AddNotice::Added { added: n },
+        (n, s) => AddNotice::AddedWithSkips {
+            added: n,
+            skipped: s,
+        },
+    }
+}
+
 /// Add `paths` to the library, persist, rebuild the filtered carousel, and
 /// surface the outcome on the status line, restoring carousel focus in every
 /// case.
@@ -2457,14 +2488,13 @@ fn add_books_and_refresh(
         skipped,
     } = add_paths(&mut deps.library.borrow_mut(), paths);
     if added_paths.is_empty() {
-        // Nothing new entered the library: nothing to persist or rebuild. The
-        // notice distinguishes "every path was rejected as empty/unreadable"
-        // (skipped > 0) from "everything picked was already in the library"
-        // (skipped == 0, the previous behavior).
-        let notice = if skipped > 0 {
-            crate::i18n::dynamic::no_books_added_empty(loader, skipped)
-        } else {
-            crate::i18n::dynamic::already_in_library(loader)
+        // Nothing new entered the library: nothing to persist or rebuild. Route
+        // through the pure decision fn so every branch is testable without Slint.
+        let notice = match select_add_notice(0, skipped) {
+            AddNotice::NoneAddedAllSkipped { skipped: s } => {
+                crate::i18n::dynamic::no_books_added_empty(loader, s)
+            }
+            _ => crate::i18n::dynamic::already_in_library(loader),
         };
         ui.set_status_text(notice.into());
         ui.invoke_focus_carousel();
@@ -2493,13 +2523,17 @@ fn add_books_and_refresh(
             );
         }
         Ok(()) => {
-            // Some books were added; if any sibling paths were rejected as
-            // empty/unreadable, name both counts, otherwise use the plain
-            // added-books notice (unchanged from before the empty-book rule).
-            let notice = if skipped > 0 {
-                crate::i18n::dynamic::added_books_skipped(loader, added_paths.len(), skipped)
-            } else {
-                crate::i18n::dynamic::added_books(loader, added_paths.len())
+            // Some books were added; route through the pure decision fn so the
+            // 4-way mapping is testable without Slint.
+            let notice = match select_add_notice(added_paths.len(), skipped) {
+                AddNotice::AddedWithSkips {
+                    added: n,
+                    skipped: s,
+                } => crate::i18n::dynamic::added_books_skipped(loader, n, s),
+                AddNotice::Added { added: n } => crate::i18n::dynamic::added_books(loader, n),
+                // added_paths is non-empty here, so AlreadyInLibrary and
+                // NoneAddedAllSkipped are unreachable; exhaustive for safety.
+                _ => crate::i18n::dynamic::added_books(loader, added_paths.len()),
             };
             ui.set_status_text(notice.into());
         }
@@ -3020,4 +3054,35 @@ mod tests {
     // (length, 1-based `current`, availability, natural `Library::books()` order)
     // are covered by `library_model::tests` against the pure `carousel_data` /
     // `carousel_data_for_indices` helpers that the builder delegates to.
+
+    // ---- select_add_notice (reject-empty-books status routing) --------------
+
+    #[test]
+    fn select_add_notice_already_in_library_when_both_zero() {
+        assert_eq!(select_add_notice(0, 0), AddNotice::AlreadyInLibrary);
+    }
+
+    #[test]
+    fn select_add_notice_none_added_all_skipped_when_added_zero_skipped_nonzero() {
+        assert_eq!(
+            select_add_notice(0, 3),
+            AddNotice::NoneAddedAllSkipped { skipped: 3 }
+        );
+    }
+
+    #[test]
+    fn select_add_notice_added_with_skips_when_both_nonzero() {
+        assert_eq!(
+            select_add_notice(2, 1),
+            AddNotice::AddedWithSkips {
+                added: 2,
+                skipped: 1
+            }
+        );
+    }
+
+    #[test]
+    fn select_add_notice_added_when_added_nonzero_skipped_zero() {
+        assert_eq!(select_add_notice(5, 0), AddNotice::Added { added: 5 });
+    }
 }
