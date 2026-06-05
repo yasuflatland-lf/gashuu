@@ -57,6 +57,10 @@ pub enum CoreError {
     #[error("unsupported format: {path}")]
     UnsupportedFormat { path: String },
 
+    /// The source contains no displayable image pages.
+    #[error("no images found in {path}")]
+    EmptyBook { path: String },
+
     /// The image dimensions exceed the maximum allowed pixel count.
     #[error("image too large: {width}x{height} = {pixels} px exceeds {max}")]
     ImageTooLarge {
