@@ -212,6 +212,11 @@ viewer-open-error = Error: { $error }
 viewer-page-unavailable = (page { $page } unavailable)
 viewer-decode-error = Decode error: { $error }
 
+# ---- bookmark-ribbon ----
+
+# BookmarkRibbon accessible label — "continue reading" signifier on library covers.
+continue-reading = Continue reading
+
 # ---- notice ----
 # Parameterized notice strings (mapped to the former msg_* functions of the deleted src/messages.rs).
 

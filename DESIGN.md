@@ -462,6 +462,17 @@ mode only): hovering any cover shows a 1px `{colors.accent}` ring — a pointer 
 is a selectable target; the focused cover's 3px ring is unchanged. Normal mode shows no ring on
 hover.
 
+Cover overlays occupy two distinct corners and can render simultaneously:
+
+- **BookmarkRibbon** (top-LEFT): a display-only bookmark-shape image (`bookmark.svg`, `colorize:
+  {colors.accent}`, sized `{spacing.huge}²` = 26×26 px) that hangs from the top edge of the cover.
+  It appears on the single book whose path equals `Library.last_opened` — the "continue reading"
+  signifier that explains why that cover is automatically focused when entering the Library. Color
+  and shape are the semantic differentiators: the accent hue means "interactive / where you are",
+  and the ribbon shape (as opposed to the circular SelectionBadge) specifically means "resume here".
+- **SelectionBadge** (top-RIGHT): the bulk-selection check mark. Occupies the opposite corner so
+  both overlays can be visible at the same time without overlapping.
+
 ### Reading Progress Bar — `components.progress-bar`
 A 4px ambient bar (rounded 2px) directly under every cover and under the focused book's meta.
 Track `{colors.track-prog}`, fill `{colors.accent}`. When a book is fully read, the fill switches

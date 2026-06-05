@@ -41,6 +41,8 @@ tasteful a tool as a fine art book.
   knob to scrub; a thumbnail preview (one or two pages for single/double spreads) pops up
   during the drag — not-yet-decoded or failed thumbnails show distinct loading/error placeholders — and the page only changes on release. RTL-aware: in manga mode dragging
   left advances pages.
+- **Continue reading** — the Library marks and auto-focuses the most recently opened book
+  with a bookmark ribbon; returning from the Viewer lands the carousel on it immediately.
 - **Selection & bulk delete** — press `x` in the Library to enter selection mode, then
   toggle books with `x` / `Space`, select all visible with `Cmd/Ctrl+A`, and delete the
   selection with `Delete` or `Backspace`. A confirm dialog lists the titles and confirms

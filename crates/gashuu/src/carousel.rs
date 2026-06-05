@@ -29,6 +29,9 @@ fn to_carousel_item(data: &CarouselData) -> CarouselItem {
         // unselected, then the bulk-selection flags are applied over the visible
         // rows by `apply_selection_flags` (selection survives query changes).
         selected: false,
+        // Continue-reading: propagated from CarouselData (pure derivation in
+        // `carousel_data_for_indices`; drives the BookmarkRibbon overlay).
+        bookmarked: data.bookmarked,
     }
 }
 
@@ -329,6 +332,60 @@ mod tests {
 
         let model = build_carousel_model(&lib, &[]);
         assert_eq!(model.row_count(), 0);
+    }
+
+    /// `build_carousel_model` propagates `bookmarked` from `CarouselData` to each
+    /// `CarouselItem`: the last-opened row has `bookmarked == true`, all others false.
+    /// Natural sort: "alpha" < "beta", so alpha is row 0, beta is row 1.
+    #[test]
+    fn build_carousel_model_propagates_bookmarked_per_visible_row() {
+        use slint::Model;
+
+        let mut lib = Library::new();
+        let alpha = std::path::PathBuf::from("/manga/alpha.cbz");
+        let beta = std::path::PathBuf::from("/manga/beta.cbz");
+        lib.register_opened(&alpha, None); // adds alpha + marks it last_opened
+        lib.add(beta); // adds beta (not last_opened)
+
+        let model = build_carousel_model(&lib, &[0, 1]);
+        assert_eq!(model.row_count(), 2);
+        assert!(
+            model.row_data(0).unwrap().bookmarked,
+            "alpha is the last-opened book and must be bookmarked"
+        );
+        assert!(
+            !model.row_data(1).unwrap().bookmarked,
+            "beta is not last-opened and must not be bookmarked"
+        );
+    }
+
+    /// An unavailable (file-gone) book that is also the last-opened book must
+    /// still carry `bookmarked == true` — the ribbon renders regardless of
+    /// `available` (edge case 4 of the design).
+    ///
+    /// A non-existent path is used intentionally: `Library::add` falls back to
+    /// the raw path when `canonicalize` fails (the file does not exist), so the
+    /// book lands in the shelf as unavailable from the start. `register_opened`
+    /// uses the same raw path, so the post-add lookup succeeds.
+    #[test]
+    fn build_carousel_model_unavailable_book_still_bookmarked() {
+        use slint::Model;
+
+        let mut lib = Library::new();
+        // A path that never existed: `add` falls back to the raw path (no
+        // canonicalize), so the book is stored unavailable. `register_opened`
+        // finds it via the same raw path and sets it as last_opened.
+        let path = std::path::PathBuf::from("/manga/gone.cbz");
+        lib.register_opened(&path, None);
+
+        let model = build_carousel_model(&lib, &[0]);
+        assert_eq!(model.row_count(), 1);
+        let item = model.row_data(0).unwrap();
+        assert!(!item.available, "non-existent path is unavailable");
+        assert!(
+            item.bookmarked,
+            "unavailable last-opened book must still be bookmarked"
+        );
     }
 
     #[test]

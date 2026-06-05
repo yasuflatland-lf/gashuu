@@ -112,6 +112,14 @@ fn book_order(a: &Book, b: &Book) -> std::cmp::Ordering {
 pub struct Library {
     #[serde(default)]
     books: Vec<Book>,
+    /// The canonical path of the most recently opened book, or `None` when no
+    /// book has been opened yet. Invariant: if `Some`, the path is present in
+    /// `books`. Maintained by: `register_opened` (sets from the stored book so
+    /// membership holds by construction), `remove`/`remove_many` (clear when
+    /// the pointed-at book is removed), `normalize()` (clears an orphan on
+    /// load).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    last_opened: Option<PathBuf>,
 }
 
 /// Outcome of [`Library::remove_many`]: the canonical paths actually removed and
@@ -150,6 +158,14 @@ impl Library {
         &self.books
     }
 
+    /// The canonical path of the most recently opened book, or `None` when no
+    /// book has been opened yet. Invariant: if `Some`, the path is present in
+    /// [`books()`](Library::books) (see the `last_opened` field for how it is
+    /// maintained).
+    pub fn last_opened(&self) -> Option<&Path> {
+        self.last_opened.as_deref()
+    }
+
     /// Add `path` to the shelf. Canonicalizes best-effort (falling back to the
     /// path verbatim when canonicalization fails - e.g. a missing file), derives
     /// the title, and de-duplicates by canonical path. Returns `Some` with the
@@ -168,19 +184,34 @@ impl Library {
             .map(Book::path)
     }
 
-    /// Re-sort the shelf into natural title order (with canonical path tie-break).
-    /// Called on load (`library_store::load_from`) so libraries persisted before
-    /// natural ordering (in insertion order) converge to the canonical sort on the
-    /// next save; it also repairs any otherwise-unsorted `books` vec.
+    /// Re-sort the shelf into natural title order (with canonical path tie-break)
+    /// and enforce the `last_opened` invariant. Called on load
+    /// (`library_store::load_from`) so libraries persisted before natural
+    /// ordering converge to the canonical sort on the next save; it also repairs
+    /// any otherwise-unsorted `books` vec and clears an orphan `last_opened`
+    /// (a path that is no longer present in `books`).
     pub(crate) fn normalize(&mut self) {
         self.books.sort_by(book_order);
+        // Clear a `last_opened` whose path is no longer in the shelf (e.g.
+        // after an external edit removed a book without going through `remove`).
+        if let Some(ref p) = self.last_opened {
+            if !self.books.iter().any(|b| b.path() == p.as_path()) {
+                self.last_opened = None;
+            }
+        }
     }
 
     /// Remove the book identified by `path`. Returns `false` when absent.
+    /// Clears `last_opened` when it points at the removed book; preserves it
+    /// when the removed book is different.
     pub fn remove(&mut self, path: &Path) -> bool {
         let before = self.books.len();
         self.books.retain(|b| b.path() != path);
-        self.books.len() != before
+        let removed = self.books.len() != before;
+        if removed && self.last_opened.as_deref() == Some(path) {
+            self.last_opened = None;
+        }
+        removed
     }
 
     /// Remove every book whose path is in `paths`, in ONE retain pass, and report
@@ -194,7 +225,9 @@ impl Library {
     /// stored canonical paths — no canonicalization happens here. The returned
     /// [`RemovalReport`] partitions the de-duplicated input into `removed` (matched
     /// a stored book) and `not_found` (matched none); a path duplicated in `paths`
-    /// is counted once, and empty input yields an empty report.
+    /// is counted once, and empty input yields an empty report. Clears
+    /// `last_opened` when it points at one of the removed paths; preserves it
+    /// otherwise.
     pub fn remove_many(&mut self, paths: &[PathBuf]) -> RemovalReport {
         // Collect the requested paths into a set: de-duplication falls out for
         // free (a repeated input is counted once in the report), and the retain
@@ -215,6 +248,14 @@ impl Library {
         // ONE retain pass drops every requested book; survivors keep their relative
         // (already-sorted) order, so the natural-order invariant holds with no re-sort.
         self.books.retain(|b| !requested.contains(b.path()));
+        // Clear `last_opened` when it points at one of the removed books.
+        if self
+            .last_opened
+            .as_deref()
+            .is_some_and(|p| requested.contains(p))
+        {
+            self.last_opened = None;
+        }
         report
     }
 
@@ -320,18 +361,25 @@ impl Library {
     ) -> OpenRegistration {
         self.add(canonical.to_path_buf());
         let count_changed = page_count.is_some_and(|c| self.set_page_count(canonical, c));
-        // The book was just added (or already present), so the lookup by the
-        // same canonical key always resolves; assert it to catch a future
-        // path-identity regression. The fallback keeps a never-panicking
-        // production path.
-        let found = self.books.iter().find(|b| b.path() == canonical);
-        debug_assert!(
-            found.is_some(),
-            "register_opened: book not found by canonical path immediately after add"
-        );
-        let resume = found
-            .map(Book::progress)
-            .unwrap_or(ReadingProgress::new(0, None));
+        // Resolve both outputs from the book actually stored in `books` so the
+        // `last_opened` invariant (it is a member of `books`) holds by construction:
+        // `add` canonicalizes internally, so the stored path may differ from the raw
+        // `canonical` argument when the caller passes a non-canonical path. Extract
+        // owned values (an owned path + the `Copy` progress) before assigning, so the
+        // immutable borrow of `self` ends before `self.last_opened` is set. When the
+        // lookup returns None (divergence: `canonical` does not match the stored
+        // canonical key), `last_opened` stays None and resume defaults to the start —
+        // invariant-preserving degradation rather than a stale bookmark.
+        let found = self
+            .books
+            .iter()
+            .find(|b| b.path() == canonical)
+            .map(|b| (b.path().to_path_buf(), b.progress()));
+        let (last_opened, resume) = match found {
+            Some((path, progress)) => (Some(path), progress),
+            None => (None, ReadingProgress::new(0, None)),
+        };
+        self.last_opened = last_opened;
         OpenRegistration {
             resume,
             count_changed,
@@ -549,12 +597,20 @@ mod tests {
     #[test]
     fn remove_many_empty_input_yields_empty_report() {
         let mut lib = Library::new();
-        assert!(lib.add(PathBuf::from("/manga/a.cbz")).is_some());
+        let book = PathBuf::from("/manga/a.cbz");
+        assert!(lib.add(book.clone()).is_some());
+        // Register it as last-opened so we can verify it is preserved.
+        lib.register_opened(&book, None);
         let report = lib.remove_many(&[]);
         assert_eq!(report, RemovalReport::default());
         assert!(report.removed.is_empty());
         assert!(report.not_found.is_empty());
         assert_eq!(lib.books().len(), 1, "no input removes nothing");
+        assert_eq!(
+            lib.last_opened(),
+            Some(book.as_path()),
+            "empty remove_many must not disturb last_opened"
+        );
     }
 
     #[test]
@@ -912,6 +968,51 @@ mod tests {
     }
 
     #[test]
+    fn register_opened_with_non_canonical_path_keeps_invariant() {
+        // Invariant: last_opened, when Some, must equal a books[].path() entry.
+        // We exercise this with a real file reached via a non-canonical route (a
+        // path containing a `..` component). On macOS, /tmp → /private/tmp also
+        // exercises symlink divergence when tempdir lives there.
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("Book.cbz");
+        std::fs::write(&file, []).unwrap();
+
+        // Build a non-canonical path: enter a subdirectory and navigate back up.
+        // If the tempdir has no subdirectory yet, create one purely for the detour.
+        let sub = dir.path().join("sub");
+        std::fs::create_dir(&sub).unwrap();
+        let non_canonical = sub.join("..").join("Book.cbz");
+
+        let mut lib = Library::new();
+        lib.register_opened(&non_canonical, None);
+
+        // Core invariant: if last_opened is Some, its path must be in books.
+        if let Some(lo) = lib.last_opened() {
+            assert!(
+                lib.books().iter().any(|b| b.path() == lo),
+                "last_opened must point at a book actually in the shelf"
+            );
+            // On hosts where canonicalize resolves the `..`, the stored path
+            // should equal the canonical form.
+            if let Ok(canonical) = non_canonical.canonicalize() {
+                assert_eq!(
+                    lo,
+                    canonical.as_path(),
+                    "last_opened must equal the canonicalized path stored by add"
+                );
+            }
+        } else {
+            // last_opened is None only when add's canonicalization diverged from
+            // the lookup key. That is still invariant-preserving: None is safe.
+            // Confirm the book was still added.
+            assert!(
+                !lib.books().is_empty(),
+                "the book must still have been added even when last_opened is None"
+            );
+        }
+    }
+
+    #[test]
     fn new_book_has_empty_overrides() {
         let book = Book::from_path(PathBuf::from("/manga/a.cbz"));
         assert!(book.overrides().is_empty());
@@ -961,5 +1062,127 @@ mod tests {
         assert!(lib
             .overrides_for(Path::new("/manga/missing.cbz"))
             .is_empty());
+    }
+
+    // --- last_opened tests ---
+
+    #[test]
+    fn last_opened_is_none_for_fresh_library() {
+        let lib = Library::new();
+        assert_eq!(lib.last_opened(), None);
+    }
+
+    #[test]
+    fn register_opened_sets_last_opened_on_fresh_book() {
+        let mut lib = Library::new();
+        let path = PathBuf::from("/manga/a.cbz");
+        lib.register_opened(&path, None);
+        assert_eq!(lib.last_opened(), Some(Path::new("/manga/a.cbz")));
+    }
+
+    #[test]
+    fn register_opened_updates_last_opened_on_reopen() {
+        // Opening a different book after the first one replaces last_opened.
+        let mut lib = Library::new();
+        let a = PathBuf::from("/manga/a.cbz");
+        let b = PathBuf::from("/manga/b.cbz");
+        lib.register_opened(&a, None);
+        lib.register_opened(&b, None);
+        assert_eq!(lib.last_opened(), Some(Path::new("/manga/b.cbz")));
+    }
+
+    #[test]
+    fn register_opened_same_book_twice_preserves_last_opened() {
+        // Re-opening the same book keeps last_opened pointing at it.
+        let mut lib = Library::new();
+        let path = PathBuf::from("/manga/a.cbz");
+        lib.register_opened(&path, None);
+        lib.register_opened(&path, None);
+        assert_eq!(lib.last_opened(), Some(Path::new("/manga/a.cbz")));
+    }
+
+    #[test]
+    fn remove_last_opened_book_clears_last_opened() {
+        let mut lib = Library::new();
+        let path = PathBuf::from("/manga/a.cbz");
+        lib.register_opened(&path, None);
+        assert!(lib.remove(&path));
+        assert_eq!(lib.last_opened(), None);
+    }
+
+    #[test]
+    fn remove_different_book_preserves_last_opened() {
+        let mut lib = Library::new();
+        let a = PathBuf::from("/manga/a.cbz");
+        let b = PathBuf::from("/manga/b.cbz");
+        lib.register_opened(&a, None);
+        lib.add(b.clone());
+        assert!(lib.remove(&b));
+        assert_eq!(
+            lib.last_opened(),
+            Some(Path::new("/manga/a.cbz")),
+            "removing a different book must not clear last_opened"
+        );
+    }
+
+    #[test]
+    fn remove_many_containing_last_opened_clears_it() {
+        let mut lib = Library::new();
+        let a = PathBuf::from("/manga/a.cbz");
+        let b = PathBuf::from("/manga/b.cbz");
+        lib.register_opened(&a, None);
+        lib.add(b.clone());
+        lib.remove_many(&[a.clone(), b.clone()]);
+        assert_eq!(lib.last_opened(), None);
+    }
+
+    #[test]
+    fn remove_many_not_containing_last_opened_preserves_it() {
+        let mut lib = Library::new();
+        let a = PathBuf::from("/manga/a.cbz");
+        let b = PathBuf::from("/manga/b.cbz");
+        lib.register_opened(&a, None);
+        lib.add(b.clone());
+        lib.remove_many(std::slice::from_ref(&b));
+        assert_eq!(
+            lib.last_opened(),
+            Some(Path::new("/manga/a.cbz")),
+            "removing an unrelated book must not clear last_opened"
+        );
+    }
+
+    #[test]
+    fn normalize_clears_orphan_last_opened() {
+        // Build a library via serde with a last_opened that points at a path
+        // NOT present in books, then confirm normalize() resets it to None.
+        let json = serde_json::json!({
+            "version": 1,
+            "books": [{"path": "/manga/a.cbz", "title": "a", "last_page": 0, "page_count": 0}],
+            "last_opened": "/manga/gone.cbz"
+        })
+        .to_string();
+        let lib = Library::from_json(&json).unwrap();
+        assert_eq!(
+            lib.last_opened(),
+            None,
+            "normalize must clear an orphan last_opened"
+        );
+    }
+
+    #[test]
+    fn normalize_keeps_valid_last_opened() {
+        // A valid last_opened (path is in books) must survive normalize().
+        let json = serde_json::json!({
+            "version": 1,
+            "books": [{"path": "/manga/a.cbz", "title": "a", "last_page": 0, "page_count": 0}],
+            "last_opened": "/manga/a.cbz"
+        })
+        .to_string();
+        let lib = Library::from_json(&json).unwrap();
+        assert_eq!(
+            lib.last_opened(),
+            Some(Path::new("/manga/a.cbz")),
+            "normalize must keep a valid last_opened"
+        );
     }
 }

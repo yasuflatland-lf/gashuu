@@ -45,11 +45,21 @@ impl Library {
     /// Serialize to pretty JSON with the on-disk schema version.
     pub fn to_json(&self) -> Result<String, CoreError> {
         let books = serde_json::to_value(self.books()).map_err(CoreError::Library)?;
-        let value = serde_json::json!({
-            "version": LIBRARY_VERSION,
-            "books": books,
-        });
-        serde_json::to_string_pretty(&value).map_err(CoreError::Library)
+        let mut map = serde_json::Map::new();
+        map.insert("version".into(), serde_json::json!(LIBRARY_VERSION));
+        map.insert("books".into(), books);
+        // Omit `last_opened` entirely when None. This if-let guard IS the
+        // omission mechanism for to_json; the field's #[serde(skip_serializing_if)]
+        // attribute applies only to the derived Serialize path, which to_json
+        // bypasses entirely. Do NOT remove this guard believing the attribute
+        // covers it — for to_json it does not.
+        if let Some(p) = self.last_opened() {
+            map.insert(
+                "last_opened".into(),
+                serde_json::to_value(p).map_err(CoreError::Library)?,
+            );
+        }
+        serde_json::to_string_pretty(&serde_json::Value::Object(map)).map_err(CoreError::Library)
     }
 
     /// Parse JSON, migrating older schema versions to the current shape.
@@ -349,5 +359,81 @@ mod tests {
         let before: serde_json::Value = serde_json::from_str(stored).unwrap();
         let after: serde_json::Value = serde_json::from_str(&reserialized).unwrap();
         assert_eq!(before, after, "library.json shape changed across load/save");
+    }
+
+    // --- last_opened persistence tests ---
+
+    #[test]
+    fn old_json_without_last_opened_loads_as_none() {
+        // Pre-feature library.json has no "last_opened" key; must load as None.
+        let stored = r#"{"version":1,"books":[{"path":"/manga/a.cbz","title":"a","last_page":0,"page_count":0}]}"#;
+        let lib = Library::from_json(stored).unwrap();
+        assert_eq!(lib.last_opened(), None);
+    }
+
+    #[test]
+    fn old_json_without_last_opened_omits_key_on_resave() {
+        // A library loaded from old JSON (no last_opened) must not emit the key
+        // on re-save: the if-let guard in to_json is what prevents the key from
+        // appearing (the field's skip_serializing_if applies only to the derived
+        // Serialize path, which to_json bypasses).
+        let stored = r#"{"version":1,"books":[{"path":"/manga/a.cbz","title":"a","last_page":42,"page_count":100}]}"#;
+        let lib = Library::from_json(stored).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&lib.to_json().unwrap()).unwrap();
+        assert!(
+            value.get("last_opened").is_none(),
+            "last_opened must be absent when None"
+        );
+    }
+
+    #[test]
+    fn last_opened_round_trips_through_save_and_load() {
+        // A library with last_opened set keeps the value across to_json/from_json.
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("library.json");
+        let book = PathBuf::from("/manga/a.cbz");
+        let mut lib = Library::new();
+        lib.register_opened(&book, NonZeroUsize::new(10));
+
+        lib.save_to(&file_path).unwrap();
+        let loaded = Library::load_from(&file_path).unwrap();
+
+        assert_eq!(
+            loaded.last_opened(),
+            Some(Path::new("/manga/a.cbz")),
+            "last_opened must survive save/load"
+        );
+    }
+
+    #[test]
+    fn last_opened_orphan_is_normalized_to_none_on_load() {
+        // A library.json whose last_opened path is NOT in books must normalize to None.
+        let stored = serde_json::json!({
+            "version": 1,
+            "books": [{"path": "/manga/a.cbz", "title": "a", "last_page": 0, "page_count": 0}],
+            "last_opened": "/manga/gone.cbz"
+        })
+        .to_string();
+        let lib = Library::from_json(&stored).unwrap();
+        assert_eq!(
+            lib.last_opened(),
+            None,
+            "orphan last_opened must be normalized to None on load"
+        );
+    }
+
+    #[test]
+    fn last_opened_to_json_then_from_json_round_trips() {
+        // In-memory round-trip via to_json/from_json (without touching the FS).
+        let book = PathBuf::from("/manga/a.cbz");
+        let mut lib = Library::new();
+        lib.register_opened(&book, None);
+        let json = lib.to_json().unwrap();
+        let parsed = Library::from_json(&json).unwrap();
+        assert_eq!(
+            parsed.last_opened(),
+            Some(Path::new("/manga/a.cbz")),
+            "last_opened must survive to_json/from_json"
+        );
     }
 }

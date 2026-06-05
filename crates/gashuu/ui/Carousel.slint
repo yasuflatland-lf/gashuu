@@ -33,12 +33,15 @@ import { PrimaryButton } from "components/PrimaryButton.slint";
 import { ThumbnailCell } from "components/ThumbnailCell.slint";
 import { NavBar } from "components/NavBar.slint";
 import { SelectionBadge } from "components/SelectionBadge.slint";
+import { BookmarkRibbon } from "components/BookmarkRibbon.slint";
 import { SelectionToolbar } from "components/SelectionToolbar.slint";
 
 // Frozen by PR-0b; populated by PR-C (covers via PR-V). One book in the shelf.
 // `selected` (bulk-delete PR-2) marks the book as picked in selection mode, so
 // the cover renders an accent check badge; populated from `LibrarySelectionState`
 // in the carousel rebuild path and on every toggle.
+// `bookmarked` (continue-reading) is true when this is the last-opened book;
+// drives the BookmarkRibbon overlay on the cover card.
 export struct CarouselItem {
     cover: image,
     title: string,
@@ -47,6 +50,7 @@ export struct CarouselItem {
     progress: float,  // 0.0 .. 1.0
     available: bool,
     selected: bool,
+    bookmarked: bool, // true = last-opened book; shows the BookmarkRibbon overlay
 }
 
 // File-private cover-flow card: de-duplicates the per-cover animated card so the
@@ -97,6 +101,9 @@ component CoverCard inherits Rectangle {
     in property <bool> selected;
     in property <bool> selection-mode;
     in property <bool> interactive;
+    // Continue-reading (BookmarkRibbon). True when this is the last-opened book;
+    // renders a ribbon at the top-left of the cover, independent of `available`.
+    in property <bool> bookmarked;
     callback clicked;
 
     // Position/size/opacity: identical bindings to the former for-item Rectangle.
@@ -184,6 +191,16 @@ component CoverCard inherits Rectangle {
             checked: root.selected;
             x: parent.width - self.width - Theme.space-xs;
             y: Theme.space-xs;
+        }
+
+        // Continue-reading ribbon (BookmarkRibbon). Pinned to the TOP-LEFT so it
+        // does NOT conflict with SelectionBadge's top-right corner: both render
+        // simultaneously when a bookmarked book is also selected (edge case 5).
+        // Rendered regardless of `available` — a file-gone book still shows its
+        // "continue reading" status (edge case 4).
+        if root.bookmarked : BookmarkRibbon {
+            x: Theme.space-xs;
+            y: 0;
         }
     }
 
@@ -530,6 +547,7 @@ export component Carousel inherits Rectangle {
                   progress: item.progress;
                   selected: item.selected;
                   selection-mode: root.selection-mode;
+                  bookmarked: item.bookmarked;
                   // PR-2: ONLY the always-on pass-1 backing copy is click-interactive,
                   // so each cover (including the focused one, whose pass-2 copy below
                   // sets interactive:false) fires its TouchArea exactly once.
@@ -556,6 +574,7 @@ export component Carousel inherits Rectangle {
                   progress: item.progress;
                   selected: item.selected;
                   selection-mode: root.selection-mode;
+                  bookmarked: item.bookmarked;
                   // PR-2: the pass-2 TOP copy of the focused card is NON-interactive
                   // so the focused cover does not double-fire — its click is handled
                   // by the pass-1 backing copy above (which is always shown).

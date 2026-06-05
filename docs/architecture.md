@@ -219,6 +219,8 @@ natural title order on the next launch. The presentation layer (`carousel_data`,
 `cover_requests`) inherits this order by iterating `books()` — it does NOT sort independently,
 which keeps carousel row indices and cover-request indices aligned.
 
+`Library` also holds `last_opened: Option<PathBuf>` (private, `#[serde(default, skip_serializing_if = "Option::is_none")]`): the canonical path of the most recently opened book, or `None`. Invariant: when `Some`, the path is present in `books`. Set by `register_opened` immediately after the idempotent add; cleared by `remove`/`remove_many` when they remove the matching book; orphan entry (path no longer in `books`) cleared by `normalize()` on load. Public accessor: `last_opened() -> Option<&Path>`. Persisted by the existing `save()` leave points; no separate save — same recipe as `last_page`/`overrides`.
+
 Each `Book` also carries a `ViewOverride overrides` field (the per-book view-preference overrides;
 `#[serde(default, skip_serializing_if = "ViewOverride::is_empty")]`, so an all-`None` override emits
 no key and `library.json` stays byte-compatible with files written before this feature — see
@@ -321,7 +323,10 @@ variant is a compile error); `index_to_screen` clamps out-of-range to `Library`.
 `main.rs` holds the single `NavState` in `Rc<RefCell<…>>`; `go_to_library`/`go_to_viewer` seam
 functions are the single chokepoints that flip `NavState`, push `screen` to the UI, and restore
 focus. The Up arrow (`KeyCommand::GoToLibrary`, direction-independent) and the carousel
-`open`/`move`/`back` callbacks route through them.
+`open`/`move`/`back` callbacks route through them. `go_to_library` also rebuilds the carousel via
+`refresh_library_carousel` (so the `BookmarkRibbon` reflects the current `last_opened`) and
+one-shot-snaps the focused index to the last-opened book's visible row (resolved through the search
+projection; falls back to 0 when `None`, filtered out, or empty).
 
 ### app
 
@@ -409,7 +414,10 @@ keeps the derivation table-testable without a display backend. Each row is built
 `progress = ReadingProgress::fraction()` (guarded so an unknown/zero total → `0.0`, overshoot clamps
 to `1.0`); `total = ReadingProgress::total()` (now `Option<usize>`, #65). The free derivation no longer lives in `library_model`
 — it is centralised in `ReadingProgress` (see core entry below). `available` via
-`Library::is_available`. `carousel.rs`'s `to_carousel_item` adapter builds the `!Send`
+`Library::is_available`. `bookmarked: bool` is a pure derivation computed in
+`carousel_data_for_indices`: `book.path() == library.last_opened()` — true for at most one row
+(the last-opened book); the `BookmarkRibbon` atom in `CoverCard` shows when this is `true`.
+`carousel.rs`'s `to_carousel_item` adapter builds the `!Send`
 `slint::Image` (a `slint::Image::default()` placeholder, filled in asynchronously by `CoverController`)
 on the UI thread; `build_carousel_model` is the build+bind
 chokepoint returning the `Rc<VecModel>` so PR-V/PR-L mutate the same model. `total` comes from
@@ -539,7 +547,13 @@ via `in` properties — deliberately `Strings`-agnostic), and `DangerButton`
 (bulk-delete PR-1: destructive-action atom — structural clone of `PrimaryButton` swapping accent for
 `Theme.danger` red + `Theme.danger-glow` hover/focus ring; accessibility role/label/action-default
 added here, `PrimaryButton` backport pending; first consumed by the PR-3 `ConfirmDialog`, and now
-also the PR-5 `SelectionToolbar` delete button). Each references `Theme.*` via `../Theme.slint`;
+also the PR-5 `SelectionToolbar` delete button), and `BookmarkRibbon` (continue-reading feature:
+display-only Image atom over a cover's top-LEFT corner, `@image-url("../assets/bookmark.svg")`
+recolored via `colorize: Theme.accent`, sized `Theme.space-huge²`; shown when
+`CarouselItem.bookmarked` is true — the single last-opened book resolved from `Library.last_opened`;
+accessible as `role: image` / label `Strings.continue-reading`; the two corner overlays are
+independent and can render simultaneously alongside `SelectionBadge`'s top-RIGHT badge).
+Each references `Theme.*` via `../Theme.slint`;
 consumers import via `import { X } from "components/X.slint"`. `build.rs` is unchanged — it compiles
 the single entry `ui/ViewerWindow.slint` and import statements cascade. See
 [docs/conventions.md](conventions.md) for the component RULES.
@@ -551,10 +565,12 @@ the single entry `ui/ViewerWindow.slint` and import statements cascade. See
 rasterization rule), `check.svg` (bulk-delete PR-2, NEW: the single-path check mark recolored
 via `colorize` to `Theme.text` white inside `SelectionBadge`), `close.svg` (UI-polish pass, NEW:
 Cancel Fill glyph — disc + knocked-out ✕ — used by the `SelectionToolbar` exit capsule, recolored
-via `colorize`; replaced the former `Text` pseudo-icon), and `delete.svg` (UI-polish pass, NEW:
+via `colorize`; replaced the former `Text` pseudo-icon), `delete.svg` (UI-polish pass, NEW:
 trash glyph shown as the `DangerButton` leading icon in `SelectionToolbar`, recolored via
-`colorize`), each a single-path SVG recolored at runtime via Slint's `Image.colorize` property.
-Components reference them with `@image-url(...)` paths relative to the consuming `.slint` file. `build.rs` is unchanged
+`colorize`), and `bookmark.svg` (continue-reading feature: Streamline "Bookmark Fill", 96×96
+intrinsic / viewBox 24; consumed by `BookmarkRibbon.slint`, recolored to `Theme.accent`), each a
+single-path SVG recolored at runtime via Slint's `Image.colorize` property. Components reference
+them with `@image-url(...)` paths relative to the consuming `.slint` file. `build.rs` is unchanged
 (assets are reached transitively through the entry-file import cascade).
 
 **`ui/Strings.slint`** (Fluent i18n PR-2, #113, NEW): `export global Strings` — the Fluent-served
