@@ -1250,6 +1250,16 @@ fn main() -> color_eyre::Result<()> {
                 refresh(&ui, &state.borrow(), &viewport, localizer.loader());
                 // Recompose the selection-toolbar strings in the new language.
                 push_selection_strings(&ui, &localizer, &selection, &search, &library);
+                // Recompose the library-count idle strip label too: the language
+                // switch does not run `refresh_library_carousel`, so the count
+                // string must be re-pushed here from the current book count.
+                ui.set_library_count_text(
+                    crate::i18n::dynamic::library_count_text(
+                        localizer.loader(),
+                        library.borrow().books().len(),
+                    )
+                    .into(),
+                );
             })
         });
     }
@@ -2063,6 +2073,12 @@ fn refresh_library_carousel(ui: &ViewerWindow, deps: &CarouselRefresh, reset_foc
     };
 
     ui.set_library_book_count(book_count);
+    // Idle bottom-strip label: the total library size, shown when no transient
+    // notice occupies the strip (the count is the strip's idle state).
+    ui.set_library_count_text(
+        crate::i18n::dynamic::library_count_text(deps.localizer.loader(), book_count as usize)
+            .into(),
+    );
     bind_carousel_model(ui, model);
     if reset_focus {
         ui.set_carousel_focused_index(0);

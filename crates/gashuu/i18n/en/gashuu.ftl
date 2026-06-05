@@ -129,6 +129,14 @@ carousel-empty-cta-files = Select files to add
 carousel-no-results-title = No matching books
 carousel-no-results-hint = Try a different search.
 
+# Idle bottom-strip label: total library size, shown when no transient notice
+# occupies the strip. { $n } is the total book count (only composed for n > 0).
+library-count =
+    { $n ->
+        [one] { $n } book
+       *[other] { $n } books
+    }
+
 # ---- navbar ----
 
 # SearchField placeholder and a11y labels (all three uses in NavBar.slint)

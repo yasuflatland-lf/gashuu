@@ -102,6 +102,8 @@ export component ViewerWindow inherits Window {
     in property <bool> rtl;
     in property <bool> single;
     in property <string> status-text: "No folder opened";
+    // Idle value of the bottom strip — total library size, composed/pushed from Rust.
+    in property <string> library-count-text;
     // Book display name (set by main.rs on a successful open, cleared to "" when
     // nothing is open). Declared on the root because Rust binds only to the root
     // surface; consumed by the floating title label Rectangle in the viewer stage.
@@ -305,12 +307,13 @@ export component ViewerWindow inherits Window {
     // from the Carousel toolbar and CTA. Shares the same `status-text` property
     // as the Viewer toolbar; visible only on the Library screen (screen == 0).
     // Positioned as a bottom strip so it does not overlap the carousel toolbar.
+    // Transient notices always take precedence; the count is the strip's idle state.
     Text {
         visible: root.screen == 0;
         x: 0;
         y: root.height - self.preferred-height - Theme.space-md;
         width: root.width;
-        text: root.status-text;
+        text: root.status-text == "" ? root.library-count-text : root.status-text;
         color: Theme.text-muted;
         font-size: Theme.font-micro;
         horizontal-alignment: center;
