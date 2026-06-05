@@ -175,6 +175,21 @@ impl Library {
         self.last_opened.as_deref()
     }
 
+    /// The resume target: `last_opened` only when that path is still a shelved
+    /// book. This is the single home of the "resume target must be a shelved
+    /// book" rule, so callers need not re-derive it by scanning `books`. The
+    /// `last_opened` invariant already guarantees membership for a library built
+    /// through the public API, but this guards a `Library` reached by a route
+    /// that bypasses `normalize` (e.g. raw deserialization), returning `None`
+    /// rather than a dangling bookmark.
+    pub fn bookmark(&self) -> Option<&Path> {
+        let last_opened = self.last_opened()?;
+        self.books
+            .iter()
+            .any(|b| b.path() == last_opened)
+            .then_some(last_opened)
+    }
+
     /// Add `path` to the shelf. Canonicalizes best-effort (falling back to the
     /// path verbatim when canonicalization fails - e.g. a missing file), derives
     /// the title, and de-duplicates by canonical path. Returns `Some` with the
@@ -1207,6 +1222,52 @@ mod tests {
             lib.last_opened(),
             Some(Path::new("/manga/a.cbz")),
             "removing an unrelated book must not clear last_opened"
+        );
+    }
+
+    // --- bookmark tests (resume target = last_opened only when shelved) ---
+
+    #[test]
+    fn bookmark_is_some_when_last_opened_is_shelved() {
+        let mut lib = Library::new();
+        let path = PathBuf::from("/manga/a.cbz");
+        lib.register_opened(&path, None);
+        assert_eq!(
+            lib.bookmark(),
+            Some(Path::new("/manga/a.cbz")),
+            "bookmark resolves to a shelved last_opened"
+        );
+    }
+
+    #[test]
+    fn bookmark_is_none_when_last_opened_is_none() {
+        let mut lib = Library::new();
+        // A shelved book but nothing opened yet: no resume target.
+        assert!(lib.add(PathBuf::from("/manga/a.cbz")).is_some());
+        assert_eq!(lib.last_opened(), None);
+        assert_eq!(lib.bookmark(), None, "no last_opened means no bookmark");
+    }
+
+    #[test]
+    fn bookmark_is_none_for_orphan_last_opened() {
+        // last_opened points at a path NOT in books. We construct this via RAW
+        // serde deserialization (NOT from_json, which runs normalize() and would
+        // clear the orphan), so bookmark() must do the membership guard itself.
+        let json = serde_json::json!({
+            "books": [{"path": "/manga/a.cbz", "title": "a", "last_page": 0, "page_count": 0}],
+            "last_opened": "/manga/gone.cbz"
+        })
+        .to_string();
+        let lib: Library = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            lib.last_opened(),
+            Some(Path::new("/manga/gone.cbz")),
+            "raw deserialization preserves the orphan (no normalize)"
+        );
+        assert_eq!(
+            lib.bookmark(),
+            None,
+            "bookmark must reject a last_opened that is not a shelved book"
         );
     }
 
