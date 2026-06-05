@@ -53,6 +53,44 @@ use std::sync::{Arc, Mutex};
 /// only on-disk cover variant a removed book can have.
 pub(crate) const COVER_MAX_SIDE: u32 = 512;
 
+/// Size cap, in bytes, for the on-disk cover cache; the startup sweep prunes
+/// down to this. 256 MiB holds roughly 650-1700 covers at `COVER_MAX_SIDE` 512
+/// (PNG covers run ~150-400 KB each), far beyond a typical library, so eviction
+/// only ever bites on key-orphaned covers (source mtime drifted, see core
+/// `purge_for`) and very large collections. The cap POLICY lives here in the
+/// app layer; core's `ThumbnailCache::prune` is only the mechanism (issue 143's
+/// ownership split).
+pub(crate) const COVER_CACHE_MAX_BYTES: u64 = 256 * 1024 * 1024;
+
+/// Sweep the cover cache down to [`COVER_CACHE_MAX_BYTES`] on a rayon worker.
+/// Fire-and-forget, called ONCE at startup right after the initial cover
+/// dispatch — visible covers grab workers first, and the sweep's per-entry
+/// stat/unlink I/O never touches the UI thread. Cap overflow created later in
+/// the session is reclaimed on the next launch (issue 143 keep-it-simple).
+///
+/// Safe against the concurrent cover workers by construction: a just-written
+/// PNG is the newest entry (last in eviction order), an in-flight `.tmp` is
+/// protected by core's staleness age guard, and a cover pruned mid-read is a
+/// plain cache miss that regenerates. Core stays log-free — the returned
+/// `PruneReport` is logged here.
+pub(crate) fn spawn_cache_prune() {
+    rayon::spawn(|| {
+        // `start` already warned once about the no-cache-dir degraded state.
+        let Ok(cache) = ThumbnailCache::new() else {
+            return;
+        };
+        let started = std::time::Instant::now();
+        let report = cache.prune(COVER_CACHE_MAX_BYTES);
+        tracing::debug!(
+            removed_files = report.removed_files,
+            removed_bytes = report.removed_bytes,
+            retained_bytes = report.retained_bytes,
+            elapsed_ms = started.elapsed().as_millis() as u64,
+            "cover cache pruned"
+        );
+    });
+}
+
 /// One book the controller must load a cover for: its carousel row index and its
 /// canonical filesystem path. Built on the UI thread from the `Library`, then the
 /// `PathBuf` (Send) is what crosses into the worker.

@@ -167,6 +167,11 @@ fn main() -> color_eyre::Result<()> {
     // row, resolved through the empty-query visible set seeded above.
     snap_carousel_focus_to_last_opened(&ui, &library, &search);
 
+    // One startup sweep keeps the cover cache under its size cap and reclaims
+    // key-orphaned covers (issue 143). Dispatched AFTER the initial cover
+    // stream above so the visible covers grab the rayon workers first.
+    cover_loader::spawn_cache_prune();
+
     // Top-level screen state machine. App boots to Library (the carousel home).
     // Held in an Rc<RefCell<…>> so the carousel callbacks and the Viewer's
     // GoToLibrary key arm can all flip it through the seam functions below.
