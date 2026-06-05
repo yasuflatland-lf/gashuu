@@ -1,9 +1,20 @@
 // SelectionBadge — the bulk-selection check badge (atom).
 //
-// An accent-filled circle with a centered white check mark, overlaid on a
-// selected cover in selection mode (bulk-delete epic, PR-2). Selection is
-// ACCENT (Theme.accent, blue); RED stays reserved for the delete button (PR-5),
-// so this badge must never use an error/red token.
+// A two-state affordance overlaid on a cover in selection mode (bulk-delete
+// epic, PR-2; two-state added in the UI-polish pass §2.3). Selection is ACCENT
+// (Theme.accent, blue); RED stays reserved for the delete button (PR-5), so this
+// badge must never use an error/red token.
+//
+//   checked == true  -> accent-filled disc + centered white check glyph (the
+//                       original rendering; this is the default for back-compat).
+//   checked == false -> a hollow ring: a faint dark glass backing so the ring is
+//                       legible over bright cover art, a 1px text-mid border, and
+//                       NO glyph (the unselected affordance in selection mode).
+//
+// Both states keep an IDENTICAL footprint (the Theme.space-huge disc), so
+// toggling `checked` causes zero size/position jump on the cover. There is one
+// atom with two display states driven by DIRECT TERNARY bindings — Slint 1.16.1
+// `states[]` cannot set child properties (verified repo trap, docs/patterns.md).
 //
 // Sizing comes from Theme.* length tokens only (DESIGN.md rule 2): the circle is
 // Theme.space-huge across, the check glyph Theme.space-lg, leaving an even ring
@@ -17,14 +28,24 @@
 import { Theme } from "../Theme.slint";
 
 export component SelectionBadge inherits Rectangle {
-    // The accent disc.
+    // True -> filled accent disc + check; false -> hollow text-mid ring. Defaults
+    // to true so existing call sites keep the original filled rendering.
+    in property <bool> checked: true;
+
+    // The disc footprint is identical in both states (zero jump on toggle); only
+    // the fill/border/glyph differ by `checked`.
     width: Theme.space-huge;
     height: Theme.space-huge;
     border-radius: Theme.radius-pill;
-    background: Theme.accent;
+    // Filled accent disc when checked; a faint dark glass backing (for legibility
+    // over cover art) with a 1px text-mid ring when unchecked.
+    background: root.checked ? Theme.accent : Theme.glass-fill;
+    border-width: root.checked ? 0px : 1px;
+    border-color: Theme.text-mid;
 
-    // Centered white check mark, recolored from the single-path SVG.
-    Image {
+    // Centered white check mark, recolored from the single-path SVG. Gated on
+    // `checked` so the unchecked ring carries no glyph.
+    if root.checked : Image {
         source: @image-url("../assets/check.svg");
         width: Theme.space-lg;
         height: Theme.space-lg;

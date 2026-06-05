@@ -118,6 +118,7 @@ export global Theme {
     // ── Scrims (modal backdrops) ──────────────────────────────────────────────
     out property <color> scrim: #000000a0;          // standard modal backdrop (~63% black)
     out property <color> scrim-strong: #000000c0;   // denser first-run backdrop (~75% black)
+    out property <color> scrim-soft: #00000060;     // lighter recede veil (~38% black); scrim is too dense for a NavBar recede
 
     // ── Elevation: page-image shadow (DESIGN elevation.page 0 6px 18px rgba(0,0,0,.50)) ──
     out property <color> shadow-page: #00000080;
@@ -186,6 +187,19 @@ export global Theme {
     out property <length> nav-pill-height: 55px; // 34 x phi
     out property <length> nav-item-gap: 13px;
     out property <length> nav-pill-pad: 11px;
+    // TRUE capsule radius for a text-bearing 34px pill: exactly height/2, so the
+    // sides stay straight and the ends are semicircles (Apple HIG capsule).
+    // `radius-pill` (9999px) must NOT be used on a non-square rectangle: femtovg
+    // clamps the radius PER AXIS (rx=w/2, ry=h/2), rendering a full ELLIPSE
+    // (see docs/patterns.md "radius-pill on a non-square Rectangle").
+    out property <length> nav-capsule-radius: nav-capsule / 2;  // 17px
+    // Horizontal label inset inside a text capsule: nav-capsule / phi ~= 21
+    // (Fibonacci) — the HIG-generous padding a capsule button needs so the
+    // label never crowds the rounded ends.
+    out property <length> nav-capsule-pad: 21px;
+    // Leading glyph size inside a text button (DangerButton's trash icon):
+    // sized to read with a font-label (12px) line next to it.
+    out property <length> button-icon: 16px;
 
     // ── Nav search field sizing (issue #88: live library search) ──
     // Length-only tokens; the field's colors reuse the surface / text / accent

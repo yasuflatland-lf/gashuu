@@ -153,6 +153,9 @@ pub(crate) fn added_books_save_failed(
 
 /// Toolbar count label.
 ///
+/// When `total == 0`, returns the mode-indicator string (the
+/// `selection-mode-label` FTL key, e.g. "Selection mode") rather than a count.
+///
 /// When `total > visible_selected`, some selected books are outside the visible
 /// projection (filtered out by the current search query). The "(M outside search)"
 /// form is shown to prevent silent off-screen deletion — it must appear ONLY when
@@ -165,6 +168,9 @@ pub(crate) fn selection_count_text(
     total: usize,
     visible_selected: usize,
 ) -> String {
+    if total == 0 {
+        return fl!(loader, "selection-mode-label");
+    }
     let n = total as i64;
     if total > visible_selected {
         let m = (total - visible_selected) as i64;
@@ -361,6 +367,39 @@ mod tests {
                 dir
             );
         }
+    }
+
+    #[test]
+    fn selection_count_text_zero_returns_mode_label() {
+        // Boundary: total == 0 ⇒ "Selection mode" label (the zero branch), not
+        // "0 selected". Verified by checking that the result does NOT contain '0'
+        // as a count digit and that it is distinct from the (3,3) plain-count form.
+        for loc in [en(), ja()] {
+            let l = loc.loader();
+            let result = selection_count_text(l, 0, 0);
+            assert!(
+                !result.is_empty(),
+                "selection_count_text(0,0) must not be empty"
+            );
+            // The zero branch must NOT render a bare count digit: the mode label
+            // contains no ASCII digit (distinguishes it from "0 selected").
+            assert!(
+                !result.contains('0'),
+                "zero form must not contain a digit '0' (got count form, not mode label): {result:?}"
+            );
+        }
+        // En != Ja (different locale strings)
+        assert_ne!(
+            selection_count_text(en().loader(), 0, 0),
+            selection_count_text(ja().loader(), 0, 0),
+            "selection_count_text zero form must differ between En and Ja"
+        );
+        // Zero form must differ from the plain "N selected" form (total=3, visible=3)
+        assert_ne!(
+            selection_count_text(en().loader(), 0, 0),
+            selection_count_text(en().loader(), 3, 3),
+            "selection_count_text zero form must differ from plain count form"
+        );
     }
 
     #[test]

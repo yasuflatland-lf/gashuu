@@ -241,6 +241,8 @@ notice-delete-save-failed = Could not save the library: { $error } — nothing w
 
 # ---- selection ----
 
+# Toolbar count label shown when zero books are selected (just entered selection mode).
+selection-mode-label = Selection mode
 # Toolbar count label when all selected books are in the current visible projection.
 selection-count = { $n } selected
 # Toolbar count label when some selected books are outside the visible search projection.

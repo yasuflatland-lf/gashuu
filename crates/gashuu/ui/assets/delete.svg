@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" height="96" width="96">
+  <desc>
+    Trash glyph for the destructive delete button (single path, recolored via colorize).
+  </desc>
+  <path fill="#ffffff" d="M9.175 17.35h1.5V7.375h-1.5V17.35Zm4.15 0h1.5V7.375h-1.5V17.35ZM5.025 21V5.25H4v-1.5h4.7V3h6.6v0.75H20v1.5h-1.025V21h-13.95Z" stroke-width="0.5"></path>
+</svg>

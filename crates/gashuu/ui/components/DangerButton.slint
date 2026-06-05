@@ -21,6 +21,13 @@ import { Theme } from "../Theme.slint";
 export component DangerButton inherits Rectangle {
     // ── Public API ────────────────────────────────────────────────────────────
     in property <string> text;
+    // Optional leading glyph (e.g. the trash icon on the toolbar delete button).
+    // Unset by default — an empty image has width 0, which gates the Image out,
+    // so existing consumers (ConfirmDialog) render label-only and unchanged.
+    // The icon NEVER replaces the label: keeping the text visible on a
+    // destructive control at every width is an approved safety requirement
+    // (see SelectionToolbar's delete cell).
+    in property <image> icon;
     callback clicked;
 
     // ── Sizing: label + 16px horizontal / 8px vertical padding ───────────────
@@ -74,7 +81,23 @@ export component DangerButton inherits Rectangle {
         // not a `y:` binding (docs/patterns.md optical-centering entry).
         padding-top: 9px;
         padding-bottom: 7px;
+        spacing: Theme.space-xs;
         alignment: center;
+
+        // Leading glyph, present only when a consumer supplies an icon. The
+        // single-path SVG is recolored to the label white via `colorize`
+        // (docs/patterns.md "First image assets"); wrapped in a VerticalLayout
+        // cell so the glyph centers against the label's line box.
+        if root.icon.width > 0 : VerticalLayout {
+            alignment: center;
+            Image {
+                source: root.icon;
+                width: Theme.button-icon;
+                height: Theme.button-icon;
+                image-fit: contain;
+                colorize: Theme.text;
+            }
+        }
 
         Text {
             text: root.text;

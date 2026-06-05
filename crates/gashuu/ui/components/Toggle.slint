@@ -2,7 +2,7 @@
 //
 // Drop-in replacement for the std-widgets `CheckBox` row in the settings dialog:
 // SAME `checked` (two-way) + `toggled(bool)` shape, painted from `Theme.*`. A
-// pill (radius-pill) whose track is `accent` when on / `track-prog` when off
+// capsule (radius = height/2) whose track is `accent` when on / `track-prog` when off
 // (the darker `track` tone sat too close to the glass fill to read as a track —
 // HIG switches keep the off state plainly visible); a white knob with a subtle
 // depth shadow slides left↔right by animating its `x` (NOT opacity — HiDPI
@@ -28,7 +28,10 @@ export component Toggle inherits Rectangle {
     height: Theme.settings-control-h;
     horizontal-stretch: 0;
     vertical-stretch: 0;
-    border-radius: Theme.radius-pill;
+    // TRUE capsule (radius = height/2), like Apple's switch track: radius-pill
+    // renders an ELLIPSE on the non-square track (femtovg per-axis clamp, see
+    // docs/patterns.md). The knob below is square, so its radius-pill is fine.
+    border-radius: self.height / 2;
     background: root.checked ? Theme.accent : Theme.track-prog;
     border-width: 1px;
     border-color: fs.has-focus ? Theme.accent : Theme.hairline-float;

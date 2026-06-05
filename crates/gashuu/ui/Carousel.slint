@@ -139,8 +139,14 @@ component CoverCard inherits Rectangle {
         // `elevated: false`, else the semi-transparent shadow composites twice.
         drop-shadow-blur: (root.focused && root.elevated) ? 22px : 0px;
         drop-shadow-color: Theme.shadow-card;
-        // Focus ring: 3px accent outline on the focused cover only.
-        border-width: root.focused ? root.ring-width : 0px;
+        // Focus ring: 3px accent outline on the focused cover. In selection mode
+        // ONLY, a non-focused cover also gets a thin 1px accent ring while hovered
+        // (§2.4 selection-mode hover affordance) — a pointer hint that the cover is
+        // a selectable target. `cover-touch` is the pass-1-only cover TouchArea
+        // (enabled: root.interactive); since it is non-interactive on pass 2 it
+        // reports no hover there, so the hover ring is single-source like the
+        // click. Normal mode (selection-mode false) shows nothing on hover.
+        border-width: root.focused ? root.ring-width : (root.selection-mode && cover-touch.has-hover ? 1px : 0px);
         border-color: Theme.accent;
 
         // Cover image via the shared ThumbnailCell (DESIGN.md rule 6: one
@@ -172,12 +178,17 @@ component CoverCard inherits Rectangle {
             }
         }
 
-        // Bulk-selection check badge (PR-2). Rendered inside `cover` so it sits on
-        // the artwork, pinned to the top-right with a small inset. Drawn in BOTH
-        // z-order passes (pass-2's focused copy paints over pass-1, so the badge
-        // must live on both or it would vanish on the focused card). Accent disc +
-        // white check — RED stays reserved for the PR-5 delete button.
-        if root.selected : SelectionBadge {
+        // Bulk-selection check badge (PR-2; two-state §2.3). Rendered inside
+        // `cover` so it sits on the artwork, pinned to the top-right with a small
+        // inset. Drawn in BOTH z-order passes (pass-2's focused copy paints over
+        // pass-1, so the badge must live on both or it would vanish on the focused
+        // card) — this block is the shared CoverCard body, so both passes get it.
+        // Gated on `selection-mode` (not `selected`) so EVERY cover shows a badge
+        // while selecting; `checked` then renders the filled (selected) disc or the
+        // hollow (unselected) ring. Accent disc + white check — RED stays reserved
+        // for the PR-5 delete button.
+        if root.selection-mode : SelectionBadge {
+            checked: root.selected;
             x: parent.width - self.width - Theme.space-xs;
             y: Theme.space-xs;
         }
@@ -202,17 +213,27 @@ component CoverCard inherits Rectangle {
     }
 
     // ── Cover click target (PR-2 — the repo's FIRST cover pointer interaction) ──
-    // An INVISIBLE `cover-step`-wide rectangle (NOT the shrunken artwork) so a
-    // neighbor cover is a comfortable click target even at neighbor-scale. Pinned
-    // centered on the card. `enabled: root.interactive` ensures ONLY the pass-1
-    // backing copy fires (pass-2's focused copy passes `interactive: false`, so a
-    // click on the focused card is handled exactly once — see the two for-loops in
-    // Carousel). The TouchArea is non-focusable (repo convention, see NavItem /
-    // docs/patterns.md "TouchArea click focus recovery"), so keyboard focus stays
-    // on the carousel FocusScope; main.rs restores carousel focus after handling.
+    // An INVISIBLE click rectangle (NOT the shrunken artwork), pinned centered on
+    // the card. Width = max(cover-step, card width):
+    //   - NEIGHBOR cards (width == cover-w * neighbor-scale): cover-step wins, so a
+    //     shrunken side cover is still a comfortable `cover-step`-wide click target.
+    //   - FOCUSED card (width == cover-w): the card width wins, so the WHOLE focused
+    //     cover is clickable — including the selection badge pinned to its top-right
+    //     corner. A bare `cover-step`-wide target (cover-step < cover-w when focused)
+    //     left the badge in a dead zone, so clicking it in selection mode toggled
+    //     nothing; the always-visible selection-mode rings then advertised a target
+    //     the focused cover's hit-area never reached (badge inset + space-xs all sit
+    //     right of a cover-step-wide centered target). Math.max fixes that without
+    //     shrinking the deliberate neighbor target.
+    // `enabled: root.interactive` ensures ONLY the pass-1 backing copy fires
+    // (pass-2's focused copy passes `interactive: false`, so a click on the focused
+    // card is handled exactly once — see the two for-loops in Carousel). The
+    // TouchArea is non-focusable (repo convention, see NavItem / docs/patterns.md
+    // "TouchArea click focus recovery"), so keyboard focus stays on the carousel
+    // FocusScope; main.rs restores carousel focus after handling.
     cover-touch := TouchArea {
         enabled: root.interactive;
-        width: root.cover-step;
+        width: Math.max(root.cover-step, parent.width);
         height: parent.height;
         x: (parent.width - self.width) / 2;
         y: 0;
@@ -606,6 +627,14 @@ export component Carousel inherits Rectangle {
         search-icon: @image-url("assets/search.svg");
         settings-icon: @image-url("assets/settings.svg");
         combined-add-picker: root.combined-add-picker;
+        // §2.6: recede the NavBar behind the foreground SelectionToolbar. Bound to
+        // the SAME condition that slides the toolbar in (`selection-mode &&
+        // !modal-open`), so the veil fades in the same beat as the bar transition.
+        // The recede is purely a translucent veil (NO TouchArea) — the search
+        // field and every nav capsule stay fully usable while receded
+        // (selection-orthogonal). The veil's `animate background` (motion-fast)
+        // matches the strip's `animate y`, so both land together.
+        receded: root.selection-mode && !root.modal-open;
         search-changed(q) => { root.search-changed(q); }
         search-exit => { root.focus-self(); }
         add-books => { root.add-books(); root.focus-self(); }
@@ -613,95 +642,160 @@ export component Carousel inherits Rectangle {
         settings => { root.settings(); }
     }
 
-    // ── Bulk-selection chrome (PR-4): toolbar + "Select" entry pill ───────────
+    // ── Bulk-selection chrome (§2.6): a clipped slide-strip below the NavBar ───
     // Declared AFTER `nav := NavBar` (same paint-order / outside-FocusScope
     // rationale as the NavBar above): mouse + screen-reader oriented, drawn on
     // top of the cover-flow, and kept OUT of the keyboard focus chain so the
-    // carousel FocusScope keeps owning key input. Both are `if`-gated, never
-    // `visible:`-toggled: Slint keeps layout space for an invisible element, so
-    // `if` guarantees zero cost outside the relevant mode (repo gotcha,
-    // docs/patterns.md). Anchored just below the NavBar via `nav.y`/`nav.height`.
+    // carousel FocusScope keeps owning key input.
+    //
+    // §2.6 replaces the former INSTANT `if`-gate swap (toolbar ⇄ select pill)
+    // with a vertical SLIDE. Both bars are now ALWAYS instantiated inside this
+    // `clip: true` strip and slide on `y` between 0 (visible) and -height
+    // (tucked up under the NavBar, clipped away). NO `opacity` is used anywhere
+    // (HiDPI child-blur gotcha, docs/patterns.md — hard repo rule); the reveal
+    // is pure geometry plus the NavBar's own recede veil.
+    //
+    // STRIP HEIGHT — fixed at `Theme.nav-pill-height` (the TALLER of the two
+    // bars: the SelectionToolbar root is nav-pill-height; the select pill is the
+    // shorter nav-capsule). A FIXED height (not `max` of the two) is deliberate:
+    // the strip reserves the same band in both modes, so the cover-flow content
+    // below never jumps when the mode flips, and each bar slides a FULL height
+    // (== strip height for the toolbar wrapper, == its own nav-capsule for the
+    // pill) to clear the clip edge cleanly. Anchored just below the NavBar via
+    // `nav.y`/`nav.height` (the former absolute anchor of both bars).
+    //
+    // INPUT GUARDS (belt-and-braces): a slid-away bar is clipped out of view but
+    // its TouchAreas could still hit-test if clipping leaks, so the slid-out bar
+    // is also disabled. The SelectionToolbar takes an `active` flag ANDed into
+    // every TouchArea/a11y action; the select pill's TouchArea is gated the same
+    // way (`enabled`). Each `active`/`enabled` term matches that bar's own
+    // visible condition, and BOTH fold in `!modal-open` (mirroring the
+    // FocusScope's modal reject guard) so a settings/guide/shortcuts modal
+    // suppresses both bars' pointer targets even mid-slide.
+    slide-strip := Rectangle {
+        x: 0;
+        y: nav.y + nav.height + Theme.nav-item-gap;
+        width: 100%;
+        height: Theme.nav-pill-height;
+        clip: true;
 
-    // SelectionToolbar — shown only IN selection mode (modal closed). The
-    // `!root.modal-open` term mirrors the FocusScope's modal reject guard so a
-    // settings/guide/shortcuts modal suppresses the toolbar's pointer targets
-    // too. `exit` reproduces the Esc arm EXACTLY: clear the local mode flag and
-    // fire exit-selection().
-    if root.selection-mode && !root.modal-open : SelectionToolbar {
-        x: (parent.width - self.width) / 2;
-        y: nav.y + nav.height + Theme.space-sm;
-        count-text: root.selection-count-text;
-        select-all-label: root.select-all-label;
-        exit-a11y: Strings.selection-exit-a11y;
-        narrow: root.narrow;
-        // Delete (PR-5): pre-composed label + has-selection gate down, the
-        // request-delete action up (Rust opens the ConfirmDialog).
-        delete-label: root.delete-label;
-        has-selection: root.has-selection;
-        select-all => { root.select-all(); }
-        request-delete => { root.request-delete(); }
-        exit => { root.selection-mode = false; root.exit-selection(); }
-    }
+        // Which bar is visible. `toolbar-shown` also drives the NavBar recede
+        // binding above, so the recede and the slide animate in the same beat.
+        property <bool> toolbar-shown: root.selection-mode && !root.modal-open;
+        // The select pill mirrors the former `if` gate (NORMAL mode, modal closed,
+        // at least one visible book — a "Select" affordance over an empty library
+        // / no-results panel is noise).
+        property <bool> pill-shown: !root.selection-mode && !root.modal-open && root.items.length > 0;
 
-    // "Select" entry pill — the MOUSE entry point into selection mode, shown in
-    // NORMAL mode (not selection mode, modal closed). Gated on `items.length > 0`
-    // (the SAME condition the cover-flow row uses): a "Select" affordance over an
-    // empty library / no-results panel is noise, so it appears only when there is
-    // at least one visible book to select. Quieter/smaller than the toolbar — it
-    // is an entry hint, not a mode indicator. A non-focusable TouchArea (NavItem
-    // idiom) enters the mode ONLY; it does NOT toggle the focused book (that is
-    // the `x` key's job). No FocusScope, so keyboard focus stays on the carousel.
-    if !root.selection-mode && !root.modal-open && root.items.length > 0 : select-pill := Rectangle {
-        x: (parent.width - self.width) / 2;
-        y: nav.y + nav.height + Theme.space-sm;
-        width: select-label.preferred-width + Theme.nav-pill-pad * 2;
-        height: Theme.nav-capsule;
-        border-radius: Theme.radius-pill;
+        // SelectionToolbar — slides DOWN into view in selection mode and UP out of
+        // view otherwise. `exit` reproduces the Esc arm EXACTLY: clear the local
+        // mode flag and fire exit-selection().
+        //
+        // The toolbar is wrapped in a full-width CENTERING layout, not positioned
+        // with an x formula: the pill's content-hug width only resolves when it is
+        // a LAYOUT CHILD — absolutely positioned, it defaults to the PARENT's width
+        // and the glass pill spanned the whole window (docs/patterns.md "An element
+        // placed OUTSIDE a layout…"). Keeping that wrapper is what preserves the
+        // measured-width centering through the slide. The wrapper itself slides on
+        // `y`; `alignment: center` packs the toolbar at its preferred width.
+        toolbar-wrap := HorizontalLayout {
+            x: 0;
+            width: 100%;
+            height: Theme.nav-pill-height;
+            // 0 = docked just below the NavBar; -height = tucked up under it
+            // (clipped). Slides each time `toolbar-shown` flips.
+            y: slide-strip.toolbar-shown ? 0 : -self.height;
+            animate y { duration: Theme.motion-fast; }
+            alignment: center;
 
-        // Default appearance: transparent fill + reserved transparent 1px ring,
-        // so the hover ring appears with no reflow (NavItem idiom).
-        background: transparent;
-        border-width: 1px;
-        border-color: transparent;
-        animate background, border-color { duration: Theme.motion-fast; }
-
-        // States: pressed > hover (NavItem ordering; this pill's own props only —
-        // states[] can target only this element's id, not `root`).
-        states [
-            pressed when select-touch.pressed : {
-                select-pill.background: Theme.accent-glow.darker(0.10);
-                select-pill.border-color: Theme.accent;
+            SelectionToolbar {
+                count-text: root.selection-count-text;
+                select-all-label: root.select-all-label;
+                exit-a11y: Strings.selection-exit-a11y;
+                narrow: root.narrow;
+                // Delete (PR-5): pre-composed label + has-selection gate down, the
+                // request-delete action up (Rust opens the ConfirmDialog).
+                delete-label: root.delete-label;
+                has-selection: root.has-selection;
+                // Input/a11y guard: only the slid-in toolbar takes input.
+                active: slide-strip.toolbar-shown;
+                select-all => { root.select-all(); }
+                request-delete => { root.request-delete(); }
+                exit => { root.selection-mode = false; root.exit-selection(); }
             }
-            hover when select-touch.has-hover : {
-                select-pill.background: Theme.accent-glow;
-                select-pill.border-color: Theme.accent;
-                select-pill.drop-shadow-color: Theme.accent-glow;
-                select-pill.drop-shadow-blur: 12px;
-            }
-        ]
-
-        select-label := Text {
-            text: Strings.selection-enter;
-            // Brighten on hover/press; idle at the calmer mid tone (NavItem idiom).
-            color: select-touch.has-hover || select-touch.pressed ? Theme.text-high : Theme.text-mid;
-            font-size: Theme.font-label;
-            font-weight: Theme.weight-medium;
-            x: (parent.width - self.width) / 2;
-            y: (parent.height - self.height) / 2;
-            horizontal-alignment: center;
-            vertical-alignment: center;
         }
 
-        // Accessibility: a button that enters selection mode.
-        accessible-role: button;
-        accessible-label: Strings.selection-enter;
-        accessible-action-default => { root.selection-mode = true; }
+        // "Select" entry pill — the MOUSE entry point into selection mode. Quieter
+        // /smaller than the toolbar — an entry hint, not a mode indicator. A
+        // non-focusable TouchArea (NavItem idiom) enters the mode ONLY; it does
+        // NOT toggle the focused book (that is the `x` key's job). No FocusScope,
+        // so keyboard focus stays on the carousel. Slides UP out of view when
+        // selection mode is active (so the two never overlap mid-transition).
+        select-pill := Rectangle {
+            x: (parent.width - self.width) / 2;
+            // 0 = docked (top of the strip, the pill's former anchor); -height =
+            // tucked up under the NavBar (clipped). Note: the pill is shorter than
+            // the strip, so -height clears only its own band — which is enough,
+            // since it slides up THROUGH the NavBar-adjacent gap and the toolbar
+            // occupies the strip while the pill is hidden.
+            y: slide-strip.pill-shown ? 0 : -self.height;
+            animate y { duration: Theme.motion-fast; }
+            width: select-label.preferred-width + Theme.nav-capsule-pad * 2;
+            height: Theme.nav-capsule;
+            // TRUE capsule (radius = height/2): radius-pill renders an ELLIPSE on a
+            // non-square rect (femtovg per-axis clamp, docs/patterns.md).
+            border-radius: Theme.nav-capsule-radius;
 
-        // Enter selection mode ONLY (do NOT toggle the focused book — that is the
-        // `x` key's behavior). TouchArea is non-focusable, so keyboard focus stays
-        // on the carousel FocusScope (repo convention, see NavItem).
-        select-touch := TouchArea {
-            clicked => { root.selection-mode = true; }
+            // Default appearance: HIG "bordered" — chip ground + hairline ring, so
+            // the entry point reads as a button at rest; the 1px ring slot is
+            // reserved, so the hover restyle causes no reflow.
+            background: Theme.chip;
+            border-width: 1px;
+            border-color: Theme.hairline-float;
+            animate background, border-color { duration: Theme.motion-fast; }
+
+            // States: pressed > hover (NavItem ordering; this pill's own props only —
+            // states[] can target only this element's id, not `root`).
+            states [
+                pressed when select-touch.pressed : {
+                    select-pill.background: Theme.accent-glow.darker(0.10);
+                    select-pill.border-color: Theme.accent;
+                }
+                hover when select-touch.has-hover : {
+                    select-pill.background: Theme.accent-glow;
+                    select-pill.border-color: Theme.accent;
+                    select-pill.drop-shadow-color: Theme.accent-glow;
+                    select-pill.drop-shadow-blur: 12px;
+                }
+            ]
+
+            select-label := Text {
+                text: Strings.selection-enter;
+                // Brighten on hover/press; idle at the calmer mid tone (NavItem idiom).
+                color: select-touch.has-hover || select-touch.pressed ? Theme.text-high : Theme.text-mid;
+                font-size: Theme.font-label;
+                font-weight: Theme.weight-medium;
+                x: (parent.width - self.width) / 2;
+                y: (parent.height - self.height) / 2;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+
+            // Accessibility: a button that enters selection mode. Gated on
+            // `pill-shown` so a slid-away pill exposes no working action.
+            accessible-role: button;
+            accessible-label: Strings.selection-enter;
+            accessible-action-default => { if (slide-strip.pill-shown) { root.selection-mode = true; } }
+
+            // Enter selection mode ONLY (do NOT toggle the focused book — that is
+            // the `x` key's behavior). TouchArea is non-focusable, so keyboard
+            // focus stays on the carousel FocusScope (repo convention, see
+            // NavItem). `enabled` guard: a slid-away pill takes no input even if
+            // clip hit-testing leaks (belt-and-braces, §2.6).
+            select-touch := TouchArea {
+                enabled: slide-strip.pill-shown;
+                clicked => { root.selection-mode = true; }
+            }
         }
     }
 }
