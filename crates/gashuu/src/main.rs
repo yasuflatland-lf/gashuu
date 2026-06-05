@@ -1645,9 +1645,10 @@ pub(crate) fn refresh(
 
 /// Finalize an `open_book.run(...)` outcome on the UI. On failure, set the
 /// localized error status; on success, `refresh()` the view and append each
-/// localized notice to the status line. The single place the three open sites
-/// (Open Folder, Open Archive, carousel-open) share this UI wiring, so the
-/// `OpenOutcome` match + notice-append loop lives in exactly one spot.
+/// localized notice to the status line. The single place the four open sites
+/// (Open Folder, Open Archive, carousel-open, bookmark-jump) share this UI
+/// wiring, so the `OpenOutcome` match + notice-append loop lives in exactly one
+/// spot.
 fn finalize_open(
     ui: &ViewerWindow,
     state: &Rc<RefCell<ViewerState>>,
