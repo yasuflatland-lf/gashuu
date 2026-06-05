@@ -502,15 +502,13 @@ fn main() -> color_eyre::Result<()> {
         let selection = Rc::clone(&selection);
         ui.on_carousel_continue_reading(move || {
             with_ui(&ui_weak, |ui| {
-                // Resolve the bookmark to a present-in-library book path. A None
-                // `last_opened`, or one whose path is no longer in `books` (the
-                // book was purged), both yield None here and count as no bookmark.
-                let path = {
-                    let lib = library.borrow();
-                    lib.last_opened()
-                        .filter(|p| lib.books().iter().any(|book| book.path() == *p))
-                        .map(std::path::Path::to_path_buf)
-                };
+                // `Library::bookmark()` returns `last_opened` only when it is
+                // still on the shelf — books purged from the library yield None,
+                // which counts as no bookmark and triggers the notice below.
+                let path = library
+                    .borrow()
+                    .bookmark()
+                    .map(std::path::Path::to_path_buf);
                 let Some(path) = path else {
                     // No registered bookmark — answer the click with a notice so
                     // the always-enabled capsule still gives feedback.
@@ -889,61 +887,14 @@ fn main() -> color_eyre::Result<()> {
             with_ui(&ui_weak, |ui| {
                 let loader = localizer.loader();
                 let path = std::path::PathBuf::from(path_str.as_str());
-                // Look up the display title BEFORE removal — once removed the book
-                // is gone from `books`, so the title must be captured first. A
-                // signal for a path no longer present yields `None`; the removal
-                // below then returns false and we bail out silently.
-                let title = {
-                    let lib = library.borrow();
-                    lib.books()
-                        .iter()
-                        .find(|book| book.path() == path.as_path())
-                        .map(|book| book.title().to_string())
-                };
-                let removed = library.borrow_mut().remove(&path);
-                if !removed {
-                    // Idempotency / race: the book was already removed by another
-                    // path (its notice + rebuild already ran), so nothing to do.
+                // The shared transaction (single home in app.rs): title capture
+                // BEFORE removal → `Library::remove` → save → best-effort cover
+                // purge. `removed == false` is the idempotency race — the book
+                // was already removed by another path (its notice + rebuild
+                // already ran), so bail out silently.
+                let removal = app::remove_empty_book(&library, &path);
+                if !removal.removed {
                     return;
-                }
-                // `removed == true` guarantees `title` was Some (the book existed
-                // when we read it just above), but fall back to the path's file
-                // name defensively so the notice never shows an empty title.
-                let title = title.unwrap_or_else(|| {
-                    path.file_name()
-                        .map(|n| n.to_string_lossy().into_owned())
-                        .unwrap_or_default()
-                });
-                // Persist the removal. A save failure is surfaced (appended to the
-                // notice), not just traced, mirroring the add/delete save-failure
-                // handling; the in-memory removal stands either way.
-                let save_error = match library.borrow().save() {
-                    Ok(()) => None,
-                    Err(e) => {
-                        tracing::error!(error = %e, "failed to save library after empty-book auto-removal");
-                        Some(format!("{e}"))
-                    }
-                };
-                // Best-effort purge of the removed book's persistent cover,
-                // mirroring the bulk-delete purge (mtime drift / missing file is
-                // expected and only warned, never surfaced).
-                match gashuu_core::ThumbnailCache::new() {
-                    Ok(cache) => {
-                        let purged = cache.purge_for(
-                            &path,
-                            cover_loader::mtime_secs(&path),
-                            &[cover_loader::COVER_MAX_SIDE],
-                        );
-                        if purged == 0 {
-                            tracing::warn!(
-                                path = %path.display(),
-                                "no persistent cover purged for auto-removed empty book (missing, mtime drift, or unwritable cache)"
-                            );
-                        }
-                    }
-                    Err(e) => {
-                        tracing::warn!(error = %e, "cover cache unavailable; skipping cover purge on empty-book removal");
-                    }
                 }
                 // Rebuild the carousel so the removed book disappears and the
                 // cover-epoch bump drops any sibling cover still streaming for it;
@@ -963,7 +914,11 @@ fn main() -> color_eyre::Result<()> {
                 // Notice LAST (status-last ordering, as in add/delete): the
                 // auto-removal message, with the save-failure detail appended when
                 // the persist failed.
-                let status = empty_book_removed_status(loader, &title, save_error.as_deref());
+                let status = empty_book_removed_status(
+                    loader,
+                    &removal.title,
+                    removal.save_error.as_deref(),
+                );
                 ui.set_status_text(status.into());
             })
         });
@@ -1210,10 +1165,11 @@ fn main() -> color_eyre::Result<()> {
                         &library,
                     );
                     if let Err(e) = settings.borrow().save() {
-                        tracing::error!(error = %e, "failed to save settings from dialog");
-                        ui.set_status_text(
-                            crate::i18n::dynamic::could_not_save_settings(localizer.loader(), &e)
-                                .into(),
+                        report_save_error(
+                            &ui,
+                            localizer.loader(),
+                            &e,
+                            "failed to save settings from dialog",
                         );
                     }
                     ui.invoke_focus_carousel();
@@ -1230,10 +1186,11 @@ fn main() -> color_eyre::Result<()> {
                         &library,
                     );
                     if let Err(e) = settings.borrow().save() {
-                        tracing::error!(error = %e, "failed to save settings from dialog");
-                        ui.set_status_text(
-                            crate::i18n::dynamic::could_not_save_settings(localizer.loader(), &e)
-                                .into(),
+                        report_save_error(
+                            &ui,
+                            localizer.loader(),
+                            &e,
+                            "failed to save settings from dialog",
                         );
                     }
                     ui.invoke_focus_pages();
@@ -1298,11 +1255,7 @@ fn main() -> color_eyre::Result<()> {
                         tracing::warn!(path = %path.display(), "reset override: open book not found in library");
                     }
                     if let Err(e) = library.borrow().save() {
-                        tracing::error!(error = %e, "failed to save library on override reset");
-                        ui.set_status_text(
-                            crate::i18n::dynamic::could_not_save_settings(localizer.loader(), &e)
-                                .into(),
-                        );
+                        report_save_error(&ui, localizer.loader(), &e, "failed to save library on override reset");
                     }
                 }
                 // Apply the global defaults to the runtime + view.
@@ -1745,6 +1698,23 @@ fn with_ui(weak: &slint::Weak<ViewerWindow>, f: impl FnOnce(ViewerWindow)) {
     }
 }
 
+/// Log a failed persistence save and surface it on the status line — the single
+/// home of the direct log+status save-failure shape. The aggregation paths keep
+/// their own composition and do NOT route through this: `NoticesContent`
+/// (app.rs, pre-captured `Option<String>` composed in `finalize_open`), the
+/// add-batch report (`add_books_and_refresh`), the bulk-delete rollback
+/// (`RemoveOutcome::SaveFailed`), and the log-only sites where no status line
+/// is wanted (guide dismiss, exit, write-backs).
+fn report_save_error(
+    ui: &ViewerWindow,
+    loader: &i18n_embed::fluent::FluentLanguageLoader,
+    e: &CoreError,
+    context: &'static str,
+) {
+    tracing::error!(error = %e, "{context}");
+    ui.set_status_text(crate::i18n::dynamic::could_not_save_settings(loader, e).into());
+}
+
 /// Push the current spread + status into the UI, then re-anchor the viewport to
 /// the new content size and push the resulting geometry.
 pub(crate) fn refresh(
@@ -2119,33 +2089,16 @@ pub(crate) fn apply_global_view_to_runtime(
 ///   - failure with a prior book still open -> that book's name (still shown);
 ///   - failure with nothing open / boot -> `""`.
 ///
-/// `open_file` is a real filesystem path, so `is_dir()` reliably discriminates a
-/// folder from an archive for the name component. Borrow discipline: the single
-/// `state.borrow()` `Ref` is confined to this function and drops on return.
+/// `open_file` is a real filesystem path; the folder/archive discrimination
+/// happens inside `gashuu_core::display_title`, which checks `is_dir()` live
+/// on the same real path. Borrow discipline: the single `state.borrow()` `Ref`
+/// is confined to this function and drops on return.
 fn current_book_name(state: &Rc<RefCell<ViewerState>>) -> String {
     let s = state.borrow();
     match s.open_file() {
-        Some(path) => book_name_for(path, path.is_dir()),
+        Some(path) => gashuu_core::display_title(path),
         None => String::new(),
     }
-}
-
-/// Derive a book's display name from its path, mirroring the `Book::from_path`
-/// convention: a folder shows its directory name (last path component), an
-/// archive shows its file stem (extension dropped so `.cbz`/`.zip` don't clutter
-/// the title). Falls back to the lossy full path so the name is never empty.
-/// `is_dir` is the folder/archive discriminator. `to_string_lossy` never panics
-/// on a non-UTF-8 path.
-fn book_name_for(path: &std::path::Path, is_dir: bool) -> String {
-    let component = if is_dir {
-        path.file_name()
-    } else {
-        path.file_stem()
-    };
-    component
-        .map(|s| s.to_string_lossy().into_owned())
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| path.to_string_lossy().into_owned())
 }
 
 /// Pure helper: decide if and what to write back to the Library.

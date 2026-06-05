@@ -100,7 +100,12 @@ remove + notify".
 - **A pinned title replica.** `app.rs::derive_title` byte-for-byte replicates `Book::from_path`'s
   derivation (which is `pub(crate)` and unreachable from the UI crate), used only when an empty source
   was never added; four mirror-contract tests pin it. Recorded in [patterns.md](../patterns.md),
-  "Replicate-and-PIN".
+  "Replicate-and-PIN". (Superseded 2026-06-06 by DDD Wave 2 #150: Wave 1 #149 made the derivation
+  public as `gashuu_core::display_title`; the replica and its mirror-contract tests are deleted.)
+- **Open-path cover purge added (DDD Wave 2 #150, 2026-06-06).** The original ship deferred the
+  cover purge to the cover-load path only; Wave 2 judged that asymmetry an implementation gap (a
+  removed book's cached cover became unreachable garbage) and the open-time bail-out now purges too,
+  via the shared `app::remove_empty_book` transaction.
 - **No new dependencies; `LIBRARY_VERSION` unchanged.** `CoreError::EmptyBook` is the only new public
   surface in core; the three notices (`notice-added-books-skipped`, `notice-no-books-added-empty`,
   `notice-empty-book-removed`) are added to the Fluent catalog (en + ja) via `i18n/dynamic.rs`.
