@@ -171,7 +171,9 @@ export component NavBar inherits Rectangle {
     in-out property <string> search-query;
     // When true, a soft translucent veil is painted over the pill to visually
     // recede the NavBar behind foreground content. Default false = no change.
-    // Wired in Carousel.slint to selection-mode (recede during selection).
+    // Wired in Carousel.slint to `selection-mode && !modal-open` (recede during
+    // selection, suppressed while a modal is open so the veil does not compound
+    // with a modal scrim).
     in property <bool> receded: false;
     callback add-books();
     callback add-folder();
