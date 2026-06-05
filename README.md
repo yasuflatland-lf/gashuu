@@ -5,7 +5,8 @@
 
 A cross-platform manga / comic viewer built with Rust and [Slint](https://slint.dev).
 Open a folder of images or a comic archive and read with the keyboard — two-page
-spreads, right-to-left binding, zoom/pan, a thumbnail strip, and persistent settings.
+spreads, right-to-left binding, zoom/pan, a thumbnail strip, a cover-flow library,
+and persistent settings, in an English / 日本語 UI.
 
 *gashuu* (画集, [ɡaɕɯː]) is the Japanese word for a book or booklet of drawings — an
 art book. It is a manga viewer, but the name carries a wish: that it be as refined and
@@ -19,12 +20,13 @@ tasteful a tool as a fine art book.
 - **Archives** — pages are read in natural filename order and images nested in
   subfolders are included. Extraction is in-memory (nothing is written to disk); unsafe,
   oversized, or corrupt entries are skipped and counted in the status bar.
-- **Library** — added books are shown in natural title order (numeric-aware, so *vol 1*,
-  *vol 2*, *vol 10* sort in that order rather than lexically). A folder or archive with no
-  images is not a book: it is rejected on add (the status bar reports how many were skipped),
-  and if one turns up empty later it is auto-removed with a notice. The NavBar includes a live
-  search field that filters books by title or filesystem path as you type; freshly-added
-  books stay visible until the query changes.
+- **Library** — a cover-flow carousel of your added books, with real cover art (streamed
+  in from a disk cache) and a per-book reading-progress bar, in natural title order
+  (numeric-aware, so *vol 1*, *vol 2*, *vol 10* sort in that order rather than lexically).
+  A folder or archive with no images is not a book: it is rejected on add (the status bar
+  reports how many were skipped), and if one turns up empty later it is auto-removed with a
+  notice. The NavBar includes a live search field that filters books by title or filesystem
+  path as you type; freshly-added books stay visible until the query changes.
 - **Spreads** — single page, two-page spread, or **auto** (picks single/double from the
   window aspect ratio and follows resizes live). Right-to-left (manga) or left-to-right
   binding, with a standalone or paired cover layout.
@@ -43,15 +45,21 @@ tasteful a tool as a fine art book.
   knob to scrub; a thumbnail preview (one or two pages for single/double spreads) pops up
   during the drag — not-yet-decoded or failed thumbnails show distinct loading/error placeholders — and the page only changes on release. RTL-aware: in manga mode dragging
   left advances pages.
-- **Continue reading** — the Library marks and auto-focuses the most recently opened book
-  with a bookmark ribbon; returning from the Viewer lands the carousel on it immediately.
-- **Selection & bulk delete** — press `x` in the Library to enter selection mode, then
-  toggle books with `x` / `Space`, select all visible with `Cmd/Ctrl+A`, and delete the
+- **Continue reading** — re-opening a book resumes at the last page you read. The Library
+  marks and auto-focuses the most recently opened book with a bookmark ribbon; returning
+  from the Viewer lands the carousel on it immediately, and the NavBar's bookmark button
+  jumps straight back into that book.
+- **Selection & bulk delete** — press `x` in the Library (or click the NavBar's **Select**
+  button) to enter selection mode, then toggle books with `x` / `Space` / a cover click,
+  select all visible with `Cmd/Ctrl+A`, and delete the
   selection with `Delete` or `Backspace`. A confirm dialog lists the titles and confirms
   that files on disk are kept (only the library entry is removed). No undo; the confirm
   dialog is the safety gate.
-- **Settings dialog & first-run guide** — change every active option from the toolbar
-  without hand-editing config, and a one-time welcome overlay summarises the controls.
+- **Settings dialog & first-run guide** — change every active option from the in-app
+  Settings dialog without hand-editing config, and a one-time welcome overlay summarises
+  the controls.
+- **Bilingual UI** — English / 日本語, switchable instantly (no restart) from the Settings
+  dialog's General → Language pull-down; the choice persists.
 - **Safe decoding** — oversized images and decompression bombs are rejected before
   allocating memory (16 384×16 384 px / 512 MiB / ~128 Mpx limits), with a clear error
   in the status bar instead of an out-of-memory crash.
@@ -77,7 +85,7 @@ A C++ compiler is also required — the RAR/CBR backend bundles the C++ UnRAR so
 builds them via `cc`. This is standard on every platform (Xcode CLT on macOS, MSVC or
 MinGW on Windows, `build-essential` on Linux) and adds nothing beyond the usual toolchain.
 
-Then run the viewer and open a folder or archive from the toolbar:
+Then run the viewer and add books from the Library's nav bar:
 
 ```bash
 cargo run -p gashuu
@@ -85,10 +93,24 @@ cargo run -p gashuu
 
 ## Usage
 
-Open content from the toolbar — **Open Folder…** (PNG/JPG/JPEG) or **Open Archive…**
-(`.cbz`/`.zip`/`.cbr`/`.rar`). Navigation works the same for folders and archives.
+Add books from the Library's NavBar — on macOS a single **Add books** button (one picker
+accepts files and folders); on Windows/Linux separate **Add files**
+(`.cbz`/`.zip`/`.cbr`/`.rar`) and **Add folder** (a folder of PNG/JPG/JPEG images becomes
+one book) buttons. An empty library shows a call-to-action that opens the same picker.
+Click a cover (or focus it and press `Enter`) to start reading; navigation works the same
+for folders and archives.
 
-**Navigation**
+**Library**
+
+| Key | Action |
+|-----|--------|
+| `←` / `→` | Move the carousel focus |
+| `Enter` | Open the focused book |
+| `↓` | Return to the open book (if any) |
+| `/` | Focus the search field |
+| `x` | Enter selection mode |
+
+**Navigation (Viewer)**
 
 | Key | Action |
 |-----|--------|
@@ -123,6 +145,9 @@ mouse-move, arrow-key press, or scrubber drag, then fade after idle. Drag the kn
 preview pages without turning; the page changes on release. In RTL mode dragging left
 advances pages.
 
+The Viewer's bottom **pill** holds a `page / total` jump field (type a page number and
+press `Enter` to jump; `Esc` cancels), a thumbnail-strip toggle, and the settings button.
+
 **Zoom & fit** (direction-independent)
 
 | Input | Action |
@@ -139,8 +164,10 @@ Zoom and pan apply to the whole viewport (both pages in a spread move together).
 turns keep the current zoom and fit and only re-center the pan. Set `RUST_LOG=debug` to
 log per-turn latency.
 
-**Settings dialog** — click **Settings…** to change reading direction, spread mode,
-cover layout, fit mode, cache size, preload radius, and the recent-files toggle. Scope
+**Settings dialog** — click the settings icon (in the Library's NavBar, or the Viewer's
+bottom pill) to change reading direction, spread mode, cover layout, fit mode, cache
+size, preload radius, the recent-files toggle, and the UI language (English / 日本語,
+applied immediately). Scope
 follows the screen: from the **Library** it edits your GLOBAL defaults; from the
 **Viewer** it edits the CURRENT book's view settings (with a "Reset to global"
 button). Display-mode changes apply immediately; cache size and preload radius take effect
@@ -169,10 +196,16 @@ hand-edited:
 | `preload_pages` | int (default `3`) | Background prefetch radius; applies to the next book |
 | `track_recent_files` | bool (default `false`) | Off for privacy; gates `recent_files` |
 | `recent_files` | list | Recorded only when tracking is on |
+| `language` | `"en"` (default) / `"ja"` | UI language; switchable live from the Settings dialog |
+| `seen_guide` | bool (default `false`) | Set once the first-run guide has been shown |
 | `key_bindings` | — | Persisted for forward-compatibility; not yet wired up |
 
-If the settings file is corrupt or unreadable, gashuu falls back to built-in defaults
-and keeps running.
+The library itself — added books, last-read pages, per-book view overrides, and the
+continue-reading bookmark — is stored separately as `library.json` in the OS data
+directory.
+
+If the settings or library file is corrupt or unreadable, gashuu falls back to built-in
+defaults (an empty library) and keeps running.
 
 ## Project layout
 
