@@ -389,7 +389,10 @@ pub(crate) fn remove_empty_book(library: &RefCell<Library>, path: &Path) -> Empt
 /// Effect-seam twin of [`remove_empty_book`] (same shape as
 /// `remove_books_with_rollback`): the save is injected so the transaction's
 /// decisions — title preference, save-only-when-removed, error pre-capture —
-/// are unit-testable without disk I/O or a cover cache.
+/// are unit-testable without disk I/O or a cover cache. Unlike that twin it
+/// deliberately does NOT roll back on a save failure: an empty book is
+/// invalid-by-definition (ADR-0009), so the in-memory removal stands and only
+/// the error is reported.
 fn remove_empty_book_with(
     lib: &mut Library,
     path: &Path,
@@ -1149,19 +1152,13 @@ mod tests {
         let mut lib = Library::new();
         let path = PathBuf::from("/manga/Empty Vol.cbz");
         lib.add(path.clone());
-        let expected_title = lib
-            .books()
-            .iter()
-            .find(|b| b.path() == path.as_path())
-            .map(|b| b.title().to_string())
-            .expect("just added");
         let saves = std::cell::Cell::new(0);
         let removal = remove_empty_book_with(&mut lib, &path, |_| {
             saves.set(saves.get() + 1);
             Ok(())
         });
         assert!(removal.removed);
-        assert_eq!(removal.title, expected_title, "stored title preferred");
+        assert_eq!(removal.title, "Empty Vol", "stored title preferred");
         assert_eq!(removal.save_error, None);
         assert_eq!(saves.get(), 1, "removal must persist exactly once");
         assert!(lib.books().is_empty());
