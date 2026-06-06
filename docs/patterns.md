@@ -273,7 +273,7 @@ a truncating cast wraps crafted huge values (`u32::MAX + 1` → 0) and silently 
 
 ### insta snapshots use `assert_snapshot!` (plain string; no `json` feature)
 
-The generated `.snap` is committed text (not a binary fixture). Generate/refresh with `INSTA_UPDATE=always mise exec -- cargo nextest run -p gashuu-core`; CI never updates snapshots, so a `.snap` mismatch fails the build — the freeze is enforced automatically. Keep snapshot inputs deterministic (`Settings::default().to_json()` — no absolute paths or timestamps). PR4 added `cover_mode:"standalone"` and PR5 added `fit_mode:"whole"` to the snapshot (`reading_direction:"ltr"`/`spread_mode:"single"` unchanged). The default snapshot is unchanged by PR4a (default is still `single`); `"auto"` round-trip serialization is covered by a separate string assert, not the snapshot.
+The generated `.snap` is committed text (not a binary fixture). Generate/refresh with `INSTA_UPDATE=always mise exec -- cargo nextest run -p gashuu-core`; CI never updates snapshots, so a `.snap` mismatch fails the build — the freeze is enforced automatically. Keep snapshot inputs deterministic (`Settings::default().to_json()` — no absolute paths or timestamps). PR4 added `cover_mode:"standalone"` and PR5 added `fit_mode:"whole"` to the snapshot (`reading_direction:"ltr"`/`spread_mode:"single"` unchanged at the time); PR4a left the snapshot untouched (the default was still `single`, with `"auto"` round-trip serialization covered by a separate string assert). The 2026-06 default change regenerated the snapshot to `rtl`/`auto`/`width`, so `"auto"` now appears in the snapshot itself.
 
 ### `Settings` uses pub serde fields, not a checked constructor
 
