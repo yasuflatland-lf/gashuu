@@ -274,9 +274,10 @@ pub(crate) fn wire_carousel_handlers(
         });
     }
 
-    // Carousel: Return on the focused book — or a double-click on ANY visible
-    // cover (the Slint side fires the same `open(int)` with the clicked index;
-    // normal mode only) — opens it, resumes its last-read page (via
+    // Carousel: Return on the focused book — or a double-click on the CENTER
+    // strip cover (the Slint side fires the same `open(int)` with that cover's
+    // index; normal mode only — side clicks are intercepted by the one-step
+    // zones) — opens it, resumes its last-read page (via
     // OpenBookUseCase::run → jump_to), and transitions to the Viewer.
     {
         let ui_weak = ui.as_weak();
@@ -522,10 +523,13 @@ pub(crate) fn wire_selection_handlers(
     }
 
     // Carousel: a cover was clicked (the repo's first cover pointer interaction).
-    // In NORMAL mode a click only FOCUSES the cover; opening is Return or a cover
-    // DOUBLE-click (both arrive via `on_carousel_open` — the Slint side fires
-    // `open(int)` from its double-clicked arm, so no second open path exists
-    // here). In SELECTION mode it focuses AND toggles the book's selection.
+    // In NORMAL mode only the CENTER-strip cover can arrive here — the Slint
+    // left/right step zones intercept every side click and fire `move(∓1)`
+    // instead (one book per click) — and the click only FOCUSES it; opening is
+    // Return or a center-cover DOUBLE-click (both arrive via `on_carousel_open`
+    // — the Slint side fires `open(int)` from its double-clicked arm, so no
+    // second open path exists here). In SELECTION mode the zones are disabled,
+    // so ANY cover click lands here and focuses AND toggles that book.
     {
         let ui_weak = ui.as_weak();
         let library = Rc::clone(&library);
