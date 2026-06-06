@@ -599,7 +599,7 @@ THE FIX — raise the animation one altitude level:
   (slint 1.16.1 `langtype.rs` `can_convert` accepts Int32→Float32), and a retarget continues from
   the CURRENT animated value (`i-slint-core` `properties_animations.rs` captures the in-flight
   value as `from_value` on rebind) — so rapid input retargets one animation instead of restarting N.
-- EVERY per-card value (x / width / height / opacity / narrow-mode visibility) is a PURE binding
+- EVERY per-card value (x / width / height / opacity) is a PURE binding
   on `flow-delta = idx - flow-position` — `CoverCard` carries NO `animate` blocks at all. The row
   moves as one coherent band, and size/opacity interpolate CONTINUOUSLY with the float distance:
   `Math.clamp(1.0 - Math.abs(d) * (1.0 - neighbor-value), neighbor-value, 1.0)` — full at d=0,
@@ -613,8 +613,11 @@ THE FIX — raise the animation one altitude level:
   whole fix is pure `.slint`.
 - The cinematic easing cubic-bezier(0.16, 1, 0.3, 1) never overshoots (control-point y's within
   [0, 1]), so `Math.round(flow-position)` cannot land outside the Rust-clamped index range.
-- Narrow-mode culling keys on the float distance with a 1.5 threshold (was int `<= 1`): a card
-  pops in/out half a step beyond its resting neighbor slot, mid-travel, never while parked at it.
+- Narrow-mode culling (centered cover ± one below 560px, keyed on the float distance with a 1.5
+  threshold) has since been REMOVED by user decision: hiding cards on a narrow window read as
+  thumbnails vanishing on resize and during moves, so every loaded cover now stays visible at
+  every width (`visible: root.show` only); offscreen cards clip at the window edge. The 560px
+  `narrow` flag survives solely for the SelectionToolbar's icon-only select-all collapse.
 
 HARNESS: when a row/strip of repeated items animates as a FORMATION, animate the formation's
 scalar and derive each item's geometry as pure bindings — never give each item its own `animate`
