@@ -1,6 +1,7 @@
 use crate::{viewer_state::ViewerState, viewport::ViewportState};
 use gashuu_core::{FitMode, Library, ReadingDirection, Settings, ViewOverride};
 use std::cell::RefCell;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 /// The leave/close point at which runtime view modes are persisted, naming WHERE
@@ -143,10 +144,7 @@ pub(crate) fn current_book_name(state: &Rc<RefCell<ViewerState>>) -> String {
 /// performed (a book is open), `None` otherwise. Extracted for table-testing
 /// so the predicate can be verified independently of the effectful
 /// `write_back_position` that actually calls `library.set_last_page`.
-fn position_to_write_back(
-    open_file: Option<&std::path::Path>,
-    page: usize,
-) -> Option<(std::path::PathBuf, usize)> {
+fn position_to_write_back(open_file: Option<&Path>, page: usize) -> Option<(PathBuf, usize)> {
     open_file.map(|p| (p.to_path_buf(), page))
 }
 
@@ -193,12 +191,12 @@ pub(crate) fn write_back_position(
 /// Extracted (mirrors `position_to_write_back`) so the predicate is unit-tested
 /// without the effectful `set_overrides` + `save`.
 fn view_override_to_write_back(
-    open_file: Option<&std::path::Path>,
+    open_file: Option<&Path>,
     reading_direction: ReadingDirection,
     spread_mode: gashuu_core::SpreadMode,
     cover_mode: gashuu_core::CoverMode,
     fit_mode: FitMode,
-) -> Option<(std::path::PathBuf, ViewOverride)> {
+) -> Option<(PathBuf, ViewOverride)> {
     open_file.map(|p| {
         (
             p.to_path_buf(),
@@ -249,6 +247,7 @@ fn write_back_view_override(
 mod tests {
     use super::*;
     use gashuu_core::{CoverMode, SpreadMode};
+    use std::path::{Path, PathBuf};
 
     #[test]
     fn reconcile_writes_runtime_modes_into_settings() {
@@ -302,7 +301,7 @@ mod tests {
         // so `open_file()` stays None and the derived name stays empty.
         let _ = state
             .borrow_mut()
-            .open_folder(std::path::Path::new("/nonexistent_gashuu_title_guard"));
+            .open_folder(Path::new("/nonexistent_gashuu_title_guard"));
         assert_eq!(
             current_book_name(&state),
             "",
@@ -349,7 +348,6 @@ mod tests {
 
     #[test]
     fn position_to_write_back_some_when_file_open() {
-        use std::path::PathBuf;
         let path = PathBuf::from("/some/book.cbz");
         let result = position_to_write_back(Some(path.as_path()), 7);
         assert!(result.is_some(), "open file => write-back tuple");
@@ -360,7 +358,6 @@ mod tests {
 
     #[test]
     fn position_to_write_back_zero_page() {
-        use std::path::PathBuf;
         let path = PathBuf::from("/some/book.cbz");
         let result = position_to_write_back(Some(path.as_path()), 0);
         assert!(result.is_some());
@@ -387,7 +384,6 @@ mod tests {
 
     #[test]
     fn view_override_to_write_back_some_carries_all_four_modes() {
-        use std::path::PathBuf;
         let path = PathBuf::from("/manga/book.cbz");
         let result = view_override_to_write_back(
             Some(path.as_path()),
