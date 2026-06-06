@@ -605,8 +605,9 @@ A reusable two-choice modal (issue 127, consumed by the bulk-delete epic). Gener
 | Delete / Backspace | — (no-op / falls through) | Open `ConfirmDialog` (no-op if N=0) |
 | Esc | — (reject, no-op) | Clear selection + exit selection mode |
 | Return | Open focused book | Open focused book (unchanged in both modes) |
-| Cover click | Focus clicked cover | Focus + toggle clicked book |
-| Cover double-click | Open clicked book (any visible cover; same path as Return) | — (the two clicks toggle twice = net no-op; never opens) |
+| Side-area click (left/right of the centered cover's strip) | Step focus ONE book toward the clicked side (same `move(∓1)` as the arrow keys) | — (zones disabled; the click toggles the clicked book, row below) |
+| Cover click (center strip / any cover in selection mode) | Focus the cover | Focus + toggle clicked book |
+| Cover double-click | Open the centered cover (same path as Return; side covers are step zones, see above) | — (the two clicks toggle twice = net no-op; never opens) |
 
 Return is **never repurposed** — it always opens the focused book, in both modes. The `x` key is the primary keyboard entry into selection mode; the NavBar **Select capsule** is the mouse entry point (it enters mode only on first click, exits on re-click — does NOT toggle the focused book).
 

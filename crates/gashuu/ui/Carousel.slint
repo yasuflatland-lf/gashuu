@@ -20,9 +20,10 @@
 //
 // Styling references `Theme.*` tokens only — NO inline brand hex (DESIGN.md).
 // Key seams (handled in the FocusScope): Left/Right -> move(-1/+1),
-// Return -> open(focused-index), Down -> back(). Pointer seam: a cover
-// double-click fires the same open(int) with the clicked cover's index
-// (normal mode only — see the pass-1 for-loop).
+// Return -> open(focused-index), Down -> back(). Pointer seams: the left/right
+// step zones fire the same move(-1/+1) one book per click, and a double-click
+// on the CENTER strip (the zones' gap) fires the same open(int) with the
+// cover's index (normal mode only — see the cover-flow row).
 import { Theme } from "Theme.slint";
 import { Strings } from "Strings.slint";
 // Shared design-system components (P2 componentization, issue #71): the
@@ -630,12 +631,14 @@ export component Carousel inherits Rectangle {
                   // sets interactive:false) fires its TouchArea exactly once.
                   interactive: true;
                   clicked => { root.cover-clicked(idx); }
-                  // Double-click opens the clicked book — ANY visible cover, via
-                  // the SAME `open(int)` path as Return (Rust resolves the
-                  // visible index and enters the viewer). Gated off in selection
-                  // mode: the two preceding `clicked` events have already toggled
-                  // the book twice (net no-op), and opening would yank the user
-                  // out of an in-progress selection.
+                  // Double-click opens the book, via the SAME `open(int)` path as
+                  // Return (Rust resolves the visible index and enters the
+                  // viewer). In NORMAL mode the step zones above intercept every
+                  // side click, so this arm is only reachable on the CENTER strip
+                  // — the visually centered cover. Gated off in selection mode:
+                  // the two preceding `clicked` events have already toggled the
+                  // book twice (net no-op), and opening would yank the user out
+                  // of an in-progress selection.
                   double-clicked => { if (!root.selection-mode) { root.open(idx); } }
               }
               // Pass 2: centered card only, on top (elevated: true default → shadow painted once).
@@ -663,6 +666,39 @@ export component Carousel inherits Rectangle {
                   // so the centered cover does not double-fire — its click is handled
                   // by the pass-1 backing copy above (which is always shown).
                   interactive: false;
+              }
+
+              // ── Left/Right one-step zones (normal mode only) ──────────────────
+              // Everything OUTSIDE the centered cover's non-overlapped strip (the
+              // cover-step-wide tile around the row center) steps the focus by
+              // exactly ONE book toward the clicked side, via the SAME frozen
+              // move(int) the Left/Right keys use (Rust clamps). Declared AFTER
+              // both card passes so they hit-test ABOVE the per-card TouchAreas
+              // (the meta block below is Text-only and never hit-tests): with
+              // every cover always visible, the former jump-to-clicked focus
+              // skipped several books per side click. The zones wire NO double-clicked arm,
+              // so rapid side-clicking can never compose into an accidental open
+              // (patterns.md "double-clicked fires IN ADDITION"). `enabled:
+              // !root.selection-mode` makes them pointer-transparent in selection
+              // mode (a disabled TouchArea ignores input — vendored input_items.rs),
+              // so selection clicks keep toggling the CLICKED book. The center
+              // strip stays a GAP between the zones: the centered cover's own
+              // TouchArea still handles focus and double-click-to-open there.
+              TouchArea {
+                  enabled: !root.selection-mode;
+                  x: 0;
+                  y: 0;
+                  width: Math.max(parent.width / 2 - root.cover-step / 2, 0px);
+                  height: 100%;
+                  clicked => { root.move(-1); }
+              }
+              TouchArea {
+                  enabled: !root.selection-mode;
+                  x: parent.width / 2 + root.cover-step / 2;
+                  y: 0;
+                  width: Math.max(parent.width / 2 - root.cover-step / 2, 0px);
+                  height: 100%;
+                  clicked => { root.move(1); }
               }
 
               // ── Focused-book meta block (centered, below the cover row) ───────

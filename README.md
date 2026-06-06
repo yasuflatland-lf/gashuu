@@ -1,11 +1,9 @@
-# gashuu
+# <img src="crates/gashuu/ui/assets/app-icon.png" alt="gashuu app icon" width="36" height="36" /> gashuu
+
+## A fast, elegant manga / comic reader built for immersive viewing.
 
 [![CI](https://img.shields.io/github/actions/workflow/status/yasuflatland-lf/gashuu/ci.yml?branch=main&label=CI&logo=github)](https://github.com/yasuflatland-lf/gashuu/actions/workflows/ci.yml)
 [![coverage](https://img.shields.io/codecov/c/github/yasuflatland-lf/gashuu?flag=rust&label=coverage&logo=codecov)](https://codecov.io/gh/yasuflatland-lf/gashuu)
-
-<img src="crates/gashuu/ui/assets/app-icon.png" alt="gashuu app icon" width="48" height="48" />
-
-## A fast, elegant manga reader built for immersive viewing.
 
 | Library | Viewer | Settings |
 | :---: | :---: | :---: |
@@ -117,15 +115,18 @@ Add books from the Library's NavBar — on macOS a single **Add books** button (
 accepts files and folders); on Windows/Linux separate **Add files**
 (`.cbz`/`.zip`/`.cbr`/`.rar`) and **Add folder** (a folder of PNG/JPG/JPEG/AVIF images becomes
 one book) buttons. An empty library shows a call-to-action that opens the same picker.
-Click a cover (or focus it and press `Enter`) to start reading; navigation works the same
-for folders and archives.
+Double-click the centered cover (or press `Enter`) to start reading; clicking left or right
+of it steps the carousel one book per click. Navigation works the same for folders and
+archives.
 
 **Library**
 
 | Key | Action |
 |-----|--------|
 | `←` / `→` | Move the carousel focus |
+| Click left / right of the centered cover | Move the carousel focus one book |
 | `Enter` | Open the focused book |
+| Double-click the centered cover | Open it |
 | `↓` | Return to the open book (if any) |
 | `/` | Focus the search field |
 | `x` | Enter selection mode |
@@ -142,9 +143,11 @@ for folders and archives.
 | `T` | Toggle the thumbnail strip |
 | `↑` | Return to the Library |
 
-Arrows follow the reading direction (LTR: `→` = next; RTL: `←` = next). `Space` and
-`Backspace` are always next/previous in reading order. `D` / `R` / `C` mode changes are
-remembered per book, so the book reopens the way you left it.
+Arrows follow the reading direction (LTR: `→` = next; RTL: `←` = next). Clicking the
+left or right half of the page turns it the same way the arrows do (a drag still pans —
+only a clean click turns). `Space` and `Backspace` are always next/previous in reading
+order. `D` / `R` / `C` mode changes are remembered per book, so the book reopens the way
+you left it.
 
 **Selection mode (Library)**
 
