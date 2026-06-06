@@ -209,6 +209,28 @@ pub(crate) fn wire_open_handlers(
     }
 }
 
+fn open_and_enter(
+    ui: &ViewerWindow,
+    nav: &Rc<RefCell<NavState>>,
+    open_book: &Rc<app::OpenBookUseCase>,
+    state: &Rc<RefCell<ViewerState>>,
+    viewport: &Rc<RefCell<ViewportState>>,
+    refresh: &CarouselRefresh<'_>,
+    path: &std::path::Path,
+) {
+    // Writes back the OLD book first, opens the new path, then resumes its
+    // stored page. Empty sources are removed instead of entering the viewer.
+    let outcome = open_book.run(ui, path, SkippedDetail::None);
+    let enter_viewer = !matches!(outcome, app::OpenOutcome::EmptyBookRemoved { .. });
+    finalize_open(ui, state, viewport, refresh, outcome);
+    // Derive the title from authoritative post-open state so failed opens never
+    // display the requested path as the current book.
+    ui.set_current_book_name(current_book_name(state).into());
+    if enter_viewer {
+        go_to_viewer(ui, nav);
+    }
+}
+
 /// Registers the library-search and carousel navigation/open callbacks onto `ui`.
 /// Panel constraint (#151): explicit handle list IS the dependency list — no AppState bundle.
 #[allow(clippy::too_many_arguments)]
@@ -319,15 +341,10 @@ pub(crate) fn wire_carousel_handlers(
                     );
                     return;
                 };
-                // open_book.run writes back the OLD book's position first,
-                // then opens the new path and resumes its stored position.
-                let outcome = open_book.run(&ui, &path, SkippedDetail::None);
-                // An empty source is removed instead of opened: stay on the
-                // Library (the rebuilt carousel no longer shows it) rather than
-                // switching to an empty viewer.
-                let enter_viewer = !matches!(outcome, app::OpenOutcome::EmptyBookRemoved { .. });
-                finalize_open(
+                open_and_enter(
                     &ui,
+                    &nav,
+                    &open_book,
                     &state,
                     &viewport,
                     &CarouselRefresh {
@@ -337,19 +354,8 @@ pub(crate) fn wire_carousel_handlers(
                         selection: &selection,
                         localizer: &localizer,
                     },
-                    outcome,
+                    &path,
                 );
-                // Title-bar book name is derived from the AUTHORITATIVE post-open
-                // state (the canonical `open_file`), so a FAILED open (a Library
-                // book that was moved/deleted) never shows that book's name: on
-                // failure `open_file` is unchanged and `run` already set an
-                // `Error:` status. Enter the viewer only when the open actually
-                // produced a book to show — an empty source was auto-removed and
-                // `finalize_open` left us on a refreshed Library.
-                ui.set_current_book_name(current_book_name(&state).into());
-                if enter_viewer {
-                    go_to_viewer(&ui, &nav);
-                }
             })
         });
     }
@@ -391,17 +397,10 @@ pub(crate) fn wire_carousel_handlers(
                     );
                     return;
                 };
-                // Same open sequence as on_carousel_open: open_book.run writes back
-                // the OLD book's position, opens the bookmarked path, and resumes
-                // its stored page; a failed open (file moved/deleted) is handled by
-                // run itself (leaves open_file unchanged + sets an `Error:` status).
-                let outcome = open_book.run(&ui, &path, SkippedDetail::None);
-                // An empty source is removed instead of opened: stay on the
-                // Library (the rebuilt carousel no longer shows it) rather than
-                // switching to an empty viewer.
-                let enter_viewer = !matches!(outcome, app::OpenOutcome::EmptyBookRemoved { .. });
-                finalize_open(
+                open_and_enter(
                     &ui,
+                    &nav,
+                    &open_book,
                     &state,
                     &viewport,
                     &CarouselRefresh {
@@ -411,12 +410,8 @@ pub(crate) fn wire_carousel_handlers(
                         selection: &selection,
                         localizer: &localizer,
                     },
-                    outcome,
+                    &path,
                 );
-                ui.set_current_book_name(current_book_name(&state).into());
-                if enter_viewer {
-                    go_to_viewer(&ui, &nav);
-                }
             })
         });
     }
