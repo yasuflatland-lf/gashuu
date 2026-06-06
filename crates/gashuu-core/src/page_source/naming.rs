@@ -6,7 +6,7 @@
 //! is provided by `crate::ordering::natural_cmp`.
 
 /// Image extensions recognized (case-insensitive).
-pub(crate) const IMAGE_EXTS: &[&str] = &["png", "jpg", "jpeg"];
+pub(crate) const IMAGE_EXTS: &[&str] = &["png", "jpg", "jpeg", "avif"];
 
 /// Per-file uncompressed ceiling shared by all archive sources. Entries
 /// declaring more are skipped at open; reads are also capped to this many bytes
@@ -57,6 +57,7 @@ mod image_ext_tests {
         assert!(has_image_ext(Path::new("photo.png")));
         assert!(has_image_ext(Path::new("photo.jpg")));
         assert!(has_image_ext(Path::new("photo.jpeg")));
+        assert!(has_image_ext(Path::new("photo.avif")));
     }
 
     #[test]
@@ -64,6 +65,7 @@ mod image_ext_tests {
         assert!(has_image_ext(Path::new("photo.PNG")));
         assert!(has_image_ext(Path::new("photo.JPG")));
         assert!(has_image_ext(Path::new("photo.Jpeg")));
+        assert!(has_image_ext(Path::new("photo.AVIF")));
     }
 
     #[test]
@@ -71,6 +73,8 @@ mod image_ext_tests {
         assert!(!has_image_ext(Path::new("notes.txt")));
         assert!(!has_image_ext(Path::new("archive.zip")));
         assert!(!has_image_ext(Path::new("noextension")));
+        // `.avi` (video) must not prefix-match the `avif` entry.
+        assert!(!has_image_ext(Path::new("video.avi")));
     }
 }
 

@@ -27,6 +27,12 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
+      # gashuu-core's `image` dep decodes AVIF through the dav1d C library
+      # (`avif-native` feature), resolved via pkg-config. Ubuntu 24.04 ships
+      # 1.4.1 (>= the 1.3.0 floor). See docs/toolchain.md.
+      - run: |
+          sudo apt-get update
+          sudo apt-get install -y libdav1d-dev
       # Install all three components explicitly on mise's pinned toolchain:
       # llvm-tools-preview (for cargo-llvm-cov; mise.toml omits it) plus rustfmt and
       # clippy. rustfmt/clippy ARE declared in mise.toml, but on a mise cache hit
@@ -74,13 +80,51 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      # Slint's winit + femtovg backend links these system libraries on Linux.
+      # Slint's winit + femtovg backend links these system libraries on Linux;
+      # libdav1d-dev backs the image crate's AVIF decode (avif-native feature).
       - if: runner.os == 'Linux'
+        name: Install system libraries + dav1d (apt)
         run: |
           sudo apt-get update
           sudo apt-get install -y \
             libfontconfig1-dev libfreetype6-dev libxcb1-dev \
-            libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libxkbcommon-dev
+            libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libxkbcommon-dev \
+            libdav1d-dev
+      # dav1d for the non-Linux legs. The SYSTEM_DEPS_* env overrides point the
+      # dav1d-sys build directly at the library, bypassing pkg-config (not
+      # reliably on PATH on these runners). See docs/toolchain.md.
+      - if: runner.os == 'macOS'
+        name: Install dav1d (brew)
+        run: |
+          brew install dav1d
+          PREFIX="$(brew --prefix dav1d)"
+          {
+            echo "SYSTEM_DEPS_DAV1D_NO_PKG_CONFIG=1"
+            echo "SYSTEM_DEPS_DAV1D_LIB=dav1d"
+            echo "SYSTEM_DEPS_DAV1D_SEARCH_NATIVE=$PREFIX/lib"
+            echo "SYSTEM_DEPS_DAV1D_INCLUDE=$PREFIX/include"
+          } >> "$GITHUB_ENV"
+      # vcpkg compiles dav1d from source on a cold cache (~5-8 min); the archives
+      # cache makes warm runs take seconds. Static lib: no DLL needed at test time.
+      - if: runner.os == 'Windows'
+        name: Cache vcpkg-built dav1d
+        uses: actions/cache@v4
+        with:
+          path: ~\AppData\Local\vcpkg\archives
+          key: vcpkg-dav1d-x64-windows-static-md
+      - if: runner.os == 'Windows'
+        name: Install dav1d (vcpkg, static)
+        shell: pwsh
+        run: |
+          vcpkg install dav1d:x64-windows-static-md
+          $root = "$Env:VCPKG_INSTALLATION_ROOT\installed\x64-windows-static-md"
+          @(
+            "SYSTEM_DEPS_DAV1D_NO_PKG_CONFIG=1",
+            "SYSTEM_DEPS_DAV1D_LINK=static",
+            "SYSTEM_DEPS_DAV1D_LIB=dav1d",
+            "SYSTEM_DEPS_DAV1D_SEARCH_NATIVE=$root\lib",
+            "SYSTEM_DEPS_DAV1D_INCLUDE=$root\include"
+          ) | Out-File -FilePath $Env:GITHUB_ENV -Append
       - run: rustup component add clippy
       # UI lint once (Linux leg); add per-OS clippy only when cfg(os) code appears.
       - if: matrix.os == 'ubuntu-latest'

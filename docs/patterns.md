@@ -35,6 +35,10 @@ When a PR swaps a helper `X` for a newer `Y` that serves all of `X`'s callers, a
 
 `image_ops::decode` first does a header pre-read with a SECOND lightweight `ImageReader` (`into_dimensions()` consumes the reader, so a second one is required) → `check_pixel_limit(w,h)?` (pure, no alloc; `MAX_PIXELS`=128 Mpx aligns with the 512 MiB / 4-bytes-per-RGBA cap; `CoreError::ImageTooLarge {width,height,pixels,max}`), THEN the full decode via `image::ImageReader` + `image::Limits` (16384×16384, 512 MiB alloc cap) to reject decompression bombs before allocating. `image::Limits` is `#[non_exhaustive]`, so build it with `Limits::default()` + field assignment (hence the local `#[allow(clippy::field_reassign_with_default)]`).
 
+### Decoder construction cost is FORMAT-DEPENDENT — `into_dimensions()` is not always a header read (AVIF)
+
+WHY the pre-read above must branch: `image` 0.25's `AvifDecoder::new` performs the FULL dav1d decode in its constructor, so for AVIF, `into_dimensions()` (a) guards nothing — allocation happens before `check_pixel_limit` runs — and (b) silently decodes every page TWICE (pre-read + real decode: pages, thumbnails, covers). `decode_dynamic` therefore skips the pre-read when the guessed format is `ImageFormat::Avif` and runs `check_pixel_limit` once, post-decode; `image::Limits` is also NOT enforced by the AVIF decoder (accepted residual risk, [ADR-0010](ADRs/0010-avif-decode-via-dav1d.md)). Before extending the guard to a NEW format, read the vendored decoder source (`~/.cargo/registry/src/*/image-*/src/codecs/<fmt>/`) and verify `new()` is lazy — do not assume; this one was caught only by a vendored-source review after the docs-level claim had already been written.
+
 ### `DynamicImage::thumbnail` UPSCALES
 
 small images to fill the bounding box — it is NOT downscale-only despite the name. `decode_thumbnail` guards with `if width > max_side || height > max_side { thumbnail() } else { unchanged }`, so a source already within `max_side` is returned at its original size. Discovered empirically — a no-upscale test pins it and the guard's comment credits this, so nobody deletes the guard.

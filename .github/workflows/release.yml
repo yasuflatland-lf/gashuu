@@ -81,10 +81,76 @@ jobs:
       # stays lean); install it here only, on the release runner.
       - name: Install cargo-bundle
         run: cargo install cargo-bundle --locked --version 0.11.0
+      # dav1d (AVIF decode) is linked STATICALLY into the release binary so the
+      # .app stays self-contained (no bundled dylib, no end-user install). brew
+      # ships no static archive, so build dav1d from source for each arch and
+      # lipo the two static archives into one fat libdav1d.a. nasm assembles the
+      # x86_64 SIMD paths fine on the arm64 host (it is an x86-family assembler).
+      - name: Install dav1d build tools (meson/ninja/nasm)
+        run: brew install meson ninja nasm
+      - name: Build dav1d static (both arches) and lipo
+        run: |
+          git clone --branch 1.5.3 --depth 1 https://github.com/videolan/dav1d.git /tmp/dav1d-src
+          # Native arm64 static build.
+          meson setup /tmp/dav1d-build-arm64 /tmp/dav1d-src \
+            --default-library=static --buildtype=release \
+            -Denable_tools=false -Denable_tests=false \
+            --prefix=/tmp/dav1d-arm64
+          meson compile -C /tmp/dav1d-build-arm64
+          meson install -C /tmp/dav1d-build-arm64
+          # Cross x86_64 static build. meson detects the HOST arch unless a
+          # cross-file pins cpu_family (CFLAGS alone would not switch its
+          # per-arch asm selection).
+          cat > /tmp/x86_64-darwin-cross.txt <<'EOF'
+          [binaries]
+          c = 'clang'
+          ar = 'ar'
+          strip = 'strip'
+
+          [built-in options]
+          c_args = ['-arch', 'x86_64']
+          c_link_args = ['-arch', 'x86_64']
+
+          [host_machine]
+          system = 'darwin'
+          cpu_family = 'x86_64'
+          cpu = 'x86_64'
+          endian = 'little'
+          EOF
+          meson setup /tmp/dav1d-build-x86_64 /tmp/dav1d-src \
+            --default-library=static --buildtype=release \
+            -Denable_tools=false -Denable_tests=false \
+            --prefix=/tmp/dav1d-x86_64 \
+            --cross-file /tmp/x86_64-darwin-cross.txt
+          meson compile -C /tmp/dav1d-build-x86_64
+          meson install -C /tmp/dav1d-build-x86_64
+          # Fat static archive + arch-neutral headers under one prefix.
+          mkdir -p /tmp/dav1d-universal/lib
+          lipo -create -output /tmp/dav1d-universal/lib/libdav1d.a \
+            /tmp/dav1d-arm64/lib/libdav1d.a /tmp/dav1d-x86_64/lib/libdav1d.a
+          lipo -info /tmp/dav1d-universal/lib/libdav1d.a
+          cp -R /tmp/dav1d-arm64/include /tmp/dav1d-universal/include
       - name: Build both arches
+        # SYSTEM_DEPS_* overrides point dav1d-sys at the fat static archive,
+        # bypassing pkg-config; the linker picks the right slice per target.
+        env:
+          SYSTEM_DEPS_DAV1D_NO_PKG_CONFIG: '1'
+          SYSTEM_DEPS_DAV1D_LINK: static
+          SYSTEM_DEPS_DAV1D_LIB: dav1d
+          SYSTEM_DEPS_DAV1D_SEARCH_NATIVE: /tmp/dav1d-universal/lib
+          SYSTEM_DEPS_DAV1D_INCLUDE: /tmp/dav1d-universal/include
         run: |
           cargo build --release --target aarch64-apple-darwin -p gashuu
           cargo build --release --target x86_64-apple-darwin  -p gashuu
+      - name: Verify dav1d linked statically (no dylib reference in either slice)
+        run: |
+          for slice in target/aarch64-apple-darwin/release/gashuu target/x86_64-apple-darwin/release/gashuu; do
+            if otool -L "$slice" | grep -i dav1d; then
+              echo "::error::$slice dynamically links dav1d — expected static"
+              exit 1
+            fi
+          done
+          echo "Static-link audit passed."
       - name: Lipo into a universal binary
         run: |
           mkdir -p target/universal
@@ -142,6 +208,26 @@ jobs:
         with:
           key: release-windows
           save-if: 'true'
+      # dav1d (AVIF decode), built static by vcpkg (preinstalled on the runner)
+      # so gashuu.exe stays self-contained — no DLL ships beside the zipped exe.
+      # The archives cache turns the ~5-8 min cold source build into seconds.
+      - name: Cache vcpkg-built dav1d
+        uses: actions/cache@v4
+        with:
+          path: ~\AppData\Local\vcpkg\archives
+          key: vcpkg-dav1d-x64-windows-static-md
+      - name: Install dav1d (vcpkg, static)
+        shell: pwsh
+        run: |
+          vcpkg install dav1d:x64-windows-static-md
+          $root = "$Env:VCPKG_INSTALLATION_ROOT\installed\x64-windows-static-md"
+          @(
+            "SYSTEM_DEPS_DAV1D_NO_PKG_CONFIG=1",
+            "SYSTEM_DEPS_DAV1D_LINK=static",
+            "SYSTEM_DEPS_DAV1D_LIB=dav1d",
+            "SYSTEM_DEPS_DAV1D_SEARCH_NATIVE=$root\lib",
+            "SYSTEM_DEPS_DAV1D_INCLUDE=$root\include"
+          ) | Out-File -FilePath $Env:GITHUB_ENV -Append
       # ImageMagick (magick) is preinstalled on the windows-latest runner image.
       # Generate the .ico from the committed PNG so build.rs (winresource) embeds
       # it into gashuu.exe. The .ico is a build artifact, not committed.
@@ -153,6 +239,17 @@ jobs:
             crates/gashuu/ui/assets/app-icon.ico
       - name: Build release binary (build.rs embeds the .ico)
         run: cargo build --release -p gashuu
+      - name: Verify gashuu.exe has no dav1d DLL dependency
+        shell: pwsh
+        run: |
+          $vsRoot = & "${Env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath
+          $dumpbin = Get-ChildItem "$vsRoot\VC\Tools\MSVC\*\bin\Hostx64\x64\dumpbin.exe" | Select-Object -First 1
+          $deps = & $dumpbin.FullName /dependents target\release\gashuu.exe
+          if ($deps -match "dav1d") {
+            Write-Error "gashuu.exe depends on a dav1d DLL - expected static link"
+            exit 1
+          }
+          Write-Output "dumpbin check passed - dav1d is statically linked."
       # ── SIGNING SEAM (Windows) ────────────────────────────────────────────
       # To Authenticode-sign later, insert a step HERE (before the zip):
       #   secrets: WIN_CERTIFICATE (base64 .pfx), WIN_CERT_PWD, WIN_CERT_THUMBPRINT

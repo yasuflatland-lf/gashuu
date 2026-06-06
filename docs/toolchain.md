@@ -13,15 +13,36 @@ Rust is pinned to **1.96.0** via `mise.toml`. Run every cargo command through th
 
 ### Linux system libraries (Slint)
 
-Slint links system libraries on **Linux** only: `libfontconfig1-dev libfreetype6-dev libxcb1-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libxkbcommon-dev`. macOS/Windows need nothing extra.
+Slint links system libraries on **Linux** only: `libfontconfig1-dev libfreetype6-dev libxcb1-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libxkbcommon-dev`. macOS/Windows need nothing extra **for Slint** — but the dav1d AVIF build dependency below applies on all 3 OS.
 
 ### zip dependency: deflate-only, no default features
 
-**`zip` is declared `{ version = "2", default-features = false, features = ["deflate"] }` — never enable its default features.** They pull native C `-sys` libs (bzip2-sys/lzma-sys/zstd-sys) that would require a C toolchain on every OS and BREAK the "macOS/Windows need nothing extra" promise above. CBZ/ZIP manga pages use only Stored (always available) or Deflate (pure-Rust via flate2/miniz_oxide), so `deflate`-only keeps the cross-platform build clean.
+**`zip` is declared `{ version = "2", default-features = false, features = ["deflate"] }` — never enable its default features.** They pull native C `-sys` libs (bzip2-sys/lzma-sys/zstd-sys) that would add a needless C toolchain burden on every OS (unlike the two justified exceptions below: `unrar` and dav1d). CBZ/ZIP manga pages use only Stored (always available) or Deflate (pure-Rust via flate2/miniz_oxide), so `deflate`-only keeps the cross-platform build clean.
 
 ### unrar dependency: C++ toolchain (knowing exception)
 
 **`unrar` is declared `unrar = "0.5"` (always-on, NO feature gate, per Issue #7) and DOES require a C++ compiler on all 3 OS** — it bundles C++ UnRAR built via `cc` (gcc/clang/MSVC, all standard on GitHub runners; macOS Apple clang suffices, no extra apt pkgs beyond the Slint set). This is a knowing exception to the `zip` "no native toolchain" stance: RAR has no pure-Rust decoder, so the C++ compile is unavoidable (build-time cost, cached by `rust-cache`). The non-free RARLAB license clause is recorded in [THIRD_PARTY_LICENSES.md](../THIRD_PARTY_LICENSES.md) (repo root, an acceptance requirement). `base64 = "0.22"` is a core dev-dep (decodes the base64 RAR fixtures). **Intentional deviation from the plan-design doc:** it specified `unrar` (fine) but the implementation uses the SYNCHRONOUS `unrar` over the existing rayon pool — sync `read_bytes` + CPU-bound decode fit rayon naturally; async would force a `block_on` bridge and infect every layer with tokio (same rationale as the sync `zip`).
+
+### dav1d dependency: system C library for AVIF decode (knowing exception)
+
+**`image` is declared `{ version = "0.25", features = ["avif-native"] }` (always-on, NO feature
+gate, mirroring the `unrar` stance) and requires `dav1d >= 1.3.0` at BUILD time on all 3 OS** —
+resolved by the `dav1d-sys`/`system-deps` build chain (pkg-config, or the `SYSTEM_DEPS_DAV1D_*`
+env overrides CI uses). This is the second knowing exception to the `zip` "no native toolchain"
+stance; the decoder choice and license rationale live in
+[ADR-0010](ADRs/0010-avif-decode-via-dav1d.md) (dav1d is BSD-2-Clause, recorded in
+[THIRD_PARTY_LICENSES.md](../THIRD_PARTY_LICENSES.md)).
+
+Dev setup — **macOS**: `brew install dav1d` (verify: `pkg-config --modversion dav1d`).
+**Linux**: `sudo apt-get install -y libdav1d-dev` (Ubuntu 24.04 ships 1.4.1). **Windows**:
+`vcpkg install dav1d:x64-windows-static-md`, then set the `SYSTEM_DEPS_DAV1D_*` variables as in
+`.github/workflows/ci.yml`. Without dav1d the build fails loudly at `dav1d-sys` with a clear
+"dav1d not found" probe error — intentional, since the dependency is not feature-gated.
+
+**End users still install nothing**: release builds link dav1d STATICALLY — macOS builds it from
+source per arch (meson/ninja/nasm) and lipo-merges one fat `libdav1d.a`; Windows uses the vcpkg
+static triplet. Both release jobs assert the result (`otool -L` / `dumpbin /dependents` show no
+dav1d dynamic reference). CI test jobs may link dynamically (brew/apt) — nothing ships from CI.
 
 ### Thumbnail strip added no new dependencies
 

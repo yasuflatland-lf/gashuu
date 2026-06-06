@@ -252,6 +252,18 @@ mod tests {
     }
 
     #[test]
+    fn avif_entries_are_indexed_as_pages() {
+        // Open-time filtering is extension-only (bytes are never decoded at
+        // open), so PNG bytes under an `.avif` name suffice — the same
+        // precedent as the `a.jpg` fixture above.
+        let cbz = write_cbz(&[("1.avif", tiny_png()), ("notes.txt", b"x".to_vec())]);
+        let src = ZipSource::open(cbz.path()).unwrap();
+
+        assert_eq!(names(&src), vec!["1.avif".to_string()]);
+        assert_eq!(src.skipped_count(), 0);
+    }
+
+    #[test]
     fn zip_slip_entry_is_rejected_and_counted() {
         let png = tiny_png();
         let cbz = write_cbz(&[("1.png", png.clone()), ("../evil.png", png.clone())]);
