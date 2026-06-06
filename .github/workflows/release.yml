@@ -212,7 +212,7 @@ jobs:
       # so gashuu.exe stays self-contained — no DLL ships beside the zipped exe.
       # The archives cache turns the ~5-8 min cold source build into seconds.
       - name: Cache vcpkg-built dav1d
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ~\AppData\Local\vcpkg\archives
           key: vcpkg-dav1d-x64-windows-static-md

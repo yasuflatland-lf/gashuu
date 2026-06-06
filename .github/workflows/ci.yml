@@ -108,7 +108,7 @@ jobs:
       # cache makes warm runs take seconds. Static lib: no DLL needed at test time.
       - if: runner.os == 'Windows'
         name: Cache vcpkg-built dav1d
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ~\AppData\Local\vcpkg\archives
           key: vcpkg-dav1d-x64-windows-static-md
