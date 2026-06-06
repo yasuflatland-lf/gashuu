@@ -1,6 +1,6 @@
 # <img src="crates/gashuu/ui/assets/app-icon.png" alt="gashuu app icon" width="36" height="36" /> gashuu
 
-## A fast, elegant manga reader built for immersive viewing.
+## A fast, elegant manga / comic reader built for immersive viewing.
 
 [![CI](https://img.shields.io/github/actions/workflow/status/yasuflatland-lf/gashuu/ci.yml?branch=main&label=CI&logo=github)](https://github.com/yasuflatland-lf/gashuu/actions/workflows/ci.yml)
 [![coverage](https://img.shields.io/codecov/c/github/yasuflatland-lf/gashuu?flag=rust&label=coverage&logo=codecov)](https://codecov.io/gh/yasuflatland-lf/gashuu)
