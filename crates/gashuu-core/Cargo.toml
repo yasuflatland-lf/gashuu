@@ -4,7 +4,9 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-image = "0.25"
+# `avif-native` enables AVIF DECODE via dav1d (BSD-2-Clause C library; the second
+# native-toolchain exception after `unrar` — see docs/toolchain.md and ADR-0010).
+image = { version = "0.25", features = ["avif-native"] }
 walkdir = "2"
 zip = { version = "8", default-features = false, features = ["deflate"] }
 thiserror = "2"

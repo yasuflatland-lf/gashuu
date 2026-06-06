@@ -26,7 +26,7 @@ pub struct FolderSource {
 }
 
 impl FolderSource {
-    /// Walk `root`, collect top-level PNG/JPG/JPEG files, and sort them naturally.
+    /// Walk `root`, collect top-level PNG/JPG/JPEG/AVIF files, and sort them naturally.
     ///
     /// Directory entries that error during the walk (e.g. permission denied,
     /// broken symlinks) are counted in [`PageSource::skipped_count`] rather than
@@ -96,7 +96,9 @@ mod folder_source_tests {
     #[test]
     fn lists_only_images_in_natural_order() {
         let dir = tempfile::tempdir().unwrap();
-        for name in ["10.png", "2.png", "1.png", "a.jpg"] {
+        // `b.avif` reuses PNG bytes: the walk filters by extension only, never
+        // decoding (same precedent as `a.jpg` here).
+        for name in ["10.png", "2.png", "1.png", "a.jpg", "b.avif"] {
             write_png(&dir.path().join(name));
         }
         // Non-image files must be excluded.
@@ -105,7 +107,7 @@ mod folder_source_tests {
         let source = FolderSource::open(dir.path()).unwrap();
         let names: Vec<String> = source.list_pages().into_iter().map(|e| e.name).collect();
 
-        assert_eq!(names, vec!["1.png", "2.png", "10.png", "a.jpg"]);
+        assert_eq!(names, vec!["1.png", "2.png", "10.png", "a.jpg", "b.avif"]);
         assert_eq!(source.skipped_count(), 0);
     }
 
@@ -149,11 +151,12 @@ mod folder_source_tests {
         write_png(&dir.path().join("1.PNG"));
         write_png(&dir.path().join("2.JPG"));
         write_png(&dir.path().join("3.Jpeg"));
+        write_png(&dir.path().join("4.AVIF"));
 
         let source = FolderSource::open(dir.path()).unwrap();
         let names: Vec<String> = source.list_pages().into_iter().map(|e| e.name).collect();
 
-        assert_eq!(names, vec!["1.PNG", "2.JPG", "3.Jpeg"]);
+        assert_eq!(names, vec!["1.PNG", "2.JPG", "3.Jpeg", "4.AVIF"]);
     }
 
     #[test]

@@ -82,10 +82,17 @@ impl DecodedImage {
 #[allow(clippy::field_reassign_with_default)]
 fn decode_dynamic(bytes: &[u8]) -> Result<image::DynamicImage, CoreError> {
     // Pre-read: parse header only (cheap) to check dimensions before allocating.
+    // AVIF is the exception: `AvifDecoder::new` runs the full dav1d decode in its
+    // constructor, so a dimension pre-read would decode the whole image and the
+    // real decode below would do it AGAIN. Skip the pre-read for AVIF — its
+    // pixel guard is the post-decode check at the bottom (post-allocation; see
+    // ADR-0010 for the accepted residual risk).
     let header_reader =
         image::ImageReader::new(std::io::Cursor::new(bytes)).with_guessed_format()?;
-    let (w, h) = header_reader.into_dimensions()?;
-    check_pixel_limit(w, h)?;
+    if header_reader.format() != Some(image::ImageFormat::Avif) {
+        let (w, h) = header_reader.into_dimensions()?;
+        check_pixel_limit(w, h)?;
+    }
 
     // Full decode with the existing Limits-based alloc cap (defense in depth).
     let mut reader = image::ImageReader::new(std::io::Cursor::new(bytes)).with_guessed_format()?;
@@ -94,17 +101,23 @@ fn decode_dynamic(bytes: &[u8]) -> Result<image::DynamicImage, CoreError> {
     limits.max_image_height = Some(16_384);
     limits.max_alloc = Some(512 * 1024 * 1024);
     reader.limits(limits);
-    Ok(reader.decode()?)
+    let img = reader.decode()?;
+    // Post-decode guard: the only pixel-limit check for AVIF (see above); for
+    // other formats it is redundant with the pre-read, but cheap.
+    check_pixel_limit(img.width(), img.height())?;
+    Ok(img)
 }
 
 /// Decode encoded image bytes into RGBA8 using the `image` crate.
 ///
-/// Supports any format recognized by `image::ImageReader` (PNG, JPEG, …). Decoder
-/// limits reject oversize / decompression-bomb images before allocation.
+/// Supports any format recognized by `image::ImageReader` (PNG, JPEG, AVIF, …).
+/// Decoder limits reject oversize / decompression-bomb images before allocation.
 ///
 /// Defense in depth: a lightweight header-only pre-read via `into_dimensions()`
-/// runs [`check_pixel_limit`] before the full decode allocates any pixel memory.
-/// The existing `image::Limits` alloc cap is kept as a second layer.
+/// runs [`check_pixel_limit`] before the full decode allocates any pixel memory —
+/// except for AVIF, whose decoder only learns dimensions by fully decoding, so
+/// its guard runs once, post-decode (see `decode_dynamic`). The existing
+/// `image::Limits` alloc cap is kept as a second layer.
 pub fn decode(bytes: &[u8]) -> Result<DecodedImage, CoreError> {
     let img = decode_dynamic(bytes)?;
     let rgba = img.to_rgba8();
@@ -143,6 +156,18 @@ mod tests {
         let img = image::RgbaImage::from_pixel(w, h, image::Rgba([1, 2, 3, 255]));
         let mut bytes = Vec::new();
         img.write_to(&mut Cursor::new(&mut bytes), image::ImageFormat::Png)
+            .unwrap();
+        bytes
+    }
+
+    /// Synthesize a tiny AVIF in-process via the ravif encoder (in `image`'s
+    /// default feature set), mirroring `png_bytes` — no committed binary
+    /// fixtures. Decoding it exercises the `avif-native` (dav1d) feature; the
+    /// rav1e encode is slow in debug builds, so keep fixture dimensions tiny.
+    fn avif_bytes(w: u32, h: u32) -> Vec<u8> {
+        let img = image::RgbaImage::from_pixel(w, h, image::Rgba([100, 150, 200, 255]));
+        let mut bytes = Vec::new();
+        img.write_to(&mut Cursor::new(&mut bytes), image::ImageFormat::Avif)
             .unwrap();
         bytes
     }
@@ -364,6 +389,31 @@ mod tests {
         assert!(
             matches!(err, CoreError::Decode(_)),
             "expected Decode error, got {err:?}"
+        );
+    }
+
+    // --- AVIF (avif-native / dav1d) ---
+
+    /// Load-bearing gate for the `avif-native` feature: without it,
+    /// `decode` returns `Err(Decode(_))` for AVIF bytes and this test fails.
+    /// AVIF is lossy, so only structural properties are asserted (dimensions
+    /// and RGBA length), not pixel-exact values.
+    #[test]
+    fn decode_avif_reports_dimensions_and_rgba_length() {
+        let decoded = decode(&avif_bytes(8, 6)).unwrap();
+        assert_eq!(decoded.width(), 8);
+        assert_eq!(decoded.height(), 6);
+        assert_eq!(decoded.rgba().len(), 8 * 6 * 4);
+    }
+
+    #[test]
+    fn decode_thumbnail_avif_fits_max_side() {
+        let thumb = decode_thumbnail(&avif_bytes(8, 6), 4).unwrap();
+        assert!(thumb.width() <= 4, "width {} > max_side 4", thumb.width());
+        assert!(
+            thumb.height() <= 4,
+            "height {} > max_side 4",
+            thumb.height()
         );
     }
 
