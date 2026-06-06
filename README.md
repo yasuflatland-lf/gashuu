@@ -3,12 +3,21 @@
 [![CI](https://img.shields.io/github/actions/workflow/status/yasuflatland-lf/gashuu/ci.yml?branch=main&label=CI&logo=github)](https://github.com/yasuflatland-lf/gashuu/actions/workflows/ci.yml)
 [![coverage](https://img.shields.io/codecov/c/github/yasuflatland-lf/gashuu?flag=rust&label=coverage&logo=codecov)](https://codecov.io/gh/yasuflatland-lf/gashuu)
 
+<img src="crates/gashuu/ui/assets/app-icon.png" alt="gashuu app icon" width="48" height="48" />
+
+## A fast, elegant manga reader built for immersive viewing.
+
+| Library | Viewer | Settings |
+| :---: | :---: | :---: |
+| ![Cover-flow library carousel](docs/screenshots/carousel.png) | ![Two-page spread viewer with thumbnail strip](docs/screenshots/viewer.png) | ![Per-book view settings dialog](docs/screenshots/config.png) |
+
 A cross-platform manga / comic viewer built with Rust and [Slint](https://slint.dev).
+
 Open a folder of images or a comic archive and read with the keyboard — two-page
 spreads, right-to-left binding, zoom/pan, a thumbnail strip, a cover-flow library,
 and persistent settings, in an English / 日本語 UI.
 
-*gashuu* (画集, [ɡaɕɯː]) is the Japanese word for a book or booklet of drawings — an
+*gashuu* (画集, [ɡaɕɯː]) is the Japanese for a book or booklet of drawings — an
 art book. It is a manga viewer, but the name carries a wish: that it be as refined and
 tasteful a tool as a fine art book.
 
@@ -238,3 +247,6 @@ MIT — see [LICENSE](LICENSE). The RAR/CBR backend uses the UnRAR library, whic
 RARLAB's non-free license (read-only use is permitted; re-creating the RAR compression
 algorithm is not). The AVIF decoder links dav1d (BSD-2-Clause). See
 [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md) for the full license texts.
+
+Artwork in screenshots: [*Pepper&Carrot*](https://www.peppercarrot.com) by David Revoy,
+[CC-BY 4.0](https://creativecommons.org/licenses/by/4.0/).
