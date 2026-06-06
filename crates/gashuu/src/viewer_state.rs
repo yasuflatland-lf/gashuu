@@ -135,9 +135,9 @@ impl ViewerState {
         Self::with_cache_config(CacheConfig::default())
     }
 
-    /// Construct with explicit cache config and default display modes
-    /// (Single / Standalone / Ltr) so callers that only care about cache sizing
-    /// get single-page behavior.
+    /// Construct with explicit cache config and fixed display modes
+    /// (Single / Standalone / Ltr — deliberate pins, NOT the `Settings` defaults)
+    /// so callers that only care about cache sizing get single-page behavior.
     pub fn with_cache_config(cache_config: CacheConfig) -> Self {
         Self {
             cache: None,
