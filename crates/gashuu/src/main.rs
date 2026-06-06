@@ -193,25 +193,22 @@ fn main() -> color_eyre::Result<()> {
         ui.set_show_guide(true);
     }
 
+    // Wire all event handlers onto the window (handlers/, #151).
     handlers::wire_open_handlers(
-        &ui, &open_book, &state, &viewport, &library, &covers, &search, &selection, &localizer,
+        &ui, &state, &viewport, &library, &open_book, &covers, &search, &selection, &localizer,
     );
     handlers::wire_carousel_handlers(
-        &ui, &library, &nav, &open_book, &state, &viewport, &covers, &search, &selection,
+        &ui, &state, &viewport, &library, &nav, &open_book, &covers, &search, &selection,
         &localizer,
     );
-
     handlers::wire_selection_handlers(
         &ui, &state, &library, &covers, &search, &selection, &localizer,
     );
-
     handlers::wire_viewer_input_handlers(&ui, &state, &viewport, &localizer);
-
     handlers::wire_settings_handlers(&ui, &state, &viewport, &settings, &library, &localizer);
     handlers::wire_view_mode_handlers(
         &ui, &state, &viewport, &settings, &library, &search, &selection, &localizer,
     );
-
     handlers::wire_viewport_handlers(&ui, &viewport);
     handlers::wire_nav_handlers(
         &ui, &state, &viewport, &settings, &library, &nav, &covers, &search, &selection, &localizer,

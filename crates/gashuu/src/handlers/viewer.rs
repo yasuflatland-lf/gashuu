@@ -15,7 +15,7 @@ use slint::ComponentHandle;
 use std::cell::RefCell;
 use std::rc::Rc;
 
-/// Registers the viewer input callbacks (thumbnails, page jump, chrome reveal, scrubber) onto `ui`.
+/// Registers the viewer input callbacks (thumbnails, page jump, chrome reveal, scrubber, thumbnail-strip toggle) onto `ui`.
 /// Panel constraint (#151): explicit handle list IS the dependency list — no AppState bundle.
 pub(crate) fn wire_viewer_input_handlers(
     ui: &ViewerWindow,

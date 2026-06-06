@@ -17,7 +17,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 /// Registers the settings/shortcuts dialog lifecycle callbacks (open, close,
-/// reset overrides, first-run guide dismissal) onto `ui`.
+/// shortcuts overlay open/close, reset overrides, first-run guide dismissal) onto `ui`.
 /// Panel constraint (#151): explicit handle list IS the dependency list — no AppState bundle.
 pub(crate) fn wire_settings_handlers(
     ui: &ViewerWindow,

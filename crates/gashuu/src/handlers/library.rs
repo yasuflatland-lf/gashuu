@@ -1,28 +1,33 @@
-use crate::carousel::{apply_selection_flags, set_carousel_selected};
-use crate::library_model::{LibrarySearchState, LibrarySelectionState};
-use crate::navigation::NavState;
-use crate::viewer_state::ViewerState;
-use crate::viewport::ViewportState;
 use crate::{
     add_books_and_refresh, clamp_focused_index, current_book_name, empty_book_removed_status,
     finalize_open, go_to_viewer, push_selection_strings, refresh_library_carousel,
     visible_index_to_path, with_ui, CarouselRefresh, ViewerWindow,
 };
-use crate::{app, cover_loader, i18n};
+use crate::{
+    app,
+    carousel::{apply_selection_flags, set_carousel_selected},
+    cover_loader, i18n,
+};
+use crate::{
+    library_model::{LibrarySearchState, LibrarySelectionState},
+    navigation::NavState,
+};
+use crate::{viewer_state::ViewerState, viewport::ViewportState};
 use app::SkippedDetail;
 use gashuu_core::Library;
 use slint::ComponentHandle;
 use std::cell::RefCell;
 use std::rc::Rc;
 
-// Panel constraint (#151): no AppState bundle — the explicit handle list IS the dependency list.
+/// Registers the open-folder/open-archive and add-books/add-folder callbacks onto `ui`.
+/// Panel constraint (#151): explicit handle list IS the dependency list — no AppState bundle.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn wire_open_handlers(
     ui: &ViewerWindow,
-    open_book: &Rc<app::OpenBookUseCase>,
     state: &Rc<RefCell<ViewerState>>,
     viewport: &Rc<RefCell<ViewportState>>,
     library: &Rc<RefCell<Library>>,
+    open_book: &Rc<app::OpenBookUseCase>,
     covers: &Rc<cover_loader::CoverController>,
     search: &Rc<RefCell<LibrarySearchState>>,
     selection: &Rc<RefCell<LibrarySelectionState>>,
@@ -31,10 +36,10 @@ pub(crate) fn wire_open_handlers(
     // Rebind the `&Rc<_>` parameters to owned `Rc` locals so each closure's
     // `Rc::clone(&handle)` prelude stays byte-identical to its pre-extraction
     // form in `main` (cloning an owned `Rc`, not a `&Rc`).
-    let open_book = Rc::clone(open_book);
     let state = Rc::clone(state);
     let viewport = Rc::clone(viewport);
     let library = Rc::clone(library);
+    let open_book = Rc::clone(open_book);
     let covers = Rc::clone(covers);
     let search = Rc::clone(search);
     let selection = Rc::clone(selection);
@@ -209,11 +214,11 @@ pub(crate) fn wire_open_handlers(
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn wire_carousel_handlers(
     ui: &ViewerWindow,
+    state: &Rc<RefCell<ViewerState>>,
+    viewport: &Rc<RefCell<ViewportState>>,
     library: &Rc<RefCell<Library>>,
     nav: &Rc<RefCell<NavState>>,
     open_book: &Rc<app::OpenBookUseCase>,
-    state: &Rc<RefCell<ViewerState>>,
-    viewport: &Rc<RefCell<ViewportState>>,
     covers: &Rc<cover_loader::CoverController>,
     search: &Rc<RefCell<LibrarySearchState>>,
     selection: &Rc<RefCell<LibrarySelectionState>>,
@@ -222,11 +227,11 @@ pub(crate) fn wire_carousel_handlers(
     // Rebind the `&Rc<_>` parameters to owned `Rc` locals so each closure's
     // `Rc::clone(&handle)` prelude stays byte-identical to its pre-extraction
     // form in `main` (cloning an owned `Rc`, not a `&Rc`).
+    let state = Rc::clone(state);
+    let viewport = Rc::clone(viewport);
     let library = Rc::clone(library);
     let nav = Rc::clone(nav);
     let open_book = Rc::clone(open_book);
-    let state = Rc::clone(state);
-    let viewport = Rc::clone(viewport);
     let covers = Rc::clone(covers);
     let search = Rc::clone(search);
     let selection = Rc::clone(selection);
@@ -458,7 +463,7 @@ pub(crate) fn wire_carousel_handlers(
     }
 }
 
-/// Registers the carousel selection, bulk-delete, and empty-book-removal callbacks onto `ui`.
+/// Registers the carousel selection/focus, bulk-delete, and empty-book-removal callbacks onto `ui`.
 /// Panel constraint (#151): explicit handle list IS the dependency list — no AppState bundle.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn wire_selection_handlers(
