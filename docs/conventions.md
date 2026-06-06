@@ -25,7 +25,7 @@ Every commit subject MUST follow [Conventional Commits 1.0.0](https://www.conven
 - **Exactly one line.** No body, no footer, no `Co-Authored-By` or other trailers.
 - Aim for ≤72 characters, imperative mood, no trailing period, English.
 - Breaking changes use the `!` marker (`feat(core)!: ...`) — the `BREAKING CHANGE:` footer form is unavailable because messages are single-line.
-- GitHub-generated merge commits (`Merge pull request #N ...`) are exempt.
+- GitHub-generated merge commits (the auto-generated `Merge ...` subject) are exempt.
 
 ### UI styling tokens
 
@@ -33,7 +33,7 @@ All visual tokens (colors, border radii, spacing, font sizes, component sizes, s
 
 - When a new token is needed, extend `Theme` rather than hard-coding the value in the component.
 - The whole UI now references `Theme.*`; there is **no** grandfathered inline hex. `scripts/check-tokens.sh` blocks any raw color hex (`#rgb`..`#rrggbbaa`) outside `Theme.slint` — treat a hit like a failing gate. The only raw values allowed in components are non-color icon glyph sizes (e.g. a `✕` `font-size`); the guard is hex-only and does not police those.
-- **`check-tokens.sh` reads a `#` + 3–8 hex-ish chars as a color — including issue refs in COMMENTS.** A comment like `// (issue #102)` trips the guard because `#102` matches `#[0-9a-fA-F]{3,8}` (the digits are valid hex); 1–2-digit refs like `#88`/`#71` are too short to match and slip through. In `.slint` files write issue numbers WITHOUT the `#` (e.g. `issue 102, PR-A`); the `#NN` form is only safe up to two digits. (Markdown docs are not scanned, so `#102` is fine in this file.) Precedent: `SettingsDialog.slint` "issue 103/104", `Strings.slint` "issue 113".
+- **`check-tokens.sh` reads a `#` + 3–8 hex-ish chars as a color — including issue refs in COMMENTS.** A comment like `// (issue #102)` trips the guard because `#102` matches `#[0-9a-fA-F]{3,8}` (the digits are valid hex); 1–2-digit refs like `#88`/`#71` are too short to match and slip through. In `.slint` files write issue numbers WITHOUT the `#` (e.g. `issue 102`); the `#NN` form is only safe up to two digits. (Markdown docs are not scanned, so `#102` is fine in this file.) Precedent: `SettingsDialog.slint` "issue 103/104", `Strings.slint` "issue 113".
 - Token types: colors `<color>`, radii/font-sizes `<length>`, motion `<duration>`, font weights `<int>`. Migrating a legacy file to `Theme.*` may deliberately CHANGE rendered values — re-basing to the dark palette is the goal, not a 1:1 hex-preserving swap.
 - **Reuse colors before adding tokens.** A restyle should first reach for existing tokens (the scrubber HIG restyle reused `accent` for the fill, `text` for the white knob core, `accent-glow` for the halo — ZERO new color tokens); a new color token is a last resort, not the first move.
 - **A length goes in `Theme` when it PAIRS with an existing size token; a one-off stays inline.** `check-tokens.sh` is hex-only and does NOT police lengths, so a single-use size (e.g. a `drop-shadow-blur: 4px`) lives inline per convention — but a value that forms a set with an existing token belongs in `Theme` for cohesion (`scrubber-knob-size-active: 20px` joined `Theme` because it pairs with `scrubber-knob-size: 16px`).
@@ -41,7 +41,7 @@ All visual tokens (colors, border radii, spacing, font sizes, component sizes, s
 
 Slint-specific: colors encode alpha as `#RRGGBBAA` (e.g. the `…40` byte is ~25% alpha), unlike CSS `rgba()`.
 
-**Golden-ratio radius tokens** (introduced/refined in PR#83 and PR#88): `Theme.nav-search-radius` (search field corner radius) and `Theme.nav-pill-radius` (outer glass pill) are computed as `height / φ²` (≈ 0.382 × height). A radius below `height / 2` yields a rounded rectangle; `Theme.radius-pill` (`9999px`) yields a stadium/oval. Deriving radii from component height via φ keeps proportions harmonious without hard-coding lengths — a concrete example of the token-driven, no-inline-values rule. The settings panel (issue 103, PR-B) extends the same φ discipline: `Theme.settings-radius` ALIASES `nav-pill-radius` (so the panel shares NavBar's glass corner language in one place), and the panel height is now content-hug (header + body + footer, Marcotte-clamped) with φ relocated into component proportions — toggle track ratio, the 8/14/22 spacing ladder, and segment padding (spec 2026-06-04).
+**Golden-ratio radius tokens**: `Theme.nav-search-radius` (search field corner radius) and `Theme.nav-pill-radius` (outer glass pill) are computed as `height / φ²` (≈ 0.382 × height). A radius below `height / 2` yields a rounded rectangle; `Theme.radius-pill` (`9999px`) yields a stadium/oval. Deriving radii from component height via φ keeps proportions harmonious without hard-coding lengths — a concrete example of the token-driven, no-inline-values rule. The settings panel (issue 103) extends the same φ discipline: `Theme.settings-radius` ALIASES `nav-pill-radius` (so the panel shares NavBar's glass corner language in one place), and the panel height is content-hug (header + body + footer, Marcotte-clamped) with φ relocated into component proportions — toggle track ratio, the 8/14/22 spacing ladder, and segment padding (spec 2026-06-04).
 
 When REMOVING a token, sweep by name, literal value, AND concept phrase over `crates/`, `docs/`, and `DESIGN.md` together, and verify that every `{ns.key}` formula symbol in the DESIGN.md frontmatter is defined — a single name-only grep misses stragglers in docs. See [patterns.md](patterns.md) ("Removing a design token").
 
@@ -69,7 +69,7 @@ Key facts: `#[path]` resolves relative to the **parent file's directory** (`src/
 
 ### Extracting a collaborator-threading fn — field-alias verbatim move + `pub(crate)` bridge
 
-Two rules validated by PR67 (extracting the open-a-book use case into `app::OpenBookUseCase`); full rationale in [patterns.md](patterns.md) ("Use-case object").
+Two rules validated by extracting the open-a-book use case into `app::OpenBookUseCase`; full rationale in [patterns.md](patterns.md) ("Use-case object").
 
 1. **Field-alias verbatim move.** When extracting a fn that threads many shared collaborators into a `…UseCase::run` method, store the collaborators as fields and alias them to locals at the top of `run` (`let state = &self.state;` per field) so the moved body stays BYTE-IDENTICAL. `Deref` absorbs the `&Rc<T>` (field) vs `&T` (former parameter) difference for method calls, so no statement in the body changes — minimal diff, borrow-discipline comments preserved verbatim.
 
@@ -83,8 +83,8 @@ The single Fluent catalog (`crates/gashuu/i18n/<lang>/gashuu.ftl`; ADR-0008) nam
 Accessibility-only strings take an `-a11y` suffix (e.g. `navbar-open-a11y`). A string shared across
 screens is ONE message under its PRIMARY owner's prefix — not duplicated per screen (the spread-mode
 labels live once and are read by both the settings dialog and the viewer status line; pinned by
-`ja_catalog_pins_spread_vocabulary`). This convention governs PR-2..4 (#113-#115) and all new
-strings. Prefer NAMED args (`{ $label }`) over positional placeholders — they are word-order-safe
+`ja_catalog_pins_spread_vocabulary`). This convention governs the i18n migration (#113-#115) and all
+new strings. Prefer NAMED args (`{ $label }`) over positional placeholders — they are word-order-safe
 for verb-final Japanese; see [patterns.md](patterns.md) ("Fluent catalog authoring gotchas").
 
 ### i18n load-failure policy: panic for the catalog we control
@@ -97,7 +97,7 @@ that asymmetry and its rationale — the repo's history of a silent gettext all-
 
 ### Test fixtures (no committed binaries)
 
-Tests synthesize fixtures in memory (the `image` crate makes tiny PNGs) plus `tempfile` for filesystem cases — **no committed binary fixtures.** Two exceptions, both committed TEXT not binaries: insta `.snap` files (see [docs/patterns.md](patterns.md)), and (PR7) the base64-encoded RAR `.cbr` fixtures in `crates/gashuu-core/src/test_fixtures.rs` (RAR has no Rust encoder, so they cannot be synthesized in-memory like PNGs/ZIPs). Even cheaper for PAGE-COUNTING / empty-book tests: a ZERO-BYTE file named `*.png` counts as a page, because `FolderSource` lists by EXTENSION (case-insensitive, `max_depth(1)`) and does not read the bytes — so a temp dir of empty `*.png` files probes to an N-page book, an empty dir probes to `EmptyBook`, and no real image data is needed (used by the `probe_page_count` / `add_paths` tests).
+Tests synthesize fixtures in memory (the `image` crate makes tiny PNGs) plus `tempfile` for filesystem cases — **no committed binary fixtures.** Two exceptions, both committed TEXT not binaries: insta `.snap` files (see [docs/patterns.md](patterns.md)), and the base64-encoded RAR `.cbr` fixtures in `crates/gashuu-core/src/test_fixtures.rs` (RAR has no Rust encoder, so they cannot be synthesized in-memory like PNGs/ZIPs). Even cheaper for PAGE-COUNTING / empty-book tests: a ZERO-BYTE file named `*.png` counts as a page, because `FolderSource` lists by EXTENSION (case-insensitive, `max_depth(1)`) and does not read the bytes — so a temp dir of empty `*.png` files probes to an N-page book, an empty dir probes to `EmptyBook`, and no real image data is needed (used by the `probe_page_count` / `add_paths` tests).
 
 ### Validated value objects must not derive `Deserialize`
 

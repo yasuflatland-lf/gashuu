@@ -15,7 +15,7 @@ for the rationale behind the two-crate split. Keep the layer boundary strict.
 ### PageSource trait
 
 Requires `Send + Sync` so `Arc<dyn PageSource>` can be shared with rayon worker threads during
-prefetch. `skipped_count(&self)->usize` is a TRAIT method as of PR6 — default `0`, overridden by
+prefetch. `skipped_count(&self)->usize` is a TRAIT method — default `0`, overridden by
 `FolderSource`/`ZipSource`/`RarSource` so the `Arc<dyn PageSource>` from `ArchiveLoader` exposes
 it uniformly and `MockPageSource`/future sources need no change.
 
@@ -28,14 +28,14 @@ Top-level directory walk with natural filename ordering (`max_depth(1)`, no recu
 
 ### ZipSource
 
-PR6, `page_source/zip.rs`. A `PageSource` over a ZIP/CBZ archive using the SYNCHRONOUS `zip`
+`page_source/zip.rs`. A `PageSource` over a ZIP/CBZ archive using the SYNCHRONOUS `zip`
 crate — flattens nested images (any image at any depth is a page, unlike `FolderSource`'s
 `max_depth(1)`). Lock-free: each `read_bytes` opens its OWN `File` + `::zip::ZipArchive` so rayon
 prefetch threads decompress fully in parallel with NO shared mutable state.
 
 ### RarSource
 
-PR7, `page_source/rar.rs`. A `PageSource` over a RAR/CBR archive using the SYNCHRONOUS `unrar`
+`page_source/rar.rs`. A `PageSource` over a RAR/CBR archive using the SYNCHRONOUS `unrar`
 crate (bundles C++ UnRAR built by `cc`; extraction ONLY — no Rust RAR encoder exists), flattening
 nested images like `ZipSource`. Lock-free via reopen + sequential-skip (RAR has NO random access):
 each `read_bytes` opens its OWN `::unrar::Archive` + `open_for_processing()`, then
@@ -43,18 +43,18 @@ each `read_bytes` opens its OWN `::unrar::Archive` + `open_for_processing()`, th
 
 ### naming.rs
 
-PR6. Shared image-extension recognition (`IMAGE_EXTS`, `has_image_ext`) and archive-entry path
+Shared image-extension recognition (`IMAGE_EXTS`, `has_image_ext`) and archive-entry path
 validation (`MAX_ENTRY_BYTES`, `enclosed_name`) — all `pub(crate)`. `IMAGE_EXTS`/`has_image_ext`
 were extracted from `folder.rs` so `FolderSource`/`ZipSource`/`RarSource` recognise images
-identically. PR7 added `enclosed_name` (traversal/zip-slip guard rejecting absolute /
-root-or-prefix / any `..` paths, mirroring `zip`'s protection for RAR entries) and moved
-`MAX_ENTRY_BYTES` here from `zip.rs` (neutral shared 500 MB archive-entry ceiling imported by
+identically. `enclosed_name` is the traversal/zip-slip guard rejecting absolute /
+root-or-prefix / any `..` paths, mirroring `zip`'s protection for RAR entries; `MAX_ENTRY_BYTES`
+lives here (neutral shared 500 MB archive-entry ceiling imported by
 both `zip.rs` and `rar.rs`). Filename ordering logic (`natural_cmp` and its helpers) was
 extracted to `ordering.rs` in #82.
 
 ### ordering.rs
 
-PR-82, `ordering.rs`. Shared numeric-aware natural-ordering comparator: `pub(crate) natural_cmp`
+`ordering.rs`. Shared numeric-aware natural-ordering comparator: `pub(crate) natural_cmp`
 plus private helpers `take_digits`/`cmp_numeric`. Numeric-aware so `vol 1 < vol 2 < vol 10`
 (digit runs are compared by numeric value, not lexicographically). Extracted from
 `page_source::naming` (#82) so the comparator is reachable from both page-source filename sorting
@@ -63,7 +63,7 @@ in `naming.rs` could not be reused across the crate.
 
 ### ArchiveLoader
 
-PR6, `archive_loader.rs`. `open(path) -> Arc<dyn PageSource>` dispatch — directory→`FolderSource`,
+`archive_loader.rs`. `open(path) -> Arc<dyn PageSource>` dispatch — directory→`FolderSource`,
 else a `Kind {Zip, Rar}` enum resolved by `ext_kind` (no I/O; `.cbz`/`.zip`→Zip,
 `.cbr`/`.rar`→Rar, case-insensitive) preferred, else `magic_kind` sniff (`PK` ZIP
 signatures→`ZipSource`; `Rar!\x1A\x07`→`RarSource`), else `UnsupportedFormat` (returns `Arc` not
@@ -77,10 +77,10 @@ into ONE core type at the boundary").
 
 ### image_ops::decode
 
-Returns raw RGBA8 + dimensions. Gained an explicit pixel-count guard `check_pixel_limit`/`MAX_PIXELS`
-+ `CoreError::ImageTooLarge` in PR5, ahead of the `Limits`-bounded decode. PR8a extracted a PRIVATE
-`decode_dynamic(&[u8]) -> Result<DynamicImage, CoreError>` holding the shared two-layer bomb guard —
-header pre-read + `check_pixel_limit` + `Limits`-bounded decode — so BOTH `decode` and the new
+Returns raw RGBA8 + dimensions. Carries an explicit pixel-count guard `check_pixel_limit`/`MAX_PIXELS`
++ `CoreError::ImageTooLarge` ahead of the `Limits`-bounded decode. A PRIVATE
+`decode_dynamic(&[u8]) -> Result<DynamicImage, CoreError>` holds the shared two-layer bomb guard —
+header pre-read + `check_pixel_limit` + `Limits`-bounded decode — so BOTH `decode` and
 `decode_thumbnail(&[u8], max_side) -> Result<DecodedImage, CoreError>` route through it and the bomb
 guard lives in ONE place; a dedicated test proves `decode_thumbnail` inherits the early
 `check_pixel_limit` rejection.
@@ -89,12 +89,12 @@ See [ADR-0003](ADRs/0003-image-loading-and-caching.md) for image loading decisio
 
 ### thumbnail
 
-PR8a, `thumbnail.rs`. `generate_thumbnails(source: Arc<dyn PageSource>, max_side, cancelled: Arc<AtomicBool>, on_ready: F)` —
+`thumbnail.rs`. `generate_thumbnails(source: Arc<dyn PageSource>, max_side, cancelled: Arc<AtomicBool>, on_ready: F)` —
 SYNCHRONOUS, rayon `par_iter` over all pages invoking `on_ready(index, Result<DecodedImage, CoreError>)`
 as each completes (arbitrary order), BLOCKING until done or `cancelled` flips (polled TWICE per
 page: before read AND before callback); per-page failure is delivered as `Err` (never panics);
 `DEFAULT_THUMB_MAX_SIDE`=160; headless (no slint/tracing), same "testable synchronous core; UI
-owns the fire-and-forget spawn" philosophy as `ImageCache`. PR-V added the single-page sibling
+owns the fire-and-forget spawn" philosophy as `ImageCache`. The single-page sibling
 `generate_cover(source: Arc<dyn PageSource>, max_side) -> Result<DecodedImage, CoreError>` (a
 downscaled thumbnail of page index 0, the book's cover; `Err(IndexOutOfRange{index:0,len:0})` on a
 0-page source, decode errors propagated); re-exported from the crate root and consumed by the UI's
@@ -102,14 +102,14 @@ downscaled thumbnail of page index 0, the book's cover; `Err(IndexOutOfRange{ind
 
 ### thumbnail_cache
 
-PR-T, `thumbnail_cache.rs`. On-disk PNG cache for page/cover thumbnails under the OS cache dir
+`thumbnail_cache.rs`. On-disk PNG cache for page/cover thumbnails under the OS cache dir
 (`ProjectDirs("", "", "gashuu").cache_dir()/covers`); `with_dir(PathBuf)` is the tempfile-testable
 seam. `put(key, &DecodedImage)` PNG-encodes the RGBA at exact dimensions and writes atomically
 (temp-file-then-rename); `get(key) -> Option<DecodedImage>` reads `<dir>/<key>.png` and decodes,
 returning `None` on any missing/unreadable/corrupt file (a cache miss, never panics). `cache_key(path,
 mtime_secs, max_side)` derives a stable 16-hex-char filename via FNV-1a (NOT `DefaultHasher`; see
 docs/patterns.md). Headless (no slint/tracing). The cover carousel consumes it via the UI's
-`cover_loader.rs` (PR-V, shipped).
+`cover_loader.rs`.
 
 Issue 143 adds the GC half: `prune(max_bytes) -> PruneReport` sweeps the directory down to
 `max_bytes` of `*.png` payload in ascending `(mtime, file name)` order, and reclaims stale
@@ -131,7 +131,7 @@ See [ADR-0003](ADRs/0003-image-loading-and-caching.md) for the LRU/prefetch deci
 
 ### CacheConfig
 
-PR59, `cache_config.rs`. Immutable value object holding the LRU `capacity` (clamped to `>= 1` in
+`cache_config.rs`. Immutable value object holding the LRU `capacity` (clamped to `>= 1` in
 `new`) and the prefetch `radius` (`0` = prefetch disabled). It owns the capacity invariant in its
 constructor, so an invalid cache size is unrepresentable downstream. `Settings` keeps the raw
 `cache_size`/`preload_pages` integers (serde-flat, JSON unchanged) and exposes
@@ -158,12 +158,12 @@ pan clamping (`clamp_offset`/`centered_offset`), cursor-anchored zoom (`anchored
 ### Settings
 
 `settings.rs`. Persistent user settings serialized to JSON in the OS config dir via
-`directories::ProjectDirs`. `CoverMode` joined the settings vocabulary in PR4, `FitMode` in PR5:
-`reading_direction`/`spread_mode`/`cover_mode`/`fit_mode`. PR4a added `SpreadMode::Auto` and the
+`directories::ProjectDirs`. The settings vocabulary includes `CoverMode` and `FitMode`:
+`reading_direction`/`spread_mode`/`cover_mode`/`fit_mode`. `SpreadMode::Auto` and the
 resolved type `SpreadLayout {Single, Double}` with `SpreadMode::resolve(aspect: f32) -> SpreadLayout` —
-`SpreadLayout` is NOT persisted. `seen_guide` (PR8b): a `bool` (default `false`,
+`SpreadLayout` is NOT persisted. `seen_guide`: a `bool` (default `false`,
 `#[serde(default)]`) the UI flips to `true` + saves once the first-run guide is dismissed;
-`SETTINGS_VERSION` stays 1 and the frozen snapshot gained `"seen_guide": false` — same
+`SETTINGS_VERSION` stays 1 and the frozen snapshot carries `"seen_guide": false` — same
 forward/backward-compat treatment as `cover_mode`/`fit_mode`.
 
 **This is the first use of `serde` in core.** The headless boundary still holds (no
@@ -171,11 +171,11 @@ slint/tracing). I/O shape: `load_from`/`save_to` take explicit paths (tempfile-t
 `load`/`save` are thin OS-path wrappers. Corrupt-file recovery (warn + fall back to defaults)
 lives in the UI (`main.rs`); core only returns typed `CoreError`:
 
-- PR4 added `Settings(#[from] serde_json::Error)` and `NoConfigDir`
-- PR5 added `ImageTooLarge`
-- PR6 added `Zip(#[from] ::zip::result::ZipError)`, `EntryTooLarge { name, max }`, `UnsupportedFormat { path }`
-- PR7 added `Rar(#[from] ::unrar::error::UnrarError)` (Display prefix `"rar archive error: "`)
-- reject-empty-books added `EmptyBook { path }` (Display `"no images found in {path}"`) — raised by `ArchiveLoader::probe_page_count` on a clean open with zero image pages, distinct from the unreadable-source errors above
+- `Settings(#[from] serde_json::Error)` and `NoConfigDir`
+- `ImageTooLarge`
+- `Zip(#[from] ::zip::result::ZipError)`, `EntryTooLarge { name, max }`, `UnsupportedFormat { path }`
+- `Rar(#[from] ::unrar::error::UnrarError)` (Display prefix `"rar archive error: "`)
+- `EmptyBook { path }` (Display `"no images found in {path}"`) — raised by `ArchiveLoader::probe_page_count` on a clean open with zero image pages, distinct from the unreadable-source errors above (the reject-empty-books feature)
 
 Errors are typed with `thiserror` (`CoreError`, `#[non_exhaustive]`).
 
@@ -183,7 +183,7 @@ See [ADR-0005](ADRs/0005-settings-persistence.md) for the settings persistence d
 
 ### reading_progress
 
-PR-60 (`total` lifted to `Option<usize>` in #65), `reading_progress.rs`. Transient, immutable core
+`reading_progress.rs` (`total` lifted to `Option<usize>` in #65). Transient, immutable core
 value object `ReadingProgress { reached, total: Option<usize> }` (`Copy`) that NAMES the one durable
 fact — how far a reader got — and centralises its derivation in ONE place: `current()` (1-based,
 `reached + 1` saturating, always ≥ 1), `fraction()` (`0.0..=1.0`; an unknown total `None` AND a
@@ -210,13 +210,13 @@ decision and [patterns.md](patterns.md) ("Partial/total override pair") for the 
 
 ### Library aggregate
 
-PR-60 (signature retyped in #65; book ordering added in #82; per-book view overrides added in
-this feature), `library.rs`.
+`library.rs` (signature retyped in #65; book ordering added in #82; per-book view overrides added
+in this feature).
 `Library::register_opened(canonical: &Path, page_count: Option<NonZeroUsize>) -> OpenRegistration
 { resume: ReadingProgress, count_changed: bool }` centralises the open-time domain rule that
 previously lived in `main.rs`'s `app::OpenBookUseCase::run`: idempotent add by canonical path
 (dedup); page-count back-fill applied only for `Some(_)` (an unknown total = `None` is skipped);
-resume lookup via `Book::progress()`. The positivity that PR-60 enforced with a runtime guard is
+resume lookup via `Book::progress()`. The positivity that was once enforced with a runtime guard is
 now a type fact — `set_page_count(_, count: NonZeroUsize)` makes `0` unrepresentable at the write
 boundary, so there is no `debug_assert` in core and no `page_count > 0` guard at the call site
 (#65). The reader side maps stored counts through `Book::page_count_opt() -> Option<usize>`
@@ -251,7 +251,7 @@ convention as `set_last_page`/`set_page_count`) and `Library::overrides_for(path
 (returns `ViewOverride::none()` for an unknown path, so the caller can `resolve` unconditionally).
 There is NO `Book` setter — `Book::overrides()` is read-only.
 
-**PR-5 (#129)** added the bulk-delete rollback primitive: `Library::restore(books: Vec<Book>)` —
+The bulk-delete rollback primitive (#129) is `Library::restore(books: Vec<Book>)` —
 re-inserts the supplied `Book` clones, de-duplicating by canonical path (an entry whose path is
 already present is skipped), then re-sorts via `book_order`. This is the counterpart to
 `remove_many`: a caller that captured clones before removal and then failed to persist can hand
@@ -270,8 +270,8 @@ See [ADR-0001](ADRs/0001-gui-framework-slint.md) for the Slint framework decisio
 
 Navigation backed by `ImageCache`; drives a two-page spread via
 `current_spread() -> Option<Result<SpreadImages, CoreError>>`, with `apply` moving in spread units.
-PR6 `open_path(path)` dispatches via `ArchiveLoader` + skipped warn + a `last_open_skipped()` getter,
-and `open_folder` now delegates to it. PR8a added `jump_to(page) -> bool` — routes through
+`open_path(path)` dispatches via `ArchiveLoader` + skipped warn + a `last_open_skipped()` getter,
+and `open_folder` delegates to it. `jump_to(page) -> bool` — routes through
 `SpreadContext::normalize` (via `spread_ctx()`) so `index` stays a valid spread leading, clamps
 out-of-range, guards `page_count==0` to avoid underflow, and returns whether it moved, mirroring
 `set_viewport_size`'s "did it change → caller refreshes" convention — and
@@ -279,16 +279,16 @@ out-of-range, guards `page_count==0` to avoid underflow, and returns whether it 
 retaining the opened `Arc` because `ImageCache` does not expose its source; `index()`/`page_count()`
 lost their `#[allow(dead_code)]`, now used by the thumbnail-strip wiring.
 
-PR8b added IDEMPOTENT value setters `set_spread_mode(SpreadMode)`/`set_cover_mode(CoverMode)`/`set_reading_direction(ReadingDirection)`
+The settings dialog drives IDEMPOTENT value setters `set_spread_mode(SpreadMode)`/`set_cover_mode(CoverMode)`/`set_reading_direction(ReadingDirection)`
 (all `-> bool`, same value → `false` no-op, mirroring `jump_to`'s "moved? → caller refreshes"
-convention) for the settings dialog — `set_spread_mode`/`set_cover_mode` call `renormalize_index`,
+convention) — `set_spread_mode`/`set_cover_mode` call `renormalize_index`,
 `set_reading_direction` does NOT (pairing is direction-agnostic) — plus
 `set_cache_config(cache_size, preload_pages)` which updates the fields `set_source` reads on the
 NEXT open (the dialog's cache/preload edits would otherwise only take effect after relaunch, since
 the fields are seeded once at `from_settings` and `set_source` reads ViewerState's own fields, not
 live `Settings`).
 
-PR-R added `open_file() -> Option<&Path>`: the CANONICAL path of the most recently successful
+`open_file() -> Option<&Path>`: the CANONICAL path of the most recently successful
 `open_path` (set via `path.canonicalize().unwrap_or(verbatim)`, matching `Library::add`'s policy;
 `None` until the first `Ok`, reset by `set_source`, unchanged by a failed `open_path`). `main.rs`
 reads it to form the write-back tuple `(canonical_path, index())` for the `Library` at every leave
@@ -301,7 +301,7 @@ against global `Settings`) takes effect. Runtime modes are intentionally NOT res
 re-seeded by this call — which is why the open-time global reconcile is a clobber trap (see
 [patterns.md](patterns.md), "Write-direction invariant audit").
 
-PR-S added two pure scrubber-support helpers:
+Two pure scrubber-support helpers:
 
 - `scrub_fraction_to_page(fraction, page_count, rtl)` — pure, total, RTL-aware mapping of a
   `0..1` knob fraction to a raw 0-based page index (clamped, non-finite-safe). As of #71 it is the
@@ -313,7 +313,7 @@ PR-S added two pure scrubber-support helpers:
   (using the same layout resolution the body uses) WITHOUT advancing the index; used by the
   scrubber preview to choose 1 vs 2 popover thumbnails.
 
-**PR-5 (#129)** added `close(&mut self)`: drops the cache and source, zeroes `page_count`/`index`,
+`close(&mut self)` (#129): drops the cache and source, zeroes `page_count`/`index`,
 and clears `open_file` — returning `ViewerState` to the no-book-open state. Display modes
 (`reading_direction`/`spread_mode`/`cover_mode`) and `cache_config`/`viewport_aspect` are
 deliberately preserved (closing a book is not a settings reset). Called by
@@ -329,12 +329,12 @@ fns.
 ### keymap
 
 Direction-aware key token → `KeyCommand` — page turns, D/R/C mode toggles, plus
-direction-independent zoom/fit commands and PR8a's `ToggleThumbnails` on `"t"`,
+direction-independent zoom/fit commands and `ToggleThumbnails` on `"t"`,
 direction-INDEPENDENT like the zoom/fit keys.
 
 ### navigation
 
-PR-0b, `navigation.rs`. Top-level screen state machine: `Screen { Library, Viewer }` enum +
+`navigation.rs`. Top-level screen state machine: `Screen { Library, Viewer }` enum +
 `NavState` (private `screen` field, intent-named `to_library`/`to_viewer` transitions, boots to
 `Library`; same private-field+intent-method convention as `ViewportState`). Free fns
 `screen_to_index`/`index_to_screen` map the enum to/from the Slint `ViewerWindow.screen` int
@@ -354,8 +354,8 @@ projection; falls back to 0 when `None`, filtered out, or empty).
 `app.rs`. `OpenBookUseCase` — the open-a-book application use case extracted from `main.rs` in
 #67. Holds six shared collaborators as `Rc<RefCell<…>>` fields: `ViewerState`, `Settings`,
 `ViewportState`, `Library`, `ThumbnailController` (`Rc`), and `CoverController` (`Rc`). There
-is NO `NavState` field — `NavState` stays in `main.rs`. **PR-3 (#114)** replaced the former
-`(Vec<String>, Option<String>)` return value with two new types and a revised single export:
+is NO `NavState` field — `NavState` stays in `main.rs`. The return value (#114) is built from two
+types and a single export:
 
 - `run(&self, path, skipped_detail) -> OpenOutcome` — writes back the previous book's position;
   opens the source; reconciles + saves settings; registers the book in `Library` and jumps to the
@@ -404,7 +404,7 @@ still holds the outgoing book's per-book modes there; reconciling would clobber 
 defaults — see [patterns.md](patterns.md), "Write-direction invariant audit"). It then applies the
 just-opened book's `ResolvedView` via `ViewerState::apply_resolved_view` (+ `ViewportState::set_fit`).
 
-**PR-5 (#129)** added the parallel destructive use case to the same module:
+The parallel destructive use case (#129) lives in the same module:
 
 - `RemoveBooksUseCase` — the "remove the selected books" use case. Holds four shared collaborators
   as `Rc<RefCell<…>>` fields: `ViewerState`, `Library`, `LibrarySearchState`, and
@@ -450,7 +450,7 @@ dialog routing".
 
 ### library_model
 
-PR-C, `library_model.rs`. PURE (Slint-free) `Library` → carousel display-row mapping: a plain
+`library_model.rs`. PURE (Slint-free) `Library` → carousel display-row mapping: a plain
 `CarouselData` struct (`title`/`current`/`total`/`progress`/`available`) + `carousel_data(&Library)
 -> Vec<CarouselData>` in natural title order (inherited from `Library::books()` — no independent
 sort here; see `Library aggregate` in the core section). The carousel counterpart of `thumbnail_strip`'s row mapping —
@@ -465,8 +465,8 @@ to `1.0`); `total = ReadingProgress::total()` (now `Option<usize>`, #65). The fr
 `carousel.rs`'s `to_carousel_item` adapter builds the `!Send`
 `slint::Image` (a `slint::Image::default()` placeholder, filled in asynchronously by `CoverController`)
 on the UI thread; `build_carousel_model` is the build+bind
-chokepoint returning the `Rc<VecModel>` so PR-V/PR-L mutate the same model. `total` comes from
-the persisted `Book::page_count` (PR-La): `0` until the count is known
+chokepoint returning the `Rc<VecModel>` so the cover loader and the library-add path mutate the
+same model. `total` comes from the persisted `Book::page_count`: `0` until the count is known
 (`progress` guarded to `0.0`), the real saved count afterwards — known by opening the book; for a
 never-opened book added BEFORE the reject-empty-books feature, by `CoverController`'s background
 page-count prefetch (see `cover_loader.rs`), which streams the count into this `total` and persists
@@ -489,7 +489,7 @@ alongside it; `matching_indices` is the fast-path delegate when no paths are for
 
 ### LibrarySelectionState
 
-Bulk-delete PR-2/PR-4 (#126/#128), `library_model.rs` (pub(crate) struct). Owns the active
+Bulk-delete feature (#126/#128), `library_model.rs` (pub(crate) struct). Owns the active
 selection as a `BTreeSet<PathBuf>` keyed by canonical path — the same key `Library::add` uses —
 so the selection survives query changes and carousel rebuilds. Key mutators: `toggle(path)` (adds
 or removes one path); `select_visible(search, library)` / `deselect_visible(search, library)`
@@ -502,39 +502,39 @@ list and the `RemoveBooksUseCase` removal snapshot); `contains(path) -> bool`;
 `all_visible_selected(search, library) -> bool` (drives the Select-all toggle direction).
 `visible_selected_count(search, library) -> usize` counts how many selected paths appear in the
 current visible projection (used by the toolbar's "N outside search" indicator and by
-`confirm_delete_content`). Used as a collaborator by `RemoveBooksUseCase` (PR-5 #129).
+`confirm_delete_content`). Used as a collaborator by `RemoveBooksUseCase` (#129).
 
 ### carousel
 
-PR-58, `carousel.rs`. UI-thread adapter layer between `library_model` and Slint: `to_carousel_item` (private) maps a `CarouselData` row to a `CarouselItem` (placeholder `slint::Image::default()` cover); `build_carousel_model(library: &Library, indices: &[usize])` (pub(crate)) is a HEADLESS builder — no `ViewerWindow` arg — returning the `Rc<VecModel<CarouselItem>>`; a separate `bind_carousel_model(ui, model)` performs the Slint bind (the build/bind split enables unit tests over visible-index order); `cover_requests(library: &Library, indices: &[usize])` (pub(crate)) derives the per-book `CoverRequest` list, re-basing each request's `row` to the enumerated position in the filtered `indices` slice (not the library index), so cover targets stay aligned with the filtered carousel model; `thumb_state_at` (pub(crate)) re-fetches a row's thumbnail state for the scrubber preview.
+`carousel.rs`. UI-thread adapter layer between `library_model` and Slint: `to_carousel_item` (private) maps a `CarouselData` row to a `CarouselItem` (placeholder `slint::Image::default()` cover); `build_carousel_model(library: &Library, indices: &[usize])` (pub(crate)) is a HEADLESS builder — no `ViewerWindow` arg — returning the `Rc<VecModel<CarouselItem>>`; a separate `bind_carousel_model(ui, model)` performs the Slint bind (the build/bind split enables unit tests over visible-index order); `cover_requests(library: &Library, indices: &[usize])` (pub(crate)) derives the per-book `CoverRequest` list, re-basing each request's `row` to the enumerated position in the filtered `indices` slice (not the library index), so cover targets stay aligned with the filtered carousel model; `thumb_state_at` (pub(crate)) re-fetches a row's thumbnail state for the scrubber preview.
 
 ### enum_adapters
 
-PR-58, `enum_adapters.rs`. The 10 `pub(crate)` enum↔index adapters (the first 8 were previously inline in `main.rs`): `reading_direction_to_index`/`index_to_reading_direction`, `spread_mode_to_index`/`index_to_spread_mode`, `cover_mode_to_index`/`index_to_cover_mode`, `fit_mode_to_index`/`index_to_fit_mode`, and `language_to_index`/`index_to_language` (i18n PR). Each `index_to_*` clamps out-of-range to the first variant, mirroring the `index_to_screen` clamp policy in `navigation.rs`.
+`enum_adapters.rs`. The 10 `pub(crate)` enum↔index adapters (8 were previously inline in `main.rs`): `reading_direction_to_index`/`index_to_reading_direction`, `spread_mode_to_index`/`index_to_spread_mode`, `cover_mode_to_index`/`index_to_cover_mode`, `fit_mode_to_index`/`index_to_fit_mode`, and the i18n pair `language_to_index`/`index_to_language`. Each `index_to_*` clamps out-of-range to the first variant, mirroring the `index_to_screen` clamp policy in `navigation.rs`.
 
 ### i18n
 
-Fluent i18n PR-1 (#112), `i18n/` module (`mod.rs` + `loader.rs` + `dynamic.rs`). **`messages.rs`
-was deleted in PR-3 (#114)** — all runtime-composed strings now live in `i18n/dynamic.rs` (see
+Fluent i18n (#112), `i18n/` module (`mod.rs` + `loader.rs` + `dynamic.rs`). **`messages.rs`
+was deleted (#114)** — all runtime-composed strings now live in `i18n/dynamic.rs` (see
 below). `Localizer` wraps an `i18n_embed::fluent::FluentLanguageLoader`; its `new(lang)`/`switch(lang)`
 call `load_languages` then re-apply `set_use_isolating(false)`, and `panic!` on a load failure
 (compile-time-embedded assets ⇒ programmer error — see [patterns.md](patterns.md), "Fluent loader").
 All mutating methods take `&self` (the loader has interior mutability), so `main.rs` shares one
-`Rc<Localizer>` into the Slint callbacks without a `RefCell`. `pub(crate) fn loader()` getter was
-added in PR-3 (justified by `dynamic.rs` as the real consumer; per the dead-code-getter rule in
-[patterns.md](patterns.md), this was deferred until the getter had a non-test caller). `loader.rs`
+`Rc<Localizer>` into the Slint callbacks without a `RefCell`. The `pub(crate) fn loader()` getter is
+justified by `dynamic.rs` as the real consumer (per the dead-code-getter rule in
+[patterns.md](patterns.md), it was deferred until the getter had a non-test caller). `loader.rs`
 holds the `#[derive(RustEmbed)] struct Localizations` (embeds `i18n/`) and the exhaustive
 `langid_for(Language) -> LanguageIdentifier` (no wildcard — the compile-time gate replacing the
 former `messages.rs` exhaustive match). The completeness/parity/byte-oracle integration tests live
 in `mod.rs`'s `#[cfg(test)]`. The `Language` enum stays in headless `gashuu-core`; ALL Fluent
-machinery is UI-crate-only, per [ADR-0002](ADRs/0002-layered-two-crate-architecture.md). PR-2 (#113)
-added `Localizer::apply(&self, ui: &ViewerWindow)` to `mod.rs`: the single chokepoint that resolves
+machinery is UI-crate-only, per [ADR-0002](ADRs/0002-layered-two-crate-architecture.md).
+`Localizer::apply(&self, ui: &ViewerWindow)` (#113) in `mod.rs` is the single chokepoint that resolves
 every Fluent-served static string via `fl!()` and pushes it into the `Strings` global (next entry);
 `main.rs` calls it at boot; after each `switch()` (language change) the call is in
 `handlers/settings.rs`'s `wire_view_mode_handlers` — see [patterns.md](patterns.md), "The
 `Strings`-global push".
 
-**`i18n/dynamic.rs`** (Fluent i18n PR-3, #114, NEW): Fluent-backed dynamic message functions that
+**`i18n/dynamic.rs`** (Fluent i18n, #114): Fluent-backed dynamic message functions that
 replaced the deleted `messages.rs`. Each function takes a `&FluentLanguageLoader` borrowed from
 `Localizer::loader()` and returns a freshly formatted `String`. Two aggregators drive the presentation
 layer: `format_status(loader, &StatusContent) -> String` and `format_notices(loader, &NoticesContent)
@@ -592,39 +592,39 @@ persist_view_modes, settings save). All callback closures live in `handlers/`; `
 per file — `ProgressBar` (accent/`success` reading-progress fill), `PrimaryButton` (the accent CTA),
 `ThumbnailCell` (the loaded/loading/failed/highlighted
 cell shared by the page strip, the scrubber preview popover, and the library covers), `ViewerPill`
-(#this-PR, NEW: the viewer glass-pill — floating page-jump field + thumbnail toggle + settings;
+(the viewer glass-pill — floating page-jump field + thumbnail toggle + settings;
 replaces the docked TitleBar), `NavBar`
 (#83, NEW: the top-centered glass-pill Library nav — translucent fill + hairline border + top inner
 highlight + drop shadow; Slint has no backdrop-blur so the glass effect is paint-only), `NavItem`
 (#83, NEW: one circular icon capsule inside `NavBar`; hover/press glow via `Theme.accent-glow`;
 non-focusable `TouchArea` with `accessible-role`/`accessible-label`/`accessible-action-default` for
-screen-reader support; `feat/library-chrome-polish` added two opt-in props: `in property <bool> active: false` — holds a persistent accent ring + `accent-glow` fill, priority pressed > hover > active; and `in property <bool> enabled: true` — gates the `TouchArea` and `accessible-action-default`, drops the icon to `text-faint` when false; existing call sites are untouched via their defaults), `Dropdown` (i18n PR, NEW: the Apple-HIG pull-down button used by the
+screen-reader support; `feat/library-chrome-polish` added two opt-in props: `in property <bool> active: false` — holds a persistent accent ring + `accent-glow` fill, priority pressed > hover > active; and `in property <bool> enabled: true` — gates the `TouchArea` and `accessible-action-default`, drops the icon to `text-faint` when false; existing call sites are untouched via their defaults), `Dropdown` (i18n feature, NEW: the Apple-HIG pull-down button used by the
 language setting — the repo's first `PopupWindow`; the menu is lowered to the window root so the
-dialog's clipping Flickable can't cut it off — see docs/patterns.md), `Segmented` (issue 102,
-PR-A: token-driven horizontal segmented control replacing the std-widgets `ComboBox`; equal-width
-cells with an accent-pill selected state, keyboard Left/Right navigation), `Stepper` (issue 102,
-PR-A: token-driven integer stepper replacing `SpinBox`; surface-sunken capsule with accent ± glyphs,
-keyboard Up/Down), `Toggle` (issue 102, PR-A: token-driven on/off switch replacing `CheckBox`; pill
-track accent-on / `track-prog`-off, spring-animated knob), `SettingRow` (issue 103, PR-B: L1
+dialog's clipping Flickable can't cut it off — see docs/patterns.md), `Segmented` (issue 102:
+token-driven horizontal segmented control replacing the std-widgets `ComboBox`; equal-width
+cells with an accent-pill selected state, keyboard Left/Right navigation), `Stepper` (issue 102:
+token-driven integer stepper replacing `SpinBox`; surface-sunken capsule with accent ± glyphs,
+keyboard Up/Down), `Toggle` (issue 102: token-driven on/off switch replacing `CheckBox`; pill
+track accent-on / `track-prog`-off, spring-animated knob), `SettingRow` (issue 103: L1
 alignment molecule — fixed label column + `@children` control slot spanning to the shared right
 rail; `trailing` flag pushes compact atoms onto the rail via a leading stretch spacer),
-`SelectionBadge` (bulk-delete PR-2; two-state added in the UI-polish pass: pure visual atom overlaid
+`SelectionBadge` (bulk-delete feature; two-state added in the UI-polish pass: pure visual atom overlaid
 on EVERY cover while selection mode is active — `checked == true` renders the original accent-filled
 disc + centered white check glyph; `checked == false` renders a hollow hairline ring over a faint
 glass backing so unselected covers are clearly afforded as targets; both Carousel `for` passes
-include it, gated on `selection-mode` not `selected`), `SelectionToolbar` (bulk-delete PR-4/PR-5;
+include it, gated on `selection-mode` not `selected`), `SelectionToolbar` (bulk-delete feature (#129);
 UI-polish pass §2.6: selection-mode organism — count pill / select-all capsule / exit capsule /
-**Delete (N)… `DangerButton`** (if-gated, hidden at N=0; the only red element in the app's chrome;
-PR-5 #129); glass-pill following `NavBar`'s four-layer idiom with two intentional departures
+**Delete (N)… `DangerButton`** (if-gated, hidden at N=0; the only red element in the app's chrome);
+glass-pill following `NavBar`'s four-layer idiom with two intentional departures
 (accent border-color for mode context; `active`-gated drop shadow to suppress bleed from the
 parked position); content-hugged width; mounted ALWAYS inside a `clip: true` slide-strip below the
 NavBar in `Carousel` (y-slide transition — NOT an `if`-gate so the animation is continuous; as of `feat/library-chrome-polish` 2026-06-05 this strip is toolbar-only — the "Select" entry pill that previously shared the strip was replaced by the NavBar Select capsule); takes
 an `active` flag ANDed into every `TouchArea`/a11y guard; all human-visible text passed from Rust
 via `in` properties — deliberately `Strings`-agnostic), and `DangerButton`
-(bulk-delete PR-1: destructive-action atom — structural clone of `PrimaryButton` swapping accent for
+(bulk-delete feature: destructive-action atom — structural clone of `PrimaryButton` swapping accent for
 `Theme.danger` red + `Theme.danger-glow` hover/focus ring; accessibility role/label/action-default
-added here, `PrimaryButton` backport pending; first consumed by the PR-3 `ConfirmDialog`, and now
-also the PR-5 `SelectionToolbar` delete button), and `BookmarkRibbon` (continue-reading feature:
+added here, `PrimaryButton` backport pending; consumed by the `ConfirmDialog` and the
+`SelectionToolbar` delete button), and `BookmarkRibbon` (continue-reading feature:
 display-only Image atom floating ABOVE the cover's top-LEFT corner, `@image-url("../assets/bookmark.svg")`
 recolored via `colorize: Theme.text` white — a quiet non-interactive status color (not accent, which is reserved for interactive elements; `feat/library-chrome-polish` swapped from accent + tucked-in to text-white + fully detached); placement `x: Theme.space-xs; y: -self.height - Theme.space-md` (~10 px clearance ≈ ribbon height / φ²; zero cover overlap; dark stage guarantees contrast); sized `Theme.space-huge²`; shown when `CarouselItem.bookmarked` is true — the single last-opened book resolved from `Library.last_opened`; accessible as `role: image` / label `Strings.continue-reading`; the ribbon sits outside the card above-left while `SelectionBadge` sits inside the card top-right; both can render simultaneously).
 Each references `Theme.*` via `../Theme.slint`;
@@ -636,7 +636,7 @@ the single entry `ui/ViewerWindow.slint` and import statements cascade. See
 (the macOS combined "Add books" capsule glyph), `carousel.svg`
 (the thumbnail-toggle icon in ViewerPill; replaced the original `slider.svg` glyph),
 `chevron-down.svg` (i18n PR, NEW: the `Dropdown` chevron; 96px intrinsic size per the HiDPI
-rasterization rule), `check.svg` (bulk-delete PR-2, NEW: the single-path check mark recolored
+rasterization rule), `check.svg` (bulk-delete feature, NEW: the single-path check mark recolored
 via `colorize` to `Theme.text` white inside `SelectionBadge`), `close.svg` (UI-polish pass, NEW:
 Cancel Fill glyph — disc + knocked-out ✕ — used by the `SelectionToolbar` exit capsule, recolored
 via `colorize`; replaced the former `Text` pseudo-icon), `delete.svg` (UI-polish pass, NEW:
@@ -646,27 +646,27 @@ single-path SVG recolored at runtime via Slint's `Image.colorize` property. Comp
 them with `@image-url(...)` paths relative to the consuming `.slint` file. `build.rs` is unchanged
 (assets are reached transitively through the entry-file import cascade).
 
-**`ui/Strings.slint`** (Fluent i18n PR-2, #113, NEW): `export global Strings` — the Fluent-served
+**`ui/Strings.slint`** (Fluent i18n, #113, NEW): `export global Strings` — the Fluent-served
 static-string surface, 67 `in property <string>` slots (property name == Fluent message ID) with
 English-literal defaults. Written exclusively from Rust by `Localizer::apply()`; `.slint` bindings
 read `Strings.<prop>` in place of the removed `@tr()` calls. `ViewerWindow.slint` re-exports it
 (`import` + `export { Strings }`) so Slint generates the `ui.global::<Strings>()` accessor. See
 [docs/patterns.md](patterns.md), "The `Strings`-global push".
 
-**`Carousel.slint`** (PR-0b shell; PR-C rendering; PR-L toolbar/CTA; #71 componentized; #83 glass-pill nav): Library
+**`Carousel.slint`** (#71 componentized; #83 glass-pill nav): Library
 cover-flow carousel.
-PR-0b froze the public contract (`CarouselItem` struct + `Carousel` component with `items`,
-`focused-index`, callbacks `open(int)`/`move(int)`/`back()`, `public function focus-self()`); PR-C
-filled in the rendering against that UNCHANGED contract: centered focused cover (accent ring) +
+The public contract is the `CarouselItem` struct + `Carousel` component with `items`,
+`focused-index`, callbacks `open(int)`/`move(int)`/`back()`, `public function focus-self()`. The
+rendering against that contract: centered focused cover (accent ring) +
 scaled/dimmed neighbors, a per-cover `ProgressBar` (#71 promoted the former file-private bar to the
 shared `components/ProgressBar.slint`, reused for the focused-meta bar), a centered focused-book meta
 block, a grayed broken-cover placeholder for
 unavailable books, and the 0-book empty-state CTA. #71 also routes its covers and empty-state CTA
 through the shared `ThumbnailCell`/`PrimaryButton` components. Covers start as placeholders
-(`slint::Image::default()`); PR-V's `cover_loader.rs` streams the real cover images into the same
-model row-by-row. PR-L added the add callbacks (today `add-books()`/`add-folder()`; `add-books` was
-named `add-files` until the macOS combined picker landed) and wired the empty-state CTA
-to `add-books()` (each restores focus via `focus-self()` after firing); PR-L's original left-aligned
+(`slint::Image::default()`); `cover_loader.rs` streams the real cover images into the same
+model row-by-row. The add callbacks (today `add-books()`/`add-folder()`; `add-books` was
+named `add-files` until the macOS combined picker landed) wire the empty-state CTA
+to `add-books()` (each restores focus via `focus-self()` after firing); the original left-aligned
 two-`Button` text toolbar was REPLACED in #83 with a centered, icon-only glass-pill `NavBar` (two
 `file`/`folder` `NavItem` capsules on Windows/Linux; on macOS a single combined `plus` capsule,
 gated by the Rust-pushed `combined-add-picker` flag). `feat/library-chrome-polish` extended the NavBar with two additional capsules: a **Select capsule** (`filter.svg`; API: `select-icon`, `selection-active`, `select-enabled`, `toggle-selection()`) that toggles bulk-selection mode (disabled — not removed — when the library is empty; modal-input blocked by the existing backdrop absorber like all other NavBar controls); and a **bookmark capsule** (`bookmark.svg`; API: `bookmark-icon`, `continue-reading()`) that jumps to the continue-reading book — always enabled, using the status strip to respond when no bookmark exists. Capsule order: `[search | add capsule(s) | select | bookmark | settings]`; width formula was updated atomically in both `combined` and non-`combined` branches (4/5 capsules, 5/6 gaps). The `NavBar` is declared as a SEPARATE LAST layer in the
@@ -685,26 +685,26 @@ identical geometry (each book keeps a persistent instance in each pass), so the 
 seamless. The enclosing row's `width`/`row-cy` are passed into `CoverCard` as `in` properties because a
 component ROOT cannot read `parent`.
 
-**`Theme.slint`** (PR-0b, NEW; #83 extended): single `global Theme` of visual tokens (colors, spacing,
+**`Theme.slint`** (NEW; #83 extended): single `global Theme` of visual tokens (colors, spacing,
 radii, font sizes); components reference `Theme.<token>` instead of inline hex literals. #83 added the
 glass-surface colors (`glass-fill`, `glass-border`, `glass-highlight`) and the golden-ratio nav sizing
 tokens (`nav-icon`, `nav-capsule`, `nav-pill-height`, `nav-item-gap`, `nav-pill-pad`). Authoritative
 values live in DESIGN.md; this file is the as-built note only.
 
-**`ThumbnailStrip.slint`** (PR8a; #71): horizontal `Flickable` + `HorizontalLayout` + `for` over a
+**`ThumbnailStrip.slint`** (#71): horizontal `Flickable` + `HorizontalLayout` + `for` over a
 `VecModel` — the FIRST `VecModel`/`Repeater` use in the codebase since `ListView` is
 vertical-only — over `struct ThumbnailItem { image, page, loaded, failed }`. #71 replaced the inline
 per-cell markup with the shared `ThumbnailCell` component (border ring / background / radius /
 loaded-loading-failed-highlighted states now live there).
 
-**`thumbnail_strip.rs`** (`ThumbnailController`, PR-B / issue #30): owns the strip's
+**`thumbnail_strip.rs`** (`ThumbnailController`, issue #30): owns the strip's
 `Rc<VecModel<ThumbnailItem>>`, the epoch counter, and the cancel flag; `new(&ui)` builds and binds the
 model via `ui.set_thumbnails`; `start(&self, ui_weak, source, page_count)` cancels any in-flight
 generation, resets the model to `page_count` placeholders, and spawns the background worker. `main.rs`
 constructs the controller once and calls `thumbs.start(...)` in every open handler, with no thumbnail
 bookkeeping inline.
 
-**`cover_loader.rs`** (`CoverController`, PR-V; reworked by `perf/async-cover-loading`): a structural
+**`cover_loader.rs`** (`CoverController`): a structural
 TWIN of `ThumbnailController` for the Library carousel. Streams each book's real cover into the shared
 `VecModel<CarouselItem>`. `start` is DISPATCH-ONLY on the UI thread: every `CoverRequest` becomes one
 `rayon::spawn` worker (`spawn_load`), and the worker does ALL the per-book I/O — derive
@@ -740,38 +740,38 @@ count is never persisted, so the next generation re-detects), and a removed book
 next generation's requests (no loop). See [patterns.md](patterns.md), "Worker → UI ACTION via a
 Slint callback", and [ADR-0009](ADRs/0009-reject-empty-books.md).
 
-**`SettingsDialog.slint`** (PR8b, NEW; issue 102 replaced its std-widgets `ComboBox`/`SpinBox`/`CheckBox` with the token-driven `Segmented`/`Stepper`/`Toggle`/`Dropdown` atoms): modal overlay editing active settings; two-way `current-index <=> in-out-prop` +
+**`SettingsDialog.slint`** (issue 102 replaced its std-widgets `ComboBox`/`SpinBox`/`CheckBox` with the token-driven `Segmented`/`Stepper`/`Toggle`/`Dropdown` atoms): modal overlay editing active settings; two-way `current-index <=> in-out-prop` +
 `selected`/`edited`/`toggled` callbacks. Since issue 103/104 it is a **content-hug glass panel** (φ relocated into the component proportions; spec 2026-06-04) built from custom `components/` atoms; its footer "Shortcuts" link opens `ShortcutsOverlay`, and an `in property <int> focus-epoch` (bumped by `ViewerWindow.focus-settings()`) lets the parent re-focus this still-mounted dialog after the overlay closes.
 
-**`ShortcutsOverlay.slint`** (issue 104, PR-C, NEW): a second glass modal listing the keyboard shortcuts read-only, stacked OVER the still-mounted `SettingsDialog` (both `show-settings` and `show-shortcuts` true). Reuses the settings glass recipe (`settings-w`/`settings-radius` + all glass tokens; only `shortcuts-h` is new). Its ancestor `FocusScope` traps every key so focus can't leak to the dialog underneath; closing returns focus to the dialog via the epoch seam. **PR-5 (#129)** extended the keyboard-shortcuts reference text to document the full selection grammar: `x`, `Space`, `Cmd/Ctrl+A`, `Delete`/`Backspace`, `Esc`.
+**`ShortcutsOverlay.slint`** (issue 104, NEW): a second glass modal listing the keyboard shortcuts read-only, stacked OVER the still-mounted `SettingsDialog` (both `show-settings` and `show-shortcuts` true). Reuses the settings glass recipe (`settings-w`/`settings-radius` + all glass tokens; only `shortcuts-h` is new). Its ancestor `FocusScope` traps every key so focus can't leak to the dialog underneath; closing returns focus to the dialog via the epoch seam. The keyboard-shortcuts reference text documents the full selection grammar (#129): `x`, `Space`, `Cmd/Ctrl+A`, `Delete`/`Backspace`, `Esc`.
 
-**`components/ConfirmDialog.slint`** (issue 127, PR-3, NEW; wired in `ViewerWindow` for the bulk-delete path by PR-5 #129): a GENERIC two-choice confirm/cancel modal — no domain vocabulary. Every string on screen arrives through `in` properties (`title`, `body-lines: [string]`, `info-text`, `warning-text`, `confirm-label`, `cancel-label`) so the same component is reusable across confirm decisions. Clones the `SettingsDialog` / `ShortcutsOverlay` glass idiom (scrim + four-layer fake-glass object). Mounted in `ViewerWindow` behind `if root.show-confirm-delete` (an `if`-gate so the node is constructed only when needed). Cancel / Esc / backdrop click fire the `cancel` callback (Slint-side: set `show-confirm-delete = false`, restore carousel focus — selection PRESERVED); the confirm `DangerButton` fires the `confirm()` callback (`ConfirmDialog.slint:117`), which `ViewerWindow` forwards as `confirm => { root.confirm-delete-accepted(); }` (ViewerWindow.slint:591), and Rust registers on `ui.on_confirm_delete_accepted` to run `RemoveBooksUseCase` and dismiss the modal. `Enter` is wired to Cancel (the destructive action is never on `Enter`).
+**`components/ConfirmDialog.slint`** (issue 127, NEW; wired in `ViewerWindow` for the bulk-delete path, #129): a GENERIC two-choice confirm/cancel modal — no domain vocabulary. Every string on screen arrives through `in` properties (`title`, `body-lines: [string]`, `info-text`, `warning-text`, `confirm-label`, `cancel-label`) so the same component is reusable across confirm decisions. Clones the `SettingsDialog` / `ShortcutsOverlay` glass idiom (scrim + four-layer fake-glass object). Mounted in `ViewerWindow` behind `if root.show-confirm-delete` (an `if`-gate so the node is constructed only when needed). Cancel / Esc / backdrop click fire the `cancel` callback (Slint-side: set `show-confirm-delete = false`, restore carousel focus — selection PRESERVED); the confirm `DangerButton` fires the `confirm()` callback (`ConfirmDialog.slint:117`), which `ViewerWindow` forwards as `confirm => { root.confirm-delete-accepted(); }` (ViewerWindow.slint:591), and Rust registers on `ui.on_confirm_delete_accepted` to run `RemoveBooksUseCase` and dismiss the modal. `Enter` is wired to Cancel (the destructive action is never on `Enter`).
 
-**`FirstRunGuide.slint`** (PR8b, NEW): dismissable once-only overlay; a local `GuideLine`
+**`FirstRunGuide.slint`** (NEW): dismissable once-only overlay; a local `GuideLine`
 component dedupes the key-reference rows.
 
-**`Theme.slint`** (PR-S, NEW; completed #70): a single Slint `global Theme` that centralises all visual design
+**`Theme.slint`** (NEW; completed #70): a single Slint `global Theme` that centralises all visual design
 tokens — colors, corner radii, spacing, font sizes, component sizes, shadow colors, motion durations, and font weights —
 sourced from `/DESIGN.md`. ALL UI components reference `Theme.*`; the three previously-inline-hex dialogs (ThumbnailStrip, SettingsDialog, FirstRunGuide) were migrated in #70, and `scripts/check-tokens.sh` is now unconditionally blocking for the whole UI (no allowlist).
 
-**`PageView.slint`**: the page canvas; hosts pan/zoom via a single `TouchArea`. Predates PR-S.
-PR-S added a `reveal()` callback, fired on `changed mouse-x` / `changed mouse-y` (pointer-move),
-which triggers the auto-hiding viewer chrome.
+**`PageView.slint`**: the page canvas; hosts pan/zoom via a single `TouchArea`.
+A `reveal()` callback, fired on `changed mouse-x` / `changed mouse-y` (pointer-move),
+triggers the auto-hiding viewer chrome.
 
-**`Scrubber.slint`** (PR-S; #71): bottom auto-hiding page-scrubber with a drag-time thumbnail
+**`Scrubber.slint`** (#71): bottom auto-hiding page-scrubber with a drag-time thumbnail
 preview popover. Public surface: `in` properties `current-page` / `total-pages` / `rtl` /
 `double` / `preview-a` / `preview-b` / `chrome-shown`; callbacks `preview(float)` / `commit(float)`
 (#71 retyped these from `int`: the scrubber now passes the RAW clamped knob fraction and Rust owns
 the fraction→page rounding — see [patterns.md](patterns.md)). Drag fires `preview` only;
 pointer-release fires `commit`. Its preview thumbs use the shared `ThumbnailCell` component.
 
-**`ViewerWindow.slint`**: extended in PR8b with the two `if root.show-X : Component` overlays
+**`ViewerWindow.slint`**: hosts the two `if root.show-X : Component` overlays
 (last children = front), a "Settings…" toolbar button, the in/in-out properties + setter
-callbacks, and a FocusScope key-guard. the wiring (dialog/guide lifecycle) was originally registered in `main.rs` and has since
-been extracted to `handlers/settings.rs`; the 8 enum↔index helper fns moved to `enum_adapters.rs`; the key-bindings help text is now composed via the localizer and pushed via `ui.set_key_bindings_text(…)` from `handlers/settings.rs`. Extended in PR-0b with a two-screen model: `in property <int>
+callbacks, and a FocusScope key-guard. The wiring (dialog/guide lifecycle) was originally registered in `main.rs` and has since
+been extracted to `handlers/settings.rs`; the 8 enum↔index helper fns moved to `enum_adapters.rs`; the key-bindings help text is now composed via the localizer and pushed via `ui.set_key_bindings_text(…)` from `handlers/settings.rs`. It carries a two-screen model: `in property <int>
 screen` gates the Library `Carousel` (screen 0) vs the Viewer body (screen 1) via
 `visible: root.screen == N` (not `if` — see [patterns.md](patterns.md) for the Slint id-scoping
-reason); Settings/Guide overlays remain viewer-scoped. Extended again in PR-S to mount the
+reason); Settings/Guide overlays remain viewer-scoped. It mounts the
 `Scrubber` as auto-hiding chrome inside the screen-1 viewer,
 driven by a `chrome-shown` bool + an idle `Timer`; chrome is revealed on pointer-move (via
 `PageView.reveal()`), arrow-key presses, and scrubber drag. #71 mounted the shared `TitleBar`
@@ -780,11 +780,10 @@ component (bound to a new `current-book-name` in-prop — derived in `main.rs` f
 
 ### rfd file/folder picker
 
-PR6 `on_open_archive` → `rfd` `pick_file` filtered to cbz/zip. PR7 extended the filter to
-cbz/zip/cbr/rar — the ONLY UI change in PR7 since `open_path` already dispatched via
-`ArchiveLoader`. "Open Archive" button lives in `ViewerWindow.slint`.
+`on_open_archive` → `rfd` `pick_file` filtered to cbz/zip/cbr/rar (the filter dispatch goes
+through `open_path` via `ArchiveLoader`). "Open Archive" button lives in `ViewerWindow.slint`.
 
-PR-L added Library-side pickers: `on_add_books` (né `on_add_files`; filtered cbz/zip/cbr/rar —
+Library-side pickers: `on_add_books` (né `on_add_files`; filtered cbz/zip/cbr/rar —
 `pick_files_or_folders` on macOS, where one NSOpenPanel picks archives AND folders in a single
 panel, `pick_files` elsewhere; the platform split lives in `#[cfg]` blocks inside the one handler,
 and the matching `combined-add-picker` bool pushed at boot collapses the NavBar's two add capsules
@@ -793,7 +792,7 @@ into one on macOS) and
 (probes each path via `ArchiveLoader::probe_page_count`, rejects empty/unreadable sources, dedup-aware
 insert, persists the probed count on each genuine insert, and returns `AddReport { added, skipped }` —
 see ADR-0009), `build_carousel_model` (Library → `ModelRc<CarouselItem>`,
-0-based `last_page` → 1-based `current`, real `total`/`progress` from persisted `Book::page_count` (PR-La),
+0-based `last_page` → 1-based `current`, real `total`/`progress` from persisted `Book::page_count`,
 placeholder cover), and the shared
 `add_books_and_refresh` handler (insert → save → rebuild carousel → status line → restore carousel
 focus; short-circuits when nothing new was added). The 4-way add notice is chosen by the pure

@@ -170,7 +170,7 @@ components:
     icon: optional            # leading glyph, 16px (Theme.button-icon), colorize {colors.text};
                               # SUPPLEMENTS the label, never replaces it (destructive-label safety
                               # requirement) — the toolbar delete button passes delete.svg
-  # bulk-delete epic — selection chrome (PR-2 + PR-4). Selection is ALWAYS accent
+  # bulk-delete epic — selection chrome. Selection is ALWAYS accent
   # (blue). Red/danger NEVER appears in selection chrome — the delete DangerButton
   # in SelectionToolbar and the ConfirmDialog confirm button are the only red elements.
   selection-badge:
@@ -531,7 +531,7 @@ reserve this button — and the `danger` hue — for destructive actions only; s
 visuals stay `{colors.accent}`.
 
 ### Selection Badge — `components.selection-badge`
-A two-state atom overlaid on a cover while selection mode is active (bulk-delete epic, PR-2; two-state in the UI-polish pass). An atom — no interactive state, no callback. Rendered inside `CoverCard` at the top-right corner, inset `{spacing.xs}` from the edges. **Both states share an identical `{spacing.huge}` 26px footprint (`{rounded.pill}`, full circle) — toggling `checked` causes zero size/position jump.**
+A two-state atom overlaid on a cover while selection mode is active (bulk-delete epic; two-state added in the UI-polish pass). An atom — no interactive state, no callback. Rendered inside `CoverCard` at the top-right corner, inset `{spacing.xs}` from the edges. **Both states share an identical `{spacing.huge}` 26px footprint (`{rounded.pill}`, full circle) — toggling `checked` causes zero size/position jump.**
 
 - **`checked=true` (selected):** `{colors.accent}` disc + `check.svg` colorized to `{colors.text}` (white), `{spacing.lg}` 14px, centered.
 - **`checked=false` (unselected, but in selection mode):** `{colors.glass-fill}` backing (for legibility over bright cover art), 1px `{colors.text-mid}` border ring, no glyph.
@@ -539,7 +539,7 @@ A two-state atom overlaid on a cover while selection mode is active (bulk-delete
 The badge shows on **every cover** while selection mode is active — the simultaneous hollow-ring appearance across all covers is the mode-changed signal. In normal mode the badge is absent (`if`-gated on `selection-mode`). **Red is reserved for destructive actions** (the `SelectionToolbar` DangerButton and the `ConfirmDialog` confirm button) — this badge is strictly accent.
 
 ### SelectionToolbar — `components.selection-toolbar`
-An organism shown **below the NavBar**, centered, only while selection mode is active and no modal is open (bulk-delete epic, PR-4; slide transition in the UI-polish pass). Not in the keyboard focus chain; mouse + screen-reader only (keyboard navigation stays carousel-owned).
+An organism shown **below the NavBar**, centered, only while selection mode is active and no modal is open (bulk-delete epic; slide transition added in the UI-polish pass). Not in the keyboard focus chain; mouse + screen-reader only (keyboard navigation stays carousel-owned).
 
 **Slide transition** (§2.6): the SelectionToolbar slides via a vertical y-slide into and out of a `clip: true` strip (`{nav-pill-height}` band) anchored at `nav.y + nav.height + {nav-item-gap}` (13px). The toolbar slides between `y=0` (visible) and `y=-height` (tucked under the NavBar, clipped away); `animate y` at `motion-fast`. The strip hosts **only** the SelectionToolbar — the former Select entry pill has been removed and selection entry now lives in the NavBar itself. **No `opacity` is used anywhere** (HiDPI child-blur gotcha — see `docs/patterns.md`); the reveal is pure geometry plus the NavBar recede veil. The toolbar's input guard (`active` flag) ensures a slid-away toolbar never takes pointer/screen-reader input even if clipping leaks.
 
@@ -570,7 +570,7 @@ first-run guide) is open — the `!modal-open` guard mirrors the carousel `Focus
 modal-reject arm so pointer targets under a modal are always unreachable.
 
 ### ConfirmDialog — `components.confirm-dialog`
-A reusable two-choice modal (issue 127, consumed by the bulk-delete epic PR-5). Generic: carries NO domain vocabulary — every word arrives through properties so the same component serves any confirm-or-cancel decision.
+A reusable two-choice modal (issue 127, consumed by the bulk-delete epic). Generic: carries NO domain vocabulary — every word arrives through properties so the same component serves any confirm-or-cancel decision.
 
 **Glass panel**: clones the `SettingsDialog` / `ShortcutsOverlay` glass recipe exactly — a full-area `Theme.scrim` backdrop, the same one-fake-glass object (top-sheen `@linear-gradient` fill + 1px `{colors.glass-border}` rim + 1px `{colors.glass-highlight}` top inner highlight + ONE `{colors.shadow-popover}` drop shadow, blur 22 / y-offset 8). No nested glass, no second shadow. The sheen is a FILL gradient, not an `opacity` layer (opacity blurs text/SVG on HiDPI — see `docs/patterns.md`). The panel is fluid-width: caps at `{components.settings-panel.width}` (360px) on wide windows, leaving a `{spacing.xl}` gutter each side on narrow ones (FirstRunGuide clamp).
 

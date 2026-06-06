@@ -60,6 +60,6 @@ Use **lazy decode-on-demand plus background prefetch, fronted by a bounded LRU c
 
 - The values match the design doc: `lru = "0.18"`, `DEFAULT_CAPACITY = 50`,
   `DEFAULT_PREFETCH_RADIUS = 3`.
-- The thumbnail strip (PR8a) is the deliberate **inverse** of this policy: it holds **all N pages**
+- The thumbnail strip is the deliberate **inverse** of this policy: it holds **all N pages**
   (non-LRU) but at thumbnail resolution, generated once on `rayon` and streamed to the UI. Peak RAM
   there ≈ rayon-pool-size full-res pages — the same bound as prefetch.

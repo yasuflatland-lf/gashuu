@@ -36,7 +36,7 @@ Migrate to ONE Fluent `.ftl` catalog per locale (`en`, `ja`) under
    the final PR of the migration.
 
 2. **Slint bypass via a `global Strings` push.** Slint's `@tr()` cannot consume Fluent. The
-   sanctioned workaround (from PR-2 onward): a Slint `global Strings { … }` of string properties
+   sanctioned workaround (introduced in stage 2): a Slint `global Strings { … }` of string properties
    is populated from Rust. Rust resolves every string through `fl!()` and sets `Strings.*` on the
    component handle; `.slint` bindings read `Strings.*` instead of `@tr()`. This keeps the `.slint`
    markup declarative while the Fluent resolution stays entirely in Rust.
@@ -54,16 +54,16 @@ Migrate to ONE Fluent `.ftl` catalog per locale (`en`, `ja`) under
 4. **Bidi isolation disabled.** `FluentLanguageLoader::set_use_isolating(false)` — the app is not
    bidi and legacy strings are pinned byte-identical by tests.
 
-5. **Staged 4-PR migration; both systems coexist until the last.** No single PR is a big-bang
-   cutover:
-   - **PR-1 (#112)** — foundation: `i18n-embed`/`rust-embed` deps, `en` + `ja` `.ftl` catalogs
+5. **Staged migration; both systems coexist until the last step.** No single step is a big-bang
+   cutover. The work is split into four stages:
+   - **Stage 1 (#112)** — foundation: `i18n-embed`/`rust-embed` deps, `en` + `ja` `.ftl` catalogs
      (full vocabulary), loader init, completeness test. Zero behavior change; gettext and
      `messages.rs` still active.
-   - **PR-2 (#113)** — wire the `Strings` global; push Fluent strings into Slint; remove `@tr()`
+   - **Stage 2 (#113)** — wire the `Strings` global; push Fluent strings into Slint; remove `@tr()`
      call-sites one section at a time.
-   - **PR-3 (#114)** — cut `messages.rs` call-sites over to `fl!()`; dynamic strings served by
+   - **Stage 3 (#114)** — cut `messages.rs` call-sites over to `fl!()`; dynamic strings served by
      Fluent.
-   - **PR-4 (#115)** — delete gettext scaffolding (`.po`, `.slint` `@tr()` residue,
+   - **Stage 4 (#115)** — delete gettext scaffolding (`.po`, `.slint` `@tr()` residue,
      `messages.rs`), finalize.
 
 6. **Crate boundary preserved.** The `Language` enum stays in headless `gashuu-core`. ALL Fluent
@@ -94,11 +94,11 @@ Migrate to ONE Fluent `.ftl` catalog per locale (`en`, `ja`) under
 - Fluent trims leading whitespace from message patterns. Values that must begin with whitespace
   (e.g. ` • item`) require a string-literal placeable (`{" "} • item`).
 
-## Implementation notes (as-built deltas — PR-1, #112)
+## Implementation notes (as-built deltas — stage 1, #112)
 
-PR-1 landed the foundation only (deps, `en`/`ja` catalogs with full vocabulary, the `i18n/`
+Stage 1 landed the foundation only (deps, `en`/`ja` catalogs with full vocabulary, the `i18n/`
 localizer module, and the completeness/parity tests); gettext and `messages.rs` are still live, so
-this ADR stays `Proposed` until the PR-4 (#115) cutover. Deltas found while building the loader,
+this ADR stayed `Proposed` until the stage-4 (#115) cutover. Deltas found while building the loader,
 with the full harness in [docs/patterns.md](../patterns.md) ("Fluent loader", "Fluent catalog
 authoring gotchas", "i18n test harness"):
 
@@ -109,18 +109,18 @@ authoring gotchas", "i18n test harness"):
 - **`set_use_isolating(false)` is re-applied after EVERY `load_languages`** (decision point 4): the
   swap rebuilds bundles with the default (isolating on), so a single boot-time call is insufficient.
 - **Two-tier safety net beyond the design (decision point 3):** alongside `fl!()` and the ID-set
-  completeness test, PR-1 added a cross-locale `$arg`-set parity test (catches a per-locale arg-name
+  completeness test, stage 1 added a cross-locale `$arg`-set parity test (catches a per-locale arg-name
   typo `fl!()` can't see) and a duplicate-message-ID guard (the parser does not error on duplicates).
 - **Load-failure policy:** `Localizer::new`/`switch` `panic!` on a load error (compile-time-embedded
   assets ⇒ programmer error), deliberately asymmetric to the gettext path's never-fatal warn.
 - The message-ID naming convention adopted here is recorded in
   [docs/conventions.md](../conventions.md) ("Fluent catalog message IDs").
 
-## Implementation notes (as-built deltas — PR-2, #113)
+## Implementation notes (as-built deltas — stage 2, #113)
 
-PR-2 landed decision point 2 (the `global Strings` push) and removed every `@tr()` call-site; the
-gettext machinery is left INERT (not deleted) for rollback, so this ADR stays `Proposed` until the
-PR-4 (#115) cutover. Full harness in [docs/patterns.md](../patterns.md) ("The `Strings`-global
+Stage 2 landed decision point 2 (the `global Strings` push) and removed every `@tr()` call-site; the
+gettext machinery is left INERT (not deleted) for rollback, so this ADR stayed `Proposed` until the
+stage-4 (#115) cutover. Full harness in [docs/patterns.md](../patterns.md) ("The `Strings`-global
 push", "Word-order-safe composed a11y labels", "The gettext bundler is keyed by live `@tr()`").
 
 - **`Strings` global + `apply()` chokepoint.** `ui/Strings.slint` declares 67 string properties with
@@ -137,11 +137,11 @@ push", "Word-order-safe composed a11y labels", "The gettext bundler is keyed by 
 - **Zero `@tr()` remain** in `.slint`, yet the `.po` + `build.rs` `with_bundled_translations` +
   `select_ui_language` stay in place as an inert rollback surface until #115.
 
-## Implementation notes (as-built deltas — PR-3, #114)
+## Implementation notes (as-built deltas — stage 3, #114)
 
-PR-3 landed decision point 1's Rust half (decision point 3 stays in force): every `messages.rs`
+Stage 3 landed decision point 1's Rust half (decision point 3 stays in force): every `messages.rs`
 call-site moved to `fl!()`, so dynamic strings are now served by Fluent. gettext is still inert (the
-`.po` + build flags survive for one more PR), so this ADR stayed `Proposed` until the PR-4 (#115)
+`.po` + build flags survive for one more stage), so this ADR stayed `Proposed` until the stage-4 (#115)
 cutover. Full harness in [docs/patterns.md](../patterns.md) ("Neutral content structs", "`OpenOutcome`
 + `finalize_open`", "`fl!()` numeric arg type", "Word-order-safe composed a11y labels").
 
@@ -161,8 +161,8 @@ cutover. Full harness in [docs/patterns.md](../patterns.md) ("Neutral content st
   and the UI handle — so threading the loader there avoids a dependency cycle with `app.rs` (which stays
   i18n-free per the delta above). `finalize_open` is the single place the `OpenOutcome` match + the
   notice-append loop appear.
-- **`Localizer::loader()` getter added now — the defer-getters-until-consumed rule (PR-1) discharged.**
-  PR-1 deliberately did not expose the loader; PR-3 is its first real cross-file consumer (`dynamic.rs`),
+- **`Localizer::loader()` getter added now — the defer-getters-until-consumed rule (stage 1) discharged.**
+  Stage 1 deliberately did not expose the loader; stage 3 is its first real cross-file consumer (`dynamic.rs`),
   so the getter landed exactly when a caller existed, not speculatively.
 - **`OpenOutcome::Error(String)` pre-captures `format!("{e}")` at the `CoreError` site.** The error is
   flattened to a `String` inside `app.rs` (where `CoreError` is in scope) so no `CoreError` ever escapes
@@ -174,11 +174,11 @@ cutover. Full harness in [docs/patterns.md](../patterns.md) ("Neutral content st
   numeric call-site (`page`, `n`, `skipped`) casts to `i64` first — consistent across `dynamic.rs`.
 - **Test-guarantee migration used a named-successor audit.** Byte-exact content pins, the
   cross-locale-differ assertions, and the args-embedded test families were each carried into the `i18n`
-  test module under named successors (no guarantee silently dropped). 515 tests passing at PR-3 HEAD.
+  test module under named successors (no guarantee silently dropped). 515 tests passing at stage-3 HEAD.
 
-## Implementation notes (as-built deltas — PR-4, #115)
+## Implementation notes (as-built deltas — stage 4, #115)
 
-PR-4 is the one-way door: it deletes the gettext scaffolding the prior PRs kept inert, so decision
+Stage 4 is the one-way door: it deletes the gettext scaffolding the prior stages kept inert, so decision
 point 1 is complete and this ADR flips to `Accepted`. Full harness in
 [docs/patterns.md](../patterns.md).
 
