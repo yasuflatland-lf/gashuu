@@ -2636,7 +2636,7 @@ mod tests {
         // Runtime state is the single source of truth: set the three ViewerState
         // modes and the viewport's fit to NON-default values...
         let mut state = ViewerState::new();
-        let _ = state.set_reading_direction(ReadingDirection::Rtl);
+        let _ = state.set_reading_direction(ReadingDirection::Ltr);
         let _ = state.set_spread_mode(SpreadMode::Double);
         let _ = state.set_cover_mode(CoverMode::Paired);
         let mut viewport = ViewportState::from_settings(&Settings::default());
@@ -2654,10 +2654,10 @@ mod tests {
         };
         reconcile_settings(&state, &viewport, &mut settings);
 
-        // The four mirrored fields now match the runtime (defaults Ltr/Single/
-        // Standalone/Whole all DIFFER from the values set above, so this can't pass
+        // The four mirrored fields now match the runtime (defaults Rtl/Auto/
+        // Standalone/Width all DIFFER from the values set above, so this can't pass
         // vacuously)...
-        assert_eq!(settings.reading_direction, ReadingDirection::Rtl);
+        assert_eq!(settings.reading_direction, ReadingDirection::Ltr);
         assert_eq!(settings.spread_mode, SpreadMode::Double);
         assert_eq!(settings.cover_mode, CoverMode::Paired);
         assert_eq!(settings.fit_mode, FitMode::Actual);
