@@ -33,7 +33,7 @@ UI interaction and timing/positioning behavior — auto-hide chrome fade timing,
 
 A function returning `ModelRc<T>` is ALSO headlessly testable, not "untestable UI": use `slint::Image::default()` for `image` fields (constructs with no backend) and assert via the `slint::Model` trait — `row_count()` and `row_data(i)`. So model-mapping logic (e.g. `build_carousel_model`'s 0-based `last_page` → 1-based `current` conversion) gets unit tests, not a coverage exemption. Precedent: `crates/gashuu/src/thumbnail_strip.rs`.
 
-### Exercise a real successful `open_path` in UI tests without an archive fixture (PR-R)
+### Exercise a real successful `open_path` in UI tests without an archive fixture
 
 `ArchiveLoader::open` succeeds on an EMPTY on-disk directory (it becomes a valid `FolderSource`), so
 a UI-crate test can drive the `open_path` Ok-path — and the invariants that need it, e.g.

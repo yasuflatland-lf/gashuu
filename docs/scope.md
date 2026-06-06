@@ -5,17 +5,15 @@ This file is the authoritative record of what has shipped and what is intentiona
 
 ## Baseline (shipped)
 
-Shipped across PR1 + PR2 + PR3 + PR4 + PR4a + PR5 + PR6 + PR7 + PR8a + PR8b + PR-T + PR-L + PR-V.
-
 ### Page sources
 
 - Top-level folder walk (`max_depth(1)`, no recursion).
-- CBZ/ZIP archives (PR6, flattened — images at any depth).
-- CBR/RAR archives (PR7, extraction only, flattened like ZIP).
+- CBZ/ZIP archives (flattened — images at any depth).
+- CBR/RAR archives (extraction only, flattened like ZIP).
 - All PNG/JPG/JPEG formats.
 - Dispatched by `ArchiveLoader` (extension → magic-byte sniff).
 
-**Intentional deviation from the Issue:** PR6's Issue specified `async_zip` + `tokio` and PR7's plan specified `unrar`, but BOTH use the SYNCHRONOUS crate (`zip` / `unrar`) over the existing rayon pool — the synchronous `read_bytes` trait method plus CPU-bound decode fit rayon naturally, whereas async would force a `block_on` bridge and infect every layer with `tokio`.
+**Intentional deviation from the Issue:** the ZIP Issue specified `async_zip` + `tokio` and the RAR plan specified `unrar`, but BOTH use the SYNCHRONOUS crate (`zip` / `unrar`) over the existing rayon pool — the synchronous `read_bytes` trait method plus CPU-bound decode fit rayon naturally, whereas async would force a `block_on` bridge and infect every layer with `tokio`.
 
 The per-entry 500 MB ceiling (`MAX_ENTRY_BYTES` in `naming.rs`) applies to both ZIP and RAR, though RAR's read-time cap is weaker (no streaming `take`; see [docs/patterns.md](patterns.md)).
 RAR requires a C++ compiler on every OS (see [docs/toolchain.md](toolchain.md)).
@@ -30,7 +28,7 @@ RAR requires a C++ compiler on every OS (see [docs/toolchain.md](toolchain.md)).
 - **Two-page spread (Single/Double/Auto)** with active RTL/LTR binding and `cover_mode` (Standalone/Paired).
 - Space = next / Backspace = prev (reading order, direction-independent); arrows are direction-aware (LTR → = next, RTL ← = next).
 - `Auto` picks single vs double from the window aspect ratio (landscape/square → double, portrait → single) and follows resizes live; composes with RTL/LTR and cover mode.
-- Runtime toggles: **D** = spread mode (3-cycle: single → double → auto), **R** = reading direction, **C** = cover mode — each mutates RUNTIME state only (`ViewerState`); `reconcile_settings` mirrors the modes into `Settings` at the next save (PR-D / issue #32), still persisted via save-on-exit (not per-key).
+- Runtime toggles: **D** = spread mode (3-cycle: single → double → auto), **R** = reading direction, **C** = cover mode — each mutates RUNTIME state only (`ViewerState`); `reconcile_settings` mirrors the modes into `Settings` at the next save (issue #32), still persisted via save-on-exit (not per-key).
 
 ### Zoom, pan, and fit modes
 
@@ -46,7 +44,7 @@ RAR requires a C++ compiler on every OS (see [docs/toolchain.md](toolchain.md)).
 - `recent_files` recorded only when `track_recent_files` is enabled (off by default for privacy).
 - `key_bindings` is persisted but inactive (forward-compat only).
 
-### Parallel thumbnail strip (PR8a)
+### Parallel thumbnail strip
 
 - rayon-generated thumbnails for all pages, streamed to the UI as each completes.
 - Click a thumb or press `T` to jump to any page (via `ViewerState::jump_to`).
@@ -54,49 +52,49 @@ RAR requires a C++ compiler on every OS (see [docs/toolchain.md](toolchain.md)).
 - Failed thumbs render distinctly (red ✕).
 - No new deps (reuses `image`/`rayon`).
 
-### Last-read-page resume and Library registration (PR-R)
+### Last-read-page resume and Library registration
 
 - Every opened book is registered in the `Library` (`Library::add` on a successful open, with an immediate `save()` mirroring the recents save-on-open).
 - The last-read page is written back to `library.json` at every leave point: ↑ to Library, opening another book, and app exit.
 - Re-opening a book resumes at its stored last page (via `OpenBookUseCase::run` → `jump_to`). Resume/write-back is observable for books opened through Open Folder / Open Archive.
-- **Deferred to PR-C:** populating the carousel from `library.books()` and cover/visual display. The `on_carousel_open` path is wired (resolves carousel index → book path → `OpenBookUseCase::run`) but inert until the carousel is actually populated. (A seam-only version would be inert because no book is added to the Library — that gap, surfaced in review, is why `Library::add`-on-open shipped here.)
+- The `on_carousel_open` path is wired (resolves carousel index → book path → `OpenBookUseCase::run`). It was originally inert until the carousel was populated (covered by "Library cover-flow carousel rendering" below). (A seam-only version would have been inert because no book is added to the Library — that gap, surfaced in review, is why `Library::add`-on-open shipped here.)
 
-### Settings dialog and first-run guide (PR8b)
+### Settings dialog and first-run guide
 
 - A modal dialog (opened from the "Settings…" toolbar button) edits the already-active settings — reading direction / spread / cover / fit (applied immediately) and cache size / preload radius / track-recent (cache/preload apply to newly opened books via `set_cache_config`).
 - The keyboard shortcuts are shown read-only (not yet remappable). Since issue 104 they live in a separate `ShortcutsOverlay` modal opened from the dialog's footer "Shortcuts" link, not inline in the dialog.
 - A first-run guide shows once, gated by `Settings::seen_guide`.
 - No new deps.
 
-### Library cover-flow carousel rendering (PR-C)
+### Library cover-flow carousel rendering
 
-- The Library screen (the PR-0b two-screen shell) now RENDERS the cover-flow carousel from the `Library` model: focused cover with accent ring, scaled/dimmed neighbors, per-cover + focused-meta reading-progress bars, a grayed broken-cover placeholder for unavailable books, and the 0-book empty-state CTA. Built from the pure `library_model::carousel_data` mapping via the `carousel::to_carousel_item` UI-thread adapter (covers via `slint::Image::default()` for now). No new deps.
-- **Covers start as placeholders** — PR-V (below) streams the real cover images in (into the same `VecModel<CarouselItem>`, using the PR8a `invoke_from_event_loop` pattern).
-- Per-book page `total` was a placeholder `0` in PR-C; **PR-La now persists it** (`Book::page_count`, back-filled and saved on open) and the carousel shows the real `total` + `current / total` progress fraction once a book has been opened. See "Per-book page totals, fallible save, and load-failure notice (PR-La)" below. (Later: `CoverController` ALSO prefetches the count for never-opened books in the background, so the carousel no longer shows `1 / 0` before first open — see "Cover sharpness, page-count prefetch, cover-flow z-order" below. Later still: the reject-empty-books feature persists the probed count at ADD time, so a freshly added book shows its real `total` immediately without waiting for the prefetch — see "Reject empty books" below.)
-- The empty-state CTA is wired to the file/folder picker by PR-L (see below).
+- The Library screen (the two-screen shell) RENDERS the cover-flow carousel from the `Library` model: focused cover with accent ring, scaled/dimmed neighbors, per-cover + focused-meta reading-progress bars, a grayed broken-cover placeholder for unavailable books, and the 0-book empty-state CTA. Built from the pure `library_model::carousel_data` mapping via the `carousel::to_carousel_item` UI-thread adapter (covers via `slint::Image::default()` for now). No new deps.
+- **Covers started as placeholders** — "Library carousel covers" (below) streams the real cover images in (into the same `VecModel<CarouselItem>`, using the thumbnail-strip `invoke_from_event_loop` pattern).
+- Per-book page `total` was originally a placeholder `0`; **"Per-book page totals, fallible save, and load-failure notice" (below) now persists it** (`Book::page_count`, back-filled and saved on open) and the carousel shows the real `total` + `current / total` progress fraction once a book has been opened. (Later: `CoverController` ALSO prefetches the count for never-opened books in the background, so the carousel no longer shows `1 / 0` before first open — see "Cover sharpness, page-count prefetch, cover-flow z-order" below. Later still: the reject-empty-books feature persists the probed count at ADD time, so a freshly added book shows its real `total` immediately without waiting for the prefetch — see "Reject empty books" below.)
+- The empty-state CTA is wired to the file/folder picker (see "Multi-file loading via picker" below).
 
-### Thumbnail disk cache (PR-T)
+### Thumbnail disk cache
 
-`ThumbnailCache` (gashuu-core) persists thumbnails/covers as PNG files under the OS cache directory, keyed by a version-stable FNV-1a hash of (path, mtime, max-side). `put` writes atomically (temp-file-then-rename); `get` returns `None` on miss/corrupt. This is the storage primitive; the cover carousel that consumes it is PR-V (below). Concurrent same-key write safety is deferred (see docs/patterns.md) and is not exercised by PR-V (one distinct key per book).
+`ThumbnailCache` (gashuu-core) persists thumbnails/covers as PNG files under the OS cache directory, keyed by a version-stable FNV-1a hash of (path, mtime, max-side). `put` writes atomically (temp-file-then-rename); `get` returns `None` on miss/corrupt. This is the storage primitive; the cover carousel that consumes it is "Library carousel covers" (below). Concurrent same-key write safety is deferred (see docs/patterns.md) and is not exercised by the carousel (one distinct key per book).
 
-### Library carousel covers (PR-V)
+### Library carousel covers
 
-- The Library carousel now shows each book's REAL cover (the thumbnail of its page 0), streamed in row-by-row rather than the PR-C placeholders. Core gained `generate_cover(source, max_side) -> Result<DecodedImage, CoreError>` (page-0 thumbnail; errors on a 0-page source); the UI's new `cover_loader.rs` (`CoverController`, a twin of the `thumbnail_strip.rs` controller) tries the `ThumbnailCache` first, else fires a `rayon::spawn` worker that opens via `ArchiveLoader`, calls `generate_cover`, caches the result, and marshals it into the shared `VecModel<CarouselItem>` via `invoke_from_event_loop` — under the same epoch + cancel double-guard as the thumbnail strip (see docs/patterns.md). (As-shipped here the cache HIT was served synchronously on the UI thread; the async-cover-loading rework below moved the hit path onto the worker too — `start` is now dispatch-only.)
+- The Library carousel shows each book's REAL cover (the thumbnail of its page 0), streamed in row-by-row rather than placeholders. Core gained `generate_cover(source, max_side) -> Result<DecodedImage, CoreError>` (page-0 thumbnail; errors on a 0-page source); the UI's `cover_loader.rs` (`CoverController`, a twin of the `thumbnail_strip.rs` controller) tries the `ThumbnailCache` first, else fires a `rayon::spawn` worker that opens via `ArchiveLoader`, calls `generate_cover`, caches the result, and marshals it into the shared `VecModel<CarouselItem>` via `invoke_from_event_loop` — under the same epoch + cancel double-guard as the thumbnail strip (see docs/patterns.md). (Originally the cache HIT was served synchronously on the UI thread; the async-cover-loading rework below moved the hit path onto the worker too — `start` is now dispatch-only.)
 - `rayon` became a direct dep of the `gashuu` UI crate (no new lockfile entry — see docs/toolchain.md).
 - No new lockfile dependencies. Core `generate_cover` is unit-tested (page-0 selection, empty-source error, decode-error propagation); the UI streaming path in `cover_loader.rs` is coverage-exempt like the thumbnail strip (see docs/quality-gates.md).
 
-### Multi-file loading via picker (PR-L)
+### Multi-file loading via picker
 
 - **Add files** (`rfd` `pick_files`, filtered cbz/zip/cbr/rar) and **Add folder** (`pick_folder`, folder-as-one-book) toolbar buttons on the Library screen, plus an interactive empty-state CTA that fires the file picker.
 - Adds route through `add_paths` (dedup via `Library::add`, skipping books already present and duplicates within the batch; since the reject-empty-books feature it ALSO probes each source first and rejects any with no image pages or that cannot be opened — see "Reject empty books" below), then persist the library, rebuild the carousel model (`build_carousel_model`), and surface the outcome on a Library-screen status line.
 - Library is loaded at startup (corrupt/unreadable → empty library, same UI-layer recovery policy as `Settings`) and the carousel is seeded from it on boot.
 - No new deps (reuses `rfd`).
 
-### Per-book page totals, fallible save, and load-failure notice (PR-La)
+### Per-book page totals, fallible save, and load-failure notice
 
-- **Per-book page totals are modeled + persisted.** `Book::page_count` (a `#[serde(default)]` field, no `LIBRARY_VERSION` bump) is back-filled from the opened source's page count and saved to `library.json` on open, so the count survives relaunch. The cover-flow carousel (`carousel_data`) now shows the REAL `total` / `current` / progress fraction for any opened book (`0` = unknown: never opened AND not yet prefetched; since the reject-empty-books feature, a book ADDED after that feature lands has its count persisted at add time, so a fresh add shows its real total immediately — see "Reject empty books" below). Same-session visibility comes from a carousel rebuild on the open path when the count was just back-filled. Cover images remain placeholders until PR-V.
+- **Per-book page totals are modeled + persisted.** `Book::page_count` (a `#[serde(default)]` field, no `LIBRARY_VERSION` bump) is back-filled from the opened source's page count and saved to `library.json` on open, so the count survives relaunch. The cover-flow carousel (`carousel_data`) shows the REAL `total` / `current` / progress fraction for any opened book (`0` = unknown: never opened AND not yet prefetched; since the reject-empty-books feature, a book ADDED after that feature lands has its count persisted at add time, so a fresh add shows its real total immediately — see "Reject empty books" below). Same-session visibility comes from a carousel rebuild on the open path when the count was just back-filled.
 - **Save is fallible end-to-end** — `Library::to_json -> Result` (symmetric with `from_json`); `save`/`save_to` propagate via `?`. No serialize step is silently swallowed, so a save can no longer write a truncated file while the UI reports success.
-- **Startup load failures surface on the home screen.** A genuine `Library`/`Settings` load failure (corrupt data / I/O / `NoDataDir`; missing files still return `Ok(default)`) is collected and shown on the Library status line after the initial refresh. Closes the PR-L gap where library load failure was tracing-only.
+- **Startup load failures surface on the home screen.** A genuine `Library`/`Settings` load failure (corrupt data / I/O / `NoDataDir`; missing files still return `Ok(default)`) is collected and shown on the Library status line after the initial refresh. Closes the earlier gap where library load failure was tracing-only.
 - No new deps.
 
 ### Cover sharpness, page-count prefetch, cover-flow z-order
@@ -128,7 +126,7 @@ RAR requires a C++ compiler on every OS (see [docs/toolchain.md](toolchain.md)).
 
 - The UI is bilingual with **immediate, no-restart switching** from a new "General → Language" pull-down in the settings dialog (the Apple-HIG-style `Dropdown` atom — the repo's first `PopupWindow`). The preference persists as `Settings.language` (`"en"`/`"ja"` serde tags doubling as the Slint locale names; `#[serde(default)]`; global-only — never per-book).
 - `.slint` strings live in an `export global Strings` (ui/Strings.slint) with English defaults and are pushed from the Fluent catalog by `Localizer::apply()` (i18n/{en,ja}/gashuu.ftl). Rust-composed strings (status line, open/save notices, decode errors, and the ShortcutsOverlay key-bindings reference) are resolved via `src/i18n/dynamic.rs` using the `fl!()` macro against the same catalog.
-- **Fluent is the sole i18n system (ADR-0008, Accepted).** The 4-PR migration (#112-#115) is complete: gettext, `.po` files, build flags, and `src/messages.rs` were fully excised in PR-4 (#115).
+- **Fluent is the sole i18n system (ADR-0008, Accepted).** The migration (#112-#115) is complete: gettext, `.po` files, build flags, and `src/messages.rs` were fully excised (#115).
 
 ### Continue-reading bookmark and entry focus snap
 
@@ -141,15 +139,15 @@ RAR requires a C++ compiler on every OS (see [docs/toolchain.md](toolchain.md)).
 
 **Deferred from this slice:** recently-read sort/history, read timestamps, auto-open on launch, multiple bookmarks.
 
-### Bulk-delete: selection mode, toolbar, and destructive delete (bulk-delete epic, PR-2..PR-5 / #125–#129)
+### Bulk-delete: selection mode, toolbar, and destructive delete (bulk-delete epic, #125–#129)
 
-- The Library carousel has a bulk-**selection** mode. Entered by keyboard `x` (also toggles the focused book) or the NavBar **Select capsule** (filter glyph, toggle + persistent accent ring while active; disabled — not removed — when the library is empty so the NavBar width stays stable); toggled per-book via `x` / Space / a cover click; left via Esc, the toolbar's ✕ exit, or re-clicking the Select capsule. Selection is a `PathBuf` set keyed by canonical path (survives query changes and adds). While selection mode is active a `SelectionBadge` overlays EVERY cover: a filled accent disc + check glyph for selected books; a hollow hairline ring for unselected books (UI-polish two-state). (Selection-mode state + the `x`/Space/cover-click toggles + the `PathBuf` set landed in PR-1/PR-2, #125/#126 → PR#130/#131; PR-4 adds the visible toolbar chrome and select-all; the text pill below the NavBar that previously entered selection mode was replaced by the NavBar capsule in `feat/library-chrome-polish` 2026-06-05 — the click-dialog deferral that accompanied the pill's original keep decision is now moot since the capsule is the entry point.)
+- The Library carousel has a bulk-**selection** mode. Entered by keyboard `x` (also toggles the focused book) or the NavBar **Select capsule** (filter glyph, toggle + persistent accent ring while active; disabled — not removed — when the library is empty so the NavBar width stays stable); toggled per-book via `x` / Space / a cover click; left via Esc, the toolbar's ✕ exit, or re-clicking the Select capsule. Selection is a `PathBuf` set keyed by canonical path (survives query changes and adds). While selection mode is active a `SelectionBadge` overlays EVERY cover: a filled accent disc + check glyph for selected books; a hollow hairline ring for unselected books (UI-polish two-state). (Selection-mode state + the `x`/Space/cover-click toggles + the `PathBuf` set landed first, #125/#126; the visible toolbar chrome and select-all were added later; the text pill below the NavBar that previously entered selection mode was replaced by the NavBar capsule in `feat/library-chrome-polish` 2026-06-05 — the click-dialog deferral that accompanied the pill's original keep decision is now moot since the capsule is the entry point.)
 - **`SelectionToolbar`** organism (below the untouched NavBar, shown only in selection mode with no modal open): a count mode-indicator ("N selected", or "N selected (M outside search)" when some selected books are filtered out of the current search), a **Select all / Deselect all** toggle button, the exit ✕, and the **Delete (N)…** `DangerButton` (the only red element in the app's chrome; if-gated/hidden at N=0). A content-hugging glass pill (no fixed width — see docs/patterns.md).
 - **Cmd/Ctrl+A** select-all/deselect-all keyboard chord (selection mode only) — the repo's first `event.modifiers` arm; the same action as the toolbar's Select-all button (Rust decides select-vs-deselect from whether every visible book is already selected). See docs/patterns.md.
 - **Delete / Backspace** keys arm the destructive path in selection mode, opening the confirm dialog (same as the DangerButton). `Enter` = Cancel — the destructive action is never on `Enter`.
-- **Confirm dialog** (PR-5, #129): before any deletion, a `ConfirmDialog` is mounted in `ViewerWindow` listing up to 10 book titles (BTreeSet order), an "…and M more" line when the selection exceeds 10, an "N selected outside the current search" line when filtered-out books are included, a warning line when the open book is among the selection, and a "files on disk are kept" info line. Cancel / Esc / backdrop click preserve the selection and mode.
-- **Destructive transaction** (`RemoveBooksUseCase`, PR-5): mutate → save with rollback → best-effort cover purge → viewer-close if the open book was deleted → search recompute → selection clear (success only). **No undo** — the confirm dialog is the safety gate instead. **Source files on disk are never touched** — only the library entry is removed.
-- **Save-failure rollback** (PR-5): if `Library::save()` fails after a `remove_many`, the full `Book` clones (captured before removal) are re-inserted via `Library::restore`, returning the shelf to a byte-identical pre-removal state. The selection is preserved so the user can retry; no cache entries are touched on failure.
+- **Confirm dialog** (#129): before any deletion, a `ConfirmDialog` is mounted in `ViewerWindow` listing up to 10 book titles (BTreeSet order), an "…and M more" line when the selection exceeds 10, an "N selected outside the current search" line when filtered-out books are included, a warning line when the open book is among the selection, and a "files on disk are kept" info line. Cancel / Esc / backdrop click preserve the selection and mode.
+- **Destructive transaction** (`RemoveBooksUseCase`): mutate → save with rollback → best-effort cover purge → viewer-close if the open book was deleted → search recompute → selection clear (success only). **No undo** — the confirm dialog is the safety gate instead. **Source files on disk are never touched** — only the library entry is removed.
+- **Save-failure rollback**: if `Library::save()` fails after a `remove_many`, the full `Book` clones (captured before removal) are re-inserted via `Library::restore`, returning the shelf to a byte-identical pre-removal state. The selection is preserved so the user can retry; no cache entries are touched on failure.
 - Status line reports "Deleted N book(s)" on success or a loud save-failure message on `SaveFailed`; the focused carousel index is clamped into the shrunken visible-row count.
 - The `ShortcutsOverlay` keyboard-reference now documents the full selection grammar: `x`, `Space`, `Cmd/Ctrl+A`, `Delete`/`Backspace`, `Esc`.
 - No new dependencies.
@@ -192,10 +190,10 @@ field / UI for the cap.
 
 ## Deferred (intentionally out of scope)
 
-- A genuinely-RAR-compressed test fixture (PR7a / issue #22 — PR7 ships only a store-format fixture, which does not exercise real RAR decompression).
-- PR8a thumbnail-strip follow-ups:
-  - RTL strip ordering (8a ships ascending order + current-page highlight only).
-  - Lazy/on-demand thumbnail generation (8a eagerly generates all).
+- A genuinely-RAR-compressed test fixture (issue #22 — only a store-format fixture ships, which does not exercise real RAR decompression).
+- Thumbnail-strip follow-ups:
+  - RTL strip ordering (the strip ships ascending order + current-page highlight only).
+  - Lazy/on-demand thumbnail generation (the strip eagerly generates all).
   - Virtual scroll for huge archives.
 - Nested archives.
 - `ComicInfo.xml` metadata.
@@ -203,12 +201,12 @@ field / UI for the cap.
 - Per-entry offset/cursor-cache optimization (avoid reopening the central directory / re-walking from the front on every `read_bytes`).
 - Multi-volume/split RAR.
 - Solid-RAR skip-speedup.
-- User-remappable keys (`key_bindings` stays persisted-but-inactive; the PR8b dialog shows a read-only reference).
-- Immediate runtime rebuild of the CURRENT book's cache (`ViewerState::rebuild_cache` — PR8b's `set_cache_config` only affects newly opened books).
+- User-remappable keys (`key_bindings` stays persisted-but-inactive; the settings dialog shows a read-only reference).
+- Immediate runtime rebuild of the CURRENT book's cache (`ViewerState::rebuild_cache` — `set_cache_config` only affects newly opened books).
 - `recent_files`-management / theme settings UI.
-- All three PR-L follow-ups SHIPPED in PR-La (see "Per-book page totals, fallible save, and load-failure notice" above): on-screen library-load-failure notice, fallible `to_json` (no silent serialize-error discard on save), and real carousel `total`/`progress` via persisted page counts. Covers now stream in via PR-V (see "Library carousel covers" above).
-- Backdrop-click / Esc dialog dismissal (PR8b dialogs close via their own button only).
-- PR5 non-goals: touch/pinch, rotation/minimap/scrollbar, click-to-turn, per-page independent zoom in Double mode, and 60fps is NOT CI-asserted (manual/telemetry only).
+- The three multi-file-loading follow-ups SHIPPED (see "Per-book page totals, fallible save, and load-failure notice" above): on-screen library-load-failure notice, fallible `to_json` (no silent serialize-error discard on save), and real carousel `total`/`progress` via persisted page counts. Covers now stream in (see "Library carousel covers" above).
+- Backdrop-click / Esc dialog dismissal (settings dialogs close via their own button only).
+- Viewer non-goals: touch/pinch, rotation/minimap/scrollbar, click-to-turn, per-page independent zoom in Double mode, and 60fps is NOT CI-asserted (manual/telemetry only).
 - Linux release artifacts and a `.desktop` entry (macOS + Windows ship via `release.yml`; Linux's Slint system-library deps make a portable artifact heavier — deferred).
 - Code signing / notarization for release binaries (macOS Developer ID + notarytool, Windows Authenticode) — `release.yml` ships unsigned with documented `SIGNING SEAM` insertion points.
 - Auto-creating the GitHub Release (the release must pre-exist; `release.yml` only uploads assets to it).

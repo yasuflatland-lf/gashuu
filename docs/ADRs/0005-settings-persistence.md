@@ -57,9 +57,9 @@ Chose JSON + a version field for simplicity, human readability, and easy migrati
 - The schema has grown well beyond the design doc's example while staying forward/backward-compatible
   via `#[serde(default)]`: it now includes `reading_direction`, `spread_mode` (incl. `Auto`),
   `cover_mode`, `fit_mode`, `cache_size`, `preload_pages`, `track_recent_files`, `recent_files`,
-  `key_bindings`, and `seen_guide` (first-run guide flag, PR8b).
+  `key_bindings`, and `seen_guide` (first-run guide flag).
 - **`SETTINGS_VERSION` stays 1.** New fields are absorbed by `#[serde(default)]`, so no migration was
   needed; the frozen snapshot simply gained each new default. `Settings::migrate()` is the mechanism
   reserved for the first genuinely incompatible change.
 - `key_bindings` is persisted but **inactive** (forward-compat only); user-remappable keys are
-  deferred, and the PR8b settings dialog shows the bindings read-only.
+  deferred, and the settings dialog shows the bindings read-only.

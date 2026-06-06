@@ -93,5 +93,5 @@ Rust side, and the UI layer receives only RGBA byte slices
 
 ## Implementation notes (as-built deltas)
 
-- Since PR1, the implementation runs exactly as decided on a Slint UI (`*.slint` + `main.rs` under
-  `crates/gashuu`). No divergence from the source.
+- From the first implementation onward, the app runs exactly as decided on a Slint UI (`*.slint` +
+  `main.rs` under `crates/gashuu`). No divergence from the source.
