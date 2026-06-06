@@ -16,7 +16,7 @@ mod viewport;
 
 use carousel::{
     apply_selection_flags, bind_carousel_model, build_carousel_model, cover_requests,
-    set_carousel_selected, thumb_state_at, ThumbState,
+    thumb_state_at, ThumbState,
 };
 use enum_adapters::{
     cover_mode_to_index, fit_mode_to_index, index_to_cover_mode, index_to_fit_mode,
@@ -211,338 +211,9 @@ fn main() -> color_eyre::Result<()> {
         &localizer,
     );
 
-    // Carousel: toggle the focused/clicked book's bulk-selection membership
-    // (keyboard `x`/Space, forwarded as a VISIBLE carousel index). Resolves the
-    // visible index → library path through the search projection (the SAME hop as
-    // `on_carousel_open`), toggles the path in the selection set, then flips ONLY
-    // that row's `selected` flag so its accent badge appears/disappears without a
-    // model rebuild. Out-of-range / desync indices are a no-op (warn on desync).
-    {
-        let ui_weak = ui.as_weak();
-        let library = Rc::clone(&library);
-        let search = Rc::clone(&search);
-        let selection = Rc::clone(&selection);
-        let localizer = Rc::clone(&localizer);
-        ui.on_carousel_toggle_selection(move |index| {
-            with_ui(&ui_weak, |ui| {
-                let Some(path) = visible_index_to_path(&library, &search, index) else {
-                    // Desync diagnostics (cold path): re-borrow is safe — the helper's borrows dropped.
-                    let visible_len = search.borrow().visible_indices().len();
-                    let library_len = library.borrow().books().len();
-                    tracing::warn!(
-                        index,
-                        visible_len,
-                        library_len,
-                        "carousel-toggle-selection: no book at index"
-                    );
-                    return;
-                };
-                selection.borrow_mut().toggle(path.clone());
-                let selected = selection.borrow().contains(&path);
-                set_carousel_selected(&ui, index as usize, selected);
-                push_selection_strings(&ui, &localizer, &selection, &search, &library);
-            })
-        });
-    }
-
-    // Carousel: a cover was clicked (the repo's first cover pointer interaction).
-    // In NORMAL mode a click only FOCUSES the cover (it never opens — opening is
-    // Return-only). In SELECTION mode it focuses AND toggles the book's selection.
-    {
-        let ui_weak = ui.as_weak();
-        let library = Rc::clone(&library);
-        let search = Rc::clone(&search);
-        let selection = Rc::clone(&selection);
-        let localizer = Rc::clone(&localizer);
-        ui.on_carousel_cover_clicked(move |index| {
-            with_ui(&ui_weak, |ui| {
-                // Always focus the clicked cover (carousel and click both drive
-                // focused-index). The visible index IS the carousel row index.
-                ui.set_carousel_focused_index(index);
-                if !ui.get_carousel_selection_mode() {
-                    return; // normal mode: focus only, never open
-                }
-                let Some(path) = visible_index_to_path(&library, &search, index) else {
-                    // Desync diagnostics (cold path): re-borrow is safe — the helper's borrows dropped.
-                    let visible_len = search.borrow().visible_indices().len();
-                    let library_len = library.borrow().books().len();
-                    tracing::warn!(
-                        index,
-                        visible_len,
-                        library_len,
-                        "carousel-cover-clicked: no book at index in selection mode"
-                    );
-                    return;
-                };
-                selection.borrow_mut().toggle(path.clone());
-                let selected = selection.borrow().contains(&path);
-                set_carousel_selected(&ui, index as usize, selected);
-                push_selection_strings(&ui, &localizer, &selection, &search, &library);
-            })
-        });
-    }
-
-    // Carousel: select-all / deselect-all toggle. Routed here by both the toolbar
-    // button and Cmd/Ctrl+A from the Slint side. If every visible book is already
-    // selected, this deselects them all (via `deselect_visible`); otherwise it
-    // selects them all (via `select_visible`). Re-applies the selection flags over
-    // the visible rows and refreshes the toolbar strings.
-    {
-        let ui_weak = ui.as_weak();
-        let library = Rc::clone(&library);
-        let search = Rc::clone(&search);
-        let selection = Rc::clone(&selection);
-        let localizer = Rc::clone(&localizer);
-        ui.on_carousel_select_all(move || {
-            with_ui(&ui_weak, |ui| {
-                {
-                    let lib = library.borrow();
-                    let srch = search.borrow();
-                    let mut sel = selection.borrow_mut();
-                    if sel.all_visible_selected(&srch, &lib) {
-                        sel.deselect_visible(&srch, &lib);
-                    } else {
-                        sel.select_visible(&srch, &lib);
-                    }
-                }
-                // Re-apply the (updated) selection flags over the visible rows so
-                // every badge appears/disappears without a full carousel rebuild.
-                {
-                    let lib = library.borrow();
-                    let indices = search.borrow().visible_indices().to_vec();
-                    let sel = selection.borrow();
-                    apply_selection_flags(&ui, &lib, &indices, |path| sel.contains(path));
-                }
-                push_selection_strings(&ui, &localizer, &selection, &search, &library);
-            })
-        });
-    }
-
-    // Carousel: leave selection mode (Esc or toolbar exit button). The Slint
-    // caller (Esc key arm or toolbar exit button) already cleared `selection-mode`;
-    // here we clear the Rust selection set and re-apply the (now empty) flags over
-    // the visible rows so every badge disappears. A fresh re-entry into selection
-    // mode then starts with nothing selected.
-    {
-        let ui_weak = ui.as_weak();
-        let library = Rc::clone(&library);
-        let search = Rc::clone(&search);
-        let selection = Rc::clone(&selection);
-        let localizer = Rc::clone(&localizer);
-        ui.on_carousel_exit_selection(move || {
-            with_ui(&ui_weak, |ui| {
-                selection.borrow_mut().clear();
-                let lib = library.borrow();
-                let indices = search.borrow().visible_indices().to_vec();
-                apply_selection_flags(&ui, &lib, &indices, |_| false);
-                push_selection_strings(&ui, &localizer, &selection, &search, &library);
-            })
-        });
-    }
-
-    // Carousel: a delete was requested (toolbar DangerButton or the Delete /
-    // Backspace key arm). The Slint side fires this even at N=0 (the key arm is
-    // unconditional by design), so an empty selection is a no-op here — the
-    // confirm dialog is never shown for nothing. Otherwise, build the localized
-    // confirm-dialog content for the current selection and push it into the
-    // ConfirmDialog's in-out properties, then flip `show-confirm-delete` true to
-    // mount the modal. Cancel/Esc/backdrop are handled purely in Slint (selection
-    // PRESERVED); Rust only sees the accept (the handler below).
-    {
-        let ui_weak = ui.as_weak();
-        let state = Rc::clone(&state);
-        let library = Rc::clone(&library);
-        let search = Rc::clone(&search);
-        let selection = Rc::clone(&selection);
-        let localizer = Rc::clone(&localizer);
-        ui.on_carousel_request_delete(move || {
-            with_ui(&ui_weak, |ui| {
-                // No-op on an empty selection (the key arm accepts even at zero).
-                if selection.borrow().count() == 0 {
-                    return;
-                }
-                // Build the dialog content under one shared-borrow group:
-                // `state`, `selection`, `search`, and `library` are distinct
-                // `RefCell`s, so holding the four immutable `Ref`s together is
-                // safe; the `ConfirmDeleteContent` it returns owns its strings, so
-                // the group drops at the block's `}` before the UI setters run.
-                let content = {
-                    let st = state.borrow();
-                    app::confirm_delete_content(
-                        localizer.loader(),
-                        &selection.borrow(),
-                        &search.borrow(),
-                        &library.borrow(),
-                        st.open_file(),
-                    )
-                };
-                ui.set_confirm_delete_title(content.title.into());
-                // `confirm-delete-body-lines` is a Slint `[string]` property, so its
-                // setter takes a `ModelRc<SharedString>`; wrap the owned lines in a
-                // one-shot `VecModel` (mirrors `carousel::model`'s `ModelRc::new`).
-                let body_lines: Vec<slint::SharedString> =
-                    content.body_lines.into_iter().map(Into::into).collect();
-                ui.set_confirm_delete_body_lines(slint::ModelRc::new(slint::VecModel::from(
-                    body_lines,
-                )));
-                ui.set_confirm_delete_info(content.info.into());
-                ui.set_confirm_delete_warning(content.warning.into());
-                ui.set_show_confirm_delete(true);
-            })
-        });
-    }
-
-    // Carousel: the delete confirmation was accepted (ConfirmDialog primary
-    // action). Run the destructive `RemoveBooksUseCase` transaction (mutate +
-    // save with rollback, cover purge, viewer-close-if-open, search recompute,
-    // selection clear), then finalize the UI from the returned `RemoveOutcome`.
-    // The modal is dismissed in EVERY outcome (its stale content props are
-    // rebuilt on the next open). The use case is constructed once and moved into
-    // the closure (mirrors how `OpenBookUseCase` is held).
-    {
-        let ui_weak = ui.as_weak();
-        let library = Rc::clone(&library);
-        let search = Rc::clone(&search);
-        let selection = Rc::clone(&selection);
-        let localizer = Rc::clone(&localizer);
-        let covers = Rc::clone(&covers);
-        let remove_books = app::RemoveBooksUseCase::new(
-            Rc::clone(&state),
-            Rc::clone(&library),
-            Rc::clone(&search),
-            Rc::clone(&selection),
-        );
-        ui.on_confirm_delete_accepted(move || {
-            with_ui(&ui_weak, |ui| {
-                let loader = localizer.loader();
-                // The use case owns the destructive transaction in the issue's
-                // non-negotiable order, including the viewer-close (it cleared
-                // `current_book_name` itself) and the success-only selection clear.
-                let outcome = remove_books.run(&ui);
-                // Dismiss the modal in every outcome.
-                ui.set_show_confirm_delete(false);
-                match outcome {
-                    app::RemoveOutcome::NoSelection => {
-                        // Defensive: the request handler guards against an empty
-                        // selection, so this should not be reached. Just refocus.
-                        ui.invoke_focus_carousel();
-                    }
-                    app::RemoveOutcome::SaveFailed { error } => {
-                        // The shelf was rolled back and the selection PRESERVED by
-                        // `run` (no flag re-apply needed — the rows are unchanged).
-                        // Stay in selection mode so the user can retry.
-                        ui.set_status_text(
-                            crate::i18n::dynamic::delete_save_failed(loader, &error).into(),
-                        );
-                        ui.invoke_focus_carousel();
-                    }
-                    app::RemoveOutcome::Removed { n, .. } => {
-                        // `run` already recomputed the search projection and cleared
-                        // the selection. Rebuild the carousel from the fresh visible
-                        // set (no focus reset — we clamp the focused index below to a
-                        // valid row), so the rebuilt model reflects the shrunken shelf.
-                        refresh_library_carousel(
-                            &ui,
-                            &CarouselRefresh {
-                                library: &library,
-                                covers: &covers,
-                                search: &search,
-                                selection: &selection,
-                                localizer: &localizer,
-                            },
-                            false,
-                        );
-                        // Clamp the focused index into the NEW visible row count
-                        // BEFORE the Slint side can read a stale out-of-range value.
-                        // The model is already bound above; setting the focused index
-                        // now re-centers the carousel on a valid row (index-out-of-
-                        // range on the projection is the documented crash risk).
-                        let visible_count = search.borrow().visible_indices().len();
-                        let clamped =
-                            clamp_focused_index(ui.get_carousel_focused_index(), visible_count);
-                        ui.set_carousel_focused_index(clamped);
-                        // Exit selection mode: drop the toolbar and clear every row's
-                        // `selected` flag (selection itself was already cleared by
-                        // `run`, so do NOT double-clear it — just re-apply all-false).
-                        ui.set_carousel_selection_mode(false);
-                        {
-                            let lib = library.borrow();
-                            let indices = search.borrow().visible_indices().to_vec();
-                            apply_selection_flags(&ui, &lib, &indices, |_| false);
-                        }
-                        push_selection_strings(&ui, &localizer, &selection, &search, &library);
-                        // Status push AFTER the refresh + toolbar string updates (the
-                        // same status-last ordering `add_books_and_refresh` uses), so
-                        // the deleted-books notice is the final write to the Library's
-                        // bottom strip. `n` already excludes stale not_found paths.
-                        ui.set_status_text(crate::i18n::dynamic::deleted_books(loader, n).into());
-                        // Restore keyboard focus to the carousel so its key seams work.
-                        // `run` cleared the viewer + `current_book_name` itself when the
-                        // open book was deleted; `current_book_name` is derived on demand
-                        // from `state.open_file()` (now `None`), so no main.rs mirror
-                        // state needs syncing here.
-                        ui.invoke_focus_carousel();
-                    }
-                }
-            })
-        });
-    }
-
-    // Carousel: a cover-loading worker found a book whose source has zero image
-    // pages (an empty folder, an archive emptied since it was added, …). The
-    // worker invokes this with the book's canonical path (epoch-guarded on its
-    // side so a stale in-flight result is dropped). Auto-remove the now-empty
-    // book from the library, persist, purge its cached cover, rebuild the
-    // carousel (the rebuild's epoch bump drops any sibling covers still
-    // streaming for it), and surface a notice. Idempotent: a second signal for a
-    // book already removed (`Library::remove` returns false) is a silent no-op.
-    {
-        let ui_weak = ui.as_weak();
-        let library = Rc::clone(&library);
-        let covers = Rc::clone(&covers);
-        let search = Rc::clone(&search);
-        let selection = Rc::clone(&selection);
-        let localizer = Rc::clone(&localizer);
-        ui.on_empty_book_detected(move |path_str| {
-            with_ui(&ui_weak, |ui| {
-                let loader = localizer.loader();
-                let path = std::path::PathBuf::from(path_str.as_str());
-                // The shared transaction (single home in app.rs): title capture
-                // BEFORE removal → `Library::remove` → save → best-effort cover
-                // purge. `removed == false` is the idempotency race — the book
-                // was already removed by another path (its notice + rebuild
-                // already ran), so bail out silently.
-                let removal = app::remove_empty_book(&library, &path);
-                if !removal.removed {
-                    return;
-                }
-                // Rebuild the carousel so the removed book disappears and the
-                // cover-epoch bump drops any sibling cover still streaming for it;
-                // the active search filter is preserved by the chokepoint. No focus
-                // reset — the user's focus stays where it was.
-                refresh_library_carousel(
-                    &ui,
-                    &CarouselRefresh {
-                        library: &library,
-                        covers: &covers,
-                        search: &search,
-                        selection: &selection,
-                        localizer: &localizer,
-                    },
-                    false,
-                );
-                // Notice LAST (status-last ordering, as in add/delete): the
-                // auto-removal message, with the save-failure detail appended when
-                // the persist failed.
-                let status = empty_book_removed_status(
-                    loader,
-                    &removal.title,
-                    removal.save_error.as_deref(),
-                );
-                ui.set_status_text(status.into());
-            })
-        });
-    }
+    handlers::wire_selection_handlers(
+        &ui, &state, &library, &covers, &search, &selection, &localizer,
+    );
 
     // Thumbnail click: jump to the clicked page's spread, refresh, then restore
     // focus to the page area so keyboard navigation keeps working.
@@ -1448,7 +1119,7 @@ pub(crate) fn refresh(
 /// the compose-and-append logic lives in one spot; the formatting stays in
 /// `main.rs` (per the spec) while `empty_book_removed` / `failed_save_library`
 /// remain the pure `dynamic.rs` notice seams.
-fn empty_book_removed_status(
+pub(crate) fn empty_book_removed_status(
     loader: &i18n_embed::fluent::FluentLanguageLoader,
     title: &str,
     save_error: Option<&str>,
@@ -1888,7 +1559,7 @@ fn add_paths(lib: &mut Library, paths: Vec<std::path::PathBuf>) -> AddReport {
 /// (the carousel row is an index into `visible_indices`, which maps to a library
 /// row). Returns `None` for an out-of-range index or a carousel/library desync.
 /// Borrows `library` and `search` only for the duration of the call.
-fn visible_index_to_path(
+pub(crate) fn visible_index_to_path(
     library: &Rc<RefCell<Library>>,
     search: &Rc<RefCell<LibrarySearchState>>,
     index: i32,
@@ -1963,7 +1634,7 @@ fn snap_carousel_focus_to_last_opened(
 /// valid row BEFORE the Slint side reads it — an index past the shrunken
 /// projection's end is the documented index-out-of-range crash risk. A negative
 /// `old` (never produced by the live carousel, but defensive) floors to 0.
-fn clamp_focused_index(old: i32, visible_count: usize) -> i32 {
+pub(crate) fn clamp_focused_index(old: i32, visible_count: usize) -> i32 {
     if visible_count == 0 {
         return 0;
     }
@@ -1981,7 +1652,7 @@ fn clamp_focused_index(old: i32, visible_count: usize) -> i32 {
 /// `RefCell`s, so the three shared `Ref`s are taken together in one block scope
 /// (both projection reads need the same trio) and drop at the block's `}` before
 /// the UI setters run.
-fn push_selection_strings(
+pub(crate) fn push_selection_strings(
     ui: &ViewerWindow,
     localizer: &i18n::Localizer,
     selection: &Rc<RefCell<LibrarySelectionState>>,
