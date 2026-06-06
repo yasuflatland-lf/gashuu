@@ -1,4 +1,4 @@
-# <img src="crates/gashuu/ui/assets/app-icon.png" alt="gashuu app icon" width="48" height="48" /> gashuu
+# <img src="crates/gashuu/ui/assets/app-icon.png" alt="gashuu app icon" width="36" height="36" /> gashuu
 
 ## A fast, elegant manga reader built for immersive viewing.
 
