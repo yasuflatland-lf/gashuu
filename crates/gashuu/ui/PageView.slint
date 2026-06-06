@@ -33,6 +33,18 @@ export component PageView inherits Rectangle {
     // this works where a `moved` handler — which fires only while pressed — would
     // not, and without a second TouchArea that would steal the pan press.
     callback reveal();
+    // Fired on a clean tap (press-release with at most `tap-slop` movement),
+    // with the release mouse-x. ViewerWindow maps it onto the left/right page-
+    // turn halves (the SAME nav("left"/"right") tokens the arrow keys use, so
+    // reading direction and spread stay single-sourced in keymap.rs / core).
+    // PageView stays policy-free: it reports WHERE the tap landed, not what it
+    // means. The slop guard is REQUIRED: the vendored i-slint-core 1.16.1
+    // TouchArea fires `clicked` on any release inside the area regardless of
+    // drag distance (input_items.rs MouseEvent::Released has no movement
+    // threshold), so without it every pan-drag would also turn a page.
+    callback tapped(length);
+    // Max press-to-release travel still counted as a tap (not a pan).
+    property <length> tap-slop: 4px;
 
     background: Theme.canvas;
     clip: true;
@@ -83,6 +95,17 @@ export component PageView inherits Rectangle {
         moved => {
             if (self.pressed) {
                 root.pan-to(self.mouse-x - self.pressed-x, self.mouse-y - self.pressed-y);
+            }
+        }
+        // Tap-vs-pan split: `pressed-x/y` hold the press point through the
+        // release (vendored input_items.rs sets them on Pressed and never
+        // clears them), so comparing against the release mouse-x/y inside
+        // `clicked` cleanly separates a stationary tap from a pan ending
+        // under the cursor.
+        clicked => {
+            if (Math.abs(self.mouse-x / 1px - self.pressed-x / 1px) <= root.tap-slop / 1px
+                && Math.abs(self.mouse-y / 1px - self.pressed-y / 1px) <= root.tap-slop / 1px) {
+                root.tapped(self.mouse-x);
             }
         }
         changed mouse-x => { root.reveal(); }

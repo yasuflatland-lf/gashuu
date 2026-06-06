@@ -395,6 +395,18 @@ export component ViewerWindow inherits Window {
                     pan-to(dx, dy) => { root.pan-to(dx, dy); }
                     viewport-resized(w, h) => { root.viewport-resized(w, h); }
                     reveal() => { root.reveal-chrome-from-pointer(); }
+                    // Tap-to-turn: a clean tap on the LEFT/RIGHT half routes into
+                    // the SAME nav tokens as the arrow keys, so keymap.rs resolves
+                    // reading direction (RTL: left = next) and core resolves the
+                    // spread — no second page-turn seam. Mirrors the FocusScope
+                    // modal guard above: the modal backdrops already absorb
+                    // pointer input, but a tap must never leak a page turn under
+                    // an overlay if that ever changes (belt-and-braces).
+                    tapped(tx) => {
+                        if (!root.show-settings && !root.show-guide && !root.show-shortcuts) {
+                            root.nav(tx < self.width / 2 ? "left" : "right");
+                        }
+                    }
                 }
             }
 
