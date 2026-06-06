@@ -188,10 +188,10 @@ hand-edited:
 
 | Key | Values | Notes |
 |-----|--------|-------|
-| `reading_direction` | `"ltr"` (default) / `"rtl"` | Right-to-left = manga binding |
-| `spread_mode` | `"single"` (default) / `"double"` / `"auto"` | Auto chooses from the window aspect ratio |
+| `reading_direction` | `"ltr"` / `"rtl"` (default) | Right-to-left = manga binding |
+| `spread_mode` | `"single"` / `"double"` / `"auto"` (default) | Auto chooses from the window aspect ratio |
 | `cover_mode` | `"standalone"` (default) / `"paired"` | Applies to double mode only |
-| `fit_mode` | `"whole"` (default) / `"width"` / `"actual"` | Initial fit; cycle with `f` |
+| `fit_mode` | `"whole"` / `"width"` (default) / `"actual"` | Initial fit; cycle with `f` |
 | `cache_size` | int (default `50`) | LRU decoded-image cache; applies to the next book |
 | `preload_pages` | int (default `3`) | Background prefetch radius; applies to the next book |
 | `track_recent_files` | bool (default `false`) | Off for privacy; gates `recent_files` |

@@ -235,12 +235,16 @@ mod tests {
     }
 
     /// A square-content state that overflows the viewport on BOTH axes once
-    /// zoomed in. 600x600 content into 200x200 (Whole fit) -> baseline 1/3, so it
-    /// fits EXACTLY at zoom 1.0; any zoom-in overflows both axes symmetrically.
+    /// zoomed in. 600x600 content into 200x200 (Whole fit, pinned explicitly so
+    /// the fixture is independent of the `Settings` default) -> baseline 1/3, so
+    /// it fits EXACTLY at zoom 1.0; any zoom-in overflows both axes symmetrically.
     /// This isolates anchor/clamp assertions from the centering branch (which
     /// fires only when a displayed axis is `<=` the viewport).
     fn square_state() -> ViewportState {
-        let mut s = ViewportState::from_settings(&Settings::default());
+        let mut s = ViewportState::from_settings(&Settings {
+            fit_mode: FitMode::Whole,
+            ..Default::default()
+        });
         s.resize(200.0, 200.0);
         s.set_content(600.0, 600.0);
         s
@@ -257,11 +261,13 @@ mod tests {
 
     #[test]
     fn from_settings_adopts_fit_mode_and_starts_at_zoom_min() {
+        // Whole is a NON-default variant (default is Width), so this proves the
+        // setting is adopted rather than re-defaulted.
         let s = ViewportState::from_settings(&Settings {
-            fit_mode: FitMode::Width,
+            fit_mode: FitMode::Whole,
             ..Default::default()
         });
-        assert_eq!(s.fit_mode(), FitMode::Width);
+        assert_eq!(s.fit_mode(), FitMode::Whole);
         assert!(approx(s.zoom, vp::ZOOM_MIN));
         assert_eq!(s.offset, (0.0, 0.0));
         assert_eq!(s.vp_size, (0.0, 0.0));

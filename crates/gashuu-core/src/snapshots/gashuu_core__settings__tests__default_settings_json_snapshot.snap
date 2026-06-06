@@ -4,10 +4,10 @@ expression: "Settings::default().to_json().unwrap()"
 ---
 {
   "version": 1,
-  "reading_direction": "ltr",
-  "spread_mode": "single",
+  "reading_direction": "rtl",
+  "spread_mode": "auto",
   "cover_mode": "standalone",
-  "fit_mode": "whole",
+  "fit_mode": "width",
   "cache_size": 50,
   "preload_pages": 3,
   "key_bindings": {

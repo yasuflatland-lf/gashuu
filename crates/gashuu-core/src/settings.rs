@@ -22,17 +22,17 @@ pub const MAX_RECENT_FILES: usize = 10;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ReadingDirection {
-    #[default]
     Ltr,
+    #[default]
     Rtl,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SpreadMode {
-    #[default]
     Single,
     Double,
+    #[default]
     Auto, // resolved to Single/Double from window aspect at the UI layer
 }
 
@@ -89,8 +89,8 @@ pub enum CoverMode {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FitMode {
-    #[default]
     Whole,
+    #[default]
     Width,
     Actual,
 }
@@ -325,10 +325,10 @@ mod tests {
     fn default_settings_have_expected_values() {
         let s = Settings::default();
         assert_eq!(s.version, 1);
-        assert_eq!(s.reading_direction, ReadingDirection::Ltr);
-        assert_eq!(s.spread_mode, SpreadMode::Single);
+        assert_eq!(s.reading_direction, ReadingDirection::Rtl);
+        assert_eq!(s.spread_mode, SpreadMode::Auto);
         assert_eq!(s.cover_mode, CoverMode::Standalone);
-        assert_eq!(s.fit_mode, FitMode::Whole);
+        assert_eq!(s.fit_mode, FitMode::Width);
         assert_eq!(s.cache_size, 50);
         assert_eq!(s.preload_pages, 3);
         assert_eq!(s.key_bindings.next, vec!["right", "space"]);
@@ -339,12 +339,15 @@ mod tests {
     }
 
     fn non_default_settings() -> Settings {
+        // Every field must DIFFER from `Settings::default()` (Rtl / Auto / Standalone
+        // / Width), or the round-trip tests below pass even when save/load drops the
+        // field (the value would be re-supplied by the default).
         Settings {
             version: SETTINGS_VERSION,
-            reading_direction: ReadingDirection::Rtl,
+            reading_direction: ReadingDirection::Ltr,
             spread_mode: SpreadMode::Double,
             cover_mode: CoverMode::Paired,
-            fit_mode: FitMode::Width,
+            fit_mode: FitMode::Whole,
             cache_size: 99,
             preload_pages: 7,
             key_bindings: KeyBindings {
@@ -430,20 +433,22 @@ mod tests {
     // ── fit_mode tests ──
 
     #[test]
-    fn fit_mode_defaults_to_whole() {
-        assert_eq!(FitMode::default(), FitMode::Whole);
-        assert_eq!(Settings::default().fit_mode, FitMode::Whole);
+    fn fit_mode_defaults_to_width() {
+        assert_eq!(FitMode::default(), FitMode::Width);
+        assert_eq!(Settings::default().fit_mode, FitMode::Width);
     }
 
     #[test]
     fn fit_mode_round_trip() {
+        // Both legs use NON-default variants (default is Width) so the round trip
+        // cannot pass by the parser merely re-defaulting a dropped field.
         let s = Settings {
-            fit_mode: FitMode::Width,
+            fit_mode: FitMode::Whole,
             ..Default::default()
         };
         let json = s.to_json().unwrap();
         let parsed = Settings::from_json(&json).unwrap();
-        assert_eq!(parsed.fit_mode, FitMode::Width);
+        assert_eq!(parsed.fit_mode, FitMode::Whole);
 
         let s = Settings {
             fit_mode: FitMode::Actual,
@@ -455,8 +460,8 @@ mod tests {
     }
 
     #[test]
-    fn from_json_missing_fit_mode_defaults_to_whole() {
-        // JSON without fit_mode must produce FitMode::Whole via #[serde(default)].
+    fn from_json_missing_fit_mode_defaults_to_width() {
+        // JSON without fit_mode must produce FitMode::Width via #[serde(default)].
         let json = serde_json::json!({
             "version": SETTINGS_VERSION,
             "reading_direction": "ltr",
@@ -465,8 +470,10 @@ mod tests {
         })
         .to_string();
         let s = Settings::from_json(&json).unwrap();
-        assert_eq!(s.fit_mode, FitMode::Whole);
-        // Other fields must be unaffected.
+        assert_eq!(s.fit_mode, FitMode::Width);
+        // The explicit keys must parse as written — "ltr"/"single" are now
+        // NON-default variants, so these also prove explicit values win over
+        // the defaults.
         assert_eq!(s.reading_direction, ReadingDirection::Ltr);
         assert_eq!(s.spread_mode, SpreadMode::Single);
         assert_eq!(s.cover_mode, CoverMode::Standalone);
