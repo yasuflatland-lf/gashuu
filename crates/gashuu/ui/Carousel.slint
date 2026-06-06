@@ -90,7 +90,6 @@ component CoverCard inherits Rectangle {
     in property <float> neighbor-scale;
     in property <float> neighbor-opacity;
     in property <length> ring-width;
-    in property <bool> narrow;
     // Enclosing cover-flow row geometry. A component ROOT cannot read `parent`
     // (the parent is unknown until instantiation), so the row's width and vertical
     // anchor are passed in by each `for` (which CAN read `parent` at its call site).
@@ -141,13 +140,11 @@ component CoverCard inherits Rectangle {
     opacity: Math.clamp(
         1.0 - Math.abs(root.flow-delta) * (1.0 - root.neighbor-opacity),
         root.neighbor-opacity, 1.0);
-    // Layer gate AND the narrow-window neighbor-drop (DESIGN.md "Responsive
-    // Behavior / Carousel"): at/below the threshold only the centered cover ± one
-    // neighbor stay visible. The 1.5 threshold keys on the FLOAT distance so a
-    // card appears/disappears half a step beyond its resting neighbor slot
-    // (mid-travel), never while parked at it. Hidden instances stay instantiated,
-    // so the pass hand-off still lands at matching geometry.
-    visible: root.show && (!root.narrow || Math.abs(root.flow-delta) <= 1.5);
+    // Layer gate only. Every loaded cover stays visible at EVERY window width
+    // (user decision: the former narrow-window neighbor-drop hid all but the
+    // centered cover ± one at/below 560px, which read as thumbnails vanishing on
+    // resize and during moves). Cards past the window edge clip naturally.
+    visible: root.show;
 
     // The cover card: rounded, card shadow on the centered cover only, accent ring.
     cover := Rectangle {
@@ -378,9 +375,11 @@ export component Carousel inherits Rectangle {
     // preserving the cover-flow depth; only the side-to-side overlap is removed.
     private property <length> cover-step: root.cover-w * root.neighbor-scale + root.cover-margin;
     private property <length> ring-width: 3px;         // DESIGN.md cover.focusOutline 3px
-    // Neighbor-drop threshold (DESIGN.md: "Below a minimum width, neighbors may
-    // drop to one per side."). Above the threshold the cover-flow renders all
-    // model items; at/below it, only the centered cover ± one neighbor are shown.
+    // Narrow-window breakpoint. Drives ONLY the SelectionToolbar's icon-only
+    // select-all collapse (DESIGN.md selectAllNarrowBreakpoint). The cover-flow
+    // itself renders every model item at every width: the former neighbor-drop
+    // (centered cover ± one at/below this threshold) was removed by user
+    // decision so loaded covers never vanish on resize or during moves.
     private property <length> narrow-threshold: 560px;
     private property <bool> narrow: root.width <= root.narrow-threshold;
 
@@ -606,7 +605,6 @@ export component Carousel inherits Rectangle {
                   neighbor-scale: root.neighbor-scale;
                   neighbor-opacity: root.neighbor-opacity;
                   ring-width: root.ring-width;
-                  narrow: root.narrow;
                   row-width: parent.width;
                   row-cy: parent.row-cy;
                   cover-source: item.cover;
@@ -634,7 +632,6 @@ export component Carousel inherits Rectangle {
                   neighbor-scale: root.neighbor-scale;
                   neighbor-opacity: root.neighbor-opacity;
                   ring-width: root.ring-width;
-                  narrow: root.narrow;
                   row-width: parent.width;
                   row-cy: parent.row-cy;
                   cover-source: item.cover;

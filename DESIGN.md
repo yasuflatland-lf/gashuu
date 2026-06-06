@@ -783,8 +783,12 @@ adapting to the live window size.
 - **Spread auto-layout**: the existing `Auto` spread mode resolves single vs double from the
   window aspect ratio (landscape/square → double, portrait → single) and follows live resizes.
   This is the primary responsive behavior and the visual system must compose with it.
-- **Carousel**: the number of visible neighbor covers grows/shrinks with width; the focused cover
-  stays centered. Below a minimum width (560px threshold), neighbors may drop to one per side. This same 560px `narrow` flag is forwarded to `SelectionToolbar`, collapsing its select-all capsule from a text label to the `check.svg` icon-only form at narrow widths.
+- **Carousel**: every loaded cover renders at every window width; the focused cover stays
+  centered and covers past the window edge simply clip. (An earlier neighbor-drop — centered
+  cover ± one below a 560px threshold — was removed by user decision: it read as thumbnails
+  vanishing on resize and during moves.) The 560px `narrow` flag remains and is forwarded to
+  `SelectionToolbar`, collapsing its select-all capsule from a text label to the `check.svg`
+  icon-only form at narrow widths.
 - **Scrubber**: the rail spans window width minus edge insets; the preview popover clamps inside
   the window so it never clips at the far edges.
 - **Showing the thumbnail strip** shrinks the viewer height and may re-resolve `Auto` (accepted).
