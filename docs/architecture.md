@@ -290,9 +290,9 @@ live `Settings`).
 
 `open_file() -> Option<&Path>`: the CANONICAL path of the most recently successful
 `open_path` (set via `path.canonicalize().unwrap_or(verbatim)`, matching `Library::add`'s policy;
-`None` until the first `Ok`, reset by `set_source`, unchanged by a failed `open_path`). `main.rs`
-reads it to form the write-back tuple `(canonical_path, index())` for the `Library` at every leave
-point — see the resume/write-back scope entry and `docs/patterns.md`.
+`None` until the first `Ok`, reset by `set_source`, unchanged by a failed `open_path`).
+`view_sync.rs` reads it to form the write-back tuple `(canonical_path, index())` for the `Library`
+at every leave point — see the resume/write-back scope entry and `docs/patterns.md`.
 
 This-feature added `apply_resolved_view(ResolvedView)` — sets `reading_direction`/`spread_mode`/`cover_mode`
 from a resolved view (the `fit_mode` field is applied by the caller via `ViewportState::set_fit`),
@@ -318,8 +318,8 @@ and clears `open_file` — returning `ViewerState` to the no-book-open state. Di
 (`reading_direction`/`spread_mode`/`cover_mode`) and `cache_config`/`viewport_aspect` are
 deliberately preserved (closing a book is not a settings reset). Called by
 `RemoveBooksUseCase::run` when the open book is among the deleted ones; `RemoveBooksUseCase::run`
-itself also calls `ui.set_current_book_name("".into())` (`app.rs`~:481) — `main.rs` only sets
-this name at boot and on a successful open.
+itself also calls `ui.set_current_book_name("".into())` (`app.rs`~:481). The UI wiring sets this
+name at boot and on a successful open via `current_book_name` from `view_sync.rs`.
 
 ### ViewportState
 
@@ -432,21 +432,22 @@ The parallel destructive use case (#129) lives in the same module:
   fully localized strings — each field is resolved via `i18n::dynamic` inside the builder and is
   display-ready.
 
-### view-mode persistence seam (`main.rs`)
+### view-mode persistence seam (`view_sync.rs`)
 
-The `pub(crate)` seam is `persist_view_modes(route: ViewModeRoute, &state, &viewport, &settings,
-&library)` (peer of `write_back_position`) — the ONE chokepoint that routes runtime view modes to
-their sink. The former write helpers `reconcile_settings` (runtime → GLOBAL `Settings`) and
-`write_back_view_override` (runtime → the open book's `ViewOverride`, saving the library) are now
-PRIVATE and called ONLY inside its routing match: `DialogClosedOnLibrary` → global reconcile;
-`DialogClosedOnViewer` / `LeaveViewer` / `OpenDifferentBook` → per-book write-back; `AppExit` →
-per-book write-back FIRST, then a global reconcile ONLY when `open_file().is_none()`. So the GLOBAL
-sink is reached only via the Library-dialog close and the no-book-open exit; every leave point hits
-the per-book sink (a no-op when no book is open). `apply_global_view_to_runtime(&settings, &state,
-&viewport)` (still `pub(crate)`) mirrors the GLOBAL `Settings` view modes into the runtime so the
-Library-screen settings dialog seeds from global (the inverse of `reconcile_settings`). See
-[patterns.md](patterns.md), "Per-book view overrides: write-back-at-leave-point + screen-scoped
-dialog routing".
+`view_sync.rs` owns `ViewModeRoute`, `persist_view_modes`,
+`apply_global_view_to_runtime`, `current_book_name`, and `write_back_position`; the crate root may
+re-export these `pub(crate)` seams so `app.rs` and `handlers/*` imports stay stable. It also keeps
+`reconcile_settings`, `position_to_write_back`, `view_override_to_write_back`, and
+`write_back_view_override` private. `persist_view_modes(route, &state, &viewport, &settings,
+&library)` (peer of `write_back_position`) is the ONE chokepoint that routes runtime view modes to
+their sink: `DialogClosedOnLibrary` → global reconcile; `DialogClosedOnViewer` / `LeaveViewer` /
+`OpenDifferentBook` → per-book write-back; `AppExit` → per-book write-back FIRST, then a global
+reconcile ONLY when `open_file().is_none()`. So the GLOBAL sink is reached only via the
+Library-dialog close and the no-book-open exit; every leave point hits the per-book sink (a no-op
+when no book is open). `apply_global_view_to_runtime(&settings, &state, &viewport)` mirrors the
+GLOBAL `Settings` view modes into the runtime so the Library-screen settings dialog seeds from
+global (the inverse of `reconcile_settings`). See [patterns.md](patterns.md), "Per-book view
+overrides: write-back-at-leave-point + screen-scoped dialog routing".
 
 ### library_model
 
@@ -582,9 +583,9 @@ no AppState bundle, explicit handle lists only). The three feature files are:
 
 `fn main` = boot (tracing, settings/library load, Slint window, localizer, Rc construction, seed
 carousel, prune) + 8 wire calls + `ui.run()` + exit flush (count persistence, write-back,
-persist_view_modes, settings save). All callback closures live in `handlers/`; `main.rs` retains
-`refresh`, `finalize_open`, `go_to_library`/`go_to_viewer`, `persist_view_modes`,
-`refresh_library_carousel`, `CarouselRefresh`, projection helpers, and the remaining view-sync seams.
+view-mode persistence, settings save). All callback closures live in `handlers/`; `main.rs` retains
+`refresh`, `finalize_open`, `go_to_library`/`go_to_viewer`, `refresh_library_carousel`,
+`CarouselRefresh`, projection helpers, and the crate-root re-exports for the `view_sync.rs` seams.
 
 ### Slint UI files
 
@@ -775,8 +776,14 @@ reason); Settings/Guide overlays remain viewer-scoped. It mounts the
 `Scrubber` as auto-hiding chrome inside the screen-1 viewer,
 driven by a `chrome-shown` bool + an idle `Timer`; chrome is revealed on pointer-move (via
 `PageView.reveal()`), arrow-key presses, and scrubber drag. #71 mounted the shared `TitleBar`
-component (bound to a new `current-book-name` in-prop — derived in `main.rs` from the post-open
-`ViewerState::open_file()`, see [patterns.md](patterns.md)), and set a `min-width`/`min-height` floor on the window. `feat/library-chrome-polish` added `in property <string> library-count-text` (the pre-composed total book count for the Library screen's bottom status strip idle state); the strip's `Text` resolves `text: root.status-text == "" ? root.library-count-text : root.status-text` — transient notices always win; and forwarded the Carousel's `continue-reading()` callback up to the window level for Rust handling.
+component (bound to a new `current-book-name` in-prop — derived by `view_sync.rs`'s
+`current_book_name` from the post-open `ViewerState::open_file()`, see [patterns.md](patterns.md)),
+and set a `min-width`/`min-height` floor on the window. `feat/library-chrome-polish` added
+`in property <string> library-count-text` (the pre-composed total book count for the Library
+screen's bottom status strip idle state); the strip's `Text` resolves
+`text: root.status-text == "" ? root.library-count-text : root.status-text` — transient notices
+always win; and forwarded the Carousel's `continue-reading()` callback up to the window level for
+Rust handling.
 
 ### rfd file/folder picker
 
