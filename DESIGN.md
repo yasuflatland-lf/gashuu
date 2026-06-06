@@ -605,7 +605,8 @@ A reusable two-choice modal (issue 127, consumed by the bulk-delete epic). Gener
 | Delete / Backspace | — (no-op / falls through) | Open `ConfirmDialog` (no-op if N=0) |
 | Esc | — (reject, no-op) | Clear selection + exit selection mode |
 | Return | Open focused book | Open focused book (unchanged in both modes) |
-| Cover click | Enter selection mode (via NavBar Select capsule click) | Toggle clicked book |
+| Cover click | Focus clicked cover | Focus + toggle clicked book |
+| Cover double-click | Open clicked book (any visible cover; same path as Return) | — (the two clicks toggle twice = net no-op; never opens) |
 
 Return is **never repurposed** — it always opens the focused book, in both modes. The `x` key is the primary keyboard entry into selection mode; the NavBar **Select capsule** is the mouse entry point (it enters mode only on first click, exits on re-click — does NOT toggle the focused book).
 
@@ -629,7 +630,7 @@ reinforcing the "glass" read.
   so the pill width never jumps. Re-clicking exits selection mode (symmetric to the toolbar ✕ and
   Esc exit paths).
 - **Bookmark capsule** (`bookmark.svg`): jumps to the continue-reading book via the same open path
-  a cover click uses. Always enabled — with no bookmark, the click answers with a status notice in
+  Return and a cover double-click use. Always enabled — with no bookmark, the click answers with a status notice in
   the bottom strip; a faint/disabled capsule would hide the affordance instead of inviting the
   press.
 - **Each capsule** is circular; only the hovered/pressed/active cell glows softly with

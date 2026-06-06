@@ -20,7 +20,9 @@
 //
 // Styling references `Theme.*` tokens only — NO inline brand hex (DESIGN.md).
 // Key seams (handled in the FocusScope): Left/Right -> move(-1/+1),
-// Return -> open(focused-index), Down -> back().
+// Return -> open(focused-index), Down -> back(). Pointer seam: a cover
+// double-click fires the same open(int) with the clicked cover's index
+// (normal mode only — see the pass-1 for-loop).
 import { Theme } from "Theme.slint";
 import { Strings } from "Strings.slint";
 // Shared design-system components (P2 componentization, issue #71): the
@@ -115,6 +117,10 @@ component CoverCard inherits Rectangle {
     // renders a ribbon at the top-left of the cover, independent of `available`.
     in property <bool> bookmarked;
     callback clicked;
+    // Double-click on the cover (pass-1 only, via the same `cover-touch`
+    // gating as `clicked`). The Carousel decides what it means (open in
+    // normal mode, nothing in selection mode) — CoverCard stays presentational.
+    callback double-clicked;
 
     // Position/size/opacity: every value below is a PURE function of `flow-delta`
     // — the card carries NO `animate` blocks. The cover-flow row animates ONE
@@ -274,6 +280,11 @@ component CoverCard inherits Rectangle {
         x: (parent.width - self.width) / 2;
         y: 0;
         clicked => { root.clicked(); }
+        // Slint fires `clicked` on EVERY click and `double-clicked` IN ADDITION
+        // on the second (vendored i-slint-core 1.16.1 input_items.rs: clicked
+        // always, then double_clicked when click_count % 2 == 1) — so a
+        // double-click is focus, focus, open in normal mode.
+        double-clicked => { root.double-clicked(); }
     }
 }
 
@@ -281,7 +292,7 @@ export component Carousel inherits Rectangle {
     // ── Frozen public contract ────────────────────────────────────────────────
     in property <[CarouselItem]> items;
     in-out property <int> focused-index;
-    callback open(int);       // index — Return on the focused book
+    callback open(int);       // index — Return on the focused book, or a cover double-click
     callback move(int);       // delta (-1 / +1) — Left / Right
     callback back();          // Down — return to the currently-open book
     callback add-books();     // opens the add picker (rfd); wired to on_add_books in handlers/library.rs
@@ -619,6 +630,13 @@ export component Carousel inherits Rectangle {
                   // sets interactive:false) fires its TouchArea exactly once.
                   interactive: true;
                   clicked => { root.cover-clicked(idx); }
+                  // Double-click opens the clicked book — ANY visible cover, via
+                  // the SAME `open(int)` path as Return (Rust resolves the
+                  // visible index and enters the viewer). Gated off in selection
+                  // mode: the two preceding `clicked` events have already toggled
+                  // the book twice (net no-op), and opening would yank the user
+                  // out of an in-progress selection.
+                  double-clicked => { if (!root.selection-mode) { root.open(idx); } }
               }
               // Pass 2: centered card only, on top (elevated: true default → shadow painted once).
               // Any future additional render pass MUST also set interactive: false (single-fire invariant).
