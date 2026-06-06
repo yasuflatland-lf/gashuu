@@ -292,8 +292,8 @@ impl Settings {
     /// `preload_pages` fields. This is the canonical way to obtain a `CacheConfig`
     /// from a loaded `Settings`; the `capacity >= 1` floor is guaranteed by
     /// `CacheConfig::new` regardless of the construction site. (The settings-dialog
-    /// handlers in `main.rs` edit the raw fields live and rebuild a `CacheConfig`
-    /// directly for the in-session update.)
+    /// the settings handlers in the UI crate edit the raw fields live and rebuild
+    /// a `CacheConfig` directly for the in-session update.)
     pub fn cache_config(&self) -> CacheConfig {
         CacheConfig::new(self.cache_size, self.preload_pages)
     }

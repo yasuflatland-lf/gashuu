@@ -7,7 +7,7 @@
 // Zoom/pan plumbing: Rust drives content-x/y/w/h to position/size the content
 // rectangle inside the clip area. Input callbacks relay mouse wheel (zoom-at),
 // drag (begin-pan / pan-to), and viewport size changes (viewport-resized) up to
-// ViewerWindow so main.rs can implement the zoom/pan math.
+// ViewerWindow so handlers/viewer.rs can implement the zoom/pan math.
 import { Theme } from "Theme.slint";
 
 export component PageView inherits Rectangle {
@@ -16,13 +16,13 @@ export component PageView inherits Rectangle {
     in property <bool> rtl;
     in property <bool> single;
     // Rust-computed displayed-content rectangle (placed inside the clip).
-    // Defaults to 0px so the build passes before main.rs sets them.
+    // Defaults to 0px so the build passes before Rust sets them.
     in property <length> content-x: 0px;
     in property <length> content-y: 0px;
     in property <length> content-w: 0px;
     in property <length> content-h: 0px;
 
-    // Input callbacks relayed to ViewerWindow / main.rs.
+    // Input callbacks relayed to ViewerWindow / handlers/viewer.rs.
     callback zoom-at(length, length, float);     // mouse-x, mouse-y, wheel delta-y
     callback begin-pan();
     callback pan-to(length, length);             // cumulative delta from the press point

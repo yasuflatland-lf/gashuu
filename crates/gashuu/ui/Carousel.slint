@@ -269,7 +269,7 @@ component CoverCard inherits Rectangle {
     // card is handled exactly once — see the two for-loops in Carousel). The
     // TouchArea is non-focusable (repo convention, see NavItem / docs/patterns.md
     // "TouchArea click focus recovery"), so keyboard focus stays on the carousel
-    // FocusScope; main.rs restores carousel focus after handling.
+    // FocusScope; handlers/library.rs restores carousel focus after handling.
     cover-touch := TouchArea {
         enabled: root.interactive;
         width: Math.max(root.cover-step, parent.width);
@@ -287,8 +287,8 @@ export component Carousel inherits Rectangle {
     callback open(int);       // index — Return on the focused book
     callback move(int);       // delta (-1 / +1) — Left / Right
     callback back();          // Down — return to the currently-open book
-    callback add-books();     // opens the add picker (rfd); wired to on_add_books in main.rs
-    callback add-folder();    // opens a folder picker (rfd); wired to on_add_folder in main.rs
+    callback add-books();     // opens the add picker (rfd); wired to on_add_books in handlers/library.rs
+    callback add-folder();    // opens a folder picker (rfd); wired to on_add_folder in handlers/library.rs
     // True when one native dialog picks files AND folders (macOS): the NavBar
     // shows a single combined add capsule. Pushed once from Rust at boot.
     in property <bool> combined-add-picker;
@@ -299,7 +299,7 @@ export component Carousel inherits Rectangle {
     // the no-results state can be told apart. `search-changed` carries the
     // debounced query to Rust. `settings` bubbles the glass-pill Settings click
     // up to ViewerWindow, which routes it into the existing `open-settings` flow
-    // (`on_open_settings` in main.rs) — the SAME SettingsDialog reached from the
+    // (`on_open_settings` in handlers/settings.rs) — the SAME SettingsDialog reached from the
     // Viewer's TitleBar "Settings…" button. The dialog overlays the Library
     // carousel; closing it returns keyboard focus to the carousel.
     in-out property <string> search-query;
@@ -308,7 +308,7 @@ export component Carousel inherits Rectangle {
     callback settings();
     // The NavBar bookmark capsule: jump to the continue-reading book (resume at
     // its saved page) when one exists, else surface a no-bookmark status notice.
-    // Bubbles up to ViewerWindow (and main.rs) the same way `settings` does.
+    // Bubbles up to ViewerWindow (and handlers/library.rs) the same way `settings` does.
     callback continue-reading();
     // True while a modal overlay (settings / first-run guide) is open over the
     // Library. The carousel still holds keyboard focus, so its FocusScope must
@@ -324,7 +324,7 @@ export component Carousel inherits Rectangle {
     // the focused book's membership (keyboard `x`/Space); `cover-clicked(int)` is
     // the pointer entry (a cover TouchArea click). `exit-selection()` clears the
     // selection and leaves the mode (Esc). All three are forwarded through
-    // ViewerWindow to main.rs (mirrors the open/move/back forwarding).
+    // ViewerWindow to handlers/library.rs (mirrors the open/move/back forwarding).
     in-out property <bool> selection-mode;
     callback toggle-selection(int);   // visible carousel index to toggle
     callback cover-clicked(int);      // visible carousel index whose cover was clicked
@@ -334,7 +334,7 @@ export component Carousel inherits Rectangle {
     // "3 selected" or "5 selected (2 outside search)"); `select-all-label` flips between the "Select all"/"Deselect
     // all" wording. `select-all()` fires from BOTH the toolbar button and the
     // Cmd/Ctrl+A key arm (Rust decides select-vs-deselect). All three are forwarded
-    // through ViewerWindow to main.rs (mirrors the PR-2 seams above).
+    // through ViewerWindow to handlers/library.rs (mirrors the PR-2 seams above).
     in property <string> selection-count-text;
     in property <string> select-all-label;
     callback select-all();
@@ -342,7 +342,7 @@ export component Carousel inherits Rectangle {
     // `delete-label` is the pre-composed destructive label from Rust (e.g.
     // "Delete (3)…"); `has-selection` gates the toolbar DangerButton. Both fire
     // the SAME `request-delete()` action: the toolbar button and the
-    // Delete/Backspace key arm below. Forwarded through ViewerWindow to main.rs
+    // Delete/Backspace key arm below. Forwarded through ViewerWindow to handlers/library.rs
     // (mirrors the PR-4 seams above), which opens the ConfirmDialog.
     in property <string> delete-label;
     in property <bool> has-selection;

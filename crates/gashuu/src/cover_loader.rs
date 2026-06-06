@@ -326,9 +326,9 @@ fn marshal_total(
 
 /// Marshal an "empty book detected" signal onto the UI thread for the book at
 /// `path`. Fired by a worker that opened a book's source CLEANLY but found ZERO
-/// pages (see `should_signal_empty`): main.rs's `on_empty_book_detected` handler
-/// removes the book, purges its cover cache, rebuilds the carousel, and shows a
-/// notice. The counterpart of `marshal_total`: same epoch-guard + upgrade
+/// pages (see `should_signal_empty`): the `on_empty_book_detected` handler in
+/// `handlers/library.rs` removes the book, purges its cover cache, rebuilds the
+/// carousel, and shows a notice. The counterpart of `marshal_total`: same epoch-guard + upgrade
 /// preamble, so a signal from a superseded generation (library refreshed since)
 /// is dropped rather than acting on a stale row.
 ///

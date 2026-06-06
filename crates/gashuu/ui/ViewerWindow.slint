@@ -41,7 +41,7 @@ export component ViewerWindow inherits Window {
     // `library-search-query` mirrors the NavBar field text; `library-book-count`
     // is the TOTAL book count (filter-independent) so the carousel can tell the
     // empty-library CTA apart from the search no-results state.
-    // `library-search-changed` carries the debounced query to main.rs;
+    // `library-search-changed` carries the debounced query to handlers/library.rs;
     // `focus-library-search` lets Rust move focus into the field. The nav's
     // `settings` click is routed straight to the existing `open-settings` flow
     // below (no dedicated root callback), so the glass-pill Settings button opens
@@ -104,7 +104,7 @@ export component ViewerWindow inherits Window {
     in property <string> status-text: "No folder opened";
     // Idle value of the bottom strip — total library size, composed/pushed from Rust.
     in property <string> library-count-text;
-    // Book display name (set by main.rs on a successful open, cleared to "" when
+    // Book display name (set by handlers/library.rs on a successful open, cleared to "" when
     // nothing is open). Declared on the root because Rust binds only to the root
     // surface; consumed by the floating title label Rectangle in the viewer stage.
     in property <string> current-book-name;
@@ -175,18 +175,18 @@ export component ViewerWindow inherits Window {
 
     callback open-folder();
     callback open-archive();
-    // Carousel navigation seams (Library screen). Forwarded to main.rs.
+    // Carousel navigation seams (Library screen). Forwarded to handlers/library.rs.
     callback carousel-open(int);
     callback carousel-move(int);
     callback carousel-back();
     // The NavBar bookmark capsule: jump to the continue-reading book, or surface
     // a no-bookmark notice. Same root-twin reason as the seams below — Slint
     // exposes only the root window surface to Rust, so the carousel's
-    // `continue-reading` needs a forwarded root twin for main.rs to handle.
+    // `continue-reading` needs a forwarded root twin for handlers/library.rs to handle.
     callback carousel-continue-reading();
     // Bulk-selection seams (bulk-delete epic, PR-2). `carousel-selection-mode` is
     // the root twin of the Carousel's `selection-mode`. The toggle/cover-clicked
-    // callbacks forward the focused/clicked VISIBLE carousel index to main.rs;
+    // callbacks forward the focused/clicked VISIBLE carousel index to handlers/library.rs;
     // `carousel-exit-selection` is the Esc clear. (Slint exposes only the root
     // window surface to Rust — see docs/patterns.md — so each child seam needs a
     // forwarded root twin.)
@@ -237,7 +237,7 @@ export component ViewerWindow inherits Window {
     // CLEANLY but finds ZERO pages: the empty book must be removed, its cover
     // cache purged, the carousel rebuilt, and a notice shown. The argument is the
     // book's canonical filesystem path. Distinct from an open ERROR (unreadable),
-    // which keeps the placeholder + log behavior and fires NO event. main.rs binds
+    // which keeps the placeholder + log behavior and fires NO event. handlers/library.rs binds
     // the handler (on_empty_book_detected); the loader invokes it via
     // invoke_empty_book_detected.
     callback empty-book-detected(/* canonical path */ string);
@@ -245,7 +245,7 @@ export component ViewerWindow inherits Window {
     // Forwarded navigation token: "left" | "right" | "space" | "backspace" |
     // "d" | "r" | "c" | "+" | "=" | "-" | "0" | "1" | "f".
     callback nav(string);
-    // Zoom/pan callbacks forwarded from PageView so main.rs can connect them.
+    // Zoom/pan callbacks forwarded from PageView so handlers/viewer.rs can connect them.
     callback zoom-at(length, length, float);
     callback begin-pan();
     callback pan-to(length, length);
