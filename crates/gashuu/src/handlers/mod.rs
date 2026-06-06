@@ -3,4 +3,4 @@
 //! per-closure `Rc::clone` list is that handler's dependency list.
 pub(crate) mod library;
 
-pub(crate) use library::wire_open_handlers;
+pub(crate) use library::{wire_carousel_handlers, wire_open_handlers};
