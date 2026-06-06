@@ -306,7 +306,7 @@ PR-S added two pure scrubber-support helpers:
 - `scrub_fraction_to_page(fraction, page_count, rtl)` — pure, total, RTL-aware mapping of a
   `0..1` knob fraction to a raw 0-based page index (clamped, non-finite-safe). As of #71 it is the
   SINGLE LIVE source of that mapping: `Scrubber.slint` passes the raw clamped fraction up via
-  `preview(float)`/`commit(float)` and `main.rs`'s `on_scrub_preview`/`on_scrub_commit` call this
+  `preview(float)`/`commit(float)` and `handlers/viewer.rs`'s `on_scrub_preview`/`on_scrub_commit` call this
   helper to resolve the page (the former in-Slint `drag-page` rounding is gone, so it no longer
   carries `#[allow(dead_code)]`). See [patterns.md](patterns.md) for the one-authoritative-side rule.
 - `preview_is_double(page)` — returns whether a previewed page would land on a 2-page spread
@@ -417,7 +417,7 @@ just-opened book's `ResolvedView` via `ViewerState::apply_resolved_view` (+ `Vie
   search projection → clear the selection (success only; `SaveFailed` preserves it so the user can
   retry). Returns `RemoveOutcome::NoSelection` (empty selection guard), `RemoveOutcome::SaveFailed
   { error }` (shelf rolled back byte-identically via `Library::restore`; selection preserved), or
-  `RemoveOutcome::Removed { n, closed_open_book }`. The caller (`main.rs`) rebuilds the carousel,
+  `RemoveOutcome::Removed { n, closed_open_book }`. The caller (`handlers/library.rs`'s `wire_selection_handlers`) rebuilds the carousel,
   clamps the focused index, and composes the status line from the outcome.
 - `remove_books_with_rollback(library, paths, save)` — the transaction primitive: captures full
   `Book` clones before removal, calls `Library::remove_many`, then calls `save`; on `Err` calls
@@ -530,7 +530,8 @@ in `mod.rs`'s `#[cfg(test)]`. The `Language` enum stays in headless `gashuu-core
 machinery is UI-crate-only, per [ADR-0002](ADRs/0002-layered-two-crate-architecture.md). PR-2 (#113)
 added `Localizer::apply(&self, ui: &ViewerWindow)` to `mod.rs`: the single chokepoint that resolves
 every Fluent-served static string via `fl!()` and pushes it into the `Strings` global (next entry);
-`main.rs` calls it at boot and after each `switch()` — see [patterns.md](patterns.md), "The
+`main.rs` calls it at boot; after each `switch()` (language change) the call is in
+`handlers/settings.rs`'s `wire_view_mode_handlers` — see [patterns.md](patterns.md), "The
 `Strings`-global push".
 
 **`i18n/dynamic.rs`** (Fluent i18n PR-3, #114, NEW): Fluent-backed dynamic message functions that
@@ -555,6 +556,35 @@ Message-ID naming convention: [conventions.md](conventions.md), "Fluent catalog 
 `total == 0`; otherwise clamps the numeric value to `[1, total]` (treating `0` as `1`) and
 subtracts 1. Replaces the removed `page_counter.rs`. The viewer wires the parsed index through
 `ViewerState::jump_to` (same "did it move → caller refreshes" convention as the scrubber).
+
+### handlers
+
+`handlers/` module (#151). Slint callback registration, split by feature area. `mod.rs` declares
+the three sub-modules and re-exports all eight `wire_*` fns at the `handlers::` level so `main.rs`
+needs no sub-module path. Each `wire_*` fn takes `&ui` and exactly the `Rc` handles its closures
+clone — the per-closure `Rc::clone` list IS that handler's dependency list (#151 panel constraint:
+no AppState bundle, explicit handle lists only). The three feature files are:
+
+- **`handlers/library.rs`**: `wire_open_handlers` (open-folder, open-archive, add-books,
+  add-folder), `wire_carousel_handlers` (carousel search/open/continue-reading/move/back),
+  `wire_selection_handlers` (toggle/cover-click/select-all/exit selection; bulk-delete confirm +
+  confirm-accepted; empty-book-detected auto-removal). Also constructs the `RemoveBooksUseCase`
+  instance inline (the use case's full collaborator list is only available here) and owns the
+  `on_empty_book_detected` UI thread handler.
+- **`handlers/settings.rs`**: `wire_settings_handlers` (settings dialog open/close, shortcuts
+  overlay open/close, reset-overrides, first-run guide dismissal),
+  `wire_view_mode_handlers` (view-mode setter callbacks — reading direction, spread, cover, fit,
+  language, cache/preload/track; the language arm calls `localizer.switch` then `apply`).
+- **`handlers/viewer.rs`**: `wire_viewer_input_handlers` (thumbnail click, page-jump, chrome
+  reveal, scrubber preview/commit, thumbnail-strip toggle), `wire_viewport_handlers` (viewport
+  size + pan/zoom callbacks), `wire_nav_handlers` (keyboard nav hub: page turns, mode toggles,
+  GoToLibrary, window resize).
+
+`fn main` = boot (tracing, settings/library load, Slint window, localizer, Rc construction, seed
+carousel, prune) + 8 wire calls + `ui.run()` + exit flush (count persistence, write-back,
+persist_view_modes, settings save). All callback closures live in `handlers/`; `main.rs` retains
+`refresh`, `finalize_open`, `go_to_library`/`go_to_viewer`, `persist_view_modes`,
+`refresh_library_carousel`, `CarouselRefresh`, projection helpers, and the remaining view-sync seams.
 
 ### Slint UI files
 
@@ -704,7 +734,7 @@ worker: a worker that opens a book CLEANLY but counts zero pages (the pure `shou
 decision = `open_result.is_ok() && count == 0`) calls `marshal_empty_book`, which fires the root
 `empty-book-detected(string)` Slint callback under the same epoch guard as `marshal_total` (the
 worker holds only a `Send` `PathBuf`; the `!Send` removal work runs on the UI thread in
-`main.rs::on_empty_book_detected`). An open ERROR is unreadable, NOT empty — it keeps the placeholder
+`handlers/library.rs`'s `on_empty_book_detected`). An open ERROR is unreadable, NOT empty — it keeps the placeholder
 + log behavior and fires no signal. A dropped stale-epoch signal cannot lose the detection (a zero
 count is never persisted, so the next generation re-detects), and a removed book is absent from the
 next generation's requests (no loop). See [patterns.md](patterns.md), "Worker → UI ACTION via a
@@ -737,8 +767,8 @@ pointer-release fires `commit`. Its preview thumbs use the shared `ThumbnailCell
 
 **`ViewerWindow.slint`**: extended in PR8b with the two `if root.show-X : Component` overlays
 (last children = front), a "Settings…" toolbar button, the in/in-out properties + setter
-callbacks, and a FocusScope key-guard. `main.rs` gained the dialog/guide wiring + 8 enum↔index
-helper fns (since extracted to `enum_adapters.rs`) + `KEY_BINDINGS_HELP`. Extended in PR-0b with a two-screen model: `in property <int>
+callbacks, and a FocusScope key-guard. the wiring (dialog/guide lifecycle) was originally registered in `main.rs` and has since
+been extracted to `handlers/settings.rs`; the 8 enum↔index helper fns moved to `enum_adapters.rs`; the key-bindings help text is now composed via the localizer and pushed via `ui.set_key_bindings_text(…)` from `handlers/settings.rs`. Extended in PR-0b with a two-screen model: `in property <int>
 screen` gates the Library `Carousel` (screen 0) vs the Viewer body (screen 1) via
 `visible: root.screen == N` (not `if` — see [patterns.md](patterns.md) for the Slint id-scoping
 reason); Settings/Guide overlays remain viewer-scoped. Extended again in PR-S to mount the

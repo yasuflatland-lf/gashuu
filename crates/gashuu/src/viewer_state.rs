@@ -66,7 +66,7 @@ pub struct SpreadImages {
 //
 // Single source of rounding (#71 Part D): the Slint scrubber now passes the RAW
 // clamped knob fraction up via `preview(float)`/`commit(float)`, and the
-// `on_scrub_preview`/`on_scrub_commit` wiring in `main.rs` calls THIS helper to
+// `on_scrub_preview`/`on_scrub_commit` wiring in `handlers/viewer.rs` calls THIS helper to
 // resolve the page. So it has a real runtime caller (no longer `#[allow(dead_code)]`)
 // AND is the authoritative spec the unit tests below pin — the former in-Slint
 // `drag-page` rounding is gone, so there is exactly one place this mapping lives.
@@ -300,7 +300,7 @@ impl ViewerState {
     }
 
     /// Total page count of the current source (0 when none is open). Used by the
-    /// thumbnail-strip wiring in `main.rs` to size the placeholder model, and by
+    /// thumbnail-strip wiring in `app.rs` to size the placeholder model, and by
     /// the unit tests below.
     pub fn page_count(&self) -> usize {
         self.page_count
@@ -523,7 +523,7 @@ impl ViewerState {
     /// so this getter has no production caller after the Fluent migration. It is
     /// retained as the read side of the mirrored `language` field — written by
     /// `set_language` whose "changed" return still gates the language dropdown's
-    /// self-fire in `main.rs`. `#[allow(dead_code)]` follows the same convention
+    /// self-fire in `handlers/settings.rs`. `#[allow(dead_code)]` follows the same convention
     /// as the other currently-unwired accessors in this module.
     #[allow(dead_code)]
     pub fn language(&self) -> Language {
