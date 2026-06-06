@@ -10,7 +10,7 @@ This file is the authoritative record of what has shipped and what is intentiona
 - Top-level folder walk (`max_depth(1)`, no recursion).
 - CBZ/ZIP archives (flattened — images at any depth).
 - CBR/RAR archives (extraction only, flattened like ZIP).
-- All PNG/JPG/JPEG formats.
+- All PNG/JPG/JPEG/AVIF formats (AVIF decode via dav1d — see [docs/toolchain.md](toolchain.md)).
 - Dispatched by `ArchiveLoader` (extension → magic-byte sniff).
 
 **Intentional deviation from the Issue:** the ZIP Issue specified `async_zip` + `tokio` and the RAR plan specified `unrar`, but BOTH use the SYNCHRONOUS crate (`zip` / `unrar`) over the existing rayon pool — the synchronous `read_bytes` trait method plus CPU-bound decode fit rayon naturally, whereas async would force a `block_on` bridge and infect every layer with `tokio`.

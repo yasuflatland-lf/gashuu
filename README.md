@@ -14,7 +14,7 @@ tasteful a tool as a fine art book.
 
 ## Features
 
-- **Sources** — a folder of PNG/JPG/JPEG images, or a `.cbz`/`.zip`/`.cbr`/`.rar`
+- **Sources** — a folder of PNG/JPG/JPEG/AVIF images, or a `.cbz`/`.zip`/`.cbr`/`.rar`
   archive. The format is detected by extension or magic bytes, so a mis-named archive
   still opens.
 - **Archives** — pages are read in natural filename order and images nested in
@@ -74,16 +74,27 @@ mise trust      # trust ./mise.toml (once per fresh clone)
 mise install
 ```
 
-On Linux, install Slint's system libraries (macOS and Windows need nothing extra):
+On Linux, install Slint's system libraries and the dav1d AV1 decoder (AVIF support):
 
 ```bash
 sudo apt-get install -y libfontconfig1-dev libfreetype6-dev libxcb1-dev \
-  libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libxkbcommon-dev
+  libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libxkbcommon-dev \
+  libdav1d-dev
+```
+
+On macOS, install dav1d with Homebrew; on Windows, via vcpkg (see
+[docs/toolchain.md](docs/toolchain.md) for the build-environment variables):
+
+```bash
+brew install dav1d                          # macOS
+vcpkg install dav1d:x64-windows-static-md   # Windows
 ```
 
 A C++ compiler is also required — the RAR/CBR backend bundles the C++ UnRAR sources and
 builds them via `cc`. This is standard on every platform (Xcode CLT on macOS, MSVC or
 MinGW on Windows, `build-essential` on Linux) and adds nothing beyond the usual toolchain.
+dav1d and the C++ compiler are BUILD-time requirements only — the released app bundles
+everything and end users install nothing.
 
 Then run the viewer and add books from the Library's nav bar:
 
@@ -95,7 +106,7 @@ cargo run -p gashuu
 
 Add books from the Library's NavBar — on macOS a single **Add books** button (one picker
 accepts files and folders); on Windows/Linux separate **Add files**
-(`.cbz`/`.zip`/`.cbr`/`.rar`) and **Add folder** (a folder of PNG/JPG/JPEG images becomes
+(`.cbz`/`.zip`/`.cbr`/`.rar`) and **Add folder** (a folder of PNG/JPG/JPEG/AVIF images becomes
 one book) buttons. An empty library shows a call-to-action that opens the same picker.
 Click a cover (or focus it and press `Enter`) to start reading; navigation works the same
 for folders and archives.
@@ -225,5 +236,5 @@ cargo nextest run --workspace
 
 MIT — see [LICENSE](LICENSE). The RAR/CBR backend uses the UnRAR library, which carries
 RARLAB's non-free license (read-only use is permitted; re-creating the RAR compression
-algorithm is not). See [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md) for the full
-UnRAR license text.
+algorithm is not). The AVIF decoder links dav1d (BSD-2-Clause). See
+[THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md) for the full license texts.

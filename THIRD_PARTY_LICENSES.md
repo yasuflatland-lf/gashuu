@@ -59,6 +59,45 @@ Source: https://www.rarlab.com/
 
 ---
 
+## dav1d (VideoLAN)
+
+gashuu links the dav1d AV1 decoder — statically in release builds, via the system library in
+development builds — through the [`dav1d`](https://crates.io/crates/dav1d) Rust crate
+(`dav1d-sys` bindings), enabled by the `image` crate's `avif-native` feature. dav1d is used
+exclusively for **decoding** AVIF images; gashuu never encodes AVIF at runtime.
+
+The dav1d license (BSD 2-Clause) is reproduced in full below:
+
+```
+Copyright © 2018-2024, VideoLAN and dav1d authors
+All rights reserved.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are met:
+
+1. Redistributions of source code must retain the above copyright notice, this
+   list of conditions and the following disclaimer.
+
+2. Redistributions in binary form must reproduce the above copyright notice,
+   this list of conditions and the following disclaimer in the documentation
+   and/or other materials provided with the distribution.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
+ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+```
+
+Source: https://code.videolan.org/videolan/dav1d
+
+---
+
 ## Other Major Dependencies
 
 The following table lists other notable dependencies used by gashuu, together with their
@@ -68,6 +107,8 @@ each package on [crates.io](https://crates.io/).
 | Crate | License |
 |---|---|
 | [`image`](https://crates.io/crates/image) | MIT / Apache-2.0 |
+| [`dav1d`](https://crates.io/crates/dav1d) / [`dav1d-sys`](https://crates.io/crates/dav1d-sys) | MIT (bindings; the dav1d C library itself is BSD-2-Clause, see above) |
+| [`mp4parse`](https://crates.io/crates/mp4parse) | MPL-2.0 |
 | [`zip`](https://crates.io/crates/zip) | MIT |
 | [`slint`](https://crates.io/crates/slint) | GPLv3 / Royalty-free / Commercial (tri-license — see [slint.dev/pricing](https://slint.dev/pricing)) |
 | [`rfd`](https://crates.io/crates/rfd) | MIT |
