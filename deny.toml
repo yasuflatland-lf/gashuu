@@ -1,0 +1,11 @@
+[advisories]
+version = 2
+ignore = [
+  { id = "RUSTSEC-2024-0436", reason = "paste is a transitive dependency of the AVIF stack (rav1e -> ravif -> image); the advisory is informational/unmaintained and has no patched version. Remove this once `cargo tree -i paste --locked` no longer finds paste." },
+]
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

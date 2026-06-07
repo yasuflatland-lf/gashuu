@@ -1,0 +1,28 @@
+name: Security
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: security-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rust-advisories:
+    name: rust advisories and sources
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: jdx/mise-action@1648a7812b9aeae629881980618f079932869151 # v4
+      - run: cargo install cargo-audit --locked
+      - run: cargo install cargo-deny --locked
+      # Keep the exception explicit in CI as well as .cargo/audit.toml so
+      # cargo-audit still suppresses this known transitive advisory even if
+      # config discovery changes across cargo-audit releases.
+      - run: cargo audit --ignore RUSTSEC-2024-0436
+      - run: cargo deny check advisories sources
