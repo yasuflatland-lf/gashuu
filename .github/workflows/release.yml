@@ -178,18 +178,42 @@ jobs:
           chmod +x "$APP/Contents/MacOS/gashuu"
           echo "APP=$APP" >> "$GITHUB_ENV"
       # ── SIGNING SEAM (macOS) ──────────────────────────────────────────────
-      # To sign + notarize later, insert steps HERE (before the ditto zip):
+      # To sign + notarize later, insert steps HERE (before staging the
+      # distribution zip):
       #   secrets: MACOS_CERTIFICATE (base64 .p12), MACOS_CERTIFICATE_PWD,
       #            MACOS_CERTIFICATE_NAME ("Developer ID Application: … (TEAMID)"),
       #            MACOS_CI_KEYCHAIN_PWD, MACOS_NOTARIZATION_APPLE_ID/PWD/TEAM_ID
       #   1. import the .p12 into a temporary keychain
       #   2. codesign --force --options runtime --sign "$MACOS_CERTIFICATE_NAME" "$APP"
-      #   3. ditto the zip, then `xcrun notarytool submit <zip> --wait`
-      #      and `xcrun stapler staple "$APP"`, then re-run ditto on the stapled app.
-      - name: Zip the .app (ditto preserves symlinks + permissions)
+      #   3. zip "$APP" for notarization, then `xcrun notarytool submit <zip> --wait`
+      #      and `xcrun stapler staple "$APP"` before the distribution stage below.
+      - name: Stage and zip the macOS distribution
         run: |
+          STAGE="target/release/macos-dist/gashuu-${TAG}-macos-universal"
+          rm -rf "target/release/macos-dist"
+          mkdir -p "$STAGE"
+
+          ditto "$APP" "$STAGE/gashuu.app"
+          cp "scripts/macos/Open gashuu.command" "$STAGE/Open gashuu.command"
+          chmod +x "$STAGE/Open gashuu.command"
+
+          cat > "$STAGE/README-macOS.txt" <<'EOF'
+          gashuu for macOS
+
+          This macOS build is currently unsigned and not notarized.
+
+          Recommended install steps:
+
+          1. Move gashuu.app to the Applications folder.
+          2. Try opening gashuu.app normally.
+          3. If macOS blocks the app with a malware verification warning, right-click "Open gashuu.command" and choose Open.
+          4. The helper removes the quarantine attribute from /Applications/gashuu.app and launches gashuu.
+
+          This helper is a temporary workaround until Developer ID signing and notarization are added.
+          EOF
+
           ditto -c -k --keepParent \
-            "$APP" \
+            "$STAGE" \
             "gashuu-${TAG}-macos-universal.zip"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:

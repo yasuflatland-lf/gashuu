@@ -56,9 +56,10 @@ jobs:
           fail_ci_if_error: false
 
   # Doc-structure harness: enforces the L1 (CLAUDE.md <=35 lines) + link integrity
-  # invariants, plus the visual-token guard (no raw hex outside Theme.slint).
+  # invariants, plus the visual-token and macOS release packaging guards.
   # Pure bash, no toolchain — runs the same scripts as the local
-  # `mise run check-docs` / `mise run check-tokens` tasks.
+  # `mise run check-docs` / `mise run check-tokens` /
+  # `mise run check-release-macos-dist` tasks.
   docs:
     name: docs (structure check)
     runs-on: ubuntu-latest
@@ -66,6 +67,7 @@ jobs:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
       - run: bash scripts/check-docs.sh
       - run: bash scripts/check-tokens.sh
+      - run: bash scripts/check-release-macos-dist.sh
 
   # The Slint presentation crate, built and tested per OS. Only `-p gashuu` runs
   # here (the core job already covers gashuu-core), and fmt/clippy are not repeated
