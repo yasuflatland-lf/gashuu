@@ -23,3 +23,7 @@ run = "bash scripts/check-docs.sh"
 [tasks.check-tokens]
 description = "Guard against raw color hex outside Theme.slint in crates/gashuu/ui/*.slint (DESIGN.md single-source-of-truth rule)"
 run = "bash scripts/check-tokens.sh"
+
+[tasks.check-release-macos-dist]
+description = "Verify the unsigned macOS release helper and distribution zip packaging guard"
+run = "bash scripts/check-release-macos-dist.sh"
