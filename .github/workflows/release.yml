@@ -21,9 +21,9 @@ concurrency:
   group: release-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: false
 
-# `gh release upload` needs write access to releases.
+# Default all release jobs to read-only; only publish needs write access.
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   # Fail fast (before any minutes are spent on the slow per-OS builds) if the
@@ -271,6 +271,8 @@ jobs:
 
   publish:
     name: publish (attach to release)
+    permissions:
+      contents: write
     needs: [preflight, build-macos, build-windows]
     runs-on: ubuntu-latest
     env:
