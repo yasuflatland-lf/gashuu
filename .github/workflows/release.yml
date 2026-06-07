@@ -285,11 +285,21 @@ jobs:
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           path: artifacts
-      - name: Verify the release exists, then upload the zips
+      - name: Generate SHA256SUMS
+        shell: bash
+        run: |
+          find artifacts -type f -name '*.zip' -print0 \
+            | sort -z \
+            | while IFS= read -r -d '' path; do
+                sha256sum "$path" | sed 's#  .*/#  #'
+              done > SHA256SUMS
+          cat SHA256SUMS
+      - name: Verify the release exists, then upload assets
         shell: bash
         run: |
           gh release view "$TAG" >/dev/null 2>&1 \
             || { echo "::error::No GitHub Release found for $TAG. Create it first: gh release create $TAG --title $TAG --notes ..."; exit 1; }
+          gh release upload "$TAG" SHA256SUMS --clobber
           find artifacts -type f -name '*.zip' -print0 \
             | while IFS= read -r -d '' path; do
                 echo "Uploading: $path"
