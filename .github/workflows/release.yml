@@ -34,7 +34,7 @@ jobs:
     outputs:
       tag: ${{ steps.resolve.outputs.tag }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           ref: ${{ inputs.tag || github.ref }}
       - id: resolve
@@ -77,11 +77,11 @@ jobs:
       SYSTEM_DEPS_DAV1D_SEARCH_NATIVE: /tmp/dav1d-universal/lib
       SYSTEM_DEPS_DAV1D_INCLUDE: /tmp/dav1d-universal/include
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           ref: ${{ needs.preflight.outputs.tag }}
-      - uses: jdx/mise-action@v4
-      - uses: Swatinem/rust-cache@v2
+      - uses: jdx/mise-action@1648a7812b9aeae629881980618f079932869151 # v4
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
           key: release-macos
           save-if: 'true'
@@ -191,7 +191,7 @@ jobs:
           ditto -c -k --keepParent \
             "$APP" \
             "gashuu-${TAG}-macos-universal.zip"
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: macos-zip
           path: gashuu-${{ env.TAG }}-macos-universal.zip
@@ -204,11 +204,11 @@ jobs:
     env:
       TAG: ${{ needs.preflight.outputs.tag }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           ref: ${{ needs.preflight.outputs.tag }}
-      - uses: jdx/mise-action@v4
-      - uses: Swatinem/rust-cache@v2
+      - uses: jdx/mise-action@1648a7812b9aeae629881980618f079932869151 # v4
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
           key: release-windows
           save-if: 'true'
@@ -216,7 +216,7 @@ jobs:
       # so gashuu.exe stays self-contained — no DLL ships beside the zipped exe.
       # The archives cache turns the ~5-8 min cold source build into seconds.
       - name: Cache vcpkg-built dav1d
-        uses: actions/cache@v5
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5
         with:
           path: ~\AppData\Local\vcpkg\archives
           key: vcpkg-dav1d-x64-windows-static-md
@@ -263,7 +263,7 @@ jobs:
         run: |
           Compress-Archive -Path target/release/gashuu.exe `
             -DestinationPath "gashuu-$env:TAG-windows-x64.zip"
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: windows-zip
           path: gashuu-${{ env.TAG }}-windows-x64.zip
@@ -279,10 +279,10 @@ jobs:
       TAG: ${{ needs.preflight.outputs.tag }}
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           ref: ${{ needs.preflight.outputs.tag }}
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           path: artifacts
       - name: Verify the release exists, then upload the zips
