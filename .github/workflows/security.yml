@@ -24,5 +24,5 @@ jobs:
       # Keep the exception explicit in CI as well as .cargo/audit.toml so
       # cargo-audit still suppresses this known transitive advisory even if
       # config discovery changes across cargo-audit releases.
-      - run: cargo audit --locked --ignore RUSTSEC-2024-0436
+      - run: cargo audit --ignore RUSTSEC-2024-0436
       - run: cargo deny check advisories sources
