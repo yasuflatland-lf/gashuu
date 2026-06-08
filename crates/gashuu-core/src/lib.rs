@@ -4,6 +4,7 @@
 //! so the presentation layer can convert them to `slint::Image`.
 
 pub mod archive_loader;
+pub(crate) mod atomic_write;
 pub mod cache;
 pub mod cache_config;
 pub mod error;

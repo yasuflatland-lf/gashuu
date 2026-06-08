@@ -19,10 +19,12 @@ serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.150"
 directories = "6.0.0"
 unrar = "0.5"
+# Atomic JSON persistence: write to a same-directory temp file, fsync, then rename
+# over the target so settings.json / library.json are never left truncated on crash.
+tempfile = "3"
 
 [dev-dependencies]
 insta = "1.47.2"
-tempfile = "3"
 base64 = "0.22"
 
 [features]

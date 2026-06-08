@@ -34,12 +34,9 @@ impl Library {
         self.save_to(&Self::data_path()?)
     }
 
+    /// Atomically write the library to `path`, creating parent directories as needed.
     pub fn save_to(&self, path: &Path) -> Result<(), CoreError> {
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        std::fs::write(path, self.to_json()?)?;
-        Ok(())
+        crate::atomic_write::write_atomic(path, self.to_json()?.as_bytes())
     }
 
     /// Serialize to pretty JSON with the on-disk schema version.
@@ -224,6 +221,41 @@ mod tests {
     }
 
     #[test]
+    fn save_to_creates_missing_parent_directories() {
+        // The atomic helper owns parent creation; saving under a non-existent
+        // subtree must materialize the directories AND the file.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("deep").join("nest").join("library.json");
+        assert!(!path.parent().unwrap().exists());
+        Library::new().save_to(&path).unwrap();
+        assert!(path.exists());
+    }
+
+    #[test]
+    fn save_to_overwrites_existing_file_with_complete_json() {
+        // Saving over an existing (longer) library file must replace it wholesale
+        // with the new document — no truncation, no leftover tail from the old one.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("library.json");
+
+        // First save: two books (a longer document).
+        let mut original = Library::new();
+        assert!(original.add(PathBuf::from("/manga/a.cbz")).is_some());
+        assert!(original.add(PathBuf::from("/manga/b.cbz")).is_some());
+        original.save_to(&path).unwrap();
+
+        // Second save: a single empty library (a shorter document).
+        let replacement = Library::new();
+        replacement.save_to(&path).unwrap();
+
+        // The bytes on disk must equal exactly the new serialization, with no
+        // residue from the first write, and parse back to an empty library.
+        let on_disk = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(on_disk, replacement.to_json().unwrap());
+        assert!(Library::load_from(&path).unwrap().books().is_empty());
+    }
+
+    #[test]
     fn load_from_normalizes_old_unsorted_library_order() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("library.json");
@@ -402,6 +434,28 @@ mod tests {
             loaded.last_opened(),
             Some(Path::new("/manga/a.cbz")),
             "last_opened must survive save/load"
+        );
+    }
+
+    #[test]
+    fn save_to_preserves_last_opened() {
+        // Verify that last_opened survives a full save_to → load_from round-trip.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("library.json");
+        let book = PathBuf::from("/manga/vol1.cbz");
+        let mut lib = Library::new();
+        assert!(lib.add(book.clone()).is_some());
+        lib.register_opened(&book, None);
+        // last_opened is set before saving.
+        assert_eq!(lib.last_opened(), Some(Path::new("/manga/vol1.cbz")));
+
+        lib.save_to(&path).unwrap();
+        let loaded = Library::load_from(&path).unwrap();
+
+        assert_eq!(
+            loaded.last_opened(),
+            Some(Path::new("/manga/vol1.cbz")),
+            "last_opened must survive save_to/load_from"
         );
     }
 
