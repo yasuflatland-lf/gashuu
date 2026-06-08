@@ -2,7 +2,7 @@ use super::naming::{has_image_ext, MAX_ENTRY_BYTES};
 use super::{PageEntry, PageSource};
 use crate::error::CoreError;
 use crate::ordering::natural_cmp;
-
+use std::io::{BufReader, Read};
 use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
 
@@ -36,6 +36,10 @@ impl FolderSource {
         Self::open_with_limit(root, MAX_ENTRY_BYTES)
     }
 
+    /// Walk `root`, skipping image files whose on-disk size exceeds `max`.
+    ///
+    /// Test seam: a small `max` triggers skip+count deterministically without
+    /// synthesizing a huge file.
     fn open_with_limit(root: impl AsRef<Path>, max: u64) -> Result<Self, CoreError> {
         let mut entries: Vec<FolderEntry> = Vec::new();
         let mut skipped = 0usize;
@@ -48,7 +52,9 @@ impl FolderSource {
                             path: e.path().to_path_buf(),
                         });
                     }
-                    Ok(_) | Err(_) => skipped += 1,
+                    // Oversized image, or metadata unreadable: count it so the UI
+                    // can surface a warning.
+                    _ => skipped += 1,
                 },
                 // Directories and non-image files are expected, not errors.
                 Ok(_) => {}
@@ -65,13 +71,15 @@ impl FolderSource {
     }
 }
 
+/// Read `path` whole, capping the read at `max` bytes so a file that grew past
+/// the open-time ceiling is rejected rather than buffered in full.
+///
+/// Reading at most `max + 1` bytes makes an over-limit file detectable: landing
+/// on exactly `max + 1` bytes means the real size exceeds the ceiling.
 fn read_file_capped(path: &Path, name: &str, max: u64) -> Result<Vec<u8>, CoreError> {
-    use std::io::{BufReader, Read};
-
     let file = std::fs::File::open(path)?;
-    let mut reader = BufReader::new(file).take(max + 1);
     let mut buf = Vec::new();
-    reader.read_to_end(&mut buf)?;
+    BufReader::new(file).take(max + 1).read_to_end(&mut buf)?;
     if buf.len() as u64 > max {
         return Err(CoreError::EntryTooLarge {
             name: name.to_string(),
