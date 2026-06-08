@@ -131,6 +131,9 @@ export component ViewerWindow inherits Window {
     in-out property <int> preload-pages;
     in-out property <bool> track-recent;
     in-out property <bool> allow-rar-archives;
+    // Pre-composed feedback string for the clear-history / clear-cache actions.
+    // Empty = not shown. Rust pushes a transient string; the caller clears it.
+    in property <string> data-action-status;
     // Index into the language dropdown model (En=0, Ja=1).
     in-out property <int> language-index;
     in property <string> key-bindings-text;
@@ -271,6 +274,8 @@ export component ViewerWindow inherits Window {
     callback set-preload-pages(int);
     callback set-track-recent(bool);
     callback set-allow-rar-archives(bool);
+    callback clear-reading-history();
+    callback clear-cover-cache();
     callback set-language(int);
 
     // ── Library screen ────────────────────────────────────────────────────────
@@ -569,6 +574,7 @@ export component ViewerWindow inherits Window {
         preload-pages <=> root.preload-pages;
         track-recent <=> root.track-recent;
         allow-rar-archives <=> root.allow-rar-archives;
+        data-action-status: root.data-action-status;
         language-index <=> root.language-index;
         focus-epoch: root.settings-focus-epoch;
         show-reset-button: root.settings-per-book;
@@ -581,6 +587,8 @@ export component ViewerWindow inherits Window {
         set-preload-pages(v) => { root.set-preload-pages(v); }
         set-track-recent(b) => { root.set-track-recent(b); }
         set-allow-rar-archives(b) => { root.set-allow-rar-archives(b); }
+        clear-reading-history() => { root.clear-reading-history(); }
+        clear-cover-cache() => { root.clear-cover-cache(); }
         set-language(i) => { root.set-language(i); }
         close-settings() => { root.close-settings(); }
         reset-to-global() => { root.reset-overrides(); }

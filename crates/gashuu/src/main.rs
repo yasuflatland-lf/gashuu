@@ -210,7 +210,9 @@ fn main() -> color_eyre::Result<()> {
         &ui, &state, &library, &covers, &search, &selection, &localizer,
     );
     handlers::wire_viewer_input_handlers(&ui, &state, &viewport, &localizer);
-    handlers::wire_settings_handlers(&ui, &state, &viewport, &settings, &library, &localizer);
+    handlers::wire_settings_handlers(
+        &ui, &state, &viewport, &settings, &library, &covers, &search, &selection, &localizer,
+    );
     handlers::wire_view_mode_handlers(
         &ui, &state, &viewport, &settings, &library, &search, &selection, &localizer,
     );

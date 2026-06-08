@@ -3,7 +3,8 @@
 // deliberately dropped; φ now lives in the component proportions instead:
 // toggle track ratio, the 8/14/22 spacing ladder, segment padding).
 //
-// Form factor: 377px wide, height hugging header + body + footer, radius 21px
+// Form factor: 432px wide (clamped to the window so a narrow window keeps a
+// space-md gutter each side), height hugging header + body + footer, radius 21px
 // (shares NavBar's glass corner language), height CLAMPED to
 // min(content, window.height − 2·space-huge) so a short window scrolls the
 // body instead of overflowing (Marcotte). The panel is ONE fake-glass object —
@@ -43,6 +44,7 @@ import { Stepper } from "components/Stepper.slint";
 import { Toggle } from "components/Toggle.slint";
 import { Dropdown } from "components/Dropdown.slint";
 import { PrimaryButton } from "components/PrimaryButton.slint";
+import { SecondaryButton } from "components/SecondaryButton.slint";
 
 export component SettingsDialog inherits Rectangle {
     // ── Full-area semi-transparent backdrop ──────────────────────────────────
@@ -71,6 +73,11 @@ export component SettingsDialog inherits Rectangle {
     // True when this dialog edits the CURRENT book's per-book settings (opened
     // from the Viewer): shows the per-book title and the reset-to-global button.
     in property <bool> show-reset-button: false;
+    // Pre-composed feedback for the clear-history / clear-cache actions.
+    // Empty string = no message shown. Rust pushes a transient string; it is
+    // reset to empty the next time the dialog opens (on_open_settings sets it
+    // back to "").
+    in property <string> data-action-status;
 
     // ── Callbacks fired when the user changes a setting ───────────────────────
     callback set-reading-direction(int);
@@ -82,6 +89,10 @@ export component SettingsDialog inherits Rectangle {
     callback set-track-recent(bool);
     callback set-allow-rar-archives(bool);
     callback set-language(int);
+    // Fired immediately when the user clicks "Clear reading history" — no confirmation.
+    callback clear-reading-history();
+    // Fired immediately when the user clicks "Clear cover cache" — no confirmation.
+    callback clear-cover-cache();
     // Fired on Esc, backdrop-click, or the Close button.
     callback close-settings();
     // Fired when the user activates the "Shortcuts" footer link (mouse click,
@@ -115,7 +126,11 @@ export component SettingsDialog inherits Rectangle {
 
     // ── Glass panel ───────────────────────────────────────────────────────────
     panel := Rectangle {
-        width: Theme.settings-w;
+        // Responsive width: shows the full 432px on roomy windows, but never
+        // overflows a narrow one — it shrinks to leave a small space-md gutter
+        // on each side (mirrors the height clamp below, which reads the same
+        // `parent` — the SettingsDialog root that fills the window).
+        width: min(Theme.settings-w, parent.width - 2 * Theme.space-md);
         // Content-hug height inside the Marcotte clamp (spec 2026-06-04): the
         // panel is exactly header + body content + footer tall — no dead slack
         // for the Flickable to absorb — but never taller than the window minus a
@@ -398,6 +413,58 @@ export component SettingsDialog inherits Rectangle {
                                         root.set-language(i);
                                     }
                                 }
+                            }
+                        }
+
+                        // ── Section: Data ─────────────────────────────────────────
+                        // The data-clearing utilities, promoted out of General into
+                        // their own section (spec 2026-06-08). Reuses the exact section
+                        // pattern (eyebrow + the space-xxl inter-section gap from the
+                        // parent layout; NO divider line). The two SecondaryButtons
+                        // stack VERTICALLY and FULL-WIDTH so the long Japanese labels
+                        // each sit on one line and the pair reads as one cohesive group.
+                        VerticalLayout {
+                            spacing: Theme.space-lg;
+                            Text {
+                                text: Strings.settings-section-data;
+                                font-size: Theme.font-label;
+                                font-weight: Theme.weight-semibold;
+                                color: Theme.text-dim;
+                                horizontal-alignment: left;
+                            }
+                            // Clear actions: immediate (no confirmation), status feedback
+                            // is surfaced via data-action-status. These are data-clearing
+                            // utilities, so they use the LOW-PROMINENCE bordered-neutral
+                            // SecondaryButton (HIG; NOT the affirmative accent PrimaryButton,
+                            // and deliberately NOT red — danger stays scarce). Full-width is
+                            // achieved at the call site via horizontal-stretch (overrides
+                            // SecondaryButton's own horizontal-stretch: 0), leaving the
+                            // component untouched; space-sm separates the stacked buttons.
+                            VerticalLayout {
+                                spacing: Theme.space-sm;
+                                SecondaryButton {
+                                    horizontal-stretch: 1;
+                                    text: Strings.settings-clear-history-label;
+                                    clicked => {
+                                        root.clear-reading-history();
+                                    }
+                                }
+                                SecondaryButton {
+                                    horizontal-stretch: 1;
+                                    text: Strings.settings-clear-cache-label;
+                                    clicked => {
+                                        root.clear-cover-cache();
+                                    }
+                                }
+                            }
+                            // Transient feedback line for clear-history / clear-cache
+                            // actions. Hidden when empty to avoid layout slack.
+                            if root.data-action-status != "" : Text {
+                                text: root.data-action-status;
+                                font-size: Theme.font-micro;
+                                color: Theme.text-dim;
+                                horizontal-alignment: left;
+                                wrap: word-wrap;
                             }
                         }
                     }

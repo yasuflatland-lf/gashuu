@@ -24,6 +24,7 @@ settings-section-reading = 読み方
 settings-section-display = 表示
 settings-section-performance = パフォーマンス
 settings-section-general = 一般
+settings-section-data = データ
 
 # Reading section — Direction row
 settings-direction-label = 方向
@@ -61,6 +62,19 @@ settings-track-recent-a11y = 最近のファイルを記録
 settings-performance-note = キャッシュと先読みは次に開いた本から適用されます。
 settings-allow-rar-label = CBR/RARアーカイブを許可
 settings-allow-rar-a11y = CBR/RARアーカイブを許可
+
+# General section — Clear action buttons
+settings-clear-history-label = 読書履歴をクリア
+settings-clear-cache-label = カバーキャッシュをクリア
+
+# General section — Clear action status feedback (issue #178)
+settings-history-cleared = 読書履歴をクリアしました。
+settings-history-clear-failed = 読書履歴をクリアできませんでした。
+settings-cache-cleared =
+    { $n ->
+       *[other] キャッシュした { $n } 件のファイル（{ $size }）を削除しました。
+    }
+settings-cache-clear-failed = カバーキャッシュをクリアできませんでした。
 
 # General section — Language row
 settings-language-label = 言語

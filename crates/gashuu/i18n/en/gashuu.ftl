@@ -21,6 +21,7 @@ settings-section-reading = Reading
 settings-section-display = Display
 settings-section-performance = Performance
 settings-section-general = General
+settings-section-data = Data
 
 # Reading section — Direction row
 settings-direction-label = Direction
@@ -58,6 +59,20 @@ settings-track-recent-a11y = Track recent files
 settings-performance-note = Cache & preload apply to newly opened books.
 settings-allow-rar-label = Allow CBR/RAR archives
 settings-allow-rar-a11y = Allow CBR/RAR archives
+
+# General section — Clear action buttons
+settings-clear-history-label = Clear reading history
+settings-clear-cache-label = Clear cover cache
+
+# General section — Clear action status feedback (issue #178)
+settings-history-cleared = Reading history cleared.
+settings-history-clear-failed = Could not clear reading history.
+settings-cache-cleared =
+    { $n ->
+        [one] Removed { $n } cached file ({ $size }).
+       *[other] Removed { $n } cached files ({ $size }).
+    }
+settings-cache-clear-failed = Could not clear cover cache.
 
 # General section — Language row
 settings-language-label = Language

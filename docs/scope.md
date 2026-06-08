@@ -186,6 +186,22 @@ dispatched at startup after the initial cover stream (no UI-thread I/O). `purge_
 unchanged. Deferred: re-pruning inside a session (overflow waits for the next launch), a Settings
 field / UI for the cap.
 
+### Data-clearing cleanup controls; Private Mode dropped (issue #178, branch `refactor/add_private_mode`, 2026-06-08)
+
+- Two confirmation-free cleanup buttons on the Settings dialog's General tab. **Clear reading
+  history** empties the whole library — `Library::clear` clears `books` + `last_opened` and the
+  recent-files list (in gashuu the library IS the reading history; a book is shelved on first open)
+  — saves library and settings independently, and rebuilds the carousel; a book open in the current
+  session stays open. **Clear cover cache** deletes the on-disk thumbnail/cover files via
+  `ThumbnailCache::clear` (best-effort, like `prune`: non-recursive, no symlink-follow, owned
+  `*.png` / `.*.tmp` only, missing dir → zero report) and reports the file count + reclaimed bytes.
+  Both surface localized feedback through a transient in-dialog status line (`data-action-status`),
+  reset on dialog open, no timer. See [docs/patterns.md](patterns.md).
+- **Private Mode was explored and fully prototyped, then DROPPED by user decision.** A book add in
+  gashuu is explicit curation, not a passive reading trace, so the privacy model did not fit; only
+  the two cleanup controls above survived. No new dependencies.
+- **Implemented on branch `refactor/add_private_mode`, pending merge** (not yet shipped on `main`).
+
 ---
 
 ## Deferred (intentionally out of scope)

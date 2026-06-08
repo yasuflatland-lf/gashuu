@@ -132,6 +132,35 @@ impl ThumbnailCache {
             .count()
     }
 
+    /// Clear every top-level file owned by this cache directory and report what
+    /// was actually removed.
+    ///
+    /// Missing or unreadable cache directories are treated as empty, matching
+    /// [`prune`](Self::prune)'s best-effort cleanup style. The sweep never
+    /// recurses and only unlinks regular files whose names match the patterns
+    /// this cache writes: `*.png` thumbnails and `.*.tmp` interrupted writes.
+    pub fn clear(&self) -> ClearCacheReport {
+        let mut report = ClearCacheReport::default();
+        let Ok(entries) = std::fs::read_dir(&self.dir) else {
+            return report;
+        };
+
+        for entry in entries.flatten() {
+            let Ok(meta) = entry.path().symlink_metadata() else {
+                continue;
+            };
+            if !meta.is_file() || !is_owned_cache_file_name(&entry.file_name()) {
+                continue;
+            }
+            if std::fs::remove_file(entry.path()).is_ok() {
+                report.removed_files += 1;
+                report.removed_bytes += meta.len();
+            }
+        }
+
+        report
+    }
+
     /// Sweep the cache directory down to `max_bytes` of stored `*.png` payload,
     /// evicting in ascending `(mtime, file name)` order — oldest first, the name
     /// as a deterministic tie-break. `get` refreshes a hit's mtime, so this order
@@ -217,6 +246,21 @@ impl ThumbnailCache {
     }
 }
 
+fn is_owned_cache_file_name(name: &std::ffi::OsStr) -> bool {
+    let lossy = name.to_string_lossy();
+    lossy.ends_with(".png") || (lossy.starts_with('.') && lossy.ends_with(".tmp"))
+}
+
+/// Result of one [`ThumbnailCache::clear`] sweep. The cache is best-effort:
+/// these counts describe entries actually unlinked, not merely discovered.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ClearCacheReport {
+    /// Cache-owned files actually unlinked by the clear operation.
+    pub removed_files: usize,
+    /// Sum of the unlinked files' sizes, in bytes.
+    pub removed_bytes: u64,
+}
+
 /// Result of one [`ThumbnailCache::prune`] sweep. A named struct (not a tuple)
 /// so call sites read; the caller (UI) logs these — core stays log-free.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -232,7 +276,7 @@ pub struct PruneReport {
 
 #[cfg(test)]
 mod tests {
-    use super::{cache_key, PruneReport, ThumbnailCache};
+    use super::{cache_key, ClearCacheReport, PruneReport, ThumbnailCache};
     use crate::image_ops::DecodedImage;
     use std::path::Path;
     use tempfile::tempdir;
@@ -472,6 +516,66 @@ mod tests {
         assert!(
             cache.get(&key).is_some(),
             "the seeded cover is left intact when no sides are requested"
+        );
+    }
+
+    #[test]
+    fn clear_missing_dir_returns_zero_report() {
+        let dir = tempdir().unwrap();
+        let cache = ThumbnailCache::with_dir(dir.path().join("never_created"));
+
+        let report = cache.clear();
+
+        assert_eq!(
+            report,
+            ClearCacheReport::default(),
+            "missing cache dir clears successfully with a zero report"
+        );
+    }
+
+    #[test]
+    fn clear_removes_owned_cache_files_and_reports_them() {
+        let dir = tempdir().unwrap();
+        let cache = ThumbnailCache::with_dir(dir.path().to_path_buf());
+        cache.put("aaaa", &tiny_decoded_image()).expect("seed png");
+        cache.put("bbbb", &tiny_decoded_image()).expect("seed png");
+        let tmp = dir.path().join(".cccc.tmp");
+        std::fs::write(&tmp, b"interrupted cache write").unwrap();
+        let expected_bytes = png_size(dir.path(), "aaaa")
+            + png_size(dir.path(), "bbbb")
+            + tmp.metadata().unwrap().len();
+
+        let report = cache.clear();
+
+        assert_eq!(report.removed_files, 3);
+        assert_eq!(report.removed_bytes, expected_bytes);
+        assert!(cache.get("aaaa").is_none());
+        assert!(cache.get("bbbb").is_none());
+        assert!(!tmp.exists(), "cache temp files are owned entries too");
+    }
+
+    #[test]
+    fn clear_keeps_foreign_files_and_nested_entries() {
+        let dir = tempdir().unwrap();
+        let cache = ThumbnailCache::with_dir(dir.path().to_path_buf());
+        cache.put("aaaa", &tiny_decoded_image()).expect("seed png");
+        let stray = dir.path().join("README.txt");
+        std::fs::write(&stray, b"not a cache entry").unwrap();
+        let nested = dir.path().join("nested");
+        std::fs::create_dir(&nested).unwrap();
+        let nested_png = nested.join("inside.png");
+        std::fs::write(&nested_png, b"nested foreign content").unwrap();
+
+        let report = cache.clear();
+
+        assert_eq!(
+            report.removed_files, 1,
+            "only the top-level owned png is removed"
+        );
+        assert!(stray.exists(), "foreign files in the cache dir survive");
+        assert!(
+            nested_png.exists(),
+            "clear does not recurse into directories"
         );
     }
 
