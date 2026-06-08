@@ -7,6 +7,7 @@
 //! logging-free: load-failure recovery (including corrupt files) lives in the
 //! presentation layer.
 
+use crate::archive_loader::ArchivePolicy;
 use crate::cache::{DEFAULT_CAPACITY, DEFAULT_PREFETCH_RADIUS};
 use crate::cache_config::CacheConfig;
 use crate::error::CoreError;
@@ -230,6 +231,13 @@ impl Settings {
         }
         std::fs::write(path, self.to_json()?)?;
         Ok(())
+    }
+
+    /// Derive the archive-open policy from these settings.
+    pub fn archive_policy(&self) -> ArchivePolicy {
+        ArchivePolicy {
+            allow_rar: self.allow_rar_archives,
+        }
     }
 
     /// Serialize to pretty JSON (also used by the snapshot test).

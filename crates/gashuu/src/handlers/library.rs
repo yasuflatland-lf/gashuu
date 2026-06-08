@@ -14,7 +14,7 @@ use crate::{
 };
 use crate::{viewer_state::ViewerState, viewport::ViewportState};
 use app::SkippedDetail;
-use gashuu_core::{ArchivePolicy, Library, Settings};
+use gashuu_core::{Library, Settings};
 use slint::ComponentHandle;
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -160,9 +160,7 @@ pub(crate) fn wire_open_handlers(
                 let Some(paths) = picked else {
                     return;
                 };
-                let policy = ArchivePolicy {
-                    allow_rar: settings.borrow().allow_rar_archives,
-                };
+                let policy = settings.borrow().archive_policy();
                 add_books_and_refresh(
                     &ui,
                     &CarouselRefresh {
@@ -199,9 +197,7 @@ pub(crate) fn wire_open_handlers(
                 let Some(folder) = rfd::FileDialog::new().pick_folder() else {
                     return;
                 };
-                let policy = ArchivePolicy {
-                    allow_rar: settings.borrow().allow_rar_archives,
-                };
+                let policy = settings.borrow().archive_policy();
                 add_books_and_refresh(
                     &ui,
                     &CarouselRefresh {

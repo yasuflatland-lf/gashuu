@@ -161,9 +161,7 @@ impl OpenBookUseCase {
         // `Ok` arm reads `state` again (a borrow held across the match would
         // double-borrow-panic at the `canonical = state.borrow().open_file()...` read
         // below).
-        let policy = gashuu_core::ArchivePolicy {
-            allow_rar: settings.borrow().allow_rar_archives,
-        };
+        let policy = settings.borrow().archive_policy();
         let opened = state.borrow_mut().open_folder_with_policy(path, policy);
         // Discriminate the open result only — the recents push + settings save are
         // DEFERRED until after the empty-book check below, so a zero-page source

@@ -504,6 +504,8 @@ impl CoverController {
                 // Cover is cached but the page count may still be unknown —
                 // resolve it with one archive open so the row shows "1 / N".
                 if req.needs_count && !cancel.load(Relaxed) {
+                    // TODO(#175-followup): use open_with_policy once ArchivePolicy
+                    // is threaded through CoverRequest / CarouselRefresh.
                     let open_result = ArchiveLoader::open(&req.path);
                     match &open_result {
                         Ok(source) => {
@@ -540,6 +542,8 @@ impl CoverController {
             // generations. An UNAVAILABLE (file-gone) book also lands here, but
             // its card renders the distinct broken-cover treatment regardless —
             // the flag is set yet never consulted (the two states stay separate).
+            // TODO(#175-followup): use open_with_policy once ArchivePolicy
+            // is threaded through CoverRequest / CarouselRefresh.
             let open_result = ArchiveLoader::open(&req.path);
             let source = match open_result {
                 Ok(s) => s,

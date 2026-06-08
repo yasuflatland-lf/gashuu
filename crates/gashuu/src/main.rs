@@ -559,6 +559,14 @@ fn add_paths(
                 skipped += 1;
                 tracing::debug!(path = %path.display(), "skipping empty source (no image pages)");
             }
+            Err(CoreError::FormatDisabled { format }) => {
+                skipped += 1;
+                tracing::info!(
+                    path = %path.display(),
+                    %format,
+                    "skipping source: format disabled in safer mode"
+                );
+            }
             Err(e) => {
                 skipped += 1;
                 tracing::warn!(error = %e, path = %path.display(), "skipping unreadable source");
@@ -1318,6 +1326,24 @@ mod tests {
             select_add_notice(0, 3),
             AddNotice::NoneAddedAllSkipped { skipped: 3 }
         );
+    }
+
+    #[test]
+    fn add_paths_rar_blocked_by_policy_is_skipped_not_added() {
+        // A .cbr file is rejected at probe time when allow_rar=false; it must be
+        // counted as skipped, not added, and must not enter the library.
+        let root = tempfile::tempdir().expect("tempdir");
+        let cbr = root.path().join("manga.cbr");
+        // Extension check fires before any bytes are read; any content works.
+        std::fs::write(&cbr, b"dummy").expect("write dummy cbr");
+
+        let mut lib = gashuu_core::Library::new();
+        let policy = ArchivePolicy { allow_rar: false };
+        let report = add_paths(&mut lib, vec![cbr], policy);
+
+        assert!(report.added.is_empty(), "blocked RAR must never be added");
+        assert_eq!(report.skipped, 1, "blocked RAR must be counted as skipped");
+        assert_eq!(lib.books().len(), 0);
     }
 
     #[test]
