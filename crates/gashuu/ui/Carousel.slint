@@ -574,6 +574,49 @@ export component Carousel inherits Rectangle {
               }
           }
 
+          // ── Two-finger horizontal swipe → one-step book move ──────────────
+          // Trackpad horizontal scroll (delta-x) steps the focus by one book,
+          // reusing the SAME move(±1) the Left/Right keys fire. Discrete by
+          // design (matches the codebase's keyboard-first model): accumulate
+          // delta-x, and once |accum| crosses `swipe-threshold` fire ONE move,
+          // then a cooldown Timer swallows the macOS momentum-phase tail so one
+          // flick never flies through several books. This TouchArea is the
+          // ANCESTOR of the cover + step-zone TouchAreas: a cover's scroll-event
+          // has no handler, so it rejects and the wheel event bubbles UP to here
+          // (vendored i-slint-core 1.16.1 input_items.rs: Reject -> EventIgnored
+          // -> ancestor), while pointer CLICKS are still grabbed by the
+          // front-most cover/zone so this wrapper never steals a tap. The sign
+          // maps delta-x straight to physical direction (no OS natural-scroll
+          // double-negation); flip the `> 0 ? 1 : -1` if a device reads inverted.
+          TouchArea {
+              width: 100%;
+              height: 100%;
+              property <length> swipe-threshold: 25px;   // lower = more sensitive
+              property <float> swipe-accum: 0;
+              property <bool> swipe-cooling: false;
+              Timer {
+                  interval: 100ms;   // shorter = higher top speed on a sustained swipe
+                  running: parent.swipe-cooling;
+                  triggered => { parent.swipe-cooling = false; }
+              }
+              scroll-event(e) => {
+                  // Selection mode owns horizontal input for its own affordances.
+                  if (root.selection-mode) { return reject; }
+                  // Dominant-axis gate (1.2x margin): near-horizontal only, so a
+                  // diagonal/vertical scroll rejects and bubbles past (no-op here).
+                  if (Math.abs(e.delta-x / 1px) <= Math.abs(e.delta-y / 1px) * 1.2) {
+                      return reject;
+                  }
+                  if (self.swipe-cooling) { return accept; }
+                  self.swipe-accum += e.delta-x / 1px;
+                  if (Math.abs(self.swipe-accum) >= self.swipe-threshold / 1px) {
+                      root.move(self.swipe-accum > 0 ? 1 : -1);
+                      self.swipe-accum = 0;
+                      self.swipe-cooling = true;
+                  }
+                  return accept;
+              }
+
           // ── Cover-flow row (>= 1 book) ───────────────────────────────────────
           if root.items.length > 0 : Rectangle {
               width: 100%;
@@ -735,6 +778,8 @@ export component Carousel inherits Rectangle {
                   }
               }
           }
+          }
+
     }
 
     // ── Top glass-pill nav (#83): centered, icon-only twin capsules. ──────────

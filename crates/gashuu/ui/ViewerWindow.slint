@@ -414,6 +414,15 @@ export component ViewerWindow inherits Window {
                             root.nav(tx < self.width / 2 ? "left" : "right");
                         }
                     }
+                    // Two-finger horizontal swipe: routes its physical-direction
+                    // token into the SAME nav() seam as tap-to-turn / arrow keys,
+                    // so keymap.rs resolves reading direction once. Same modal
+                    // guard as tapped (belt-and-braces under an overlay).
+                    page-swipe(dir) => {
+                        if (!root.show-settings && !root.show-guide && !root.show-shortcuts) {
+                            root.nav(dir);
+                        }
+                    }
                 }
             }
 
