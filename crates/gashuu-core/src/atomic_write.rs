@@ -7,8 +7,9 @@
 //! new bytes to a temporary file in the SAME directory, fsyncs them to disk, and
 //! then atomically renames it over the target. The rename either fully replaces
 //! the previous contents or does nothing, so a reader never observes a partial
-//! file. The temp file shares the target's directory so the rename stays on one
-//! filesystem (cross-device renames are not atomic and would fail).
+//! file. The temp file is created in the same directory as the target so the
+//! rename stays on a single filesystem; cross-device renames would fail with
+//! `EXDEV`.
 //!
 //! This module owns parent-directory creation, so call sites must NOT also call
 //! `create_dir_all` for the target's parent (single owner of that invariant).
@@ -30,13 +31,12 @@ pub(crate) fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), CoreError> {
 
     let mut tmp = tempfile::NamedTempFile::new_in(parent)?;
     tmp.write_all(bytes)?;
+    // Defensive flush before fsync (no-op for NamedTempFile but harmless).
     tmp.flush()?;
     tmp.as_file().sync_all()?;
 
-    // `persist` consumes the temp file and renames it over `path`. On error it
-    // returns a `PersistError` whose `.error` is the underlying `io::Error`; map
-    // that into `CoreError::Io` so callers see a uniform error type. (The dropped
-    // temp file is cleaned up by `tempfile` on failure.)
+    // Rename the temp file over `path`. `PersistError` wraps the underlying
+    // `io::Error`; extract it so callers see a uniform `CoreError::Io`.
     tmp.persist(path).map_err(|e| CoreError::Io(e.error))?;
 
     // Best-effort: fsync the directory so the rename is durable across a crash.
@@ -92,5 +92,17 @@ mod tests {
             1,
             "only the target file should remain, found: {entries:?}"
         );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn returns_io_error_for_read_only_directory() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let ro = dir.path().join("ro");
+        std::fs::create_dir(&ro).unwrap();
+        std::fs::set_permissions(&ro, std::fs::Permissions::from_mode(0o555)).unwrap();
+        let result = write_atomic(&ro.join("out.json"), b"x");
+        assert!(matches!(result, Err(CoreError::Io(_))));
     }
 }

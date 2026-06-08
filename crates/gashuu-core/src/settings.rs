@@ -225,9 +225,8 @@ impl Settings {
         self.save_to(&Self::config_path()?)
     }
 
+    /// Atomically write the settings to `path`, creating parent directories as needed.
     pub fn save_to(&self, path: &Path) -> Result<(), CoreError> {
-        // `write_atomic` owns parent-directory creation and crash-safe replacement
-        // (temp file + fsync + rename), so this call site does neither itself.
         crate::atomic_write::write_atomic(path, self.to_json()?.as_bytes())
     }
 

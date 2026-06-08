@@ -34,9 +34,8 @@ impl Library {
         self.save_to(&Self::data_path()?)
     }
 
+    /// Atomically write the library to `path`, creating parent directories as needed.
     pub fn save_to(&self, path: &Path) -> Result<(), CoreError> {
-        // `write_atomic` owns parent-directory creation and crash-safe replacement
-        // (temp file + fsync + rename), so this call site does neither itself.
         crate::atomic_write::write_atomic(path, self.to_json()?.as_bytes())
     }
 
@@ -435,6 +434,28 @@ mod tests {
             loaded.last_opened(),
             Some(Path::new("/manga/a.cbz")),
             "last_opened must survive save/load"
+        );
+    }
+
+    #[test]
+    fn save_to_preserves_last_opened() {
+        // Verify that last_opened survives a full save_to → load_from round-trip.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("library.json");
+        let book = PathBuf::from("/manga/vol1.cbz");
+        let mut lib = Library::new();
+        assert!(lib.add(book.clone()).is_some());
+        lib.register_opened(&book, None);
+        // last_opened is set before saving.
+        assert_eq!(lib.last_opened(), Some(Path::new("/manga/vol1.cbz")));
+
+        lib.save_to(&path).unwrap();
+        let loaded = Library::load_from(&path).unwrap();
+
+        assert_eq!(
+            loaded.last_opened(),
+            Some(Path::new("/manga/vol1.cbz")),
+            "last_opened must survive save_to/load_from"
         );
     }
 
