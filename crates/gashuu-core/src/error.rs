@@ -49,8 +49,8 @@ pub enum CoreError {
     #[error("archive error: {0}")]
     Zip(#[from] ::zip::result::ZipError),
 
-    /// An archive entry's data exceeded the per-file size ceiling on read.
-    #[error("archive entry too large: {name} exceeds {max} bytes")]
+    /// An entry's data exceeded the per-file size ceiling on read.
+    #[error("entry too large: {name} exceeds {max} bytes")]
     EntryTooLarge { name: String, max: u64 },
 
     /// The path is neither a directory nor a recognized archive.
@@ -139,10 +139,7 @@ mod tests {
             name: "p.png".into(),
             max: 10,
         };
-        assert_eq!(
-            err.to_string(),
-            "archive entry too large: p.png exceeds 10 bytes"
-        );
+        assert_eq!(err.to_string(), "entry too large: p.png exceeds 10 bytes");
     }
 
     #[test]
