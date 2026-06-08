@@ -3,7 +3,7 @@
 // deliberately dropped; φ now lives in the component proportions instead:
 // toggle track ratio, the 8/14/22 spacing ladder, segment padding).
 //
-// Form factor: 360px wide, height hugging header + body + footer, radius 21px
+// Form factor: 377px wide, height hugging header + body + footer, radius 21px
 // (shares NavBar's glass corner language), height CLAMPED to
 // min(content, window.height − 2·space-huge) so a short window scrolls the
 // body instead of overflowing (Marcotte). The panel is ONE fake-glass object —
@@ -320,7 +320,7 @@ export component SettingsDialog inherits Rectangle {
                                 horizontal-alignment: left;
                             }
                             SettingRow {
-                                // One of the longest labels — it helped size settings-label-col.
+                                // A long label, but the Japanese settings-allow-rar-label below is the column-sizing driver.
                                 label: Strings.settings-cache-label;
                                 trailing: true;
                                 Stepper {
@@ -467,7 +467,7 @@ export component SettingsDialog inherits Rectangle {
                     // Shortcuts (docs/patterns.md). `space-between` would
                     // scatter 3+ items instead of grouping Reset with Close. The
                     // Reset button only appears in the per-book (viewer)
-                    // context; the 360px panel minus the two space-xl gutters
+                    // context; the 377px panel minus the two space-xl gutters
                     // cannot fit the full "Reset to global defaults" label
                     // beside Shortcuts and Close on one line, so the label is
                     // shortened to "Reset to global" (the accessible-label
