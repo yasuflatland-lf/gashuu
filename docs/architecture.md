@@ -20,7 +20,8 @@ prefetch. `skipped_count(&self)->usize` is a TRAIT method — default `0`, overr
 it uniformly and `MockPageSource`/future sources need no change.
 
 See [ADR-0004](ADRs/0004-archive-abstraction-and-extraction.md) for the `PageSource` abstraction
-decision.
+decision. See [ADR-0011](ADRs/0011-decoder-subprocess-isolation.md) for the planned subprocess
+isolation of RAR/CBR and AVIF decoders.
 
 ### FolderSource
 
