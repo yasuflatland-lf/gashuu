@@ -24,6 +24,7 @@ settings-section-reading = 読み方
 settings-section-display = 表示
 settings-section-performance = パフォーマンス
 settings-section-general = 一般
+settings-section-data = データ
 
 # Reading section — Direction row
 settings-direction-label = 方向

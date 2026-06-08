@@ -719,10 +719,20 @@ to fit and the **body scrolls** (see Responsive Behavior).
   (Stepper — width-equalized — Toggle, and the Language pull-down) trail on the rail (macOS System
   Settings). Row height 34px; the 30px control atom centers within it; row pitch 48px ≈
   controlHeight × φ.
-- **Sections**: Reading / Display / Performance / General, delineated by whitespace (22px ≈ Fib 21).
+- **Sections**: Reading / Display / Performance / General / Data, delineated by whitespace (22px ≈ Fib 21).
   Section headers are `{colors.text-dim}` **sentence-case semibold eyebrows** — smaller than the row
   labels on purpose (Apple grouped-list IA: hierarchy via position/whitespace/color, weight marks the
   header species) — NOT accent (accent stays interactive/selected-only).
+- **Data section**: the data-clearing utilities — "Clear reading history" and "Clear cover cache" — live
+  in their own **"データ" (Data)** section after General, **not** mixed into the General rows. The two
+  `button-secondary` (neutral bordered) buttons **stack VERTICALLY, FULL-WIDTH** (each fills the body
+  content width via a call-site `horizontal-stretch`), separated by `{spacing.sm}` (8px), so the long
+  Japanese labels each sit on one line and the pair reads as one cohesive cleanup group. The section
+  reuses the standard eyebrow + `{spacing.xxl}` inter-section gap pattern with **no divider line** and
+  **no new visual element**. Weight stays neutral (chip fill + hairline-float ring, white label) —
+  deliberately **NOT** the affirmative accent of `button-primary` nor the destructive `{colors.danger}`
+  of `button-danger`: a data-clearing utility reads as neither, so the **"red is scarce"** doctrine
+  stays intact.
 - **Footer**: both-ends (HIG) — "⌨ Shortcuts" on the left edge, (Reset to global +) Close hard
   right, all on one shared vertical centerline; `{spacing.xl}` horizontal / `{spacing.lg}` vertical
   padding (18 / 14 ≈ Fib 13 — the same ladder rung as the row gap, so the footer breathes on the

@@ -144,6 +144,7 @@ impl Localizer {
             fl!(self.loader, "settings-section-performance").into(),
         );
         strings.set_settings_section_general(fl!(self.loader, "settings-section-general").into());
+        strings.set_settings_section_data(fl!(self.loader, "settings-section-data").into());
         strings.set_settings_direction_label(fl!(self.loader, "settings-direction-label").into());
         strings.set_settings_direction_ltr(fl!(self.loader, "settings-direction-ltr").into());
         strings.set_settings_direction_rtl(fl!(self.loader, "settings-direction-rtl").into());

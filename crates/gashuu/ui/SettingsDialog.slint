@@ -414,29 +414,48 @@ export component SettingsDialog inherits Rectangle {
                                     }
                                 }
                             }
+                        }
+
+                        // ── Section: Data ─────────────────────────────────────────
+                        // The data-clearing utilities, promoted out of General into
+                        // their own section (spec 2026-06-08). Reuses the exact section
+                        // pattern (eyebrow + the space-xxl inter-section gap from the
+                        // parent layout; NO divider line). The two SecondaryButtons
+                        // stack VERTICALLY and FULL-WIDTH so the long Japanese labels
+                        // each sit on one line and the pair reads as one cohesive group.
+                        VerticalLayout {
+                            spacing: Theme.space-lg;
+                            Text {
+                                text: Strings.settings-section-data;
+                                font-size: Theme.font-label;
+                                font-weight: Theme.weight-semibold;
+                                color: Theme.text-dim;
+                                horizontal-alignment: left;
+                            }
                             // Clear actions: immediate (no confirmation), status feedback
                             // is surfaced via data-action-status. These are data-clearing
                             // utilities, so they use the LOW-PROMINENCE bordered-neutral
                             // SecondaryButton (HIG; NOT the affirmative accent PrimaryButton,
-                            // and deliberately NOT red — danger stays scarce). The pair
-                            // groups left so the cleanup cluster stays cohesive (HIG); the
-                            // trailing spacer keeps them from stretching across the wider
-                            // dialog.
-                            HorizontalLayout {
-                                spacing: Theme.space-md;
+                            // and deliberately NOT red — danger stays scarce). Full-width is
+                            // achieved at the call site via horizontal-stretch (overrides
+                            // SecondaryButton's own horizontal-stretch: 0), leaving the
+                            // component untouched; space-sm separates the stacked buttons.
+                            VerticalLayout {
+                                spacing: Theme.space-sm;
                                 SecondaryButton {
+                                    horizontal-stretch: 1;
                                     text: Strings.settings-clear-history-label;
                                     clicked => {
                                         root.clear-reading-history();
                                     }
                                 }
                                 SecondaryButton {
+                                    horizontal-stretch: 1;
                                     text: Strings.settings-clear-cache-label;
                                     clicked => {
                                         root.clear-cover-cache();
                                     }
                                 }
-                                Rectangle { horizontal-stretch: 1; }
                             }
                             // Transient feedback line for clear-history / clear-cache
                             // actions. Hidden when empty to avoid layout slack.

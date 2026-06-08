@@ -21,6 +21,7 @@ settings-section-reading = Reading
 settings-section-display = Display
 settings-section-performance = Performance
 settings-section-general = General
+settings-section-data = Data
 
 # Reading section — Direction row
 settings-direction-label = Direction
