@@ -175,6 +175,16 @@ impl Library {
         self.last_opened.as_deref()
     }
 
+    /// Clear all persisted reading-library state. Returns `true` when either
+    /// shelved books or `last_opened` changed, so callers can skip a save for an
+    /// already-empty library.
+    pub fn clear(&mut self) -> bool {
+        let changed = !self.books.is_empty() || self.last_opened.is_some();
+        self.books.clear();
+        self.last_opened = None;
+        changed
+    }
+
     /// The resume target: `last_opened` only when that path is still a shelved
     /// book. This is the single home of the "resume target must be a shelved
     /// book" rule, so callers need not re-derive it by scanning `books`. The
@@ -521,6 +531,35 @@ mod tests {
     fn new_library_is_empty() {
         let lib = Library::new();
         assert!(lib.books().is_empty());
+    }
+
+    #[test]
+    fn clear_empty_library_returns_false() {
+        let mut lib = Library::new();
+
+        assert!(
+            !lib.clear(),
+            "clearing an already-empty library changes no persisted state"
+        );
+        assert!(lib.books().is_empty());
+        assert_eq!(lib.last_opened(), None);
+    }
+
+    #[test]
+    fn clear_non_empty_library_removes_books_and_last_opened() {
+        let mut lib = Library::new();
+        let first = PathBuf::from("/manga/a.cbz");
+        let second = PathBuf::from("/manga/b.cbz");
+        assert!(lib.add(first.clone()).is_some());
+        assert!(lib.add(second.clone()).is_some());
+        lib.register_opened(&second, NonZeroUsize::new(24));
+
+        assert!(
+            lib.clear(),
+            "clearing a populated library changes persisted state"
+        );
+        assert!(lib.books().is_empty(), "all books are removed");
+        assert_eq!(lib.last_opened(), None, "last_opened is cleared");
     }
 
     #[test]
