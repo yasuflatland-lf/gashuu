@@ -118,26 +118,34 @@ export component Segmented inherits Rectangle {
             accessible-item-selected: idx == root.current-index;
             accessible-action-default => { root.pick(idx); }
 
-            Text {
+            // Symmetric horizontal breathing room so a label never crowds the
+            // cell's rounded ends. `Text` has no `padding`, so the inset lives on
+            // a wrapping HorizontalLayout; the Text keeps its full centered span
+            // and the y:1px optical nudge inside it.
+            HorizontalLayout {
                 width: 100%;
                 height: 100%;
-                // Optical centering: Slint's vertical-alignment centers the
-                // font's FULL line box (ascent + descent), but these labels
-                // have no descenders, so the glyph mass sits ~1px high of the
-                // pill's visual center (measured 7px above vs 9px below the
-                // caps). Nudge down half the 12px font's descent so the
-                // GLYPHS — not the em box — read centered (Apple optically
-                // centers control labels the same way).
-                y: 1px;
-                text: item;
-                horizontal-alignment: center;
-                vertical-alignment: center;
-                // Selected = white + semibold; idle = muted + regular. Color only
-                // (no opacity wrapper) so the glyphs stay crisp on HiDPI.
-                color: idx == root.current-index ? Theme.text : Theme.text-muted;
-                font-size: Theme.font-label;
-                font-weight: idx == root.current-index ? Theme.weight-semibold : Theme.weight-regular;
-                animate color { duration: Theme.motion-fast; }
+                padding-left: Theme.seg-label-pad;
+                padding-right: Theme.seg-label-pad;
+                Text {
+                    // Optical centering: Slint's vertical-alignment centers the
+                    // font's FULL line box (ascent + descent), but these labels
+                    // have no descenders, so the glyph mass sits ~1px high of the
+                    // pill's visual center (measured 7px above vs 9px below the
+                    // caps). Nudge down half the 12px font's descent so the
+                    // GLYPHS — not the em box — read centered (Apple optically
+                    // centers control labels the same way).
+                    y: 1px;
+                    text: item;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                    // Selected = white + semibold; idle = muted + regular. Color only
+                    // (no opacity wrapper) so the glyphs stay crisp on HiDPI.
+                    color: idx == root.current-index ? Theme.text : Theme.text-muted;
+                    font-size: Theme.font-label;
+                    font-weight: idx == root.current-index ? Theme.weight-semibold : Theme.weight-regular;
+                    animate color { duration: Theme.motion-fast; }
+                }
             }
 
             TouchArea {

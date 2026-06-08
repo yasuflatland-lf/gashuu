@@ -1,0 +1,99 @@
+// SecondaryButton — DESIGN.md `components.button-secondary`
+//
+// The bordered NEUTRAL push button: Apple's HIG-standard low-prominence style for
+// settings utilities (e.g. macOS "Clear History…"). A geometry clone of
+// PrimaryButton — same min-height, radius, padding, font and alignment — but a
+// restrained palette instead of the accent ground, so a data-clearing action does
+// NOT read as an affirmative/primary call-to-action. Deliberately NOT red:
+// DESIGN.md reserves `danger`/DangerButton as scarce, destructive-only chrome.
+//
+// Background : Theme.chip            (the "bordered button at rest" fill)
+// Border     : 1px Theme.hairline-float (the bordered-button ring)
+// Corner     : Theme.radius-md (8px)
+// Padding    : 16px vertical total, split 9 top / 7 bottom for optical
+//              centering / 16px horizontal (size to label + padding)
+// Label      : Theme.font-label (12px), Theme.weight-medium (500), Theme.text (white)
+// Hover      : fill brightens slightly via .brighter(0.06) + border brightens
+// Press      : fill darkens slightly via .darker(0.08)
+// Restrained — no glow ring (that emphasis is reserved for accent/danger buttons).
+// All colors are routed through Theme — no raw hex inline.
+// Accessibility: role/label/action-default mirror DangerButton's hooks so the
+// visible label becomes the screen-reader name.
+
+import { Theme } from "../Theme.slint";
+
+export component SecondaryButton inherits Rectangle {
+    // ── Public API (drop-in sibling of PrimaryButton) ───────────────────────────
+    in property <string> text;
+    callback clicked;
+
+    // ── Sizing: label + 16px horizontal / 8px vertical padding ───────────────
+    // The root Rectangle sizes itself to its content (HorizontalLayout min-size
+    // drives width; explicit padding drives height via the layout's padding).
+    // A min-height of 32px satisfies the DESIGN >= 32px hit-area requirement and
+    // matches PrimaryButton exactly.
+    min-height: 32px;
+    horizontal-stretch: 0;
+    vertical-stretch: 0;
+
+    // ── Default appearance: bordered neutral (chip fill + hairline ring) ─────
+    background: Theme.chip;
+    border-radius: Theme.radius-md;
+    border-width: 1px;
+    border-color: Theme.hairline-float;
+
+    animate background { duration: Theme.motion-fast; }
+    animate border-color { duration: Theme.motion-fast; }
+
+    // ── States: hover brightens, press darkens — restrained, no glow ─────────
+    // Priority: pressed > hover (Slint evaluates first matching state wins, so
+    // list pressed before hover — same ordering used by PrimaryButton / NavItem).
+    states [
+        pressed when touch.pressed : {
+            root.background: Theme.chip.darker(0.08);
+            root.border-color: Theme.hairline-float;
+        }
+        hover when touch.has-hover : {
+            root.background: Theme.chip.brighter(0.06);
+            root.border-color: Theme.hairline-float.brighter(0.10);
+        }
+    ]
+
+    // ── Label ─────────────────────────────────────────────────────────────────
+    HorizontalLayout {
+        padding-left: 16px;
+        padding-right: 16px;
+        // Optical centering (same correction as PrimaryButton / the Segmented
+        // labels): Slint metric-centers the full font line box, which sits a
+        // descender-less label ~1px high of the button's visual center. The label
+        // is a layout child whose y the LAYOUT owns, so the nudge lives in an
+        // asymmetric vertical-padding split (9/7 — the 16px total is unchanged),
+        // not a `y:` binding (docs/patterns.md optical-centering entry).
+        padding-top: 9px;
+        padding-bottom: 7px;
+        alignment: center;
+
+        Text {
+            text: root.text;
+            color: Theme.text;
+            font-size: Theme.font-label;
+            font-weight: Theme.weight-medium;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+        }
+    }
+
+    // ── Accessibility ─────────────────────────────────────────────────────────
+    accessible-role: button;
+    accessible-label: root.text;
+    // Let a screen-reader activation gesture fire the same callback as a click.
+    accessible-action-default => { root.clicked(); }
+
+    // ── Interaction ───────────────────────────────────────────────────────────
+    // TouchArea is non-focusable in Slint — it does NOT steal keyboard focus
+    // from any FocusScope in the parent hierarchy (established pattern, see
+    // docs/patterns.md "TouchArea click focus recovery").
+    touch := TouchArea {
+        clicked => { root.clicked(); }
+    }
+}

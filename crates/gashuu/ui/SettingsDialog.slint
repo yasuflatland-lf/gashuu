@@ -3,7 +3,8 @@
 // deliberately dropped; φ now lives in the component proportions instead:
 // toggle track ratio, the 8/14/22 spacing ladder, segment padding).
 //
-// Form factor: 377px wide, height hugging header + body + footer, radius 21px
+// Form factor: 432px wide (clamped to the window so a narrow window keeps a
+// space-md gutter each side), height hugging header + body + footer, radius 21px
 // (shares NavBar's glass corner language), height CLAMPED to
 // min(content, window.height − 2·space-huge) so a short window scrolls the
 // body instead of overflowing (Marcotte). The panel is ONE fake-glass object —
@@ -43,6 +44,7 @@ import { Stepper } from "components/Stepper.slint";
 import { Toggle } from "components/Toggle.slint";
 import { Dropdown } from "components/Dropdown.slint";
 import { PrimaryButton } from "components/PrimaryButton.slint";
+import { SecondaryButton } from "components/SecondaryButton.slint";
 
 export component SettingsDialog inherits Rectangle {
     // ── Full-area semi-transparent backdrop ──────────────────────────────────
@@ -124,7 +126,11 @@ export component SettingsDialog inherits Rectangle {
 
     // ── Glass panel ───────────────────────────────────────────────────────────
     panel := Rectangle {
-        width: Theme.settings-w;
+        // Responsive width: shows the full 432px on roomy windows, but never
+        // overflows a narrow one — it shrinks to leave a small space-md gutter
+        // on each side (mirrors the height clamp below, which reads the same
+        // `parent` — the SettingsDialog root that fills the window).
+        width: min(Theme.settings-w, parent.width - 2 * Theme.space-md);
         // Content-hug height inside the Marcotte clamp (spec 2026-06-04): the
         // panel is exactly header + body content + footer tall — no dead slack
         // for the Flickable to absorb — but never taller than the window minus a
@@ -409,21 +415,28 @@ export component SettingsDialog inherits Rectangle {
                                 }
                             }
                             // Clear actions: immediate (no confirmation), status feedback
-                            // is surfaced via data-action-status.
+                            // is surfaced via data-action-status. These are data-clearing
+                            // utilities, so they use the LOW-PROMINENCE bordered-neutral
+                            // SecondaryButton (HIG; NOT the affirmative accent PrimaryButton,
+                            // and deliberately NOT red — danger stays scarce). The pair
+                            // groups left so the cleanup cluster stays cohesive (HIG); the
+                            // trailing spacer keeps them from stretching across the wider
+                            // dialog.
                             HorizontalLayout {
                                 spacing: Theme.space-md;
-                                PrimaryButton {
+                                SecondaryButton {
                                     text: Strings.settings-clear-history-label;
                                     clicked => {
                                         root.clear-reading-history();
                                     }
                                 }
-                                PrimaryButton {
+                                SecondaryButton {
                                     text: Strings.settings-clear-cache-label;
                                     clicked => {
                                         root.clear-cover-cache();
                                     }
                                 }
+                                Rectangle { horizontal-stretch: 1; }
                             }
                             // Transient feedback line for clear-history / clear-cache
                             // actions. Hidden when empty to avoid layout slack.

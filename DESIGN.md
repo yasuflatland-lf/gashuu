@@ -170,6 +170,16 @@ components:
     icon: optional            # leading glyph, 16px (Theme.button-icon), colorize {colors.text};
                               # SUPPLEMENTS the label, never replaces it (destructive-label safety
                               # requirement) — the toolbar delete button passes delete.svg
+  button-secondary:
+    backgroundColor: "{colors.chip}"               # bordered-button-at-rest fill — NOT accent (low prominence)
+    border: "1px solid {colors.hairline-float}"    # the bordered-button ring
+    textColor: "{colors.text}"
+    typography: "{typography.ui-label}"
+    rounded: "{rounded.md}"
+    padding: 8px 16px         # same geometry as button-primary (9/7 optical-centering split)
+    hoverBackground: "{colors.chip}.brighter(0.06)"   # fill brightens subtly; border brightens too
+    pressBackground: "{colors.chip}.darker(0.08)"     # fill darkens subtly
+                              # restrained — NO glow ring (emphasis is reserved for accent/danger)
   # bulk-delete epic — selection chrome. Selection is ALWAYS accent
   # (blue). Red/danger NEVER appears in selection chrome — the delete DangerButton
   # in SelectionToolbar and the ConfirmDialog confirm button are the only red elements.
@@ -250,7 +260,7 @@ components:
     border: "1px solid {colors.hairline}"
     rounded: "{rounded.lg}"
   settings-panel:
-    width: 377px              # Theme.settings-w (377 = Fibonacci; widened from 360px so the label column clears the longest Japanese labels)
+    width: 432px              # Theme.settings-w (432 = 377 + 55, both Fibonacci; widened from 377 so the 3-up segmented cells fit their widest JP label plus the 13px symmetric segLabelPad — the extra width all goes to the control column, labelColumn stays 165). Responsive: SettingsDialog clamps to min(settings-w, window − 2 × {spacing.md}) so a narrow window keeps a gutter each side
     height: content-hug       # header + body + footer; clamps to the window (Marcotte). φ outline dropped 2026-06-04 — φ moved into component proportions (toggle track, spacing ladder)
     rounded: 21px             # Theme.settings-radius = nav-pill-radius (shares NavBar's glass corner language)
     labelColumn: 165px        # Theme.settings-label-col (fixed; sized for the longest label — the Japanese "Allow CBR/RAR archives" ≈ 157px — never wraps/elides)
@@ -260,6 +270,7 @@ components:
     rowGap: "{spacing.lg}"    # 14px ≈ Fib 13 — row pitch 48px ≈ controlHeight × φ
     sectionGap: "{spacing.xxl}" # 22px ≈ Fib 21; also the caption→footer-hairline gap
     segmentRadius: "{rounded.md}"          # Theme.radius-md capsule; selected pill = Theme.seg-cell-radius (md − seg-pill-inset = 5px — consecutive-Fibonacci 3/5/8 concentric: inset → pill radius → capsule radius)
+    segLabelPad: 13px                       # Theme.seg-label-pad — symmetric horizontal label inset per segment cell; extends the concentric Fibonacci triple (inset 3 → pill-radius 5 → capsule-radius 8) to the next rung 13 — the φ-generous inset so a label never crowds the cell's rounded ends (mirrors nav-capsule-pad = nav-capsule/φ)
     toggleTrack: "controlHeight × φ"       # Theme.toggle-track-w ≈ 48.5×30 — Apple's 51×31 switch proportion; track corner = height/2 TRUE capsule (radius-pill would render an ellipse on the non-square track); knob inset 2px; off track {colors.track-prog} (visible on the glass), knob carries a subtle {colors.shadow-popover} depth shadow
     scrollIndicatorWidth: 3px # Theme.settings-scroll-indicator-w (self-drawn, not a std scrollbar)
     dropdownWidth: 140px      # Theme.settings-dropdown-w (fixed so the pull-down capsule doesn't resize across languages)
@@ -270,12 +281,12 @@ components:
     highlight: "{colors.glass-highlight}" # 1px top inner highlight
     shadow: "0 8px 22px {colors.shadow-popover}"  # ONE drop shadow; no second shadow, no nested glass
   shortcuts-overlay:
-    width: 377px              # Theme.settings-w — REUSED, not a new token
+    width: 432px              # Theme.settings-w — REUSED, not a new token
     height: 466px             # Theme.shortcuts-h; fixed, smaller than the settings panel's content-hug height so it reads as a smaller modal stacked over settings
     rounded: 21px             # Theme.settings-radius — REUSED
     # All glass tokens reused from settings-panel above (sheenTop/fill/border/highlight/shadow); no second glass set.
   confirm-dialog:
-    width: 377px              # Theme.settings-w — REUSED; fluid-width clamp: min(settings-w, parent − 2 × space-xl)
+    width: 432px              # Theme.settings-w — REUSED; fluid-width clamp: min(settings-w, parent − 2 × space-xl)
     rounded: 21px             # Theme.settings-radius — REUSED (same NavBar glass corner language)
     # Glass tokens all reused from settings-panel (sheenTop/fill/border/highlight/shadow); no new token set.
     # Body layout tokens (spacing, typography) also reused from settings-panel.
@@ -529,6 +540,20 @@ the WCAG AA contrast floor (≈ 4.91:1) on the dark canvas. On hover/press the g
 `{colors.danger-glow}` ring lights up (a drop-shadow glow symmetric to the accent glow). **Red is scarce:**
 reserve this button — and the `danger` hue — for destructive actions only; selection and "you are here"
 visuals stay `{colors.accent}`.
+
+### Secondary Button — `components.button-secondary`
+The bordered **neutral** push button: Apple's HIG-standard low-prominence style for settings utilities
+(e.g. macOS "Clear History…"). A **geometry clone of `components.button-primary`** — white text,
+`{rounded.md}`, the same 8×16 padding (9 top / 7 bottom optical-centering split), `min-height` 32px — but a
+restrained palette instead of the accent ground: a `{colors.chip}` fill behind a 1px `{colors.hairline-float}`
+ring. On hover the fill brightens subtly (`.brighter(0.06)`) and the ring lightens; on press the fill darkens
+subtly (`.darker(0.08)`). It carries **no glow ring** — that emphasis stays with the accent and danger buttons.
+Used for low-prominence / settings data-clearing actions (the "Clear reading history" and "Clear cover cache"
+buttons in the settings dialog). Contrast it with `button-primary` (the affirmative accent call-to-action) and
+`button-danger` (scarce destructive red): a data-clearing utility should read as neither prominent-affirmative
+nor destructive, so it deliberately **avoids `{colors.accent}` and `{colors.danger}` alike** — the "red is
+scarce" doctrine above stays intact. Carries the a11y hooks (`accessible-role: button`,
+`accessible-label: {text}`, `accessible-action-default`) so its visible label is the screen-reader name.
 
 ### Selection Badge — `components.selection-badge`
 A two-state atom overlaid on a cover while selection mode is active (bulk-delete epic; two-state added in the UI-polish pass). An atom — no interactive state, no callback. Rendered inside `CoverCard` at the top-right corner, inset `{spacing.xs}` from the edges. **Both states share an identical `{spacing.huge}` 26px footprint (`{rounded.pill}`, full circle) — toggling `checked` causes zero size/position jump.**
