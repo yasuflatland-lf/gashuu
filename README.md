@@ -3,7 +3,7 @@
 ## A fast, elegant manga / comic reader built for immersive viewing.
 
 [![CI](https://img.shields.io/github/actions/workflow/status/yasuflatland-lf/gashuu/ci.yml?branch=main&label=CI&logo=github)](https://github.com/yasuflatland-lf/gashuu/actions/workflows/ci.yml)
-[![coverage](https://img.shields.io/codecov/c/github/yasuflatland-lf/gashuu?flag=rust&label=coverage&logo=codecov)](https://codecov.io/gh/yasuflatland-lf/gashuu)
+[![coverage](https://img.shields.io/codecov/c/github/yasuflatland-lf/gashuu/main?flag=rust&label=coverage&logo=codecov)](https://codecov.io/gh/yasuflatland-lf/gashuu)
 
 | Library | Viewer | Settings |
 | :---: | :---: | :---: |
