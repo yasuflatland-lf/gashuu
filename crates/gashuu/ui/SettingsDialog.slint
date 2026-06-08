@@ -71,6 +71,11 @@ export component SettingsDialog inherits Rectangle {
     // True when this dialog edits the CURRENT book's per-book settings (opened
     // from the Viewer): shows the per-book title and the reset-to-global button.
     in property <bool> show-reset-button: false;
+    // Pre-composed feedback for the clear-history / clear-cache actions.
+    // Empty string = no message shown. Rust pushes a transient string; it is
+    // reset to empty the next time the dialog opens (on_open_settings sets it
+    // back to "").
+    in property <string> data-action-status;
 
     // ── Callbacks fired when the user changes a setting ───────────────────────
     callback set-reading-direction(int);
@@ -82,6 +87,10 @@ export component SettingsDialog inherits Rectangle {
     callback set-track-recent(bool);
     callback set-allow-rar-archives(bool);
     callback set-language(int);
+    // Fired immediately when the user clicks "Clear reading history" — no confirmation.
+    callback clear-reading-history();
+    // Fired immediately when the user clicks "Clear cover cache" — no confirmation.
+    callback clear-cover-cache();
     // Fired on Esc, backdrop-click, or the Close button.
     callback close-settings();
     // Fired when the user activates the "Shortcuts" footer link (mouse click,
@@ -398,6 +407,32 @@ export component SettingsDialog inherits Rectangle {
                                         root.set-language(i);
                                     }
                                 }
+                            }
+                            // Clear actions: immediate (no confirmation), status feedback
+                            // is surfaced via data-action-status.
+                            HorizontalLayout {
+                                spacing: Theme.space-md;
+                                PrimaryButton {
+                                    text: Strings.settings-clear-history-label;
+                                    clicked => {
+                                        root.clear-reading-history();
+                                    }
+                                }
+                                PrimaryButton {
+                                    text: Strings.settings-clear-cache-label;
+                                    clicked => {
+                                        root.clear-cover-cache();
+                                    }
+                                }
+                            }
+                            // Transient feedback line for clear-history / clear-cache
+                            // actions. Hidden when empty to avoid layout slack.
+                            if root.data-action-status != "" : Text {
+                                text: root.data-action-status;
+                                font-size: Theme.font-micro;
+                                color: Theme.text-dim;
+                                horizontal-alignment: left;
+                                wrap: word-wrap;
                             }
                         }
                     }
