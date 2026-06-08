@@ -11,7 +11,9 @@ use crate::{
     apply_global_view_to_runtime, persist_view_modes, push_selection_strings, refresh,
     report_save_error, with_ui, ViewModeRoute, ViewerWindow,
 };
-use gashuu_core::{CacheConfig, Library, Settings, ViewOverride};
+use gashuu_core::{
+    CacheConfig, Library, Settings, ViewOverride, MAX_CACHE_SIZE, MAX_PREFETCH_RADIUS,
+};
 use slint::ComponentHandle;
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -343,7 +345,7 @@ pub(crate) fn wire_view_mode_handlers(
         let settings = Rc::clone(&settings);
         // Cache size applies to newly opened books; no refresh of the current view.
         ui.on_set_cache_size(move |v| {
-            let v = (v.max(1)) as usize;
+            let v = (v.max(1) as usize).min(MAX_CACHE_SIZE);
             // Read the current preload while writing cache_size, then mirror both
             // into ViewerState so the next opened book picks up the change this
             // session.
@@ -363,7 +365,7 @@ pub(crate) fn wire_view_mode_handlers(
         // Preload radius applies to newly opened books; no refresh. 0 is a valid
         // "prefetch disabled" radius, so only clamp the negative tail.
         ui.on_set_preload_pages(move |v| {
-            let v = (v.max(0)) as usize;
+            let v = (v.max(0) as usize).min(MAX_PREFETCH_RADIUS);
             let cache_size = {
                 let mut s = settings.borrow_mut();
                 s.preload_pages = v;

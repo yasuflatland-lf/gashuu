@@ -314,7 +314,7 @@ export component SettingsDialog inherits Rectangle {
                                 Stepper {
                                     value <=> root.cache-size;
                                     minimum: 1;
-                                    maximum: 9999;
+                                    maximum: 100;
                                     a11y-label: Strings.settings-cache-a11y;
                                     a11y-decrease-label: Strings.stepper-decrease-cache;
                                     a11y-increase-label: Strings.stepper-increase-cache;
@@ -329,7 +329,7 @@ export component SettingsDialog inherits Rectangle {
                                 Stepper {
                                     value <=> root.preload-pages;
                                     minimum: 0;
-                                    maximum: 99;
+                                    maximum: 5;
                                     a11y-label: Strings.settings-preload-a11y;
                                     a11y-decrease-label: Strings.stepper-decrease-preload;
                                     a11y-increase-label: Strings.stepper-increase-preload;

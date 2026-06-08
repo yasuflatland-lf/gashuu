@@ -1,21 +1,30 @@
 //! Validated cache configuration value object.
 //!
-//! `CacheConfig` wraps the LRU `capacity` (always >= 1) and the prefetch
-//! `radius` (0 means prefetch is disabled, a valid setting). `CacheConfig::new`
-//! is the single place the `capacity >= 1` invariant is enforced, so an invalid
-//! capacity cannot exist downstream. The type is an immutable value object.
+//! `CacheConfig` wraps the LRU `capacity` (always >= 1 and <= MAX_CACHE_SIZE)
+//! and the prefetch `radius` (0 means prefetch is disabled, a valid setting;
+//! clamped to MAX_PREFETCH_RADIUS). `CacheConfig::new` is the single place both
+//! bounds are enforced, so an invalid configuration cannot exist downstream.
+//! The type is an immutable value object.
 
 use crate::cache::{DEFAULT_CAPACITY, DEFAULT_PREFETCH_RADIUS};
 
+/// Hard upper bound for LRU cache capacity accepted by `CacheConfig::new`.
+pub const MAX_CACHE_SIZE: usize = 100;
+
+/// Hard upper bound for prefetch radius accepted by `CacheConfig::new`.
+/// `0` remains a valid "prefetch disabled" value.
+pub const MAX_PREFETCH_RADIUS: usize = 5;
+
 /// Validated, immutable cache configuration.
 ///
-/// Holds the LRU `capacity` (clamped to `>= 1` at construction) and the prefetch
-/// `radius` (`0` disables prefetch). Constructing a `CacheConfig` is the only way
-/// to obtain these values, so downstream consumers can rely on `capacity >= 1`.
+/// Holds the LRU `capacity` (clamped to `[1, MAX_CACHE_SIZE]` at construction)
+/// and the prefetch `radius` (clamped to `[0, MAX_PREFETCH_RADIUS]`; `0`
+/// disables prefetch). Constructing a `CacheConfig` is the only way to obtain
+/// these values, so downstream consumers can rely on the bounds being upheld.
 ///
 /// Intentionally NOT `Deserialize`: deserializing would populate the private
-/// fields directly and bypass `new`'s `capacity >= 1` clamp. Persistence goes
-/// through `Settings`'s raw integer fields plus `Settings::cache_config`.
+/// fields directly and bypass `new`'s clamps. Persistence goes through
+/// `Settings`'s raw integer fields plus `Settings::cache_config`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CacheConfig {
     capacity: usize,
@@ -23,13 +32,12 @@ pub struct CacheConfig {
 }
 
 impl CacheConfig {
-    /// Build a config. `capacity` is clamped to `>= 1` (0 has no meaning for an
-    /// LRU). `radius` is taken verbatim (`0` disables prefetch, a deliberate and
-    /// valid setting).
+    /// Build a config. `capacity` is clamped to `[1, MAX_CACHE_SIZE]`.
+    /// `radius` is clamped to `[0, MAX_PREFETCH_RADIUS]` (`0` disables prefetch).
     pub fn new(capacity: usize, radius: usize) -> Self {
         Self {
-            capacity: capacity.max(1),
-            radius,
+            capacity: capacity.clamp(1, MAX_CACHE_SIZE),
+            radius: radius.min(MAX_PREFETCH_RADIUS),
         }
     }
 
@@ -62,19 +70,37 @@ mod tests {
     }
 
     #[test]
-    fn new_keeps_positive_capacity() {
-        let cfg = CacheConfig::new(42, 5);
+    fn new_keeps_capacity_within_bounds() {
+        let cfg = CacheConfig::new(42, 3);
         assert_eq!(cfg.capacity(), 42);
     }
 
     #[test]
-    fn new_keeps_radius_verbatim_including_zero() {
+    fn new_clamps_capacity_above_max() {
+        let cfg = CacheConfig::new(MAX_CACHE_SIZE + 1, 0);
+        assert_eq!(cfg.capacity(), MAX_CACHE_SIZE);
+    }
+
+    #[test]
+    fn new_clamps_radius_above_max() {
+        let cfg = CacheConfig::new(10, MAX_PREFETCH_RADIUS + 1);
+        assert_eq!(cfg.radius(), MAX_PREFETCH_RADIUS);
+    }
+
+    #[test]
+    fn new_keeps_radius_zero_as_prefetch_disabled() {
         assert_eq!(
             CacheConfig::new(10, 0).radius(),
             0,
             "radius 0 is a valid disabled-prefetch value"
         );
-        assert_eq!(CacheConfig::new(10, 7).radius(), 7);
+    }
+
+    #[test]
+    fn new_clamps_both_to_max_simultaneously() {
+        let cfg = CacheConfig::new(MAX_CACHE_SIZE + 99, MAX_PREFETCH_RADIUS + 99);
+        assert_eq!(cfg.capacity(), MAX_CACHE_SIZE);
+        assert_eq!(cfg.radius(), MAX_PREFETCH_RADIUS);
     }
 
     #[test]

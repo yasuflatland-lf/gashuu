@@ -1452,9 +1452,10 @@ fn set_cache_config_updates_fields() {
     // cache/preload values in the ViewerState so a subsequently opened book
     // picks them up without requiring an app relaunch.
     let mut state = ViewerState::new();
+    // radius 7 exceeds MAX_PREFETCH_RADIUS (5) and is clamped by CacheConfig::new.
     state.set_cache_config(CacheConfig::new(99, 7));
     assert_eq!(state.cache_config().capacity(), 99);
-    assert_eq!(state.cache_config().radius(), 7);
+    assert_eq!(state.cache_config().radius(), 5);
 }
 
 #[test]
