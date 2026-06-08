@@ -3,34 +3,44 @@ use crate::enum_adapters::{
     index_to_language, index_to_reading_direction, index_to_spread_mode, language_to_index,
     reading_direction_to_index, spread_mode_to_index,
 };
-use crate::i18n;
 use crate::library_model::{LibrarySearchState, LibrarySelectionState};
 use crate::viewer_state::ViewerState;
 use crate::viewport::ViewportState;
 use crate::{
-    apply_global_view_to_runtime, persist_view_modes, push_selection_strings, refresh,
-    report_save_error, with_ui, ViewModeRoute, ViewerWindow,
+    apply_global_view_to_runtime, cover_loader, i18n, persist_view_modes, push_selection_strings,
+    refresh, refresh_library_carousel, report_save_error, with_ui, CarouselRefresh, ViewModeRoute,
+    ViewerWindow,
 };
-use gashuu_core::{CacheConfig, Library, Settings, ViewOverride};
+use gashuu_core::{CacheConfig, Library, Settings, ThumbnailCache, ViewOverride};
 use slint::ComponentHandle;
 use std::cell::RefCell;
 use std::rc::Rc;
 
 /// Registers the settings/shortcuts dialog lifecycle callbacks (open, close,
-/// shortcuts overlay open/close, reset overrides, first-run guide dismissal) onto `ui`.
+/// shortcuts overlay open/close, reset overrides, first-run guide dismissal,
+/// and the immediate data-clearing actions) onto `ui`.
 /// Panel constraint (#151): explicit handle list IS the dependency list — no AppState bundle.
+/// `covers`/`search`/`selection` are threaded in for the clear-reading-history
+/// refresh, which rebuilds the library carousel after emptying the library.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn wire_settings_handlers(
     ui: &ViewerWindow,
     state: &Rc<RefCell<ViewerState>>,
     viewport: &Rc<RefCell<ViewportState>>,
     settings: &Rc<RefCell<Settings>>,
     library: &Rc<RefCell<Library>>,
+    covers: &Rc<cover_loader::CoverController>,
+    search: &Rc<RefCell<LibrarySearchState>>,
+    selection: &Rc<RefCell<LibrarySelectionState>>,
     localizer: &Rc<i18n::Localizer>,
 ) {
     let state = Rc::clone(state);
     let viewport = Rc::clone(viewport);
     let settings = Rc::clone(settings);
     let library = Rc::clone(library);
+    let covers = Rc::clone(covers);
+    let search = Rc::clone(search);
+    let selection = Rc::clone(selection);
     let localizer = Rc::clone(localizer);
 
     // Open the settings dialog: push the current values into the dialog's in-out
@@ -67,6 +77,9 @@ pub(crate) fn wire_settings_handlers(
                 ui.set_preload_pages(s.preload_pages as i32);
                 ui.set_track_recent(s.track_recent_files);
                 ui.set_allow_rar_archives(s.allow_rar_archives);
+                // Clear any stale data-clearing status from a prior open so the
+                // feedback line starts hidden each time the dialog opens.
+                ui.set_data_action_status("".into());
                 ui.set_language_index(language_to_index(s.language));
                 ui.set_key_bindings_text(
                     crate::i18n::dynamic::shortcuts_help(localizer.loader()).into(),
@@ -231,6 +244,100 @@ pub(crate) fn wire_settings_handlers(
                 }
                 ui.set_show_guide(false);
                 ui.invoke_focus_pages();
+            })
+        });
+    }
+
+    // Clear reading history (issue #178): immediate, no confirmation. Empties the
+    // library (books + last_opened) and the recent-files list, persists both, then
+    // rebuilds the library carousel IN PLACE. The viewer / current screen is NOT
+    // touched: a book open in this session stays open — only the persisted history
+    // and the library carousel are cleared. Localized status feedback is pushed to
+    // `data-action-status`.
+    {
+        let ui_weak = ui.as_weak();
+        let settings = Rc::clone(&settings);
+        let library = Rc::clone(&library);
+        let covers = Rc::clone(&covers);
+        let search = Rc::clone(&search);
+        let selection = Rc::clone(&selection);
+        let localizer = Rc::clone(&localizer);
+        ui.on_clear_reading_history(move || {
+            with_ui(&ui_weak, |ui| {
+                // Mutate then save under tight borrow scopes that drop before the
+                // refresh below (which re-borrows library/search/selection/settings).
+                library.borrow_mut().clear();
+                settings.borrow_mut().recent_files.clear();
+                // Save library and settings INDEPENDENTLY so each failure is
+                // reported distinctly and a partial success is correctly diagnosed
+                // (library cleared and persisted even if settings save fails, or
+                // vice-versa). Both borrows drop before the carousel rebuild below.
+                let lib_err = library.borrow().save().err();
+                let set_err = settings.borrow().save().err();
+                if let Some(ref e) = lib_err {
+                    tracing::error!(error = %e, "failed to persist library while clearing reading history");
+                }
+                if let Some(ref e) = set_err {
+                    tracing::error!(error = %e, "failed to persist settings while clearing reading history");
+                }
+                // Recompute the (now empty) search projection and drop the bulk
+                // selection, then project into the carousel. In-memory state is
+                // already cleared regardless of save outcome, so the UI MUST
+                // reflect it — no early-return here. `set_query` recomputes
+                // internally; its temporary `library.borrow()` drops at the `;`.
+                search
+                    .borrow_mut()
+                    .set_query(String::new(), &library.borrow());
+                selection.borrow_mut().clear();
+                refresh_library_carousel(
+                    &ui,
+                    &CarouselRefresh {
+                        library: &library,
+                        covers: &covers,
+                        search: &search,
+                        selection: &selection,
+                        localizer: &localizer,
+                    },
+                    true,
+                );
+                // Show failure status if either save failed; success only when both
+                // persisted cleanly.
+                let status = if lib_err.is_some() || set_err.is_some() {
+                    i18n::dynamic::reading_history_clear_failed(localizer.loader())
+                } else {
+                    i18n::dynamic::reading_history_cleared(localizer.loader())
+                };
+                ui.set_data_action_status(status.into());
+            })
+        });
+    }
+
+    // Clear cover cache (issue #178): immediate, no confirmation. Deletes the
+    // on-disk thumbnail cache files; in-session covers already rendered are left
+    // alone (no carousel rebuild). A best-effort report drives the localized
+    // status; a failure to open the cache directory surfaces a failure status.
+    {
+        let ui_weak = ui.as_weak();
+        let localizer = Rc::clone(&localizer);
+        ui.on_clear_cover_cache(move || {
+            with_ui(&ui_weak, |ui| match ThumbnailCache::new() {
+                Ok(cache) => {
+                    let report = cache.clear();
+                    ui.set_data_action_status(
+                        i18n::dynamic::cover_cache_cleared(
+                            localizer.loader(),
+                            report.removed_files,
+                            report.removed_bytes,
+                        )
+                        .into(),
+                    );
+                }
+                Err(e) => {
+                    tracing::error!(error = %e, "failed to open thumbnail cache for clearing");
+                    ui.set_data_action_status(
+                        i18n::dynamic::cover_cache_clear_failed(localizer.loader()).into(),
+                    );
+                }
             })
         });
     }

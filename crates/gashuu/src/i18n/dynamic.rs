@@ -307,6 +307,61 @@ pub(crate) fn selection_delete_label(loader: &FluentLanguageLoader, n: usize) ->
     format!("{} ({})…", fl!(loader, "selection-delete"), n)
 }
 
+// ---- Settings data-clearing messages (issue #178) -------------------------
+
+/// Format a byte count as a compact human-readable size (B / KB / MB).
+///
+/// The unit symbol is intentionally NOT localized — "KB"/"MB" are
+/// language-neutral and the surrounding Fluent template owns any translated
+/// wording. Uses 1024-based units and one decimal place for KB/MB so e.g.
+/// 1536 bytes reads "1.5 KB" instead of collapsing to "1 KB".
+fn human_size(bytes: u64) -> String {
+    const KB: u64 = 1024;
+    const MB: u64 = 1024 * 1024;
+    if bytes < KB {
+        format!("{bytes} B")
+    } else if bytes < MB {
+        format!("{:.1} KB", bytes as f64 / KB as f64)
+    } else {
+        format!("{:.1} MB", bytes as f64 / MB as f64)
+    }
+}
+
+/// Status line after the user clears the reading history (library + recents).
+pub(crate) fn reading_history_cleared(loader: &FluentLanguageLoader) -> String {
+    fl!(loader, "settings-history-cleared")
+}
+
+/// Status line when clearing the reading history failed because the library or
+/// settings save did not persist.
+pub(crate) fn reading_history_clear_failed(loader: &FluentLanguageLoader) -> String {
+    fl!(loader, "settings-history-clear-failed")
+}
+
+/// Status line after the user clears the on-disk cover cache. `removed_files` is
+/// the number of cached cover files deleted (plural-aware in en); `removed_bytes`
+/// is the reclaimed disk space, rendered via [`human_size`].
+pub(crate) fn cover_cache_cleared(
+    loader: &FluentLanguageLoader,
+    removed_files: usize,
+    removed_bytes: u64,
+) -> String {
+    let n = removed_files as i64;
+    let size = human_size(removed_bytes);
+    fl!(
+        loader,
+        "settings-cache-cleared",
+        n = n,
+        size = size.as_str()
+    )
+}
+
+/// Status line when clearing the cover cache failed because the cache directory
+/// could not be opened (e.g. no data dir).
+pub(crate) fn cover_cache_clear_failed(loader: &FluentLanguageLoader) -> String {
+    fl!(loader, "settings-cache-clear-failed")
+}
+
 // ---- Shortcuts help -------------------------------------------------------
 
 /// Multi-line keyboard-shortcuts reference rendered read-only in the
@@ -753,6 +808,89 @@ mod tests {
             no_books_added_empty(en().loader(), 4),
             no_books_added_empty(ja().loader(), 4),
             "no_books_added_empty must differ between En and Ja"
+        );
+    }
+
+    #[test]
+    fn human_size_picks_unit_by_magnitude() {
+        // Sub-KB stays in bytes; >=KB and >=MB switch units with one decimal.
+        assert_eq!(human_size(0), "0 B");
+        assert_eq!(human_size(512), "512 B");
+        assert_eq!(human_size(1024), "1.0 KB");
+        assert_eq!(human_size(1536), "1.5 KB");
+        assert_eq!(human_size(1024 * 1024), "1.0 MB");
+        assert_eq!(human_size(3 * 1024 * 1024 / 2), "1.5 MB");
+    }
+
+    #[test]
+    fn reading_history_cleared_is_non_empty_and_translated() {
+        for loc in [en(), ja()] {
+            assert!(
+                !reading_history_cleared(loc.loader()).is_empty(),
+                "reading_history_cleared must not be empty"
+            );
+            assert!(
+                !reading_history_clear_failed(loc.loader()).is_empty(),
+                "reading_history_clear_failed must not be empty"
+            );
+        }
+        assert_ne!(
+            reading_history_cleared(en().loader()),
+            reading_history_cleared(ja().loader()),
+            "reading_history_cleared must differ between En and Ja"
+        );
+        assert_ne!(
+            reading_history_clear_failed(en().loader()),
+            reading_history_clear_failed(ja().loader()),
+            "reading_history_clear_failed must differ between En and Ja"
+        );
+    }
+
+    #[test]
+    fn cover_cache_cleared_embeds_count_and_size() {
+        // The file count and the human size string must both appear; failure
+        // helper non-empty; en/ja differ.
+        for loc in [en(), ja()] {
+            let l = loc.loader();
+            let result = cover_cache_cleared(l, 5, 3 * 1024 * 1024 / 2);
+            assert!(!result.is_empty(), "cover_cache_cleared must not be empty");
+            assert!(
+                result.contains('5'),
+                "cover_cache_cleared must contain file count 5, got: {result:?}"
+            );
+            assert!(
+                result.contains("1.5 MB"),
+                "cover_cache_cleared must contain the human size, got: {result:?}"
+            );
+            assert!(
+                !cover_cache_clear_failed(l).is_empty(),
+                "cover_cache_clear_failed must not be empty"
+            );
+        }
+        assert_ne!(
+            cover_cache_cleared(en().loader(), 5, 1024),
+            cover_cache_cleared(ja().loader(), 5, 1024),
+            "cover_cache_cleared must differ between En and Ja"
+        );
+        assert_ne!(
+            cover_cache_clear_failed(en().loader()),
+            cover_cache_clear_failed(ja().loader()),
+            "cover_cache_clear_failed must differ between En and Ja"
+        );
+    }
+
+    #[test]
+    fn cover_cache_cleared_singular_vs_plural_in_english() {
+        // English plural select: "cached file" (singular) vs "cached files" (plural).
+        let one = cover_cache_cleared(en().loader(), 1, 1024);
+        let many = cover_cache_cleared(en().loader(), 2, 1024);
+        assert!(
+            one.contains("cached file ") && !one.contains("cached files"),
+            "en singular must use 'file', got: {one:?}"
+        );
+        assert!(
+            many.contains("cached files"),
+            "en plural must use 'files', got: {many:?}"
         );
     }
 

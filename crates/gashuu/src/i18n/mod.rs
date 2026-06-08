@@ -124,8 +124,8 @@ impl Localizer {
     /// every [`switch`] to keep the global in sync with the active locale.
     ///
     /// Slint batches property changes and repaints them together before the next
-    /// frame, so a sequential push of 67 setters cannot produce a half-translated
-    /// frame — the entire swap is visually atomic.
+    /// frame, so a sequential push of every localized Strings setter cannot produce
+    /// a half-translated frame — the entire swap is visually atomic.
     ///
     /// All `fl!()` calls resolve IDs against the `i18n.toml`-declared crate
     /// catalog.
@@ -135,7 +135,7 @@ impl Localizer {
     pub(crate) fn apply(&self, ui: &ViewerWindow) {
         let strings = ui.global::<Strings>();
 
-        // ---- 60 plain pushes (id == property name, no arguments) ----------
+        // ---- Plain pushes (id == property name, no arguments) ----------
         strings.set_settings_book_title(fl!(self.loader, "settings-book-title").into());
         strings.set_settings_title(fl!(self.loader, "settings-title").into());
         strings.set_settings_section_reading(fl!(self.loader, "settings-section-reading").into());
@@ -176,6 +176,12 @@ impl Localizer {
         strings.set_settings_performance_note(fl!(self.loader, "settings-performance-note").into());
         strings.set_settings_language_label(fl!(self.loader, "settings-language-label").into());
         strings.set_settings_language_a11y(fl!(self.loader, "settings-language-a11y").into());
+        // General section — data-clearing actions.
+        strings.set_settings_clear_history_label(
+            fl!(self.loader, "settings-clear-history-label").into(),
+        );
+        strings
+            .set_settings_clear_cache_label(fl!(self.loader, "settings-clear-cache-label").into());
         strings.set_settings_shortcuts_label(fl!(self.loader, "settings-shortcuts-label").into());
         strings.set_settings_reset_to_global(fl!(self.loader, "settings-reset-to-global").into());
         strings.set_shortcuts_title(fl!(self.loader, "shortcuts-title").into());
@@ -208,7 +214,7 @@ impl Localizer {
         strings.set_common_close(fl!(self.loader, "common-close").into());
         strings.set_confirm_delete_cancel(fl!(self.loader, "confirm-delete-cancel").into());
 
-        // ---- 3 plain pushes (SelectionToolbar) ------------------------------
+        // ---- Plain pushes (SelectionToolbar) ------------------------------
         strings.set_selection_enter(fl!(self.loader, "selection-enter").into());
         strings.set_selection_exit_a11y(fl!(self.loader, "selection-exit-a11y").into());
         strings.set_selection_delete(fl!(self.loader, "selection-delete").into());
