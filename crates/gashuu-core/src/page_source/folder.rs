@@ -1,4 +1,4 @@
-use super::naming::has_image_ext;
+use super::naming::{has_image_ext, MAX_ENTRY_BYTES};
 use super::{PageEntry, PageSource};
 use crate::error::CoreError;
 use crate::ordering::natural_cmp;
@@ -23,6 +23,7 @@ struct FolderEntry {
 pub struct FolderSource {
     entries: Vec<FolderEntry>,
     skipped: usize,
+    max_bytes: u64,
 }
 
 impl FolderSource {
@@ -32,16 +33,23 @@ impl FolderSource {
     /// broken symlinks) are counted in [`PageSource::skipped_count`] rather than
     /// silently dropped, so the presentation layer can log them.
     pub fn open(root: impl AsRef<Path>) -> Result<Self, CoreError> {
+        Self::open_with_limit(root, MAX_ENTRY_BYTES)
+    }
+
+    fn open_with_limit(root: impl AsRef<Path>, max: u64) -> Result<Self, CoreError> {
         let mut entries: Vec<FolderEntry> = Vec::new();
         let mut skipped = 0usize;
         for result in WalkDir::new(root.as_ref()).min_depth(1).max_depth(1) {
             match result {
-                Ok(e) if e.file_type().is_file() && has_image_ext(e.path()) => {
-                    entries.push(FolderEntry {
-                        name: e.file_name().to_string_lossy().into_owned(),
-                        path: e.path().to_path_buf(),
-                    });
-                }
+                Ok(e) if e.file_type().is_file() && has_image_ext(e.path()) => match e.metadata() {
+                    Ok(meta) if meta.len() <= max => {
+                        entries.push(FolderEntry {
+                            name: e.file_name().to_string_lossy().into_owned(),
+                            path: e.path().to_path_buf(),
+                        });
+                    }
+                    Ok(_) | Err(_) => skipped += 1,
+                },
                 // Directories and non-image files are expected, not errors.
                 Ok(_) => {}
                 // Unreadable entry: record it so the UI can surface a warning.
@@ -49,8 +57,28 @@ impl FolderSource {
             }
         }
         entries.sort_by(|a, b| natural_cmp(&a.name, &b.name));
-        Ok(Self { entries, skipped })
+        Ok(Self {
+            entries,
+            skipped,
+            max_bytes: max,
+        })
     }
+}
+
+fn read_file_capped(path: &Path, name: &str, max: u64) -> Result<Vec<u8>, CoreError> {
+    use std::io::{BufReader, Read};
+
+    let file = std::fs::File::open(path)?;
+    let mut reader = BufReader::new(file).take(max + 1);
+    let mut buf = Vec::new();
+    reader.read_to_end(&mut buf)?;
+    if buf.len() as u64 > max {
+        return Err(CoreError::EntryTooLarge {
+            name: name.to_string(),
+            max,
+        });
+    }
+    Ok(buf)
 }
 
 impl PageSource for FolderSource {
@@ -68,7 +96,7 @@ impl PageSource for FolderSource {
             index,
             len: self.entries.len(),
         })?;
-        std::fs::read(&entry.path).map_err(CoreError::from)
+        read_file_capped(&entry.path, &entry.name, self.max_bytes)
     }
 
     /// Number of directory entries that could not be read during `open`.
@@ -171,6 +199,74 @@ mod folder_source_tests {
         let names: Vec<String> = source.list_pages().into_iter().map(|e| e.name).collect();
 
         assert_eq!(names, vec!["1.png"]);
+    }
+
+    #[test]
+    fn image_at_limit_is_included() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("1.png");
+        write_png(&path);
+        let size = fs::metadata(&path).unwrap().len();
+
+        let source = FolderSource::open_with_limit(dir.path(), size).unwrap();
+        assert_eq!(source.list_pages().len(), 1);
+        assert_eq!(source.skipped_count(), 0);
+    }
+
+    #[test]
+    fn image_above_limit_is_skipped_at_open() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("big.png");
+        write_png(&path);
+        let size = fs::metadata(&path).unwrap().len();
+
+        let source = FolderSource::open_with_limit(dir.path(), size - 1).unwrap();
+        assert!(source.list_pages().is_empty());
+        assert_eq!(source.skipped_count(), 1);
+    }
+
+    #[test]
+    fn read_bytes_returns_entry_too_large_when_file_grows_after_open() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("grow.png");
+        write_png(&path);
+        let size = fs::metadata(&path).unwrap().len();
+
+        // Open with a limit that accepts the file as-is.
+        let source = FolderSource::open_with_limit(dir.path(), size).unwrap();
+        assert_eq!(source.list_pages().len(), 1);
+
+        // Grow the file beyond the limit after open.
+        let extra = vec![0u8; 2];
+        let mut f = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap();
+        use std::io::Write;
+        f.write_all(&extra).unwrap();
+        drop(f);
+
+        // read_bytes must now reject the file.
+        let err = source.read_bytes(0).unwrap_err();
+        assert!(
+            matches!(err, CoreError::EntryTooLarge { .. }),
+            "expected EntryTooLarge, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn oversized_non_image_does_not_increment_skipped() {
+        let dir = tempfile::tempdir().unwrap();
+        // A large non-image file: should not affect skipped_count.
+        fs::write(dir.path().join("big.txt"), vec![0u8; 100]).unwrap();
+        // A tiny image that fits.
+        write_png(&dir.path().join("1.png"));
+
+        let source = FolderSource::open_with_limit(dir.path(), 1).unwrap();
+        // The small image is also above limit=1, so it gets skipped — the
+        // important assertion is that big.txt does NOT add to the count.
+        // Both together: only 1 skipped (the image), not 2.
+        assert_eq!(source.skipped_count(), 1);
     }
 
     /// Pins the load-bearing invariant of the refactor: after the natural-sort,
