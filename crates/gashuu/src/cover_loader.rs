@@ -194,6 +194,7 @@ fn set_cover(ui: &ViewerWindow, row: usize, img: slint::Image) {
     if row < vm.row_count() {
         let mut item = vm.row_data(row).expect("row < row_count checked above");
         item.cover = img;
+        item.cover_loaded = true;
         vm.set_row_data(row, item);
     }
 }
@@ -669,6 +670,7 @@ mod tests {
             selected: true,
             bookmarked: true,
             cover_failed: false,
+            cover_loaded: false,
         }
     }
 
