@@ -254,26 +254,64 @@ mod folder_source_tests {
         f.write_all(&extra).unwrap();
         drop(f);
 
-        // read_bytes must now reject the file.
+        // read_bytes must now reject the file; verify both error fields.
         let err = source.read_bytes(0).unwrap_err();
-        assert!(
-            matches!(err, CoreError::EntryTooLarge { .. }),
-            "expected EntryTooLarge, got {err:?}"
-        );
+        match err {
+            CoreError::EntryTooLarge { name, max } => {
+                assert_eq!(name, "grow.png");
+                assert_eq!(max, size);
+            }
+            other => panic!("expected EntryTooLarge, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn read_file_capped_boundary_is_inclusive() {
+        // A file of exactly `max` bytes must succeed; `max + 1` must return EntryTooLarge.
+        // Uses raw byte content (not a valid PNG) so the size is precisely controlled,
+        // with a `.png` extension so has_image_ext passes at open time.
+        const MAX: u64 = 32;
+        let dir = tempfile::tempdir().unwrap();
+
+        let exact_path = dir.path().join("exact.png");
+        fs::write(&exact_path, vec![0u8; MAX as usize]).unwrap();
+        let ok = read_file_capped(&exact_path, "exact.png", MAX).unwrap();
+        assert_eq!(ok.len() as u64, MAX);
+
+        let over_path = dir.path().join("over.png");
+        fs::write(&over_path, vec![0u8; MAX as usize + 1]).unwrap();
+        let err = read_file_capped(&over_path, "over.png", MAX).unwrap_err();
+        match err {
+            CoreError::EntryTooLarge { name, max } => {
+                assert_eq!(name, "over.png");
+                assert_eq!(max, MAX);
+            }
+            other => panic!("expected EntryTooLarge, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn multiple_oversized_images_accumulate_skipped_count() {
+        let dir = tempfile::tempdir().unwrap();
+        for name in ["a.png", "b.png", "c.png"] {
+            write_png(&dir.path().join(name));
+        }
+        // Use limit 1 so all three images are oversized.
+        let source = FolderSource::open_with_limit(dir.path(), 1).unwrap();
+        assert!(source.list_pages().is_empty());
+        assert_eq!(source.skipped_count(), 3);
     }
 
     #[test]
     fn oversized_non_image_does_not_increment_skipped() {
         let dir = tempfile::tempdir().unwrap();
-        // A large non-image file: should not affect skipped_count.
+        // A non-image file: must never affect skipped_count regardless of size.
         fs::write(dir.path().join("big.txt"), vec![0u8; 100]).unwrap();
-        // A tiny image that fits.
         write_png(&dir.path().join("1.png"));
 
+        // limit=1 means the image is oversized (skipped, count=1); big.txt is
+        // not an image and must not contribute to the count (stays at 1, not 2).
         let source = FolderSource::open_with_limit(dir.path(), 1).unwrap();
-        // The small image is also above limit=1, so it gets skipped — the
-        // important assertion is that big.txt does NOT add to the count.
-        // Both together: only 1 skipped (the image), not 2.
         assert_eq!(source.skipped_count(), 1);
     }
 
