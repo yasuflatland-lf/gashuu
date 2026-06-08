@@ -36,6 +36,10 @@ fn to_carousel_item(data: &CarouselData) -> CarouselItem {
         // shows the neutral loading placeholder until `CoverController` either
         // streams a cover in or marks the load failed (issue 144).
         cover_failed: false,
+        // Starts false so the neutral loading placeholder is shown instead of
+        // the black slint::Image::default() while the async worker is in flight.
+        // Set to true by set_cover() once a real image arrives.
+        cover_loaded: false,
     }
 }
 
@@ -392,12 +396,14 @@ mod tests {
         );
     }
 
-    /// Rows are built with `cover_failed == false`: a fresh model row shows the
-    /// neutral loading placeholder until the cover controller either streams in
-    /// a cover or marks the row failed (issue 144 — the rebuilt model resets any
-    /// prior generation's failed flags, so a refresh retries the load cleanly).
+    /// Rows are built with `cover_failed == false` and `cover_loaded == false`:
+    /// a fresh model row shows the neutral loading placeholder (not the black
+    /// default image) until the cover controller either streams in a cover
+    /// (`cover_loaded = true`) or marks the row failed (`cover_failed = true`).
+    /// A model rebuild resets any prior generation's flags so a refresh retries
+    /// the load cleanly (issue 144).
     #[test]
-    fn build_carousel_model_rows_start_unfailed() {
+    fn build_carousel_model_rows_start_in_loading_state() {
         use slint::Model;
 
         let mut lib = Library::new();
@@ -407,9 +413,14 @@ mod tests {
 
         let model = build_carousel_model(&lib, &[0]);
         assert_eq!(model.row_count(), 1);
+        let row = model.row_data(0).unwrap();
         assert!(
-            !model.row_data(0).unwrap().cover_failed,
+            !row.cover_failed,
             "fresh rows must start un-failed (neutral loading placeholder)"
+        );
+        assert!(
+            !row.cover_loaded,
+            "fresh rows must start un-loaded so the placeholder is shown, not the black default image"
         );
     }
 
