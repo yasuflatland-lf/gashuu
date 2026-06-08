@@ -14,7 +14,7 @@ use crate::{
 };
 use crate::{viewer_state::ViewerState, viewport::ViewportState};
 use app::SkippedDetail;
-use gashuu_core::Library;
+use gashuu_core::{ArchivePolicy, Library, Settings};
 use slint::ComponentHandle;
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -26,6 +26,7 @@ pub(crate) fn wire_open_handlers(
     ui: &ViewerWindow,
     state: &Rc<RefCell<ViewerState>>,
     viewport: &Rc<RefCell<ViewportState>>,
+    settings: &Rc<RefCell<Settings>>,
     library: &Rc<RefCell<Library>>,
     open_book: &Rc<app::OpenBookUseCase>,
     covers: &Rc<cover_loader::CoverController>,
@@ -38,6 +39,7 @@ pub(crate) fn wire_open_handlers(
     // form in `main` (cloning an owned `Rc`, not a `&Rc`).
     let state = Rc::clone(state);
     let viewport = Rc::clone(viewport);
+    let settings = Rc::clone(settings);
     let library = Rc::clone(library);
     let open_book = Rc::clone(open_book);
     let covers = Rc::clone(covers);
@@ -141,6 +143,7 @@ pub(crate) fn wire_open_handlers(
     // keyboard focus to the carousel.
     {
         let ui_weak = ui.as_weak();
+        let settings = Rc::clone(&settings);
         let library = Rc::clone(&library);
         let covers = Rc::clone(&covers);
         let search = Rc::clone(&search);
@@ -157,6 +160,9 @@ pub(crate) fn wire_open_handlers(
                 let Some(paths) = picked else {
                     return;
                 };
+                let policy = ArchivePolicy {
+                    allow_rar: settings.borrow().allow_rar_archives,
+                };
                 add_books_and_refresh(
                     &ui,
                     &CarouselRefresh {
@@ -167,6 +173,7 @@ pub(crate) fn wire_open_handlers(
                         localizer: &localizer,
                     },
                     paths,
+                    policy,
                     "add-books",
                     localizer.loader(),
                 );
@@ -181,6 +188,7 @@ pub(crate) fn wire_open_handlers(
     // focus.
     {
         let ui_weak = ui.as_weak();
+        let settings = Rc::clone(&settings);
         let library = Rc::clone(&library);
         let covers = Rc::clone(&covers);
         let search = Rc::clone(&search);
@@ -190,6 +198,9 @@ pub(crate) fn wire_open_handlers(
             with_ui(&ui_weak, |ui| {
                 let Some(folder) = rfd::FileDialog::new().pick_folder() else {
                     return;
+                };
+                let policy = ArchivePolicy {
+                    allow_rar: settings.borrow().allow_rar_archives,
                 };
                 add_books_and_refresh(
                     &ui,
@@ -201,6 +212,7 @@ pub(crate) fn wire_open_handlers(
                         localizer: &localizer,
                     },
                     vec![folder],
+                    policy,
                     "add-folder",
                     localizer.loader(),
                 );

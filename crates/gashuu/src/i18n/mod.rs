@@ -171,6 +171,8 @@ impl Localizer {
         );
         strings
             .set_settings_track_recent_a11y(fl!(self.loader, "settings-track-recent-a11y").into());
+        strings.set_settings_allow_rar_label(fl!(self.loader, "settings-allow-rar-label").into());
+        strings.set_settings_allow_rar_a11y(fl!(self.loader, "settings-allow-rar-a11y").into());
         strings.set_settings_performance_note(fl!(self.loader, "settings-performance-note").into());
         strings.set_settings_language_label(fl!(self.loader, "settings-language-label").into());
         strings.set_settings_language_a11y(fl!(self.loader, "settings-language-a11y").into());

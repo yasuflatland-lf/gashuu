@@ -59,6 +59,8 @@ settings-preload-a11y = 先読みページ数
 settings-track-recent-label = 最近のファイルを記録
 settings-track-recent-a11y = 最近のファイルを記録
 settings-performance-note = キャッシュと先読みは次に開いた本から適用されます。
+settings-allow-rar-label = CBR/RARアーカイブを許可
+settings-allow-rar-a11y = CBR/RARアーカイブを許可
 
 # General section — Language row
 settings-language-label = 言語
