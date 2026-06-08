@@ -24,7 +24,7 @@ pub mod viewport;
 
 pub use archive_loader::ArchiveLoader;
 pub use cache::{ImageCache, DEFAULT_CAPACITY, DEFAULT_PREFETCH_RADIUS};
-pub use cache_config::CacheConfig;
+pub use cache_config::{CacheConfig, MAX_CACHE_SIZE, MAX_PREFETCH_RADIUS};
 pub use error::CoreError;
 pub use image_ops::{check_pixel_limit, decode, decode_thumbnail, DecodedImage, MAX_PIXELS};
 pub use library::{display_title, Book, Library, OpenRegistration, RemovalReport};

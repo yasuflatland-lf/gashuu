@@ -262,13 +262,14 @@ impl Settings {
         };
         let mut settings: Self = serde_json::from_value(value)?;
         // Normalize invariants that a hand-edited or corrupt file could violate.
-        // A persisted cache_size of 0 would otherwise be returned verbatim via the
-        // public `cache_size` field. `CacheConfig::new` (reached through `cache_config`)
-        // owns the `capacity >= 1` floor, so route the stored field through it: this
-        // keeps the persisted value equal to the value actually used and keeps the floor
-        // defined in exactly one place. (preload_pages is deliberately NOT clamped: 0 is
-        // a valid "prefetch disabled" radius and is taken verbatim downstream.)
-        settings.cache_size = settings.cache_config().capacity();
+        // Route both fields through `CacheConfig::new` (via `cache_config()`), which
+        // owns the `[1, MAX_CACHE_SIZE]` / `[0, MAX_PREFETCH_RADIUS]` clamps. This
+        // keeps the persisted values equal to the values actually used and keeps the
+        // bounds defined in exactly one place. (preload_pages = 0 remains valid as a
+        // "prefetch disabled" sentinel; values above MAX_PREFETCH_RADIUS are clamped.)
+        let cfg = settings.cache_config();
+        settings.cache_size = cfg.capacity();
+        settings.preload_pages = cfg.radius();
         // push_recent caps recent_files on write, but a hand-edited file could exceed
         // MAX_RECENT_FILES and then persist forever (exit-save writes in-memory state);
         // enforce the cap on the read path too.
@@ -349,7 +350,7 @@ mod tests {
             cover_mode: CoverMode::Paired,
             fit_mode: FitMode::Whole,
             cache_size: 99,
-            preload_pages: 7,
+            preload_pages: 4,
             key_bindings: KeyBindings {
                 next: vec!["down".into()],
                 prev: vec!["up".into()],
@@ -789,5 +790,40 @@ mod tests {
         let cfg = Settings::from_json(&json).unwrap().cache_config();
         assert_eq!(cfg.capacity(), 12);
         assert_eq!(cfg.radius(), 4);
+    }
+
+    #[test]
+    fn from_json_clamps_cache_size_above_max() {
+        use crate::cache_config::MAX_CACHE_SIZE;
+        let json = serde_json::json!({
+            "version": SETTINGS_VERSION,
+            "cache_size": MAX_CACHE_SIZE + 50,
+        })
+        .to_string();
+        let s = Settings::from_json(&json).unwrap();
+        assert_eq!(s.cache_size, MAX_CACHE_SIZE);
+    }
+
+    #[test]
+    fn from_json_clamps_preload_pages_above_max() {
+        use crate::cache_config::MAX_PREFETCH_RADIUS;
+        let json = serde_json::json!({
+            "version": SETTINGS_VERSION,
+            "preload_pages": MAX_PREFETCH_RADIUS + 10,
+        })
+        .to_string();
+        let s = Settings::from_json(&json).unwrap();
+        assert_eq!(s.preload_pages, MAX_PREFETCH_RADIUS);
+    }
+
+    #[test]
+    fn from_json_preserves_preload_pages_zero() {
+        let json = serde_json::json!({
+            "version": SETTINGS_VERSION,
+            "preload_pages": 0,
+        })
+        .to_string();
+        let s = Settings::from_json(&json).unwrap();
+        assert_eq!(s.preload_pages, 0, "preload_pages=0 must remain valid");
     }
 }

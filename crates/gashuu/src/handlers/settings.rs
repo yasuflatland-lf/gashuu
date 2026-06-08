@@ -343,35 +343,29 @@ pub(crate) fn wire_view_mode_handlers(
         let settings = Rc::clone(&settings);
         // Cache size applies to newly opened books; no refresh of the current view.
         ui.on_set_cache_size(move |v| {
-            let v = (v.max(1)) as usize;
             // Read the current preload while writing cache_size, then mirror both
             // into ViewerState so the next opened book picks up the change this
-            // session.
-            let preload = {
-                let mut s = settings.borrow_mut();
-                s.cache_size = v;
-                s.preload_pages
-            };
-            state
-                .borrow_mut()
-                .set_cache_config(CacheConfig::new(v, preload));
+            // session. `max(1)` guards the i32->usize cast against a negative
+            // stepper value; `CacheConfig::new` owns the upper clamp, and reading
+            // `capacity()` back keeps the persisted field equal to the value used.
+            let preload = settings.borrow().preload_pages;
+            let cfg = CacheConfig::new(v.max(1) as usize, preload);
+            settings.borrow_mut().cache_size = cfg.capacity();
+            state.borrow_mut().set_cache_config(cfg);
         });
     }
     {
         let state = Rc::clone(&state);
         let settings = Rc::clone(&settings);
         // Preload radius applies to newly opened books; no refresh. 0 is a valid
-        // "prefetch disabled" radius, so only clamp the negative tail.
+        // "prefetch disabled" radius. `max(0)` guards the i32->usize cast; the
+        // upper clamp and the floor live in `CacheConfig::new`, and reading
+        // `radius()` back keeps the persisted field equal to the value used.
         ui.on_set_preload_pages(move |v| {
-            let v = (v.max(0)) as usize;
-            let cache_size = {
-                let mut s = settings.borrow_mut();
-                s.preload_pages = v;
-                s.cache_size
-            };
-            state
-                .borrow_mut()
-                .set_cache_config(CacheConfig::new(cache_size, v));
+            let cache_size = settings.borrow().cache_size;
+            let cfg = CacheConfig::new(cache_size, v.max(0) as usize);
+            settings.borrow_mut().preload_pages = cfg.radius();
+            state.borrow_mut().set_cache_config(cfg);
         });
     }
     {
