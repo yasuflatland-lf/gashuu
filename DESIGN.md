@@ -250,10 +250,10 @@ components:
     border: "1px solid {colors.hairline}"
     rounded: "{rounded.lg}"
   settings-panel:
-    width: 360px              # Theme.settings-w
+    width: 377px              # Theme.settings-w (377 = Fibonacci; widened from 360px so the label column clears the longest Japanese labels)
     height: content-hug       # header + body + footer; clamps to the window (Marcotte). φ outline dropped 2026-06-04 — φ moved into component proportions (toggle track, spacing ladder)
     rounded: 21px             # Theme.settings-radius = nav-pill-radius (shares NavBar's glass corner language)
-    labelColumn: 132px        # Theme.settings-label-col (fixed; longest label ≈ 100px + slack, never wraps/elides)
+    labelColumn: 165px        # Theme.settings-label-col (fixed; sized for the longest label — the Japanese "Allow CBR/RAR archives" ≈ 157px — never wraps/elides)
     controlSeam: "labelColumn + {spacing.lg}"   # Theme.settings-control-x — fill controls START here; every control ENDS at the right rail
     rowHeight: 34px           # Theme.settings-row-h (= nav-capsule); the 30px control atom centers within it
     controlHeight: 30px       # Theme.settings-control-h — the control atom; centers within rowHeight
@@ -270,12 +270,12 @@ components:
     highlight: "{colors.glass-highlight}" # 1px top inner highlight
     shadow: "0 8px 22px {colors.shadow-popover}"  # ONE drop shadow; no second shadow, no nested glass
   shortcuts-overlay:
-    width: 360px              # Theme.settings-w — REUSED, not a new token
+    width: 377px              # Theme.settings-w — REUSED, not a new token
     height: 466px             # Theme.shortcuts-h; fixed, smaller than the settings panel's content-hug height so it reads as a smaller modal stacked over settings
     rounded: 21px             # Theme.settings-radius — REUSED
     # All glass tokens reused from settings-panel above (sheenTop/fill/border/highlight/shadow); no second glass set.
   confirm-dialog:
-    width: 360px              # Theme.settings-w — REUSED; fluid-width clamp: min(settings-w, parent − 2 × space-xl)
+    width: 377px              # Theme.settings-w — REUSED; fluid-width clamp: min(settings-w, parent − 2 × space-xl)
     rounded: 21px             # Theme.settings-radius — REUSED (same NavBar glass corner language)
     # Glass tokens all reused from settings-panel (sheenTop/fill/border/highlight/shadow); no new token set.
     # Body layout tokens (spacing, typography) also reused from settings-panel.
@@ -572,7 +572,7 @@ modal-reject arm so pointer targets under a modal are always unreachable.
 ### ConfirmDialog — `components.confirm-dialog`
 A reusable two-choice modal (issue 127, consumed by the bulk-delete epic). Generic: carries NO domain vocabulary — every word arrives through properties so the same component serves any confirm-or-cancel decision.
 
-**Glass panel**: clones the `SettingsDialog` / `ShortcutsOverlay` glass recipe exactly — a full-area `Theme.scrim` backdrop, the same one-fake-glass object (top-sheen `@linear-gradient` fill + 1px `{colors.glass-border}` rim + 1px `{colors.glass-highlight}` top inner highlight + ONE `{colors.shadow-popover}` drop shadow, blur 22 / y-offset 8). No nested glass, no second shadow. The sheen is a FILL gradient, not an `opacity` layer (opacity blurs text/SVG on HiDPI — see `docs/patterns.md`). The panel is fluid-width: caps at `{components.settings-panel.width}` (360px) on wide windows, leaving a `{spacing.xl}` gutter each side on narrow ones (FirstRunGuide clamp).
+**Glass panel**: clones the `SettingsDialog` / `ShortcutsOverlay` glass recipe exactly — a full-area `Theme.scrim` backdrop, the same one-fake-glass object (top-sheen `@linear-gradient` fill + 1px `{colors.glass-border}` rim + 1px `{colors.glass-highlight}` top inner highlight + ONE `{colors.shadow-popover}` drop shadow, blur 22 / y-offset 8). No nested glass, no second shadow. The sheen is a FILL gradient, not an `opacity` layer (opacity blurs text/SVG on HiDPI — see `docs/patterns.md`). The panel is fluid-width: caps at `{components.settings-panel.width}` (377px) on wide windows, leaving a `{spacing.xl}` gutter each side on narrow ones (FirstRunGuide clamp).
 
 **Key model — EVERY dismiss path is cancel except one explicit confirm action:**
 - Esc → `cancel()`.
@@ -675,7 +675,7 @@ same `status-text` / `library-count-text` channel as the Viewer toolbar notices.
 This is not a new chrome element — it reuses the existing notice channel and its position tokens.
 
 ### Settings Panel — `components.settings-panel`
-A modal **content-hug glass panel** centered over the dimmed screen: 360px wide, exactly as tall as
+A modal **content-hug glass panel** centered over the dimmed screen: 377px wide, exactly as tall as
 its header + body + footer (the fixed φ outline was deliberately dropped 2026-06-04 — **φ relocated
 into the component proportions**: the toggle track ratio, the 8/14/22 ≈ Fibonacci 8/13/21 spacing
 ladder, and the segment pill inset), corner radius **21px** (= `nav-pill-radius` — it shares NavBar's
@@ -687,7 +687,7 @@ a `@linear-gradient(180deg, {colors.glass-sheen-top} 0%, {colors.glass-fill} 46%
 an opacity layer — Slint `opacity` blurs text/SVG on HiDPI.) On a short window the panel height clamps
 to fit and the **body scrolls** (see Responsive Behavior).
 
-- **Seam + right-rail alignment**: each setting is a row with a fixed **label column** (132px,
+- **Seam + right-rail alignment**: each setting is a row with a fixed **label column** (165px,
   `{colors.text-mid}`, never wrapping/eliding) at the left margin. Rule: **every control ENDS at the
   right rail** (the body's right padding edge); **fill controls (Segmented) also START at the seam**
   (`labelColumn + {spacing.lg}`) with equal-width cells (HIG), while compact controls
@@ -726,7 +726,7 @@ to fit and the **body scrolls** (see Responsive Behavior).
 A second modal glass panel that lists the keyboard shortcuts read-only, reached from the settings
 panel's **"⌨ Shortcuts"** footer link. It stacks **ON TOP of the still-open Settings Panel** (a layer,
 not a replacement). It clones the settings glass recipe EXACTLY — same `{components.settings-panel.width}`
-(360px) and `{components.settings-panel.rounded}` (21px), the same one-fake-glass-object build (top-sheen
+(377px) and `{components.settings-panel.rounded}` (21px), the same one-fake-glass-object build (top-sheen
 gradient fill + 1px rim + 1px top inner highlight + ONE `{colors.shadow-popover}` shadow), the same `Flickable`
 body + self-drawn scroll indicator. There is NO second glass token set; only the height differs.
 
@@ -794,7 +794,7 @@ adapting to the live window size.
 - **Scrubber**: the rail spans window width minus edge insets; the preview popover clamps inside
   the window so it never clips at the far edges.
 - **Showing the thumbnail strip** shrinks the viewer height and may re-resolve `Auto` (accepted).
-- **Settings panel**: keeps its fixed 360px width and hugs its content vertically; once the window gets
+- **Settings panel**: keeps its fixed 377px width and hugs its content vertically; once the window gets
   short, the Marcotte clamp caps its height to the window minus a gutter on each side and the body scrolls
   (the sticky header/footer stay put). Never overflows the window.
 - **Shortcuts overlay**: same fixed-then-clamp behavior as the settings panel (its 466px height clamps to
