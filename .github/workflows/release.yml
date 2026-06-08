@@ -194,8 +194,6 @@ jobs:
           mkdir -p "$STAGE"
 
           ditto "$APP" "$STAGE/gashuu.app"
-          cp "scripts/macos/Open gashuu.command" "$STAGE/Open gashuu.command"
-          chmod +x "$STAGE/Open gashuu.command"
 
           cat > "$STAGE/README-macOS.txt" <<'EOF'
           gashuu for macOS
@@ -205,11 +203,12 @@ jobs:
           Recommended install steps:
 
           1. Move gashuu.app to the Applications folder.
-          2. Try opening gashuu.app normally.
-          3. If macOS blocks the app with a malware verification warning, right-click "Open gashuu.command" and choose Open.
-          4. The helper removes the quarantine attribute from /Applications/gashuu.app and launches gashuu.
+          2. Try opening gashuu.app normally and accept the error dialog.
+          3. Open System Settings > Privacy & Security.
+          4. Scroll down to the Security section. You will see a message that gashuu was blocked.
+          5. Click "Open Anyway" and enter your Mac's password.
 
-          This helper is a temporary workaround until Developer ID signing and notarization are added.
+          This is a temporary workaround until Developer ID signing and notarization are added.
           EOF
 
           ditto -c -k --keepParent \

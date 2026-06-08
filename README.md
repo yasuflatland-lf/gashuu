@@ -76,13 +76,15 @@ tasteful a tool as a fine art book.
 ### macOS release install
 
 macOS builds are currently unsigned and not notarized. If macOS blocks
-`gashuu.app` on first launch with a malware verification warning, move
-`gashuu.app` to `/Applications`, then right-click `Open gashuu.command` and choose
-Open.
+`gashuu.app` on first launch, follow these steps:
 
-The helper removes the quarantine attribute from `/Applications/gashuu.app` and
-launches the app. This is a temporary workaround until Developer ID signing and
-notarization are added.
+1. Move `gashuu.app` to the `/Applications` folder.
+2. Try opening `gashuu.app` normally and accept the error dialog.
+3. Open **System Settings > Privacy & Security**.
+4. Scroll down to the Security section. You will see a message that gashuu was blocked.
+5. Click **Open Anyway** and enter your Mac's password.
+
+This is a temporary workaround until Developer ID signing and notarization are added.
 
 Toolchain and tools are managed by [mise](https://mise.jdx.dev) (Rust 1.96.0 +
 cargo-nextest + cargo-llvm-cov):
