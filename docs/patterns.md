@@ -906,6 +906,24 @@ NUANCE (`write_back_position`): to read MULTIPLE fields from one `RefCell` in a 
 
 `ThumbnailCache::put` encodes to memory, writes `<dir>/.{key}.tmp`, then `std::fs::rename`s it onto `<dir>/{key}.png`. The rename is atomic on POSIX, so a concurrent `get` (e.g. the background cover rayon fill racing a read) never observes a half-written PNG — it sees either the old file or the complete new one. This guarantees READER atomicity only. Concurrent same-key WRITERS share the deterministic `.{key}.tmp` path and could clobber each other or orphan a `.tmp` on a failed rename; that is intentionally deferred. Cover generation does NOT trigger this: each book's cover key is distinct (path + mtime + max_side), and a `get` hit skips the worker entirely, so no two in-flight `put`s ever share a key. The deferral therefore still holds — the risk is simply not exercised. If a future PR DOES add parallel same-key writes (e.g. two threads regenerating one book's cover), switch to a unique temp name (pid + counter) plus best-effort cleanup then. Correspondingly, `get` treats every missing/unreadable/corrupt file as `None` (a cache miss), never an error, and never panics.
 
+### Atomic persistence for primary JSON stores (`settings.json` / `library.json`) (issue #181)
+
+`std::fs::write` to the final path can leave a truncated or half-written file if the process dies or the disk fills mid-write — a settings or library document that loads fine until then corrupts silently. `write_atomic` (`crates/gashuu-core/src/atomic_write.rs`) eliminates that window:
+
+1. **Resolve the parent dir** (`path.parent().unwrap_or(Path::new("."))`), then `create_dir_all` it (`atomic_write.rs:29-30`).
+2. **Create a `NamedTempFile` in that SAME directory** (`NamedTempFile::new_in(parent)`, `atomic_write.rs:32`). Same directory = same filesystem → the rename that follows stays on one device and cannot fail with `EXDEV`.
+3. **Write all bytes, flush, then `sync_all`** (`atomic_write.rs:33-36`). `sync_all` flushes the file's data (and metadata) to the storage device before the rename, so the fully-written temp is durable before it replaces the target.
+4. **`persist` (rename) over the target path** (`tmp.persist(path)`, `atomic_write.rs:40`). A rename either fully replaces the previous contents or does nothing — a reader never observes a partial file. `PersistError` wraps the underlying `io::Error`; the `.error` field is extracted so callers see a uniform `CoreError::Io`. The `NamedTempFile`'s `.file` field (the temp itself) is dropped automatically if `persist` fails.
+5. **Best-effort parent-dir fsync** (`let _ = std::fs::File::open(parent).and_then(|d| d.sync_all())`, `atomic_write.rs:45`). This makes the rename durable across a power-loss event on many filesystems. The `let _ = …` is intentionally silent: `gashuu-core` is headless (no `tracing`), and a failure here does NOT invalidate the freshly-renamed target — the save succeeded, only the durability of the rename's directory entry is uncertain.
+
+**Single owner of `create_dir_all`.** `write_atomic` owns parent-directory creation (module doc comment: `atomic_write.rs:15`). Call sites MUST NOT also call `create_dir_all` for the same parent; the invariant is held in one place.
+
+**`save_to` delegation.** Both `Library::save_to` (`library_store.rs:38-40`) and `Settings::save_to` (`settings.rs:228-231`) are one-liners that call `write_atomic(path, self.to_json()?.as_bytes())`. No other code in the crate writes these JSON files directly.
+
+**`tempfile` in `[dependencies]`, not `[dev-dependencies]`** (`gashuu-core/Cargo.toml:24`). `write_atomic` is production code, so `tempfile` must be a regular dependency — placing it in `[dev-dependencies]` would make `NamedTempFile` unavailable at compile time in release builds.
+
+**Cross-device rename note.** Creating the temp in the SAME directory as the target prevents `EXDEV` ("Invalid cross-device link"). If the temp were created in a system temp dir on a different mount point, `persist` would fail with that error on every save (the `atomic_write.rs` module doc explains this at line 10-12).
+
 ### Add a persisted core field with `#[serde(default)]` — bump `LIBRARY_VERSION` / change `migrate` ONLY when it can't be a defaulted field
 
 `Book::page_count` was added as a `#[serde(default)]` field, so an older `library.json` (written before the field existed) still deserializes unchanged — the missing field defaults to `0`. NO `LIBRARY_VERSION` bump and NO `migrate` change was needed (same mechanism as `Book::last_page`, and as `Settings`' forward-compat fields). Reserve a version bump + `migrate` step for a change that a defaulted field cannot express (a renamed/removed/semantically-reshaped field). A schema test asserts the new field is EMITTED (`to_json`'s `page_count` is present) so it can't silently drop, plus a round-trip test that an old-shape `Book` JSON (no `page_count`) deserializes to the `0` sentinel.
