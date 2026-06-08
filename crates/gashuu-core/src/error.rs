@@ -57,6 +57,10 @@ pub enum CoreError {
     #[error("unsupported format: {path}")]
     UnsupportedFormat { path: String },
 
+    /// The archive format is recognized but disabled by the active policy.
+    #[error("{format} support is disabled in safer mode")]
+    FormatDisabled { format: &'static str },
+
     /// The source contains no displayable image pages.
     #[error("no images found in {path}")]
     EmptyBook { path: String },

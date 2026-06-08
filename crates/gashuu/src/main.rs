@@ -16,7 +16,9 @@ mod viewer_state;
 mod viewport;
 
 use carousel::{apply_selection_flags, bind_carousel_model, build_carousel_model, cover_requests};
-use gashuu_core::{ArchiveLoader, CoreError, DecodedImage, Library, ReadingDirection, Settings};
+use gashuu_core::{
+    ArchiveLoader, ArchivePolicy, CoreError, DecodedImage, Library, ReadingDirection, Settings,
+};
 use library_model::{LibrarySearchState, LibrarySelectionState};
 use navigation::{screen_to_index, NavState};
 use std::cell::RefCell;
@@ -197,7 +199,8 @@ fn main() -> color_eyre::Result<()> {
 
     // Wire all event handlers onto the window (handlers/, #151).
     handlers::wire_open_handlers(
-        &ui, &state, &viewport, &library, &open_book, &covers, &search, &selection, &localizer,
+        &ui, &state, &viewport, &settings, &library, &open_book, &covers, &search, &selection,
+        &localizer,
     );
     handlers::wire_carousel_handlers(
         &ui, &state, &viewport, &library, &nav, &open_book, &covers, &search, &selection,
@@ -543,14 +546,26 @@ struct AddReport {
 ///   immediately so a freshly added book shows "1 / N" without waiting for its
 ///   first open; a duplicate (`None`) is silently dropped (neither added nor
 ///   skipped).
-fn add_paths(lib: &mut Library, paths: Vec<std::path::PathBuf>) -> AddReport {
+fn add_paths(
+    lib: &mut Library,
+    paths: Vec<std::path::PathBuf>,
+    policy: ArchivePolicy,
+) -> AddReport {
     let mut added = Vec::new();
     let mut skipped = 0usize;
     for path in paths {
-        match ArchiveLoader::probe_page_count(&path) {
+        match ArchiveLoader::probe_page_count_with_policy(&path, policy) {
             Err(CoreError::EmptyBook { .. }) => {
                 skipped += 1;
                 tracing::debug!(path = %path.display(), "skipping empty source (no image pages)");
+            }
+            Err(CoreError::FormatDisabled { format }) => {
+                skipped += 1;
+                tracing::info!(
+                    path = %path.display(),
+                    %format,
+                    "skipping source: format disabled in safer mode"
+                );
             }
             Err(e) => {
                 skipped += 1;
@@ -848,13 +863,14 @@ fn add_books_and_refresh(
     ui: &ViewerWindow,
     deps: &CarouselRefresh,
     paths: Vec<std::path::PathBuf>,
+    policy: ArchivePolicy,
     op: &'static str,
     loader: &i18n_embed::fluent::FluentLanguageLoader,
 ) {
     let AddReport {
         added: added_paths,
         skipped,
-    } = add_paths(&mut deps.library.borrow_mut(), paths);
+    } = add_paths(&mut deps.library.borrow_mut(), paths, policy);
     if added_paths.is_empty() {
         // Nothing new entered the library: nothing to persist or rebuild. Route
         // through the pure decision fn so every branch is testable without Slint.
@@ -971,7 +987,7 @@ mod tests {
     #[test]
     fn add_paths_empty_vec_returns_zero() {
         let mut lib = gashuu_core::Library::new();
-        let report = add_paths(&mut lib, vec![]);
+        let report = add_paths(&mut lib, vec![], ArchivePolicy::default());
         assert!(report.added.is_empty());
         assert_eq!(report.skipped, 0);
         assert_eq!(lib.books().len(), 0);
@@ -983,7 +999,11 @@ mod tests {
         let root = tempfile::tempdir().expect("tempdir");
         let vol1 = make_book_dir(root.path(), "vol1", 1);
         let vol2 = make_book_dir(root.path(), "vol2", 2);
-        let report = add_paths(&mut lib, vec![vol1.clone(), vol2.clone()]);
+        let report = add_paths(
+            &mut lib,
+            vec![vol1.clone(), vol2.clone()],
+            ArchivePolicy::default(),
+        );
         assert_eq!(report.added.len(), 2);
         assert_eq!(report.skipped, 0);
         assert_eq!(lib.books().len(), 2);
@@ -996,7 +1016,11 @@ mod tests {
         let mut lib = gashuu_core::Library::new();
         let root = tempfile::tempdir().expect("tempdir");
         let vol1 = make_book_dir(root.path(), "vol1", 1);
-        let report = add_paths(&mut lib, vec![vol1.clone(), vol1.clone()]);
+        let report = add_paths(
+            &mut lib,
+            vec![vol1.clone(), vol1.clone()],
+            ArchivePolicy::default(),
+        );
         assert_eq!(
             report.added.len(),
             1,
@@ -1017,7 +1041,11 @@ mod tests {
         let vol1 = make_book_dir(root.path(), "vol1", 1);
         let vol2 = make_book_dir(root.path(), "vol2", 1);
         lib.add(vol1.clone());
-        let report = add_paths(&mut lib, vec![vol1.clone(), vol2.clone()]);
+        let report = add_paths(
+            &mut lib,
+            vec![vol1.clone(), vol2.clone()],
+            ArchivePolicy::default(),
+        );
         assert_eq!(
             report.added.len(),
             1,
@@ -1039,7 +1067,11 @@ mod tests {
         // duplicate and dropped.
         let with_dot = vol1.join(".");
         let expected = canon(&vol1);
-        let report = add_paths(&mut lib, vec![with_dot.clone(), with_dot.clone()]);
+        let report = add_paths(
+            &mut lib,
+            vec![with_dot.clone(), with_dot.clone()],
+            ArchivePolicy::default(),
+        );
         assert_eq!(report.added, vec![expected.clone()]);
         assert_eq!(report.skipped, 0);
         assert_eq!(lib.books().len(), 1);
@@ -1055,7 +1087,11 @@ mod tests {
         lib.add(vol1.clone());
         lib.add(vol2.clone());
         let before = lib.books().len();
-        let report = add_paths(&mut lib, vec![vol1.clone(), vol2.clone()]);
+        let report = add_paths(
+            &mut lib,
+            vec![vol1.clone(), vol2.clone()],
+            ArchivePolicy::default(),
+        );
         assert!(report.added.is_empty(), "all-duplicate batch must add 0");
         assert_eq!(report.skipped, 0, "duplicates are not skips");
         assert_eq!(lib.books().len(), before, "books count must not change");
@@ -1069,7 +1105,11 @@ mod tests {
         let root = tempfile::tempdir().expect("tempdir");
         let valid = make_book_dir(root.path(), "valid", 1);
         let empty = make_book_dir(root.path(), "empty", 0);
-        let report = add_paths(&mut lib, vec![valid.clone(), empty.clone(), valid.clone()]);
+        let report = add_paths(
+            &mut lib,
+            vec![valid.clone(), empty.clone(), valid.clone()],
+            ArchivePolicy::default(),
+        );
         assert_eq!(
             report.added,
             vec![canon(&valid)],
@@ -1088,7 +1128,7 @@ mod tests {
         let e1 = make_book_dir(root.path(), "e1", 0);
         let e2 = make_book_dir(root.path(), "e2", 0);
         let e3 = make_book_dir(root.path(), "e3", 0);
-        let report = add_paths(&mut lib, vec![e1, e2, e3]);
+        let report = add_paths(&mut lib, vec![e1, e2, e3], ArchivePolicy::default());
         assert!(
             report.added.is_empty(),
             "no book added from an all-empty batch"
@@ -1108,6 +1148,7 @@ mod tests {
             vec![std::path::PathBuf::from(
                 "/nonexistent_gashuu_add_paths_unreadable",
             )],
+            ArchivePolicy::default(),
         );
         assert!(report.added.is_empty(), "an unreadable path is never added");
         assert_eq!(
@@ -1124,7 +1165,7 @@ mod tests {
         let mut lib = gashuu_core::Library::new();
         let root = tempfile::tempdir().expect("tempdir");
         let three = make_book_dir(root.path(), "three", 3);
-        let report = add_paths(&mut lib, vec![three.clone()]);
+        let report = add_paths(&mut lib, vec![three.clone()], ArchivePolicy::default());
         assert_eq!(report.added.len(), 1);
         assert_eq!(report.skipped, 0);
         let book = lib
@@ -1246,7 +1287,11 @@ mod tests {
         let root = tempfile::tempdir().expect("tempdir");
         let vol10 = canon(&make_book_dir(root.path(), "vol10", 1));
         let vol1 = canon(&make_book_dir(root.path(), "vol1", 1));
-        let report = add_paths(&mut lib, vec![vol10.clone(), vol1.clone()]);
+        let report = add_paths(
+            &mut lib,
+            vec![vol10.clone(), vol1.clone()],
+            ArchivePolicy::default(),
+        );
 
         // Returned vec is in INPUT order (vol10 first, vol1 second).
         assert_eq!(report.added[0], vol10);
@@ -1281,6 +1326,24 @@ mod tests {
             select_add_notice(0, 3),
             AddNotice::NoneAddedAllSkipped { skipped: 3 }
         );
+    }
+
+    #[test]
+    fn add_paths_rar_blocked_by_policy_is_skipped_not_added() {
+        // A .cbr file is rejected at probe time when allow_rar=false; it must be
+        // counted as skipped, not added, and must not enter the library.
+        let root = tempfile::tempdir().expect("tempdir");
+        let cbr = root.path().join("manga.cbr");
+        // Extension check fires before any bytes are read; any content works.
+        std::fs::write(&cbr, b"dummy").expect("write dummy cbr");
+
+        let mut lib = gashuu_core::Library::new();
+        let policy = ArchivePolicy { allow_rar: false };
+        let report = add_paths(&mut lib, vec![cbr], policy);
+
+        assert!(report.added.is_empty(), "blocked RAR must never be added");
+        assert_eq!(report.skipped, 1, "blocked RAR must be counted as skipped");
+        assert_eq!(lib.books().len(), 0);
     }
 
     #[test]

@@ -10,8 +10,9 @@
 
 use crate::keymap::NavAction;
 use gashuu_core::{
-    ArchiveLoader, CacheConfig, CoreError, CoverMode, DecodedImage, ImageCache, Language,
-    PageSource, ReadingDirection, ResolvedView, Settings, SpreadContext, SpreadLayout, SpreadMode,
+    ArchiveLoader, ArchivePolicy, CacheConfig, CoreError, CoverMode, DecodedImage, ImageCache,
+    Language, PageSource, ReadingDirection, ResolvedView, Settings, SpreadContext, SpreadLayout,
+    SpreadMode,
 };
 use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
@@ -255,13 +256,14 @@ impl ViewerState {
         self.cache_config
     }
 
-    /// Open any supported path (directory or CBZ/ZIP archive) as the active
-    /// source, resetting to the first page. Dispatches to the appropriate
-    /// `PageSource` implementation via `ArchiveLoader`. Unreadable entries are
-    /// counted and logged at WARN level; the caller receives `Ok(())` as long
-    /// as the source itself opened successfully.
-    pub fn open_path(&mut self, path: &Path) -> Result<(), CoreError> {
-        let source = ArchiveLoader::open(path)?;
+    /// Open any supported path (directory or archive) as the active source,
+    /// using the given `policy` to control which formats are permitted.
+    pub fn open_path_with_policy(
+        &mut self,
+        path: &Path,
+        policy: ArchivePolicy,
+    ) -> Result<(), CoreError> {
+        let source = ArchiveLoader::open_with_policy(path, policy)?;
         let skipped = source.skipped_count();
         if skipped > 0 {
             tracing::warn!(skipped, path = %path.display(), "entries skipped while opening path");
@@ -292,9 +294,25 @@ impl ViewerState {
         self.open_file.as_deref()
     }
 
-    /// Open a folder as the active source, resetting to the first page.
-    /// Delegates to `open_path` so both directories and archives share a single
-    /// dispatch + skipped-warn path.
+    /// Open any supported path with the default (allow-all) policy.
+    /// Kept for test compatibility; production callers use `open_path_with_policy`.
+    #[allow(dead_code)]
+    pub fn open_path(&mut self, path: &Path) -> Result<(), CoreError> {
+        self.open_path_with_policy(path, ArchivePolicy::default())
+    }
+
+    /// Open a folder as the active source, respecting `policy`.
+    pub fn open_folder_with_policy(
+        &mut self,
+        path: &Path,
+        policy: ArchivePolicy,
+    ) -> Result<(), CoreError> {
+        self.open_path_with_policy(path, policy)
+    }
+
+    /// Open a folder as the active source with the default policy.
+    /// Kept for test compatibility; production callers use `open_folder_with_policy`.
+    #[allow(dead_code)]
     pub fn open_folder(&mut self, path: &Path) -> Result<(), CoreError> {
         self.open_path(path)
     }

@@ -63,6 +63,8 @@ export component SettingsDialog inherits Rectangle {
     in-out property <int> preload-pages;
     // Whether recent-files tracking is enabled.
     in-out property <bool> track-recent;
+    // Whether RAR/CBR archive support is enabled.
+    in-out property <bool> allow-rar-archives;
     // Index into the language dropdown model (En=0, Ja=1 — enum_adapters.rs
     // owns the authoritative ordering).
     in-out property <int> language-index;
@@ -78,6 +80,7 @@ export component SettingsDialog inherits Rectangle {
     callback set-cache-size(int);
     callback set-preload-pages(int);
     callback set-track-recent(bool);
+    callback set-allow-rar-archives(bool);
     callback set-language(int);
     // Fired on Esc, backdrop-click, or the Close button.
     callback close-settings();
@@ -346,6 +349,17 @@ export component SettingsDialog inherits Rectangle {
                                     a11y-label: Strings.settings-track-recent-a11y;
                                     toggled(b) => {
                                         root.set-track-recent(b);
+                                    }
+                                }
+                            }
+                            SettingRow {
+                                label: Strings.settings-allow-rar-label;
+                                trailing: true;
+                                Toggle {
+                                    checked <=> root.allow-rar-archives;
+                                    a11y-label: Strings.settings-allow-rar-a11y;
+                                    toggled(b) => {
+                                        root.set-allow-rar-archives(b);
                                     }
                                 }
                             }

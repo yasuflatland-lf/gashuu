@@ -66,6 +66,7 @@ pub(crate) fn wire_settings_handlers(
                 ui.set_cache_size(s.cache_size as i32);
                 ui.set_preload_pages(s.preload_pages as i32);
                 ui.set_track_recent(s.track_recent_files);
+                ui.set_allow_rar_archives(s.allow_rar_archives);
                 ui.set_language_index(language_to_index(s.language));
                 ui.set_key_bindings_text(
                     crate::i18n::dynamic::shortcuts_help(localizer.loader()).into(),
@@ -372,6 +373,12 @@ pub(crate) fn wire_view_mode_handlers(
         let settings = Rc::clone(&settings);
         ui.on_set_track_recent(move |b| {
             settings.borrow_mut().track_recent_files = b;
+        });
+    }
+    {
+        let settings = Rc::clone(&settings);
+        ui.on_set_allow_rar_archives(move |b| {
+            settings.borrow_mut().allow_rar_archives = b;
         });
     }
     {

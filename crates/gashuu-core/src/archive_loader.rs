@@ -24,6 +24,23 @@ enum Kind {
     Rar,
 }
 
+/// Policy controlling which archive formats `ArchiveLoader` is permitted to open.
+///
+/// The default (`allow_rar: true`) preserves backward-compatible behavior.
+/// Set `allow_rar: false` to reject RAR/CBR archives and return
+/// [`CoreError::FormatDisabled`] instead of opening [`RarSource`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ArchivePolicy {
+    /// When `false`, RAR/CBR paths are rejected with `CoreError::FormatDisabled`.
+    pub allow_rar: bool,
+}
+
+impl Default for ArchivePolicy {
+    fn default() -> Self {
+        Self { allow_rar: true }
+    }
+}
+
 /// Opens any supported source by path, returning a type-erased `Arc<dyn PageSource>`.
 ///
 /// Resolution order:
@@ -46,8 +63,16 @@ impl ArchiveLoader {
     /// "unreadable" are strictly distinct: an unreadable source (I/O failure,
     /// corrupt archive header, unsupported file type) is never classified as empty.
     pub fn probe_page_count(path: impl AsRef<Path>) -> Result<NonZeroUsize, CoreError> {
+        Self::probe_page_count_with_policy(path, ArchivePolicy::default())
+    }
+
+    /// Like [`probe_page_count`] but respects `policy`.
+    pub fn probe_page_count_with_policy(
+        path: impl AsRef<Path>,
+        policy: ArchivePolicy,
+    ) -> Result<NonZeroUsize, CoreError> {
         let path = path.as_ref();
-        let source = Self::open(path)?;
+        let source = Self::open_with_policy(path, policy)?;
         let count = source.list_pages().len();
         NonZeroUsize::new(count).ok_or_else(|| CoreError::EmptyBook {
             path: path.display().to_string(),
@@ -58,7 +83,19 @@ impl ArchiveLoader {
     ///
     /// Returns `Err(CoreError::UnsupportedFormat)` when the path is a file that
     /// is neither a recognized archive extension nor matches ZIP/RAR magic bytes.
+    /// Equivalent to `open_with_policy(path, ArchivePolicy::default())`.
     pub fn open(path: impl AsRef<Path>) -> Result<Arc<dyn PageSource>, CoreError> {
+        Self::open_with_policy(path, ArchivePolicy::default())
+    }
+
+    /// Open `path` as the most appropriate [`PageSource`], respecting `policy`.
+    ///
+    /// When the resolved kind is RAR and `policy.allow_rar` is `false`, returns
+    /// `Err(CoreError::FormatDisabled)` instead of opening [`RarSource`].
+    pub fn open_with_policy(
+        path: impl AsRef<Path>,
+        policy: ArchivePolicy,
+    ) -> Result<Arc<dyn PageSource>, CoreError> {
         let path = path.as_ref();
         if path.is_dir() {
             return Ok(Arc::new(FolderSource::open(path)?));
@@ -69,6 +106,9 @@ impl ArchiveLoader {
         };
         match kind {
             Some(Kind::Zip) => Ok(Arc::new(ZipSource::open(path)?)),
+            Some(Kind::Rar) if !policy.allow_rar => {
+                Err(CoreError::FormatDisabled { format: "rar/cbr" })
+            }
             Some(Kind::Rar) => Ok(Arc::new(RarSource::open(path)?)),
             None => Err(CoreError::UnsupportedFormat {
                 path: path.display().to_string(),
@@ -691,5 +731,80 @@ mod tests {
         let cbr = write_cbr_with_suffix(SAMPLE_CBR_B64, ".cbr");
         let n = ArchiveLoader::probe_page_count(cbr.path()).expect("probe cbr ok");
         assert_eq!(n.get(), 4);
+    }
+
+    // ------------------------------------------------------------------
+    // ArchivePolicy tests
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn rar_extension_blocked_when_allow_rar_false() {
+        let cbr = write_cbr_with_suffix(SAMPLE_CBR_B64, ".rar");
+        let policy = ArchivePolicy { allow_rar: false };
+        let Err(err) = ArchiveLoader::open_with_policy(cbr.path(), policy) else {
+            panic!("expected FormatDisabled for .rar with allow_rar=false");
+        };
+        assert!(
+            matches!(err, CoreError::FormatDisabled { .. }),
+            "expected FormatDisabled, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn cbr_extension_blocked_when_allow_rar_false() {
+        let cbr = write_cbr_with_suffix(SAMPLE_CBR_B64, ".cbr");
+        let policy = ArchivePolicy { allow_rar: false };
+        let Err(err) = ArchiveLoader::open_with_policy(cbr.path(), policy) else {
+            panic!("expected FormatDisabled for .cbr with allow_rar=false");
+        };
+        assert!(
+            matches!(err, CoreError::FormatDisabled { .. }),
+            "expected FormatDisabled, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn rar_magic_blocked_when_allow_rar_false() {
+        // A file with RAR magic bytes but a .txt extension must also be blocked
+        // via the magic-byte fallback path.
+        let cbr = write_cbr_with_suffix(SAMPLE_CBR_B64, ".txt");
+        let policy = ArchivePolicy { allow_rar: false };
+        let Err(err) = ArchiveLoader::open_with_policy(cbr.path(), policy) else {
+            panic!("expected FormatDisabled for RAR magic + .txt with allow_rar=false");
+        };
+        assert!(
+            matches!(err, CoreError::FormatDisabled { .. }),
+            "expected FormatDisabled, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn zip_still_opens_when_allow_rar_false() {
+        let mut f = tempfile::Builder::new()
+            .suffix(".cbz")
+            .tempfile()
+            .expect("tempfile");
+        f.write_all(&tiny_zip_bytes()).expect("write cbz");
+        f.flush().expect("flush");
+        let policy = ArchivePolicy { allow_rar: false };
+        let src = ArchiveLoader::open_with_policy(f.path(), policy).expect("cbz must open");
+        assert!(!src.list_pages().is_empty());
+    }
+
+    #[test]
+    fn directory_still_opens_when_allow_rar_false() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(dir.path().join("cover.png"), tiny_png()).expect("write png");
+        let policy = ArchivePolicy { allow_rar: false };
+        let src = ArchiveLoader::open_with_policy(dir.path(), policy).expect("dir must open");
+        assert!(!src.list_pages().is_empty());
+    }
+
+    #[test]
+    fn open_still_permits_rar_backward_compat() {
+        // ArchiveLoader::open uses ArchivePolicy::default() (allow_rar=true).
+        let cbr = write_cbr_with_suffix(SAMPLE_CBR_B64, ".cbr");
+        let src = ArchiveLoader::open(cbr.path()).expect("open must permit rar by default");
+        assert_eq!(src.list_pages().len(), 4);
     }
 }

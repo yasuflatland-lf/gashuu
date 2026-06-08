@@ -7,6 +7,7 @@
 //! logging-free: load-failure recovery (including corrupt files) lives in the
 //! presentation layer.
 
+use crate::archive_loader::ArchivePolicy;
 use crate::cache::{DEFAULT_CAPACITY, DEFAULT_PREFETCH_RADIUS};
 use crate::cache_config::CacheConfig;
 use crate::error::CoreError;
@@ -160,6 +161,11 @@ pub struct Settings {
     /// before this field existed load as `Language::En` (English).
     #[serde(default)]
     pub language: Language,
+    /// When `false` (the default), RAR/CBR archives are rejected at open time.
+    /// Set to `true` to enable RAR/CBR support. `#[serde(default)]` ensures
+    /// existing settings files load as `false`.
+    #[serde(default)]
+    pub allow_rar_archives: bool,
 }
 
 fn default_version() -> u32 {
@@ -187,6 +193,7 @@ impl Default for Settings {
             recent_files: Vec::new(),
             seen_guide: false,
             language: Language::default(),
+            allow_rar_archives: false,
         }
     }
 }
@@ -224,6 +231,13 @@ impl Settings {
         }
         std::fs::write(path, self.to_json()?)?;
         Ok(())
+    }
+
+    /// Derive the archive-open policy from these settings.
+    pub fn archive_policy(&self) -> ArchivePolicy {
+        ArchivePolicy {
+            allow_rar: self.allow_rar_archives,
+        }
     }
 
     /// Serialize to pretty JSON (also used by the snapshot test).
@@ -336,6 +350,10 @@ mod tests {
         assert_eq!(s.key_bindings.prev, vec!["left", "backspace"]);
         assert!(!s.track_recent_files);
         assert!(s.recent_files.is_empty());
+        assert!(
+            !s.allow_rar_archives,
+            "allow_rar_archives must default to false"
+        );
         assert_eq!(s.language, Language::En);
     }
 
@@ -359,6 +377,7 @@ mod tests {
             recent_files: vec![PathBuf::from("/a"), PathBuf::from("/b")],
             seen_guide: true,
             language: Language::Ja,
+            allow_rar_archives: true,
         }
     }
 
@@ -825,5 +844,29 @@ mod tests {
         .to_string();
         let s = Settings::from_json(&json).unwrap();
         assert_eq!(s.preload_pages, 0, "preload_pages=0 must remain valid");
+    }
+
+    #[test]
+    fn allow_rar_archives_missing_field_loads_as_false() {
+        let json = serde_json::json!({"version": SETTINGS_VERSION}).to_string();
+        let s = Settings::from_json(&json).unwrap();
+        assert!(
+            !s.allow_rar_archives,
+            "missing allow_rar_archives must load as false"
+        );
+    }
+
+    #[test]
+    fn allow_rar_archives_true_round_trips() {
+        let json = serde_json::json!({
+            "version": SETTINGS_VERSION,
+            "allow_rar_archives": true,
+        })
+        .to_string();
+        let s = Settings::from_json(&json).unwrap();
+        assert!(s.allow_rar_archives);
+        let json2 = s.to_json().unwrap();
+        let s2 = Settings::from_json(&json2).unwrap();
+        assert!(s2.allow_rar_archives);
     }
 }

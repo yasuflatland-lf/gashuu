@@ -56,6 +56,8 @@ settings-preload-a11y = Preload radius
 settings-track-recent-label = Track recent files
 settings-track-recent-a11y = Track recent files
 settings-performance-note = Cache & preload apply to newly opened books.
+settings-allow-rar-label = Allow CBR/RAR archives
+settings-allow-rar-a11y = Allow CBR/RAR archives
 
 # General section — Language row
 settings-language-label = Language

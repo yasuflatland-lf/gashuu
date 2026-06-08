@@ -161,7 +161,8 @@ impl OpenBookUseCase {
         // `Ok` arm reads `state` again (a borrow held across the match would
         // double-borrow-panic at the `canonical = state.borrow().open_file()...` read
         // below).
-        let opened = state.borrow_mut().open_folder(path);
+        let policy = settings.borrow().archive_policy();
+        let opened = state.borrow_mut().open_folder_with_policy(path, policy);
         // Discriminate the open result only — the recents push + settings save are
         // DEFERRED until after the empty-book check below, so a zero-page source
         // pushes nothing to recents and triggers no settings save (the spec pins
