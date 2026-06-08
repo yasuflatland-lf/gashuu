@@ -35,11 +35,9 @@ impl Library {
     }
 
     pub fn save_to(&self, path: &Path) -> Result<(), CoreError> {
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        std::fs::write(path, self.to_json()?)?;
-        Ok(())
+        // `write_atomic` owns parent-directory creation and crash-safe replacement
+        // (temp file + fsync + rename), so this call site does neither itself.
+        crate::atomic_write::write_atomic(path, self.to_json()?.as_bytes())
     }
 
     /// Serialize to pretty JSON with the on-disk schema version.
@@ -221,6 +219,41 @@ mod tests {
         assert_eq!(loaded.books().len(), 1);
         assert_eq!(loaded.books()[0].path(), Path::new("/manga/a.cbz"));
         assert_eq!(loaded.books()[0].last_page(), 7);
+    }
+
+    #[test]
+    fn save_to_creates_missing_parent_directories() {
+        // The atomic helper owns parent creation; saving under a non-existent
+        // subtree must materialize the directories AND the file.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("deep").join("nest").join("library.json");
+        assert!(!path.parent().unwrap().exists());
+        Library::new().save_to(&path).unwrap();
+        assert!(path.exists());
+    }
+
+    #[test]
+    fn save_to_overwrites_existing_file_with_complete_json() {
+        // Saving over an existing (longer) library file must replace it wholesale
+        // with the new document — no truncation, no leftover tail from the old one.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("library.json");
+
+        // First save: two books (a longer document).
+        let mut original = Library::new();
+        assert!(original.add(PathBuf::from("/manga/a.cbz")).is_some());
+        assert!(original.add(PathBuf::from("/manga/b.cbz")).is_some());
+        original.save_to(&path).unwrap();
+
+        // Second save: a single empty library (a shorter document).
+        let replacement = Library::new();
+        replacement.save_to(&path).unwrap();
+
+        // The bytes on disk must equal exactly the new serialization, with no
+        // residue from the first write, and parse back to an empty library.
+        let on_disk = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(on_disk, replacement.to_json().unwrap());
+        assert!(Library::load_from(&path).unwrap().books().is_empty());
     }
 
     #[test]

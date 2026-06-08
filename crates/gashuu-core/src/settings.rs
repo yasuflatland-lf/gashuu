@@ -226,11 +226,9 @@ impl Settings {
     }
 
     pub fn save_to(&self, path: &Path) -> Result<(), CoreError> {
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        std::fs::write(path, self.to_json()?)?;
-        Ok(())
+        // `write_atomic` owns parent-directory creation and crash-safe replacement
+        // (temp file + fsync + rename), so this call site does neither itself.
+        crate::atomic_write::write_atomic(path, self.to_json()?.as_bytes())
     }
 
     /// Derive the archive-open policy from these settings.
@@ -398,6 +396,38 @@ mod tests {
         original.save_to(&path).unwrap();
         let loaded = Settings::load_from(&path).unwrap();
         assert_eq!(original, loaded);
+    }
+
+    #[test]
+    fn save_to_creates_missing_parent_directories() {
+        // The atomic helper owns parent creation; saving under a non-existent
+        // subtree must materialize the directories AND the file.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("deep").join("nest").join("settings.json");
+        assert!(!path.parent().unwrap().exists());
+        Settings::default().save_to(&path).unwrap();
+        assert!(path.exists());
+    }
+
+    #[test]
+    fn save_to_overwrites_existing_file_with_complete_json() {
+        // Saving over an existing (longer) settings file must replace it wholesale
+        // with the new document — no truncation, no leftover tail from the old one.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+
+        // First save: a fully-populated (longer) document.
+        non_default_settings().save_to(&path).unwrap();
+
+        // Second save: defaults (a shorter document on most fields).
+        let replacement = Settings::default();
+        replacement.save_to(&path).unwrap();
+
+        // The bytes on disk must equal exactly the new serialization, and parse
+        // back to the replacement value with no residue from the first write.
+        let on_disk = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(on_disk, replacement.to_json().unwrap());
+        assert_eq!(Settings::load_from(&path).unwrap(), replacement);
     }
 
     #[test]
