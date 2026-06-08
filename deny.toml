@@ -2,6 +2,7 @@
 version = 2
 ignore = [
   { id = "RUSTSEC-2024-0436", reason = "paste is a transitive dependency of the AVIF stack (rav1e -> ravif -> image); the advisory is informational/unmaintained and has no patched version. Remove this once `cargo tree -i paste --locked` no longer finds paste." },
+  { id = "RUSTSEC-2026-0173", reason = "proc-macro-error2 is unmaintained, used transitively by i18n-embed-fl; no safe upgrade is available. Remove once i18n-embed-fl drops this dependency." },
 ]
 
 [sources]
