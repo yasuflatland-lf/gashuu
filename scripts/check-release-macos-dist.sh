@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # check-release-macos-dist.sh - macOS release packaging guard.
 #
-# This checks the temporary unsigned macOS release helper and the workflow
-# packaging shape without running the expensive macOS release build.
+# This checks the workflow packaging shape and documentation content
+# without running the expensive macOS release build.
 
 set -euo pipefail
 
@@ -61,39 +61,28 @@ forbid_text() {
   fi
 }
 
-helper="scripts/macos/Open gashuu.command"
 workflow=".github/workflows/release.yml"
 ci=".github/workflows/ci.yml"
 readme="README.md"
 
 echo ""
-echo "=== CHECK 1: macOS helper command ==="
-require_file "$helper"
-require_executable "$helper"
-require_text "$helper" "#!/bin/sh"
-require_text "$helper" 'APP="/Applications/gashuu.app"'
-require_text "$helper" '/usr/bin/osascript'
-require_text "$helper" '/usr/bin/xattr -dr com.apple.quarantine "$APP"'
-require_text "$helper" '/usr/bin/open "$APP"'
-require_text "$helper" 'gashuu.app was not found in /Applications'
-forbid_text "$helper" "sudo"
-
-echo ""
-echo "=== CHECK 2: release workflow macOS zip contents ==="
+echo "=== CHECK 1: release workflow macOS zip contents ==="
 require_text "$workflow" 'STAGE="target/release/macos-dist/gashuu-${TAG}-macos-universal"'
 require_text "$workflow" 'ditto "$APP" "$STAGE/gashuu.app"'
-require_text "$workflow" 'cp "scripts/macos/Open gashuu.command" "$STAGE/Open gashuu.command"'
-require_text "$workflow" 'chmod +x "$STAGE/Open gashuu.command"'
 require_text "$workflow" '"$STAGE/README-macOS.txt"'
 require_text "$workflow" 'This macOS build is currently unsigned and not notarized.'
+require_text "$workflow" 'System Settings > Privacy & Security'
+require_text "$workflow" 'Open Anyway'
 require_text "$workflow" 'ditto -c -k --keepParent'
 require_text "$workflow" '"$STAGE"'
 require_text "$workflow" '"gashuu-${TAG}-macos-universal.zip"'
+forbid_text "$workflow" 'cp "scripts/macos/Open gashuu.command"'
 
 echo ""
-echo "=== CHECK 3: docs and CI guard ==="
+echo "=== CHECK 2: docs and CI guard ==="
 require_text "$readme" "macOS builds are currently unsigned and not notarized."
-require_text "$readme" "Open gashuu.command"
+require_text "$readme" "System Settings"
+require_text "$readme" "Open Anyway"
 require_text "$readme" "temporary workaround until Developer ID signing"
 require_text "$readme" "notarization are added"
 require_text "$ci" "bash scripts/check-release-macos-dist.sh"
