@@ -59,6 +59,7 @@ export struct CarouselItem {
     selected: bool,
     bookmarked: bool, // true = last-opened book; shows the BookmarkRibbon overlay
     cover-failed: bool, // true = cover load failed; shows the failed treatment
+    cover-loaded: bool, // true = cover image arrived from CoverController (not yet = loading placeholder)
 }
 
 // File-private cover-flow card: de-duplicates the per-cover card so the
@@ -107,6 +108,9 @@ component CoverCard inherits Rectangle {
     // is true — an unavailable book renders its own distinct broken-cover
     // treatment regardless (the two states stay visually separate).
     in property <bool> cover-failed;
+    // true once CoverController streams in a real image. Starts false so the
+    // neutral loading placeholder is shown instead of a black default image.
+    in property <bool> cover-loaded;
     // Bulk-selection (PR-2). `selected` draws the accent check badge;
     // `selection-mode` is forwarded for future selection-only chrome. `interactive`
     // gates the cover TouchArea so only the pass-1 backing copy fires the click
@@ -189,7 +193,7 @@ component CoverCard inherits Rectangle {
             x: 0; y: 0; width: 100%; height: 100%;
             radius: Theme.radius-sm;
             source: root.cover-source;
-            loaded: !root.cover-failed;
+            loaded: root.cover-loaded;
             failed: root.cover-failed;
             highlighted: false;
         }
@@ -626,6 +630,7 @@ export component Carousel inherits Rectangle {
                   selection-mode: root.selection-mode;
                   bookmarked: item.bookmarked;
                   cover-failed: item.cover-failed;
+                  cover-loaded: item.cover-loaded;
                   // PR-2: ONLY the always-on pass-1 backing copy is click-interactive,
                   // so each cover (including the centered one, whose pass-2 copy below
                   // sets interactive:false) fires its TouchArea exactly once.
@@ -662,6 +667,7 @@ export component Carousel inherits Rectangle {
                   selection-mode: root.selection-mode;
                   bookmarked: item.bookmarked;
                   cover-failed: item.cover-failed;
+                  cover-loaded: item.cover-loaded;
                   // PR-2: the pass-2 TOP copy of the centered card is NON-interactive
                   // so the centered cover does not double-fire — its click is handled
                   // by the pass-1 backing copy above (which is always shown).
