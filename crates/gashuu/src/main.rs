@@ -1,5 +1,6 @@
 slint::include_modules!();
 
+mod add_loader;
 mod app;
 mod carousel;
 mod cover_loader;
@@ -16,9 +17,7 @@ mod viewer_state;
 mod viewport;
 
 use carousel::{apply_selection_flags, bind_carousel_model, build_carousel_model, cover_requests};
-use gashuu_core::{
-    ArchiveLoader, ArchivePolicy, CoreError, DecodedImage, Library, ReadingDirection, Settings,
-};
+use gashuu_core::{CoreError, DecodedImage, Library, ReadingDirection, Settings};
 use library_model::{LibrarySearchState, LibrarySelectionState};
 use navigation::{screen_to_index, NavState};
 use std::cell::RefCell;
@@ -100,6 +99,13 @@ fn main() -> color_eyre::Result<()> {
     // double-guard; `start` is called after the carousel model is (re)built so a
     // library refresh supersedes any covers still streaming from the prior view.
     let covers = Rc::new(cover_loader::CoverController::new());
+
+    // Bulk-add controller (issue 206): probes each picked source off the UI
+    // thread so a bulk add never freezes the event loop. Owns the supersede
+    // epoch + per-generation outcome accumulator; the add handlers call `start`,
+    // and the `add-finalize` callback runs the apply half on the UI thread.
+    // Shared via `Rc` so the add and finalize handlers see one controller.
+    let adder = Rc::new(add_loader::AddController::new());
 
     // Shared library-search filter state. Owned here and shared via `Rc` with the
     // search-query callback (live filtering), the add/open backfill paths, and the
@@ -199,8 +205,8 @@ fn main() -> color_eyre::Result<()> {
 
     // Wire all event handlers onto the window (handlers/, #151).
     handlers::wire_open_handlers(
-        &ui, &state, &viewport, &settings, &library, &open_book, &covers, &search, &selection,
-        &localizer,
+        &ui, &state, &viewport, &settings, &library, &open_book, &covers, &adder, &search,
+        &selection, &localizer,
     );
     handlers::wire_carousel_handlers(
         &ui, &state, &viewport, &library, &nav, &open_book, &covers, &search, &selection,
@@ -261,7 +267,7 @@ fn with_ui(weak: &slint::Weak<ViewerWindow>, f: impl FnOnce(ViewerWindow)) {
 /// home of the direct log+status save-failure shape. The aggregation paths keep
 /// their own composition and do NOT route through this: `NoticesContent`
 /// (app.rs, pre-captured `Option<String>` composed in `finalize_open`), the
-/// add-batch report (`add_books_and_refresh`), the bulk-delete rollback
+/// add-batch report (`apply_add_report`), the bulk-delete rollback
 /// (`RemoveOutcome::SaveFailed`), and the log-only sites where no status line
 /// is wanted (guide dismiss, exit, write-backs).
 fn report_save_error(
@@ -534,34 +540,37 @@ struct AddReport {
     skipped: usize,
 }
 
-/// Add every path in `paths` to `lib`, rejecting sources that contain no images
-/// before they ever enter the library.
+/// Apply already-probed sources to `lib`, the UI-thread APPLY half of the bulk
+/// add (issue 206). The probe half runs off the UI thread (`add_loader::probe_path`
+/// on rayon workers) so opening each archive never freezes the event loop; this
+/// half takes the resulting [`add_loader::ProbeOutcome`]s — which the controller
+/// has already re-sorted to INPUT order — and mutates the `!Send` `Library` here:
 ///
-/// Each path is FIRST probed with [`ArchiveLoader::probe_page_count`]:
-/// - `Err(CoreError::EmptyBook { .. })` — the source opened but has zero image
-///   pages: skip it and count it in `skipped` (the empty-book rule).
-/// - `Err(other)` (I/O, `UnsupportedFormat`, …) — the source cannot be opened at
-///   all: skip it, count it in `skipped`, and `warn!` with the error. A book that
-///   cannot be opened is never added.
-/// - `Ok(count)` — add via `Library::add` (which canonicalizes, dedups, and
+/// - `ProbeKind::Empty` — opened but zero image pages: skip and count in
+///   `skipped` (the empty-book rule).
+/// - `ProbeKind::FormatDisabled` / `ProbeKind::Unreadable` — could not be opened
+///   as a book: skip, count in `skipped`, and log (the same level + detail the
+///   old synchronous `add_paths` logged; logging is deferred to here so the probe
+///   half stays pure).
+/// - `ProbeKind::Counted(count)` — add via `Library::add` (canonicalizes, dedups,
 ///   re-sorts). On a genuine insert (`Some(canonical)`) the page count is recorded
 ///   immediately so a freshly added book shows "1 / N" without waiting for its
 ///   first open; a duplicate (`None`) is silently dropped (neither added nor
 ///   skipped).
-fn add_paths(
-    lib: &mut Library,
-    paths: Vec<std::path::PathBuf>,
-    policy: ArchivePolicy,
-) -> AddReport {
+///
+/// Behaviour is byte-identical to the pre-206 synchronous `add_paths`; only the
+/// probe was moved off-thread.
+fn apply_outcomes(lib: &mut Library, outcomes: Vec<add_loader::ProbeOutcome>) -> AddReport {
+    use add_loader::ProbeKind;
     let mut added = Vec::new();
     let mut skipped = 0usize;
-    for path in paths {
-        match ArchiveLoader::probe_page_count_with_policy(&path, policy) {
-            Err(CoreError::EmptyBook { .. }) => {
+    for add_loader::ProbeOutcome { path, kind, .. } in outcomes {
+        match kind {
+            ProbeKind::Empty => {
                 skipped += 1;
                 tracing::debug!(path = %path.display(), "skipping empty source (no image pages)");
             }
-            Err(CoreError::FormatDisabled { format }) => {
+            ProbeKind::FormatDisabled { format } => {
                 skipped += 1;
                 tracing::info!(
                     path = %path.display(),
@@ -569,11 +578,11 @@ fn add_paths(
                     "skipping source: format disabled in safer mode"
                 );
             }
-            Err(e) => {
+            ProbeKind::Unreadable { error } => {
                 skipped += 1;
-                tracing::warn!(error = %e, path = %path.display(), "skipping unreadable source");
+                tracing::warn!(%error, path = %path.display(), "skipping unreadable source");
             }
-            Ok(count) => {
+            ProbeKind::Counted(count) => {
                 if let Some(canonical) = lib.add(path).map(std::path::Path::to_path_buf) {
                     // Record the probed count on the freshly inserted book so it
                     // shows "1 / N" before its first open. `set_page_count`
@@ -731,7 +740,7 @@ pub(crate) fn push_selection_strings(
 /// state, and the `localizer` (for composing the selection-toolbar strings after
 /// the projection changes). They ALWAYS travel together for a carousel rebuild,
 /// so bundling them as borrows keeps `refresh_library_carousel` /
-/// `add_books_and_refresh` under the argument-count limit and documents that
+/// `apply_add_report` under the argument-count limit and documents that
 /// they are one collaboration unit, not independent params.
 struct CarouselRefresh<'a> {
     library: &'a Rc<RefCell<Library>>,
@@ -813,11 +822,11 @@ fn refresh_library_carousel(ui: &ViewerWindow, deps: &CarouselRefresh, reset_foc
     );
 }
 
-/// Which status notice to surface after `add_books_and_refresh` calls `add_paths`.
+/// Which status notice to surface after `apply_outcomes` applies a probed batch.
 ///
 /// The four arms cover the full 2×2 of (added==0 vs added>0) × (skipped==0 vs
 /// skipped>0).  The save-failure arm is handled separately in
-/// `add_books_and_refresh` and is NOT part of this enum.
+/// `apply_add_report` and is NOT part of this enum.
 #[derive(Debug, PartialEq)]
 enum AddNotice {
     /// All picked paths were already in the library (no new additions, no rejections).
@@ -844,35 +853,36 @@ fn select_add_notice(added: usize, skipped: usize) -> AddNotice {
     }
 }
 
-/// Add `paths` to the library, persist, rebuild the filtered carousel, and
-/// surface the outcome on the status line, restoring carousel focus in every
-/// case.
+/// Apply an already-computed add `report` to the library: persist, rebuild the
+/// filtered carousel, and surface the outcome on the status line, restoring
+/// carousel focus in every case. The UI-thread tail of the bulk add (issue 206),
+/// run from the `add-finalize` handler once the off-thread probe completes (and
+/// the `apply_outcomes` mutation has produced the `report`).
 ///
-/// Shared by the Add Books and Add Folder handlers; `op` distinguishes the two
-/// only in the save-failure trace message. When nothing new is added there is
-/// nothing to persist or rebuild, so it short-circuits after the status update.
+/// Shared by the Add Books and Add Folder paths; `op` distinguishes the two only
+/// in the save-failure trace message. When nothing new was added there is nothing
+/// to persist or rebuild, so it short-circuits after the status update.
 ///
-/// Sources with no image pages (or that cannot be opened) are rejected by
-/// `add_paths` before they enter the library; the status notice names how many
-/// were skipped (added-some-skipped-some, or none-added-all-empty), falling back
-/// to the already-in-library message only when the skip count is zero.
+/// Sources with no image pages (or that cannot be opened) were rejected by the
+/// probe + `apply_outcomes` before they entered the library; the status notice
+/// names how many were skipped (added-some-skipped-some, or none-added-all-empty),
+/// falling back to the already-in-library message only when the skip count is zero.
 ///
 /// Newly added books are FORCED visible under the active filter (so an add never
 /// silently hides the new book behind a non-matching query); the filter text
 /// stays in place, and the forced override is cleared on the next user query
 /// change (see `LibrarySearchState::set_query`).
-fn add_books_and_refresh(
+fn apply_add_report(
     ui: &ViewerWindow,
     deps: &CarouselRefresh,
-    paths: Vec<std::path::PathBuf>,
-    policy: ArchivePolicy,
+    report: AddReport,
     op: &'static str,
     loader: &i18n_embed::fluent::FluentLanguageLoader,
 ) {
     let AddReport {
         added: added_paths,
         skipped,
-    } = add_paths(&mut deps.library.borrow_mut(), paths, policy);
+    } = report;
     if added_paths.is_empty() {
         // Nothing new entered the library: nothing to persist or rebuild. Route
         // through the pure decision fn so every branch is testable without Slint.
@@ -956,6 +966,27 @@ fn add_books_and_refresh(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use gashuu_core::ArchivePolicy;
+
+    /// Test convenience around the split add: probe `paths` synchronously in
+    /// input order, then apply the outcomes. This is the pre-206 `add_paths`
+    /// behaviour, retained so the apply-half tests below exercise the real
+    /// `apply_outcomes` mutation path through one call. Production no longer has a
+    /// synchronous `add_paths` — the probe runs off the UI thread (`add_loader`)
+    /// and the apply runs in the `add-finalize` handler — but the probe + apply
+    /// halves are unchanged in behaviour, so testing them composed is faithful.
+    fn add_paths(
+        lib: &mut Library,
+        paths: Vec<std::path::PathBuf>,
+        policy: ArchivePolicy,
+    ) -> AddReport {
+        let outcomes = paths
+            .into_iter()
+            .enumerate()
+            .map(|(index, path)| add_loader::probe_path(index, path, policy))
+            .collect();
+        apply_outcomes(lib, outcomes)
+    }
 
     // ---- add_paths (empty-book rule) -------------------------------------
     //

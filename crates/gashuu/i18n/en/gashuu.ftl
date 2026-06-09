@@ -266,6 +266,9 @@ notice-added-books-save-failed = Added { $n } book(s), but could not save librar
 notice-added-books-skipped = Added { $n } book(s), skipped { $skipped } with no images
 # All picked paths had no images; nothing was added to the library.
 notice-no-books-added-empty = No books added — { $skipped } item(s) had no images
+# Transient progress while a bulk add probes each picked source off the UI
+# thread; { $done } sources of { $total } have been probed so far.
+notice-adding-progress = Adding… ({ $done }/{ $total })
 # An existing library entry was auto-removed because its source has no images.
 notice-empty-book-removed = Removed "{ $title }" — no images found
 

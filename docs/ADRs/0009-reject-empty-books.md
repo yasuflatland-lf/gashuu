@@ -38,8 +38,9 @@ remove + notify".
    that counts zero pages. I/O errors and `UnsupportedFormat` propagate UNCHANGED — an unreadable
    source is never reclassified as empty. At the cover worker this is the pure
    `should_signal_empty(open_result, count) = open_result.is_ok() && count == 0`.
-3. **Three UI hooks, no re-derivation of the rule.** Add (`add_paths` → `AddReport { added, skipped }`):
-   probe each path, reject empty OR unreadable before insert, and persist the probed count on a genuine
+3. **Three UI hooks, no re-derivation of the rule.** Add (probe off the UI thread via
+   `add_loader::probe_path`, then `apply_outcomes` → `AddReport { added, skipped }`, issue 206):
+   reject empty OR unreadable before insert, and persist the probed count on a genuine
    insert so a fresh add shows "1 / N" immediately. Open (`OpenBookUseCase::run` →
    `OpenOutcome::EmptyBookRemoved { title, removed, save_error }`): on a clean zero-page open, bail out
    BEFORE the recents push / settings save / `register_opened`, remove the book if present, re-save,
