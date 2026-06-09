@@ -195,6 +195,7 @@ component CoverCard inherits Rectangle {
             source: root.cover-source;
             loaded: root.cover-loaded;
             failed: root.cover-failed;
+            failed-label: root.centered && root.cover-failed ? Strings.cover-failed-label : "";
             highlighted: false;
         }
 

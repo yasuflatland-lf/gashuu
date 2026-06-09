@@ -11,7 +11,7 @@
 //! local module is also named `zip`; an unqualified `zip::` would resolve to
 //! this module, not the crate.
 
-use super::naming::{has_image_ext, MAX_ENTRY_BYTES};
+use super::naming::{has_image_ext, is_macos_metadata, MAX_ENTRY_BYTES};
 use super::{PageEntry, PageSource};
 use crate::error::CoreError;
 use crate::ordering::natural_cmp;
@@ -80,6 +80,13 @@ impl ZipSource {
             // pages in a folder, unlike FolderSource's max_depth(1)).
             if entry.is_dir() || !has_image_ext(&safe) {
                 continue; // dirs / non-images are expected, not skips
+            }
+            // macOS resource forks (`__MACOSX/.../._x.jpg`) and dotfiles carry
+            // image extensions and sort ahead of real pages via case-insensitive
+            // ordering, so they can masquerade as page 0. Treat them as expected
+            // noise like directories — drop without counting as a skip.
+            if is_macos_metadata(&safe) {
+                continue;
             }
             if entry.size() > max {
                 skipped += 1;
@@ -260,6 +267,34 @@ mod tests {
         let src = ZipSource::open(cbz.path()).unwrap();
 
         assert_eq!(names(&src), vec!["1.avif".to_string()]);
+        assert_eq!(src.skipped_count(), 0);
+    }
+
+    #[test]
+    fn macos_metadata_entries_are_excluded_without_counting() {
+        let png = tiny_png();
+        // The AppleDouble carries a `.jpg` name and (via case-insensitive
+        // natural ordering) sorts AHEAD of `Manga/001.jpg`, so before the fix it
+        // would become page 0 and fail to decode.
+        let cbz = write_cbz(&[
+            ("__MACOSX/Manga/._001.jpg", b"AppleDouble noise".to_vec()),
+            ("Manga/001.jpg", png.clone()),
+            ("Manga/002.jpg", png.clone()),
+        ]);
+        let src = ZipSource::open(cbz.path()).unwrap();
+
+        let listed = names(&src);
+        // Only the real images survive, in natural order.
+        assert_eq!(
+            listed,
+            vec!["Manga/001.jpg".to_string(), "Manga/002.jpg".to_string()]
+        );
+        // The AppleDouble must be entirely absent from the page list.
+        assert!(!listed.iter().any(|n| n.contains("__MACOSX")));
+        assert!(!listed.iter().any(|n| n.contains("._")));
+        // Page 0 is the real first page, not the resource fork.
+        assert_eq!(listed[0], "Manga/001.jpg");
+        // Metadata is expected noise, not a skip.
         assert_eq!(src.skipped_count(), 0);
     }
 

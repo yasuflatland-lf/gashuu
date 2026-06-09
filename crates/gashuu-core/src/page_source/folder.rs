@@ -1,4 +1,4 @@
-use super::naming::{has_image_ext, MAX_ENTRY_BYTES};
+use super::naming::{has_image_ext, is_macos_metadata, MAX_ENTRY_BYTES};
 use super::{PageEntry, PageSource};
 use crate::error::CoreError;
 use crate::ordering::natural_cmp;
@@ -45,17 +45,25 @@ impl FolderSource {
         let mut skipped = 0usize;
         for result in WalkDir::new(root.as_ref()).min_depth(1).max_depth(1) {
             match result {
-                Ok(e) if e.file_type().is_file() && has_image_ext(e.path()) => match e.metadata() {
-                    Ok(meta) if meta.len() <= max => {
-                        entries.push(FolderEntry {
-                            name: e.file_name().to_string_lossy().into_owned(),
-                            path: e.path().to_path_buf(),
-                        });
+                // macOS resource forks (`._x.jpg`) and dotfiles (`.DS_Store`)
+                // carry image extensions but are filesystem metadata, not pages.
+                Ok(e)
+                    if e.file_type().is_file()
+                        && has_image_ext(e.path())
+                        && !is_macos_metadata(e.path()) =>
+                {
+                    match e.metadata() {
+                        Ok(meta) if meta.len() <= max => {
+                            entries.push(FolderEntry {
+                                name: e.file_name().to_string_lossy().into_owned(),
+                                path: e.path().to_path_buf(),
+                            });
+                        }
+                        // Oversized image, or metadata unreadable: count it so the
+                        // UI can surface a warning.
+                        _ => skipped += 1,
                     }
-                    // Oversized image, or metadata unreadable: count it so the UI
-                    // can surface a warning.
-                    _ => skipped += 1,
-                },
+                }
                 // Directories and non-image files are expected, not errors.
                 Ok(_) => {}
                 // Unreadable entry: record it so the UI can surface a warning.
@@ -144,6 +152,23 @@ mod folder_source_tests {
         let names: Vec<String> = source.list_pages().into_iter().map(|e| e.name).collect();
 
         assert_eq!(names, vec!["1.png", "2.png", "10.png", "a.jpg", "b.avif"]);
+        assert_eq!(source.skipped_count(), 0);
+    }
+
+    #[test]
+    fn macos_metadata_files_are_excluded() {
+        let dir = tempfile::tempdir().unwrap();
+        // A real page, an AppleDouble resource fork (`.jpg`-named but metadata),
+        // and a `.DS_Store` dotfile.
+        write_png(&dir.path().join("1.png"));
+        write_png(&dir.path().join("._1.png"));
+        fs::write(dir.path().join(".DS_Store"), b"dotfile").unwrap();
+
+        let source = FolderSource::open(dir.path()).unwrap();
+        let names: Vec<String> = source.list_pages().into_iter().map(|e| e.name).collect();
+
+        assert_eq!(names, vec!["1.png"]);
+        // Metadata is expected noise, not a skip.
         assert_eq!(source.skipped_count(), 0);
     }
 

@@ -149,6 +149,9 @@ carousel-empty-cta-files = 追加するファイルを選択
 carousel-no-results-title = 一致する本がありません
 carousel-no-results-hint = 別のキーワードで検索してください。
 
+# Cover load-failure label, shown only on the centered card (issue 144 follow-up).
+cover-failed-label = 開けません
+
 # Idle bottom-strip label: total library size, shown when no transient notice
 # occupies the strip. { $n } は蔵書の総冊数（n > 0 のときのみ合成）。
 # Japanese has no plural inflection, so a single *[other] variant carries every
