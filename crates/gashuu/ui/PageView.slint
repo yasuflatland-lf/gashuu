@@ -46,6 +46,22 @@ export component PageView inherits Rectangle {
     // Max press-to-release travel still counted as a tap (not a pan).
     property <length> tap-slop: 4px;
 
+    // ── Two-finger horizontal swipe → page turn ──────────────────────────────
+    // Horizontal trackpad scroll (delta-x) turns ONE page; vertical (delta-y)
+    // still zooms. Discrete: accumulate delta-x, cross `swipe-threshold` → emit
+    // ONE physical-direction token, mapped to nav() in ViewerWindow so keymap.rs
+    // owns the RTL/LTR resolution and core owns the step size (single = 1 page,
+    // spread = 1 two-page spread). ONE physical swipe = ONE turn: after firing,
+    // an idle-gap guard swallows the rest of the gesture AND the macOS
+    // momentum-phase tail; every swallowed event restarts the idle countdown, so
+    // the guard clears only once events truly STOP — a long drag or the momentum
+    // tail can no longer re-fire and skip a page/spread.
+    callback page-swipe(string);   // "left" / "right" — physical swipe direction
+    property <length> swipe-threshold: 60px;   // higher = heavier; page turns stay deliberate
+    property <duration> swipe-idle-gap: 120ms; // quiet time that ends one swipe
+    property <float> swipe-accum: 0;
+    property <bool> swipe-armed: false;        // gesture owns input until it goes idle
+
     background: Theme.canvas;
     clip: true;
 
@@ -82,8 +98,45 @@ export component PageView inherits Rectangle {
 
     // TouchArea is non-focusable and will not steal keyboard focus from the
     // FocusScope in ViewerWindow. The existing fs.focus() convention is unaffected.
+    // Idle-gap guard (re-armable): after a swipe fires one turn, every further
+    // horizontal scroll event restarts this countdown, so it clears only once the
+    // events stop (the user lifts and the OS momentum dies) — one swipe = one turn.
+    idle-timer := Timer {
+        interval: root.swipe-idle-gap;
+        running: root.swipe-armed;
+        triggered => { root.swipe-armed = false; }
+    }
+
     TouchArea {
         scroll-event(e) => {
+            // Horizontal swipe → discrete page turn; vertical → zoom (unchanged).
+            // Dominant-axis gate (1.2x margin) stops a diagonal scroll doing both.
+            if (Math.abs(e.delta-x / 1px) > Math.abs(e.delta-y / 1px) * 1.2) {
+                // When zoomed in the user needs two-finger drag (pan) for horizontal
+                // movement; disable swipe-to-turn so it doesn't fire unexpectedly.
+                if (root.content-w > root.width + 2px || root.content-h > root.height + 2px) {
+                    return reject;
+                }
+                // Already fired this gesture: swallow the rest (incl. the OS
+                // momentum tail) and keep the idle countdown alive so it can't
+                // re-fire and skip a page/spread.
+                if (root.swipe-armed) {
+                    idle-timer.restart();
+                    return accept;
+                }
+                // Drop a reversed gesture's prior travel so two flicks never cancel.
+                if (e.delta-x / 1px * root.swipe-accum < 0) {
+                    root.swipe-accum = 0;
+                }
+                root.swipe-accum += e.delta-x / 1px;
+                if (Math.abs(root.swipe-accum) >= root.swipe-threshold / 1px) {
+                    root.page-swipe(root.swipe-accum > 0 ? "right" : "left");
+                    root.swipe-accum = 0;
+                    root.swipe-armed = true;
+                    idle-timer.restart();
+                }
+                return accept;
+            }
             root.zoom-at(self.mouse-x, self.mouse-y, e.delta-y / 1px);
             return accept;
         }
