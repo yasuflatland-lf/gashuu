@@ -472,7 +472,7 @@ same model. `total` comes from the persisted `Book::page_count`: `0` until the c
 (`progress` guarded to `0.0`), the real saved count afterwards — known by opening the book; for a
 never-opened book added BEFORE the reject-empty-books feature, by `CoverController`'s background
 page-count prefetch (see `cover_loader.rs`), which streams the count into this `total` and persists
-it; for a book ADDED after that feature, persisted at add time by `add_paths` (so a fresh add shows
+it; for a book ADDED after that feature, persisted at add time by `apply_outcomes` (so a fresh add shows
 its real `total` without waiting for the prefetch — see ADR-0009). The `total: clamp_to_i32(total)`
 saturating cast is unchanged.
 
@@ -742,6 +742,21 @@ count is never persisted, so the next generation re-detects), and a removed book
 next generation's requests (no loop). See [patterns.md](patterns.md), "Worker → UI ACTION via a
 Slint callback", and [ADR-0009](ADRs/0009-reject-empty-books.md).
 
+**`add_loader.rs`** (`AddController`, issue 206): the SAME async harness applied to the bulk ADD, so opening
+several large/cloud-synced archives in the `+` picker never freezes the event loop (`probe_page_count` reads each
+ZIP's central directory; `File::open` can block on hydration). `start(ui_weak, paths, policy, op)` bumps an
+`AtomicUsize` epoch, installs a fresh `Arc<Mutex<Vec<ProbeOutcome>>>` accumulator, shows `Adding… (0/N)`, then
+dispatches one `rayon::spawn` per path running the pure, `Send` `probe_path` (classifies into
+`ProbeKind::{Counted(NonZeroUsize), Empty, FormatDisabled, Unreadable}` — touching NO `Library`). Each worker
+pushes its `ProbeOutcome`, marshals an epoch-guarded `add-progress(done, total)` tick, and the worker that drains
+the `remaining` `AtomicUsize` to zero marshals `add-finalize(epoch)`. The finalize handler
+(`handlers/library.rs`) drains via `AddController::take_outcomes(epoch)` — epoch-guarded, so a second add started
+mid-probe supersedes the first with no stale clobber — re-sorts to INPUT order, then runs the APPLY half on the UI
+thread: `main.rs::apply_outcomes` (the old synchronous `add_paths` body, byte-identical behaviour, logging deferred
+here so the probe stays pure) + `apply_add_report` (save → rebuild → notice → focus). Same Send/!Send discipline as
+the cover loader: only `Send` values cross into the workers and the marshaled closures; every `Library` mutation
+runs on the UI thread. See [patterns.md](patterns.md), "Worker → UI ACTION via a Slint callback".
+
 **`SettingsDialog.slint`** (issue 102 replaced its std-widgets `ComboBox`/`SpinBox`/`CheckBox` with the token-driven `Segmented`/`Stepper`/`Toggle`/`Dropdown` atoms): modal overlay editing active settings; two-way `current-index <=> in-out-prop` +
 `selected`/`edited`/`toggled` callbacks. Since issue 103/104 it is a **content-hug glass panel** (φ relocated into the component proportions; spec 2026-06-04) built from custom `components/` atoms; its footer "Shortcuts" link opens `ShortcutsOverlay`, and an `in property <int> focus-epoch` (bumped by `ViewerWindow.focus-settings()`) lets the parent re-focus this still-mounted dialog after the overlay closes.
 
@@ -796,13 +811,18 @@ Library-side pickers: `on_add_books` (né `on_add_files`; filtered cbz/zip/cbr/r
 panel, `pick_files` elsewhere; the platform split lives in `#[cfg]` blocks inside the one handler,
 and the matching `combined-add-picker` bool pushed at boot collapses the NavBar's two add capsules
 into one on macOS) and
-`on_add_folder` (`pick_folder`, folder-as-one-book; its capsule is hidden on macOS). `main.rs` owns the library-add seam — `add_paths`
-(probes each path via `ArchiveLoader::probe_page_count`, rejects empty/unreadable sources, dedup-aware
-insert, persists the probed count on each genuine insert, and returns `AddReport { added, skipped }` —
-see ADR-0009), `build_carousel_model` (Library → `ModelRc<CarouselItem>`,
+`on_add_folder` (`pick_folder`, folder-as-one-book; its capsule is hidden on macOS). The library-add seam is split
+across the UI-thread boundary (issue 206, to keep a bulk add of large/cloud-synced archives from freezing the event
+loop): the PROBE half runs OFF the UI thread — `add_loader::AddController::start` dispatches one rayon
+`add_loader::probe_path` per picked path (`ArchiveLoader::probe_page_count` → a `Send` `ProbeOutcome`, touching no
+`Library`), streams `Adding… (k/N)` progress via the `add-progress` callback, and marshals `add-finalize` when the
+last probe completes (an `AtomicUsize` epoch supersedes a second add started mid-probe). The APPLY half runs on the
+UI thread in the `add-finalize` handler: `main.rs::apply_outcomes` (dedup-aware insert, rejects empty/unreadable
+sources, persists the probed count on each genuine insert, returns `AddReport { added, skipped }` — see ADR-0009),
+`build_carousel_model` (Library → `ModelRc<CarouselItem>`,
 0-based `last_page` → 1-based `current`, real `total`/`progress` from persisted `Book::page_count`,
 placeholder cover), and the shared
-`add_books_and_refresh` handler (insert → save → rebuild carousel → status line → restore carousel
+`apply_add_report` tail (save → rebuild carousel → status line → restore carousel
 focus; short-circuits when nothing new was added). The 4-way add notice is chosen by the pure
 `select_add_notice(added, skipped) -> AddNotice` selector (testable without Slint; see
 [patterns.md](patterns.md), "Pure-selector seam"). The persisted `Library` lives in `main.rs` as

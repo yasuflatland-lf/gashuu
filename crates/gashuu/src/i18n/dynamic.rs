@@ -184,6 +184,16 @@ pub(crate) fn no_books_added_empty(loader: &FluentLanguageLoader, skipped: usize
     fl!(loader, "notice-no-books-added-empty", skipped = skipped)
 }
 
+/// Transient bottom-strip progress while a bulk add probes each picked source
+/// off the UI thread: `done` of `total` sources probed so far. Set on every
+/// probe completion (issue 206), then overwritten by the final add notice once
+/// every source has been classified.
+pub(crate) fn adding_progress(loader: &FluentLanguageLoader, done: usize, total: usize) -> String {
+    let done = done as i64;
+    let total = total as i64;
+    fl!(loader, "notice-adding-progress", done = done, total = total)
+}
+
 /// Notice when an existing library entry is auto-removed because its source
 /// has no images. `title` is the book's display title.
 pub(crate) fn empty_book_removed(loader: &FluentLanguageLoader, title: &str) -> String {
@@ -788,6 +798,30 @@ mod tests {
             added_books_skipped(en().loader(), 5, 3),
             added_books_skipped(ja().loader(), 5, 3),
             "added_books_skipped must differ between En and Ja"
+        );
+    }
+
+    #[test]
+    fn adding_progress_embeds_both_counts() {
+        // done and total must both appear in the output; both locales must be
+        // non-empty; en must differ from ja.
+        for loc in [en(), ja()] {
+            let l = loc.loader();
+            let result = adding_progress(l, 3, 6);
+            assert!(!result.is_empty(), "adding_progress must not be empty");
+            assert!(
+                result.contains('3'),
+                "adding_progress must contain done=3, got: {result:?}"
+            );
+            assert!(
+                result.contains('6'),
+                "adding_progress must contain total=6, got: {result:?}"
+            );
+        }
+        assert_ne!(
+            adding_progress(en().loader(), 3, 6),
+            adding_progress(ja().loader(), 3, 6),
+            "adding_progress must differ between En and Ja"
         );
     }
 

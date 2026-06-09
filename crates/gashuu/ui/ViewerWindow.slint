@@ -245,6 +245,17 @@ export component ViewerWindow inherits Window {
     // the handler (on_empty_book_detected); the loader invokes it via
     // invoke_empty_book_detected.
     callback empty-book-detected(/* canonical path */ string);
+    // Bulk-add async probe bridge (issue 206). The AddController probes each
+    // picked source on rayon workers (so the UI never freezes on large/cloud-
+    // synced archives) and marshals these two callbacks back to the UI thread,
+    // mirroring empty-book-detected. add-progress is fired on every probe
+    // completion with (done, total) so handlers/library.rs can show the transient
+    // "Adding… (k/N)" status; add-finalize is fired ONCE when the last probe
+    // completes, carrying the generation epoch so a superseded add is dropped —
+    // the handler drains the probed outcomes and runs the add (mutate library,
+    // save, rebuild carousel, notice) on the UI thread.
+    callback add-progress(/* done */ int, /* total */ int);
+    callback add-finalize(/* epoch */ int);
     public function focus-carousel() { carousel.focus-self(); }
     // Forwarded navigation token: "left" | "right" | "space" | "backspace" |
     // "d" | "r" | "c" | "+" | "=" | "-" | "0" | "1" | "f".

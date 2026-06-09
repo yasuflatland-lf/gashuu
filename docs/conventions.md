@@ -87,6 +87,18 @@ labels live once and are read by both the settings dialog and the viewer status 
 new strings. Prefer NAMED args (`{ $label }`) over positional placeholders — they are word-order-safe
 for verb-final Japanese; see [patterns.md](patterns.md) ("Fluent catalog authoring gotchas").
 
+WHERE a string is SERVED depends on whether it has runtime args, NOT on whether it "feels" like a label.
+A STATIC string (no `{ $arg }`) that Slint renders directly is a property on the `Strings` global
+(`ui/Strings.slint`), pushed once per locale change via `Localizer::apply` (the `cover-failed-label`
+precedent). A PARAMETERIZED string (`{ $done }/{ $total }`, an error detail, a count) is composed in
+Rust on demand by a `crate::i18n::dynamic::*` fn and pushed through a Rust-set property
+(`set_status_text`, the `notice-*` family) — it CANNOT live on the `Strings` global, because that global
+holds a fixed value frozen at apply-time and has no way to interpolate per-call args. So a progress
+status like `notice-adding-progress = 追加中 ({ $done }/{ $total })…` goes in `dynamic.rs`
+(`adding_progress(loader, done, total)`), never in `Strings.slint` — even when a spec or checklist says
+to "follow the static-label precedent". Match the SHAPE of the value (static vs interpolated), not the
+surface it happens to render on.
+
 ### i18n load-failure policy: panic for the catalog we control
 
 The Fluent `Localizer` (`new`/`switch`) `panic!`s on a load failure: assets are
@@ -97,7 +109,18 @@ that asymmetry and its rationale — the repo's history of a silent gettext all-
 
 ### Test fixtures (no committed binaries)
 
-Tests synthesize fixtures in memory (the `image` crate makes tiny PNGs — and tiny AVIFs via its bundled ravif encoder; keep AVIF fixtures a few pixels per side, the rav1e encode is slow in debug builds) plus `tempfile` for filesystem cases — **no committed binary fixtures.** Two exceptions, both committed TEXT not binaries: insta `.snap` files (see [docs/patterns.md](patterns.md)), and the base64-encoded RAR `.cbr` fixtures in `crates/gashuu-core/src/test_fixtures.rs` (RAR has no Rust encoder, so they cannot be synthesized in-memory like PNGs/ZIPs). Even cheaper for PAGE-COUNTING / empty-book tests: a ZERO-BYTE file named `*.png` counts as a page, because `FolderSource` lists by EXTENSION (case-insensitive, `max_depth(1)`) and does not read the bytes — so a temp dir of empty `*.png` files probes to an N-page book, an empty dir probes to `EmptyBook`, and no real image data is needed (used by the `probe_page_count` / `add_paths` tests).
+Tests synthesize fixtures in memory (the `image` crate makes tiny PNGs — and tiny AVIFs via its bundled ravif encoder; keep AVIF fixtures a few pixels per side, the rav1e encode is slow in debug builds) plus `tempfile` for filesystem cases — **no committed binary fixtures.** Two exceptions, both committed TEXT not binaries: insta `.snap` files (see [docs/patterns.md](patterns.md)), and the base64-encoded RAR `.cbr` fixtures in `crates/gashuu-core/src/test_fixtures.rs` (RAR has no Rust encoder, so they cannot be synthesized in-memory like PNGs/ZIPs). Even cheaper for PAGE-COUNTING / empty-book tests: a ZERO-BYTE file named `*.png` counts as a page, because `FolderSource` lists by EXTENSION (case-insensitive, `max_depth(1)`) and does not read the bytes — so a temp dir of empty `*.png` files probes to an N-page book, an empty dir probes to `EmptyBook`, and no real image data is needed (used by the `probe_page_count` / `probe_path` / `apply_outcomes` tests).
+
+### An import used ONLY by `#[cfg(test)]` code belongs INSIDE `mod tests`, not at module scope
+
+`clippy --all-targets -- -D warnings` compiles each target separately, so an import at module scope that
+is referenced ONLY from the crate's `#[cfg(test)] mod tests` is `unused_imports` in the NON-test build
+of that target (the bin / lib) — and fails the gate, even though `cargo test` would see it as used. When
+a production use disappears (e.g. `ArchivePolicy` stopped being a `main.rs` production type after the
+add split, surviving only in the test helper), MOVE the `use` into `mod tests` (`use gashuu_core::ArchivePolicy;`)
+rather than leaving it at the top. Same trap, same fix as the dead-`pub(crate)`-getter rule
+([patterns.md](patterns.md), "Don't add a `pub(crate)` getter for a future consumer"): if the only
+consumer is test-gated, the declaration must be test-gated too.
 
 ### Validated value objects must not derive `Deserialize`
 

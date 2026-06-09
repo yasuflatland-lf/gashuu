@@ -1,12 +1,12 @@
 use crate::{
-    add_books_and_refresh, clamp_focused_index, current_book_name, empty_book_removed_status,
-    finalize_open, go_to_viewer, push_selection_strings, refresh_library_carousel,
-    visible_index_to_path, with_ui, CarouselRefresh, ViewerWindow,
-};
-use crate::{
-    app,
+    add_loader, app,
     carousel::{apply_selection_flags, set_carousel_selected},
     cover_loader, i18n,
+};
+use crate::{
+    apply_add_report, apply_outcomes, clamp_focused_index, current_book_name,
+    empty_book_removed_status, finalize_open, go_to_viewer, push_selection_strings,
+    refresh_library_carousel, visible_index_to_path, with_ui, CarouselRefresh, ViewerWindow,
 };
 use crate::{
     library_model::{LibrarySearchState, LibrarySelectionState},
@@ -30,6 +30,7 @@ pub(crate) fn wire_open_handlers(
     library: &Rc<RefCell<Library>>,
     open_book: &Rc<app::OpenBookUseCase>,
     covers: &Rc<cover_loader::CoverController>,
+    adder: &Rc<add_loader::AddController>,
     search: &Rc<RefCell<LibrarySearchState>>,
     selection: &Rc<RefCell<LibrarySelectionState>>,
     localizer: &Rc<i18n::Localizer>,
@@ -43,6 +44,7 @@ pub(crate) fn wire_open_handlers(
     let library = Rc::clone(library);
     let open_book = Rc::clone(open_book);
     let covers = Rc::clone(covers);
+    let adder = Rc::clone(adder);
     let search = Rc::clone(search);
     let selection = Rc::clone(selection);
     let localizer = Rc::clone(localizer);
@@ -138,17 +140,15 @@ pub(crate) fn wire_open_handlers(
     // (`pick_files_or_folders` only compiles there); elsewhere this is the
     // files-only picker paired with the separate Add Folder button below. Rust
     // is the single authority for the dialog flavor — Slint only fires the
-    // intent. Skips duplicates and rejects image-free or unreadable sources
-    // (via `add_paths`), persists, rebuilds the carousel model, and restores
-    // keyboard focus to the carousel.
+    // intent. The picked sources are PROBED off the UI thread (issue 206): the
+    // controller dispatches one rayon probe per path, streams "Adding… (k/N)"
+    // progress, and runs the add (dedup, reject image-free/unreadable, persist,
+    // rebuild) in the `add-finalize` handler below once probing finishes — so a
+    // bulk add of large/cloud-synced archives never freezes the event loop.
     {
         let ui_weak = ui.as_weak();
         let settings = Rc::clone(&settings);
-        let library = Rc::clone(&library);
-        let covers = Rc::clone(&covers);
-        let search = Rc::clone(&search);
-        let selection = Rc::clone(&selection);
-        let localizer = Rc::clone(&localizer);
+        let adder = Rc::clone(&adder);
         ui.on_add_books(move || {
             with_ui(&ui_weak, |ui| {
                 let dialog = rfd::FileDialog::new()
@@ -161,44 +161,74 @@ pub(crate) fn wire_open_handlers(
                     return;
                 };
                 let policy = settings.borrow().archive_policy();
-                add_books_and_refresh(
-                    &ui,
-                    &CarouselRefresh {
-                        library: &library,
-                        covers: &covers,
-                        search: &search,
-                        selection: &selection,
-                        localizer: &localizer,
-                    },
-                    paths,
-                    policy,
-                    "add-books",
-                    localizer.loader(),
-                );
+                adder.start(ui.as_weak(), paths, policy, "add-books");
             })
         });
     }
 
     // Add Folder button: pick a single folder and add it as one book to the
-    // library. Wraps the folder in a `vec![]` so the same dedup/save/rebuild
-    // path as `on_add_books` is used. Skips duplicates and rejects image-free
-    // or unreadable sources (via `add_paths`), persists, and restores carousel
-    // focus.
+    // library. Wraps the folder in a `vec![]` so the same off-thread probe +
+    // `add-finalize` apply path as `on_add_books` is used (issue 206). Skips
+    // duplicates and rejects image-free or unreadable sources, persists, and
+    // restores carousel focus — all in the finalize handler.
     {
         let ui_weak = ui.as_weak();
         let settings = Rc::clone(&settings);
-        let library = Rc::clone(&library);
-        let covers = Rc::clone(&covers);
-        let search = Rc::clone(&search);
-        let selection = Rc::clone(&selection);
-        let localizer = Rc::clone(&localizer);
+        let adder = Rc::clone(&adder);
         ui.on_add_folder(move || {
             with_ui(&ui_weak, |ui| {
                 let Some(folder) = rfd::FileDialog::new().pick_folder() else {
                     return;
                 };
                 let policy = settings.borrow().archive_policy();
-                add_books_and_refresh(
+                adder.start(ui.as_weak(), vec![folder], policy, "add-folder");
+            })
+        });
+    }
+
+    // Bulk-add progress tick (issue 206): a probe worker completed, so update the
+    // transient bottom-strip status to "Adding… (done/total)". Marshaled
+    // epoch-guarded by the controller, so a tick from a superseded add is already
+    // dropped before reaching here.
+    {
+        let ui_weak = ui.as_weak();
+        let localizer = Rc::clone(&localizer);
+        ui.on_add_progress(move |done, total| {
+            with_ui(&ui_weak, |ui| {
+                ui.set_status_text(
+                    crate::i18n::dynamic::adding_progress(
+                        localizer.loader(),
+                        done.max(0) as usize,
+                        total.max(0) as usize,
+                    )
+                    .into(),
+                );
+            })
+        });
+    }
+
+    // Bulk-add finalize (issue 206): the last probe completed. Drain this
+    // generation's outcomes (epoch-guarded — `None` means a second add superseded
+    // this one, so drop it), mutate the library on the UI thread via
+    // `apply_outcomes`, then run the existing add tail (`apply_add_report`):
+    // persist, rebuild the filtered carousel, surface the "added N / skipped M"
+    // notice, and focus the first added book. This is where every `!Send`
+    // collaborator (library, covers, search, selection, localizer) is re-acquired.
+    {
+        let ui_weak = ui.as_weak();
+        let adder = Rc::clone(&adder);
+        let library = Rc::clone(&library);
+        let covers = Rc::clone(&covers);
+        let search = Rc::clone(&search);
+        let selection = Rc::clone(&selection);
+        let localizer = Rc::clone(&localizer);
+        ui.on_add_finalize(move |epoch| {
+            with_ui(&ui_weak, |ui| {
+                let Some((outcomes, op)) = adder.take_outcomes(epoch.max(0) as usize) else {
+                    return;
+                };
+                let report = apply_outcomes(&mut library.borrow_mut(), outcomes);
+                apply_add_report(
                     &ui,
                     &CarouselRefresh {
                         library: &library,
@@ -207,9 +237,8 @@ pub(crate) fn wire_open_handlers(
                         selection: &selection,
                         localizer: &localizer,
                     },
-                    vec![folder],
-                    policy,
-                    "add-folder",
+                    report,
+                    op,
                     localizer.loader(),
                 );
             })
@@ -757,7 +786,7 @@ pub(crate) fn wire_selection_handlers(
                         }
                         push_selection_strings(&ui, &localizer, &selection, &search, &library);
                         // Status push AFTER the refresh + toolbar string updates (the
-                        // same status-last ordering `add_books_and_refresh` uses), so
+                        // same status-last ordering `apply_add_report` uses), so
                         // the deleted-books notice is the final write to the Library's
                         // bottom strip. `n` already excludes stale not_found paths.
                         ui.set_status_text(crate::i18n::dynamic::deleted_books(loader, n).into());
