@@ -11,6 +11,7 @@ use crate::{
 use crate::{
     library_model::{LibrarySearchState, LibrarySelectionState},
     navigation::NavState,
+    page_loader::PageController,
 };
 use crate::{viewer_state::ViewerState, viewport::ViewportState};
 use app::SkippedDetail;
@@ -30,6 +31,7 @@ pub(crate) fn wire_open_handlers(
     library: &Rc<RefCell<Library>>,
     open_book: &Rc<app::OpenBookUseCase>,
     covers: &Rc<cover_loader::CoverController>,
+    pages: &Rc<PageController>,
     adder: &Rc<add_loader::AddController>,
     search: &Rc<RefCell<LibrarySearchState>>,
     selection: &Rc<RefCell<LibrarySelectionState>>,
@@ -44,6 +46,7 @@ pub(crate) fn wire_open_handlers(
     let library = Rc::clone(library);
     let open_book = Rc::clone(open_book);
     let covers = Rc::clone(covers);
+    let pages = Rc::clone(pages);
     let adder = Rc::clone(adder);
     let search = Rc::clone(search);
     let selection = Rc::clone(selection);
@@ -55,6 +58,7 @@ pub(crate) fn wire_open_handlers(
         let open_book = Rc::clone(&open_book);
         let state = Rc::clone(&state);
         let viewport = Rc::clone(&viewport);
+        let pages = Rc::clone(&pages);
         let localizer = Rc::clone(&localizer);
         // `finalize_open` may rebuild the carousel (empty-book auto-removal), so it
         // needs the full carousel-refresh deps, not just the localizer.
@@ -72,6 +76,7 @@ pub(crate) fn wire_open_handlers(
                     &ui,
                     &state,
                     &viewport,
+                    &pages,
                     &CarouselRefresh {
                         library: &library,
                         covers: &covers,
@@ -97,6 +102,7 @@ pub(crate) fn wire_open_handlers(
         let open_book = Rc::clone(&open_book);
         let state = Rc::clone(&state);
         let viewport = Rc::clone(&viewport);
+        let pages = Rc::clone(&pages);
         let localizer = Rc::clone(&localizer);
         // `finalize_open` may rebuild the carousel (empty-book auto-removal), so it
         // needs the full carousel-refresh deps, not just the localizer.
@@ -117,6 +123,7 @@ pub(crate) fn wire_open_handlers(
                     &ui,
                     &state,
                     &viewport,
+                    &pages,
                     &CarouselRefresh {
                         library: &library,
                         covers: &covers,
@@ -246,12 +253,14 @@ pub(crate) fn wire_open_handlers(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn open_and_enter(
     ui: &ViewerWindow,
     nav: &Rc<RefCell<NavState>>,
     open_book: &Rc<app::OpenBookUseCase>,
     state: &Rc<RefCell<ViewerState>>,
     viewport: &Rc<RefCell<ViewportState>>,
+    pages: &Rc<PageController>,
     refresh: &CarouselRefresh<'_>,
     path: &std::path::Path,
 ) {
@@ -259,7 +268,7 @@ fn open_and_enter(
     // stored page. Empty sources are removed instead of entering the viewer.
     let outcome = open_book.run(ui, path, SkippedDetail::None);
     let enter_viewer = !matches!(outcome, app::OpenOutcome::EmptyBookRemoved { .. });
-    finalize_open(ui, state, viewport, refresh, outcome);
+    finalize_open(ui, state, viewport, pages, refresh, outcome);
     // Derive the title from authoritative post-open state so failed opens never
     // display the requested path as the current book.
     ui.set_current_book_name(current_book_name(state).into());
@@ -279,6 +288,7 @@ pub(crate) fn wire_carousel_handlers(
     nav: &Rc<RefCell<NavState>>,
     open_book: &Rc<app::OpenBookUseCase>,
     covers: &Rc<cover_loader::CoverController>,
+    pages: &Rc<PageController>,
     search: &Rc<RefCell<LibrarySearchState>>,
     selection: &Rc<RefCell<LibrarySelectionState>>,
     localizer: &Rc<i18n::Localizer>,
@@ -292,6 +302,7 @@ pub(crate) fn wire_carousel_handlers(
     let nav = Rc::clone(nav);
     let open_book = Rc::clone(open_book);
     let covers = Rc::clone(covers);
+    let pages = Rc::clone(pages);
     let search = Rc::clone(search);
     let selection = Rc::clone(selection);
     let localizer = Rc::clone(localizer);
@@ -344,6 +355,7 @@ pub(crate) fn wire_carousel_handlers(
         let nav = Rc::clone(&nav);
         let open_book = Rc::clone(&open_book);
         let state = Rc::clone(&state);
+        let pages = Rc::clone(&pages);
         let search = Rc::clone(&search);
         let viewport = Rc::clone(&viewport);
         let localizer = Rc::clone(&localizer);
@@ -384,6 +396,7 @@ pub(crate) fn wire_carousel_handlers(
                     &open_book,
                     &state,
                     &viewport,
+                    &pages,
                     &CarouselRefresh {
                         library: &library,
                         covers: &covers,
@@ -411,6 +424,7 @@ pub(crate) fn wire_carousel_handlers(
         let open_book = Rc::clone(&open_book);
         let state = Rc::clone(&state);
         let viewport = Rc::clone(&viewport);
+        let pages = Rc::clone(&pages);
         let localizer = Rc::clone(&localizer);
         // `finalize_open` may rebuild the carousel (empty-book auto-removal), so it
         // needs the full carousel-refresh deps.
@@ -440,6 +454,7 @@ pub(crate) fn wire_carousel_handlers(
                     &open_book,
                     &state,
                     &viewport,
+                    &pages,
                     &CarouselRefresh {
                         library: &library,
                         covers: &covers,

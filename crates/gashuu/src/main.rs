@@ -11,6 +11,7 @@ mod keymap;
 mod library_model;
 mod navigation;
 mod page_jump;
+mod page_loader;
 mod thumbnail_strip;
 mod view_sync;
 mod viewer_state;
@@ -20,6 +21,9 @@ use carousel::{apply_selection_flags, bind_carousel_model, build_carousel_model,
 use gashuu_core::{CoreError, DecodedImage, Library, ReadingDirection, Settings};
 use library_model::{LibrarySearchState, LibrarySelectionState};
 use navigation::{screen_to_index, NavState};
+use page_loader::PageController;
+#[cfg(not(test))]
+use page_loader::{PageSlot, SpreadDecodeRequest};
 use std::cell::RefCell;
 use std::rc::Rc;
 use thumbnail_strip::ThumbnailController;
@@ -27,7 +31,9 @@ pub(crate) use view_sync::{
     apply_global_view_to_runtime, current_book_name, persist_view_modes, write_back_position,
     ViewModeRoute,
 };
-use viewer_state::ViewerState;
+#[cfg(not(test))]
+use viewer_state::SpreadSlots;
+use viewer_state::{StatusContent, ViewerState};
 use viewport::ViewportState;
 
 fn main() -> color_eyre::Result<()> {
@@ -99,6 +105,10 @@ fn main() -> color_eyre::Result<()> {
     // double-guard; `start` is called after the carousel model is (re)built so a
     // library refresh supersedes any covers still streaming from the prior view.
     let covers = Rc::new(cover_loader::CoverController::new());
+
+    // Page controller for the viewer body. Owns async page-decode epoch and
+    // dispatch dedup for cache-miss spreads.
+    let pages = Rc::new(page_loader::PageController::new());
 
     // Bulk-add controller (issue 206): probes each picked source off the UI
     // thread so a bulk add never freezes the event loop. Owns the supersede
@@ -185,7 +195,14 @@ fn main() -> color_eyre::Result<()> {
 
     // Initial paint so rtl/single/status are all initialized before the first
     // folder is opened (refresh shows "No folder opened" and clears the images).
-    refresh(&ui, &state.borrow(), &viewport, localizer.loader());
+    refresh(
+        &ui,
+        &state.borrow(),
+        &viewport,
+        localizer.loader(),
+        &pages,
+        ui.as_weak(),
+    );
 
     // Surface any load failures AFTER the initial refresh, which overwrites
     // status-text with "No folder opened". The carousel/home screen is visible
@@ -205,26 +222,28 @@ fn main() -> color_eyre::Result<()> {
 
     // Wire all event handlers onto the window (handlers/, #151).
     handlers::wire_open_handlers(
-        &ui, &state, &viewport, &settings, &library, &open_book, &covers, &adder, &search,
+        &ui, &state, &viewport, &settings, &library, &open_book, &covers, &pages, &adder, &search,
         &selection, &localizer,
     );
     handlers::wire_carousel_handlers(
-        &ui, &state, &viewport, &library, &nav, &open_book, &covers, &search, &selection,
+        &ui, &state, &viewport, &library, &nav, &open_book, &covers, &pages, &search, &selection,
         &localizer,
     );
     handlers::wire_selection_handlers(
         &ui, &state, &library, &covers, &search, &selection, &localizer,
     );
-    handlers::wire_viewer_input_handlers(&ui, &state, &viewport, &localizer);
+    handlers::wire_viewer_input_handlers(&ui, &state, &viewport, &pages, &localizer);
     handlers::wire_settings_handlers(
-        &ui, &state, &viewport, &settings, &library, &covers, &search, &selection, &localizer,
+        &ui, &state, &viewport, &settings, &library, &covers, &pages, &search, &selection,
+        &localizer,
     );
     handlers::wire_view_mode_handlers(
-        &ui, &state, &viewport, &settings, &library, &search, &selection, &localizer,
+        &ui, &state, &viewport, &settings, &library, &pages, &search, &selection, &localizer,
     );
     handlers::wire_viewport_handlers(&ui, &viewport);
     handlers::wire_nav_handlers(
-        &ui, &state, &viewport, &settings, &library, &nav, &covers, &search, &selection, &localizer,
+        &ui, &state, &viewport, &settings, &library, &nav, &covers, &pages, &search, &selection,
+        &localizer,
     );
 
     ui.run()?;
@@ -280,12 +299,83 @@ fn report_save_error(
     ui.set_status_text(crate::i18n::dynamic::could_not_save_settings(loader, e).into());
 }
 
-fn clear_page_view(ui: &ViewerWindow, viewport: &Rc<RefCell<ViewportState>>) {
+pub(crate) fn clear_page_view(ui: &ViewerWindow, viewport: &Rc<RefCell<ViewportState>>) {
+    ui.set_leading_loading(false);
+    ui.set_trailing_loading(false);
     ui.set_leading_page(slint::Image::default());
     ui.set_trailing_page(slint::Image::default());
     ui.set_single(true);
     viewport.borrow_mut().set_content(0.0, 0.0);
     apply_viewport(ui, &viewport.borrow());
+}
+
+pub(crate) fn apply_spread_images(
+    ui: &ViewerWindow,
+    leading: slint::Image,
+    trailing: Option<slint::Image>,
+    single: bool,
+) {
+    ui.set_leading_page(leading);
+    if single {
+        ui.set_trailing_page(slint::Image::default());
+    } else {
+        ui.set_trailing_page(trailing.unwrap_or_default());
+    }
+    ui.set_single(single);
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn apply_spread_geometry(
+    ui: &ViewerWindow,
+    viewport: &Rc<RefCell<ViewportState>>,
+    loader: &i18n_embed::fluent::FluentLanguageLoader,
+    content_w: f32,
+    content_h: f32,
+    single: bool,
+    trailing_failed: Option<usize>,
+    status: &StatusContent,
+) {
+    ui.set_single(single);
+    let base_status = crate::i18n::dynamic::format_status(loader, status);
+    match trailing_failed {
+        Some(failed) => ui.set_status_text(
+            format!(
+                "{base_status}  {}",
+                crate::i18n::dynamic::page_unavailable(loader, failed + 1)
+            )
+            .into(),
+        ),
+        None => ui.set_status_text(base_status.into()),
+    }
+    viewport.borrow_mut().set_content(content_w, content_h);
+    apply_viewport(ui, &viewport.borrow());
+}
+
+fn spread_content_size(leading: &DecodedImage, trailing: Option<&DecodedImage>) -> (f32, f32) {
+    match trailing {
+        Some(trailing) => (
+            (leading.width() + trailing.width()) as f32,
+            leading.height().max(trailing.height()) as f32,
+        ),
+        None => (leading.width() as f32, leading.height() as f32),
+    }
+}
+
+#[cfg(not(test))]
+fn page_slot(index: usize, decoded: Option<std::sync::Arc<DecodedImage>>) -> PageSlot {
+    match decoded {
+        Some(decoded) => PageSlot::hit(index, decoded),
+        None => PageSlot::miss(index),
+    }
+}
+
+#[cfg(not(test))]
+fn spread_request(slots: SpreadSlots) -> SpreadDecodeRequest {
+    let leading = page_slot(slots.leading.0, slots.leading.1);
+    match slots.trailing {
+        Some((index, decoded)) => SpreadDecodeRequest::double(leading, page_slot(index, decoded)),
+        None => SpreadDecodeRequest::single(leading),
+    }
 }
 
 /// Push the current spread + status into the UI, then re-anchor the viewport to
@@ -295,71 +385,73 @@ pub(crate) fn refresh(
     state: &ViewerState,
     viewport: &Rc<RefCell<ViewportState>>,
     loader: &i18n_embed::fluent::FluentLanguageLoader,
+    pages: &PageController,
+    #[cfg_attr(test, allow(unused_variables))] ui_weak: slint::Weak<ViewerWindow>,
 ) {
     let content = state.status_content();
     let status = crate::i18n::dynamic::format_status(loader, &content);
     ui.set_rtl(matches!(state.reading_direction(), ReadingDirection::Rtl));
-    match state.current_spread() {
-        Some(Ok(spread)) => {
-            // Content pixel size for the viewport: single page = the leading
-            // page; double page = widths summed side-by-side, height = the taller
-            // of the two. Compute before swapping the images so the viewport
-            // re-centers for the new spread.
-            let (content_w, content_h) = match &spread.trailing {
-                // Each page gets an equal half of content-w (horizontal-stretch 1:1 in PageView.slint);
-                // contain-fit within that half-slot letterboxes a wide page or pillarboxes a tall one.
-                // Exact for equal-size manga pages.
-                Some(trailing) => (
-                    (spread.leading.width() + trailing.width()) as f32,
-                    spread.leading.height().max(trailing.height()) as f32,
-                ),
-                None => (
-                    spread.leading.width() as f32,
-                    spread.leading.height() as f32,
-                ),
-            };
-            ui.set_leading_page(to_slint_image(&spread.leading));
-            match spread.trailing {
-                Some(trailing) => {
-                    ui.set_trailing_page(to_slint_image(&trailing));
-                    ui.set_single(false);
-                }
-                None => {
-                    ui.set_trailing_page(slint::Image::default());
-                    ui.set_single(true);
+    match state.spread_slots() {
+        Some(slots) => {
+            let leading_idx = slots.leading.0;
+            let trailing_idx = slots.trailing.as_ref().map(|(index, _)| *index);
+            pages.set_target(leading_idx, trailing_idx, slots.single);
+
+            let leading_missing = slots.leading.1.is_none();
+            let trailing_missing = slots
+                .trailing
+                .as_ref()
+                .is_some_and(|(_, decoded)| decoded.is_none());
+
+            if !leading_missing && !trailing_missing {
+                let leading = slots.leading.1.as_ref().expect("checked HIT");
+                let trailing = slots
+                    .trailing
+                    .as_ref()
+                    .and_then(|(_, decoded)| decoded.as_ref());
+                let (content_w, content_h) =
+                    spread_content_size(leading, trailing.map(|img| img.as_ref()));
+                ui.set_leading_loading(false);
+                ui.set_trailing_loading(false);
+                pages.clear_dispatched_spread(leading_idx, trailing_idx);
+                apply_spread_images(
+                    ui,
+                    to_slint_image(leading),
+                    trailing.map(|img| to_slint_image(img)),
+                    slots.single,
+                );
+                apply_spread_geometry(
+                    ui,
+                    viewport,
+                    loader,
+                    content_w,
+                    content_h,
+                    slots.single,
+                    None,
+                    &content,
+                );
+            } else {
+                ui.set_status_text(status.into());
+                ui.set_single(slots.single);
+                ui.set_leading_page(slint::Image::default());
+                ui.set_trailing_page(slint::Image::default());
+                viewport.borrow_mut().set_content(0.0, 0.0);
+                apply_viewport(ui, &viewport.borrow());
+                ui.set_leading_loading(leading_missing);
+                ui.set_trailing_loading(trailing_missing);
+
+                #[cfg(not(test))]
+                if let Some(dispatch) = state.dispatch_handle() {
+                    pages.dispatch_spread(ui_weak, dispatch, spread_request(slots));
                 }
             }
-            // A trailing-page decode failure degraded the view to leading-only;
-            // append a marker so the status no longer contradicts the single
-            // page actually shown.
-            match spread.trailing_failed {
-                Some(failed) => ui.set_status_text(
-                    format!(
-                        "{status}  {}",
-                        crate::i18n::dynamic::page_unavailable(loader, failed + 1)
-                    )
-                    .into(),
-                ),
-                None => ui.set_status_text(status.into()),
-            }
-            // Re-anchor the viewport to the new content, then push geometry.
-            // Borrow-scoping rule: never hold a `borrow_mut()` while constructing
-            // the `&viewport.borrow()` argument to `apply_viewport`. Mutate in one
-            // statement (the temporary `borrow_mut` drops at the `;`), then take a
-            // fresh immutable borrow for apply.
-            viewport.borrow_mut().set_content(content_w, content_h);
-            apply_viewport(ui, &viewport.borrow());
-        }
-        Some(Err(e)) => {
-            tracing::error!(error = %e, "failed to decode page");
-            ui.set_status_text(crate::i18n::dynamic::decode_error(loader, &e).into());
-            clear_page_view(ui, viewport);
         }
         None => {
             // Source loaded but empty (or no source yet): clear and show single
             // so the view matches the status text ("No folder opened" / "Folder
             // contains no images").
             ui.set_status_text(status.into());
+            pages.clear_target();
             clear_page_view(ui, viewport);
         }
     }
@@ -415,6 +507,7 @@ fn finalize_open(
     ui: &ViewerWindow,
     state: &Rc<RefCell<ViewerState>>,
     viewport: &Rc<RefCell<ViewportState>>,
+    pages: &PageController,
     deps: &CarouselRefresh,
     outcome: app::OpenOutcome,
 ) {
@@ -424,7 +517,8 @@ fn finalize_open(
             ui.set_status_text(crate::i18n::dynamic::open_error_str(loader, &e_str).into());
         }
         app::OpenOutcome::Success(notices) => {
-            refresh(ui, &state.borrow(), viewport, loader);
+            pages.set_source();
+            refresh(ui, &state.borrow(), viewport, loader, pages, ui.as_weak());
             for detail in crate::i18n::dynamic::format_notices(loader, &notices) {
                 let base = ui.get_status_text().to_string();
                 ui.set_status_text(format!("{base} \u{2014} {detail}").into());
@@ -435,6 +529,7 @@ fn finalize_open(
             removed,
             save_error,
         } => {
+            pages.set_source();
             // The source opened cleanly but has zero pages: the use case already
             // removed it from the library (if present) and re-saved. This arm does
             // NOT switch screens — the open-folder/archive sites only switch on a

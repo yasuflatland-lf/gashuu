@@ -4,6 +4,7 @@ use crate::enum_adapters::{
     reading_direction_to_index, spread_mode_to_index,
 };
 use crate::library_model::{LibrarySearchState, LibrarySelectionState};
+use crate::page_loader::PageController;
 use crate::viewer_state::ViewerState;
 use crate::viewport::ViewportState;
 use crate::{
@@ -30,6 +31,7 @@ pub(crate) fn wire_settings_handlers(
     settings: &Rc<RefCell<Settings>>,
     library: &Rc<RefCell<Library>>,
     covers: &Rc<cover_loader::CoverController>,
+    pages: &Rc<PageController>,
     search: &Rc<RefCell<LibrarySearchState>>,
     selection: &Rc<RefCell<LibrarySelectionState>>,
     localizer: &Rc<i18n::Localizer>,
@@ -39,6 +41,7 @@ pub(crate) fn wire_settings_handlers(
     let settings = Rc::clone(settings);
     let library = Rc::clone(library);
     let covers = Rc::clone(covers);
+    let pages = Rc::clone(pages);
     let search = Rc::clone(search);
     let selection = Rc::clone(selection);
     let localizer = Rc::clone(localizer);
@@ -217,7 +220,14 @@ pub(crate) fn wire_settings_handlers(
                 }
                 // Apply the global defaults to the runtime + view.
                 apply_global_view_to_runtime(&settings, &state, &viewport);
-                refresh(&ui, &state.borrow(), &viewport, localizer.loader());
+                refresh(
+                    &ui,
+                    &state.borrow(),
+                    &viewport,
+                    localizer.loader(),
+                    &pages,
+                    ui.as_weak(),
+                );
                 // Sync the open dialog's combos to the now-global values.
                 let st = state.borrow();
                 ui.set_reading_direction_index(reading_direction_to_index(st.reading_direction()));
@@ -353,6 +363,7 @@ pub(crate) fn wire_view_mode_handlers(
     viewport: &Rc<RefCell<ViewportState>>,
     settings: &Rc<RefCell<Settings>>,
     library: &Rc<RefCell<Library>>,
+    pages: &Rc<PageController>,
     search: &Rc<RefCell<LibrarySearchState>>,
     selection: &Rc<RefCell<LibrarySelectionState>>,
     localizer: &Rc<i18n::Localizer>,
@@ -361,6 +372,7 @@ pub(crate) fn wire_view_mode_handlers(
     let viewport = Rc::clone(viewport);
     let settings = Rc::clone(settings);
     let library = Rc::clone(library);
+    let pages = Rc::clone(pages);
     let search = Rc::clone(search);
     let selection = Rc::clone(selection);
     let localizer = Rc::clone(localizer);
@@ -374,6 +386,7 @@ pub(crate) fn wire_view_mode_handlers(
         let ui_weak = ui.as_weak();
         let state = Rc::clone(&state);
         let viewport = Rc::clone(&viewport);
+        let pages = Rc::clone(&pages);
         let localizer = Rc::clone(&localizer);
         ui.on_set_reading_direction(move |i| {
             with_ui(&ui_weak, |ui| {
@@ -383,7 +396,14 @@ pub(crate) fn wire_view_mode_handlers(
                 // `write_back_view_override` at the next viewer leave point, not into
                 // the global `Settings`.
                 if state.borrow_mut().set_reading_direction(dir) {
-                    refresh(&ui, &state.borrow(), &viewport, localizer.loader());
+                    refresh(
+                        &ui,
+                        &state.borrow(),
+                        &viewport,
+                        localizer.loader(),
+                        &pages,
+                        ui.as_weak(),
+                    );
                 }
             })
         });
@@ -392,6 +412,7 @@ pub(crate) fn wire_view_mode_handlers(
         let ui_weak = ui.as_weak();
         let state = Rc::clone(&state);
         let viewport = Rc::clone(&viewport);
+        let pages = Rc::clone(&pages);
         let localizer = Rc::clone(&localizer);
         ui.on_set_spread_mode(move |i| {
             with_ui(&ui_weak, |ui| {
@@ -401,7 +422,14 @@ pub(crate) fn wire_view_mode_handlers(
                 // `write_back_view_override` at the next viewer leave point, not into
                 // the global `Settings`.
                 if state.borrow_mut().set_spread_mode(mode) {
-                    refresh(&ui, &state.borrow(), &viewport, localizer.loader());
+                    refresh(
+                        &ui,
+                        &state.borrow(),
+                        &viewport,
+                        localizer.loader(),
+                        &pages,
+                        ui.as_weak(),
+                    );
                 }
             })
         });
@@ -410,6 +438,7 @@ pub(crate) fn wire_view_mode_handlers(
         let ui_weak = ui.as_weak();
         let state = Rc::clone(&state);
         let viewport = Rc::clone(&viewport);
+        let pages = Rc::clone(&pages);
         let localizer = Rc::clone(&localizer);
         ui.on_set_cover_mode(move |i| {
             with_ui(&ui_weak, |ui| {
@@ -419,7 +448,14 @@ pub(crate) fn wire_view_mode_handlers(
                 // `write_back_view_override` at the next viewer leave point, not into
                 // the global `Settings`.
                 if state.borrow_mut().set_cover_mode(mode) {
-                    refresh(&ui, &state.borrow(), &viewport, localizer.loader());
+                    refresh(
+                        &ui,
+                        &state.borrow(),
+                        &viewport,
+                        localizer.loader(),
+                        &pages,
+                        ui.as_weak(),
+                    );
                 }
             })
         });
@@ -428,6 +464,7 @@ pub(crate) fn wire_view_mode_handlers(
         let ui_weak = ui.as_weak();
         let state = Rc::clone(&state);
         let viewport = Rc::clone(&viewport);
+        let pages = Rc::clone(&pages);
         let localizer = Rc::clone(&localizer);
         ui.on_set_fit_mode(move |i| {
             with_ui(&ui_weak, |ui| {
@@ -441,7 +478,14 @@ pub(crate) fn wire_view_mode_handlers(
                 // the global `Settings`.
                 if viewport.borrow().fit_mode() != mode {
                     viewport.borrow_mut().set_fit(mode);
-                    refresh(&ui, &state.borrow(), &viewport, localizer.loader());
+                    refresh(
+                        &ui,
+                        &state.borrow(),
+                        &viewport,
+                        localizer.loader(),
+                        &pages,
+                        ui.as_weak(),
+                    );
                 }
             })
         });
@@ -493,6 +537,7 @@ pub(crate) fn wire_view_mode_handlers(
         let state = Rc::clone(&state);
         let settings = Rc::clone(&settings);
         let viewport = Rc::clone(&viewport);
+        let pages = Rc::clone(&pages);
         let localizer = Rc::clone(&localizer);
         let library = Rc::clone(&library);
         let search = Rc::clone(&search);
@@ -520,7 +565,14 @@ pub(crate) fn wire_view_mode_handlers(
                 ui.set_key_bindings_text(
                     crate::i18n::dynamic::shortcuts_help(localizer.loader()).into(),
                 );
-                refresh(&ui, &state.borrow(), &viewport, localizer.loader());
+                refresh(
+                    &ui,
+                    &state.borrow(),
+                    &viewport,
+                    localizer.loader(),
+                    &pages,
+                    ui.as_weak(),
+                );
                 // Recompose the selection-toolbar strings in the new language.
                 push_selection_strings(&ui, &localizer, &selection, &search, &library);
                 // Recompose the library-count idle strip label too: the language
