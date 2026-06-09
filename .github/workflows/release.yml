@@ -177,16 +177,23 @@ jobs:
           cp target/universal/gashuu "$APP/Contents/MacOS/gashuu"
           chmod +x "$APP/Contents/MacOS/gashuu"
           echo "APP=$APP" >> "$GITHUB_ENV"
-      # ── SIGNING SEAM (macOS) ──────────────────────────────────────────────
-      # To sign + notarize later, insert steps HERE (before staging the
-      # distribution zip):
-      #   secrets: MACOS_CERTIFICATE (base64 .p12), MACOS_CERTIFICATE_PWD,
-      #            MACOS_CERTIFICATE_NAME ("Developer ID Application: … (TEAMID)"),
-      #            MACOS_CI_KEYCHAIN_PWD, MACOS_NOTARIZATION_APPLE_ID/PWD/TEAM_ID
-      #   1. import the .p12 into a temporary keychain
-      #   2. codesign --force --options runtime --sign "$MACOS_CERTIFICATE_NAME" "$APP"
-      #   3. zip "$APP" for notarization, then `xcrun notarytool submit <zip> --wait`
-      #      and `xcrun stapler staple "$APP"` before the distribution stage below.
+      # ── Ad-hoc code signing (self-signed) ─────────────────────────────────
+      # Splicing the universal binary invalidates any signature cargo-bundle's
+      # scaffold build produced. Re-seal the bundle with an ad-hoc signature
+      # (identity "-"): no certificate, Apple account, or secret required. This
+      # does NOT clear Gatekeeper (only Developer ID + notarization does), but it
+      # gives the lipo'd binary a valid signature so it launches reliably on
+      # Apple Silicon, and is the foundation a future notarization step needs.
+      #
+      # To upgrade to Developer ID + notarization later, swap the ad-hoc "-" for
+      # "$MACOS_CERTIFICATE_NAME" (a .p12 secret imported into a temp keychain),
+      # add --options runtime, then `xcrun notarytool submit <zip> --wait` and
+      # `xcrun stapler staple "$APP"` before the distribution stage below.
+      - name: Ad-hoc codesign the .app (self-signed)
+        run: |
+          codesign --force --sign - "$APP"
+          codesign --verify --strict --verbose=2 "$APP"
+          echo "Ad-hoc signature applied and verified."
       - name: Stage and zip the macOS distribution
         run: |
           STAGE="target/release/macos-dist/gashuu-${TAG}-macos-universal"
@@ -198,7 +205,7 @@ jobs:
           cat > "$STAGE/README-macOS.txt" <<'EOF'
           gashuu for macOS
 
-          This macOS build is currently unsigned and not notarized.
+          This macOS build is ad-hoc signed (self-signed) but not notarized by Apple.
 
           Recommended install steps:
 
