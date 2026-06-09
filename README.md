@@ -15,62 +15,6 @@ Open a folder of images or a comic archive and read with the keyboard — two-pa
 spreads, right-to-left binding, zoom/pan, a thumbnail strip, a cover-flow library,
 and persistent settings, in an English / 日本語 UI.
 
-*gashuu* (画集, [ɡaɕɯː]) is the Japanese for a book or booklet of drawings — an
-art book. It is a manga viewer, but the name carries a wish: that it be as refined and
-tasteful a tool as a fine art book.
-
-## Features
-
-- **Sources** — a folder of PNG/JPG/JPEG/AVIF images, or a `.cbz`/`.zip`/`.cbr`/`.rar`
-  archive. The format is detected by extension or magic bytes, so a mis-named archive
-  still opens.
-- **Archives** — pages are read in natural filename order and images nested in
-  subfolders are included. Extraction is in-memory (nothing is written to disk); unsafe,
-  oversized, or corrupt entries are skipped and counted in the status bar.
-- **Library** — a cover-flow carousel of your added books, with real cover art (streamed
-  in from a disk cache) and a per-book reading-progress bar, in natural title order
-  (numeric-aware, so *vol 1*, *vol 2*, *vol 10* sort in that order rather than lexically).
-  A folder or archive with no images is not a book: it is rejected on add (the status bar
-  reports how many were skipped), and if one turns up empty later it is auto-removed with a
-  notice. The NavBar includes a live search field that filters books by title or filesystem
-  path as you type; freshly-added books stay visible until the query changes.
-- **Spreads** — single page, two-page spread, or **auto** (picks single/double from the
-  window aspect ratio and follows resizes live). Right-to-left (manga) or left-to-right
-  binding, with a standalone or paired cover layout.
-- **Per-book view settings** — reading direction, spread, cover layout, and fit mode are
-  remembered per book (falling back to your global defaults), so each title reopens the way
-  you left it; the Viewer settings dialog can reset a book back to the global defaults.
-- **Zoom & pan** — the wheel zooms at the cursor and drag pans; fit modes are Whole /
-  Width / Actual. Zoom and pan are session-only; the fit mode is saved.
-- **Fast page turns** — pages are held in an LRU cache and neighbours are prefetched in
-  the background, so warmed turns are effectively instant.
-- **Thumbnail strip** — previews of every page, generated in parallel so the strip fills
-  in while you read. Click a thumbnail to jump; the current page is highlighted; a
-  thumbnail that fails to generate shows a red ✕.
-- **Page scrubber & counter** — a bottom scrub bar and a top-right page-counter chip
-  appear on mouse-move, arrow-key press, or scrubber drag, then fade after idle. Drag the
-  knob to scrub; a thumbnail preview (one or two pages for single/double spreads) pops up
-  during the drag — not-yet-decoded or failed thumbnails show distinct loading/error placeholders — and the page only changes on release. RTL-aware: in manga mode dragging
-  left advances pages.
-- **Continue reading** — re-opening a book resumes at the last page you read. The Library
-  marks and auto-focuses the most recently opened book with a bookmark ribbon; returning
-  from the Viewer lands the carousel on it immediately, and the NavBar's bookmark button
-  jumps straight back into that book.
-- **Selection & bulk delete** — press `x` in the Library (or click the NavBar's **Select**
-  button) to enter selection mode, then toggle books with `x` / `Space` / a cover click,
-  select all visible with `Cmd/Ctrl+A`, and delete the
-  selection with `Delete` or `Backspace`. A confirm dialog lists the titles and confirms
-  that files on disk are kept (only the library entry is removed). No undo; the confirm
-  dialog is the safety gate.
-- **Settings dialog & first-run guide** — change every active option from the in-app
-  Settings dialog without hand-editing config, and a one-time welcome overlay summarises
-  the controls.
-- **Bilingual UI** — English / 日本語, switchable instantly (no restart) from the Settings
-  dialog's General → Language pull-down; the choice persists.
-- **Safe decoding** — oversized images and decompression bombs are rejected before
-  allocating memory (16 384×16 384 px / 512 MiB / ~128 Mpx limits), with a clear error
-  in the status bar instead of an out-of-memory crash.
-
 ## Getting Started
 
 ### macOS release install
@@ -86,41 +30,56 @@ macOS builds are ad-hoc signed (self-signed) but not notarized by Apple. If macO
 
 This is a temporary workaround until Developer ID signing and notarization are added.
 
-Toolchain and tools are managed by [mise](https://mise.jdx.dev) (Rust 1.96.0 +
-cargo-nextest + cargo-llvm-cov):
+## Features
 
-```bash
-mise trust      # trust ./mise.toml (once per fresh clone)
-mise install
-```
+- **Sources** — a folder of PNG/JPG/JPEG/AVIF images, or a `.cbz`/`.zip`/`.cbr`/`.rar`
+  archive. The format is detected by extension or magic bytes, so a mis-named archive
+  still opens.
+- **Archives** — pages are read in natural filename order and images nested in
+  subfolders are included. Extraction is in-memory (nothing is written to disk); unsafe,
+  oversized, or corrupt entries are skipped and counted in the status bar.
+- **Library** — a cover-flow carousel with real cover art and per-book reading-progress
+  bars, in numeric-aware title order (*vol 1*, *vol 2*, *vol 10* sort naturally). Empty
+  folders/archives are rejected on add and auto-removed if found empty later. The NavBar
+  includes a live search field that filters books by title or path.
+- **Spreads** — single page, two-page spread, or **auto** (picks single/double from the
+  window aspect ratio and follows resizes live). Right-to-left (manga) or left-to-right
+  binding, with a standalone or paired cover layout.
+- **Per-book view settings** — reading direction, spread, cover layout, and fit mode are
+  remembered per book (falling back to your global defaults), so each title reopens the way
+  you left it; the Viewer settings dialog can reset a book back to the global defaults.
+- **Zoom & pan** — the wheel zooms at the cursor and drag pans; fit modes are Whole /
+  Width / Actual. Zoom and pan are session-only; the fit mode is saved.
+- **Fast page turns** — pages are held in an LRU cache and neighbours are prefetched in
+  the background, so warmed turns are effectively instant.
+- **Thumbnail strip** — previews of every page, generated in parallel so the strip fills
+  in while you read. Click a thumbnail to jump; the current page is highlighted; a
+  thumbnail that fails to generate shows a red ✕.
+- **Page scrubber & counter** — a bottom scrub bar and a top-right page-counter chip
+  appear on mouse-move, arrow-key press, or scrubber drag, then fade after idle. Drag the
+  knob to scrub; a thumbnail preview pops up during the drag and the page changes on
+  release. RTL-aware: in manga mode dragging left advances pages.
+- **Continue reading** — re-opening a book resumes at the last page you read. The Library
+  marks and auto-focuses the most recently opened book with a bookmark ribbon; returning
+  from the Viewer lands the carousel on it immediately, and the NavBar's bookmark button
+  jumps straight back into that book.
+- **Selection & bulk delete** — press `x` in the Library (or click the NavBar's **Select**
+  button) to enter selection mode, then toggle books with `x` / `Space` / a cover click,
+  select all visible with `Cmd/Ctrl+A`, and delete the selection with `Delete` or
+  `Backspace`. A confirm dialog lists the titles and confirms that files on disk are kept
+  (only the library entry is removed). No undo; the confirm dialog is the safety gate.
+- **Settings dialog & first-run guide** — change every active option from the in-app
+  Settings dialog without hand-editing config, and a one-time welcome overlay summarises
+  the controls.
+- **Bilingual UI** — English / 日本語, switchable instantly (no restart) from the Settings
+  dialog's General → Language pull-down; the choice persists.
+- **Safe decoding** — oversized images and decompression bombs are rejected before
+  allocating memory (16 384×16 384 px / 512 MiB / ~128 Mpx limits), with a clear error
+  in the status bar instead of an out-of-memory crash.
 
-On Linux, install Slint's system libraries and the dav1d AV1 decoder (AVIF support):
-
-```bash
-sudo apt-get install -y libfontconfig1-dev libfreetype6-dev libxcb1-dev \
-  libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libxkbcommon-dev \
-  libdav1d-dev
-```
-
-On macOS, install dav1d with Homebrew; on Windows, via vcpkg (see
-[docs/toolchain.md](docs/toolchain.md) for the build-environment variables):
-
-```bash
-brew install dav1d                          # macOS
-vcpkg install dav1d:x64-windows-static-md   # Windows
-```
-
-A C++ compiler is also required — the RAR/CBR backend bundles the C++ UnRAR sources and
-builds them via `cc`. This is standard on every platform (Xcode CLT on macOS, MSVC or
-MinGW on Windows, `build-essential` on Linux) and adds nothing beyond the usual toolchain.
-dav1d and the C++ compiler are BUILD-time requirements only — the released app bundles
-everything and end users install nothing.
-
-Then run the viewer and add books from the Library's nav bar:
-
-```bash
-cargo run -p gashuu
-```
+*gashuu* (画集, [ɡaɕɯː]) is the Japanese for a book or booklet of drawings — an
+art book. It is a manga viewer, but the name carries a wish: that it be as refined and
+tasteful a tool as a fine art book.
 
 ## Usage
 
@@ -134,10 +93,11 @@ archives.
 
 **Library**
 
-| Key | Action |
-|-----|--------|
+| Key / Gesture | Action |
+|---------------|--------|
 | `←` / `→` | Move the carousel focus |
 | Click left / right of the centered cover | Move the carousel focus one book |
+| Two-finger horizontal swipe | Move the carousel one book per swipe |
 | `Enter` | Open the focused book |
 | Double-click the centered cover | Open it |
 | `↓` | Return to the open book (if any) |
@@ -146,10 +106,11 @@ archives.
 
 **Navigation (Viewer)**
 
-| Key | Action |
-|-----|--------|
+| Key / Gesture | Action |
+|---------------|--------|
 | `→` / `Space` | Next page or spread |
 | `←` / `Backspace` | Previous page or spread |
+| Two-finger horizontal swipe | Next / previous page or spread (disabled while zoomed in) |
 | `D` | Cycle spread mode: single → double → auto |
 | `R` | Toggle reading direction (LTR ↔ RTL) |
 | `C` | Toggle cover layout (standalone ↔ paired) |
@@ -203,15 +164,15 @@ log per-turn latency.
 **Settings dialog** — click the settings icon (in the Library's NavBar, or the Viewer's
 bottom pill) to change reading direction, spread mode, cover layout, fit mode, cache
 size, preload radius, the recent-files toggle, and the UI language (English / 日本語,
-applied immediately). Scope
-follows the screen: from the **Library** it edits your GLOBAL defaults; from the
-**Viewer** it edits the CURRENT book's view settings (with a "Reset to global"
-button). Display-mode changes apply immediately; cache size and preload radius take effect
-on the next book you open. The dialog also has two immediate cleanup buttons: **Clear
-reading history** forgets every added book and the recent-files list (a book open in the
-current session stays open), and **Clear cover cache** deletes the on-disk cover/thumbnail
-files and reports how much space was reclaimed. The dialog's footer has a **Shortcuts** link
-that opens a separate overlay listing the keyboard shortcuts (remapping is not yet supported).
+applied immediately). Scope follows the screen: from the **Library** it edits your GLOBAL
+defaults; from the **Viewer** it edits the CURRENT book's view settings (with a "Reset to
+global" button). Display-mode changes apply immediately; cache size and preload radius
+take effect on the next book you open. The dialog also has two immediate cleanup buttons:
+**Clear reading history** forgets every added book and the recent-files list (a book open
+in the current session stays open), and **Clear cover cache** deletes the on-disk
+cover/thumbnail files and reports how much space was reclaimed. The dialog's footer has a
+**Shortcuts** link that opens a separate overlay listing the keyboard shortcuts (remapping
+is not yet supported).
 
 ## Settings
 
@@ -236,8 +197,6 @@ hand-edited:
 | `track_recent_files` | bool (default `false`) | Off for privacy; gates `recent_files` |
 | `recent_files` | list | Recorded only when tracking is on |
 | `language` | `"en"` (default) / `"ja"` | UI language; switchable live from the Settings dialog |
-| `seen_guide` | bool (default `false`) | Set once the first-run guide has been shown |
-| `key_bindings` | — | Persisted for forward-compatibility; not yet wired up |
 
 The library itself — added books, last-read pages, per-book view overrides, and the
 continue-reading bookmark — is stored separately as `library.json` in the OS data
@@ -254,10 +213,50 @@ defaults (an empty library) and keeps running.
 
 ## Development
 
+### Setup
+
+Toolchain and tools are managed by [mise](https://mise.jdx.dev) (Rust 1.96.0 +
+cargo-nextest + cargo-llvm-cov):
+
 ```bash
-cargo fmt --check
-cargo clippy --workspace --all-targets -- -D warnings
-cargo nextest run --workspace
+mise trust      # trust ./mise.toml (once per fresh clone)
+mise install
+```
+
+On Linux, install Slint's system libraries and the dav1d AV1 decoder (AVIF support):
+
+```bash
+sudo apt-get install -y libfontconfig1-dev libfreetype6-dev libxcb1-dev \
+  libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libxkbcommon-dev \
+  libdav1d-dev
+```
+
+On macOS, install dav1d with Homebrew; on Windows, via vcpkg (see
+[docs/toolchain.md](docs/toolchain.md) for the build-environment variables):
+
+```bash
+brew install dav1d                          # macOS
+vcpkg install dav1d:x64-windows-static-md   # Windows
+```
+
+A C++ compiler is also required — the RAR/CBR backend bundles the C++ UnRAR sources and
+builds them via `cc`. This is standard on every platform (Xcode CLT on macOS, MSVC or
+MinGW on Windows, `build-essential` on Linux) and adds nothing beyond the usual toolchain.
+dav1d and the C++ compiler are BUILD-time requirements only — the released app bundles
+everything and end users install nothing.
+
+Then run the viewer and add books from the Library's nav bar:
+
+```bash
+cargo run -p gashuu
+```
+
+### Quality gates
+
+```bash
+mise exec -- cargo fmt --check
+mise exec -- cargo clippy --workspace --all-targets -- -D warnings
+mise exec -- cargo nextest run --workspace --profile ci
 ```
 
 ## License
