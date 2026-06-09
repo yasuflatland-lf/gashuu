@@ -581,13 +581,10 @@ export component Carousel inherits Rectangle {
           // delta-x, and once |accum| crosses `swipe-threshold` fire ONE move,
           // then a cooldown Timer swallows the macOS momentum-phase tail so one
           // flick never flies through several books. This TouchArea is the
-          // ANCESTOR of the cover + step-zone TouchAreas: a cover's scroll-event
-          // has no handler, so it rejects and the wheel event bubbles UP to here
-          // (vendored i-slint-core 1.16.1 input_items.rs: Reject -> EventIgnored
-          // -> ancestor), while pointer CLICKS are still grabbed by the
-          // front-most cover/zone so this wrapper never steals a tap. The sign
-          // maps delta-x straight to physical direction (no OS natural-scroll
-          // double-negation); flip the `> 0 ? 1 : -1` if a device reads inverted.
+          // ANCESTOR of the cover + step-zone TouchAreas: neither has a
+          // scroll-event handler, so scroll events fall through to this ancestor
+          // while pointer clicks are still absorbed front-to-back by the
+          // cover/zone, so this wrapper never steals a tap.
           TouchArea {
               width: 100%;
               height: 100%;
@@ -600,14 +597,19 @@ export component Carousel inherits Rectangle {
                   triggered => { parent.swipe-cooling = false; }
               }
               scroll-event(e) => {
-                  // Selection mode owns horizontal input for its own affordances.
+                  // Modals and selection mode own all input while active.
+                  if (root.modal-open) { return reject; }
                   if (root.selection-mode) { return reject; }
-                  // Dominant-axis gate (1.2x margin): near-horizontal only, so a
-                  // diagonal/vertical scroll rejects and bubbles past (no-op here).
+                  // Dominant-axis gate (1.2x margin): near-horizontal only; a
+                  // diagonal/vertical scroll is ignored (no ancestor handles it).
                   if (Math.abs(e.delta-x / 1px) <= Math.abs(e.delta-y / 1px) * 1.2) {
                       return reject;
                   }
                   if (self.swipe-cooling) { return accept; }
+                  // Drop a reversed gesture's prior travel so two flicks never cancel.
+                  if (e.delta-x / 1px * self.swipe-accum < 0) {
+                      self.swipe-accum = 0;
+                  }
                   self.swipe-accum += e.delta-x / 1px;
                   if (Math.abs(self.swipe-accum) >= self.swipe-threshold / 1px) {
                       root.move(self.swipe-accum > 0 ? 1 : -1);

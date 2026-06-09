@@ -112,12 +112,21 @@ export component PageView inherits Rectangle {
             // Horizontal swipe → discrete page turn; vertical → zoom (unchanged).
             // Dominant-axis gate (1.2x margin) stops a diagonal scroll doing both.
             if (Math.abs(e.delta-x / 1px) > Math.abs(e.delta-y / 1px) * 1.2) {
+                // When zoomed in the user needs two-finger drag (pan) for horizontal
+                // movement; disable swipe-to-turn so it doesn't fire unexpectedly.
+                if (root.content-w > root.width + 2px || root.content-h > root.height + 2px) {
+                    return reject;
+                }
                 // Already fired this gesture: swallow the rest (incl. the OS
                 // momentum tail) and keep the idle countdown alive so it can't
                 // re-fire and skip a page/spread.
                 if (root.swipe-armed) {
                     idle-timer.restart();
                     return accept;
+                }
+                // Drop a reversed gesture's prior travel so two flicks never cancel.
+                if (e.delta-x / 1px * root.swipe-accum < 0) {
+                    root.swipe-accum = 0;
                 }
                 root.swipe-accum += e.delta-x / 1px;
                 if (Math.abs(root.swipe-accum) >= root.swipe-threshold / 1px) {
