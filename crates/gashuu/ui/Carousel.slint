@@ -586,7 +586,16 @@ export component Carousel inherits Rectangle {
           // scroll-event handler, so scroll events fall through to this ancestor
           // while pointer clicks are still absorbed front-to-back by the
           // cover/zone, so this wrapper never steals a tap.
-          TouchArea {
+          //
+          // GATED on `items.length > 0`: with zero visible books there is
+          // nothing to swipe through, AND this full-size TouchArea is declared
+          // AFTER (paints ABOVE) the empty-state / no-results panels — so left
+          // ungated it would block clicks on the empty-state "add books" CTA
+          // behind it (a TouchArea absorbs pointer events even with no `clicked`
+          // arm; the cover/zone children that normally take the tap don't exist
+          // when the library is empty). The gate matches the cover-flow row's,
+          // which is now this TouchArea's only child.
+          if root.items.length > 0 : TouchArea {
               width: 100%;
               height: 100%;
               property <length> swipe-threshold: 25px;   // lower = more sensitive
@@ -621,7 +630,9 @@ export component Carousel inherits Rectangle {
               }
 
           // ── Cover-flow row (>= 1 book) ───────────────────────────────────────
-          if root.items.length > 0 : Rectangle {
+          // The parent swipe TouchArea is already gated on `items.length > 0`,
+          // so this row exists only when there is at least one visible book.
+          Rectangle {
               width: 100%;
               height: 100%;
 
