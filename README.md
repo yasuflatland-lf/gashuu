@@ -75,7 +75,7 @@ tasteful a tool as a fine art book.
 
 ### macOS release install
 
-macOS builds are currently unsigned and not notarized. If macOS blocks
+macOS builds are ad-hoc signed (self-signed) but not notarized by Apple. If macOS blocks
 `gashuu.app` on first launch, follow these steps:
 
 1. Move `gashuu.app` to the `/Applications` folder.

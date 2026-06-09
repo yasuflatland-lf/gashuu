@@ -70,7 +70,8 @@ echo "=== CHECK 1: release workflow macOS zip contents ==="
 require_text "$workflow" 'STAGE="target/release/macos-dist/gashuu-${TAG}-macos-universal"'
 require_text "$workflow" 'ditto "$APP" "$STAGE/gashuu.app"'
 require_text "$workflow" '"$STAGE/README-macOS.txt"'
-require_text "$workflow" 'This macOS build is currently unsigned and not notarized.'
+require_text "$workflow" 'This macOS build is ad-hoc signed (self-signed) but not notarized by Apple.'
+require_text "$workflow" 'codesign --force --sign -'
 require_text "$workflow" 'System Settings > Privacy & Security'
 require_text "$workflow" 'Open Anyway'
 require_text "$workflow" 'ditto -c -k --keepParent'
@@ -80,7 +81,7 @@ forbid_text "$workflow" 'cp "scripts/macos/Open gashuu.command"'
 
 echo ""
 echo "=== CHECK 2: docs and CI guard ==="
-require_text "$readme" "macOS builds are currently unsigned and not notarized."
+require_text "$readme" "macOS builds are ad-hoc signed (self-signed) but not notarized by Apple."
 require_text "$readme" "System Settings"
 require_text "$readme" "Open Anyway"
 require_text "$readme" "temporary workaround until Developer ID signing"
