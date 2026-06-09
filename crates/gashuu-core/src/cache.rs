@@ -69,6 +69,22 @@ impl Drop for InFlightGuard<'_> {
 }
 
 impl Inner {
+    /// Return a cached page if present, promoting it in the LRU.
+    fn cached(&self, index: usize) -> Option<Arc<DecodedImage>> {
+        self.cache.lock().unwrap().get(&index).cloned()
+    }
+
+    /// Insert `img` unless another thread already populated the cache.
+    fn cache_decoded(&self, index: usize, img: Arc<DecodedImage>) -> Arc<DecodedImage> {
+        let mut cache = self.cache.lock().unwrap();
+        if let Some(existing) = cache.get(&index).cloned() {
+            existing
+        } else {
+            cache.put(index, Arc::clone(&img));
+            img
+        }
+    }
+
     /// Warm every not-yet-cached, not-in-flight neighbour of `center`. The
     /// reservation phase (selecting candidates and marking them in-flight) runs
     /// synchronously under the locks; the reads and decodes then run in parallel
@@ -114,6 +130,12 @@ impl Inner {
     }
 }
 
+#[derive(Clone)]
+pub struct CacheDispatch {
+    inner: Arc<Inner>,
+    radius: usize,
+}
+
 /// An LRU cache of decoded pages with background ±N prefetch.
 pub struct ImageCache {
     inner: Arc<Inner>,
@@ -148,27 +170,74 @@ impl ImageCache {
         self.inner.len == 0
     }
 
+    /// Return the decoded page at `index` if it is already cached.
+    ///
+    /// This is a pure cache-hit probe: it never reads or decodes on a miss.
+    /// Hits are promoted in the LRU and still spawn neighbour prefetch just like
+    /// `get`.
+    pub fn get_cached(&self, index: usize) -> Option<Arc<DecodedImage>> {
+        let img = self.inner.cached(index);
+        if img.is_some() {
+            self.spawn_prefetch(index);
+        }
+        img
+    }
+
+    /// Shareable decode handle for off-thread page work.
+    pub fn dispatch_handle(&self) -> CacheDispatch {
+        CacheDispatch {
+            inner: Arc::clone(&self.inner),
+            radius: self.radius,
+        }
+    }
+
     /// Return the decoded page at `index`, decoding synchronously on a miss, then
     /// spawn a background task to warm the neighbouring pages. A hit clones an
     /// `Arc` (no buffer copy) and returns instantly.
     pub fn get(&self, index: usize) -> Result<Arc<DecodedImage>, CoreError> {
-        if let Some(img) = self.inner.cache.lock().unwrap().get(&index).cloned() {
-            self.spawn_prefetch(index);
+        if let Some(img) = self.get_cached(index) {
             return Ok(img);
         }
-        let bytes = self.inner.source.read_bytes(index)?;
-        let img = Arc::new(decode(&bytes)?);
-        self.inner
-            .cache
-            .lock()
-            .unwrap()
-            .put(index, Arc::clone(&img));
-        self.spawn_prefetch(index);
-        Ok(img)
+        self.dispatch_handle().decode_and_cache(index)
     }
 
     /// Fire-and-forget background prefetch around `center` on the rayon pool.
     fn spawn_prefetch(&self, center: usize) {
+        if self.radius == 0 {
+            return;
+        }
+        let inner = Arc::clone(&self.inner);
+        let radius = self.radius;
+        rayon::spawn(move || inner.prefetch_blocking(center, radius));
+    }
+}
+
+impl CacheDispatch {
+    /// Read + decode page `index` on the calling thread, insert it into the
+    /// shared cache, and warm neighbouring pages.
+    pub fn decode_and_cache(&self, index: usize) -> Result<Arc<DecodedImage>, CoreError> {
+        if let Some(img) = self.inner.cached(index) {
+            self.spawn_prefetch(index);
+            return Ok(img);
+        }
+
+        let bytes = self.inner.source.read_bytes(index)?;
+
+        if let Some(img) = self.inner.cached(index) {
+            self.spawn_prefetch(index);
+            return Ok(img);
+        }
+
+        let decoded = Arc::new(decode(&bytes)?);
+        let img = self.inner.cache_decoded(index, decoded);
+        self.spawn_prefetch(index);
+        Ok(img)
+    }
+
+    fn spawn_prefetch(&self, center: usize) {
+        if self.radius == 0 {
+            return;
+        }
         let inner = Arc::clone(&self.inner);
         let radius = self.radius;
         rayon::spawn(move || inner.prefetch_blocking(center, radius));
@@ -273,6 +342,44 @@ mod tests {
         let b = cache.get(0).unwrap();
         assert!(Arc::ptr_eq(&a, &b), "a hit must return the cached Arc");
         assert_eq!(reads.load(Ordering::SeqCst), 1, "a hit must not re-read");
+    }
+
+    #[test]
+    fn get_cached_miss_does_not_read() {
+        let (src, reads) = counting(5);
+        let cache = ImageCache::new(src, CacheConfig::new(50, 0));
+        assert!(cache.get_cached(2).is_none());
+        assert_eq!(
+            reads.load(Ordering::SeqCst),
+            0,
+            "a cached miss must not trigger read_bytes"
+        );
+    }
+
+    #[test]
+    fn get_cached_hit_returns_same_arc_after_fill() {
+        let (src, reads) = counting(5);
+        let cache = ImageCache::new(src, CacheConfig::new(50, 0));
+        let a = cache.get(1).unwrap();
+        assert_eq!(reads.load(Ordering::SeqCst), 1);
+        let b = cache.get_cached(1).unwrap();
+        assert!(Arc::ptr_eq(&a, &b), "cached hit must return the same Arc");
+        assert_eq!(reads.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn dispatch_decode_and_cache_stores_then_get_cached_hits() {
+        let (src, reads) = counting(5);
+        let cache = ImageCache::new(src, CacheConfig::new(50, 0));
+        let dispatch = cache.dispatch_handle();
+        let a = dispatch.decode_and_cache(3).unwrap();
+        assert_eq!(reads.load(Ordering::SeqCst), 1);
+        let b = cache.get_cached(3).unwrap();
+        assert!(
+            Arc::ptr_eq(&a, &b),
+            "dispatch must populate the shared cache"
+        );
+        assert_eq!(reads.load(Ordering::SeqCst), 1);
     }
 
     #[test]
