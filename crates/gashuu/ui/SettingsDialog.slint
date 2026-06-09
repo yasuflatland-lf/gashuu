@@ -389,7 +389,11 @@ export component SettingsDialog inherits Rectangle {
                         }
 
                         // ── Section: General ──────────────────────────────────────
-                        VerticalLayout {
+                        // App-global settings (language). Shown ONLY when the dialog
+                        // edits the Library default (show-reset-button == false); the
+                        // Viewer's per-book dialog hides it, as a global control has no
+                        // place among one book's settings.
+                        if !root.show-reset-button : VerticalLayout {
                             spacing: Theme.space-lg;
                             Text {
                                 text: Strings.settings-section-general;
@@ -423,7 +427,10 @@ export component SettingsDialog inherits Rectangle {
                         // parent layout; NO divider line). The two SecondaryButtons
                         // stack VERTICALLY and FULL-WIDTH so the long Japanese labels
                         // each sit on one line and the pair reads as one cohesive group.
-                        VerticalLayout {
+                        // App-global utilities (clear history / cover cache): shown ONLY
+                        // in the Library default dialog (show-reset-button == false), not
+                        // in the Viewer's per-book dialog.
+                        if !root.show-reset-button : VerticalLayout {
                             spacing: Theme.space-lg;
                             Text {
                                 text: Strings.settings-section-data;
