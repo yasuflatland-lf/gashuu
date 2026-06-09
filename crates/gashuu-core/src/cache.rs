@@ -74,6 +74,15 @@ impl Inner {
         self.cache.lock().unwrap().get(&index).cloned()
     }
 
+    /// Fire-and-forget background prefetch around `center` on the rayon pool.
+    fn spawn_prefetch(self: &Arc<Self>, center: usize, radius: usize) {
+        if radius == 0 {
+            return;
+        }
+        let inner = Arc::clone(self);
+        rayon::spawn(move || inner.prefetch_blocking(center, radius));
+    }
+
     /// Insert `img` unless another thread already populated the cache.
     fn cache_decoded(&self, index: usize, img: Arc<DecodedImage>) -> Arc<DecodedImage> {
         let mut cache = self.cache.lock().unwrap();
@@ -178,7 +187,7 @@ impl ImageCache {
     pub fn get_cached(&self, index: usize) -> Option<Arc<DecodedImage>> {
         let img = self.inner.cached(index);
         if img.is_some() {
-            self.spawn_prefetch(index);
+            self.inner.spawn_prefetch(index, self.radius);
         }
         img
     }
@@ -200,16 +209,6 @@ impl ImageCache {
         }
         self.dispatch_handle().decode_and_cache(index)
     }
-
-    /// Fire-and-forget background prefetch around `center` on the rayon pool.
-    fn spawn_prefetch(&self, center: usize) {
-        if self.radius == 0 {
-            return;
-        }
-        let inner = Arc::clone(&self.inner);
-        let radius = self.radius;
-        rayon::spawn(move || inner.prefetch_blocking(center, radius));
-    }
 }
 
 impl CacheDispatch {
@@ -217,30 +216,21 @@ impl CacheDispatch {
     /// shared cache, and warm neighbouring pages.
     pub fn decode_and_cache(&self, index: usize) -> Result<Arc<DecodedImage>, CoreError> {
         if let Some(img) = self.inner.cached(index) {
-            self.spawn_prefetch(index);
+            self.inner.spawn_prefetch(index, self.radius);
             return Ok(img);
         }
 
         let bytes = self.inner.source.read_bytes(index)?;
 
         if let Some(img) = self.inner.cached(index) {
-            self.spawn_prefetch(index);
+            self.inner.spawn_prefetch(index, self.radius);
             return Ok(img);
         }
 
         let decoded = Arc::new(decode(&bytes)?);
         let img = self.inner.cache_decoded(index, decoded);
-        self.spawn_prefetch(index);
+        self.inner.spawn_prefetch(index, self.radius);
         Ok(img)
-    }
-
-    fn spawn_prefetch(&self, center: usize) {
-        if self.radius == 0 {
-            return;
-        }
-        let inner = Arc::clone(&self.inner);
-        let radius = self.radius;
-        rayon::spawn(move || inner.prefetch_blocking(center, radius));
     }
 }
 
