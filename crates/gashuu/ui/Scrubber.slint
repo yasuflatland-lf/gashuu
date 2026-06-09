@@ -61,7 +61,7 @@ export component Scrubber inherits Rectangle {
     // rounding property here (#71 Part D: single source of rounding).
     private property <float> drag-frac:
         root.rail-w > 0px
-            ? clamp((ta.mouse-x - root.rail-x) / root.rail-w, 0.0, 1.0)
+            ? clamp(ta.mouse-x / root.rail-w, 0.0, 1.0)
             : 0.0;
     // Idle fraction derived from current-page (1-based) so the knob sits at the
     // current spread when not dragging. RTL mirrors the position.

@@ -3,11 +3,13 @@ use crate::keymap::{map_key, KeyCommand};
 use crate::library_model::{LibrarySearchState, LibrarySelectionState};
 use crate::navigation::NavState;
 use crate::page_jump::parse_page_jump;
+use crate::page_loader::PageController;
 use crate::viewer_state::{scrub_fraction_to_page, ViewerState};
 use crate::viewport::ViewportState;
 use crate::{
-    apply_viewport, current_page_1based, go_to_library, persist_view_modes, refresh, with_ui,
-    write_back_position, CarouselRefresh, ViewModeRoute, ViewerWindow,
+    apply_spread_geometry, apply_viewport, clear_page_view, current_page_1based, go_to_library,
+    persist_view_modes, refresh, with_ui, write_back_position, CarouselRefresh, ViewModeRoute,
+    ViewerWindow,
 };
 use crate::{cover_loader, i18n};
 use gashuu_core::{FitMode, Library, ReadingDirection, Settings};
@@ -21,11 +23,77 @@ pub(crate) fn wire_viewer_input_handlers(
     ui: &ViewerWindow,
     state: &Rc<RefCell<ViewerState>>,
     viewport: &Rc<RefCell<ViewportState>>,
+    pages: &Rc<PageController>,
     localizer: &Rc<i18n::Localizer>,
 ) {
     let state = Rc::clone(state);
     let viewport = Rc::clone(viewport);
+    let pages = Rc::clone(pages);
     let localizer = Rc::clone(localizer);
+
+    // Async page-decode bridge: `page_loader` applies Slint images on the event
+    // loop, then invokes this scalar callback so the UI-thread-only viewport and
+    // localizer can update geometry/status.
+    {
+        let ui_weak = ui.as_weak();
+        let state = Rc::clone(&state);
+        let viewport = Rc::clone(&viewport);
+        let pages = Rc::clone(&pages);
+        let localizer = Rc::clone(&localizer);
+        ui.on_spread_anchored(
+            move |content_w, content_h, single, trailing_failed, leading_idx, trailing_idx| {
+                with_ui(&ui_weak, |ui| {
+                    let leading = leading_idx.max(0) as usize;
+                    let trailing = (trailing_idx >= 0).then_some(trailing_idx as usize);
+                    pages.clear_dispatched_spread(leading, trailing);
+                    ui.set_leading_loading(false);
+                    ui.set_trailing_loading(false);
+                    // Unmounting the LoadingSlot perturbs PageView's TouchArea
+                    // hit-testing the same way the mount does (see main.rs MISS
+                    // path); suppress the phantom pointer-reveal so the decode
+                    // finish does not flip the chrome under a stationary cursor.
+                    ui.invoke_arm_pointer_reveal_suppression();
+                    let failed = (trailing_failed >= 0).then_some(trailing_failed as usize);
+                    let status = state.borrow().status_content();
+                    apply_spread_geometry(
+                        &ui,
+                        &viewport,
+                        localizer.loader(),
+                        content_w,
+                        content_h,
+                        single,
+                        failed,
+                        &status,
+                    );
+                })
+            },
+        );
+    }
+
+    // Decode failures are surfaced only through this async callback. The worker
+    // logged the concrete core error before sending the scalar page index.
+    {
+        let ui_weak = ui.as_weak();
+        let viewport = Rc::clone(&viewport);
+        let pages = Rc::clone(&pages);
+        let localizer = Rc::clone(&localizer);
+        ui.on_page_decode_error(move |page_index| {
+            with_ui(&ui_weak, |ui| {
+                let page = page_index.max(0) as usize;
+                pages.clear_dispatched(page);
+                let detail = format!("page {}", page + 1);
+                ui.set_status_text(
+                    crate::i18n::dynamic::decode_error(localizer.loader(), &detail).into(),
+                );
+                clear_page_view(&ui, &viewport);
+                // clear_page_view unmounts the LoadingSlot (loading flags →
+                // false), which perturbs PageView's TouchArea hit-testing under a
+                // stationary cursor; suppress the phantom pointer-reveal so a
+                // decode error does not flip the chrome (mirrors on_spread_anchored).
+                ui.invoke_arm_pointer_reveal_suppression();
+            })
+        });
+    }
 
     // Thumbnail click: jump to the clicked page's spread, refresh, then restore
     // focus to the page area so keyboard navigation keeps working.
@@ -33,11 +101,19 @@ pub(crate) fn wire_viewer_input_handlers(
         let ui_weak = ui.as_weak();
         let state = Rc::clone(&state);
         let viewport = Rc::clone(&viewport);
+        let pages = Rc::clone(&pages);
         let localizer = Rc::clone(&localizer);
         ui.on_thumbnail_clicked(move |page| {
             with_ui(&ui_weak, |ui| {
                 if state.borrow_mut().jump_to(page as usize) {
-                    refresh(&ui, &state.borrow(), &viewport, localizer.loader());
+                    refresh(
+                        &ui,
+                        &state.borrow(),
+                        &viewport,
+                        localizer.loader(),
+                        &pages,
+                        ui.as_weak(),
+                    );
                 }
                 ui.invoke_focus_pages();
             })
@@ -50,6 +126,7 @@ pub(crate) fn wire_viewer_input_handlers(
         let ui_weak = ui.as_weak();
         let state = Rc::clone(&state);
         let viewport = Rc::clone(&viewport);
+        let pages = Rc::clone(&pages);
         let localizer = Rc::clone(&localizer);
         ui.on_page_jump_request(move |text: slint::SharedString| {
             with_ui(&ui_weak, |ui| {
@@ -57,7 +134,14 @@ pub(crate) fn wire_viewer_input_handlers(
                 let did_jump = if let Some(page_0based) = parse_page_jump(text.as_str(), total) {
                     let moved = state.borrow_mut().jump_to(page_0based);
                     if moved {
-                        refresh(&ui, &state.borrow(), &viewport, localizer.loader());
+                        refresh(
+                            &ui,
+                            &state.borrow(),
+                            &viewport,
+                            localizer.loader(),
+                            &pages,
+                            ui.as_weak(),
+                        );
                         // Belt-and-suspenders: if refresh gains an early-return path,
                         // the field still shows the canonical post-jump page.
                         ui.set_page_jump_text(
@@ -160,6 +244,7 @@ pub(crate) fn wire_viewer_input_handlers(
         let ui_weak = ui.as_weak();
         let state = Rc::clone(&state);
         let viewport = Rc::clone(&viewport);
+        let pages = Rc::clone(&pages);
         let localizer = Rc::clone(&localizer);
         ui.on_scrub_commit(move |frac| {
             with_ui(&ui_weak, |ui| {
@@ -175,7 +260,14 @@ pub(crate) fn wire_viewer_input_handlers(
                 // re-seeds the scrubber knob + counter to the committed spread, even when
                 // the resolved leading equals the current index (a no-op jump).
                 let _moved = state.borrow_mut().jump_to(page);
-                refresh(&ui, &state.borrow(), &viewport, localizer.loader());
+                refresh(
+                    &ui,
+                    &state.borrow(),
+                    &viewport,
+                    localizer.loader(),
+                    &pages,
+                    ui.as_weak(),
+                );
                 ui.invoke_focus_pages();
             })
         });
@@ -260,6 +352,7 @@ pub(crate) fn wire_nav_handlers(
     library: &Rc<RefCell<Library>>,
     nav: &Rc<RefCell<NavState>>,
     covers: &Rc<cover_loader::CoverController>,
+    pages: &Rc<PageController>,
     search: &Rc<RefCell<LibrarySearchState>>,
     selection: &Rc<RefCell<LibrarySelectionState>>,
     localizer: &Rc<i18n::Localizer>,
@@ -270,6 +363,7 @@ pub(crate) fn wire_nav_handlers(
     let library = Rc::clone(library);
     let nav = Rc::clone(nav);
     let covers = Rc::clone(covers);
+    let pages = Rc::clone(pages);
     let search = Rc::clone(search);
     let selection = Rc::clone(selection);
     let localizer = Rc::clone(localizer);
@@ -281,6 +375,7 @@ pub(crate) fn wire_nav_handlers(
         let viewport = Rc::clone(&viewport);
         let nav = Rc::clone(&nav);
         let library = Rc::clone(&library);
+        let pages = Rc::clone(&pages);
         let localizer = Rc::clone(&localizer);
         // `settings` is captured only to satisfy `persist_view_modes`'s signature
         // on the GoToLibrary leave point; the LeaveViewer route never reads it.
@@ -302,7 +397,14 @@ pub(crate) fn wire_nav_handlers(
                     KeyCommand::Turn(action) => {
                         let moved = state.borrow_mut().apply(action);
                         if moved {
-                            refresh(&ui, &state.borrow(), &viewport, localizer.loader());
+                            refresh(
+                                &ui,
+                                &state.borrow(),
+                                &viewport,
+                                localizer.loader(),
+                                &pages,
+                                ui.as_weak(),
+                            );
                         }
                         // Log every page-turn latency (cache hits target <50ms; the
                         // first visit to a page also includes a synchronous decode).
@@ -321,17 +423,38 @@ pub(crate) fn wire_nav_handlers(
                     // Settings write).
                     KeyCommand::ToggleSpread => {
                         if state.borrow_mut().toggle_spread() {
-                            refresh(&ui, &state.borrow(), &viewport, localizer.loader());
+                            refresh(
+                                &ui,
+                                &state.borrow(),
+                                &viewport,
+                                localizer.loader(),
+                                &pages,
+                                ui.as_weak(),
+                            );
                         }
                     }
                     KeyCommand::ToggleReadingDirection => {
                         if state.borrow_mut().toggle_reading_direction() {
-                            refresh(&ui, &state.borrow(), &viewport, localizer.loader());
+                            refresh(
+                                &ui,
+                                &state.borrow(),
+                                &viewport,
+                                localizer.loader(),
+                                &pages,
+                                ui.as_weak(),
+                            );
                         }
                     }
                     KeyCommand::ToggleCover => {
                         if state.borrow_mut().toggle_cover() {
-                            refresh(&ui, &state.borrow(), &viewport, localizer.loader());
+                            refresh(
+                                &ui,
+                                &state.borrow(),
+                                &viewport,
+                                localizer.loader(),
+                                &pages,
+                                ui.as_weak(),
+                            );
                         }
                     }
                     // Zoom/fit commands mutate `ViewportState`, then push geometry.
@@ -414,11 +537,19 @@ pub(crate) fn wire_nav_handlers(
         let ui_weak = ui.as_weak();
         let state = Rc::clone(&state);
         let viewport = Rc::clone(&viewport);
+        let pages = Rc::clone(&pages);
         let localizer = Rc::clone(&localizer);
         ui.on_resized(move |w, h| {
             with_ui(&ui_weak, |ui| {
                 if state.borrow_mut().set_viewport_size(w, h) {
-                    refresh(&ui, &state.borrow(), &viewport, localizer.loader());
+                    refresh(
+                        &ui,
+                        &state.borrow(),
+                        &viewport,
+                        localizer.loader(),
+                        &pages,
+                        ui.as_weak(),
+                    );
                 }
             })
         });

@@ -522,6 +522,34 @@ the page commits on release. Thumbnails are pulled from the existing page-thumbn
 ### Thumbnail Failed State — `{colors.error}` / `{colors.error-surface}` (accepted)
 When a thumbnail/page fails to decode, the cell uses a desaturated-red treatment: surface `{colors.error-surface}` (#2a1820) with a `{colors.error}` (#d16b7c) 1px border and glyph. These two hues are **STATE semantics** — they mark a failed decode/load, not an interactive action — tuned to the dark canvas and deliberately distinct from the forbidden traffic-light close (`{colors.win-close}` #ff5f57). They are **NOT** for destructive buttons: white label text on `{colors.error}` is only ≈ 3.44:1, below the WCAG AA floor — destructive buttons use the deeper `{colors.danger}` instead.
 
+### Page-View Loading Placeholder — `components.page-loading-slot`
+
+While an async page decode is in flight (issue #207), each missing slot shows a loading placeholder
+in place of the not-yet-decoded image.
+
+**Slot geometry.** The placeholder is slot-sized, not content-sized. In single-page mode it fills
+the full viewport width and height. In double-spread mode each slot fills exactly half the viewport
+width at full height — the leading-slot origin is at `x = 0` in LTR or `x = width/2` in RTL; the
+trailing-slot origin is the mirror. The RTL-mirror rule is load-bearing: manga (RTL) keeps the
+leading page on the right half and the trailing page on the left half, matching the page layout.
+(`PageView.slint`, `LoadingSlot` component, `slot-x`/`slot-width`/`slot-height` in-properties.)
+
+**Background.** `{colors.placeholder}` (`Theme.placeholder`) — the same sunken tone the thumbnail
+strip and cover cells use for not-yet-loaded content. Keeps visual consistency across the three
+thumbnail surfaces.
+
+**Spinner.** A `loading.svg` image, colorized `{colors.text-faint}` (`Theme.text-faint`), centered
+in the slot, with a continuous CSS-style rotation (`animation-tick() / 2s` → 360°). Size: 21% of
+`Math.min(slot-width, slot-height)` — a Fibonacci-adjacent ratio applied to the smaller slot
+dimension so the spinner scales naturally for both portrait-dominant single-page and
+landscape-dominant double-spread slots.
+
+**Overlay discipline.** The placeholder is declared AFTER the page image in `PageView.slint`, so it
+layers over the image area rather than beneath it. When the decode arrives, `leading-loading` /
+`trailing-loading` flip to `false` and the `if`-gated `LoadingSlot` nodes are destroyed; the real
+image becomes visible with no cross-fade (the transition is fast enough that animation is not needed
+at this stage).
+
 ### Title Bar — `components.title-bar`
 Background `{colors.surface-raised}`, 1px bottom `{colors.hairline}`, `{typography.ui-label}` in
 `{colors.text-muted}`, with the document/library name centered and a count chip on the right.

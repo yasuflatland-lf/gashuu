@@ -10,11 +10,38 @@
 // ViewerWindow so handlers/viewer.rs can implement the zoom/pan math.
 import { Theme } from "Theme.slint";
 
+// Loading placeholder that fills its assigned slot while a page is being decoded.
+// slot-x/slot-width/slot-height express the RTL-aware geometry at the call site
+// so the component stays policy-free (matches the ThumbnailCell pattern).
+component LoadingSlot inherits Rectangle {
+    in property <length> slot-x;
+    in property <length> slot-width;
+    in property <length> slot-height;
+
+    x: slot-x;
+    y: 0px;
+    width: slot-width;
+    height: slot-height;
+    background: Theme.placeholder;
+
+    Image {
+        source: @image-url("assets/loading.svg");
+        colorize: Theme.text-faint;
+        width: Math.min(parent.width, parent.height) * 21%;
+        height: self.width;
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        transform-rotation: 360deg * (animation-tick() / 2s);
+    }
+}
+
 export component PageView inherits Rectangle {
     in property <image> leading-page;
     in property <image> trailing-page;
     in property <bool> rtl;
     in property <bool> single;
+    in property <bool> leading-loading: false;
+    in property <bool> trailing-loading: false;
     // Rust-computed displayed-content rectangle (placed inside the clip).
     // Defaults to 0px so the build passes before Rust sets them.
     in property <length> content-x: 0px;
@@ -94,6 +121,24 @@ export component PageView inherits Rectangle {
             image-fit: contain;
             horizontal-stretch: 1;
         }
+    }
+
+    if root.single && root.leading-loading : LoadingSlot {
+        slot-x: 0px;
+        slot-width: root.width;
+        slot-height: root.height;
+    }
+
+    if !root.single && root.leading-loading : LoadingSlot {
+        slot-x: root.rtl ? root.width / 2 : 0px;
+        slot-width: root.width / 2;
+        slot-height: root.height;
+    }
+
+    if !root.single && root.trailing-loading : LoadingSlot {
+        slot-x: root.rtl ? 0px : root.width / 2;
+        slot-width: root.width / 2;
+        slot-height: root.height;
     }
 
     // TouchArea is non-focusable and will not steal keyboard focus from the

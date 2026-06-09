@@ -10,9 +10,9 @@
 
 use crate::keymap::NavAction;
 use gashuu_core::{
-    ArchiveLoader, ArchivePolicy, CacheConfig, CoreError, CoverMode, DecodedImage, ImageCache,
-    Language, PageSource, ReadingDirection, ResolvedView, Settings, SpreadContext, SpreadLayout,
-    SpreadMode,
+    cache::CacheDispatch, ArchiveLoader, ArchivePolicy, CacheConfig, CoreError, CoverMode,
+    DecodedImage, ImageCache, Language, PageSource, ReadingDirection, ResolvedView, Settings,
+    SpreadContext, SpreadLayout, SpreadMode,
 };
 use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
@@ -41,15 +41,25 @@ pub(crate) struct StatusContent {
     pub(crate) kind: StatusKind,
 }
 
-/// One displayed unit: the leading image and, in two-page modes, an optional
-/// trailing image. Both are `Arc<DecodedImage>` so a cache hit never copies the
-/// multi-MB RGBA buffer.
+/// One displayed unit from the legacy synchronous test seam: the leading image
+/// and, in two-page modes, an optional trailing image.
+#[cfg(test)]
 pub struct SpreadImages {
     pub leading: Arc<DecodedImage>,
     pub trailing: Option<Arc<DecodedImage>>,
     /// `Some(page_index)` when the trailing page failed to decode and the view
     /// degraded to leading-only; `None` for a normal single- or two-page spread.
     pub trailing_failed: Option<usize>,
+}
+
+/// Non-blocking cache classification for the current spread.
+///
+/// Each slot carries its page index plus `Some(decoded)` on a cache HIT or
+/// `None` on a cache MISS. MISS never reads or decodes.
+pub(crate) struct SpreadSlots {
+    pub(crate) leading: (usize, Option<Arc<DecodedImage>>),
+    pub(crate) trailing: Option<(usize, Option<Arc<DecodedImage>>)>,
+    pub(crate) single: bool,
 }
 
 /// Map a scrub fraction (knob position along the track, 0.0 = screen-left edge,
@@ -374,13 +384,36 @@ impl ViewerState {
         moved
     }
 
-    /// Return the current spread from the cache (decoding on a miss and
-    /// triggering background prefetch). `None` when no folder is open or it has
-    /// no pages.
+    /// Return a non-blocking classification of the current spread.
     ///
-    /// A leading-page decode error fails the whole call. A trailing-page decode
-    /// error does NOT: it is logged and the spread degrades gracefully to a
-    /// single page (showing the leading alone) rather than blanking the view.
+    /// `None` means no source or an empty source. `Some` never decodes on cache
+    /// MISS; callers must dispatch missing slots separately.
+    pub(crate) fn spread_slots(&self) -> Option<SpreadSlots> {
+        let cache = self.cache.as_ref()?;
+        if self.page_count == 0 {
+            return None;
+        }
+        let s = self.spread_ctx().spread_at(self.index);
+        let leading = (s.leading, cache.get_cached(s.leading));
+        let trailing = s.trailing.map(|t| (t, cache.get_cached(t)));
+        Some(SpreadSlots {
+            leading,
+            trailing,
+            single: s.trailing.is_none(),
+        })
+    }
+
+    /// Return a cloneable off-thread decode handle for the active source.
+    pub(crate) fn dispatch_handle(&self) -> Option<CacheDispatch> {
+        self.cache.as_ref().map(ImageCache::dispatch_handle)
+    }
+
+    /// Return the current spread from the cache, decoding on a miss.
+    ///
+    /// Kept for the existing spread/navigation tests only; production uses
+    /// [`ViewerState::spread_slots`] so cache misses never decode on the UI
+    /// thread.
+    #[cfg(test)]
     pub fn current_spread(&self) -> Option<Result<SpreadImages, CoreError>> {
         let cache = self.cache.as_ref()?;
         if self.page_count == 0 {
@@ -621,3 +654,78 @@ impl Default for ViewerState {
 #[cfg(test)]
 #[path = "viewer_state/tests.rs"]
 mod tests;
+
+#[cfg(test)]
+mod async_slot_tests {
+    use super::*;
+    use gashuu_core::{MockPageSource, PageEntry};
+    use std::io::Cursor;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    fn tiny_png() -> Vec<u8> {
+        let img = image::RgbaImage::from_pixel(2, 3, image::Rgba([9, 9, 9, 255]));
+        let mut bytes = Vec::new();
+        img.write_to(&mut Cursor::new(&mut bytes), image::ImageFormat::Png)
+            .unwrap();
+        bytes
+    }
+
+    fn counted_source(pages: usize) -> (Arc<dyn PageSource>, Arc<AtomicUsize>) {
+        let reads = Arc::new(AtomicUsize::new(0));
+        let reads_for_mock = Arc::clone(&reads);
+        let mut mock = MockPageSource::new();
+        mock.expect_list_pages()
+            .returning(move || vec![PageEntry { name: "p".into() }; pages]);
+        mock.expect_read_bytes().returning(move |_| {
+            reads_for_mock.fetch_add(1, Ordering::SeqCst);
+            Ok(tiny_png())
+        });
+        (Arc::new(mock), reads)
+    }
+
+    #[test]
+    fn spread_slots_returns_none_without_displayable_pages() {
+        let mut state = ViewerState::new();
+        assert!(state.spread_slots().is_none());
+
+        let (empty, _) = counted_source(0);
+        state.set_source(empty);
+        assert!(state.spread_slots().is_none());
+    }
+
+    #[test]
+    fn spread_slots_reports_miss_without_reading_or_decoding() {
+        let (source, reads) = counted_source(1);
+        let mut state = ViewerState::with_cache_config(CacheConfig::new(4, 0));
+        state.set_source(source);
+
+        let slots = state.spread_slots().expect("one page yields a slot");
+
+        assert_eq!(slots.leading.0, 0);
+        assert!(slots.leading.1.is_none());
+        assert!(slots.trailing.is_none());
+        assert!(slots.single);
+        assert_eq!(
+            reads.load(Ordering::SeqCst),
+            0,
+            "spread slot classification must not decode cache misses"
+        );
+    }
+
+    #[test]
+    fn spread_slots_reports_cache_hits_after_dispatch_decode() {
+        let (source, reads) = counted_source(1);
+        let mut state = ViewerState::with_cache_config(CacheConfig::new(4, 0));
+        state.set_source(source);
+        let decoded = state
+            .dispatch_handle()
+            .expect("source has a dispatch handle")
+            .decode_and_cache(0)
+            .expect("tiny png decodes");
+
+        let slots = state.spread_slots().expect("one page yields a slot");
+
+        assert!(Arc::ptr_eq(slots.leading.1.as_ref().unwrap(), &decoded));
+        assert_eq!(reads.load(Ordering::SeqCst), 1);
+    }
+}

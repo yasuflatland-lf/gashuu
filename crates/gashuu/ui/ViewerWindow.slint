@@ -96,11 +96,15 @@ export component ViewerWindow inherits Window {
     // the idle timer. (Arrow / page-turn keys call `invoke_reveal_chrome_now()`
     // directly in the `nav` handler, bypassing this callback.)
     callback reveal-chrome();
+    callback spread-anchored(float, float, bool, int, int, int);
+    callback page-decode-error(int);
 
     in property <image> leading-page;
     in property <image> trailing-page;
     in property <bool> rtl;
     in property <bool> single;
+    in property <bool> leading-loading: false;
+    in property <bool> trailing-loading: false;
     in property <string> status-text: "No folder opened";
     // Idle value of the bottom strip — total library size, composed/pushed from Rust.
     in property <string> library-count-text;
@@ -175,6 +179,17 @@ export component ViewerWindow inherits Window {
             return;
         }
         root.reveal-chrome-now();
+    }
+
+    // Arms the same brief pointer-reveal suppression window the idle-hide uses,
+    // single-sourcing the guard. Called from Rust whenever the LoadingSlot
+    // mounts/unmounts under a stationary cursor (cache-MISS page turn → loading
+    // flags true, then decode finish → loading flags false). Either toggle
+    // perturbs PageView's TouchArea hit-testing and emits a phantom
+    // `changed mouse-x` that would otherwise re-reveal the chrome.
+    public function arm-pointer-reveal-suppression() {
+        root.suppress-pointer-reveal = true;
+        reveal-guard.start();
     }
 
     callback open-folder();
@@ -404,6 +419,8 @@ export component ViewerWindow inherits Window {
                     trailing-page: root.trailing-page;
                     rtl: root.rtl;
                     single: root.single;
+                    leading-loading: root.leading-loading;
+                    trailing-loading: root.trailing-loading;
                     content-x: root.content-x;
                     content-y: root.content-y;
                     content-w: root.content-w;
@@ -549,8 +566,7 @@ export component ViewerWindow inherits Window {
                         root.chrome-shown = false;
                         // Suppress the phantom pointer-reveal this hide triggers
                         // when a stationary cursor sat over the vacated chrome.
-                        root.suppress-pointer-reveal = true;
-                        reveal-guard.start();
+                        root.arm-pointer-reveal-suppression();
                     }
                     idle-timer.stop();
                 }
