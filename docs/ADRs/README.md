@@ -21,6 +21,7 @@ source, the divergence is called out in each ADR's "Implementation notes (as-bui
 | [0009](0009-reject-empty-books.md) | Validate book emptiness with a core probe at the boundaries | Accepted |
 | [0010](0010-avif-decode-via-dav1d.md) | Decode AVIF pages via the dav1d native decoder | Accepted |
 | [0011](0011-decoder-subprocess-isolation.md) | Decoder subprocess isolation for RAR/CBR and AVIF | Proposed |
+| [0012](0012-async-page-decode.md) | Decode cache-miss pages off the UI thread, carrying the result back | Accepted |
 
 ## Conventions
 

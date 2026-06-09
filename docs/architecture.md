@@ -126,7 +126,14 @@ rayon worker right after the initial cover stream.
 ### cache::ImageCache
 
 LRU of `Arc<DecodedImage>` up to `DEFAULT_CAPACITY`=50 + background ±`DEFAULT_PREFETCH_RADIUS`=3
-prefetch in front of any `PageSource`.
+prefetch in front of any `PageSource`. Two access paths serve different callers: `get(index)`
+decodes synchronously on a miss (kept for tests); `get_cached(index)` is a non-blocking pure
+cache-hit probe that returns `None` on a miss without ever reading or decoding. `dispatch_handle()`
+returns a cloneable `Send` `CacheDispatch` handle (`decode_and_cache`) that shares the live LRU via
+`Arc<Inner>` — the rayon worker decodes on a miss, inserts into the shared cache, then spawns
+neighbour prefetch. A racing prefetch or a concurrent worker that populated the same slot is detected
+by the double-checked `cached()` call in `decode_and_cache`, so the last writer wins and a duplicate
+decode is safely discarded.
 
 See [ADR-0003](ADRs/0003-image-loading-and-caching.md) for the LRU/prefetch decision.
 
@@ -269,8 +276,7 @@ See [ADR-0001](ADRs/0001-gui-framework-slint.md) for the Slint framework decisio
 
 ### ViewerState
 
-Navigation backed by `ImageCache`; drives a two-page spread via
-`current_spread() -> Option<Result<SpreadImages, CoreError>>`, with `apply` moving in spread units.
+Navigation backed by `ImageCache`; drives a two-page spread with `apply` moving in spread units.
 `open_path(path)` dispatches via `ArchiveLoader` + skipped warn + a `last_open_skipped()` getter,
 and `open_folder` delegates to it. `jump_to(page) -> bool` — routes through
 `SpreadContext::normalize` (via `spread_ctx()`) so `index` stays a valid spread leading, clamps
@@ -279,6 +285,15 @@ out-of-range, guards `page_count==0` to avoid underflow, and returns whether it 
 `current_source() -> Option<Arc<dyn PageSource>>`
 retaining the opened `Arc` because `ImageCache` does not expose its source; `index()`/`page_count()`
 lost their `#[allow(dead_code)]`, now used by the thumbnail-strip wiring.
+
+Production page delivery goes through two non-blocking methods: `spread_slots() -> Option<SpreadSlots>`
+classifies the current spread into per-slot HIT (`Some(Arc<DecodedImage>)`) / MISS (`None`) pairs
+without ever reading or decoding on a miss; `dispatch_handle() -> Option<CacheDispatch>` returns the
+`Send` decode handle. `main.rs::refresh` calls `spread_slots()` and branches: all-HIT → apply
+images synchronously; any-MISS → set `leading-loading` / `trailing-loading` loading flags and hand
+the `SpreadSlots` to `PageController::dispatch_spread` for off-thread decode. `current_spread()`
+(decodes synchronously on miss, surfaces the spread images as `SpreadImages`) is `#[cfg(test)]`-only
+and never called on the UI thread in production.
 
 The settings dialog drives IDEMPOTENT value setters `set_spread_mode(SpreadMode)`/`set_cover_mode(CoverMode)`/`set_reading_direction(ReadingDirection)`
 (all `-> bool`, same value → `false` no-op, mirroring `jump_to`'s "moved? → caller refreshes"
@@ -756,6 +771,23 @@ thread: `main.rs::apply_outcomes` (the old synchronous `add_paths` body, byte-id
 here so the probe stays pure) + `apply_add_report` (save → rebuild → notice → focus). Same Send/!Send discipline as
 the cover loader: only `Send` values cross into the workers and the marshaled closures; every `Library` mutation
 runs on the UI thread. See [patterns.md](patterns.md), "Worker → UI ACTION via a Slint callback".
+
+**`page_loader.rs`** (`PageController`, issue #207): the viewer's async-decode arm. Keeps the same
+mental model as `cover_loader.rs` — UI-thread bookkeeping in the controller, heavy decode on rayon
+workers, scalar-only `Send` values marshalled back via Slint callbacks — applied to page turns so a
+cache-miss page never blocks the event loop. `PageController` owns an `Arc<AtomicUsize>` epoch, a
+`RefCell<HashSet<usize>>` dispatch-dedup set, and a `RefCell<Option<SpreadTarget>>` (holding
+`leading_idx`, `trailing_idx`, `single`). `set_source` / `set_target` advance the epoch so stale
+marshal closures that arrive after a source change or spread navigation are silently discarded.
+`dispatch_spread(ui_weak, cache_dispatch, request)` reserves each MISS slot independently via
+`reserve_missing_slots` (dedup prevents duplicate in-flight decodes for the same page); when both
+slots are MISS, the rayon job uses `rayon::join` so they decode in parallel. Each rayon job marshals
+back via `slint::invoke_from_event_loop`: on success it calls `ui.invoke_spread_anchored(content_w,
+content_h, single, trailing_failed, leading_idx, trailing_idx)` (which drives geometry + image
+apply on the UI thread); on decode failure it calls `ui.invoke_page_decode_error(index)`. The
+UI-side `slint::Image` is built inside the event-loop closure (never `Send`). `main.rs::refresh`
+calls `ViewerState::spread_slots()` to classify the current spread, branches on all-HIT vs
+any-MISS, and hands a `SpreadDecodeRequest` to `dispatch_spread` on a miss.
 
 **`SettingsDialog.slint`** (issue 102 replaced its std-widgets `ComboBox`/`SpinBox`/`CheckBox` with the token-driven `Segmented`/`Stepper`/`Toggle`/`Dropdown` atoms): modal overlay editing active settings; two-way `current-index <=> in-out-prop` +
 `selected`/`edited`/`toggled` callbacks. Since issue 103/104 it is a **content-hug glass panel** (φ relocated into the component proportions; spec 2026-06-04) built from custom `components/` atoms; its footer "Shortcuts" link opens `ShortcutsOverlay`, and an `in property <int> focus-epoch` (bumped by `ViewerWindow.focus-settings()`) lets the parent re-focus this still-mounted dialog after the overlay closes.

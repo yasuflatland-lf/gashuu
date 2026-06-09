@@ -162,6 +162,33 @@ RAR requires a C++ compiler on every OS (see [docs/toolchain.md](toolchain.md)).
 - Follow-ups deliberately NOT done here (filed as issues): #140 page-turn miss-decode analysis, #141 raw-RGBA/QOI cover-cache v2, #142 batched cover marshaling, #143 ThumbnailCache size cap/GC (since shipped — see the cover-cache GC section below), #144 failed-cover state.
 - No new dependencies. The worker path stays coverage-exempt (same policy as the thumbnail strip); `prioritize_by_focus` is unit-tested headlessly.
 
+### Async page decode (issue #207)
+
+- **Cache-miss page decode moved off the UI thread.** Previously `main.rs::refresh` called
+  `ViewerState::current_spread()`, which decoded missing pages synchronously on the event loop —
+  blocking every turn for however long the decode took. `refresh` now calls
+  `ViewerState::spread_slots()`, which is a non-blocking HIT/MISS classification: it returns each
+  slot's index plus a cached `Arc<DecodedImage>` on a HIT or `None` on a MISS, never reading or
+  decoding on a miss.
+- **All-HIT path (sync apply).** When every slot is a HIT, `refresh` applies the images
+  synchronously — clears the loading flags, builds the `slint::Image` objects on the UI thread, and
+  calls `apply_spread_images` + `apply_spread_geometry`. No rayon job is spawned.
+- **Any-MISS path (async).** On any MISS, `refresh` sets `leading-loading` / `trailing-loading` to
+  show the per-slot loading placeholders, clears the image properties, and calls
+  `PageController::dispatch_spread`. `dispatch_spread` reserves each missing slot independently
+  (dedup prevents duplicate in-flight decodes for the same page), spawns one rayon job, and uses
+  `rayon::join` when both slots are MISS so they decode in parallel. The job marshals back via
+  `slint::invoke_from_event_loop`, epoch-guarded: on success it calls
+  `ui.invoke_spread_anchored(content_w, content_h, single, trailing_failed, leading_idx,
+  trailing_idx)`; on decode failure it calls `ui.invoke_page_decode_error(index)`.
+- **Epoch + dedup.** `PageController::set_target` advances the epoch on a real spread change; stale
+  marshal closures arriving after a navigation detect the superseded epoch via `is_current` and
+  return without touching UI state. `reserve_dispatch` deduplicates: if a slot is already in-flight
+  from a prior dispatch it is not re-dispatched, and the earlier worker's marshal completes it.
+- **`current_spread()` retained for tests only** (`#[cfg(test)]`). It decodes synchronously and is
+  never called on the UI thread in production.
+- No new dependencies.
+
 ### Reject empty books (reject-empty-books, 2026-06-05)
 
 A source with no image pages (an empty folder, an archive with only non-image entries, a folder whose images live only in subfolders since the walk is `max_depth(1)`) is no longer treatable as a book. The domain rule "a valid book has >= 1 image page" lives once in core; three UI hook points enforce it. See [ADR-0009](ADRs/0009-reject-empty-books.md) for the decision and [docs/patterns.md](patterns.md) for the harnesses.
@@ -207,6 +234,7 @@ field / UI for the cap.
 ## Deferred (intentionally out of scope)
 
 - A genuinely-RAR-compressed test fixture (issue #22 — only a store-format fixture ships, which does not exercise real RAR decompression).
+- Progressive per-slot double-spread display (rejected — per-slot geometry would fracture the unified zoom/pan content rectangle; the spread applies atomically).
 - Thumbnail-strip follow-ups:
   - RTL strip ordering (the strip ships ascending order + current-page highlight only).
   - Lazy/on-demand thumbnail generation (the strip eagerly generates all).
