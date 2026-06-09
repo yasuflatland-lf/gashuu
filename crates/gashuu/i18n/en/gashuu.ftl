@@ -146,6 +146,9 @@ carousel-empty-cta-files = Select files to add
 carousel-no-results-title = No matching books
 carousel-no-results-hint = Try a different search.
 
+# Cover load-failure label, shown only on the centered card (issue 144 follow-up).
+cover-failed-label = Can't open
+
 # Idle bottom-strip label: total library size, shown when no transient notice
 # occupies the strip. { $n } is the total book count (only composed for n > 0).
 library-count =
