@@ -48,6 +48,11 @@ pub(crate) fn wire_viewer_input_handlers(
                     pages.clear_dispatched_spread(leading, trailing);
                     ui.set_leading_loading(false);
                     ui.set_trailing_loading(false);
+                    // Unmounting the LoadingSlot perturbs PageView's TouchArea
+                    // hit-testing the same way the mount does (see main.rs MISS
+                    // path); suppress the phantom pointer-reveal so the decode
+                    // finish does not flip the chrome under a stationary cursor.
+                    ui.invoke_arm_pointer_reveal_suppression();
                     let failed = (trailing_failed >= 0).then_some(trailing_failed as usize);
                     let status = state.borrow().status_content();
                     apply_spread_geometry(
@@ -81,6 +86,11 @@ pub(crate) fn wire_viewer_input_handlers(
                     crate::i18n::dynamic::decode_error(localizer.loader(), &detail).into(),
                 );
                 clear_page_view(&ui, &viewport);
+                // clear_page_view unmounts the LoadingSlot (loading flags →
+                // false), which perturbs PageView's TouchArea hit-testing under a
+                // stationary cursor; suppress the phantom pointer-reveal so a
+                // decode error does not flip the chrome (mirrors on_spread_anchored).
+                ui.invoke_arm_pointer_reveal_suppression();
             })
         });
     }

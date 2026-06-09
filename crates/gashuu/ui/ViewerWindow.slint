@@ -181,6 +181,17 @@ export component ViewerWindow inherits Window {
         root.reveal-chrome-now();
     }
 
+    // Arms the same brief pointer-reveal suppression window the idle-hide uses,
+    // single-sourcing the guard. Called from Rust whenever the LoadingSlot
+    // mounts/unmounts under a stationary cursor (cache-MISS page turn → loading
+    // flags true, then decode finish → loading flags false). Either toggle
+    // perturbs PageView's TouchArea hit-testing and emits a phantom
+    // `changed mouse-x` that would otherwise re-reveal the chrome.
+    public function arm-pointer-reveal-suppression() {
+        root.suppress-pointer-reveal = true;
+        reveal-guard.start();
+    }
+
     callback open-folder();
     callback open-archive();
     // Carousel navigation seams (Library screen). Forwarded to handlers/library.rs.
@@ -555,8 +566,7 @@ export component ViewerWindow inherits Window {
                         root.chrome-shown = false;
                         // Suppress the phantom pointer-reveal this hide triggers
                         // when a stationary cursor sat over the vacated chrome.
-                        root.suppress-pointer-reveal = true;
-                        reveal-guard.start();
+                        root.arm-pointer-reveal-suppression();
                     }
                     idle-timer.stop();
                 }

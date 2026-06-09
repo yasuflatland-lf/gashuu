@@ -438,6 +438,11 @@ pub(crate) fn refresh(
                 apply_viewport(ui, &viewport.borrow());
                 ui.set_leading_loading(leading_missing);
                 ui.set_trailing_loading(trailing_missing);
+                // Mounting the LoadingSlot perturbs PageView's TouchArea
+                // hit-testing under a stationary cursor and emits a phantom
+                // `changed mouse-x`; suppress the resulting pointer-reveal so the
+                // chrome does not flip on every cache-MISS page turn.
+                ui.invoke_arm_pointer_reveal_suppression();
 
                 #[cfg(not(test))]
                 if let Some(dispatch) = state.dispatch_handle() {
