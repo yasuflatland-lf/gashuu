@@ -389,7 +389,6 @@ pub(crate) fn refresh(
     #[cfg_attr(test, allow(unused_variables))] ui_weak: slint::Weak<ViewerWindow>,
 ) {
     let content = state.status_content();
-    let status = crate::i18n::dynamic::format_status(loader, &content);
     ui.set_rtl(matches!(state.reading_direction(), ReadingDirection::Rtl));
     match state.spread_slots() {
         Some(slots) => {
@@ -431,7 +430,7 @@ pub(crate) fn refresh(
                     &content,
                 );
             } else {
-                ui.set_status_text(status.into());
+                ui.set_status_text(crate::i18n::dynamic::format_status(loader, &content).into());
                 ui.set_single(slots.single);
                 ui.set_leading_page(slint::Image::default());
                 ui.set_trailing_page(slint::Image::default());
@@ -450,7 +449,7 @@ pub(crate) fn refresh(
             // Source loaded but empty (or no source yet): clear and show single
             // so the view matches the status text ("No folder opened" / "Folder
             // contains no images").
-            ui.set_status_text(status.into());
+            ui.set_status_text(crate::i18n::dynamic::format_status(loader, &content).into());
             pages.clear_target();
             clear_page_view(ui, viewport);
         }

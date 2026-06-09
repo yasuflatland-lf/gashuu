@@ -302,84 +302,49 @@ fn spawn_decode_spread(
 ) {
     rayon::spawn(move || {
         let leading_idx = request.leading.index;
-        let leading_hit = request.leading.decoded;
         let trailing_slot = request.trailing;
         let requested_single = request.single || trailing_slot.is_none();
 
-        match (leading_hit, trailing_slot) {
-            (Some(leading), None) => {
-                finish_decode_spread(
-                    weak,
-                    epoch,
-                    my_epoch,
-                    leading_idx,
-                    Ok(leading),
-                    None,
-                    requested_single,
-                );
+        // Resolve each slot: a HIT wraps the cached image in Ok; a MISS decodes
+        // on this worker. When both are missing, rayon::join runs them in parallel.
+        let (leading_result, trailing_result) = match (request.leading.decoded, trailing_slot) {
+            (leading_hit, None) => {
+                let leading = leading_hit
+                    .map(Ok)
+                    .unwrap_or_else(|| cache_dispatch.decode_and_cache(leading_idx));
+                (leading, None)
             }
-            (None, None) => {
-                let leading = cache_dispatch.decode_and_cache(leading_idx);
-                finish_decode_spread(
-                    weak,
-                    epoch,
-                    my_epoch,
-                    leading_idx,
-                    leading,
-                    None,
-                    requested_single,
-                );
+            (Some(leading), Some(t)) => {
+                let trailing = t
+                    .decoded
+                    .map(Ok)
+                    .unwrap_or_else(|| cache_dispatch.decode_and_cache(t.index));
+                (Ok(leading), Some((t.index, trailing)))
             }
-            (Some(leading), Some(trailing_slot)) => {
-                let trailing_idx = trailing_slot.index;
-                let trailing = match trailing_slot.decoded {
-                    Some(trailing) => Ok(trailing),
-                    None => cache_dispatch.decode_and_cache(trailing_idx),
-                };
-                finish_decode_spread(
-                    weak,
-                    epoch,
-                    my_epoch,
-                    leading_idx,
-                    Ok(leading),
-                    Some((trailing_idx, trailing)),
-                    requested_single,
-                );
-            }
-            (None, Some(trailing_slot)) => {
-                let trailing_idx = trailing_slot.index;
-                match trailing_slot.decoded {
-                    Some(trailing) => {
-                        let leading = cache_dispatch.decode_and_cache(leading_idx);
-                        finish_decode_spread(
-                            weak,
-                            epoch,
-                            my_epoch,
-                            leading_idx,
-                            leading,
-                            Some((trailing_idx, Ok(trailing))),
-                            requested_single,
-                        );
-                    }
+            (None, Some(t)) => {
+                let (leading, trailing) = match t.decoded {
+                    Some(trailing) => (cache_dispatch.decode_and_cache(leading_idx), Ok(trailing)),
                     None => {
                         let trailing_dispatch = cache_dispatch.clone();
-                        let (leading, trailing) = rayon::join(
+                        rayon::join(
                             || cache_dispatch.decode_and_cache(leading_idx),
-                            || trailing_dispatch.decode_and_cache(trailing_idx),
-                        );
-                        finish_decode_spread(
-                            weak,
-                            epoch,
-                            my_epoch,
-                            leading_idx,
-                            leading,
-                            Some((trailing_idx, trailing)),
-                            requested_single,
-                        );
+                            || trailing_dispatch.decode_and_cache(t.index),
+                        )
                     }
-                }
+                };
+                (leading, Some((t.index, trailing)))
             }
-        }
+        };
+
+        finish_decode_spread(
+            weak,
+            epoch,
+            my_epoch,
+            leading_idx,
+            leading_result,
+            trailing_result,
+            requested_single,
+        );
     });
 }
 
