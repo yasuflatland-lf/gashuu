@@ -4,12 +4,14 @@
 
 [![CI](https://img.shields.io/github/actions/workflow/status/yasuflatland-lf/gashuu/ci.yml?branch=main&label=CI&logo=github)](https://github.com/yasuflatland-lf/gashuu/actions/workflows/ci.yml)
 [![coverage](https://img.shields.io/codecov/c/github/yasuflatland-lf/gashuu/main?flag=rust&label=coverage&logo=codecov)](https://codecov.io/gh/yasuflatland-lf/gashuu)
+[![website](https://img.shields.io/badge/website-gashuu-f35f3d?logo=githubpages)](https://yasuflatland-lf.github.io/gashuu/)
 
 | Library | Viewer | Settings |
 | :---: | :---: | :---: |
 | ![Cover-flow library carousel](docs/screenshots/carousel.png) | ![Two-page spread viewer with thumbnail strip](docs/screenshots/viewer.png) | ![Per-book view settings dialog](docs/screenshots/config.png) |
 
 A cross-platform manga / comic viewer built with Rust and [Slint](https://slint.dev).
+Visit the [landing page](https://yasuflatland-lf.github.io/gashuu/) for a visual overview.
 
 Open a folder of images or a comic archive and read with the keyboard — two-page
 spreads, right-to-left binding, zoom/pan, a thumbnail strip, a cover-flow library,
