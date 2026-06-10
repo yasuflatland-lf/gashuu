@@ -112,7 +112,7 @@
     <div id="root"></div>
 
     <script type="text/babel">
-      const { useState } = React;
+      const { useState, useEffect } = React;
 
       function Badge({ children }) {
         return <span className="type-kicker inline-flex items-center gap-2 rounded-full border border-black/10 bg-white/70 px-3 py-1.5 font-bold text-black/70 backdrop-blur">{children}</span>;
@@ -125,16 +125,47 @@
           : "border border-black/10 bg-white/70 text-ink backdrop-blur hover:bg-white";
         return <a href={href} className={`${base} ${styles}`}>{children}</a>;
       }
+      const shots = [
+        { src: 'assets/viewer-screenshot.png', width: 1277, height: 1280, alt: 'gashuu viewer with a two-page spread and thumbnail strip' },
+        { src: 'assets/library-carousel.png', width: 1100, height: 834, alt: 'gashuu library with the cover-flow carousel' },
+      ];
+
       function MockViewer() {
+        const [shot, setShot] = useState(0);
+        useEffect(() => {
+          if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+          // Keyed on the current slide so a manual dot click re-arms a full 6s window.
+          const timer = setInterval(() => setShot((i) => (i + 1) % shots.length), 6000);
+          return () => clearInterval(timer);
+        }, [shot]);
         return (
           <div className="mx-auto w-full max-w-6xl">
-            <img
-              src="assets/viewer-screenshot.png"
-              width="1277"
-              height="1280"
-              alt="gashuu viewer screenshot"
-              className="mx-auto w-full max-w-[1277px] rounded-[2.125rem] border border-black/10 bg-black object-contain soft-shadow"
-            />
+            {/* Sized by the tallest (square) shot; other shots float centered inside. */}
+            <div className="relative mx-auto aspect-[1277/1280] w-full max-w-[1277px]">
+              {shots.map((s, i) => (
+                <img
+                  key={s.src}
+                  src={s.src}
+                  width={s.width}
+                  height={s.height}
+                  alt={s.alt}
+                  aria-hidden={i !== shot}
+                  className={`absolute inset-0 m-auto max-h-full max-w-full rounded-[2.125rem] border border-black/10 bg-black object-contain soft-shadow transition-opacity duration-700 ${i === shot ? 'opacity-100' : 'pointer-events-none opacity-0'}`}
+                />
+              ))}
+            </div>
+            <div className="rhythm-21 flex justify-center gap-2">
+              {shots.map((s, i) => (
+                <button
+                  key={s.src}
+                  type="button"
+                  aria-label={`Show screenshot ${i + 1} of ${shots.length}`}
+                  aria-current={i === shot ? 'true' : undefined}
+                  onClick={() => setShot(i)}
+                  className={`h-2.5 w-2.5 rounded-full transition ${i === shot ? 'bg-vermilion' : 'bg-black/20 hover:bg-black/40'}`}
+                ></button>
+              ))}
+            </div>
           </div>
         );
       }
