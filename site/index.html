@@ -171,13 +171,10 @@
       }
 
       const features = [
-        ['STEP 1', '本を入れる', 'フォルダもCBZ/ZIP/CBR/RARも。中身を見て判定し、自然な順番で本棚へ。'],
-        ['STEP 2', '読み方を合わせる', '単ページ/見開き/Auto、RTL/LTR、フィット。作品ごとの読み味を記憶します。'],
-        ['STEP 3', '続きへ戻る', '進捗、最近読んだ本、最後のページ。次に開けば、昨日の位置から再開できます。'],
-        ['FIND', 'ページを探す', 'サムネイル、スクラブ、ページカウンターで、長い巻でも読みたい場面へすぐ移動。'],
-        ['FAST', 'テンポよくめくる', 'LRUキャッシュと近傍ページのプリロードで、ページ送りの待ち時間を減らします。'],
-        ['SAFE', '安全に読む', '巨大画像や壊れた項目は事前に検知。クラッシュではなく、状態として知らせます。']
-      ];
+        ['IMPORT', 'どんな漫画も', 'フォルダもCBZ/ZIP/CBR/RARも自動判定。中身を見て適切に読み込みます。'],
+        ['READ', '気持ちよく読む', '単ページ/見開き/Auto、RTL/LTR、フィットを作品ごとに記憶。キャッシュとプリロードでテンポよくめくれます。'],
+        ['RETURN', '続きへ戻る', '進捗、最近読んだ本、最後のページを保存。サムネイルやスクラブで探したい場面にもすぐ戻れます。']
+      ]
 
       function App() {
         return (
@@ -205,7 +202,7 @@
                   漫画を、美しく読む。
                 </h1>
                 <p className="type-lead mx-auto rhythm-55 measure-copy text-balance text-black/62">
-                  gashuuは、高解像度コミックを軽快に読むためのデスクトップビューア。<br />フォルダもアーカイブも、見開きもRTLも、作品ごとの読み心地まで覚えます。
+                  gashuuは、高解像度コミックを軽快に読むためのデスクトップビューア。<br />フォルダもアーカイブも、見開きもRTLも、作品ごとの読み心地も記憶。
                 </p>
                 <div className="rhythm-34 flex flex-col justify-center gap-3 sm:flex-row">
                   <Button>Get gashuu</Button>
@@ -223,7 +220,7 @@
                   <h2 className="type-section rhythm-34 text-balance">開いて、整えて、続きへ。</h2>
                   <p className="type-lead mt-[3.4375rem] text-white/58">
                     フォルダもアーカイブも自然に本棚へ。<br />
-                    作品ごとの読み方を覚え、次に開けば昨日のページからすぐ戻れます。
+                    作品ごとの設定を記憶するので、次に開けば昨日のページからすぐ戻れます。
                   </p>
                 </div>
                 <div className="mt-[5.5625rem] grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
@@ -243,8 +240,8 @@
                 <div className="grid gap-[3.4375rem] lg:grid-cols-[1fr_380px] lg:items-center">
                   <div>
                     <Badge>Open source desktop app</Badge>
-                    <h2 className="type-section rhythm-34 text-balance">無料で使えて、コードも見える。</h2>
-                    <p className="type-lead rhythm-34 measure-copy text-black/60">gashuuはMITライセンスのオープンソース。まずはGitHubのReleaseから入れて、気に入ったらIssueやPRで育てられます。</p>
+                    <h2 className="type-section rhythm-34 text-balance">無料で使える。</h2>
+                    <p className="type-lead rhythm-34 measure-copy text-black/60">gashuuはMITライセンスのオープンソース。まずは使って、要望はGitHubのIssueやPRで。</p>
                   </div>
                   <div className="rounded-[2rem] bg-white p-[2.125rem] ring-1 ring-black/10">
                     <h3 className="type-subsection">gashuu Desktop</h3>
