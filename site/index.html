@@ -26,20 +26,24 @@
       @utility grid-bg { background-image: radial-gradient(rgba(17,17,22,.08) 1px, transparent 1px); background-size: 22px 22px; }
 
       /*
-        Typography system
-        - Type: Inter (Latin / numerals) + Noto Sans JP (Japanese). Japanese glyphs
-          fall through the Latin face automatically, so each script keeps its own
-          metrics and weights.
-        - Base: 17px · golden-ratio body leading (1.618).
-        - Kerning: Inter carries optical Latin kerning; Japanese is kerned with the
-          `palt` proportional-alternates feature so full-width punctuation no longer
-          opens large gaps — the CJK counterpart of tight display tracking. Display
-          tracking is therefore moderate (palt does the close-fitting work).
-        - Weight ladder (lighter display register, hierarchy by size): 500 medium
-          hero & section · 700 small labels / subsection / card / buttons · 400 body.
-          Only 400 / 500 / 700 are loaded so every step maps to a real weight.
-        - Rhythm: Fibonacci vertical scale 13 / 21 / 34 / 55 / 89 / 144 (rhythm-*),
-          used for stacks, gaps, and section padding so the page breathes on one grid.
+        Typography & spacing system — golden ratio (φ ≈ 1.618) + Fibonacci.
+        Tuned to apple.com/jp proportions: confident display sizes, tight display
+        leading, a comfortable CJK body measure, optical size-based tracking, and a
+        single whitespace grid the whole page snaps to.
+
+        - Type: Inter (Latin / numerals) + Noto Sans JP. Each script keeps its own
+          metrics; CJK is closed up with `palt` (proportional alternates) rather
+          than Latin tracking, the CJK counterpart of tight display tracking.
+        - Modular scale: step = √φ ≈ 1.272, so every SECOND step lands on a clean
+          golden power — body 1 → subsection φ (1.618) → section φ² (2.618) → hero
+          φ³ (4.236). Hierarchy is carried by SIZE on a light display weight (500),
+          not heavy weights. Loaded weights 400 / 500 / 700 each map to a real face.
+        - Tracking ladder (optical, Apple-style): the larger the type the tighter
+          the tracking; near-zero at body; strongly positive only on caps labels.
+        - Leading: tight at display (≈1.08–1.12), opening to a comfortable CJK body
+          (≈1.6); φ (1.618) is the default leading for untiered text.
+        - Whitespace: one φ-ratio ladder (rhythm-*, each step ×φ ≈ Fibonacci index).
+          Tight WITHIN a group, wide BETWEEN groups, so proximity reads cleanly.
       */
       @layer base {
         html {
@@ -49,78 +53,90 @@
           -moz-osx-font-smoothing: grayscale;
         }
         body {
+          /* φ as the default leading for untiered text; each type-* tier overrides. */
           line-height: 1.618;
-          /* Neutral default tracking; each type-* tier owns its own tracking so CJK
-             body runs are not tightened by a global negative value. */
+          /* Neutral default tracking — each type-* tier owns its optical tracking so
+             CJK body runs are never tightened by a global negative value. */
           letter-spacing: 0;
-          /* Kern Japanese punctuation / spacing proportionally across the page. */
-          font-feature-settings: "palt" 1;
+          /* Close up Japanese punctuation proportionally (palt) and enable Latin
+             kerning so mixed JP / Latin runs sit tight. */
+          font-feature-settings: "palt" 1, "kern" 1;
           font-kerning: normal;
+          /* Avoid orphans / ragged last lines in body copy. */
+          text-wrap: pretty;
         }
       }
 
       @layer utilities {
+        /* — Type tiers: fluid size (clamp) · leading · optical tracking — */
         .type-kicker {
-          font-size: clamp(0.72rem, 0.69rem + 0.12vw, 0.82rem);
+          /* Uppercase Latin label — the only tier with positive tracking. */
+          font-size: clamp(0.74rem, 0.71rem + 0.12vw, 0.8rem);
           line-height: 1;
           letter-spacing: 0.16em;
           text-transform: uppercase;
           font-weight: 700;
         }
         .type-nav {
-          font-size: clamp(0.82rem, 0.79rem + 0.10vw, 0.94rem);
-          line-height: 1.2;
+          font-size: clamp(0.84rem, 0.81rem + 0.10vw, 0.92rem);
+          line-height: 1.3;
           letter-spacing: -0.006em;
         }
         .type-hero {
-          /* One line on desktop for the short Japanese hero; palt keeps it compact.
-             Medium weight for an elegant, editorial display tone (per design review);
-             tracking near-neutral so palt — not negative letter-spacing — does the
-             CJK close-fitting. */
-          font-size: clamp(2rem, 1.42rem + 2.2vw, 3.4375rem);
-          line-height: 1.06;
-          letter-spacing: -0.01em;
+          /* φ³ ≈ 4.236rem (≈72px). One confident line on desktop; palt + a small
+             negative tracking close the CJK glyphs without collision. Medium (500)
+             keeps the large display elegant rather than shouty. */
+          font-size: clamp(2.2rem, 1.3rem + 4vw, 4.236rem);
+          /* 1.1 keeps the desktop single line tight while giving the stacked
+             two-line CJK hero on narrow screens room not to collide. */
+          line-height: 1.1;
+          letter-spacing: -0.022em;
           font-weight: 500;
         }
         .type-section {
-          /* Hero / φ ≒ 2.5rem, nudged to 2.62rem for Japanese display clarity.
-             Shares the medium register; hierarchy comes from size, not weight. */
-          font-size: clamp(1.62rem, 1.24rem + 1.35vw, 2.62rem);
-          line-height: 1.14;
-          letter-spacing: -0.012em;
+          /* φ² ≈ 2.618rem (≈44px). Shares the medium register; hierarchy by size. */
+          font-size: clamp(1.7rem, 1.28rem + 1.5vw, 2.618rem);
+          line-height: 1.12;
+          letter-spacing: -0.018em;
           font-weight: 500;
         }
         .type-subsection {
-          font-size: clamp(1.31rem, 1.18rem + 0.55vw, 1.62rem);
-          line-height: 1.2;
-          letter-spacing: -0.02em;
+          /* φ ≈ 1.618rem (≈27px). */
+          font-size: clamp(1.3rem, 1.16rem + 0.55vw, 1.618rem);
+          line-height: 1.24;
+          letter-spacing: -0.015em;
           font-weight: 700;
         }
         .type-card-title {
-          font-size: clamp(1.00rem, 0.96rem + 0.18vw, 1.13rem);
-          line-height: 1.4;
-          letter-spacing: -0.014em;
+          /* √φ ≈ 1.272rem (≈21.6px) — one modular step above body; weight 700 sets
+             it apart from the same-size lead. Keeps every tier on the scale. */
+          font-size: clamp(1.13rem, 1.05rem + 0.25vw, 1.272rem);
+          line-height: 1.35;
+          letter-spacing: -0.012em;
           font-weight: 700;
         }
         .type-lead {
-          font-size: clamp(1.00rem, 0.96rem + 0.20vw, 1.13rem);
-          line-height: 1.72;
-          letter-spacing: -0.008em;
+          /* One √φ step above body (≈21.6px) — the apple.com/jp intro register.
+             Larger text, so leading is tighter than body. */
+          font-size: clamp(1.06rem, 1.0rem + 0.3vw, 1.272rem);
+          line-height: 1.55;
+          letter-spacing: -0.011em;
           font-weight: 400;
         }
         .type-body {
-          font-size: clamp(0.94rem, 0.91rem + 0.12vw, 1.00rem);
-          line-height: 1.75;
-          letter-spacing: -0.002em;
+          font-size: clamp(0.94rem, 0.91rem + 0.12vw, 1rem);
+          line-height: 1.62;
+          letter-spacing: -0.003em;
           font-weight: 400;
         }
+        /* — Measures: line length anchored on golden fractions — */
         .measure-phi {
+          /* 38.2 : 61.8 golden split — a comfortable centered measure (~30 JP chars). */
           max-width: 38.2rem;
         }
-        .measure-copy {
-          /* Wider lead measure: 55rem Fibonacci anchor, balanced against the one-line hero. */
-          max-width: 55rem;
-        }
+        /* — Whitespace ladder: each step ×φ (Fibonacci-indexed). Tight within a
+             group, wide between groups. The values are a clean φ-ratio progression. — */
+        .rhythm-8 { margin-top: 0.5rem; }
         .rhythm-13 { margin-top: 0.8125rem; }
         .rhythm-21 { margin-top: 1.3125rem; }
         .rhythm-34 { margin-top: 2.125rem; }
@@ -134,7 +150,7 @@
     <div id="root"></div>
 
     <script type="text/babel">
-      const { useState, useEffect } = React;
+      const { useEffect, useRef } = React;
 
       function Badge({ children, tone = 'light' }) {
         // tone="dark" for use on the dark (#workflow) band so the tracked label keeps
@@ -146,54 +162,64 @@
       }
 
       function Button({ children, variant = 'primary', href = '#download' }) {
-        const base = "type-nav inline-flex items-center justify-center rounded-full px-5 py-3 font-bold transition hover:-translate-y-0.5 active:translate-y-0";
+        const base = "type-nav inline-flex items-center justify-center rounded-full px-6 py-3 font-bold transition hover:-translate-y-0.5 active:translate-y-0";
         const styles = variant === 'primary'
           ? "bg-ink text-white shadow-xl shadow-black/15 hover:bg-black"
           : "border border-black/10 bg-white/70 text-ink backdrop-blur hover:bg-white";
         return <a href={href} className={`${base} ${styles}`}>{children}</a>;
       }
-      const shots = [
-        { src: 'assets/viewer-screenshot.png', width: 1277, height: 1280, alt: 'gashuu viewer with a two-page spread and thumbnail strip' },
-        { src: 'assets/library-carousel.png', width: 1100, height: 834, alt: 'gashuu library with the cover-flow carousel' },
-      ];
-
-      function MockViewer() {
-        const [shot, setShot] = useState(0);
+      // A centered video showcase: heading + lead above a framed, autoplaying loop.
+      // The clip plays muted with no chrome (apple.com-style); it starts only when
+      // scrolled into view and pauses when out, and falls back to a poster + manual
+      // controls under prefers-reduced-motion.
+      function VideoSection({ kicker, title, lead, src, poster, alt, ratio }) {
+        const videoRef = useRef(null);
         useEffect(() => {
-          if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
-          // Keyed on the current slide so a manual dot click re-arms a full 6s window.
-          const timer = setInterval(() => setShot((i) => (i + 1) % shots.length), 6000);
-          return () => clearInterval(timer);
-        }, [shot]);
+          const v = videoRef.current;
+          if (!v) return;
+          // `muted` is set imperatively: a muted JSX prop does not reliably set the
+          // DOM property, and muting is required for autoplay to be permitted.
+          v.muted = true;
+          if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+            // Honor reduced motion: no autoplay; expose controls over the poster.
+            v.removeAttribute('autoplay');
+            v.setAttribute('controls', '');
+            v.pause();
+            return;
+          }
+          // Play only while on screen; pause when scrolled away.
+          const io = new IntersectionObserver(
+            (entries) => entries.forEach((e) => (e.isIntersecting ? v.play().catch(() => {}) : v.pause())),
+            { threshold: 0.25 }
+          );
+          io.observe(v);
+          return () => io.disconnect();
+        }, []);
         return (
-          <div className="mx-auto w-full max-w-6xl">
-            {/* Sized by the tallest (square) shot; other shots float centered inside. */}
-            <div className="relative mx-auto aspect-[1277/1280] w-full max-w-[1277px]">
-              {shots.map((s, i) => (
-                <img
-                  key={s.src}
-                  src={s.src}
-                  width={s.width}
-                  height={s.height}
-                  alt={s.alt}
-                  aria-hidden={i !== shot}
-                  className={`absolute inset-0 m-auto max-h-full max-w-full rounded-[2.125rem] border border-black/10 bg-black object-contain soft-shadow transition-opacity duration-700 ${i === shot ? 'opacity-100' : 'pointer-events-none opacity-0'}`}
-                />
-              ))}
+          <section className="mx-auto max-w-7xl px-5 py-[3.4375rem] md:py-[5.5625rem]">
+            <div className="mx-auto measure-phi text-center">
+              <p className="type-kicker text-black/40">{kicker}</p>
+              <h2 className="type-section rhythm-21 text-balance">{title}</h2>
+              <p className="type-lead rhythm-34 text-pretty text-black/62">{lead}</p>
             </div>
-            <div className="rhythm-34 flex justify-center gap-2">
-              {shots.map((s, i) => (
-                <button
-                  key={s.src}
-                  type="button"
-                  aria-label={`Show screenshot ${i + 1} of ${shots.length}`}
-                  aria-current={i === shot ? 'true' : undefined}
-                  onClick={() => setShot(i)}
-                  className={`h-2.5 w-2.5 rounded-full transition ${i === shot ? 'bg-vermilion' : 'bg-black/20 hover:bg-black/40'}`}
-                ></button>
-              ))}
+            <div className="rhythm-55 mx-auto w-full max-w-5xl">
+              <div className="relative overflow-hidden rounded-[2.125rem] border border-black/10 bg-black soft-shadow" style={{ aspectRatio: ratio }}>
+                <video
+                  ref={videoRef}
+                  autoPlay
+                  muted
+                  loop
+                  playsInline
+                  preload="metadata"
+                  poster={poster}
+                  aria-label={alt}
+                  className="absolute inset-0 h-full w-full object-cover"
+                >
+                  <source src={src} type="video/mp4" />
+                </video>
+              </div>
             </div>
-          </div>
+          </section>
         );
       }
 
@@ -221,38 +247,46 @@
               </nav>
             </header>
 
-            <section className="relative pt-[5.5625rem] pb-[5.5625rem] md:pt-[9rem] md:pb-[9rem]">
+            <section className="relative pt-[5.5625rem] pb-[3.4375rem] md:pt-[9rem] md:pb-[5.5625rem]">
               <div className="absolute inset-0 -z-10 grid-bg opacity-70"></div>
               <div className="absolute left-1/2 top-24 -z-10 h-80 w-80 -translate-x-1/2 rounded-full bg-vermilion/20 blur-3xl"></div>
               <div className="mx-auto max-w-7xl px-5 text-center">
-                <h1 className="type-hero mx-auto w-fit max-w-full text-center md:max-w-none md:whitespace-nowrap">
-                  漫画を、美しく読む。
+                <h1 className="type-hero text-center">
+                  漫画を、<wbr />美しく読む。
                 </h1>
-                <p className="type-lead mx-auto rhythm-55 measure-copy text-balance text-black/62">
-                  gashuuは、高解像度コミックを軽快に読むためのデスクトップビューア。<br />フォルダもアーカイブも、見開きもRTLも、作品ごとの読み心地も記憶。
+                <p className="type-lead mx-auto rhythm-34 measure-phi text-pretty text-black/62">
+                  gashuuは、高解像度コミックを軽快に読むためのデスクトップビューア。フォルダもアーカイブも、見開きもRTLも、作品ごとの読み心地も記憶。
                 </p>
-                <div className="rhythm-34 flex flex-col justify-center gap-3 sm:flex-row">
+                <div className="rhythm-55 flex flex-col justify-center gap-3 sm:flex-row">
                   <Button href="https://github.com/yasuflatland-lf/gashuu/releases">Get gashuu</Button>
                   <Button variant="secondary" href="https://github.com/yasuflatland-lf/gashuu">View on GitHub</Button>
                 </div>
-                <p className="type-nav rhythm-21 text-black/45">Open source · MIT License · 画集 / gashuu</p>
-                <div className="rhythm-34 md:rhythm-55"><MockViewer /></div>
+                <p className="type-nav rhythm-21 tracking-normal text-black/45">Open source · MIT License · 画集 / gashuu</p>
               </div>
             </section>
 
+            <VideoSection
+              kicker="Library"
+              title="本棚を、流れるように。"
+              lead="読み込んだ漫画は、そのままカバーフローへ。何百冊あっても、表紙を滑らせるように軽快に探せます。"
+              src="assets/carousel_demo.mp4"
+              poster="assets/carousel_demo-poster.jpg"
+              alt="gashuuのライブラリで表紙のカバーフローをページ送りするデモ"
+              ratio="946 / 634"
+            />
+
             <section className="bg-ink py-[5.5625rem] md:py-[9rem] text-white" id="workflow">
               <div className="mx-auto max-w-7xl px-5">
-                <div className="mx-auto max-w-4xl text-center">
+                <div className="mx-auto measure-phi text-center">
                   <Badge tone="dark">Reading flow</Badge>
-                  <h2 className="type-section rhythm-34 text-balance">開いて、整えて、続きへ。</h2>
-                  <p className="type-lead rhythm-34 text-white/58">
-                    フォルダもアーカイブも自然に本棚へ。<br />
-                    作品ごとの設定を記憶するので、次に開けば昨日のページからすぐ戻れます。
+                  <h2 className="type-section rhythm-21 text-balance">開いて、整えて、続きへ。</h2>
+                  <p className="type-lead rhythm-34 text-pretty text-white/58">
+                    フォルダもアーカイブも自然に本棚へ。作品ごとの設定を記憶するので、次に開けば昨日のページからすぐ戻れます。
                   </p>
                 </div>
-                <div className="rhythm-89 grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
+                <div className="rhythm-55 grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
                   {features.map((f, i) => (
-                    <div key={f[1]} className="rounded-[1.75rem] border border-white/10 bg-white/[.06] p-6 transition hover:-translate-y-1 hover:bg-white/[.09]">
+                    <div key={f[1]} className="rounded-[1.75rem] border border-white/10 bg-white/[.06] p-7 transition hover:-translate-y-1 hover:bg-white/[.09]">
                       <div className="mb-[1.3125rem] inline-flex rounded-full border border-white/10 bg-white/10 px-3 py-1 type-kicker text-white/62">{f[0]}</div>
                       <h3 className="type-card-title">{f[1]}</h3>
                       <p className="type-body rhythm-13 text-white/55">{f[2]}</p>
@@ -262,13 +296,23 @@
               </div>
             </section>
 
-<section className="mx-auto max-w-7xl px-5 py-[3.4375rem] md:py-[5.5625rem]" id="pricing">
+            <VideoSection
+              kicker="Reader"
+              title="高精細を、軽やかに。"
+              lead="拡大してもくっきり精細。見開きもRTLも、なめらかなページ送りで読みに没頭できます。"
+              src="assets/view_demo.mp4"
+              poster="assets/view_demo-poster.jpg"
+              alt="gashuuのビューアで高解像度の漫画をなめらかに読むデモ"
+              ratio="900 / 634"
+            />
+
+            <section className="mx-auto max-w-7xl px-5 py-[3.4375rem] md:py-[5.5625rem]" id="pricing">
               <div className="rounded-[2.5rem] bg-manga p-[1.3125rem] md:p-[3.4375rem] soft-shadow">
                 <div className="grid gap-[3.4375rem] lg:grid-cols-[1fr_380px] lg:items-center">
                   <div>
                     <Badge>Open source desktop app</Badge>
-                    <h2 className="type-section rhythm-34 text-balance">無料で使える。</h2>
-                    <p className="type-lead rhythm-34 measure-copy text-black/60">gashuuはMITライセンスのオープンソース。まずは使って、要望はGitHubのIssueやPRで。</p>
+                    <h2 className="type-section rhythm-21 text-balance">無料で使える。</h2>
+                    <p className="type-lead rhythm-34 measure-phi text-pretty text-black/60">gashuuはMITライセンスのオープンソース。まずは使って、要望はGitHubのIssueやPRで。</p>
                   </div>
                   <div className="rounded-[2rem] bg-white p-[2.125rem] ring-1 ring-black/10">
                     <h3 className="type-subsection">gashuu Desktop</h3>
@@ -279,14 +323,15 @@
                       <li>✓ 見開き / RTL / ズーム / サムネイル</li>
                       <li>✓ 日本語/英語UI</li>
                     </ul>
-                    <a id="download" href="https://github.com/yasuflatland-lf/gashuu/releases" className="rhythm-34 inline-flex w-full justify-center rounded-full bg-ink px-5 py-3 font-bold text-white">Download release</a>
+                    <a id="download" href="https://github.com/yasuflatland-lf/gashuu/releases" className="rhythm-55 inline-flex w-full justify-center rounded-full bg-ink px-6 py-3 font-bold text-white">Download release</a>
                   </div>
                 </div>
               </div>
             </section>
 
             <section className="mx-auto max-w-4xl px-5 py-[3.4375rem] md:py-[5.5625rem]" id="faq">
-              <h2 className="type-section text-center">FAQ</h2>
+              <p className="type-kicker text-center text-black/40">Support</p>
+              <h2 className="type-section rhythm-21 text-center text-balance">FAQ</h2>
               <div className="rhythm-34 divide-y divide-black/10 rounded-[2rem] border border-black/10 bg-white/60 px-6">
                 {[
                   ['どんな形式に対応していますか？', '画像フォルダ、PNG/JPG/JPEG/AVIF、CBZ/ZIP/CBR/RARアーカイブを想定しています。'],
