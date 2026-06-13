@@ -148,8 +148,23 @@ component CoverCard inherits Rectangle {
         root.neighbor-scale, 1.0);
     width: root.cover-w * root.scale-factor;
     height: root.cover-h * root.scale-factor;
+    // Opacity holds FULL across the center half (|flow-delta| <= 0.5), then fades
+    // linearly to `neighbor-opacity` out to the immediate-neighbor slot
+    // (|flow-delta| == 1). The flat opaque plateau fixes the mid-move "the cover
+    // BEHIND bleeds through the front book" artifact: the visually centered card is
+    // `Math.round(flow-position)`, so its |flow-delta| never exceeds 0.5 — with the
+    // plateau it now stays FULLY opaque for the whole slide and nothing shows
+    // through it (the centered card is full-size and overlaps its neighbors on top,
+    // so any sub-1.0 opacity used to reveal the overlapped neighbor). The plateau
+    // edge is pinned to 0.5 — the round() center hand-off point — ON PURPOSE: at
+    // the instant the visual center hands off from one card to the next, BOTH sit
+    // at |flow-delta| == 0.5 where this curve equals exactly 1.0, so the hand-off
+    // carries no opacity pop. The slope `2 * (1 - neighbor-opacity)` lands the fade
+    // on `neighbor-opacity` at |flow-delta| == 1. At rest the look is unchanged:
+    // centered d==0 -> 1.0, immediate neighbors d==±1 -> neighbor-opacity, farther
+    // cards clamped to it.
     opacity: Math.clamp(
-        1.0 - Math.abs(root.flow-delta) * (1.0 - root.neighbor-opacity),
+        1.0 - (Math.abs(root.flow-delta) - 0.5) * 2 * (1.0 - root.neighbor-opacity),
         root.neighbor-opacity, 1.0);
     // Layer gate only. Every loaded cover stays visible at EVERY window width
     // (user decision: the former narrow-window neighbor-drop hid all but the
