@@ -104,14 +104,15 @@ archives.
 | Double-click the centered cover | Open it |
 | `↓` | Return to the open book (if any) |
 | `/` | Focus the search field |
-| `x` | Enter selection mode |
+| `x` | Enter selection mode (also toggles the focused book) |
 
 **Navigation (Viewer)**
 
 | Key / Gesture | Action |
 |---------------|--------|
-| `→` / `Space` | Next page or spread |
-| `←` / `Backspace` | Previous page or spread |
+| `Space` | Next page or spread (reading order) |
+| `Backspace` | Previous page or spread (reading order) |
+| `→` / `←` | Turn the page — follows the binding (default RTL: `←` = next, `→` = previous) |
 | Two-finger horizontal swipe | Next / previous page or spread (disabled while zoomed in) |
 | `D` | Cycle spread mode: single → double → auto |
 | `R` | Toggle reading direction (LTR ↔ RTL) |
@@ -199,6 +200,7 @@ hand-edited:
 | `track_recent_files` | bool (default `false`) | Off for privacy; gates `recent_files` |
 | `recent_files` | list | Recorded only when tracking is on |
 | `language` | `"en"` (default) / `"ja"` | UI language; switchable live from the Settings dialog |
+| `allow_rar_archives` | bool (default `false`) | Off rejects `.cbr`/`.rar` at open time; toggle on in the Settings dialog (Allow CBR/RAR archives) |
 
 The library itself — added books, last-read pages, per-book view overrides, and the
 continue-reading bookmark — is stored separately as `library.json` in the OS data
