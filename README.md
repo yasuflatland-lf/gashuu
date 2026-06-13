@@ -212,6 +212,9 @@ defaults (an empty library) and keeps running.
 - `crates/gashuu-core` — Slint-independent domain + I/O: folder, ZIP/CBZ, and RAR/CBR
   page sources, image decode, LRU cache + prefetch, thumbnails, and settings.
 - `crates/gashuu` — Slint presentation layer (windows, dialogs, input, rendering).
+- `ops/collect_images` — operational tooling (NOT a build/quality gate): a bash
+  scraper that downloads Pepper&Carrot webcomic episodes into per-episode folders
+  for local sample/test data. See [its README](ops/collect_images/README.md).
 
 ## Development
 
@@ -252,6 +255,20 @@ Then run the viewer and add books from the Library's nav bar:
 ```bash
 cargo run -p gashuu
 ```
+
+### Sample data
+
+To populate a local library with real comics, `ops/collect_images` downloads
+[Pepper&Carrot](https://www.peppercarrot.com) (CC-BY, David Revoy) episodes into
+one folder per episode — the shape gashuu opens as books:
+
+```bash
+ops/collect_images/collect_images.sh 1-10   # episodes 1-10 -> ops/collect_images/output/epNN/
+```
+
+The downloaded `output/` is git-ignored. See
+[ops/collect_images/README.md](ops/collect_images/README.md) for all options
+(language, resolution, dry-run) and the CC-BY attribution note.
 
 ### Quality gates
 
