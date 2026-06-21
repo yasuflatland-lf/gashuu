@@ -97,23 +97,9 @@ impl ThumbnailCache {
     /// seeing a torn file, and the random temp name means concurrent `put`s of
     /// the same key never collide on a fixed temp path.
     pub fn put(&self, key: &str, img: &DecodedImage) -> Result<(), CoreError> {
-        let raw = image::RgbaImage::from_raw(img.width(), img.height(), img.rgba().to_vec())
-            .ok_or_else(|| CoreError::MalformedImage {
-                expected: (img.width() as usize)
-                    .saturating_mul(img.height() as usize)
-                    .saturating_mul(4),
-                actual: img.rgba().len(),
-            })?;
-
-        let mut png_bytes: Vec<u8> = Vec::new();
-        image::DynamicImage::ImageRgba8(raw).write_to(
-            &mut std::io::Cursor::new(&mut png_bytes),
-            image::ImageFormat::Png,
-        )?;
-
+        let png_bytes = encode_png(img)?;
         let target = self.dir.join(format!("{key}.png"));
         crate::atomic_write::write_atomic(&target, &png_bytes)?;
-
         Ok(())
     }
 
@@ -150,23 +136,15 @@ impl ThumbnailCache {
     /// `write_atomic` temps.
     pub fn clear(&self) -> ClearCacheReport {
         let mut report = ClearCacheReport::default();
-        let Ok(entries) = std::fs::read_dir(&self.dir) else {
-            return report;
-        };
-
-        for entry in entries.flatten() {
-            let Ok(meta) = entry.path().symlink_metadata() else {
-                continue;
-            };
-            if !meta.is_file() || !is_owned_cache_file_name(&entry.file_name()) {
-                continue;
+        for_each_cache_file(&self.dir, |entry, meta| {
+            if !is_owned_cache_file_name(&entry.file_name()) {
+                return;
             }
             if std::fs::remove_file(entry.path()).is_ok() {
                 report.removed_files += 1;
                 report.removed_bytes += meta.len();
             }
-        }
-
+        });
         report
     }
 
@@ -182,11 +160,6 @@ impl ThumbnailCache {
     /// did not write (neither `*.png` nor its tmp shape) are NEVER touched.
     pub fn prune(&self, max_bytes: u64) -> PruneReport {
         let mut report = PruneReport::default();
-        let Ok(entries) = std::fs::read_dir(&self.dir) else {
-            // Missing/unreadable dir (e.g. first launch, cache never written):
-            // nothing to sweep, never an error.
-            return report;
-        };
 
         // One stored thumbnail, as the eviction pass needs it: unlink target,
         // size for the running total, and the (mtime, name) sort key.
@@ -199,13 +172,7 @@ impl ThumbnailCache {
 
         let now = std::time::SystemTime::now();
         let mut pngs: Vec<CacheEntry> = Vec::new();
-        for entry in entries.flatten() {
-            let Ok(meta) = entry.metadata() else {
-                continue;
-            };
-            if !meta.is_file() {
-                continue;
-            }
+        for_each_cache_file(&self.dir, |entry, meta| {
             let name = entry.file_name();
             let lossy = name.to_string_lossy();
             // A `put` interrupted between temp write and rename strands its
@@ -223,7 +190,7 @@ impl ThumbnailCache {
                     report.removed_files += 1;
                     report.removed_bytes += meta.len();
                 }
-                continue;
+                return;
             }
             if lossy.ends_with(".png") {
                 pngs.push(CacheEntry {
@@ -235,7 +202,7 @@ impl ThumbnailCache {
                     name,
                 });
             }
-        }
+        });
 
         let mut total: u64 = pngs.iter().map(|e| e.size).sum();
         pngs.sort_by(|a, b| a.mtime.cmp(&b.mtime).then_with(|| a.name.cmp(&b.name)));
@@ -259,6 +226,49 @@ impl ThumbnailCache {
 fn is_owned_cache_file_name(name: &std::ffi::OsStr) -> bool {
     let lossy = name.to_string_lossy();
     lossy.ends_with(".png") || lossy.starts_with(TMP_NAME_PREFIX)
+}
+
+/// The shared scaffold of the directory sweeps ([`ThumbnailCache::clear`] /
+/// [`ThumbnailCache::prune`]): visit each TOP-LEVEL regular file in `dir`, calling
+/// `visit(&entry, &meta)` with the entry and its non-following (symlink) metadata.
+/// A missing or unreadable directory yields nothing (best-effort, never an error —
+/// e.g. first launch); the walk never recurses and skips anything that is not a
+/// regular file. Each sweep supplies its own per-entry policy (owned-name filter,
+/// tmp age-guard, size-cap collection) as the closure.
+fn for_each_cache_file(dir: &Path, mut visit: impl FnMut(&std::fs::DirEntry, &std::fs::Metadata)) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let Ok(meta) = entry.path().symlink_metadata() else {
+            continue;
+        };
+        if !meta.is_file() {
+            continue;
+        }
+        visit(&entry, &meta);
+    }
+}
+
+/// The write-side codec: PNG-encode `img` at its exact dimensions. Split from the
+/// atomic-write/path concern in [`ThumbnailCache::put`] so the encode is testable
+/// in isolation. Errors with `MalformedImage` if the RGBA buffer length does not
+/// match `width * height * 4`, or propagates an `image` encode failure.
+fn encode_png(img: &DecodedImage) -> Result<Vec<u8>, CoreError> {
+    let raw = image::RgbaImage::from_raw(img.width(), img.height(), img.rgba().to_vec())
+        .ok_or_else(|| CoreError::MalformedImage {
+            expected: (img.width() as usize)
+                .saturating_mul(img.height() as usize)
+                .saturating_mul(4),
+            actual: img.rgba().len(),
+        })?;
+
+    let mut png_bytes: Vec<u8> = Vec::new();
+    image::DynamicImage::ImageRgba8(raw).write_to(
+        &mut std::io::Cursor::new(&mut png_bytes),
+        image::ImageFormat::Png,
+    )?;
+    Ok(png_bytes)
 }
 
 /// Result of one [`ThumbnailCache::clear`] sweep. The cache is best-effort:
