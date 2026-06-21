@@ -200,7 +200,7 @@ hand-edited:
 | `track_recent_files` | bool (default `false`) | Off for privacy; gates `recent_files` |
 | `recent_files` | list | Recorded only when tracking is on |
 | `language` | `"en"` (default) / `"ja"` | UI language; switchable live from the Settings dialog |
-| `allow_rar_archives` | bool (default `false`) | Off rejects `.cbr`/`.rar` at open time; toggle on in the Settings dialog (Allow CBR/RAR archives) |
+| `allow_rar_archives` | bool (default `true`) | On opens `.cbr`/`.rar` directly; toggle off in the Settings dialog (Allow CBR/RAR archives) to reject them at open time |
 
 The library itself — added books, last-read pages, per-book view overrides, and the
 continue-reading bookmark — is stored separately as `library.json` in the OS data
