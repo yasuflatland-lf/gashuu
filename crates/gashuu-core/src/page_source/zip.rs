@@ -11,11 +11,11 @@
 //! local module is also named `zip`; an unqualified `zip::` would resolve to
 //! this module, not the crate.
 
-use super::naming::{has_image_ext, is_macos_metadata, MAX_ENTRY_BYTES};
+use super::naming::{cap_or_reject, classify_entry, has_image_ext, EntryClass, MAX_ENTRY_BYTES};
 use super::{PageEntry, PageSource};
 use crate::error::CoreError;
 use crate::ordering::natural_cmp;
-use std::io::{BufReader, Read};
+use std::io::BufReader;
 use std::path::{Path, PathBuf};
 
 /// Metadata for one image page resolved from the archive's central directory.
@@ -76,26 +76,19 @@ impl ZipSource {
                 }
                 continue;
             };
-            // Flatten: any image entry at any depth is a page (CBZs often wrap
-            // pages in a folder, unlike FolderSource's max_depth(1)).
-            if entry.is_dir() || !has_image_ext(&safe) {
-                continue; // dirs / non-images are expected, not skips
+            // Shared page-membership decision: flatten any image at any depth into
+            // a page (CBZs often wrap pages in a folder, unlike FolderSource's
+            // max_depth(1)); dirs / non-images / macOS metadata are expected noise;
+            // an oversized image is a counted skip. The zip-slip guard above and the
+            // `by_index` iteration stay zip-specific.
+            match classify_entry(&safe, entry.is_dir(), entry.size(), max) {
+                EntryClass::Page => entries.push(EntryMeta {
+                    zip_index: i,
+                    name: safe.to_string_lossy().into_owned(),
+                }),
+                EntryClass::Skip => skipped += 1,
+                EntryClass::Ignore => {}
             }
-            // macOS resource forks (`__MACOSX/.../._x.jpg`) and dotfiles carry
-            // image extensions and sort ahead of real pages via case-insensitive
-            // ordering, so they can masquerade as page 0. Treat them as expected
-            // noise like directories — drop without counting as a skip.
-            if is_macos_metadata(&safe) {
-                continue;
-            }
-            if entry.size() > max {
-                skipped += 1;
-                continue;
-            }
-            entries.push(EntryMeta {
-                zip_index: i,
-                name: safe.to_string_lossy().into_owned(),
-            });
         }
         // Sort by the full flattened name with natural (digit-aware) ordering so
         // `2.png` precedes `10.png`.
@@ -117,26 +110,14 @@ impl ZipSource {
         })?;
         let file = std::fs::File::open(&self.path)?;
         let mut archive = ::zip::ZipArchive::new(BufReader::new(file))?;
-        let mut entry = archive.by_index(meta.zip_index)?;
-        // Pre-size the buffer to the smaller of the declared size and the cap
-        // purely as a growth hint to avoid reallocations. This is NOT the size
-        // defense: `open_with_limit` already skipped any entry whose declared
-        // `size()` exceeds `max`, so by the time we read, the only remaining
-        // threat is a header that lies about its size. That is caught below by
-        // the `take(max + 1)` truncation plus the `buf.len() > max` check — the
-        // actual security cap.
-        let cap = entry.size().min(max) as usize;
-        let mut buf = Vec::with_capacity(cap);
-        // Read at most max+1 so an over-limit (spoofed) entry is detectable: if
-        // we land on exactly max+1 bytes the real size exceeds the ceiling.
-        entry.by_ref().take(max + 1).read_to_end(&mut buf)?;
-        if buf.len() as u64 > max {
-            return Err(CoreError::EntryTooLarge {
-                name: meta.name.clone(),
-                max,
-            });
-        }
-        Ok(buf)
+        let entry = archive.by_index(meta.zip_index)?;
+        // Pre-size to the smaller of the declared size and the cap purely as a
+        // growth hint (NOT the size defense): `open_with_limit` already skipped any
+        // entry whose declared `size()` exceeds `max`, so the only remaining threat
+        // is a header that lies about its size — caught by `cap_or_reject`'s
+        // `take(max + 1)` + length check, the actual security cap.
+        let capacity_hint = entry.size().min(max) as usize;
+        cap_or_reject(entry, &meta.name, max, capacity_hint)
     }
 }
 

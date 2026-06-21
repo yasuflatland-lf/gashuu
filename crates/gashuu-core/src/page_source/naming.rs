@@ -5,6 +5,9 @@
 //! (directory walk) and `ZipSource` (ZIP/CBZ archive entries). Filename ordering
 //! is provided by `crate::ordering::natural_cmp`.
 
+use crate::error::CoreError;
+use std::io::Read;
+
 /// Image extensions recognized (case-insensitive).
 pub(crate) const IMAGE_EXTS: &[&str] = &["png", "jpg", "jpeg", "avif"];
 
@@ -48,6 +51,44 @@ pub(crate) fn is_macos_metadata(path: &std::path::Path) -> bool {
     starts_with_dot || in_macosx
 }
 
+/// The listing decision for one archive entry, shared by `ZipSource` and
+/// `RarSource` so "what counts as a page vs. a skip vs. expected noise" is
+/// single-owned rather than open-coded (and drifting) in each source.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum EntryClass {
+    /// A real image page within the size ceiling: index it.
+    Page,
+    /// An oversized image entry: drop it and COUNT it as a user-visible skip.
+    Skip,
+    /// A directory, non-image, or macOS-metadata entry: drop it WITHOUT counting
+    /// (expected noise, never a skip).
+    Ignore,
+}
+
+/// Classify one archive entry from its safe (`enclosed_name`-resolved) `name`,
+/// whether it `is_dir`, and its `declared_size` against `max`. Centralizes the
+/// page-membership rule both archive sources share: directories, non-image
+/// extensions, and macOS metadata (`__MACOSX/...`, dotfiles, AppleDouble
+/// `._x.jpg` resource forks) are [`EntryClass::Ignore`]d as expected noise; an
+/// image whose declared size exceeds `max` is an [`EntryClass::Skip`] (counted);
+/// everything else is an [`EntryClass::Page`]. The membership check precedes the
+/// size check, so an oversized NON-image is `Ignore`, never a `Skip`. The
+/// format-specific zip-slip guard and header iteration stay in each source.
+pub(crate) fn classify_entry(
+    name: &std::path::Path,
+    is_dir: bool,
+    declared_size: u64,
+    max: u64,
+) -> EntryClass {
+    if is_dir || !has_image_ext(name) || is_macos_metadata(name) {
+        return EntryClass::Ignore;
+    }
+    if declared_size > max {
+        return EntryClass::Skip;
+    }
+    EntryClass::Page
+}
+
 /// Resolve a relative, traversal-free path or reject it. Returns `None` when the
 /// entry name is absolute, has a root/prefix component, or contains any `..`
 /// component (path traversal). Mirrors `zip::read::ZipFile::enclosed_name`
@@ -67,6 +108,36 @@ pub(crate) fn enclosed_name(path: &std::path::Path) -> Option<std::path::PathBuf
         }
     }
     Some(out)
+}
+
+/// Read `src` to the end but capped at `max + 1` bytes, rejecting with
+/// [`CoreError::EntryTooLarge`] (named `name`) when the result exceeds `max`.
+/// Reading one byte past the ceiling makes an over-limit source detectable:
+/// landing on exactly `max + 1` bytes means the real size is over the cap. This is
+/// the actual streaming size defense (the constant lives here as `MAX_ENTRY_BYTES`
+/// because the ceiling is an archive-entry-domain property). `capacity_hint`
+/// pre-sizes the buffer purely as a growth hint — NOT the defense — so pass `0`
+/// for none.
+///
+/// Shared by the streaming readers: `FolderSource` file reads and `ZipSource`
+/// entry reads. `RarSource` cannot stream-cap (`unrar`'s `read()` materializes the
+/// whole entry with no `take`), so it keeps its declared-`unpacked_size`
+/// re-validation instead.
+pub(crate) fn cap_or_reject(
+    src: impl Read,
+    name: &str,
+    max: u64,
+    capacity_hint: usize,
+) -> Result<Vec<u8>, CoreError> {
+    let mut buf = Vec::with_capacity(capacity_hint);
+    src.take(max + 1).read_to_end(&mut buf)?;
+    if buf.len() as u64 > max {
+        return Err(CoreError::EntryTooLarge {
+            name: name.to_string(),
+            max,
+        });
+    }
+    Ok(buf)
 }
 
 #[cfg(test)]
@@ -165,5 +236,106 @@ mod enclosed_name_tests {
     #[test]
     fn interior_parent_dir_is_rejected() {
         assert_eq!(enclosed_name(Path::new("a/../b.png")), None);
+    }
+}
+
+#[cfg(test)]
+mod classify_entry_tests {
+    use super::{classify_entry, EntryClass, MAX_ENTRY_BYTES};
+    use std::path::Path;
+
+    #[test]
+    fn image_within_size_is_a_page() {
+        assert_eq!(
+            classify_entry(Path::new("sub/page1.jpg"), false, 1_000, MAX_ENTRY_BYTES),
+            EntryClass::Page
+        );
+    }
+
+    #[test]
+    fn oversized_image_is_a_counted_skip() {
+        assert_eq!(
+            classify_entry(Path::new("page1.png"), false, 11, 10),
+            EntryClass::Skip
+        );
+    }
+
+    #[test]
+    fn directory_is_ignored() {
+        assert_eq!(
+            classify_entry(Path::new("folder"), true, 0, MAX_ENTRY_BYTES),
+            EntryClass::Ignore
+        );
+    }
+
+    #[test]
+    fn non_image_is_ignored() {
+        assert_eq!(
+            classify_entry(Path::new("notes.txt"), false, 1, MAX_ENTRY_BYTES),
+            EntryClass::Ignore
+        );
+    }
+
+    #[test]
+    fn macos_metadata_is_ignored_even_when_image_named() {
+        // AppleDouble resource forks / `__MACOSX` trees carry image extensions but
+        // are metadata, not pages — Ignored (NOT a counted skip) in both archive
+        // sources via this shared classifier.
+        assert_eq!(
+            classify_entry(
+                Path::new("__MACOSX/Manga/._001.jpg"),
+                false,
+                1,
+                MAX_ENTRY_BYTES
+            ),
+            EntryClass::Ignore
+        );
+        assert_eq!(
+            classify_entry(Path::new("._cover.jpg"), false, 1, MAX_ENTRY_BYTES),
+            EntryClass::Ignore
+        );
+    }
+
+    #[test]
+    fn oversized_non_image_is_ignored_not_skipped() {
+        // The membership check precedes the size check, so a giant non-image is
+        // expected noise, never a user-visible skip.
+        assert_eq!(
+            classify_entry(Path::new("huge.bin"), false, u64::MAX, 10),
+            EntryClass::Ignore
+        );
+    }
+}
+
+#[cfg(test)]
+mod cap_or_reject_tests {
+    use super::cap_or_reject;
+    use crate::error::CoreError;
+
+    #[test]
+    fn under_cap_returns_all_bytes() {
+        let data = b"hello".to_vec();
+        let out = cap_or_reject(data.as_slice(), "x.png", 10, 0).expect("under cap");
+        assert_eq!(out, data);
+    }
+
+    #[test]
+    fn exactly_at_cap_is_accepted() {
+        let data = vec![0u8; 10];
+        let out = cap_or_reject(data.as_slice(), "x.png", 10, 0).expect("at cap");
+        assert_eq!(out.len(), 10);
+    }
+
+    #[test]
+    fn over_cap_rejects_with_entry_too_large() {
+        let data = vec![0u8; 11];
+        let err = cap_or_reject(data.as_slice(), "big.png", 10, 0).unwrap_err();
+        match err {
+            CoreError::EntryTooLarge { name, max } => {
+                assert_eq!(name, "big.png");
+                assert_eq!(max, 10);
+            }
+            other => panic!("expected EntryTooLarge, got {other:?}"),
+        }
     }
 }
