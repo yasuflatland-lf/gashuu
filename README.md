@@ -58,9 +58,10 @@ This is a temporary workaround until Developer ID signing and notarization are a
   in while you read. Click a thumbnail to jump; the current page is highlighted; a
   thumbnail that fails to generate shows a red ✕.
 - **Page scrubber & counter** — a bottom scrub bar and a top-right page-counter chip
-  appear on mouse-move, arrow-key press, or scrubber drag, then fade after idle. Drag the
-  knob to scrub; a thumbnail preview pops up during the drag and the page changes on
-  release. RTL-aware: in manga mode dragging left advances pages.
+  appear on mouse-move or scrubber drag, then fade after idle (page turns stay quiet —
+  they don't pop the chrome). Drag the knob to scrub; a thumbnail preview pops up during
+  the drag and the page changes on release. RTL-aware: in manga mode dragging left
+  advances pages.
 - **Continue reading** — re-opening a book resumes at the last page you read. The Library
   marks and auto-focuses the most recently opened book with a bookmark ribbon; returning
   from the Viewer lands the carousel on it immediately, and the NavBar's bookmark button
@@ -118,7 +119,7 @@ archives.
 | `R` | Toggle reading direction (LTR ↔ RTL) |
 | `C` | Toggle cover layout (standalone ↔ paired) |
 | `T` | Toggle the thumbnail strip |
-| `↑` | Return to the Library |
+| `↑` / `Esc` | Return to the Library |
 
 Arrows follow the reading direction (LTR: `→` = next; RTL: `←` = next). Clicking the
 left or right half of the page turns it the same way the arrows do (a drag still pans —
@@ -141,7 +142,7 @@ only the library entries are removed. The action is not undoable; `Enter` maps t
 so the destructive path is never a single keypress.
 
 The **page scrubber** (bottom bar) and **page-counter chip** (top-right) appear on
-mouse-move, arrow-key press, or scrubber drag, then fade after idle. Drag the knob to
+mouse-move or scrubber drag, then fade after idle — page turns leave them hidden. Drag the knob to
 preview pages without turning; the page changes on release. In RTL mode dragging left
 advances pages.
 

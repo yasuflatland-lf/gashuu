@@ -17,10 +17,12 @@
 //! (Ltr <-> Rtl), `c` toggles cover page.
 //!
 //! ## Chrome reveal (PR-S)
-//! The page scrubber's auto-hiding chrome reveals on arrow / page-turn keys, but
-//! that reveal is a UI side effect handled in `handlers/viewer.rs`'s `on_nav` handler — NOT
-//! here. `map_key` stays a pure token -> `KeyCommand` function with no UI
-//! awareness, so do not add a reveal command or side effect to this module.
+//! Page turns deliberately do NOT reveal the auto-hiding chrome (the menu and
+//! scrubber stay hidden while turning pages); chrome reveal is a UI side effect
+//! handled in `handlers/viewer.rs` only for pointer movement and scrubber drags —
+//! NOT here, and NOT on page-turn keys. `map_key` stays a pure token ->
+//! `KeyCommand` function with no UI awareness, so do not add a reveal command or
+//! side effect to this module.
 //!
 //! ## Screen-navigation keys
 //! `Up` and `Escape` both emit `GoToLibrary` (direction-independent like the
