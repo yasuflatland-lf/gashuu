@@ -13,6 +13,7 @@ mod keymap;
 mod library_model;
 mod navigation;
 mod open_book;
+mod page_count_prefetch;
 mod page_jump;
 mod page_loader;
 mod remove_books;

@@ -29,7 +29,7 @@
 //! and `slint::Image` (both `!Send`) are NEVER moved: the model is re-fetched and
 //! the image built INSIDE the event-loop closure.
 
-use crate::library_model::clamp_to_i32;
+use crate::page_count_prefetch::{self, PageCountPrefetch};
 use crate::to_slint_image;
 use crate::{CarouselItem, ViewerWindow};
 use gashuu_core::{
@@ -41,7 +41,7 @@ use std::num::NonZeroUsize;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering::Relaxed};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 /// Immutable cover-cache retention policy: how big the on-disk cover cache may
 /// grow (`max_bytes`) and the longer-edge size of generated covers (`max_side`).
@@ -144,16 +144,6 @@ pub(crate) fn prioritize_by_focus(
     requests
 }
 
-/// One page count a background worker resolved for a book, awaiting UI-thread
-/// persistence into the `Library`. Named (rather than a bare `(PathBuf,
-/// NonZeroUsize)` tuple) so the queue's element reads as what it is: a resolved
-/// fact being carried home, not anonymous data.
-struct ResolvedCount {
-    /// The book's canonical path — the `Library::set_page_count` lookup key.
-    path: PathBuf,
-    count: NonZeroUsize,
-}
-
 /// Owns the carousel-cover generation bookkeeping (epoch + cancel double-guard).
 /// It does NOT own the `VecModel` — that is built and bound into the UI by
 /// `carousel::build_carousel_model`; this controller re-fetches it through the
@@ -161,14 +151,12 @@ struct ResolvedCount {
 pub struct CoverController {
     epoch: Arc<AtomicUsize>,
     cancel: RefCell<Arc<AtomicBool>>,
-    /// Page counts resolved by background workers, awaiting persistence on the UI
-    /// thread. A worker cannot touch the `!Send` `Rc<RefCell<Library>>`, so it
-    /// pushes a [`ResolvedCount`] here (the `Arc<Mutex>` is `Send`); the UI
-    /// thread drains and applies them via `apply_pending_counts` at the next
-    /// `start` and at shutdown (`flush_counts`). The live carousel `total` is
-    /// updated separately and immediately by `marshal_total` (display vs persist
-    /// are independent — the queue is only the persistence bridge).
-    pending_counts: Arc<Mutex<Vec<ResolvedCount>>>,
+    /// Page-count prefetch concern: the pending queue of counts resolved by
+    /// background workers plus its UI-thread persistence lifecycle. The live
+    /// carousel `total` is updated separately and immediately by `marshal_total`
+    /// (display vs persist are independent — the queue is only the persistence
+    /// bridge). See [`PageCountPrefetch`].
+    prefetch: PageCountPrefetch,
 }
 
 impl Default for CoverController {
@@ -256,24 +244,6 @@ fn set_cover_failed(ui: &ViewerWindow, row: usize) {
     mark_cover_failed(vm, row);
 }
 
-/// Set the displayed `total` of carousel row `row`, on the UI thread. The cover
-/// counterpart of `set_cover`: same `!Send`-`VecModel`-via-`ui` re-fetch and same
-/// row-bounds check (tolerating a model that shrank since the request was built),
-/// swapping only the row's `total` so the focused-book counter reads "1 / N"
-/// instead of "1 / 0" the moment the background count resolves. `progress` is left
-/// untouched — an unread book is 0 % regardless of its (now known) total.
-fn set_carousel_total(ui: &ViewerWindow, row: usize, total: i32) {
-    let model = ui.get_carousel_items();
-    let Some(vm) = model.as_any().downcast_ref::<VecModel<CarouselItem>>() else {
-        return;
-    };
-    if row < vm.row_count() {
-        let mut item = vm.row_data(row).expect("row < row_count checked above");
-        item.total = total;
-        vm.set_row_data(row, item);
-    }
-}
-
 /// Marshal one cover image onto the UI thread for carousel row `row`: the
 /// event-loop closure applies the epoch-guard + upgrade preamble, then writes
 /// the row via `set_cover`. The `slint::Image` is built INSIDE this closure
@@ -328,32 +298,6 @@ fn marshal_failed(
     }
 }
 
-/// Marshal a resolved page `count` onto the UI thread as carousel row `row`'s
-/// `total`. The count counterpart of `marshal_cover`: same epoch-guard + upgrade
-/// preamble, so a count from a superseded generation (library refreshed since) is
-/// dropped rather than flashing a stale total. `count` is the raw `usize` page
-/// count (a `Send` `Copy` value); the saturating `i32` map happens here.
-fn marshal_total(
-    weak: slint::Weak<ViewerWindow>,
-    epoch: Arc<AtomicUsize>,
-    my_epoch: usize,
-    row: usize,
-    count: usize,
-) {
-    let total = clamp_to_i32(count);
-    if let Err(e) = slint::invoke_from_event_loop(move || {
-        if epoch.load(Relaxed) != my_epoch {
-            return;
-        }
-        let Some(ui) = weak.upgrade() else {
-            return;
-        };
-        set_carousel_total(&ui, row, total);
-    }) {
-        tracing::debug!(row, error = %e, "dropped total update; event loop gone");
-    }
-}
-
 /// Marshal an "empty book detected" signal onto the UI thread for the book at
 /// `path`. Fired by a worker that opened a book's source CLEANLY but found ZERO
 /// pages (see `should_signal_empty`): the `on_empty_book_detected` handler in
@@ -401,44 +345,13 @@ fn should_signal_empty<S, E>(open_result: &Result<S, E>, page_count: Option<NonZ
     open_result.is_ok() && page_count.is_none()
 }
 
-/// Worker-side: record a resolved page `count` for `path`/`row`. Queues `(path,
-/// count)` for UI-thread persistence (a zero-page archive yields `count == 0`,
-/// which `NonZeroUsize::new` maps to `None` so nothing is queued or persisted) and
-/// marshals the total to the row for immediate display. Runs on a rayon worker, so
-/// it only touches `Send` state (the `Arc<Mutex>` queue, the `Weak`, the epoch).
-fn push_and_marshal_count(
-    pending: &Arc<Mutex<Vec<ResolvedCount>>>,
-    weak: &slint::Weak<ViewerWindow>,
-    epoch: &Arc<AtomicUsize>,
-    my_epoch: usize,
-    row: usize,
-    path: PathBuf,
-    count: usize,
-) {
-    // Persist only while OUR generation is still current. A superseded generation
-    // (library refreshed since dispatch) may have counted a since-changed archive;
-    // the fresh generation re-dispatches any book still missing a count, so dropping
-    // a stale push here cannot lose a real count — it only avoids overwriting a good
-    // one (e.g. a count just back-filled by opening the book). Mirrors the epoch
-    // guard inside `marshal_total` (the display side).
-    if epoch.load(Relaxed) == my_epoch {
-        if let Some(nz) = NonZeroUsize::new(count) {
-            pending
-                .lock()
-                .expect("cover pending_counts mutex poisoned")
-                .push(ResolvedCount { path, count: nz });
-        }
-    }
-    marshal_total(weak.clone(), Arc::clone(epoch), my_epoch, row, count);
-}
-
 impl CoverController {
     /// Build the controller. Call once during UI setup.
     pub fn new() -> Self {
         Self {
             epoch: Arc::new(AtomicUsize::new(0)),
             cancel: RefCell::new(Arc::new(AtomicBool::new(false))),
-            pending_counts: Arc::new(Mutex::new(Vec::new())),
+            prefetch: PageCountPrefetch::new(),
         }
     }
 
@@ -453,41 +366,11 @@ impl CoverController {
         Arc::clone(&self.cancel.borrow())
     }
 
-    /// Persist page counts resolved by background workers since the last call, on
-    /// the UI thread (a worker cannot touch the `!Send` `Rc<RefCell<Library>>`).
-    /// Drains the pending queue, applies each via `Library::set_page_count`, and
-    /// saves ONCE if any changed. Borrow discipline: each `borrow_mut` is confined
-    /// to its own statement (dropped at the `;`); the final `borrow` for `save` is
-    /// a separate statement — collapsing them would double-borrow-panic.
-    fn apply_pending_counts(&self, library: &Rc<RefCell<Library>>) {
-        let drained: Vec<ResolvedCount> = {
-            let mut queue = self
-                .pending_counts
-                .lock()
-                .expect("cover pending_counts mutex poisoned");
-            std::mem::take(&mut *queue)
-        };
-        let mut changed = false;
-        for resolved in &drained {
-            if library
-                .borrow_mut()
-                .set_page_count(&resolved.path, resolved.count)
-            {
-                changed = true;
-            }
-        }
-        if changed {
-            if let Err(e) = library.borrow().save() {
-                tracing::error!(error = %e, "cover: failed to save library after page-count prefetch");
-            }
-        }
-    }
-
     /// Persist any still-pending prefetched page counts. Call once on shutdown
     /// (after the event loop ends) so counts resolved after the last `start`
     /// survive a restart instead of being recomputed by re-opening every archive.
     pub fn flush_counts(&self, library: &Rc<RefCell<Library>>) {
-        self.apply_pending_counts(library);
+        self.prefetch.flush(library);
     }
 
     /// Load one cover on a rayon worker — the SINGLE per-book path for cache hit
@@ -513,7 +396,7 @@ impl CoverController {
         let weak = ui_weak.clone();
         let epoch = Arc::clone(&self.epoch);
         let cancel = Arc::clone(cancel_flag);
-        let pending = Arc::clone(&self.pending_counts);
+        let pending = self.prefetch.queue();
         rayon::spawn(move || {
             // Bail before the heavy work if a newer generation superseded us.
             if cancel.load(Relaxed) {
@@ -554,7 +437,7 @@ impl CoverController {
                             if should_signal_empty(&open_result, NonZeroUsize::new(count)) {
                                 marshal_empty_book(&weak, &epoch, my_epoch, req.path.clone());
                             }
-                            push_and_marshal_count(
+                            page_count_prefetch::push_and_marshal_count(
                                 &pending, &weak, &epoch, my_epoch, req.row, req.path, count,
                             );
                         }
@@ -626,7 +509,9 @@ impl CoverController {
             }
             // Stream the resolved count to the row and queue it for persistence.
             if let Some(c) = count {
-                push_and_marshal_count(&pending, &weak, &epoch, my_epoch, req.row, req.path, c);
+                page_count_prefetch::push_and_marshal_count(
+                    &pending, &weak, &epoch, my_epoch, req.row, req.path, c,
+                );
             }
             marshal_cover(weak, epoch, my_epoch, req.row, decoded);
         });
@@ -641,7 +526,7 @@ impl CoverController {
     /// I/O, regardless of cache state or library size. Call after the carousel
     /// model is built or refreshed (initial library load + every add/remove). The
     /// caller MUST build `requests` BEFORE the call (releasing its own
-    /// `library.borrow()`) so the `apply_pending_counts` `borrow_mut` here cannot
+    /// `library.borrow()`) so the `prefetch.apply` `borrow_mut` here cannot
     /// double-borrow.
     pub fn start(
         &self,
@@ -650,7 +535,7 @@ impl CoverController {
         requests: Vec<CoverRequest>,
     ) {
         // 0. Persist counts the PREVIOUS generation's workers resolved (UI thread).
-        self.apply_pending_counts(library);
+        self.prefetch.apply(library);
 
         // 1. Supersede the previous generation and take this one's fresh cancel flag.
         let cancel_flag = self.rotate_cancel();
