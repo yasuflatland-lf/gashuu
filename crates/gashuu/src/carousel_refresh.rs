@@ -136,8 +136,8 @@ pub(crate) fn push_selection_strings(
         let lib = library.borrow();
         (
             sel.count(),
-            sel.visible_selected_count(&srch, &lib),
-            sel.all_visible_selected(&srch, &lib),
+            crate::selection_projection::visible_selected_count(&sel, &srch, &lib),
+            crate::selection_projection::all_visible_selected(&sel, &srch, &lib),
         )
     };
     ui.set_carousel_selection_count_text(
