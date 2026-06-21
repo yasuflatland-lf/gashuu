@@ -11,6 +11,7 @@ mod i18n;
 mod keymap;
 mod library_model;
 mod navigation;
+mod page_count_prefetch;
 mod page_jump;
 mod page_loader;
 mod thumbnail_strip;
