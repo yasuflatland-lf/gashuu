@@ -43,28 +43,52 @@ use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering::Relaxed};
 use std::sync::{Arc, Mutex};
 
-/// Longer-edge size, in pixels, for generated carousel covers. Decoupled from the
-/// page strip's `DEFAULT_THUMB_MAX_SIDE` (160 px): a focused cover slot is up to
-/// 240×336 logical px, which is 480×672 PHYSICAL px on a 2× (Retina) display, so a
-/// 160 px buffer was upscaled ~4× and looked blurry. 512 px keeps covers sharp at
-/// 1× and near-sharp at 2× while staying a single cover per book in the cache.
-/// `max_side` is part of the cache key, so raising it transparently invalidates
-/// and regenerates every stale 160 px cover on the next run.
+/// Immutable cover-cache retention policy: how big the on-disk cover cache may
+/// grow (`max_bytes`) and the longer-edge size of generated covers (`max_side`).
+/// Both decisions are I/O retention policy, so they live together in one value
+/// object instead of as scattered bare `const`s next to the rayon-dispatch glue
+/// — the invariant-owner pattern of core's `CacheConfig`. The single
+/// canonical instance is [`CoverCachePolicy::DEFAULT`]; the dispatch helpers
+/// (`spawn_cache_prune`, `spawn_load`, `purge_cover`) read its fields rather
+/// than free-standing constants.
 ///
-/// Private — external purge sites route through [`purge_cover`], which owns the
-/// complete key recipe, so the `max_side` ingredient never leaks to callers.
-const COVER_MAX_SIDE: u32 = 512;
+/// `max_side` is also a `cache_key` / `purge_for` ingredient, so its value must
+/// stay 512 to keep compatibility with the existing on-disk cache — raising it
+/// would transparently invalidate and regenerate every stale cover on the next
+/// run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct CoverCachePolicy {
+    /// Size cap, in bytes, for the on-disk cover cache; the startup sweep prunes
+    /// down to this. 256 MiB holds roughly 650-1700 covers at `max_side` 512
+    /// (PNG covers run ~150-400 KB each), far beyond a typical library, so
+    /// eviction only ever bites on key-orphaned covers (source mtime drifted,
+    /// see core `purge_for`) and very large collections. The cap POLICY lives
+    /// here in the app layer; core's `ThumbnailCache::prune` is only the
+    /// mechanism (issue 143's ownership split).
+    max_bytes: u64,
+    /// Longer-edge size, in pixels, for generated carousel covers. Decoupled
+    /// from the page strip's `DEFAULT_THUMB_MAX_SIDE` (160 px): a focused cover
+    /// slot is up to 240×336 logical px, which is 480×672 PHYSICAL px on a 2×
+    /// (Retina) display, so a 160 px buffer was upscaled ~4× and looked blurry.
+    /// 512 px keeps covers sharp at 1× and near-sharp at 2× while staying a
+    /// single cover per book in the cache. `max_side` is part of the cache key,
+    /// so raising it transparently invalidates and regenerates every stale 160
+    /// px cover on the next run.
+    max_side: u32,
+}
 
-/// Size cap, in bytes, for the on-disk cover cache; the startup sweep prunes
-/// down to this. 256 MiB holds roughly 650-1700 covers at `COVER_MAX_SIDE` 512
-/// (PNG covers run ~150-400 KB each), far beyond a typical library, so eviction
-/// only ever bites on key-orphaned covers (source mtime drifted, see core
-/// `purge_for`) and very large collections. The cap POLICY lives here in the
-/// app layer; core's `ThumbnailCache::prune` is only the mechanism (issue 143's
-/// ownership split).
-pub(crate) const COVER_CACHE_MAX_BYTES: u64 = 256 * 1024 * 1024;
+impl CoverCachePolicy {
+    /// The single canonical cover-cache policy. The values are load-bearing:
+    /// `max_side` (512) is a `cache_key`/`purge_for` ingredient, so changing it
+    /// invalidates the existing on-disk cache; `max_bytes` (256 MiB) is the
+    /// prune target.
+    pub(crate) const DEFAULT: Self = Self {
+        max_bytes: 256 * 1024 * 1024,
+        max_side: 512,
+    };
+}
 
-/// Sweep the cover cache down to [`COVER_CACHE_MAX_BYTES`] on a rayon worker.
+/// Sweep the cover cache down to the policy's `max_bytes` on a rayon worker.
 /// Fire-and-forget, called ONCE at startup right after the initial cover
 /// dispatch — visible covers grab workers first, and the sweep's per-entry
 /// stat/unlink I/O never touches the UI thread. Cap overflow created later in
@@ -82,7 +106,7 @@ pub(crate) fn spawn_cache_prune() {
             return;
         };
         let started = std::time::Instant::now();
-        let report = cache.prune(COVER_CACHE_MAX_BYTES);
+        let report = cache.prune(CoverCachePolicy::DEFAULT.max_bytes);
         tracing::debug!(
             removed_files = report.removed_files,
             removed_bytes = report.removed_bytes,
@@ -167,12 +191,17 @@ fn mtime_secs(path: &std::path::Path) -> i64 {
 }
 
 /// Best-effort removal of `path`'s persistent cover — the single home of the
-/// cover-key purge recipe (`purge_for(path, mtime_secs(path), &[COVER_MAX_SIDE])`),
-/// so the key ingredients never leak to callers. A zero purge count is EXPECTED
-/// (missing file, mtime drift, unwritable cache entry) and only warned: the
-/// orphan is harmless and the startup prune sweep reclaims it later (issue 143).
+/// cover-key purge recipe (`purge_for(path, mtime_secs(path),
+/// &[CoverCachePolicy::DEFAULT.max_side])`), so the key ingredients never leak to
+/// callers. A zero purge count is EXPECTED (missing file, mtime drift,
+/// unwritable cache entry) and only warned: the orphan is harmless and the
+/// startup prune sweep reclaims it later (issue 143).
 pub(crate) fn purge_cover(cache: &ThumbnailCache, path: &std::path::Path) {
-    let removed = cache.purge_for(path, mtime_secs(path), &[COVER_MAX_SIDE]);
+    let removed = cache.purge_for(
+        path,
+        mtime_secs(path),
+        &[CoverCachePolicy::DEFAULT.max_side],
+    );
     if removed == 0 {
         tracing::warn!(
             path = %path.display(),
@@ -496,7 +525,11 @@ impl CoverController {
             let Ok(cache) = ThumbnailCache::new() else {
                 return;
             };
-            let key = cache_key(&req.path, mtime_secs(&req.path), COVER_MAX_SIDE);
+            let key = cache_key(
+                &req.path,
+                mtime_secs(&req.path),
+                CoverCachePolicy::DEFAULT.max_side,
+            );
             // HIT: the decode is already done on disk; read + decode it on THIS
             // worker and stream it to the row first (the count open below may be
             // slow — the user should not wait on it to see the cover).
@@ -570,7 +603,7 @@ impl CoverController {
                 return;
             };
             let count = req.needs_count.then_some(page_count.get());
-            let decoded = match generate_cover(source, COVER_MAX_SIDE) {
+            let decoded = match generate_cover(source, CoverCachePolicy::DEFAULT.max_side) {
                 Ok(d) => d,
                 Err(e) => {
                     tracing::warn!(path = %req.path.display(), error = %e, "cover: generate failed");
@@ -656,6 +689,34 @@ impl CoverController {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The cover-cache policy values are load-bearing for on-disk compatibility:
+    /// `max_side` (512) is a `cache_key` / `purge_for` ingredient, so the
+    /// refactor must NOT change it (a different value silently invalidates every
+    /// existing cached cover). `max_bytes` (256 MiB) is the prune target. Pin
+    /// both so a future edit that drifts them fails loudly here.
+    #[test]
+    fn default_policy_preserves_on_disk_values() {
+        assert_eq!(
+            CoverCachePolicy::DEFAULT.max_side,
+            512,
+            "max_side is a cache-key ingredient; changing it breaks existing covers"
+        );
+        assert_eq!(
+            CoverCachePolicy::DEFAULT.max_bytes,
+            256 * 1024 * 1024,
+            "max_bytes is the on-disk cover-cache prune target"
+        );
+    }
+
+    /// The policy is an immutable `Copy` value object (mirrors core's
+    /// `CacheConfig`): copying it yields an equal instance.
+    #[test]
+    fn policy_is_copy_and_eq() {
+        let a = CoverCachePolicy::DEFAULT;
+        let b = a; // Copy
+        assert_eq!(a, b);
+    }
 
     /// A fully-populated row with every flag SET (except `cover_failed`), so the
     /// preserve-other-fields assertion below cannot pass vacuously on defaults.
