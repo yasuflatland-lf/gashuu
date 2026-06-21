@@ -45,6 +45,29 @@ use viewer_state::SpreadSlots;
 use viewer_state::{StatusContent, ViewerState};
 use viewport::ViewportState;
 
+/// Load a persisted value, falling back to its `Default` on a RECOVERABLE
+/// failure. The single home of the corrupt-file recovery policy — default on
+/// error, collect a surfaceable notice, log a warning — which was hand-written
+/// once per source before. `label` names the source for both the `errs` notice
+/// (`"<label> (<e>)"`, surfaced on the home screen) and the log. A missing file
+/// returns `Ok(default)` from the loader, so this fallback fires only on a
+/// GENUINE failure (corrupt data, I/O error, `NoDataDir`). Stays UI-side (it
+/// logs via `tracing`) so `gashuu-core` remains headless.
+fn load_or_default<T: Default>(
+    label: &str,
+    load: impl FnOnce() -> Result<T, CoreError>,
+    errs: &mut Vec<String>,
+) -> T {
+    match load() {
+        Ok(value) => value,
+        Err(e) => {
+            tracing::warn!(error = %e, "failed to load {label}; using defaults");
+            errs.push(format!("{label} ({e})"));
+            T::default()
+        }
+    }
+}
+
 fn main() -> color_eyre::Result<()> {
     color_eyre::install()?;
     // Slint's text layout (parley -> icu_segmenter) emits a `log::warn!` for every
@@ -61,30 +84,14 @@ fn main() -> color_eyre::Result<()> {
     );
     tracing_subscriber::fmt().with_env_filter(env_filter).init();
 
-    // Load persisted settings and library; corrupt/unreadable files fall back
-    // to defaults (the corrupt-file recovery policy lives here in the UI layer,
-    // by design). Missing files return Ok(default) from Settings::load /
-    // Library::load, so the Err arm fires only on a GENUINE failure (corrupt
-    // data, I/O error, NoDataDir). Errors are collected and surfaced on the
-    // home screen after the initial refresh, which itself overwrites
-    // status-text, so the notice must be set after that call.
+    // Load persisted settings and library through `load_or_default` — the single
+    // home of the corrupt-file recovery policy (default-on-error + collect a
+    // notice). Errors are collected and surfaced on the home screen after the
+    // initial refresh, which itself overwrites status-text, so the notice must be
+    // set after that call.
     let mut load_errs: Vec<String> = Vec::new();
-    let settings = match Settings::load() {
-        Ok(s) => s,
-        Err(e) => {
-            tracing::warn!(error = %e, "failed to load settings; using defaults");
-            load_errs.push(format!("settings ({e})"));
-            Settings::default()
-        }
-    };
-    let library = match Library::load() {
-        Ok(l) => l,
-        Err(e) => {
-            tracing::warn!(error = %e, "failed to load library; starting empty");
-            load_errs.push(format!("library ({e})"));
-            Library::new()
-        }
-    };
+    let settings = load_or_default("settings", Settings::load, &mut load_errs);
+    let library = load_or_default("library", Library::load, &mut load_errs);
 
     let ui = ViewerWindow::new()?;
     // Boot the Fluent localizer with the persisted language; `apply()` pushes
@@ -632,4 +639,31 @@ fn to_slint_image(decoded: &DecodedImage) -> slint::Image {
         slint::SharedPixelBuffer::<slint::Rgba8Pixel>::new(decoded.width(), decoded.height());
     buffer.make_mut_bytes().copy_from_slice(decoded.rgba());
     slint::Image::from_rgba8(buffer)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn load_or_default_returns_loaded_value_and_records_no_notice() {
+        let mut errs: Vec<String> = Vec::new();
+        let value: u32 = load_or_default("settings", || Ok(42), &mut errs);
+        assert_eq!(value, 42);
+        assert!(errs.is_empty(), "a successful load records no notice");
+    }
+
+    #[test]
+    fn load_or_default_falls_back_to_default_and_records_labelled_notice_on_err() {
+        let mut errs: Vec<String> = Vec::new();
+        let value: u32 = load_or_default("library", || Err(CoreError::NoDataDir), &mut errs);
+        assert_eq!(
+            value,
+            u32::default(),
+            "a recoverable failure yields the type's default"
+        );
+        // The notice is the label with the error detail appended (derived from the
+        // error's own Display, so this pins the format, not the wording).
+        assert_eq!(errs, vec![format!("library ({})", CoreError::NoDataDir)]);
+    }
 }
