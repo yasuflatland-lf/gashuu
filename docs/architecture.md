@@ -166,10 +166,9 @@ pan clamping (`clamp_offset`/`centered_offset`), cursor-anchored zoom (`anchored
 ### Settings
 
 `settings.rs`. Persistent user settings serialized to JSON in the OS config dir via
-`directories::ProjectDirs`. The settings vocabulary includes `CoverMode` and `FitMode`:
-`reading_direction`/`spread_mode`/`cover_mode`/`fit_mode`. `SpreadMode::Auto` and the
-resolved type `SpreadLayout {Single, Double}` with `SpreadMode::resolve(aspect: f32) -> SpreadLayout` —
-`SpreadLayout` is NOT persisted. `seen_guide`: a `bool` (default `false`,
+`directories::ProjectDirs`. The view-mode vocabulary it persists
+(`reading_direction`/`spread_mode`/`cover_mode`/`fit_mode`/`language`/`key_bindings`) now lives in
+`view_modes.rs` (see below); `Settings` is just one consumer. `seen_guide`: a `bool` (default `false`,
 `#[serde(default)]`) the UI flips to `true` + saves once the first-run guide is dismissed;
 `SETTINGS_VERSION` stays 1 and the frozen snapshot carries `"seen_guide": false` — same
 forward/backward-compat treatment as `cover_mode`/`fit_mode`.
@@ -188,6 +187,18 @@ lives in the UI (`main.rs`); core only returns typed `CoreError`:
 Errors are typed with `thiserror` (`CoreError`, `#[non_exhaustive]`).
 
 See [ADR-0005](ADRs/0005-settings-persistence.md) for the settings persistence decision.
+
+### view-mode vocabulary (`view_modes.rs`)
+
+`view_modes.rs` (extracted from `settings.rs`). The ubiquitous-language enums for how pages are
+displayed: `ReadingDirection`, `SpreadMode` + the resolved `SpreadLayout {Single, Double}` (with
+`SpreadMode::resolve(aspect: f32) -> SpreadLayout`, which the UI layer calls so the pure `spread::*`
+functions never see `Auto`; `SpreadLayout` is NOT persisted), `CoverMode`, `FitMode`, `Language`,
+and the `KeyBindings` value object. This is the actual vocabulary; `Settings` (in `settings.rs`) is
+one consumer, and the pure modules `spread`/`viewport`/`view_override` import it from here instead of
+through the serde-persistence aggregate. Headless (serde only, no slint/tracing). External public
+paths (`gashuu_core::ReadingDirection`, …) are unchanged — `lib.rs` re-exports these from
+`view_modes` rather than `settings`.
 
 ### reading_progress
 

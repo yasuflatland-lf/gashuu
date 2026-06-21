@@ -10,7 +10,8 @@
 //!
 //! Headless: no `slint`, no `tracing`.
 
-use crate::settings::{CoverMode, FitMode, ReadingDirection, Settings, SpreadMode};
+use crate::settings::Settings;
+use crate::view_modes::{CoverMode, FitMode, ReadingDirection, SpreadMode};
 use serde::{Deserialize, Serialize};
 
 /// Per-book overrides for the four view preferences. Each `None` field inherits
