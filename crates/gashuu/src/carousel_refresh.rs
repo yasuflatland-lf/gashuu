@@ -13,6 +13,7 @@ use crate::carousel::{
     apply_selection_flags, bind_carousel_model, build_carousel_model, cover_requests,
 };
 use crate::library_model::{LibrarySearchState, LibrarySelectionState};
+use crate::open_book::EmptyBookRemoval;
 use crate::{cover_loader, i18n, ViewerWindow};
 use gashuu_core::Library;
 use slint::ComponentHandle;
@@ -245,6 +246,31 @@ pub(crate) fn refresh_library_carousel(
         deps.library,
         cover_loader::prioritize_by_focus(cover_reqs, focus_row),
     );
+}
+
+/// The shared UI tail of an empty-book auto-removal, called by both the open-time
+/// `finalize_open` arm and the cover-time `on_empty_book_detected` handler so the
+/// two cannot drift. Rebuilds the carousel through the chokepoint (removed book
+/// disappears; the cover-epoch bump drops any sibling cover still streaming for
+/// it; active filter preserved; no focus reset), then — only when THIS path
+/// performed the removal (`removed == true`) — surfaces the auto-removal notice
+/// (with the library-save-failure detail appended). The `removed`-idempotency
+/// guard is single-sourced here: a `removed == false` (race, or a never-added
+/// empty source) rebuilds but stays silent.
+pub(crate) fn finalize_empty_book_removed(
+    ui: &ViewerWindow,
+    deps: &CarouselRefresh,
+    removal: &EmptyBookRemoval,
+) {
+    refresh_library_carousel(ui, deps, false);
+    if removal.removed {
+        let status = crate::empty_book_removed_status(
+            deps.localizer.loader(),
+            &removal.title,
+            removal.save_error.as_deref(),
+        );
+        ui.set_status_text(status.into());
+    }
 }
 
 /// Route a neutral / success add notice to the quiet idle strip. Clears any

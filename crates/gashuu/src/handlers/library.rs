@@ -5,7 +5,7 @@ use crate::{
 };
 use crate::{
     apply_add_report, apply_outcomes, clamp_focused_index, current_book_name,
-    empty_book_removed_status, finalize_open, go_to_viewer, push_selection_strings,
+    finalize_empty_book_removed, finalize_open, go_to_viewer, push_selection_strings,
     refresh_library_carousel, visible_index_to_path, with_ui, CarouselRefresh, ViewerWindow,
 };
 use crate::{
@@ -837,22 +837,11 @@ pub(crate) fn wire_selection_handlers(
         let localizer = Rc::clone(&localizer);
         ui.on_empty_book_detected(move |path_str| {
             with_ui(&ui_weak, |ui| {
-                let loader = localizer.loader();
                 let path = std::path::PathBuf::from(path_str.as_str());
-                // The shared transaction (single home in app.rs): title capture
-                // BEFORE removal → `Library::remove` → save → best-effort cover
-                // purge. `removed == false` is the idempotency race — the book
-                // was already removed by another path (its notice + rebuild
-                // already ran), so bail out silently.
+                // The shared transaction (single home in open_book): title capture
+                // BEFORE removal -> Library::remove -> save -> best-effort cover purge.
                 let removal = app::remove_empty_book(&library, &path);
-                if !removal.removed {
-                    return;
-                }
-                // Rebuild the carousel so the removed book disappears and the
-                // cover-epoch bump drops any sibling cover still streaming for it;
-                // the active search filter is preserved by the chokepoint. No focus
-                // reset — the user's focus stays where it was.
-                refresh_library_carousel(
+                finalize_empty_book_removed(
                     &ui,
                     &CarouselRefresh {
                         library: &library,
@@ -861,17 +850,8 @@ pub(crate) fn wire_selection_handlers(
                         selection: &selection,
                         localizer: &localizer,
                     },
-                    false,
+                    &removal,
                 );
-                // Notice LAST (status-last ordering, as in add/delete): the
-                // auto-removal message, with the save-failure detail appended when
-                // the persist failed.
-                let status = empty_book_removed_status(
-                    loader,
-                    &removal.title,
-                    removal.save_error.as_deref(),
-                );
-                ui.set_status_text(status.into());
             })
         });
     }
