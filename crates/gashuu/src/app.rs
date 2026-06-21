@@ -6,4 +6,4 @@
 pub(crate) use crate::open_book::{
     remove_empty_book, NoticesContent, OpenBookUseCase, OpenOutcome, SkippedDetail,
 };
-pub(crate) use crate::remove_books::{confirm_delete_content, RemoveBooksUseCase, RemoveOutcome};
+pub(crate) use crate::remove_books::{confirm_delete_content, RemoveBooksUseCase};
