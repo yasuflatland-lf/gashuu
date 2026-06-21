@@ -15,7 +15,7 @@
 //! saturating, >= 1); `ReadingProgress::fraction()` guards `total == 0` to
 //! `0.0` (no NaN/inf); `ReadingProgress::total()` is the persisted page count.
 
-use gashuu_core::{Book, Library};
+use gashuu_core::{book_matches, Book, Library};
 
 /// One carousel row's display data, derived from a `Book` in the `Library`.
 /// Plain data only (no `slint::Image`) so the derivation is unit-testable
@@ -43,23 +43,6 @@ pub struct CarouselData {
     /// True when this book is the last-opened book (`book.path() == library.last_opened()`).
     /// Drives the BookmarkRibbon overlay on the cover card. Pure derivation — no I/O.
     pub bookmarked: bool,
-}
-
-/// Case-insensitive substring match of `query` against a book's display title
-/// and its filesystem path. An empty query matches every book (no filter).
-///
-/// The query is matched verbatim (not trimmed): callers pass the exact debounced
-/// search text, so leading/trailing whitespace is significant by design.
-pub(crate) fn book_matches(book: &Book, query: &str) -> bool {
-    if query.is_empty() {
-        return true;
-    }
-
-    let needle = query.to_lowercase();
-    let title = book.title().to_lowercase();
-    let path = book.path().to_string_lossy().to_lowercase();
-
-    title.contains(&needle) || path.contains(&needle)
 }
 
 /// Derive one carousel display row from a single `Book`.
@@ -481,26 +464,6 @@ mod tests {
         assert_eq!(rows[0].total, 10); // real persisted count
         assert_eq!(rows[0].current, 5); // 1-based: last_page 4 -> display 5
         assert_eq!(rows[0].progress, 0.4); // 4 / 10
-    }
-
-    #[test]
-    fn book_matches_title_and_path_case_insensitively() {
-        let mut lib = Library::new();
-        assert!(lib.add(PathBuf::from("/manga/Akira/Vol 01.cbz")).is_some());
-        let book = &lib.books()[0];
-
-        assert!(book_matches(book, "vol 01"));
-        assert!(book_matches(book, "VOL 01"));
-        assert!(book_matches(book, "akira"));
-        assert!(book_matches(book, "/MANGA/AKIRA"));
-        assert!(!book_matches(book, "banana"));
-    }
-
-    #[test]
-    fn book_matches_empty_query_matches_everything() {
-        let mut lib = Library::new();
-        assert!(lib.add(PathBuf::from("/manga/One Piece.cbz")).is_some());
-        assert!(book_matches(&lib.books()[0], ""));
     }
 
     #[test]

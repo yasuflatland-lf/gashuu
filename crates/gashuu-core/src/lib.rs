@@ -14,6 +14,7 @@ pub mod library_store;
 pub(crate) mod ordering;
 pub mod page_source;
 pub mod reading_progress;
+pub mod search;
 pub mod settings;
 pub mod spread;
 #[cfg(test)]
@@ -32,6 +33,7 @@ pub use library::{display_title, Book, Library, OpenRegistration, RemovalReport}
 pub use library_store::LIBRARY_VERSION;
 pub use page_source::{FolderSource, PageEntry, PageSource, RarSource, ZipSource};
 pub use reading_progress::ReadingProgress;
+pub use search::book_matches;
 pub use settings::{
     CoverMode, FitMode, KeyBindings, Language, ReadingDirection, Settings, SpreadLayout,
     SpreadMode, MAX_RECENT_FILES, SETTINGS_VERSION,
