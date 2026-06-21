@@ -15,7 +15,7 @@
 //! saturating, >= 1); `ReadingProgress::fraction()` guards `total == 0` to
 //! `0.0` (no NaN/inf); `ReadingProgress::total()` is the persisted page count.
 
-use gashuu_core::{book_matches, Book, Library};
+use gashuu_core::{book_is_available, book_matches, Book, Library};
 
 /// One carousel row's display data, derived from a `Book` in the `Library`.
 /// Plain data only (no `slint::Image`) so the derivation is unit-testable
@@ -36,7 +36,7 @@ pub struct CarouselData {
     /// Reading progress in `0.0..=1.0` = `ReadingProgress::fraction()` (`0.0` when
     /// `total == 0`, never NaN/inf). Ambient per-cover bar; accent fill, green when `>= 1.0`.
     pub progress: f32,
-    /// Derived availability (`Library::is_available`): false when the book's
+    /// Derived availability (`book_is_available`): false when the book's
     /// path no longer resolves. Unavailable books stay in the shelf, rendered
     /// grayed with a broken-cover placeholder.
     pub available: bool,
@@ -75,7 +75,7 @@ fn carousel_data_for_book(book: &Book, bookmarked: bool) -> CarouselData {
         current,
         total,
         progress: fraction,
-        available: Library::is_available(book),
+        available: book_is_available(book),
         bookmarked,
     }
 }
@@ -351,7 +351,7 @@ mod tests {
     #[test]
     fn book_row_derives_title_current_total_progress() {
         // A real on-disk directory so `add` canonicalizes/derives a title and
-        // `is_available` is true (the path resolves). `last_page` defaults to 0
+        // `book_is_available` is true (the path resolves). `last_page` defaults to 0
         // for a freshly-added book (no position recorded yet), so this row is
         // the "unread, total unknown" case: current = 1, total = 0,
         // progress = 0.0, available = true.
