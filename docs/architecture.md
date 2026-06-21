@@ -525,6 +525,10 @@ current visible projection (used by the toolbar's "N outside search" indicator a
 
 `carousel.rs`. UI-thread adapter layer between `library_model` and Slint: `to_carousel_item` (private) maps a `CarouselData` row to a `CarouselItem` (placeholder `slint::Image::default()` cover); `build_carousel_model(library: &Library, indices: &[usize])` (pub(crate)) is a HEADLESS builder — no `ViewerWindow` arg — returning the `Rc<VecModel<CarouselItem>>`; a separate `bind_carousel_model(ui, model)` performs the Slint bind (the build/bind split enables unit tests over visible-index order); `cover_requests(library: &Library, indices: &[usize])` (pub(crate)) derives the per-book `CoverRequest` list, re-basing each request's `row` to the enumerated position in the filtered `indices` slice (not the library index), so cover targets stay aligned with the filtered carousel model; `thumb_state_at` (pub(crate)) re-fetches a row's thumbnail state for the scrubber preview.
 
+### carousel refresh / projection (`carousel_refresh.rs`)
+
+`carousel_refresh.rs` (extracted from `main.rs`, mirroring the `view_sync.rs` split). Owns the carousel-refresh/projection cluster: `refresh_library_carousel` (the single chokepoint that rebuilds + binds the filtered carousel model, optionally resets focus, re-applies the path-keyed selection, and (re)starts focus-prioritized cover loading), the `CarouselRefresh` borrowed-collaborator bundle it takes (`library` / `covers` / `search` / `selection` / `localizer`, all `pub(crate)`), the visible-index projection helpers (`visible_index_to_path`, `visible_focus_index_for_path`, `entry_focus_index` (private), `snap_carousel_focus_to_last_opened`, `clamp_focused_index`), and `push_selection_strings` (the selection-toolbar string chokepoint). UI-thread only; driven almost entirely from `handlers/library.rs` and `handlers/settings.rs`, with `go_to_library`/`go_to_viewer` (still in `main.rs`) routing their carousel work through it via the crate-root re-exports.
+
 ### enum_adapters
 
 `enum_adapters.rs`. The 10 `pub(crate)` enum↔index adapters (8 were previously inline in `main.rs`): `reading_direction_to_index`/`index_to_reading_direction`, `spread_mode_to_index`/`index_to_spread_mode`, `cover_mode_to_index`/`index_to_cover_mode`, `fit_mode_to_index`/`index_to_fit_mode`, and the i18n pair `language_to_index`/`index_to_language`. Each `index_to_*` clamps out-of-range to the first variant, mirroring the `index_to_screen` clamp policy in `navigation.rs`.
@@ -600,8 +604,9 @@ no AppState bundle, explicit handle lists only). The three feature files are:
 `fn main` = boot (tracing, settings/library load, Slint window, localizer, Rc construction, seed
 carousel, prune) + 8 wire calls + `ui.run()` + exit flush (count persistence, write-back,
 view-mode persistence, settings save). All callback closures live in `handlers/`; `main.rs` retains
-`refresh`, `finalize_open`, `go_to_library`/`go_to_viewer`, `refresh_library_carousel`,
-`CarouselRefresh`, projection helpers, and the crate-root re-exports for the `view_sync.rs` seams.
+`refresh`, `finalize_open`, `go_to_library`/`go_to_viewer`, and the add-batch helpers, plus the
+crate-root re-exports for the `view_sync.rs` and `carousel_refresh.rs` seams (the carousel-refresh
+/projection cluster itself now lives in `carousel_refresh.rs`).
 
 ### Slint UI files
 
