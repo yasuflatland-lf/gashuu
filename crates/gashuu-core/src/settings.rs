@@ -276,20 +276,29 @@ impl Settings {
             value
         };
         let mut settings: Self = serde_json::from_value(value)?;
-        // Normalize invariants that a hand-edited or corrupt file could violate.
-        // Route both fields through `CacheConfig::new` (via `cache_config()`), which
-        // owns the `[1, MAX_CACHE_SIZE]` / `[0, MAX_PREFETCH_RADIUS]` clamps. This
-        // keeps the persisted values equal to the values actually used and keeps the
-        // bounds defined in exactly one place. (preload_pages = 0 remains valid as a
-        // "prefetch disabled" sentinel; values above MAX_PREFETCH_RADIUS are clamped.)
-        let cfg = settings.cache_config();
-        settings.cache_size = cfg.capacity();
-        settings.preload_pages = cfg.radius();
-        // push_recent caps recent_files on write, but a hand-edited file could exceed
-        // MAX_RECENT_FILES and then persist forever (exit-save writes in-memory state);
-        // enforce the cap on the read path too.
-        settings.recent_files.truncate(MAX_RECENT_FILES);
+        settings.normalize();
         Ok(settings)
+    }
+
+    /// Re-establish domain invariants on a freshly built or loaded `Settings`,
+    /// so that a value constructed any way other than the normal write path
+    /// (a hand-edited file, a future loader, an in-memory value) still obeys
+    /// the same bounds. Mirrors `Library::normalize`. Idempotent.
+    ///
+    /// Route the cache fields through `CacheConfig::new` (via `cache_config()`),
+    /// which owns the `[1, MAX_CACHE_SIZE]` / `[0, MAX_PREFETCH_RADIUS]` clamps.
+    /// This keeps the persisted values equal to the values actually used and
+    /// keeps the bounds defined in exactly one place. (`preload_pages = 0`
+    /// remains valid as a "prefetch disabled" sentinel; values above
+    /// `MAX_PREFETCH_RADIUS` are clamped.)
+    pub fn normalize(&mut self) {
+        let cfg = self.cache_config();
+        self.cache_size = cfg.capacity();
+        self.preload_pages = cfg.radius();
+        // push_recent caps recent_files on write, but a hand-edited file could
+        // exceed MAX_RECENT_FILES and then persist forever (exit-save writes
+        // in-memory state); enforce the cap here too.
+        self.recent_files.truncate(MAX_RECENT_FILES);
     }
 
     /// Record `path` as most-recently-opened when tracking is enabled. Dedups
@@ -879,6 +888,26 @@ mod tests {
         .to_string();
         let s = Settings::from_json(&json).unwrap();
         assert_eq!(s.preload_pages, 0, "preload_pages=0 must remain valid");
+    }
+
+    #[test]
+    fn normalize_clamps_out_of_range_fields() {
+        use crate::cache_config::{MAX_CACHE_SIZE, MAX_PREFETCH_RADIUS};
+        // A `Settings` built any way other than `from_json` (e.g. hand-built in
+        // memory) must still be brought back inside its domain invariants by
+        // `normalize`, mirroring `Library::normalize`.
+        let mut s = Settings {
+            cache_size: MAX_CACHE_SIZE + 50,
+            preload_pages: MAX_PREFETCH_RADIUS + 10,
+            recent_files: (0..MAX_RECENT_FILES + 5)
+                .map(|i| PathBuf::from(format!("/p{i}")))
+                .collect(),
+            ..Settings::default()
+        };
+        s.normalize();
+        assert_eq!(s.cache_size, MAX_CACHE_SIZE);
+        assert_eq!(s.preload_pages, MAX_PREFETCH_RADIUS);
+        assert_eq!(s.recent_files.len(), MAX_RECENT_FILES);
     }
 
     #[test]
