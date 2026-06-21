@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24">
+  <!-- Alert triangle with the exclamation punched out via the even-odd rule, so
+       `colorize` tints the triangle and the mark shows the surface behind it. -->
+  <path fill="#000000" fill-rule="evenodd" d="M12 2.2 22.6 21H1.4Z M11 8.5h2v6h-2z M11 16h2v2h-2z"/>
+</svg>

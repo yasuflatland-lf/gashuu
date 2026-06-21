@@ -202,6 +202,9 @@ pub(crate) fn wire_open_handlers(
         let localizer = Rc::clone(&localizer);
         ui.on_add_progress(move |done, total| {
             with_ui(&ui_weak, |ui| {
+                // A new add is underway: clear any lingering error toast from the
+                // previous add so it doesn't float over this operation's progress.
+                ui.set_add_toast_text("".into());
                 ui.set_status_text(
                     crate::i18n::dynamic::adding_progress(
                         localizer.loader(),
