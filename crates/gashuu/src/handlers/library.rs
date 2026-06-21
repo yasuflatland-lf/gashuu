@@ -12,6 +12,7 @@ use crate::{
     library_model::{LibrarySearchState, LibrarySelectionState},
     navigation::NavState,
     page_loader::PageController,
+    selection_projection,
 };
 use crate::{viewer_state::ViewerState, viewport::ViewportState};
 use app::SkippedDetail;
@@ -631,10 +632,10 @@ pub(crate) fn wire_selection_handlers(
                     let lib = library.borrow();
                     let srch = search.borrow();
                     let mut sel = selection.borrow_mut();
-                    if sel.all_visible_selected(&srch, &lib) {
-                        sel.deselect_visible(&srch, &lib);
+                    if selection_projection::all_visible_selected(&sel, &srch, &lib) {
+                        selection_projection::deselect_visible(&mut sel, &srch, &lib);
                     } else {
-                        sel.select_visible(&srch, &lib);
+                        selection_projection::select_visible(&mut sel, &srch, &lib);
                     }
                 }
                 // Re-apply the (updated) selection flags over the visible rows so

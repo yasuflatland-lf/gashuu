@@ -684,7 +684,8 @@ pub(crate) fn confirm_delete_content(
 
     // "N selected outside the current search" as the LAST body line, when some
     // selected books are not in the visible projection.
-    let visible_selected = selection.visible_selected_count(search, library);
+    let visible_selected =
+        crate::selection_projection::visible_selected_count(selection, search, library);
     if count > visible_selected {
         body_lines.push(crate::i18n::dynamic::confirm_delete_outside_search(
             loader,

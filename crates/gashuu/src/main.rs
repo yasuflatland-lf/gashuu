@@ -13,6 +13,7 @@ mod library_model;
 mod navigation;
 mod page_jump;
 mod page_loader;
+mod selection_projection;
 mod thumbnail_strip;
 mod view_sync;
 mod viewer_state;
