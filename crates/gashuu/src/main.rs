@@ -23,7 +23,7 @@ mod viewport;
 
 pub(crate) use add_books::apply_outcomes;
 pub(crate) use carousel_refresh::{
-    apply_add_report, clamp_focused_index, finalize_empty_book_removed, push_selection_strings,
+    apply_add_report, finalize_empty_book_removed, finalize_remove, push_selection_strings,
     refresh_library_carousel, snap_carousel_focus_to_last_opened, visible_index_to_path,
     CarouselRefresh,
 };

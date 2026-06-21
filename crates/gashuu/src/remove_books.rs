@@ -4,9 +4,11 @@
 //! The bulk-remove surface here ([`RemoveBooksUseCase`] + [`RemoveOutcome`] +
 //! [`remove_books_with_rollback`] + [`removed_contains_open`] + the
 //! [`ConfirmDeleteContent`] builder) is consumed by `main.rs` (cluster W) and the
-//! Slint `ConfirmDialog` wiring, the destructive-delete handlers in `main.rs`
-//! being the live runtime callers (PR-5 #129). It touches Slint (clears the
-//! viewer title on a closed open book), so it lives in the UI crate.
+//! Slint `ConfirmDialog` wiring, the destructive-delete handlers in
+//! `handlers::library` being the live runtime callers (PR-5 #129). The use case
+//! is lean and headless — it returns a [`RemoveOutcome`] and touches no Slint; the
+//! UI tail lives in
+//! [`finalize_remove`](crate::carousel_refresh::finalize_remove).
 
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
@@ -18,7 +20,6 @@ use i18n_embed::fluent::FluentLanguageLoader;
 use crate::cover_loader::purge_cover;
 use crate::library_model::{LibrarySearchState, LibrarySelectionState};
 use crate::viewer_state::ViewerState;
-use crate::ViewerWindow;
 
 /// Maximum number of book titles listed verbatim in the delete-confirmation
 /// dialog body before the list is truncated with an "…and M more" line. Beyond
@@ -98,10 +99,12 @@ pub(crate) fn removed_contains_open(open_file: Option<&Path>, removed: &[PathBuf
 /// Coordinates the "remove the selected books" use case. Mirrors
 /// [`OpenBookUseCase`](crate::open_book::OpenBookUseCase): the shared
 /// collaborators it threads are fields, so the (single) delete-confirm site calls
-/// [`run`](RemoveBooksUseCase::run) with just the `ui`. It touches Slint (clears
-/// the viewer title on a closed open book), so it lives in the UI crate. Carousel
-/// rebuild / status / focus restoration after a successful removal happen in
-/// `main.rs` from the returned [`RemoveOutcome`].
+/// [`run`](RemoveBooksUseCase::run) with no arguments. It stays lean and headless
+/// — it touches no Slint at all (only the in-memory `state` / `library` / `search`
+/// / `selection`) and returns a [`RemoveOutcome`]. The carousel rebuild / status /
+/// focus restoration / viewer title-blank all happen in
+/// [`finalize_remove`](crate::carousel_refresh::finalize_remove) from that
+/// outcome.
 pub(crate) struct RemoveBooksUseCase {
     state: Rc<RefCell<ViewerState>>,
     library: Rc<RefCell<Library>>,
@@ -126,14 +129,18 @@ impl RemoveBooksUseCase {
 
     /// Execute the destructive transaction in the issue's non-negotiable order:
     /// snapshot the selection → mutate+save with rollback → purge covers (best
-    /// effort) → clear the viewer if the open book was deleted → recompute the
+    /// effort) → close the viewer's open book if it was deleted → recompute the
     /// search projection → clear the selection (success only).
     ///
-    /// Returns [`RemoveOutcome::NoSelection`] for an empty selection,
-    /// [`RemoveOutcome::SaveFailed`] (selection PRESERVED, shelf rolled back) when
-    /// the persistence save fails, and [`RemoveOutcome::Removed`] otherwise. The
-    /// caller (`main.rs`) rebuilds the carousel and composes the status line.
-    pub(crate) fn run(&self, ui: &ViewerWindow) -> RemoveOutcome {
+    /// Lean and headless: touches no Slint. Returns [`RemoveOutcome::NoSelection`]
+    /// for an empty selection, [`RemoveOutcome::SaveFailed`] (selection PRESERVED,
+    /// shelf rolled back) when the persistence save fails, and
+    /// [`RemoveOutcome::Removed`] otherwise.
+    /// [`finalize_remove`](crate::carousel_refresh::finalize_remove) consumes the
+    /// outcome to rebuild the carousel, compose the status line, restore focus, and
+    /// blank the viewer title (the Slint side of the headless close recorded by
+    /// `closed_open_book`).
+    pub(crate) fn run(&self) -> RemoveOutcome {
         // 1. Snapshot the selected paths (deterministic BTreeSet order). Empty
         //    selection short-circuits before any mutation.
         let paths: Vec<PathBuf> = self
@@ -175,14 +182,14 @@ impl RemoveBooksUseCase {
             }
         }
 
-        // 4. If the open book was deleted, clear the viewer to the no-book-open
-        //    state (there is no previous book to fall back to) and blank the
-        //    centered title-bar name.
+        // 4. If the open book was deleted, close the viewer's open book to the
+        //    no-book-open state (there is no previous book to fall back to). This
+        //    is headless state only; the `closed_open_book` flag records that the
+        //    centered title-bar name must be blanked, which `finalize_remove` does.
         let closed_open_book = {
             let open_file = self.state.borrow().open_file().map(Path::to_path_buf);
             if removed_contains_open(open_file.as_deref(), &report.removed) {
                 self.state.borrow_mut().close();
-                ui.set_current_book_name("".into());
                 true
             } else {
                 false

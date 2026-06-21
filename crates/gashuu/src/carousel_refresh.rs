@@ -14,6 +14,7 @@ use crate::carousel::{
 };
 use crate::library_model::{LibrarySearchState, LibrarySelectionState};
 use crate::open_book::EmptyBookRemoval;
+use crate::remove_books::RemoveOutcome;
 use crate::{cover_loader, i18n, ViewerWindow};
 use gashuu_core::Library;
 use slint::ComponentHandle;
@@ -270,6 +271,64 @@ pub(crate) fn finalize_empty_book_removed(
             removal.save_error.as_deref(),
         );
         ui.set_status_text(status.into());
+    }
+}
+
+/// Finalize a `RemoveBooksUseCase::run()` outcome on the UI — the mirror of
+/// `finalize_open`. The use case stays lean (returns data); this owns the Slint
+/// tail per outcome arm, so the destructive path's UI finalize lives in one
+/// place and cannot drift from the open path's.
+pub(crate) fn finalize_remove(ui: &ViewerWindow, deps: &CarouselRefresh, outcome: RemoveOutcome) {
+    let loader = deps.localizer.loader();
+    match outcome {
+        RemoveOutcome::NoSelection => {
+            // Defensive: the request handler guards against an empty selection.
+            ui.invoke_focus_carousel();
+        }
+        RemoveOutcome::SaveFailed { error } => {
+            // Shelf rolled back and selection PRESERVED by `run` (rows unchanged);
+            // stay in selection mode so the user can retry.
+            ui.set_status_text(crate::i18n::dynamic::delete_save_failed(loader, &error).into());
+            ui.invoke_focus_carousel();
+        }
+        RemoveOutcome::Removed {
+            n,
+            closed_open_book,
+        } => {
+            // `run` closed the viewer's open book (headless) when it was deleted;
+            // blank the centered title-bar name here (the Slint side of that close).
+            if closed_open_book {
+                ui.set_current_book_name("".into());
+            }
+            // `run` already recomputed the search projection and cleared the
+            // selection. Rebuild from the fresh visible set (no focus reset — the
+            // focused index is clamped below to a valid row).
+            refresh_library_carousel(ui, deps, false);
+            // Clamp the focused index into the NEW visible row count BEFORE Slint can
+            // read a stale out-of-range value (index-out-of-range is the crash risk).
+            let visible_count = deps.search.borrow().visible_indices().len();
+            let clamped = clamp_focused_index(ui.get_carousel_focused_index(), visible_count);
+            ui.set_carousel_focused_index(clamped);
+            // Exit selection mode: drop the toolbar and re-apply all-false flags
+            // (selection itself was already cleared by `run`).
+            ui.set_carousel_selection_mode(false);
+            {
+                let lib = deps.library.borrow();
+                let indices = deps.search.borrow().visible_indices().to_vec();
+                apply_selection_flags(ui, &lib, &indices, |_| false);
+            }
+            push_selection_strings(
+                ui,
+                deps.localizer,
+                deps.selection,
+                deps.search,
+                deps.library,
+            );
+            // Status LAST (status-last ordering): the deleted-books notice. `n`
+            // already excludes stale not_found paths.
+            ui.set_status_text(crate::i18n::dynamic::deleted_books(loader, n).into());
+            ui.invoke_focus_carousel();
+        }
     }
 }
 
