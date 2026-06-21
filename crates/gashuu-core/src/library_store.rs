@@ -1,12 +1,25 @@
 //! Persistent library serialization.
 
 use crate::error::CoreError;
-use crate::library::Library;
+use crate::library::{Book, Library};
 use directories::ProjectDirs;
+use serde::Serialize;
 use std::path::{Path, PathBuf};
 
 /// On-disk library schema version.
 pub const LIBRARY_VERSION: u32 = 1;
+
+/// The on-disk library document. Owns the complete serialized schema in one
+/// place so a new top-level field can no longer be silently omitted: every
+/// field's omission rule (e.g. `last_opened`'s `skip_serializing_if`) is the
+/// derived `Serialize` behavior `to_json` actually uses.
+#[derive(Serialize)]
+struct LibraryDocument<'a> {
+    version: u32,
+    books: &'a [Book],
+    #[serde(skip_serializing_if = "Option::is_none")]
+    last_opened: Option<&'a Path>,
+}
 
 impl Library {
     /// Resolve `library.json` in the OS data dir (creates nothing).
@@ -40,23 +53,18 @@ impl Library {
     }
 
     /// Serialize to pretty JSON with the on-disk schema version.
+    ///
+    /// Serialization goes through a single derived `Serialize` path
+    /// ([`LibraryDocument`]): the top-level shape and every field's omission
+    /// rule (e.g. `last_opened`'s `skip_serializing_if`) are owned by that one
+    /// type, so a new top-level field cannot be silently dropped on save.
     pub fn to_json(&self) -> Result<String, CoreError> {
-        let books = serde_json::to_value(self.books()).map_err(CoreError::Library)?;
-        let mut map = serde_json::Map::new();
-        map.insert("version".into(), serde_json::json!(LIBRARY_VERSION));
-        map.insert("books".into(), books);
-        // Omit `last_opened` entirely when None. This if-let guard IS the
-        // omission mechanism for to_json; the field's #[serde(skip_serializing_if)]
-        // attribute applies only to the derived Serialize path, which to_json
-        // bypasses entirely. Do NOT remove this guard believing the attribute
-        // covers it — for to_json it does not.
-        if let Some(p) = self.last_opened() {
-            map.insert(
-                "last_opened".into(),
-                serde_json::to_value(p).map_err(CoreError::Library)?,
-            );
-        }
-        serde_json::to_string_pretty(&serde_json::Value::Object(map)).map_err(CoreError::Library)
+        let document = LibraryDocument {
+            version: LIBRARY_VERSION,
+            books: self.books(),
+            last_opened: self.last_opened(),
+        };
+        serde_json::to_string_pretty(&document).map_err(CoreError::Library)
     }
 
     /// Parse JSON, migrating older schema versions to the current shape.
@@ -406,15 +414,36 @@ mod tests {
     #[test]
     fn old_json_without_last_opened_omits_key_on_resave() {
         // A library loaded from old JSON (no last_opened) must not emit the key
-        // on re-save: the if-let guard in to_json is what prevents the key from
-        // appearing (the field's skip_serializing_if applies only to the derived
-        // Serialize path, which to_json bypasses).
+        // on re-save: `skip_serializing_if = "Option::is_none"` on the derived
+        // LibraryDocument path (the single serialization path) omits it.
         let stored = r#"{"version":1,"books":[{"path":"/manga/a.cbz","title":"a","last_page":42,"page_count":100}]}"#;
         let lib = Library::from_json(stored).unwrap();
         let value: serde_json::Value = serde_json::from_str(&lib.to_json().unwrap()).unwrap();
         assert!(
             value.get("last_opened").is_none(),
             "last_opened must be absent when None"
+        );
+    }
+
+    #[test]
+    fn to_json_omits_last_opened_when_none_emits_when_some() {
+        // Pin the single serialization path: `last_opened` is omitted when None
+        // and present with the exact stored path when Some.
+        let none_value: serde_json::Value =
+            serde_json::from_str(&Library::new().to_json().unwrap()).unwrap();
+        assert!(
+            none_value.get("last_opened").is_none(),
+            "last_opened must be absent when None"
+        );
+
+        let book = PathBuf::from("/manga/a.cbz");
+        let mut lib = Library::new();
+        lib.register_opened(&book, None);
+        let some_value: serde_json::Value = serde_json::from_str(&lib.to_json().unwrap()).unwrap();
+        assert_eq!(
+            some_value.get("last_opened").and_then(|v| v.as_str()),
+            Some("/manga/a.cbz"),
+            "last_opened must be emitted with the stored path when Some"
         );
     }
 
