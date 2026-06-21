@@ -23,8 +23,9 @@ mod viewport;
 
 pub(crate) use add_books::apply_outcomes;
 pub(crate) use carousel_refresh::{
-    apply_add_report, clamp_focused_index, push_selection_strings, refresh_library_carousel,
-    snap_carousel_focus_to_last_opened, visible_index_to_path, CarouselRefresh,
+    apply_add_report, clamp_focused_index, finalize_empty_book_removed, push_selection_strings,
+    refresh_library_carousel, snap_carousel_focus_to_last_opened, visible_index_to_path,
+    CarouselRefresh,
 };
 use gashuu_core::{CoreError, DecodedImage, Library, ReadingDirection, Settings};
 use library_model::{LibrarySearchState, LibrarySelectionState};
@@ -547,24 +548,18 @@ fn finalize_open(
             pages.set_source();
             // The source opened cleanly but has zero pages: the use case already
             // removed it from the library (if present) and re-saved. This arm does
-            // NOT switch screens — the open-folder/archive sites only switch on a
-            // user gesture, and the carousel-open/bookmark sites skip their
-            // `go_to_viewer` for this variant (see the `enter_viewer` guard there),
-            // so the user is left on a refreshed Library. Rebuild the carousel
-            // through the shared chokepoint so the removed book disappears and the
-            // cover-epoch bump drops any in-flight cover for it; the active search
-            // filter is preserved by the chokepoint. Do NOT reset focus.
-            refresh_library_carousel(ui, deps, false);
-            if removed {
-                // `removed == true` means THIS path performed the removal, so it
-                // owns the notice. A concurrent path that already removed+notified
-                // yields `removed == false` (idempotent) and stays silent below.
-                let status = empty_book_removed_status(loader, &title, save_error.as_deref());
-                ui.set_status_text(status.into());
-            }
-            // `removed == false`: another path already removed+notified this book
-            // (race idempotency), so add no notice — but the carousel rebuild
-            // above still ran, keeping this screen consistent.
+            // NOT switch screens (see the `enter_viewer` guard at the carousel/
+            // bookmark sites); the shared finalize rebuilds the carousel and shows
+            // the notice when this path owns the removal.
+            finalize_empty_book_removed(
+                ui,
+                deps,
+                &crate::open_book::EmptyBookRemoval {
+                    title,
+                    removed,
+                    save_error,
+                },
+            );
         }
     }
 }
