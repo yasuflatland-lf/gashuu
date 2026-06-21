@@ -146,6 +146,9 @@ carousel-empty-cta-files = Select files to add
 carousel-no-results-title = No matching books
 carousel-no-results-hint = Try a different search.
 
+# Drop-zone overlay shown while a file/folder drag hovers the Library screen.
+drag-drop-hint = Drop here to add
+
 # Cover load-failure label, shown only on the centered card (issue 144 follow-up).
 cover-failed-label = Can't open
 
