@@ -23,18 +23,45 @@ pub struct Book {
     title: String,
     #[serde(default)]
     last_page: usize,
-    /// Total page count, cached at open time. The storage type stays `usize` for
-    /// a byte-compatible serde shape; a stored `0` is the unknown encoding (set
-    /// for a freshly added book and for any older `library.json` missing the
-    /// field) and is surfaced as `None` via [`Book::page_count_opt`].
-    #[serde(default)]
-    page_count: usize,
+    /// Total page count, cached at open time. The unknown state is expressed in
+    /// the type as `None` (rather than a magic `0`): the domain only ever holds a
+    /// positive count, so an absent measurement is `None`, never `Some(0)`. The
+    /// on-disk shape stays a bare `usize` for byte-compatibility — `0` encodes
+    /// `None` and any positive count encodes `Some(n)` — via [`page_count_serde`].
+    #[serde(default, with = "page_count_serde")]
+    page_count: Option<NonZeroUsize>,
     /// Per-book view preference overrides. `None` fields inherit the global
     /// `Settings`. `skip_serializing_if` keeps an all-None override out of the
     /// JSON entirely, so a book with no overrides serializes byte-identically to
     /// the pre-feature shape (and `#[serde(default)]` loads old files as empty).
     #[serde(default, skip_serializing_if = "ViewOverride::is_empty")]
     overrides: ViewOverride,
+}
+
+/// Serde shim for [`Book::page_count`]: the in-memory `Option<NonZeroUsize>` is
+/// persisted as a bare `usize` (the historical on-disk shape), with `0` standing
+/// for the unknown state (`None`) and any positive `n` for `Some(n)`. This keeps
+/// `library.json` byte-compatible while the domain type forbids the out-of-band
+/// `0`. `None` is always emitted (as `0`), never skipped, so the object keeps its
+/// fixed key set.
+mod page_count_serde {
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+    use std::num::NonZeroUsize;
+
+    pub(super) fn serialize<S: Serializer>(
+        value: &Option<NonZeroUsize>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        value
+            .map_or(0usize, NonZeroUsize::get)
+            .serialize(serializer)
+    }
+
+    pub(super) fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Option<NonZeroUsize>, D::Error> {
+        Ok(NonZeroUsize::new(usize::deserialize(deserializer)?))
+    }
 }
 
 /// Derive a book's display title from its path. For a folder the title is the
@@ -66,7 +93,7 @@ impl Book {
             path,
             title,
             last_page: 0,
-            page_count: 0,
+            page_count: None,
             overrides: ViewOverride::none(),
         }
     }
@@ -86,12 +113,11 @@ impl Book {
         self.last_page
     }
 
-    /// Total page count cached at open time, or `None` when unknown. The stored
-    /// field encodes "unknown" as `0`; this accessor maps that `0` to `None` (and
-    /// any positive count to `Some(n)`) via `NonZeroUsize`, so callers never see
-    /// the raw sentinel.
+    /// Total page count cached at open time, or `None` when unknown. The field is
+    /// already `Option<NonZeroUsize>`; this accessor just unwraps the inner count
+    /// to a plain `usize` for callers that don't need the non-zero guarantee.
     pub fn page_count_opt(&self) -> Option<usize> {
-        NonZeroUsize::new(self.page_count).map(NonZeroUsize::get)
+        self.page_count.map(NonZeroUsize::get)
     }
 
     /// This book's reading progress as a value object: the last-viewed leading
@@ -361,8 +387,8 @@ impl Library {
     /// is now a type fact carried by the parameter, so no runtime guard is needed.
     pub fn set_page_count(&mut self, path: &Path, count: NonZeroUsize) -> bool {
         match self.books.iter_mut().find(|b| b.path() == path) {
-            Some(book) if book.page_count != count.get() => {
-                book.page_count = count.get();
+            Some(book) if book.page_count != Some(count) => {
+                book.page_count = Some(count);
                 true
             }
             _ => false,

@@ -147,6 +147,22 @@ mod tests {
     }
 
     #[test]
+    fn to_json_emits_positive_page_count_as_bare_integer() {
+        // Pins the `Some(n)` direction of the `Option<NonZeroUsize>` serde shim:
+        // a known count must serialize as the bare integer `n` (not an object or
+        // a tagged enum), keeping the on-disk shape byte-compatible. The `None`
+        // direction (emitted as `0`) is pinned by `to_json_emits_version_and_books`.
+        let mut lib = Library::new();
+        let book = PathBuf::from("/manga/a.cbz");
+        assert!(lib.add(book.clone()).is_some());
+        assert!(lib.set_page_count(&book, NonZeroUsize::new(123).unwrap()));
+
+        let value: serde_json::Value = serde_json::from_str(&lib.to_json().unwrap()).unwrap();
+
+        assert_eq!(value["books"][0]["page_count"].as_u64(), Some(123));
+    }
+
+    #[test]
     fn from_json_empty_object_yields_empty_library() {
         let lib = Library::from_json("{}").unwrap();
 
