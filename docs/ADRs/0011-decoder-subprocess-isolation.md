@@ -156,7 +156,7 @@ and returns `CoreError::Timeout` or `CoreError::WorkerCrash` to the caller.
 
 | Phase | Description | Prerequisite |
 |---|---|---|
-| 1 (done) | Safe Mode (`allow_rar_archives = false`) disables RAR at open and import time; cover-loader gap documented (issue #175). | issue #175 merged |
+| 1 (done) | Safe Mode (`allow_rar_archives`) toggle disables RAR at open and import time; cover-loader gap documented (issue #175). **Default reversed to `true` on 2026-06-21 (see "Amendment" below)** — the toggle remains as an opt-out, but RAR/CBR now opens out of the box; the native-decoder risk above is accepted by default until this roadmap's later phases land. | issue #175 merged |
 | 2 | Add `gashuu-decode-worker` binary crate and the IPC protocol behind a hidden/dev setting (`use_decode_worker = false` by default). Route RAR through the worker when enabled. All gates green; no behavior change at default settings. | — |
 | 3 | Route AVIF through the worker in the same binary. Extend the IPC protocol to handle AVIF's lack of a cheap pre-decode dimension check. | Phase 2 stable |
 | 4 | Enable `use_decode_worker = true` by default. Keep direct in-process decode as a fallback (toggled by the setting) for at least one release cycle to allow regression reports. Remove the fallback once the worker path is stable across platforms. | Phase 3 stable + one release |
@@ -193,3 +193,42 @@ This ADR does not:
   toggle already shipped in issue #175.
 - Define the exact wire format (MessagePack vs CBOR) — that is deferred to the phase 2
   implementation PR.
+
+## Amendment 2026-06-21: RAR/CBR enabled by default
+
+Phase 1's `allow_rar_archives = false` default is reversed: the setting now defaults to `true`.
+The toggle itself is unchanged and remains an **opt-out**; only the default flips.
+
+**Why.** CBR/RAR is a primary manga distribution format, `RarSource` has extracted it in-process
+since issue #22, and the product already advertises support for it (`site/index.html` lists
+"CBZ/ZIP/CBR/RAR"). Yet Safe Mode left the format unreachable out of the box — a supported,
+advertised format silently returning `CoreError::FormatDisabled` until the user found a hidden
+toggle. For a local-only viewer where the user explicitly picks the files to open, that friction
+outweighs the marginal protection of a default-off toggle that any motivated user disables anyway.
+The durable mitigation for the native-decoder risk is the subprocess isolation in this ADR's phases
+2–4, not a default that hides a working feature.
+
+**What changed (settings only — extraction, `ArchivePolicy`, the toggle UI, and the error types are
+untouched).**
+
+- `Settings::default()` returns `allow_rar_archives: true`, and the field uses
+  `#[serde(default = "default_allow_rar")]` (a named function returning `true`) instead of the bare
+  `#[serde(default)]`, which would resolve a missing field to `bool::default()` (`false`). This
+  mirrors the existing `default_cache_size` / `default_preload_pages` pattern so both fresh installs
+  AND settings files written before the field existed adopt the new default.
+- **A user's explicit `false` is preserved**: once a settings file records `allow_rar_archives:
+  false` it round-trips unchanged (covered by a new `allow_rar_archives_explicit_false_round_trips`
+  test). In practice the new default reaches fresh installs and pre-field files; an existing install
+  that has ever saved settings already baked in the then-current `false` and keeps RAR disabled until
+  the user toggles it on.
+
+**Risk accepted.** The native-decoder attack surface analyzed above is now exposed by default. A
+crafted RAR can still trigger unbounded allocation, an infinite loop, or a native crash in libunrar
+before the application-level guards fire. This is a deliberate, documented acceptance for a local
+viewer; phases 2–4 remain the path to removing it.
+
+**Cover-loader gap, unchanged but lower-impact.** The `cover_loader.rs` `TODO(#175-followup)` still
+uses the policy-less `ArchiveLoader::open` (effectively `allow_rar: true`). With the default now
+`true` that matches the default policy, so the inconsistency only persists for a user who has
+explicitly opted OUT (their already-added RAR books' covers still load). Closing it stays a
+follow-up.

@@ -161,10 +161,11 @@ pub struct Settings {
     /// before this field existed load as `Language::En` (English).
     #[serde(default)]
     pub language: Language,
-    /// When `false` (the default), RAR/CBR archives are rejected at open time.
-    /// Set to `true` to enable RAR/CBR support. `#[serde(default)]` ensures
-    /// existing settings files load as `false`.
-    #[serde(default)]
+    /// When `true` (the default), RAR/CBR archives are opened directly; set to
+    /// `false` to reject them at open time. `#[serde(default = "default_allow_rar")]`
+    /// ensures both fresh installs and settings files written before this field
+    /// existed load as `true`, while a user's explicit `false` is preserved.
+    #[serde(default = "default_allow_rar")]
     pub allow_rar_archives: bool,
 }
 
@@ -176,6 +177,9 @@ fn default_cache_size() -> usize {
 }
 fn default_preload_pages() -> usize {
     DEFAULT_PREFETCH_RADIUS
+}
+fn default_allow_rar() -> bool {
+    true
 }
 
 impl Default for Settings {
@@ -193,7 +197,7 @@ impl Default for Settings {
             recent_files: Vec::new(),
             seen_guide: false,
             language: Language::default(),
-            allow_rar_archives: false,
+            allow_rar_archives: true,
         }
     }
 }
@@ -348,8 +352,8 @@ mod tests {
         assert!(!s.track_recent_files);
         assert!(s.recent_files.is_empty());
         assert!(
-            !s.allow_rar_archives,
-            "allow_rar_archives must default to false"
+            s.allow_rar_archives,
+            "allow_rar_archives must default to true"
         );
         assert_eq!(s.language, Language::En);
     }
@@ -374,7 +378,9 @@ mod tests {
             recent_files: vec![PathBuf::from("/a"), PathBuf::from("/b")],
             seen_guide: true,
             language: Language::Ja,
-            allow_rar_archives: true,
+            // Differs from the new default (`true`) so the round-trip tests below
+            // would catch save/load dropping this field.
+            allow_rar_archives: false,
         }
     }
 
@@ -876,12 +882,14 @@ mod tests {
     }
 
     #[test]
-    fn allow_rar_archives_missing_field_loads_as_false() {
+    fn allow_rar_archives_missing_field_loads_as_true() {
+        // A settings file written before this field existed must adopt the new
+        // default (`true`) via `default_allow_rar`, not serde's bare `bool::default()`.
         let json = serde_json::json!({"version": SETTINGS_VERSION}).to_string();
         let s = Settings::from_json(&json).unwrap();
         assert!(
-            !s.allow_rar_archives,
-            "missing allow_rar_archives must load as false"
+            s.allow_rar_archives,
+            "missing allow_rar_archives must load as true (new default)"
         );
     }
 
@@ -897,5 +905,21 @@ mod tests {
         let json2 = s.to_json().unwrap();
         let s2 = Settings::from_json(&json2).unwrap();
         assert!(s2.allow_rar_archives);
+    }
+
+    #[test]
+    fn allow_rar_archives_explicit_false_round_trips() {
+        // Now that the default is `true`, a user's explicit opt-out (`false`) must
+        // survive load/save rather than being re-defaulted back to `true`.
+        let json = serde_json::json!({
+            "version": SETTINGS_VERSION,
+            "allow_rar_archives": false,
+        })
+        .to_string();
+        let s = Settings::from_json(&json).unwrap();
+        assert!(!s.allow_rar_archives);
+        let json2 = s.to_json().unwrap();
+        let s2 = Settings::from_json(&json2).unwrap();
+        assert!(!s2.allow_rar_archives);
     }
 }
