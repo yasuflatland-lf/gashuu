@@ -112,7 +112,7 @@ shortcuts-help =
       T = toggle thumbnail strip
 
     Library:
-      Up = return to the library
+      Up / Esc = return to the library
 
     Selection:
       x = enter selection mode    Space = toggle focused

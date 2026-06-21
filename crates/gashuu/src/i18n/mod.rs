@@ -512,7 +512,7 @@ View:
   T = toggle thumbnail strip
 
 Library:
-  Up = return to the library
+  Up / Esc = return to the library
 
 Selection:
   x = enter selection mode    Space = toggle focused
@@ -536,7 +536,7 @@ Selection:
   T = サムネイル一覧の表示切替
 
 ライブラリ:
-  Up = ライブラリに戻る
+  Up / Esc = ライブラリに戻る
 
 選択:
   x = 選択モードへ    Space = 選択を切替

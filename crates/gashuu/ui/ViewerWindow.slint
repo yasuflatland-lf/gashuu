@@ -476,6 +476,14 @@ export component ViewerWindow inherits Window {
                         root.nav("up");
                         return accept;
                     }
+                    // Escape returns to the Library, mirroring Up. The modal guard
+                    // above already rejected this key when an overlay is open, so
+                    // Esc closes the topmost modal first and only leaves the Viewer
+                    // when none is open.
+                    if (event.text == Key.Escape) {
+                        root.nav("escape");
+                        return accept;
+                    }
                     if (event.text == Key.Space) {
                         root.nav("space");
                         return accept;
