@@ -10,6 +10,7 @@ import { Scrubber } from "Scrubber.slint";
 import { ViewerPill } from "components/ViewerPill.slint";
 import { Strings } from "Strings.slint";
 import { ConfirmDialog } from "components/ConfirmDialog.slint";
+import { DropZone } from "components/DropZone.slint";
 
 // Re-export so Rust gets the `ui.global::<Strings>()` accessor — Slint only
 // generates global accessors for globals exported from the build entry point.
@@ -33,6 +34,10 @@ export component ViewerWindow inherits Window {
     // Top-level screen: 0 = Library (Carousel), 1 = Viewer. Pushed by main.rs
     // from NavState; app boots to Library (0).
     in property <int> screen: 0;
+    // True while an OS file/folder drag hovers the window (set by
+    // handlers/drag_drop.rs from raw winit hover events). Gates the drop-zone
+    // overlay below; only meaningful on the Library screen.
+    in property <bool> drag-active: false;
     // Carousel model + focus index (filled by PR-C; empty shell for now).
     in property <[CarouselItem]> carousel-items;
     in-out property <int> carousel-focused-index;
@@ -430,6 +435,17 @@ export component ViewerWindow inherits Window {
                 overflow: elide;
             }
         }
+    }
+
+    // ── Drag-and-drop drop zone ───────────────────────────────────────────────
+    // Full-window solid-frame affordance shown while an OS file/folder drag
+    // hovers the Library screen (`drag-active` is toggled by handlers/drag_drop.rs
+    // from raw winit hover events). Gated to the Library screen so a drag over the
+    // Viewer shows nothing. The component is purely visual (no TouchArea) — the
+    // actual add happens in Rust when the OS delivers the drop. See DropZone.slint.
+    if root.drag-active && root.screen == 0: DropZone {
+        width: root.width;
+        height: root.height;
     }
 
     // ── Viewer screen (existing content) ───────────────────────────────────────

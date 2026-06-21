@@ -201,6 +201,7 @@ impl Localizer {
         strings.set_carousel_empty_cta_files(fl!(self.loader, "carousel-empty-cta-files").into());
         strings.set_carousel_no_results_title(fl!(self.loader, "carousel-no-results-title").into());
         strings.set_carousel_no_results_hint(fl!(self.loader, "carousel-no-results-hint").into());
+        strings.set_drag_drop_hint(fl!(self.loader, "drag-drop-hint").into());
         strings.set_cover_failed_label(fl!(self.loader, "cover-failed-label").into());
         strings.set_navbar_search_placeholder(fl!(self.loader, "navbar-search-placeholder").into());
         strings.set_navbar_search_a11y(fl!(self.loader, "navbar-search-a11y").into());

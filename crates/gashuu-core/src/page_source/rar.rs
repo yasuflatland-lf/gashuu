@@ -17,7 +17,7 @@
 //! The external `unrar` crate is referenced as `::unrar::` throughout for
 //! clarity even though the local module name (`rar`) does not collide with it.
 
-use super::naming::{enclosed_name, has_image_ext, MAX_ENTRY_BYTES};
+use super::naming::{enclosed_name, has_image_ext, is_macos_metadata, MAX_ENTRY_BYTES};
 use super::{PageEntry, PageSource};
 use crate::error::CoreError;
 use crate::ordering::natural_cmp;
@@ -94,6 +94,15 @@ impl RarSource {
             // pages in a folder, unlike FolderSource's max_depth(1)).
             if !has_image_ext(&safe) {
                 continue; // non-images are expected, not skips
+            }
+            // macOS resource forks (`__MACOSX/.../._x.jpg`) and dotfiles carry
+            // image extensions and sort ahead of real pages via case-insensitive
+            // ordering, so they can masquerade as page 0. Treat them as expected
+            // noise like directories — drop without counting as a skip. Mirrors
+            // the identical filter in `ZipSource` so the page-membership rule is
+            // shared across both archive sources.
+            if is_macos_metadata(&safe) {
+                continue;
             }
             if header.unpacked_size > max {
                 skipped += 1;
@@ -201,7 +210,8 @@ impl PageSource for RarSource {
 mod tests {
     use super::*;
     use crate::test_fixtures::{
-        write_cbr, CORRUPT_TRAILING_CBR_B64, HOSTILE_CBR_B64, SAMPLE_CBR_B64,
+        write_cbr, CORRUPT_TRAILING_CBR_B64, HOSTILE_CBR_B64, MACOS_METADATA_CBR_B64,
+        SAMPLE_CBR_B64,
     };
     use std::io::Write;
 
@@ -255,6 +265,34 @@ mod tests {
                 "page {i} must decode to a {w}x{h} image"
             );
         }
+    }
+
+    /// macOS metadata inside a RAR is never enumerated as a page. The
+    /// AppleDouble resource fork (`__MACOSX/Manga/._001.jpg`) carries a `.jpg`
+    /// name and sorts AHEAD of the real pages via case-insensitive natural
+    /// ordering, so without the filter it would become an undecodable page 0.
+    /// Mirrors `ZipSource::macos_metadata_entries_are_excluded_without_counting`.
+    #[test]
+    fn macos_metadata_entries_are_excluded_without_counting() {
+        let cbr = write_cbr(MACOS_METADATA_CBR_B64);
+        let src = RarSource::open(cbr.path()).unwrap();
+
+        let listed = names(&src);
+        // (a) the metadata entry is entirely absent from the page list.
+        assert!(!listed.iter().any(|n| n.contains("__MACOSX")));
+        assert!(!listed.iter().any(|n| n.contains("._")));
+        // Only the real images survive, in natural order.
+        assert_eq!(
+            listed,
+            vec!["Manga/001.jpg".to_string(), "Manga/002.jpg".to_string()]
+        );
+        // (b) page 0 is the real first page, not the resource fork.
+        assert_eq!(listed[0], "Manga/001.jpg");
+        // The surviving page still decodes.
+        let decoded = crate::image_ops::decode(&src.read_bytes(0).unwrap()).unwrap();
+        assert_eq!((decoded.width(), decoded.height()), (2, 2));
+        // (c) metadata is expected noise, not a skip.
+        assert_eq!(src.skipped_count(), 0);
     }
 
     /// zip-slip via `RarSource`: the two `..` traversal entries are excluded from

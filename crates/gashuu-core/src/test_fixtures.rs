@@ -44,6 +44,15 @@ pub(crate) const HOSTILE_CBR_B64: &str = "UmFyIRoHAM+QcwAADQAAAAAAAACrzHQAgCUASQ
 /// `read_bytes(0)` still decodes the good 2x2 page.
 pub(crate) const CORRUPT_TRAILING_CBR_B64: &str = "UmFyIRoHAM+QcwAADQAAAAAAAACrzHQAgCUASQAAAEkAAAADhbZecAAAoU4UMAUAIAAAADEucG5niVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAAEElEQVR42mP4z8AARAwQCgAf7gP9Y167WwAAAABJRU5ErkJggu++dAAABwA=";
 
+/// Fixture D (338 bytes): a macOS-metadata noise entry whose name carries an
+/// image extension and (under case-insensitive natural ordering) sorts AHEAD of
+/// the real pages, plus two real images. Physical order is
+/// `__MACOSX/Manga/._001.jpg` (AppleDouble resource fork, NOT an image — must be
+/// dropped without counting as a skip), `Manga/001.jpg`(2x2), `Manga/002.jpg`(2x2).
+/// Through `RarSource`: pages == `["Manga/001.jpg", "Manga/002.jpg"]`,
+/// `skipped_count() == 0`, and page 0 is the real first page, not the resource fork.
+pub(crate) const MACOS_METADATA_CBR_B64: &str = "UmFyIRoHAM+QcwAADQAAAAAAAAA2MXQAgDgAEQAAABEAAAADzfqQj6vC0HMUMBgAIAAAAF9fTUFDT1NYL01hbmdhLy5fMDAxLmpwZ0FwcGxlRG91YmxlIG5vaXNlVJd0AIAtAEoAAABKAAAAA4E2aZ+rwtBzFDANACAAAABNYW5nYS8wMDEuanBniVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAEUlEQVR42mPgEpH7D8IMMAYAJowE7d8n2J0AAAAASUVORK5CYIKE7XQAgC0ASgAAAEoAAAADgTZpn6vC0HMUMA0AIAAAAE1hbmdhLzAwMi5qcGeJUE5HDQoaCgAAAA1JSERSAAAAAgAAAAIIBgAAAHK2DSQAAAARSURBVHjaY+ASkfsPwgwwBgAmjATt3yfYnQAAAABJRU5ErkJgggSwewAABwA=";
+
 /// Base64-decode `b64` and write the bytes to a `.cbr` tempfile. The returned
 /// `NamedTempFile` is kept alive by the caller so the path stays valid.
 pub(crate) fn write_cbr(b64: &str) -> NamedTempFile {

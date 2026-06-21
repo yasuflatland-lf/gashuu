@@ -44,6 +44,10 @@ source per arch (meson/ninja/nasm) and lipo-merges one fat `libdav1d.a`; Windows
 static triplet. Both release jobs assert the result (`otool -L` / `dumpbin /dependents` show no
 dav1d dynamic reference). CI test jobs may link dynamically (brew/apt) — nothing ships from CI.
 
+### slint pinned to `=1.16.1` for the `unstable-winit-030` feature (drag-and-drop)
+
+**`slint` and `slint-build` are pinned to an EXACT version (`=1.16.1`), not `1`, because the UI crate enables the `unstable-winit-030` feature.** Slint has no stable file-drop API, so OS file/folder drag-and-drop (`handlers/drag_drop.rs`) reaches the winit backend's raw `WindowEvent` filter (`slint::winit_030::WinitWindowAccessor::on_winit_window_event`) to receive `HoveredFile`/`DroppedFile`. That module is gated behind `unstable-winit-030` and is documented as "may be removed or changed in future minor releases", so a slint minor bump must be a deliberate, tested step rather than an automatic `cargo update`. The two versions MUST stay in lockstep (the proc-macro and the runtime are one release). To upgrade slint: bump both pins together, re-verify drag-and-drop builds and the `winit_030` API still resolves, then run the three gates.
+
 ### Thumbnail strip added no new dependencies
 
 **The thumbnail strip added NO new dependencies** — it reuses the existing `image` (`DynamicImage::thumbnail`) and `rayon` (already a direct dep). Contrast the `unrar` C++-toolchain exception above: the thumbnail strip is dependency-free and adds no build cost.

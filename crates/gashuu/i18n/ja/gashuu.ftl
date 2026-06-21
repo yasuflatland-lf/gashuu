@@ -149,6 +149,9 @@ carousel-empty-cta-files = 追加するファイルを選択
 carousel-no-results-title = 一致する本がありません
 carousel-no-results-hint = 別のキーワードで検索してください。
 
+# Drop-zone overlay shown while a file/folder drag hovers the Library screen.
+drag-drop-hint = ここにドロップして追加
+
 # Cover load-failure label, shown only on the centered card (issue 144 follow-up).
 cover-failed-label = 開けません
 

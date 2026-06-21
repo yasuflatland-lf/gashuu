@@ -1,0 +1,65 @@
+import { Theme } from "../Theme.slint";
+import { Strings } from "../Strings.slint";
+
+// Full-window drop-zone affordance, shown while an OS file/folder drag hovers the
+// Library screen (driven by ViewerWindow's `drag-active`, set from raw winit hover
+// events in handlers/drag_drop.rs).
+//
+// A solid near-white frame is inset from every window edge, with an icon + hint
+// centered on one horizontal line inside it. Purely visual: holds NO TouchArea,
+// so it never grabs pointer events from the carousel beneath and the OS
+// drag/drop continues uninterrupted. All translucency is the baked alpha of
+// `drop-scrim` — there is deliberately NO `opacity:` anywhere (it would blur the
+// SVG/text on HiDPI and fade the message).
+export component DropZone inherits Rectangle {
+    // Recede the library to ~30% visible so the frame reads as foreground (the
+    // translucency is the drop-scrim alpha, not an opacity layer).
+    background: Theme.drop-scrim;
+
+    // Solid frame, inset from every window edge. A Rectangle border is a solid
+    // line, so the frame is a single transparent-filled Rectangle (no dash tiling).
+    Rectangle {
+        x: Theme.drop-frame-inset;
+        y: Theme.drop-frame-inset;
+        width: root.width - 2 * Theme.drop-frame-inset;
+        height: root.height - 2 * Theme.drop-frame-inset;
+        background: transparent;
+        border-color: Theme.drop-frame-line;
+        border-width: Theme.drop-frame-width;
+        border-radius: Theme.radius-lg;
+    }
+
+    // Centered message: icon + hint on the SAME horizontal line. The outer
+    // VerticalLayout fills the window and centers the row vertically; the inner
+    // HorizontalLayout centers the icon+text group horizontally. `no-wrap` keeps
+    // the short string on one line at its natural width (no per-glyph collapse).
+    VerticalLayout {
+        width: 100%;
+        height: 100%;
+        alignment: center;
+
+        HorizontalLayout {
+            alignment: center;
+            spacing: Theme.space-md;
+
+            Image {
+                source: @image-url("../assets/plus.svg");
+                colorize: Theme.drop-frame-line;
+                width: Theme.nav-icon * 2;
+                height: Theme.nav-icon * 2;
+                vertical-alignment: center;
+            }
+
+            Text {
+                text: Strings.drag-drop-hint;
+                color: Theme.drop-frame-line;
+                font-size: Theme.font-title;
+                font-weight: Theme.weight-bold;
+                vertical-alignment: center;
+                wrap: no-wrap;
+                accessible-role: text;
+                accessible-label: Strings.drag-drop-hint;
+            }
+        }
+    }
+}
