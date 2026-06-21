@@ -108,6 +108,11 @@ export component ViewerWindow inherits Window {
     in property <string> status-text: "No folder opened";
     // Idle value of the bottom strip — total library size, composed/pushed from Rust.
     in property <string> library-count-text;
+    // Attention-grabbing add notice — skips / failures only. Rust sets this (and
+    // clears `status-text` so the quiet strip falls back to the idle count, no
+    // duplicate text); the toast below shows it and auto-dismisses. In-out so the
+    // auto-dismiss Timer can clear it back to "" from Slint.
+    in-out property <string> add-toast-text;
     // Book display name (set by handlers/library.rs on a successful open, cleared to "" when
     // nothing is open). Declared on the root because Rust binds only to the root
     // surface; consumed by the floating title label Rectangle in the viewer stage.
@@ -355,8 +360,10 @@ export component ViewerWindow inherits Window {
     // as the Viewer toolbar; visible only on the Library screen (screen == 0).
     // Positioned as a bottom strip so it does not overlap the carousel toolbar.
     // Transient notices always take precedence; the count is the strip's idle state.
+    // Mutually exclusive with the error toast below: while a toast is up the strip
+    // hides, so the bottom-center shows exactly one message at a time.
     Text {
-        visible: root.screen == 0;
+        visible: root.screen == 0 && root.add-toast-text == "";
         x: 0;
         y: root.height - self.preferred-height - Theme.space-md;
         width: root.width;
@@ -364,6 +371,65 @@ export component ViewerWindow inherits Window {
         color: Theme.text-muted;
         font-size: Theme.font-micro;
         horizontal-alignment: center;
+    }
+
+    // ── Library add-error toast (severity-scaled notice) ─────────────────────
+    // Raised ONLY for add skips / failures (none-added-all-skipped, added-with-
+    // skips, save-failed); plain success + the idle count stay on the quiet strip
+    // above. While this toast is up the strip hides (mutual exclusion) so the two
+    // never overlap. The bound Timer auto-dismisses it a few seconds after Rust
+    // sets the text — the user is never blocked — and the strip then returns.
+    Timer {
+        interval: 6s;
+        running: root.screen == 0 && root.add-toast-text != "";
+        triggered => { root.add-toast-text = ""; }
+    }
+    if root.screen == 0 && root.add-toast-text != "": Rectangle {
+        x: (root.width - self.width) / 2;
+        y: root.height - self.height - Theme.space-xl;
+        width: min(toast-row.preferred-width, root.width - 2 * Theme.space-xxl);
+        height: toast-row.preferred-height;
+        background: Theme.glass-fill;
+        border-color: Theme.error;
+        border-width: 1px;
+        border-radius: Theme.radius-lg;
+        clip: true;
+        drop-shadow-color: Theme.shadow-popover;
+        drop-shadow-blur: Theme.space-md;
+        drop-shadow-offset-y: Theme.space-xxs;
+
+        // Left severity accent bar (clipped to the rounded corners by `clip`).
+        Rectangle {
+            x: 0;
+            width: 3px;
+            height: parent.height;
+            background: Theme.error;
+        }
+
+        toast-row := HorizontalLayout {
+            padding-left: Theme.space-md;
+            padding-right: Theme.space-md;
+            padding-top: Theme.space-sm;
+            padding-bottom: Theme.space-sm;
+            spacing: Theme.space-sm;
+
+            Image {
+                source: @image-url("assets/warning.svg");
+                colorize: Theme.error;
+                width: Theme.font-body;
+                height: Theme.font-body;
+                vertical-alignment: center;
+            }
+            Text {
+                text: root.add-toast-text;
+                color: Theme.text-high;
+                font-size: Theme.font-micro;
+                vertical-alignment: center;
+                horizontal-alignment: center;
+                wrap: no-wrap;
+                overflow: elide;
+            }
+        }
     }
 
     // ── Viewer screen (existing content) ───────────────────────────────────────
