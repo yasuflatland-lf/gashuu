@@ -850,7 +850,8 @@ screen` gates the Library `Carousel` (screen 0) vs the Viewer body (screen 1) vi
 reason); Settings/Guide overlays remain viewer-scoped. It mounts the
 `Scrubber` as auto-hiding chrome inside the screen-1 viewer,
 driven by a `chrome-shown` bool + an idle `Timer`; chrome is revealed on pointer-move (via
-`PageView.reveal()`), arrow-key presses, and scrubber drag. #71 mounted the shared `TitleBar`
+`PageView.reveal()`) and scrubber drag — NOT on page turns (arrows / Space / Backspace / tap /
+swipe stay quiet so the chrome doesn't flash on every turn). #71 mounted the shared `TitleBar`
 component (bound to a new `current-book-name` in-prop — derived by `view_sync.rs`'s
 `current_book_name` from the post-open `ViewerState::open_file()`, see [patterns.md](patterns.md)),
 and set a `min-width`/`min-height` floor on the window. `feat/library-chrome-polish` added

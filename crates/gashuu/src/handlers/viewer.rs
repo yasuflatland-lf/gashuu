@@ -414,8 +414,12 @@ pub(crate) fn wire_nav_handlers(
                             moved,
                             "page turn"
                         );
-                        // Reveal the auto-hiding chrome on a page-turn key (spec §5).
-                        ui.invoke_reveal_chrome_now();
+                        // Page turns deliberately do NOT reveal the auto-hiding
+                        // chrome: turning pages (arrows / Space / Backspace / tap /
+                        // swipe — all route here through `nav`) should stay quiet so
+                        // the menu and scrubber don't flash on every turn. The chrome
+                        // still reveals on pointer movement (`reveal-chrome-from-pointer`)
+                        // and during scrubber drags (`on_scrub_preview`).
                     }
                     // Runtime state is the single source of truth for these modes;
                     // `persist_view_modes` routes them into `Settings` or the
