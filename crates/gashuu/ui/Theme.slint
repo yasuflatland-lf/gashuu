@@ -224,4 +224,18 @@ export global Theme {
     // nav-search-width. Referenced twice (the field's own width AND the pill's
     // token-summed width) so it lives here to keep the two in lockstep.
     out property <length> viewer-jump-field-width: 142px; // holds a 4-digit page + "/ total" without clipping
+
+    // ── Layout helper: pixel-snapping ─────────────────────────────────────────
+    // Round a length to whole LOGICAL pixels. Manual `(parent.* - self.*) / 2`
+    // centering can place an element's origin on a fractional pixel; on a 1x
+    // (standard-DPI) display that fractional logical value IS a fractional
+    // PHYSICAL pixel, so the element's text/SVG is sampled off the pixel grid and
+    // looks soft. On a 2x Retina display a whole-logical value lands on a whole
+    // physical pixel either way, so snapping is a no-op there. Apply only at the
+    // STATIC centering of chrome panels/icons — never on an animated position
+    // (snapping would make it jump between integer pixels). Fractional scale
+    // factors (e.g. 1.5x) are not perfectly snapped; the common 1.0/2.0 are.
+    pure public function snap(v: length) -> length {
+        return Math.round(v / 1px) * 1px;
+    }
 }

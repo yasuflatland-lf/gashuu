@@ -140,8 +140,8 @@ export component SettingsDialog inherits Rectangle {
         height: min(
             Theme.space-lg + header-row.preferred-height + content.preferred-height + footer-block.height,
             max(0px, parent.height - 2 * Theme.space-huge));
-        x: (parent.width - self.width) / 2;
-        y: (parent.height - self.height) / 2;
+        x: Theme.snap((parent.width - self.width) / 2);
+        y: Theme.snap((parent.height - self.height) / 2);
 
         // Glass layers 1, 2, 4: a top-sheen FILL gradient (not opacity), a 1px
         // soft rim, and ONE drop shadow. No nested glass / no second shadow.

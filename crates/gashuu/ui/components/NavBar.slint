@@ -65,7 +65,7 @@ component SearchField inherits Rectangle {
         width: Theme.nav-search-icon;
         height: Theme.nav-search-icon;
         x: Theme.nav-search-pad-x;
-        y: (parent.height - self.height) / 2;
+        y: Theme.snap((parent.height - self.height) / 2);
         image-fit: contain;
         colorize: Theme.text-mid;
     }
