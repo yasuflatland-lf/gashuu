@@ -1,8 +1,8 @@
-use super::naming::{has_image_ext, is_macos_metadata, MAX_ENTRY_BYTES};
+use super::naming::{cap_or_reject, has_image_ext, is_macos_metadata, MAX_ENTRY_BYTES};
 use super::{PageEntry, PageSource};
 use crate::error::CoreError;
 use crate::ordering::natural_cmp;
-use std::io::{BufReader, Read};
+use std::io::BufReader;
 use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
 
@@ -79,22 +79,12 @@ impl FolderSource {
     }
 }
 
-/// Read `path` whole, capping the read at `max` bytes so a file that grew past
-/// the open-time ceiling is rejected rather than buffered in full.
-///
-/// Reading at most `max + 1` bytes makes an over-limit file detectable: landing
-/// on exactly `max + 1` bytes means the real size exceeds the ceiling.
+/// Read `path` whole, capping the read at `max` bytes (via the shared
+/// [`cap_or_reject`]) so a file that grew past the open-time ceiling is rejected
+/// rather than buffered in full.
 fn read_file_capped(path: &Path, name: &str, max: u64) -> Result<Vec<u8>, CoreError> {
     let file = std::fs::File::open(path)?;
-    let mut buf = Vec::new();
-    BufReader::new(file).take(max + 1).read_to_end(&mut buf)?;
-    if buf.len() as u64 > max {
-        return Err(CoreError::EntryTooLarge {
-            name: name.to_string(),
-            max,
-        });
-    }
-    Ok(buf)
+    cap_or_reject(BufReader::new(file), name, max, 0)
 }
 
 impl PageSource for FolderSource {

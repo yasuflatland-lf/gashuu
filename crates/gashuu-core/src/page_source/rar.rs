@@ -17,7 +17,7 @@
 //! The external `unrar` crate is referenced as `::unrar::` throughout for
 //! clarity even though the local module name (`rar`) does not collide with it.
 
-use super::naming::{enclosed_name, has_image_ext, is_macos_metadata, MAX_ENTRY_BYTES};
+use super::naming::{classify_entry, enclosed_name, has_image_ext, EntryClass, MAX_ENTRY_BYTES};
 use super::{PageEntry, PageSource};
 use crate::error::CoreError;
 use crate::ordering::natural_cmp;
@@ -90,28 +90,21 @@ impl RarSource {
                 }
                 continue;
             };
-            // Flatten: any image entry at any depth is a page (CBRs may wrap
-            // pages in a folder, unlike FolderSource's max_depth(1)).
-            if !has_image_ext(&safe) {
-                continue; // non-images are expected, not skips
+            // Shared page-membership decision: flatten any image at any depth into
+            // a page (CBRs may wrap pages in a folder, unlike FolderSource's
+            // max_depth(1)); non-images / macOS metadata are expected noise; an
+            // oversized image is a counted skip. The directory check above (kept
+            // ahead of `enclosed_name` so an unsafe-named dir is never miscounted),
+            // the zip-slip guard, and the sequential `read_header` walk stay
+            // rar-specific; only the post-`enclosed_name` decision is shared.
+            match classify_entry(&safe, header.is_directory(), header.unpacked_size, max) {
+                EntryClass::Page => entries.push(EntryMeta {
+                    seq_index,
+                    name: safe.to_string_lossy().into_owned(),
+                }),
+                EntryClass::Skip => skipped += 1,
+                EntryClass::Ignore => {}
             }
-            // macOS resource forks (`__MACOSX/.../._x.jpg`) and dotfiles carry
-            // image extensions and sort ahead of real pages via case-insensitive
-            // ordering, so they can masquerade as page 0. Treat them as expected
-            // noise like directories — drop without counting as a skip. Mirrors
-            // the identical filter in `ZipSource` so the page-membership rule is
-            // shared across both archive sources.
-            if is_macos_metadata(&safe) {
-                continue;
-            }
-            if header.unpacked_size > max {
-                skipped += 1;
-                continue;
-            }
-            entries.push(EntryMeta {
-                seq_index,
-                name: safe.to_string_lossy().into_owned(),
-            });
         }
         // Sort by the full flattened name with natural (digit-aware) ordering so
         // `2.png` precedes `10.png`.

@@ -373,7 +373,7 @@ So rayon prefetch threads decompress fully in parallel with NO shared mutable st
 
 ### Two-tier per-entry 500 MB ceiling (`MAX_ENTRY_BYTES`) defends size-spoofing zip bombs
 
-`MAX_ENTRY_BYTES` lives in `naming.rs` (it is an archive-entry-domain property shared by BOTH `ZipSource` and `RarSource`). Open-time (both sources): skip entries whose DECLARED size > max. Read-time for `ZipSource`: `Read::take(max+1)` then `buf.len() > max` → `EntryTooLarge` — the read-time `take` is the REAL cap (a crafted header can lie); `with_capacity(size.min(max))` is only a growth hint, not a trust boundary. **`RarSource`'s read-time cap is WEAKER** — see the RAR bullet below.
+`MAX_ENTRY_BYTES` lives in `naming.rs` (it is an archive-entry-domain property shared by BOTH `ZipSource` and `RarSource`). Open-time (both sources): skip entries whose DECLARED size > max. Read-time for `ZipSource` (and `FolderSource`): the shared `cap_or_reject(src, name, max, capacity_hint)` helper in `naming.rs` does `Read::take(max+1)` then `buf.len() > max` → `EntryTooLarge` — the read-time `take` is the REAL cap (a crafted header can lie); the `capacity_hint` (zip passes `size.min(max)`, folder passes `0`) is only a `with_capacity` growth hint, not a trust boundary. **`RarSource`'s read-time cap is WEAKER** — it cannot stream-cap (see the RAR bullet below), so it does not use `cap_or_reject`. The open-time page-membership decision (dir / non-image / macOS-metadata / oversized → `EntryClass::{Page, Skip, Ignore}`) is likewise centralized in `naming.rs`'s `classify_entry`, shared by zip and rar so the rule cannot drift between them.
 
 ### zip-slip defense + corrupt-entry policy is skip+count, container failure is hard-fail
 

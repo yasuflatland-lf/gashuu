@@ -53,6 +53,17 @@ lives here (neutral shared 500 MB archive-entry ceiling imported by
 both `zip.rs` and `rar.rs`). Filename ordering logic (`natural_cmp` and its helpers) was
 extracted to `ordering.rs` in #82.
 
+Two shared archive-entry helpers also live here so the rule is single-owned rather than
+open-coded (and drifting) in each source. `classify_entry(name, is_dir, declared_size, max) ->
+EntryClass {Page, Skip, Ignore}` is the page-membership decision both `ZipSource` and `RarSource`
+make after `enclosed_name`: directories / non-images / macOS metadata are `Ignore`d as expected
+noise, an oversized image is a counted `Skip`, everything else is a `Page` (the membership check
+precedes the size check). `cap_or_reject(src, name, max, capacity_hint)` is the read-time streaming
+size cap (`take(max + 1)` + length check → `EntryTooLarge`) shared by `FolderSource` and
+`ZipSource`; `RarSource` cannot stream-cap (`unrar` materializes the whole entry) so it keeps its
+declared-`unpacked_size` re-validation. The format-specific iteration (zip `by_index` vs rar
+sequential `read_header`) and the zip-slip guard stay in each source.
+
 ### ordering.rs
 
 `ordering.rs`. Shared numeric-aware natural-ordering comparator: `pub(crate) natural_cmp`
