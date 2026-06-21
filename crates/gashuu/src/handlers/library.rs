@@ -4,9 +4,9 @@ use crate::{
     cover_loader, i18n,
 };
 use crate::{
-    apply_add_report, apply_outcomes, clamp_focused_index, current_book_name,
-    empty_book_removed_status, finalize_open, go_to_viewer, push_selection_strings,
-    refresh_library_carousel, visible_index_to_path, with_ui, CarouselRefresh, ViewerWindow,
+    apply_add_report, apply_outcomes, current_book_name, finalize_empty_book_removed,
+    finalize_open, finalize_remove, go_to_viewer, push_selection_strings, refresh_library_carousel,
+    visible_index_to_path, with_ui, CarouselRefresh, ViewerWindow,
 };
 use crate::{
     library_model::{LibrarySearchState, LibrarySelectionState},
@@ -747,76 +747,21 @@ pub(crate) fn wire_selection_handlers(
         );
         ui.on_confirm_delete_accepted(move || {
             with_ui(&ui_weak, |ui| {
-                let loader = localizer.loader();
-                // The use case owns the destructive transaction in the issue's
-                // non-negotiable order, including the viewer-close (it cleared
-                // `current_book_name` itself) and the success-only selection clear.
-                let outcome = remove_books.run(&ui);
-                // Dismiss the modal in every outcome.
+                let outcome = remove_books.run();
+                // Dismiss the modal in every outcome (its stale content props are
+                // rebuilt on the next open).
                 ui.set_show_confirm_delete(false);
-                match outcome {
-                    app::RemoveOutcome::NoSelection => {
-                        // Defensive: the request handler guards against an empty
-                        // selection, so this should not be reached. Just refocus.
-                        ui.invoke_focus_carousel();
-                    }
-                    app::RemoveOutcome::SaveFailed { error } => {
-                        // The shelf was rolled back and the selection PRESERVED by
-                        // `run` (no flag re-apply needed — the rows are unchanged).
-                        // Stay in selection mode so the user can retry.
-                        ui.set_status_text(
-                            crate::i18n::dynamic::delete_save_failed(loader, &error).into(),
-                        );
-                        ui.invoke_focus_carousel();
-                    }
-                    app::RemoveOutcome::Removed { n, .. } => {
-                        // `run` already recomputed the search projection and cleared
-                        // the selection. Rebuild the carousel from the fresh visible
-                        // set (no focus reset — we clamp the focused index below to a
-                        // valid row), so the rebuilt model reflects the shrunken shelf.
-                        refresh_library_carousel(
-                            &ui,
-                            &CarouselRefresh {
-                                library: &library,
-                                covers: &covers,
-                                search: &search,
-                                selection: &selection,
-                                localizer: &localizer,
-                            },
-                            false,
-                        );
-                        // Clamp the focused index into the NEW visible row count
-                        // BEFORE the Slint side can read a stale out-of-range value.
-                        // The model is already bound above; setting the focused index
-                        // now re-centers the carousel on a valid row (index-out-of-
-                        // range on the projection is the documented crash risk).
-                        let visible_count = search.borrow().visible_indices().len();
-                        let clamped =
-                            clamp_focused_index(ui.get_carousel_focused_index(), visible_count);
-                        ui.set_carousel_focused_index(clamped);
-                        // Exit selection mode: drop the toolbar and clear every row's
-                        // `selected` flag (selection itself was already cleared by
-                        // `run`, so do NOT double-clear it — just re-apply all-false).
-                        ui.set_carousel_selection_mode(false);
-                        {
-                            let lib = library.borrow();
-                            let indices = search.borrow().visible_indices().to_vec();
-                            apply_selection_flags(&ui, &lib, &indices, |_| false);
-                        }
-                        push_selection_strings(&ui, &localizer, &selection, &search, &library);
-                        // Status push AFTER the refresh + toolbar string updates (the
-                        // same status-last ordering `apply_add_report` uses), so
-                        // the deleted-books notice is the final write to the Library's
-                        // bottom strip. `n` already excludes stale not_found paths.
-                        ui.set_status_text(crate::i18n::dynamic::deleted_books(loader, n).into());
-                        // Restore keyboard focus to the carousel so its key seams work.
-                        // `run` cleared the viewer + `current_book_name` itself when the
-                        // open book was deleted; `current_book_name` is derived on demand
-                        // from `state.open_file()` (now `None`), so no main.rs mirror
-                        // state needs syncing here.
-                        ui.invoke_focus_carousel();
-                    }
-                }
+                finalize_remove(
+                    &ui,
+                    &CarouselRefresh {
+                        library: &library,
+                        covers: &covers,
+                        search: &search,
+                        selection: &selection,
+                        localizer: &localizer,
+                    },
+                    outcome,
+                );
             })
         });
     }
@@ -838,22 +783,11 @@ pub(crate) fn wire_selection_handlers(
         let localizer = Rc::clone(&localizer);
         ui.on_empty_book_detected(move |path_str| {
             with_ui(&ui_weak, |ui| {
-                let loader = localizer.loader();
                 let path = std::path::PathBuf::from(path_str.as_str());
-                // The shared transaction (single home in app.rs): title capture
-                // BEFORE removal → `Library::remove` → save → best-effort cover
-                // purge. `removed == false` is the idempotency race — the book
-                // was already removed by another path (its notice + rebuild
-                // already ran), so bail out silently.
+                // The shared transaction (single home in open_book): title capture
+                // BEFORE removal -> Library::remove -> save -> best-effort cover purge.
                 let removal = app::remove_empty_book(&library, &path);
-                if !removal.removed {
-                    return;
-                }
-                // Rebuild the carousel so the removed book disappears and the
-                // cover-epoch bump drops any sibling cover still streaming for it;
-                // the active search filter is preserved by the chokepoint. No focus
-                // reset — the user's focus stays where it was.
-                refresh_library_carousel(
+                finalize_empty_book_removed(
                     &ui,
                     &CarouselRefresh {
                         library: &library,
@@ -862,17 +796,8 @@ pub(crate) fn wire_selection_handlers(
                         selection: &selection,
                         localizer: &localizer,
                     },
-                    false,
+                    &removal,
                 );
-                // Notice LAST (status-last ordering, as in add/delete): the
-                // auto-removal message, with the save-failure detail appended when
-                // the persist failed.
-                let status = empty_book_removed_status(
-                    loader,
-                    &removal.title,
-                    removal.save_error.as_deref(),
-                );
-                ui.set_status_text(status.into());
             })
         });
     }
