@@ -515,8 +515,8 @@ export component Carousel inherits Rectangle {
               // on a narrow window nor stretches too wide on a large one.
               width: Math.clamp(parent.width - 2 * Theme.space-xl, 280px, 360px);
               height: 200px;
-              x: (parent.width - self.width) / 2;
-              y: (parent.height - self.height) / 2;
+              x: Theme.snap((parent.width - self.width) / 2);
+              y: Theme.snap((parent.height - self.height) / 2);
               background: Theme.surface-sunken;
               border-radius: Theme.radius-lg;
               border-width: 1px;
@@ -564,8 +564,8 @@ export component Carousel inherits Rectangle {
           if root.library-book-count > 0 && root.items.length == 0 : Rectangle {
               width: Math.clamp(parent.width - 2 * Theme.space-xl, 280px, 360px);
               height: 160px;
-              x: (parent.width - self.width) / 2;
-              y: (parent.height - self.height) / 2;
+              x: Theme.snap((parent.width - self.width) / 2);
+              y: Theme.snap((parent.height - self.height) / 2);
               background: Theme.surface-sunken;
               border-radius: Theme.radius-lg;
               border-width: 1px;

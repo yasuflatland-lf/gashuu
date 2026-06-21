@@ -150,8 +150,8 @@ export component ConfirmDialog inherits Rectangle {
         // remove the explicit `body-col` height instead (SettingsDialog avoids
         // this by assembling panel height from named sub-parts, not body-col).
         height: body-col.preferred-height;
-        x: (parent.width - self.width) / 2;
-        y: (parent.height - self.height) / 2;
+        x: Theme.snap((parent.width - self.width) / 2);
+        y: Theme.snap((parent.height - self.height) / 2);
 
         // Glass layers 1, 2, 4: a top-sheen FILL gradient (not opacity), a 1px
         // soft rim, and ONE drop shadow. No nested glass / no second shadow.

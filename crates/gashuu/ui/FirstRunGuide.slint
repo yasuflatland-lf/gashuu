@@ -31,8 +31,8 @@ export component FirstRunGuide inherits Rectangle {
     // ── Centered panel ─────────────────────────────────────────────────────────
     Rectangle {
         // Center the panel inside the backdrop.
-        x: (root.width  - self.width)  / 2;
-        y: (root.height - self.height) / 2;
+        x: Theme.snap((root.width  - self.width)  / 2);
+        y: Theme.snap((root.height - self.height) / 2);
         // Fluid width: caps at 520 px on wide windows; shrinks to leave a
         // Theme.space-xl gutter on each side on narrow windows.
         width: min(520px, root.width - 2 * Theme.space-xl);

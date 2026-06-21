@@ -85,8 +85,8 @@ export component NavItem inherits Rectangle {
         source: root.icon;
         width: Theme.nav-icon;
         height: Theme.nav-icon;
-        x: (parent.width - self.width) / 2;
-        y: (parent.height - self.height) / 2;
+        x: Theme.snap((parent.width - self.width) / 2);
+        y: Theme.snap((parent.height - self.height) / 2);
         image-fit: contain;
         // Brighten on hover/press/active; faint when disabled; default to the
         // calmer mid tone. Driven by a binding (not a states[] assignment)
