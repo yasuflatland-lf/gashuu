@@ -245,6 +245,9 @@ fn main() -> color_eyre::Result<()> {
         &ui, &state, &viewport, &settings, &library, &nav, &covers, &pages, &search, &selection,
         &localizer,
     );
+    // File/folder drag-and-drop onto the Library screen, feeding the same bulk-add
+    // pipeline as the Add buttons (handlers/drag_drop.rs).
+    handlers::wire_drag_drop_handlers(&ui, &settings, &adder);
 
     ui.run()?;
     // Persist any page counts the cover prefetch resolved after the last carousel

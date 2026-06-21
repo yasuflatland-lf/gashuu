@@ -5,7 +5,13 @@ edition = "2021"
 
 [dependencies]
 gashuu-core = { path = "../gashuu-core" }
-slint = "1"
+# `unstable-winit-030` exposes `slint::winit_030` (the winit backend's raw
+# `WindowEvent` filter), used by `handlers/drag_drop.rs` to receive OS file-drop
+# events Slint has no stable API for. That module is feature-gated and "may be
+# removed or changed in future minor releases", so slint/slint-build are pinned
+# to an exact version (=1.16.1) rather than `1` — a slint minor bump must be a
+# deliberate, tested step. See docs/toolchain.md.
+slint = { version = "=1.16.1", features = ["unstable-winit-030"] }
 rfd = "0.17"
 rayon = "1"
 tracing = "0.1"
@@ -17,7 +23,8 @@ rust-embed = "8"
 unic-langid = { version = "0.9", features = ["macros"] }
 
 [build-dependencies]
-slint-build = "1"
+# Pinned to match the exact `slint` version above (they must stay in lockstep).
+slint-build = "=1.16.1"
 
 # Windows-only: embeds app-icon.ico into gashuu.exe (see build.rs). Gated on
 # `cfg(windows)` so it is never fetched or compiled on macOS/Linux builds.

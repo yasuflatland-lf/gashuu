@@ -126,6 +126,17 @@ export global Theme {
     out property <color> scrim-strong: #000000c0;   // denser first-run backdrop (~75% black)
     out property <color> scrim-soft: #00000060;     // lighter recede veil (~38% black); scrim is too dense for a NavBar recede
 
+    // ── Drag-and-drop drop zone (full-window solid frame) ─────────────────────
+    // A full-window solid frame shown while an OS file/folder drag hovers the
+    // Library. The library recede uses drop-scrim (~70% black, denser than the
+    // NavBar's scrim-soft veil) so the affordance reads as foreground; the
+    // frame/message are drawn at full strength (NO opacity layer — alpha lives in
+    // the color tokens).
+    out property <color> drop-scrim: #000000b3;           // ~70% black recede; library shows at ~30% (drop-zone only; do NOT reuse — scrim-soft stays the NavBar veil)
+    out property <length> drop-frame-inset: space-huge;   // 26px gap from each window edge to the frame
+    out property <length> drop-frame-width: 2px;          // solid frame stroke thickness
+    out property <color> drop-frame-line: #9f9f9f;        // frame + message tint
+
     // ── Neutral placeholder fill (thumbnail still-loading) ────────────────────
     out property <color> placeholder: #2a3243;      // neutral loading fill (= track hue)
 
