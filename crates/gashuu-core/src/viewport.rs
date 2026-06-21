@@ -10,7 +10,7 @@
 //! when zoomed in). The effective scale is `clamp_zoom(zoom) * fit_scale(...)`;
 //! that composition is done by the CALLER, not here (no combined helper).
 
-use crate::settings::FitMode;
+use crate::view_modes::FitMode;
 
 /// Minimum zoom factor (relative to the fit baseline). 1.0 = cannot shrink below
 /// fit; the FitMode itself provides "show the whole page".
@@ -94,7 +94,7 @@ pub fn anchored_zoom(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::settings::FitMode;
+    use crate::view_modes::FitMode;
 
     /// Float comparison tolerance for geometry assertions.
     fn approx(a: f32, b: f32) -> bool {

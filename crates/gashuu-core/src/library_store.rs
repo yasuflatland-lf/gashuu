@@ -337,10 +337,10 @@ mod tests {
         let p = PathBuf::from("/manga/a.cbz");
         assert!(lib.add(p.clone()).is_some());
         let ov = crate::view_override::ViewOverride {
-            reading_direction: Some(crate::settings::ReadingDirection::Rtl),
-            spread_mode: Some(crate::settings::SpreadMode::Double),
-            cover_mode: Some(crate::settings::CoverMode::Paired),
-            fit_mode: Some(crate::settings::FitMode::Width),
+            reading_direction: Some(crate::view_modes::ReadingDirection::Rtl),
+            spread_mode: Some(crate::view_modes::SpreadMode::Double),
+            cover_mode: Some(crate::view_modes::CoverMode::Paired),
+            fit_mode: Some(crate::view_modes::FitMode::Width),
         };
         assert!(lib.set_overrides(&p, ov));
         let reloaded = Library::from_json(&lib.to_json().unwrap()).unwrap();

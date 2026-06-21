@@ -8,7 +8,7 @@
 //! window aspect ratio) before these functions are called, so this module never
 //! sees image/window dimensions.
 
-use crate::settings::{CoverMode, SpreadLayout};
+use crate::view_modes::{CoverMode, SpreadLayout};
 
 /// One displayed unit: 1–2 page indices in reading order (`leading` first).
 ///
@@ -242,7 +242,7 @@ impl SpreadContext {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::settings::{CoverMode, SpreadLayout};
+    use crate::view_modes::{CoverMode, SpreadLayout};
 
     // ---- helpers -----------------------------------------------------------
 

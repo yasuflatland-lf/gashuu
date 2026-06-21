@@ -814,7 +814,7 @@ mod tests {
         assert!(lib.set_last_page(&p, 42));
         assert!(lib.set_page_count(&p, NonZeroUsize::new(100).unwrap()));
         let ov = crate::view_override::ViewOverride {
-            reading_direction: Some(crate::settings::ReadingDirection::Rtl),
+            reading_direction: Some(crate::view_modes::ReadingDirection::Rtl),
             ..crate::view_override::ViewOverride::none()
         };
         assert!(lib.set_overrides(&p, ov));
@@ -877,7 +877,7 @@ mod tests {
         assert!(lib.set_last_page(Path::new("/manga/b.cbz"), 9));
         assert!(lib.set_page_count(Path::new("/manga/b.cbz"), NonZeroUsize::new(50).unwrap()));
         let ov = crate::view_override::ViewOverride {
-            reading_direction: Some(crate::settings::ReadingDirection::Rtl),
+            reading_direction: Some(crate::view_modes::ReadingDirection::Rtl),
             ..crate::view_override::ViewOverride::none()
         };
         assert!(lib.set_overrides(Path::new("/manga/b.cbz"), ov));
@@ -1150,7 +1150,7 @@ mod tests {
         let p = PathBuf::from("/manga/a.cbz");
         assert!(lib.add(p.clone()).is_some());
         let ov = crate::view_override::ViewOverride {
-            reading_direction: Some(crate::settings::ReadingDirection::Rtl),
+            reading_direction: Some(crate::view_modes::ReadingDirection::Rtl),
             ..crate::view_override::ViewOverride::none()
         };
         // First set changes the value -> true.
@@ -1166,7 +1166,7 @@ mod tests {
         let p = PathBuf::from("/manga/a.cbz");
         assert!(lib.add(p.clone()).is_some());
         let ov = crate::view_override::ViewOverride {
-            reading_direction: Some(crate::settings::ReadingDirection::Rtl),
+            reading_direction: Some(crate::view_modes::ReadingDirection::Rtl),
             ..crate::view_override::ViewOverride::none()
         };
         assert!(lib.set_overrides(&p, ov));

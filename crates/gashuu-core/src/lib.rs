@@ -21,6 +21,7 @@ pub mod spread;
 mod test_fixtures;
 pub mod thumbnail;
 pub mod thumbnail_cache;
+pub mod view_modes;
 pub mod view_override;
 pub mod viewport;
 
@@ -36,13 +37,13 @@ pub use library_store::LIBRARY_VERSION;
 pub use page_source::{FolderSource, PageEntry, PageSource, RarSource, ZipSource};
 pub use reading_progress::ReadingProgress;
 pub use search::book_matches;
-pub use settings::{
-    CoverMode, FitMode, KeyBindings, Language, ReadingDirection, Settings, SpreadLayout,
-    SpreadMode, MAX_RECENT_FILES, SETTINGS_VERSION,
-};
+pub use settings::{Settings, MAX_RECENT_FILES, SETTINGS_VERSION};
 pub use spread::{next_leading, normalize_leading, prev_leading, spread_at, Spread, SpreadContext};
 pub use thumbnail::{generate_cover, generate_thumbnails, DEFAULT_THUMB_MAX_SIDE};
 pub use thumbnail_cache::{cache_key, ClearCacheReport, PruneReport, ThumbnailCache};
+pub use view_modes::{
+    CoverMode, FitMode, KeyBindings, Language, ReadingDirection, SpreadLayout, SpreadMode,
+};
 pub use view_override::{ResolvedView, ViewOverride};
 pub use viewport::{
     anchored_zoom, centered_offset, clamp_offset, clamp_zoom, fit_scale, ZOOM_MAX, ZOOM_MIN,

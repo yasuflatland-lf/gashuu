@@ -1051,7 +1051,7 @@ HISTORICAL (the trap worth remembering): the deleted gettext path defaulted Slin
 
 **Adding a new language is a chain where every step's gate is compile-time or test-time — no step can be silently skipped:**
 
-1. Add the variant to `pub enum Language` in `gashuu-core/src/settings.rs` (today `En` / `Ja`).
+1. Add the variant to `pub enum Language` in `gashuu-core/src/view_modes.rs` (today `En` / `Ja`).
 2. `langid_for(lang: Language)` in `src/i18n/loader.rs` now FAILS TO COMPILE — it is an exhaustive `match` with no wildcard arm, so the new variant forces you to wire its BCP-47 `langid!`.
 3. Add `crates/gashuu/i18n/<lang>/gashuu.ftl`. The `all_ftl_ids_present_in_every_locale` test (in `src/i18n/mod.rs`) then FAILS until the new file carries every message ID present in the others — it forces full translation coverage, not a partial stub.
 4. Extend the Slint adapters in `src/enum_adapters.rs`: `language_to_index` is an exhaustive `match` on `Language` with no wildcard — a new variant fails to compile there. Its reverse `index_to_language` matches on `i: i32` with a `_ => Language::En` wildcard, so a new variant does NOT cause a compile error; instead the round-trip test `language_index_round_trips` (in `enum_adapters.rs`) catches any missing reverse mapping at test time. Also add the option to the language `Dropdown` model in `ui/SettingsDialog.slint` (`model: ["English", "日本語"]` — option labels are deliberately each in their OWN tongue, not translated).
