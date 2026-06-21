@@ -23,10 +23,18 @@ pub fn cache_key(path: &Path, mtime_secs: i64, max_side: u32) -> String {
 const FNV_OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
 const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
 
-/// Age past which a `.{key}.tmp` file is a crash leftover, not an in-flight
-/// `put` (whose temp-write-then-rename lives milliseconds). [`ThumbnailCache::prune`]
-/// reclaims tmp files older than this regardless of the size cap.
+/// Age past which a `write_atomic` temp file (`.tmpXXXXXX`) is a crash leftover,
+/// not an in-flight `put` (whose temp-write-then-rename lives milliseconds).
+/// [`ThumbnailCache::prune`] reclaims tmp files older than this regardless of the
+/// size cap.
 const TMP_STALE_SECS: u64 = 60 * 60;
+
+/// `NamedTempFile`'s default name prefix. `write_atomic` (and therefore `put`)
+/// creates its same-dir temp via `NamedTempFile::new_in`, whose default name
+/// shape is `.tmpXXXXXX` — a `.tmp` PREFIX with random trailing chars, NOT a
+/// `.tmp` suffix. The cache-ownership matcher keys off this prefix so `prune`
+/// reliably reclaims a temp stranded by an interrupted write.
+const TMP_NAME_PREFIX: &str = ".tmp";
 
 // Fold `bytes` into `hash` using the FNV-1a step (xor then multiply).
 fn fnv1a(hash: &mut u64, bytes: &[u8]) {
@@ -82,11 +90,13 @@ impl ThumbnailCache {
     /// Store a thumbnail in the cache.
     ///
     /// PNG-encodes `img` at its exact dimensions and writes it atomically to
-    /// `<dir>/<key>.png`, creating the cache directory if it does not exist.
-    /// The temp-file-then-rename keeps a concurrent reader from seeing a torn file.
+    /// `<dir>/<key>.png` via [`write_atomic`](crate::atomic_write::write_atomic),
+    /// which creates the cache directory if it does not exist and is the single
+    /// owner of the temp-then-rename invariant (same-dir `NamedTempFile` +
+    /// `sync_all` + rename). The atomic rename keeps a concurrent reader from
+    /// seeing a torn file, and the random temp name means concurrent `put`s of
+    /// the same key never collide on a fixed temp path.
     pub fn put(&self, key: &str, img: &DecodedImage) -> Result<(), CoreError> {
-        std::fs::create_dir_all(&self.dir)?;
-
         let raw = image::RgbaImage::from_raw(img.width(), img.height(), img.rgba().to_vec())
             .ok_or_else(|| CoreError::MalformedImage {
                 expected: (img.width() as usize)
@@ -102,9 +112,7 @@ impl ThumbnailCache {
         )?;
 
         let target = self.dir.join(format!("{key}.png"));
-        let tmp_path = self.dir.join(format!(".{key}.tmp"));
-        std::fs::write(&tmp_path, &png_bytes)?;
-        std::fs::rename(&tmp_path, &target)?;
+        crate::atomic_write::write_atomic(&target, &png_bytes)?;
 
         Ok(())
     }
@@ -138,7 +146,8 @@ impl ThumbnailCache {
     /// Missing or unreadable cache directories are treated as empty, matching
     /// [`prune`](Self::prune)'s best-effort cleanup style. The sweep never
     /// recurses and only unlinks regular files whose names match the patterns
-    /// this cache writes: `*.png` thumbnails and `.*.tmp` interrupted writes.
+    /// this cache writes: `*.png` thumbnails and `.tmpXXXXXX` interrupted
+    /// `write_atomic` temps.
     pub fn clear(&self) -> ClearCacheReport {
         let mut report = ClearCacheReport::default();
         let Ok(entries) = std::fs::read_dir(&self.dir) else {
@@ -200,10 +209,11 @@ impl ThumbnailCache {
             let name = entry.file_name();
             let lossy = name.to_string_lossy();
             // A `put` interrupted between temp write and rename strands its
-            // `.{key}.tmp` forever. Reclaim ones past the stale threshold; a
-            // younger tmp may be an in-flight write on another thread, so the
-            // age guard protects it (an unreadable age counts as fresh).
-            if lossy.starts_with('.') && lossy.ends_with(".tmp") {
+            // `write_atomic` temp (`.tmpXXXXXX`) forever. Reclaim ones past the
+            // stale threshold; a younger tmp may be an in-flight write on another
+            // thread, so the age guard protects it (an unreadable age counts as
+            // fresh).
+            if lossy.starts_with(TMP_NAME_PREFIX) {
                 let mtime = meta.modified().unwrap_or(now);
                 let stale = now
                     .duration_since(mtime)
@@ -248,7 +258,7 @@ impl ThumbnailCache {
 
 fn is_owned_cache_file_name(name: &std::ffi::OsStr) -> bool {
     let lossy = name.to_string_lossy();
-    lossy.ends_with(".png") || (lossy.starts_with('.') && lossy.ends_with(".tmp"))
+    lossy.ends_with(".png") || lossy.starts_with(TMP_NAME_PREFIX)
 }
 
 /// Result of one [`ThumbnailCache::clear`] sweep. The cache is best-effort:
@@ -539,7 +549,8 @@ mod tests {
         let cache = ThumbnailCache::with_dir(dir.path().to_path_buf());
         cache.put("aaaa", &tiny_decoded_image()).expect("seed png");
         cache.put("bbbb", &tiny_decoded_image()).expect("seed png");
-        let tmp = dir.path().join(".cccc.tmp");
+        // A `write_atomic` temp uses the `.tmpXXXXXX` prefix shape.
+        let tmp = dir.path().join(".tmpcccc01");
         std::fs::write(&tmp, b"interrupted cache write").unwrap();
         let expected_bytes = png_size(dir.path(), "aaaa")
             + png_size(dir.path(), "bbbb")
@@ -693,13 +704,13 @@ mod tests {
 
     #[test]
     fn prune_removes_stale_tmp_even_under_cap() {
-        // A crash between `put`'s temp write and rename leaves `.{key}.tmp`
-        // behind forever. The sweep reclaims tmp files older than the stale
+        // A crash between `put`'s temp write and rename leaves a `.tmpXXXXXX`
+        // temp behind forever. The sweep reclaims tmp files older than the stale
         // threshold regardless of the cap (they are garbage, not payload).
         let dir = tempdir().unwrap();
         let cache = ThumbnailCache::with_dir(dir.path().to_path_buf());
         cache.put("aaaa", &tiny_decoded_image()).expect("seed");
-        let stale_tmp = dir.path().join(".deadbeef.tmp");
+        let stale_tmp = dir.path().join(".tmpdeadbeef");
         std::fs::write(&stale_tmp, b"torn write leftover").unwrap();
         back_date(&stale_tmp, 2 * 60 * 60); // 2 h old: well past the threshold
 
@@ -717,7 +728,7 @@ mod tests {
         // on another thread — the age guard protects it, even under a zero cap.
         let dir = tempdir().unwrap();
         let cache = ThumbnailCache::with_dir(dir.path().to_path_buf());
-        let fresh_tmp = dir.path().join(".cafebabe.tmp");
+        let fresh_tmp = dir.path().join(".tmpcafebabe");
         std::fs::write(&fresh_tmp, b"write in flight").unwrap();
 
         let report = cache.prune(0);
@@ -765,6 +776,25 @@ mod tests {
 
         let after = std::fs::metadata(&png).unwrap().modified().unwrap();
         assert_eq!(after, before, "a failed decode must not refresh the mtime");
+    }
+
+    #[test]
+    fn is_owned_recognizes_write_atomic_temp_name() {
+        // `put` writes through `write_atomic`, which creates a `NamedTempFile`
+        // whose default name shape is `.tmpXXXXXX` (a `.tmp` PREFIX, not a `.tmp`
+        // suffix). The ownership matcher MUST recognize that shape so `prune`
+        // reliably reclaims a temp stranded by an interrupted `write_atomic`.
+        let dir = tempdir().unwrap();
+        let tmp = tempfile::NamedTempFile::new_in(dir.path()).expect("create temp in cache dir");
+        let name = tmp
+            .path()
+            .file_name()
+            .expect("temp file has a name")
+            .to_owned();
+        assert!(
+            super::is_owned_cache_file_name(&name),
+            "prune must recognize a write_atomic temp ({name:?}) as reclaimable"
+        );
     }
 
     #[test]
