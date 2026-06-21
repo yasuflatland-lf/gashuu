@@ -15,8 +15,8 @@
 //! Split:
 //! - the PROBE half ([`probe_path`]) is pure and `Send`: `(index, PathBuf,
 //!   ArchivePolicy)` → [`ProbeOutcome`]. It touches NO `Library`.
-//! - the APPLY half lives on the UI thread (`crate::apply_outcomes` +
-//!   `crate::apply_add_report`): it mutates the `!Send` `Rc<RefCell<Library>>`,
+//! - the APPLY half lives on the UI thread (`crate::add_books::apply_outcomes` +
+//!   `crate::carousel_refresh::apply_add_report`): it mutates the `!Send` `Rc<RefCell<Library>>`,
 //!   saves, rebuilds the carousel, and shows the notice — driven by the
 //!   `add-finalize` Slint callback wired in `handlers/library.rs`.
 //!

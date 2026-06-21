@@ -8,6 +8,7 @@
 //! and `handlers::settings`. `go_to_library` / `go_to_viewer` stay in `main.rs`
 //! and route their carousel work through here. UI-thread only.
 
+use crate::add_books::{select_add_notice, AddNotice, AddReport};
 use crate::carousel::{
     apply_selection_flags, bind_carousel_model, build_carousel_model, cover_requests,
 };
@@ -244,6 +245,144 @@ pub(crate) fn refresh_library_carousel(
         deps.library,
         cover_loader::prioritize_by_focus(cover_reqs, focus_row),
     );
+}
+
+/// Route a neutral / success add notice to the quiet idle strip. Clears any
+/// error toast so the two channels never show duplicate text.
+fn set_status_strip(ui: &ViewerWindow, text: String) {
+    ui.set_add_toast_text("".into());
+    ui.set_status_text(text.into());
+}
+
+/// Route a skip / failure add notice to the attention-grabbing toast. Clears the
+/// strip's transient text so it falls back to the idle library count (no dup).
+fn set_add_toast(ui: &ViewerWindow, text: String) {
+    ui.set_status_text("".into());
+    ui.set_add_toast_text(text.into());
+}
+
+/// Apply an already-computed add `report` to the library: persist, rebuild the
+/// filtered carousel, and surface the outcome on the status line, restoring
+/// carousel focus in every case. The UI-thread tail of the bulk add (issue 206),
+/// run from the `add-finalize` handler once the off-thread probe completes (and
+/// the `apply_outcomes` mutation has produced the `report`).
+///
+/// Shared by the Add Books and Add Folder paths; `op` distinguishes the two only
+/// in the save-failure trace message. When nothing new was added there is nothing
+/// to persist or rebuild, so it short-circuits after the status update.
+///
+/// Sources with no image pages (or that cannot be opened) were rejected by the
+/// probe + `apply_outcomes` before they entered the library; the status notice
+/// names how many were skipped (added-some-skipped-some, or none-added-all-empty),
+/// falling back to the already-in-library message only when the skip count is zero.
+///
+/// Newly added books are FORCED visible under the active filter (so an add never
+/// silently hides the new book behind a non-matching query); the filter text
+/// stays in place, and the forced override is cleared on the next user query
+/// change (see `LibrarySearchState::set_query`).
+pub(crate) fn apply_add_report(
+    ui: &ViewerWindow,
+    deps: &CarouselRefresh,
+    report: AddReport,
+    op: &'static str,
+    loader: &i18n_embed::fluent::FluentLanguageLoader,
+) {
+    let AddReport {
+        added: added_paths,
+        skipped,
+    } = report;
+    if added_paths.is_empty() {
+        // Nothing new entered the library: nothing to persist or rebuild. Route
+        // through the pure decision fn so every branch is testable without Slint.
+        match select_add_notice(0, skipped) {
+            AddNotice::NoneAddedAllSkipped { skipped: s } => {
+                // Every picked path was rejected: surface it on the toast so the
+                // failure is noticed, not lost in the quiet strip.
+                set_add_toast(ui, crate::i18n::dynamic::no_books_added_empty(loader, s));
+            }
+            _ => {
+                // "Already in library" is neutral info → quiet strip.
+                set_status_strip(ui, crate::i18n::dynamic::already_in_library(loader));
+            }
+        }
+        ui.invoke_focus_carousel();
+        return;
+    }
+    // Rebuild from the in-memory state even if the save fails, so the newly added
+    // books are visible; the save error is then surfaced (not just traced). Keep
+    // the just-added paths visible under the active filter, then refresh through
+    // the shared chokepoint (which recomputes the filter, rebuilds + binds the
+    // model, and restarts the cover stream). Focus is set explicitly below to the
+    // new book's visible row, so do NOT reset focus to 0 here.
+    let save_result = deps.library.borrow().save();
+    // `search` and `library` are distinct RefCells, so the mut borrow of one and
+    // the shared borrow of the other cannot conflict; the `library.borrow()`
+    // drops at the `;` before refresh. `force_visible` recomputes internally, so
+    // the visible set is consistent before `refresh_library_carousel` reads it.
+    deps.search
+        .borrow_mut()
+        .force_visible(added_paths.clone(), &deps.library.borrow());
+    refresh_library_carousel(ui, deps, false);
+    match save_result {
+        Err(e) => {
+            tracing::error!(error = %e, "failed to save library after {op}");
+            // Save failure is an error the user must see → toast, not the strip.
+            set_add_toast(
+                ui,
+                crate::i18n::dynamic::added_books_save_failed(loader, added_paths.len(), &e),
+            );
+        }
+        Ok(()) => {
+            // Some books were added; route through the pure decision fn so the
+            // 4-way mapping is testable without Slint.
+            match select_add_notice(added_paths.len(), skipped) {
+                AddNotice::AddedWithSkips {
+                    added: n,
+                    skipped: s,
+                } => {
+                    // Partial add: some images were skipped → warn on the toast.
+                    set_add_toast(ui, crate::i18n::dynamic::added_books_skipped(loader, n, s));
+                }
+                AddNotice::Added { added: n } => {
+                    // Clean success → quiet strip.
+                    set_status_strip(ui, crate::i18n::dynamic::added_books(loader, n));
+                }
+                // added_paths is non-empty here, so AlreadyInLibrary and
+                // NoneAddedAllSkipped are unreachable; exhaustive for safety.
+                _ => set_status_strip(
+                    ui,
+                    crate::i18n::dynamic::added_books(loader, added_paths.len()),
+                ),
+            }
+        }
+    }
+    // Focus the first newly added book by its VISIBLE row (the carousel renders
+    // the filtered slice), not its full-library index.
+    if let Some(first_path) = added_paths.first() {
+        let index = {
+            let lib = deps.library.borrow();
+            let search = deps.search.borrow();
+            visible_focus_index_for_path(&lib, search.visible_indices(), first_path)
+        };
+        if let Some(index) = index {
+            ui.set_carousel_focused_index(index as i32);
+        } else {
+            // force_visible(added_paths) + recompute guarantees the just-added book is
+            // a visible row, so this is unreachable in practice. Fail loudly in dev/test;
+            // in release, log and fall through (focus stays on the carousel via the
+            // unconditional invoke_focus_carousel below).
+            debug_assert!(
+                false,
+                "add: forced-visible book {} not found in visible rows",
+                first_path.display()
+            );
+            tracing::warn!(
+                path = %first_path.display(),
+                "add: forced-visible book not found in visible rows; focus not restored"
+            );
+        }
+    }
+    ui.invoke_focus_carousel();
 }
 
 #[cfg(test)]
