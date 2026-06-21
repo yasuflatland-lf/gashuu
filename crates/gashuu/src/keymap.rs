@@ -23,8 +23,9 @@
 //! awareness, so do not add a reveal command or side effect to this module.
 //!
 //! ## Screen-navigation keys
-//! `Up` emits `GoToLibrary` (direction-independent like the zoom/fit keys); it
-//! returns the app to the Library screen and is only acted on in the Viewer.
+//! `Up` and `Escape` both emit `GoToLibrary` (direction-independent like the
+//! zoom/fit keys); they return the app to the Library screen and are only acted
+//! on in the Viewer.
 
 use gashuu_core::ReadingDirection;
 
@@ -56,7 +57,7 @@ pub enum KeyCommand {
     CycleFit,
     /// Return to the Library screen. Only meaningful in the Viewer screen
     /// (the screen gate lives in `main.rs`); direction-independent like the
-    /// zoom/fit keys (Up has no reading-order meaning).
+    /// zoom/fit keys (Up and Escape have no reading-order meaning).
     GoToLibrary,
 }
 
@@ -84,7 +85,7 @@ pub fn map_key(token: &str, dir: ReadingDirection) -> Option<KeyCommand> {
         "0" => Some(KeyCommand::ResetView),
         "1" => Some(KeyCommand::FitActual),
         "f" => Some(KeyCommand::CycleFit),
-        "up" => Some(KeyCommand::GoToLibrary),
+        "up" | "escape" => Some(KeyCommand::GoToLibrary),
         _ => None,
     }
 }
@@ -296,6 +297,18 @@ mod tests {
         );
         assert_eq!(
             map_key("up", ReadingDirection::Rtl),
+            Some(KeyCommand::GoToLibrary)
+        );
+    }
+
+    #[test]
+    fn escape_maps_to_go_to_library() {
+        assert_eq!(
+            map_key("escape", ReadingDirection::Ltr),
+            Some(KeyCommand::GoToLibrary)
+        );
+        assert_eq!(
+            map_key("escape", ReadingDirection::Rtl),
             Some(KeyCommand::GoToLibrary)
         );
     }
