@@ -1,3 +1,10 @@
+// On Windows, a GUI binary built for the default "console" subsystem spawns an
+// extra console window alongside the app window on launch. Switch RELEASE builds
+// to the "windows" subsystem so end users see only the app window; debug builds
+// keep the console so `tracing` output stays visible while developing. The
+// attribute is a no-op on non-Windows targets.
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 slint::include_modules!();
 
 mod add_books;
