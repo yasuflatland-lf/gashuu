@@ -246,7 +246,7 @@ fn toggle_spread_flips_mode_and_normalizes_index() {
     assert_eq!(state.spread_mode(), SpreadMode::Double);
     assert_eq!(state.index(), 5);
 
-    // Cycle to Auto: default viewport aspect is 1.0 -> resolves to Double, so
+    // Cycle to Auto: default viewport aspect is 1.0 -> resolves to Single, so
     // index 5 is still a valid leading and stays put.
     assert!(state.toggle_spread());
     assert_eq!(state.spread_mode(), SpreadMode::Auto);
@@ -423,8 +423,8 @@ fn double_paired_navigation_steps_by_two_and_clamps() {
 #[test]
 fn toggle_spread_from_double_paired_keeps_index() {
     // 6 pages, Paired cover. Advance to the {2,3} spread (index 2), then
-    // toggle to Auto: default viewport aspect 1.0 resolves Auto to Double, so
-    // index 2 ({2,3}) is still a valid Paired leading and stays unchanged.
+    // toggle to Auto: default viewport aspect 1.0 resolves Auto to Single, so
+    // index 2 is still a valid leading and stays unchanged.
     let mut state = ViewerState::from_settings(&Settings {
         spread_mode: SpreadMode::Double,
         cover_mode: CoverMode::Paired,
@@ -452,29 +452,11 @@ fn auto_state() -> ViewerState {
 }
 
 #[test]
-fn auto_portrait_navigates_single() {
-    // Portrait viewport (aspect < 1) => Auto resolves to Single: every page
-    // stands alone and navigation steps by 1.
-    let mut state = auto_state();
-    state.set_viewport_size(900.0, 1200.0);
-    state.set_source(mock_with(5));
-
-    assert!(state.current_spread().unwrap().unwrap().trailing.is_none());
-
-    assert!(state.apply(NavAction::Next));
-    assert_eq!(state.index(), 1);
-    assert!(state.current_spread().unwrap().unwrap().trailing.is_none());
-    assert!(state.apply(NavAction::Next));
-    assert_eq!(state.index(), 2);
-    assert!(state.current_spread().unwrap().unwrap().trailing.is_none());
-}
-
-#[test]
-fn auto_landscape_navigates_double() {
-    // Landscape viewport (aspect > 1) => Auto resolves to Double. Default
+fn auto_portrait_navigates_double() {
+    // Portrait viewport (aspect < 1) => Auto resolves to Double. Default
     // Standalone cover: {0}{1,2}{3,4}{5}; navigation steps 0->1->3->5.
     let mut state = auto_state();
-    state.set_viewport_size(1600.0, 900.0);
+    state.set_viewport_size(900.0, 1200.0);
     state.set_source(mock_with(6));
 
     // Cover (page 0) stands alone.
@@ -492,26 +474,45 @@ fn auto_landscape_navigates_double() {
 }
 
 #[test]
-fn set_viewport_size_reports_flip_and_renormalizes() {
-    // Auto, landscape (Double). Advance to the {1,2} spread (index 1), then
-    // go portrait (Single): the layout flips, set_viewport_size returns true,
-    // and the visible page stays on screen (index 1 is a valid Single
-    // leading). Going back landscape flips again and re-anchors to a valid
-    // Double leading.
+fn auto_landscape_navigates_single() {
+    // Landscape viewport (aspect > 1) => Auto resolves to Single: every page
+    // stands alone and navigation steps by 1.
     let mut state = auto_state();
-    // Default aspect 1.0 already resolves Auto to Double; widening to
-    // landscape stays Double, so this reports no flip.
+    state.set_viewport_size(1600.0, 900.0);
+    state.set_source(mock_with(5));
+
+    assert!(state.current_spread().unwrap().unwrap().trailing.is_none());
+
+    assert!(state.apply(NavAction::Next));
+    assert_eq!(state.index(), 1);
+    assert!(state.current_spread().unwrap().unwrap().trailing.is_none());
+    assert!(state.apply(NavAction::Next));
+    assert_eq!(state.index(), 2);
+    assert!(state.current_spread().unwrap().unwrap().trailing.is_none());
+}
+
+#[test]
+fn set_viewport_size_reports_flip_and_renormalizes() {
+    // Auto. Advance to the {1,2} spread once Double. Default aspect 1.0
+    // resolves Auto to Single; widening to landscape stays Single, then going
+    // portrait flips to Double, and going back landscape flips to Single. Each
+    // flip keeps the visible page on screen (index 1 is a valid leading in both
+    // Single and Standalone-Double layouts).
+    let mut state = auto_state();
+    // Default aspect 1.0 already resolves Auto to Single; widening to
+    // landscape stays Single, so this reports no flip.
     assert!(!state.set_viewport_size(1600.0, 900.0));
     state.set_source(mock_with(6));
     assert!(state.apply(NavAction::Next));
     assert_eq!(state.index(), 1);
 
-    // Landscape -> portrait: Double -> Single flips.
+    // Landscape -> portrait: Single -> Double flips; index 1 ({1,2}) is a valid
+    // Standalone Double leading.
     assert!(state.set_viewport_size(900.0, 1200.0));
-    assert_eq!(state.index(), 1); // valid Single leading, page stays visible
+    assert_eq!(state.index(), 1);
 
-    // Portrait -> landscape: Single -> Double flips again; index 1 ({1,2}) is
-    // a valid Standalone Double leading.
+    // Portrait -> landscape: Double -> Single flips again; index 1 stays a
+    // valid Single leading, page stays visible.
     assert!(state.set_viewport_size(1600.0, 900.0));
     assert_eq!(state.index(), 1);
 }
@@ -534,7 +535,7 @@ fn set_viewport_size_no_flip_when_not_auto() {
 #[test]
 fn toggle_spread_cycles_single_double_auto() {
     // Single -> Double -> Auto -> Single, each transition keeps the visible
-    // page on screen (index normalized). Default viewport 1.0 => Auto=Double.
+    // page on screen (index normalized). Default viewport 1.0 => Auto=Single.
     let mut state = ViewerState::new();
     state.set_source(mock_with(6));
     assert_eq!(state.spread_mode(), SpreadMode::Single);
@@ -551,31 +552,32 @@ fn toggle_spread_cycles_single_double_auto() {
 
 #[test]
 fn toggle_into_auto_resolves_with_current_viewport() {
-    // Portrait viewport then cycle into Auto: spread resolves to Single.
+    // Portrait viewport then cycle into Auto: spread resolves to Double.
     let mut state = ViewerState::new();
     state.set_viewport_size(900.0, 1200.0);
-    state.set_source(mock_with(6));
-    state.toggle_spread(); // Single -> Double
-    state.toggle_spread(); // Double -> Auto
-    assert_eq!(state.spread_mode(), SpreadMode::Auto);
-    assert!(state.current_spread().unwrap().unwrap().trailing.is_none());
-
-    // Landscape viewport then cycle into Auto: spread resolves to Double.
-    let mut state = ViewerState::new();
-    state.set_viewport_size(1600.0, 900.0);
     state.set_source(mock_with(6));
     state.apply(NavAction::Next); // index 1 ({1,2} once Double)
     state.toggle_spread(); // Single -> Double
     state.toggle_spread(); // Double -> Auto
     assert_eq!(state.spread_mode(), SpreadMode::Auto);
     assert!(state.current_spread().unwrap().unwrap().trailing.is_some());
+
+    // Landscape viewport then cycle into Auto: spread resolves to Single.
+    let mut state = ViewerState::new();
+    state.set_viewport_size(1600.0, 900.0);
+    state.set_source(mock_with(6));
+    state.apply(NavAction::Next); // index 1, stands alone once Single
+    state.toggle_spread(); // Single -> Double
+    state.toggle_spread(); // Double -> Auto
+    assert_eq!(state.spread_mode(), SpreadMode::Auto);
+    assert!(state.current_spread().unwrap().unwrap().trailing.is_none());
 }
 
 #[test]
 fn status_text_auto_label() {
-    // Auto + landscape => "auto" label and a page RANGE (resolved Double).
+    // Auto + portrait => "auto" label and a page RANGE (resolved Double).
     let mut state = auto_state();
-    state.set_viewport_size(1600.0, 900.0);
+    state.set_viewport_size(900.0, 1200.0);
     state.set_source(mock_with(6));
     state.apply(NavAction::Next);
     assert_eq!(state.index(), 1);
@@ -583,9 +585,9 @@ fn status_text_auto_label() {
     assert_eq!(c.pages, "2\u{2013}3 / 6");
     assert_eq!(c.spread, SpreadMode::Auto);
 
-    // Auto + portrait => "auto" label and a single page number (Single).
+    // Auto + landscape => "auto" label and a single page number (Single).
     let mut state = auto_state();
-    state.set_viewport_size(900.0, 1200.0);
+    state.set_viewport_size(1600.0, 900.0);
     state.set_source(mock_with(6));
     state.apply(NavAction::Next);
     assert_eq!(state.index(), 1);
@@ -594,8 +596,8 @@ fn status_text_auto_label() {
 
 #[test]
 fn set_viewport_size_flip_moves_index_via_normalize() {
-    // Auto + Paired cover. Portrait resolves Auto to Single, where index 1 is a
-    // valid leading; flipping to landscape (Double/Paired) makes pairs start
+    // Auto + Paired cover. Landscape resolves Auto to Single, where index 1 is a
+    // valid leading; flipping to portrait (Double/Paired) makes pairs start
     // even, so normalize_leading(.., Double, Paired, 1) rounds 1 down to 0 — the
     // renormalize on flip must MOVE the index, not no-op.
     let mut state = ViewerState::from_settings(&Settings {
@@ -603,15 +605,15 @@ fn set_viewport_size_flip_moves_index_via_normalize() {
         cover_mode: CoverMode::Paired,
         ..Default::default()
     });
-    // Default aspect 1.0 resolves Auto to Double; go portrait => Single (flips).
-    assert!(state.set_viewport_size(900.0, 1200.0));
+    // Default aspect 1.0 resolves Auto to Single; go landscape => stays Single.
+    assert!(!state.set_viewport_size(1600.0, 900.0));
     state.set_source(mock_with(6));
     assert!(state.apply(NavAction::Next));
     assert_eq!(state.index(), 1);
 
-    // Portrait -> landscape: Single -> Double/Paired flips; index 1 normalizes
+    // Landscape -> portrait: Single -> Double/Paired flips; index 1 normalizes
     // to the even pair start 0.
-    assert!(state.set_viewport_size(1600.0, 900.0));
+    assert!(state.set_viewport_size(900.0, 1200.0));
     assert_eq!(state.index(), 0);
 }
 
@@ -634,15 +636,15 @@ fn toggle_spread_renormalize_moves_index() {
 }
 
 #[test]
-fn auto_landscape_with_paired_cover_navigates_double() {
-    // Auto + Paired + landscape => Double. 5 pages Paired: {0,1}{2,3}{4};
+fn auto_portrait_with_paired_cover_navigates_double() {
+    // Auto + Paired + portrait => Double. 5 pages Paired: {0,1}{2,3}{4};
     // navigation steps leading 0->2->4.
     let mut state = ViewerState::from_settings(&Settings {
         spread_mode: SpreadMode::Auto,
         cover_mode: CoverMode::Paired,
         ..Default::default()
     });
-    state.set_viewport_size(1600.0, 900.0);
+    state.set_viewport_size(900.0, 1200.0);
     state.set_source(mock_with(5));
 
     // Cover paired with page 1: trailing present.
@@ -662,15 +664,15 @@ fn auto_landscape_with_paired_cover_navigates_double() {
 #[test]
 fn set_viewport_size_degenerate_inputs_do_not_panic() {
     // Degenerate sizes must not panic and must not flip from the default 1.0
-    // aspect (=> Double); after sanitizing, the stored aspect stays 1.0.
+    // aspect (=> Single); after sanitizing, the stored aspect stays 1.0.
     let mut state = auto_state();
     state.set_source(mock_with(6));
 
     assert!(!state.set_viewport_size(0.0, 0.0));
     assert!(!state.set_viewport_size(f32::NAN, f32::NAN));
-    // Still resolves to Double (aspect stayed 1.0): a non-cover spread pairs.
+    // Still resolves to Single (aspect stayed 1.0): every page stands alone.
     state.apply(NavAction::Next);
-    assert!(state.current_spread().unwrap().unwrap().trailing.is_some());
+    assert!(state.current_spread().unwrap().unwrap().trailing.is_none());
 }
 
 // ---- open_path / open_folder dispatch (PR6) -----------------------------
@@ -1381,8 +1383,8 @@ fn set_reading_direction_same_value_is_noop() {
 // ---- set_cache_config (PR8b) ---------------------------------------------
 
 #[test]
-fn set_spread_mode_to_auto_landscape_renormalizes_like_double() {
-    // Single mode at index 2 of 6. Landscape viewport (aspect > 1) means
+fn set_spread_mode_to_auto_portrait_renormalizes_like_double() {
+    // Single mode at index 2 of 6. Portrait viewport (aspect < 1) means
     // Auto resolves to Double. Switching from Single to Auto triggers
     // renormalize_index under Double/Standalone semantics: index 2 (even > 0)
     // is NOT a valid Standalone Double leading, so it re-anchors to the pair
@@ -1394,8 +1396,8 @@ fn set_spread_mode_to_auto_landscape_renormalizes_like_double() {
     assert_eq!(state.index(), 2);
     assert_eq!(state.spread_mode(), SpreadMode::Single);
 
-    // Landscape viewport: Auto resolves to Double.
-    state.set_viewport_size(1600.0, 900.0);
+    // Portrait viewport: Auto resolves to Double.
+    state.set_viewport_size(900.0, 1200.0);
 
     assert!(state.set_spread_mode(SpreadMode::Auto));
     assert_eq!(state.spread_mode(), SpreadMode::Auto);
@@ -1404,8 +1406,8 @@ fn set_spread_mode_to_auto_landscape_renormalizes_like_double() {
 }
 
 #[test]
-fn set_spread_mode_to_auto_portrait_preserves_index() {
-    // Single mode at index 2 of 6. Portrait viewport (aspect < 1) means
+fn set_spread_mode_to_auto_landscape_preserves_index() {
+    // Single mode at index 2 of 6. Landscape viewport (aspect > 1) means
     // Auto resolves to Single, where every page is its own valid leading.
     // Switching from Single to Auto still returns true (different enum
     // values), triggers renormalize_index, but index 2 is already a valid
@@ -1417,8 +1419,8 @@ fn set_spread_mode_to_auto_portrait_preserves_index() {
     assert_eq!(state.index(), 2);
     assert_eq!(state.spread_mode(), SpreadMode::Single);
 
-    // Portrait viewport: Auto resolves to Single.
-    state.set_viewport_size(900.0, 1200.0);
+    // Landscape viewport: Auto resolves to Single.
+    state.set_viewport_size(1600.0, 900.0);
 
     assert!(state.set_spread_mode(SpreadMode::Auto));
     assert_eq!(state.spread_mode(), SpreadMode::Auto);

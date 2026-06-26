@@ -277,7 +277,7 @@ a truncating cast wraps crafted huge values (`u32::MAX + 1` → 0) and silently 
 
 ### insta snapshots use `assert_snapshot!` (plain string; no `json` feature)
 
-The generated `.snap` is committed text (not a binary fixture). Generate/refresh with `INSTA_UPDATE=always mise exec -- cargo nextest run -p gashuu-core`; CI never updates snapshots, so a `.snap` mismatch fails the build — the freeze is enforced automatically. Keep snapshot inputs deterministic (`Settings::default().to_json()` — no absolute paths or timestamps). The snapshot pins the current default shape: `reading_direction:"rtl"`, `spread_mode:"auto"`, `cover_mode:"standalone"`, `fit_mode:"width"` (so `"auto"` appears in the snapshot itself). Whenever a default changes, the snapshot must be regenerated — that regeneration IS the freeze's review surface.
+The generated `.snap` is committed text (not a binary fixture). Generate/refresh with `INSTA_UPDATE=always mise exec -- cargo nextest run -p gashuu-core`; CI never updates snapshots, so a `.snap` mismatch fails the build — the freeze is enforced automatically. Keep snapshot inputs deterministic (`Settings::default().to_json()` — no absolute paths or timestamps). The snapshot pins the current default shape: `reading_direction:"rtl"`, `spread_mode:"auto"`, `cover_mode:"standalone"`, `fit_mode:"whole"` (so `"auto"` appears in the snapshot itself). Whenever a default changes, the snapshot must be regenerated — that regeneration IS the freeze's review surface.
 
 ### `Settings` uses pub serde fields, not a checked constructor
 
@@ -305,7 +305,7 @@ The spread settings are active: `keymap::map_key` takes a `dir: ReadingDirection
 
 ### `ViewerState::set_viewport_size(width, height) -> bool`
 
-updates `viewport_aspect` and returns `true` ONLY when the effective `SpreadLayout` actually flips (so `auto` mode causes no churn while resizing within the same layout). On a flip, `normalize_leading` re-anchors the index so the current page stays visible. `main.rs` calls `refresh` only when `set_viewport_size` returns `true`. `auto` resolves aspect `>= 1.0` as Double. The stored `viewport_aspect` is sanitized at storage — any `width/height` ratio that is non-finite or non-positive is coerced to `1.0` (→ Double), so the field always holds a valid ratio; `SpreadMode::resolve` repeats the same guard as a standalone safety net. The `D` toggle is now a 3-cycle (single → double → auto) handled in `ViewerState::toggle_spread`; `keymap` still just returns `ToggleSpread`.
+updates `viewport_aspect` and returns `true` ONLY when the effective `SpreadLayout` actually flips (so `auto` mode causes no churn while resizing within the same layout). On a flip, `normalize_leading` re-anchors the index so the current page stays visible. `main.rs` calls `refresh` only when `set_viewport_size` returns `true`. `auto` resolves aspect `>= 1.0` (landscape/square) as Single and aspect `< 1.0` (portrait) as Double. The stored `viewport_aspect` is sanitized at storage — any `width/height` ratio that is non-finite or non-positive is coerced to `1.0` (→ Single), so the field always holds a valid ratio; `SpreadMode::resolve` repeats the same guard as a standalone safety net. The `D` toggle is now a 3-cycle (single → double → auto) handled in `ViewerState::toggle_spread`; `keymap` still just returns `ToggleSpread`.
 
 ### `CoverMode {Standalone(default), Paired}` controls cover layout in Double mode only
 

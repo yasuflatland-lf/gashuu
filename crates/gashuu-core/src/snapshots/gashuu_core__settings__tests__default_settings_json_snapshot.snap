@@ -7,7 +7,7 @@ expression: "Settings::default().to_json().unwrap()"
   "reading_direction": "rtl",
   "spread_mode": "auto",
   "cover_mode": "standalone",
-  "fit_mode": "width",
+  "fit_mode": "whole",
   "cache_size": 50,
   "preload_pages": 3,
   "key_bindings": {

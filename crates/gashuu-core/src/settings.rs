@@ -248,7 +248,7 @@ mod tests {
         assert_eq!(s.reading_direction, ReadingDirection::Rtl);
         assert_eq!(s.spread_mode, SpreadMode::Auto);
         assert_eq!(s.cover_mode, CoverMode::Standalone);
-        assert_eq!(s.fit_mode, FitMode::Width);
+        assert_eq!(s.fit_mode, FitMode::Whole);
         assert_eq!(s.cache_size, 50);
         assert_eq!(s.preload_pages, 3);
         assert_eq!(s.key_bindings.next, vec!["right", "space"]);
@@ -392,22 +392,22 @@ mod tests {
     // ── fit_mode tests ──
 
     #[test]
-    fn fit_mode_defaults_to_width() {
-        assert_eq!(FitMode::default(), FitMode::Width);
-        assert_eq!(Settings::default().fit_mode, FitMode::Width);
+    fn fit_mode_defaults_to_whole() {
+        assert_eq!(FitMode::default(), FitMode::Whole);
+        assert_eq!(Settings::default().fit_mode, FitMode::Whole);
     }
 
     #[test]
     fn fit_mode_round_trip() {
-        // Both legs use NON-default variants (default is Width) so the round trip
+        // Both legs use NON-default variants (default is Whole) so the round trip
         // cannot pass by the parser merely re-defaulting a dropped field.
         let s = Settings {
-            fit_mode: FitMode::Whole,
+            fit_mode: FitMode::Width,
             ..Default::default()
         };
         let json = s.to_json().unwrap();
         let parsed = Settings::from_json(&json).unwrap();
-        assert_eq!(parsed.fit_mode, FitMode::Whole);
+        assert_eq!(parsed.fit_mode, FitMode::Width);
 
         let s = Settings {
             fit_mode: FitMode::Actual,
@@ -419,8 +419,8 @@ mod tests {
     }
 
     #[test]
-    fn from_json_missing_fit_mode_defaults_to_width() {
-        // JSON without fit_mode must produce FitMode::Width via #[serde(default)].
+    fn from_json_missing_fit_mode_defaults_to_whole() {
+        // JSON without fit_mode must produce FitMode::Whole via #[serde(default)].
         let json = serde_json::json!({
             "version": SETTINGS_VERSION,
             "reading_direction": "ltr",
@@ -429,7 +429,7 @@ mod tests {
         })
         .to_string();
         let s = Settings::from_json(&json).unwrap();
-        assert_eq!(s.fit_mode, FitMode::Width);
+        assert_eq!(s.fit_mode, FitMode::Whole);
         // The explicit keys must parse as written — "ltr"/"single" are now
         // NON-default variants, so these also prove explicit values win over
         // the defaults.
