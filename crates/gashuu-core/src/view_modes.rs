@@ -39,9 +39,9 @@ pub enum SpreadLayout {
 
 impl SpreadMode {
     /// Resolve to a concrete `SpreadLayout`. `Single`/`Double` ignore `aspect`
-    /// (identity); `Auto` picks `Double` for a landscape-or-square window
-    /// (`aspect >= 1.0`) and `Single` for a portrait window. A non-finite or
-    /// non-positive `aspect` is treated as `1.0` (=> Double) so a degenerate
+    /// (identity); `Auto` picks `Single` for a landscape-or-square window
+    /// (`aspect >= 1.0`) and `Double` for a portrait window. A non-finite or
+    /// non-positive `aspect` is treated as `1.0` (=> Single) so a degenerate
     /// window size can never panic or pick a surprising layout.
     pub fn resolve(self, aspect: f32) -> SpreadLayout {
         match self {
@@ -54,9 +54,9 @@ impl SpreadMode {
                     1.0
                 };
                 if a >= 1.0 {
-                    SpreadLayout::Double
-                } else {
                     SpreadLayout::Single
+                } else {
+                    SpreadLayout::Double
                 }
             }
         }
@@ -80,8 +80,8 @@ pub enum CoverMode {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FitMode {
-    Whole,
     #[default]
+    Whole,
     Width,
     Actual,
 }
@@ -130,19 +130,19 @@ mod tests {
 
     #[test]
     fn resolve_auto_threshold() {
-        // Square or wider => Double; portrait => Single.
-        assert_eq!(SpreadMode::Auto.resolve(1.0), SpreadLayout::Double);
-        assert_eq!(SpreadMode::Auto.resolve(1.01), SpreadLayout::Double);
-        assert_eq!(SpreadMode::Auto.resolve(2.0), SpreadLayout::Double);
-        assert_eq!(SpreadMode::Auto.resolve(0.99), SpreadLayout::Single);
-        assert_eq!(SpreadMode::Auto.resolve(0.5), SpreadLayout::Single);
+        // Square or wider => Single; portrait => Double.
+        assert_eq!(SpreadMode::Auto.resolve(1.0), SpreadLayout::Single);
+        assert_eq!(SpreadMode::Auto.resolve(1.01), SpreadLayout::Single);
+        assert_eq!(SpreadMode::Auto.resolve(2.0), SpreadLayout::Single);
+        assert_eq!(SpreadMode::Auto.resolve(0.99), SpreadLayout::Double);
+        assert_eq!(SpreadMode::Auto.resolve(0.5), SpreadLayout::Double);
     }
 
     #[test]
     fn resolve_auto_guards_degenerate_aspect() {
-        // Non-finite / non-positive aspects are treated as 1.0 (=> Double); no panic.
+        // Non-finite / non-positive aspects are treated as 1.0 (=> Single); no panic.
         for aspect in [0.0_f32, -1.0, f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
-            assert_eq!(SpreadMode::Auto.resolve(aspect), SpreadLayout::Double);
+            assert_eq!(SpreadMode::Auto.resolve(aspect), SpreadLayout::Single);
         }
     }
 
