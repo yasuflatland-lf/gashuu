@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=gashuu
+GenericName=Manga Viewer
+Comment=A fast, elegant manga / comic reader built for immersive viewing
+Exec=gashuu %F
+Icon=gashuu
+Terminal=false
+Categories=Graphics;Viewer;
+MimeType=application/vnd.comicbook+zip;application/vnd.comicbook-rar;application/zip;
+Keywords=manga;comic;cbz;cbr;reader;viewer;
