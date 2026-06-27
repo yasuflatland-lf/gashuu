@@ -1854,7 +1854,7 @@ dependencies = [
 
 [[package]]
 name = "gashuu"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "color-eyre",
  "fluent-syntax",
@@ -1876,7 +1876,7 @@ dependencies = [
 
 [[package]]
 name = "gashuu-core"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "base64",
  "directories",
