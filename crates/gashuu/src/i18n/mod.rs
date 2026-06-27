@@ -186,15 +186,6 @@ impl Localizer {
         strings.set_settings_shortcuts_label(fl!(self.loader, "settings-shortcuts-label").into());
         strings.set_settings_reset_to_global(fl!(self.loader, "settings-reset-to-global").into());
         strings.set_shortcuts_title(fl!(self.loader, "shortcuts-title").into());
-        strings.set_guide_welcome(fl!(self.loader, "guide-welcome").into());
-        strings.set_guide_intro(fl!(self.loader, "guide-intro").into());
-        strings.set_guide_open(fl!(self.loader, "guide-open").into());
-        strings.set_guide_turn_pages(fl!(self.loader, "guide-turn-pages").into());
-        strings.set_guide_modes(fl!(self.loader, "guide-modes").into());
-        strings.set_guide_zoom_fit(fl!(self.loader, "guide-zoom-fit").into());
-        strings.set_guide_thumbnails(fl!(self.loader, "guide-thumbnails").into());
-        strings.set_guide_settings(fl!(self.loader, "guide-settings").into());
-        strings.set_guide_got_it(fl!(self.loader, "guide-got-it").into());
         strings.set_carousel_empty_title(fl!(self.loader, "carousel-empty-title").into());
         strings.set_carousel_empty_subtitle(fl!(self.loader, "carousel-empty-subtitle").into());
         strings.set_carousel_empty_cta(fl!(self.loader, "carousel-empty-cta").into());

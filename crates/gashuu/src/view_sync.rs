@@ -267,7 +267,7 @@ mod tests {
             cache_size: 99,
             preload_pages: 7,
             track_recent_files: true,
-            seen_guide: true,
+            allow_rar_archives: false,
             ..Settings::default()
         };
         reconcile_settings(&state, &viewport, &mut settings);
@@ -283,7 +283,7 @@ mod tests {
         assert_eq!(settings.cache_size, 99);
         assert_eq!(settings.preload_pages, 7);
         assert!(settings.track_recent_files);
-        assert!(settings.seen_guide);
+        assert!(!settings.allow_rar_archives);
     }
 
     // ---- current_book_name (#71 title-bar) -------------------------------

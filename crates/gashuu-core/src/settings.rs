@@ -49,10 +49,6 @@ pub struct Settings {
     /// Recently opened folders, most-recent first. Capped at `MAX_RECENT_FILES`.
     #[serde(default)]
     pub recent_files: Vec<PathBuf>,
-    /// Set to `true` after the first-run guide has been shown. Default `false` so
-    /// a fresh install shows the guide exactly once.
-    #[serde(default)]
-    pub seen_guide: bool,
     /// UI display language. `#[serde(default)]` so settings.json files written
     /// before this field existed load as `Language::En` (English).
     #[serde(default)]
@@ -96,7 +92,6 @@ impl Default for Settings {
             key_bindings: KeyBindings::default(),
             track_recent_files: false,
             recent_files: Vec::new(),
-            seen_guide: false,
             language: Language::default(),
             allow_rar_archives: true,
             window: None,
@@ -295,7 +290,6 @@ mod tests {
             },
             track_recent_files: true,
             recent_files: vec![PathBuf::from("/a"), PathBuf::from("/b")],
-            seen_guide: true,
             language: Language::Ja,
             // Differs from the new default (`true`) so the round-trip tests below
             // would catch save/load dropping this field.
@@ -609,35 +603,6 @@ mod tests {
         );
     }
 
-    // ── seen_guide tests ──
-
-    #[test]
-    fn seen_guide_defaults_to_false() {
-        assert!(!Settings::default().seen_guide);
-    }
-
-    #[test]
-    fn seen_guide_round_trips() {
-        let s = Settings {
-            seen_guide: true,
-            ..Default::default()
-        };
-        let json = s.to_json().unwrap();
-        let parsed = Settings::from_json(&json).unwrap();
-        assert!(parsed.seen_guide);
-    }
-
-    #[test]
-    fn from_json_missing_seen_guide_defaults_to_false() {
-        // A JSON object that omits `seen_guide` must produce `false` via
-        // `#[serde(default)]`, identical to how `cover_mode`/`fit_mode` were added.
-        let s = Settings::from_json(r#"{"version":1}"#).unwrap();
-        assert!(
-            !s.seen_guide,
-            "seen_guide must default to false when absent from JSON"
-        );
-    }
-
     // ── language tests ──
 
     #[test]
@@ -675,7 +640,7 @@ mod tests {
     #[test]
     fn from_json_missing_language_defaults_to_en() {
         // A JSON object that omits `language` must produce `En` via
-        // `#[serde(default)]`, identical to how `seen_guide` was added.
+        // `#[serde(default)]`, identical to how `cover_mode`/`fit_mode` were added.
         let s = Settings::from_json(r#"{"version":1}"#).unwrap();
         assert_eq!(s.language, Language::En);
     }

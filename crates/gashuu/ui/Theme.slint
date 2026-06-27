@@ -94,7 +94,7 @@ export global Theme {
     out property <length> settings-dropdown-chevron: 10px;  // chevron glyph square
 
     // ── Settings glass panel (issue 103, PR-B) ────────────────────────────────
-    out property <length> settings-w: 432px;             // panel width (432 = 377 + 55, both Fibonacci numbers; widened from 377 so the 3-up segmented cells fit their widest JP label plus the 13px symmetric seg-label-pad without crowding the rounded ends — settings-label-col stays 165, so the extra width all goes to the control column); height is content-hug — spec 2026-06-04 dropped the fixed φ outline; shared by the Shortcuts overlay / Confirm / FirstRunGuide width clamps
+    out property <length> settings-w: 432px;             // panel width (432 = 377 + 55, both Fibonacci numbers; widened from 377 so the 3-up segmented cells fit their widest JP label plus the 13px symmetric seg-label-pad without crowding the rounded ends — settings-label-col stays 165, so the extra width all goes to the control column); height is content-hug — spec 2026-06-04 dropped the fixed φ outline; shared by the Shortcuts overlay / Confirm width clamps
     out property <length> settings-radius: nav-pill-radius;  // = nav-pill-radius (shares NavBar's glass corner language)
     out property <length> settings-label-col: 165px;     // fixed label column; sized for the longest label — the Japanese "Allow CBR/RAR archives" string renders ≈ 157px in font-body (13px) — leaving ~8px slack; widened from 132px (an English-only fit that clipped the longer Japanese labels) when settings-w grew to 377px; labels never wrap/elide
     out property <length> settings-control-x: settings-label-col + space-lg;  // single vertical seam every CONTROL shares; section headers align with the label margin (not this seam)
@@ -123,7 +123,6 @@ export global Theme {
 
     // ── Scrims (modal backdrops) ──────────────────────────────────────────────
     out property <color> scrim: #000000a0;          // standard modal backdrop (~63% black)
-    out property <color> scrim-strong: #000000c0;   // denser first-run backdrop (~75% black)
     out property <color> scrim-soft: #00000060;     // lighter recede veil (~38% black); scrim is too dense for a NavBar recede
 
     // ── Drag-and-drop drop zone (full-window solid frame) ─────────────────────

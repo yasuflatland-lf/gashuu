@@ -240,12 +240,6 @@ fn main() -> color_eyre::Result<()> {
         );
     }
 
-    // First-run guide: show the overlay exactly once. `seen_guide` is flipped and
-    // persisted when the user dismisses it (see `on_dismiss_guide`).
-    if !settings.borrow().seen_guide {
-        ui.set_show_guide(true);
-    }
-
     // Wire all event handlers onto the window (handlers/, #151).
     handlers::wire_open_handlers(
         &ui, &state, &viewport, &settings, &library, &open_book, &covers, &pages, &adder, &search,
@@ -291,8 +285,8 @@ fn main() -> color_eyre::Result<()> {
     write_back_position(&state, &library);
     // Persist the open book's view modes to its override on exit, then mirror into
     // the GLOBAL Settings only when no book is open (the ADR-0007 clobber guard
-    // lives inside `persist_view_modes`). cache/preload/track and seen_guide are
-    // saved unconditionally below.
+    // lives inside `persist_view_modes`). cache/preload/track are saved
+    // unconditionally below.
     persist_view_modes(
         ViewModeRoute::AppExit,
         &state,

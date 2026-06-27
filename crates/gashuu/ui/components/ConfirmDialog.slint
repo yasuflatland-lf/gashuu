@@ -7,8 +7,7 @@
 // glass idiom exactly — the same scrim, the same ONE fake-glass object (NavBar's
 // four-layer idiom, with layer 1 promoted from a solid fill to a top-sheen FILL
 // gradient — the SettingsDialog promotion: a top-sheen FILL gradient + a 1px rim +
-// a 1px top inner highlight + ONE drop shadow), and the FirstRunGuide fluid-width
-// clamp. The
+// a 1px top inner highlight + ONE drop shadow), and a fluid-width clamp. The
 // sheen is a FILL gradient, not an opacity layer (opacity blurs text/SVG on
 // HiDPI — docs/patterns.md); show/hide is `if`/`visible:` only, never `opacity`.
 //
@@ -140,7 +139,7 @@ export component ConfirmDialog inherits Rectangle {
     // ── Glass panel ───────────────────────────────────────────────────────────
     panel := Rectangle {
         // Fluid width: caps on wide windows; shrinks to leave a gutter each side
-        // on narrow windows (FirstRunGuide clamp). Height hugs the content.
+        // on narrow windows (shared settings-w clamp). Height hugs the content.
         width: min(Theme.settings-w, parent.width - 2 * Theme.space-xl);
         // `body-col` is a VerticalLayout whose preferred-height is computed
         // bottom-up from its children, so reading it here does not create a

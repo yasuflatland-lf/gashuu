@@ -2,7 +2,6 @@ import { VerticalBox } from "std-widgets.slint";
 import { PageView } from "PageView.slint";
 import { ThumbnailStrip, ThumbnailItem } from "ThumbnailStrip.slint";
 import { SettingsDialog } from "SettingsDialog.slint";
-import { FirstRunGuide } from "FirstRunGuide.slint";
 import { ShortcutsOverlay } from "ShortcutsOverlay.slint";
 import { Carousel, CarouselItem } from "Carousel.slint";
 import { Theme } from "Theme.slint";
@@ -130,7 +129,6 @@ export component ViewerWindow inherits Window {
 
     // Settings dialog / overlay visibility and state.
     in property <bool> show-settings: false;
-    in property <bool> show-guide: false;
     in property <bool> show-shortcuts: false;
     // Private epoch: Rust bumps this (via focus-settings()) after closing the
     // shortcuts overlay so SettingsDialog can re-focus its FocusScope. The
@@ -301,7 +299,6 @@ export component ViewerWindow inherits Window {
     callback close-shortcuts();
     // Viewer settings: reset the current book to the global defaults.
     callback reset-overrides();
-    callback dismiss-guide();
     callback set-reading-direction(int);
     callback set-spread-mode(int);
     callback set-cover-mode(int);
@@ -330,7 +327,7 @@ export component ViewerWindow inherits Window {
         combined-add-picker: root.combined-add-picker;
         // Suppress the carousel's keyboard seams while a modal overlays the
         // Library — same condition the Viewer FocusScope uses (see `fs` below).
-        modal-open: root.show-settings || root.show-guide || root.show-shortcuts || root.show-confirm-delete;
+        modal-open: root.show-settings || root.show-shortcuts || root.show-confirm-delete;
         search-changed(q) => { root.library-search-changed(q); }
         // The nav's Settings button opens the EXISTING SettingsDialog: route the
         // click straight to the shared `open-settings` flow (same handler the
@@ -463,7 +460,7 @@ export component ViewerWindow inherits Window {
             fs := FocusScope {
                 key-pressed(event) => {
                     // Suppress background navigation while a modal overlay is open.
-                    if (root.show-settings || root.show-guide || root.show-shortcuts) { return reject; }
+                    if (root.show-settings || root.show-shortcuts) { return reject; }
                     if (event.text == Key.LeftArrow) {
                         root.nav("left");
                         return accept;
@@ -528,7 +525,7 @@ export component ViewerWindow inherits Window {
                     // pointer input, but a tap must never leak a page turn under
                     // an overlay if that ever changes (belt-and-braces).
                     tapped(tx) => {
-                        if (!root.show-settings && !root.show-guide && !root.show-shortcuts && !root.show-confirm-delete) {
+                        if (!root.show-settings && !root.show-shortcuts && !root.show-confirm-delete) {
                             root.nav(tx < self.width / 2 ? "left" : "right");
                         }
                     }
@@ -537,7 +534,7 @@ export component ViewerWindow inherits Window {
                     // so keymap.rs resolves reading direction once. Same modal
                     // guard as tapped (belt-and-braces under an overlay).
                     page-swipe(dir) => {
-                        if (!root.show-settings && !root.show-guide && !root.show-shortcuts && !root.show-confirm-delete) {
+                        if (!root.show-settings && !root.show-shortcuts && !root.show-confirm-delete) {
                             root.nav(dir);
                         }
                     }
@@ -718,11 +715,6 @@ export component ViewerWindow inherits Window {
         set-language(i) => { root.set-language(i); }
         close-settings() => { root.close-settings(); }
         reset-to-global() => { root.reset-overrides(); }
-    }
-    if root.show-guide : FirstRunGuide {
-        width: root.width;
-        height: root.height;
-        dismiss-guide() => { root.dismiss-guide(); }
     }
     // ShortcutsOverlay: must stay LAST (topmost) — see stacking-order note above.
     if root.show-shortcuts : ShortcutsOverlay {
