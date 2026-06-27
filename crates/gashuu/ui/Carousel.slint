@@ -339,7 +339,7 @@ export component Carousel inherits Rectangle {
     // its saved page) when one exists, else surface a no-bookmark status notice.
     // Bubbles up to ViewerWindow (and handlers/library.rs) the same way `settings` does.
     callback continue-reading();
-    // True while a modal overlay (settings / first-run guide) is open over the
+    // True while a modal overlay (settings / shortcuts) is open over the
     // Library. The carousel still holds keyboard focus, so its FocusScope must
     // suppress all key arms — otherwise Left/Right, `/`, Down, and Return would
     // act on the carousel underneath the modal (mirrors the Viewer FocusScope

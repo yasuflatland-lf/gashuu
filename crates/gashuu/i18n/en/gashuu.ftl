@@ -1,7 +1,7 @@
 # English Fluent catalog for gashuu.
 #
 # ID convention: <screen>-<element>[-<variant>], kebab-case.
-# Prefixes: settings-, guide- (FirstRunGuide), carousel-, navbar-,
+# Prefixes: settings-, carousel-, navbar-,
 #           shortcuts-, viewer-pill-, stepper-, viewer- (status/dynamic),
 #           notice-, common-.
 # A11y-only strings get an -a11y suffix.
@@ -119,19 +119,6 @@ shortcuts-help =
       Cmd/Ctrl+A = select all visible / deselect all
       Delete / Backspace = delete selected books
       Esc = exit selection mode
-
-# ---- guide ----
-
-# FirstRunGuide overlay
-guide-welcome = Welcome to gashuu
-guide-intro = A quick guide to get you started:
-guide-open = Open: use the toolbar buttons — Open Folder… / Open Archive… (CBZ/ZIP/CBR/RAR).
-guide-turn-pages = Turn pages: Space = next, Backspace = previous. Arrow keys follow the reading direction.
-guide-modes = Modes: D = spread (single → double → auto), R = reading direction (LTR/RTL), C = cover layout.
-guide-zoom-fit = Zoom & fit: + / - to zoom, 0 to reset, 1 for actual size, f to cycle fit mode. Wheel zooms at the cursor; drag to pan.
-guide-thumbnails = Thumbnails: T toggles the thumbnail strip; click a thumbnail to jump to that page.
-guide-settings = Settings: open the Settings dialog from the toolbar to change these options anytime.
-guide-got-it = Got it
 
 # ---- carousel ----
 

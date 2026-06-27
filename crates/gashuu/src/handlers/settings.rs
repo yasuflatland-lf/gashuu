@@ -18,7 +18,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 /// Registers the settings/shortcuts dialog lifecycle callbacks (open, close,
-/// shortcuts overlay open/close, reset overrides, first-run guide dismissal,
+/// shortcuts overlay open/close, reset overrides,
 /// and the immediate data-clearing actions) onto `ui`.
 /// Panel constraint (#151): explicit handle list IS the dependency list — no AppState bundle.
 /// `covers`/`search`/`selection` are threaded in for the clear-reading-history
@@ -234,26 +234,6 @@ pub(crate) fn wire_settings_handlers(
                 ui.set_spread_mode_index(spread_mode_to_index(st.spread_mode()));
                 ui.set_cover_mode_index(cover_mode_to_index(st.cover_mode()));
                 ui.set_fit_mode_index(fit_mode_to_index(viewport.borrow().fit_mode()));
-            })
-        });
-    }
-
-    // Dismiss the first-run guide: mark it seen, persist, hide it, restore focus.
-    // Two-statement RefCell discipline: the `borrow_mut()` drops at the `;` before
-    // the immutable `borrow()` for `save`.
-    {
-        let ui_weak = ui.as_weak();
-        let settings = Rc::clone(&settings);
-        ui.on_dismiss_guide(move || {
-            with_ui(&ui_weak, |ui| {
-                // Persist immediately; a persistent save failure here is non-fatal — the
-                // guide simply re-shows next launch (seen_guide is also saved on exit).
-                settings.borrow_mut().seen_guide = true;
-                if let Err(e) = settings.borrow().save() {
-                    tracing::error!(error = %e, "failed to save settings on guide dismiss");
-                }
-                ui.set_show_guide(false);
-                ui.invoke_focus_pages();
             })
         });
     }

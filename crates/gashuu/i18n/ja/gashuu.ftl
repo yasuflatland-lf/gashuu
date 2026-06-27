@@ -1,7 +1,7 @@
 # Japanese Fluent catalog for gashuu.
 #
 # ID convention: <screen>-<element>[-<variant>], kebab-case.
-# Prefixes: settings-, guide- (FirstRunGuide), carousel-, navbar-,
+# Prefixes: settings-, carousel-, navbar-,
 #           shortcuts-, viewer-pill-, stepper-, viewer- (status/dynamic),
 #           notice-, common-.
 # A11y-only strings get an -a11y suffix.
@@ -122,19 +122,6 @@ shortcuts-help =
       Cmd/Ctrl+A = 表示中をすべて選択 / すべて解除
       Delete / Backspace = 選択した本を削除
       Esc = 選択モードを終了
-
-# ---- guide ----
-
-# FirstRunGuide overlay
-guide-welcome = gashuu へようこそ
-guide-intro = かんたんな使い方ガイド:
-guide-open = 開く: ツールバーの「フォルダーを開く…」「アーカイブを開く…」(CBZ/ZIP/CBR/RAR) ボタンを使います。
-guide-turn-pages = ページ送り: Space = 次へ、Backspace = 前へ。矢印キーは読む方向に従います。
-guide-modes = モード: D = ページ表示 (単ページ → 見開き → 自動)、R = 読む方向 (左から右 / 右から左)、C = 表紙レイアウト。
-guide-zoom-fit = ズームとフィット: + / - でズーム、0 でリセット、1 で原寸、f でフィット切替。ホイールはカーソル位置でズーム、ドラッグで移動します。
-guide-thumbnails = サムネイル: T で一覧の表示を切替。サムネイルをクリックするとそのページへ移動します。
-guide-settings = 設定: ツールバーから設定ダイアログを開くと、これらの設定をいつでも変更できます。
-guide-got-it = わかりました
 
 # ---- carousel ----
 
