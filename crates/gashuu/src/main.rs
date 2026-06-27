@@ -29,6 +29,7 @@ mod thumbnail_strip;
 mod view_sync;
 mod viewer_state;
 mod viewport;
+mod window_state;
 
 pub(crate) use add_books::apply_outcomes;
 pub(crate) use carousel_refresh::{
@@ -274,6 +275,10 @@ fn main() -> color_eyre::Result<()> {
     // pipeline as the Add buttons (handlers/drag_drop.rs).
     handlers::wire_drag_drop_handlers(&ui, &settings, &adder);
 
+    // Restore the last window size + position before the first paint. No-op on a
+    // fresh install; off-screen positions are dropped in favor of centering.
+    window_state::restore_geometry(&ui, &settings.borrow());
+
     ui.run()?;
     // Persist any page counts the cover prefetch resolved after the last carousel
     // refresh, so a book counted this session shows its real total next launch
@@ -295,6 +300,11 @@ fn main() -> color_eyre::Result<()> {
         &settings,
         &library,
     );
+    // Record the final window geometry so the next launch restores it. The window
+    // handle is still alive here (the event loop has exited but `ui` is in scope),
+    // and `settings` is unborrowed.
+    window_state::capture_geometry(&ui, &mut settings.borrow_mut());
+
     if let Err(e) = settings.borrow().save() {
         tracing::error!(error = %e, "failed to save settings on exit");
     }

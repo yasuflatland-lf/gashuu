@@ -12,6 +12,7 @@ use crate::cache::{DEFAULT_CAPACITY, DEFAULT_PREFETCH_RADIUS};
 use crate::cache_config::CacheConfig;
 use crate::error::CoreError;
 use crate::view_modes::{CoverMode, FitMode, KeyBindings, Language, ReadingDirection, SpreadMode};
+use crate::window_geometry::WindowGeometry;
 use directories::ProjectDirs;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -62,6 +63,11 @@ pub struct Settings {
     /// existed load as `true`, while a user's explicit `false` is preserved.
     #[serde(default = "default_allow_rar")]
     pub allow_rar_archives: bool,
+    /// Last window geometry (size + position, physical pixels). `None` on a fresh
+    /// install → the Slint `preferred-*` boot size applies. `skip_serializing_if`
+    /// keeps a `None` out of the document, so the default snapshot is unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window: Option<WindowGeometry>,
 }
 
 fn default_version() -> u32 {
@@ -93,6 +99,7 @@ impl Default for Settings {
             seen_guide: false,
             language: Language::default(),
             allow_rar_archives: true,
+            window: None,
         }
     }
 }
@@ -194,6 +201,13 @@ impl Settings {
         // exceed MAX_RECENT_FILES and then persist forever (exit-save writes
         // in-memory state); enforce the cap here too.
         self.recent_files.truncate(MAX_RECENT_FILES);
+        // Floor a stored window size to the legible minimum, mirroring the cache
+        // clamps above (a hand-edited file could carry a tiny/zero size).
+        if let Some(g) = self.window.as_mut() {
+            let (w, h) = g.clamped_size();
+            g.width = w;
+            g.height = h;
+        }
     }
 
     /// Record `path` as most-recently-opened when tracking is enabled. Dedups
@@ -240,6 +254,7 @@ fn migrate(mut value: serde_json::Value, from: u32) -> serde_json::Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::window_geometry::{WindowGeometry, MIN_WINDOW_HEIGHT, MIN_WINDOW_WIDTH};
 
     #[test]
     fn default_settings_have_expected_values() {
@@ -285,6 +300,12 @@ mod tests {
             // Differs from the new default (`true`) so the round-trip tests below
             // would catch save/load dropping this field.
             allow_rar_archives: false,
+            window: Some(WindowGeometry {
+                width: 1024,
+                height: 768,
+                x: 120,
+                y: -40,
+            }),
         }
     }
 
@@ -736,6 +757,69 @@ mod tests {
         .to_string();
         let s = Settings::from_json(&json).unwrap();
         assert_eq!(s.preload_pages, MAX_PREFETCH_RADIUS);
+    }
+
+    // ── window geometry tests ──
+
+    #[test]
+    fn window_defaults_to_none() {
+        assert_eq!(Settings::default().window, None);
+    }
+
+    #[test]
+    fn window_omitted_from_default_json() {
+        // skip_serializing_if keeps a None window out of the serialized document.
+        let json = Settings::default().to_json().unwrap();
+        assert!(
+            !json.contains("window"),
+            "a None window must not appear in settings.json, got {json}"
+        );
+    }
+
+    #[test]
+    fn window_round_trips() {
+        let s = Settings {
+            window: Some(WindowGeometry {
+                width: 1024,
+                height: 768,
+                x: 120,
+                y: -40,
+            }),
+            ..Default::default()
+        };
+        let parsed = Settings::from_json(&s.to_json().unwrap()).unwrap();
+        assert_eq!(parsed.window, s.window);
+    }
+
+    #[test]
+    fn from_json_missing_window_defaults_to_none() {
+        let s = Settings::from_json(r#"{"version":1}"#).unwrap();
+        assert_eq!(s.window, None);
+    }
+
+    #[test]
+    fn normalize_floors_window_size() {
+        // A hand-edited / undersized stored geometry is floored to the minimum,
+        // mirroring how cache_size is normalized. Position is untouched.
+        let mut s = Settings {
+            window: Some(WindowGeometry {
+                width: 100,
+                height: 50,
+                x: 7,
+                y: 9,
+            }),
+            ..Default::default()
+        };
+        s.normalize();
+        assert_eq!(
+            s.window,
+            Some(WindowGeometry {
+                width: MIN_WINDOW_WIDTH,
+                height: MIN_WINDOW_HEIGHT,
+                x: 7,
+                y: 9,
+            })
+        );
     }
 
     #[test]

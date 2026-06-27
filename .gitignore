@@ -1,6 +1,9 @@
 # Superpowers brainstorming / specs (local only)
 docs/superpowers/
 
+# Design specs (local only)
+docs/specs/
+
 # Claude Code plans (local only)
 .claude/plans/
 
