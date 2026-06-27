@@ -153,3 +153,14 @@ Estimated ≈300 production LOC — within the ≤1000-LOC PR guideline.
   If `size()` / `position()` return stale/zero after `run()` on any platform,
   fall back to live tracking (size via `on_resized`, position via a `Moved`
   branch folded into the existing drag-drop winit handler).
+
+## Amendment (2026-06-27): apply geometry after the window is created
+
+Implementation/review found that winit 0.30 creates the OS window lazily — it does
+not exist until the event loop spins. Applying geometry before `ui.run()` therefore
+fails: `with_winit_window` returns `None` (so the monitor list is empty and the
+position is never restored), and `set_size` is treated as a logical size at scale
+1.0 (wrong physical size on HiDPI). The restore is now armed before `ui.run()` but
+DEFERRED via `slint::Timer::single_shot(Duration::ZERO, …)`, which fires on the first
+event-loop turn once the window exists (with a bounded re-arm guard on
+`has_winit_window()`). Capture at exit is unchanged.

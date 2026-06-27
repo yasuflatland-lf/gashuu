@@ -10,16 +10,44 @@ use crate::ViewerWindow;
 use gashuu_core::{center_in, Rect, Settings, WindowGeometry};
 use slint::winit_030::{winit, WinitWindowAccessor};
 use slint::ComponentHandle;
+use std::time::Duration;
 
-/// Apply the saved geometry to `ui` before the event loop starts. The size is
-/// always restored (floored to the legible minimum). The position is restored
-/// only when it still lands on a monitor; otherwise the window is centered on
-/// the primary monitor. No-op when nothing was saved (fresh install) so Slint's
-/// `preferred-*` boot size applies.
+/// Arrange to restore the saved geometry once the OS window exists. winit 0.30
+/// creates the window lazily — it does not exist until the event loop spins — so
+/// monitor enumeration and correct physical sizing only work AFTER `run()` has
+/// started. We therefore defer the apply to a zero-delay single-shot timer, armed
+/// here (before `ui.run()`) and firing on the first event-loop turn. A no-op when
+/// nothing was saved (fresh install), so Slint's `preferred-*` boot size applies.
 pub(crate) fn restore_geometry(ui: &ViewerWindow, settings: &Settings) {
     let Some(geom) = settings.window else {
         return;
     };
+    // ~30 immediate re-arms is far more than the 1-2 ticks the window needs in
+    // practice; the bound only prevents an unbounded loop on a hypothetical
+    // non-winit build where the window never appears.
+    arm_apply(ui.as_weak(), geom, 30);
+}
+
+/// Fire a zero-delay timer that applies `geom` once the winit window exists,
+/// re-arming (up to `attempts` more times) if it is not up yet on this tick.
+fn arm_apply(weak: slint::Weak<ViewerWindow>, geom: WindowGeometry, attempts: u8) {
+    slint::Timer::single_shot(Duration::ZERO, move || {
+        let Some(ui) = weak.upgrade() else {
+            return;
+        };
+        if !ui.window().has_winit_window() && attempts > 0 {
+            arm_apply(ui.as_weak(), geom, attempts - 1);
+            return;
+        }
+        apply_geometry(&ui, geom);
+    });
+}
+
+/// Apply size + position to the live window. Size is always applied (floored to
+/// the legible minimum); position is applied only when it still lands on a
+/// monitor, otherwise the window is centered on the primary monitor. No monitors
+/// discoverable (non-winit build) → leave placement to the OS.
+fn apply_geometry(ui: &ViewerWindow, geom: WindowGeometry) {
     let (w, h) = geom.clamped_size();
     ui.window().set_size(slint::PhysicalSize::new(w, h));
 
@@ -31,7 +59,6 @@ pub(crate) fn restore_geometry(ui: &ViewerWindow, settings: &Settings) {
         let (x, y) = center_in(*primary, (w, h));
         ui.window().set_position(slint::PhysicalPosition::new(x, y));
     }
-    // No monitors discoverable (non-winit build): leave placement to the OS.
 }
 
 /// Capture the live window geometry into `settings` at exit. Called after
