@@ -59,9 +59,15 @@ impl WindowGeometry {
         )
     }
 
-    /// Top-center grab point a little below the window's top edge.
+    /// Top-center grab point a little below the window's top edge. Uses
+    /// saturating/u32-first arithmetic so absurd hand-edited values cannot
+    /// overflow (and panic in debug).
     fn grab_point(&self) -> (i32, i32) {
-        (self.x + self.width as i32 / 2, self.y + TITLE_BAR_GRAB)
+        let half_w = (self.width / 2) as i32;
+        (
+            self.x.saturating_add(half_w),
+            self.y.saturating_add(TITLE_BAR_GRAB),
+        )
     }
 
     /// True when the title-bar grab point falls on some monitor (the window can
@@ -197,5 +203,19 @@ mod tests {
         };
         // Window wider/taller than the monitor → clamp to the monitor origin.
         assert_eq!(center_in(monitor, (1024, 768)), (10, 20));
+    }
+
+    #[test]
+    fn clamped_size_passes_through_at_minimum() {
+        let g = geom(MIN_WINDOW_WIDTH, MIN_WINDOW_HEIGHT, 0, 0);
+        assert_eq!(g.clamped_size(), (MIN_WINDOW_WIDTH, MIN_WINDOW_HEIGHT));
+    }
+
+    #[test]
+    fn grab_point_does_not_overflow_on_extreme_values() {
+        // Hand-edited garbage must not panic (debug) when computing the grab point.
+        let g = geom(u32::MAX, 600, i32::MAX, 0);
+        let monitors = [Rect { x: 0, y: 0, width: 100, height: 100 }];
+        assert!(!g.is_position_visible(&monitors));
     }
 }
