@@ -24,6 +24,7 @@ pub mod thumbnail_cache;
 pub mod view_modes;
 pub mod view_override;
 pub mod viewport;
+pub mod window_geometry;
 
 pub use archive_loader::{ArchiveLoader, ArchivePolicy};
 pub use cache::{ImageCache, DEFAULT_CAPACITY, DEFAULT_PREFETCH_RADIUS};
@@ -48,6 +49,7 @@ pub use view_override::{ResolvedView, ViewOverride};
 pub use viewport::{
     anchored_zoom, centered_offset, clamp_offset, clamp_zoom, fit_scale, ZOOM_MAX, ZOOM_MIN,
 };
+pub use window_geometry::{center_in, Rect, WindowGeometry, MIN_WINDOW_HEIGHT, MIN_WINDOW_WIDTH};
 
 #[cfg(feature = "testing")]
 pub use page_source::MockPageSource;
