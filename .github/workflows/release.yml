@@ -260,14 +260,15 @@ jobs:
           save-if: 'true'
       # Slint's winit + femtovg backend links these system libraries on Linux.
       # meson/ninja/nasm build dav1d from source (next step); `file` is required
-      # by linuxdeploy/appimagetool.
+      # by linuxdeploy/appimagetool; imagemagick downsizes the app icon for the
+      # AppImage (linuxdeploy only accepts standard hicolor sizes, max 512x512).
       - name: Install system libraries + dav1d build tools (apt)
         run: |
           sudo apt-get update
           sudo apt-get install -y \
             libfontconfig1-dev libfreetype6-dev libxcb1-dev \
             libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libxkbcommon-dev \
-            meson ninja-build nasm file
+            meson ninja-build nasm file imagemagick
       # Build a current dav1d as a STATIC archive (apt's 0.9.2 is too old, see the
       # SYSTEM_DEPS_* note above). Pinned to the same 1.5.3 the macOS job uses so
       # the AVIF decoder is identical across platforms. meson's default
@@ -321,8 +322,10 @@ jobs:
           OUTPUT: gashuu-${{ needs.preflight.outputs.tag }}-x86_64.AppImage
         run: |
           # The .desktop declares Icon=gashuu, so the icon file's basename must
-          # be gashuu.png for linuxdeploy to wire it up.
-          cp crates/gashuu/ui/assets/app-icon.png gashuu.png
+          # be gashuu.png for linuxdeploy to wire it up. The 1024x1024 master is
+          # not a resolution linuxdeploy accepts, so downsize it to 512x512 (the
+          # largest valid hicolor size).
+          convert crates/gashuu/ui/assets/app-icon.png -resize 512x512 gashuu.png
           base=https://github.com/linuxdeploy
           curl -fsSL -o linuxdeploy \
             "$base/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage"
