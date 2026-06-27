@@ -1,10 +1,16 @@
-# <img src="crates/gashuu/ui/assets/app-icon.png" alt="gashuu app icon" width="36" height="36" /> gashuu
+<div align="center">
+
+<img src="crates/gashuu/ui/assets/app-icon.png" alt="gashuu app icon" width="72" height="72" />
+
+# gashuu
 
 ## A fast, elegant manga / comic reader built for immersive viewing.
 
 [![CI](https://img.shields.io/github/actions/workflow/status/yasuflatland-lf/gashuu/ci.yml?branch=main&label=CI&logo=github)](https://github.com/yasuflatland-lf/gashuu/actions/workflows/ci.yml)
 [![coverage](https://img.shields.io/codecov/c/github/yasuflatland-lf/gashuu/main?flag=rust&label=coverage&logo=codecov)](https://codecov.io/gh/yasuflatland-lf/gashuu)
 [![website](https://img.shields.io/badge/website-gashuu-f35f3d?logo=githubpages)](https://yasuflatland-lf.github.io/gashuu/)
+
+</div>
 
 | Library | Viewer | Settings |
 | :---: | :---: | :---: |
@@ -31,6 +37,30 @@ macOS builds are ad-hoc signed (self-signed) but not notarized by Apple. If macO
 5. Click **Open Anyway** and enter your Mac's password.
 
 This is a temporary workaround until Developer ID signing and notarization are added.
+
+### Linux release install
+
+Linux releases ship two x86_64 artifacts; pick whichever suits your distro:
+
+- **AppImage** — a single self-contained file (bundles its shared libraries, so
+  nothing is installed system-wide). Make it executable and run it:
+
+  ```bash
+  chmod +x gashuu-*-x86_64.AppImage
+  ./gashuu-*-x86_64.AppImage
+  ```
+
+- **`.deb`** — for Debian / Ubuntu and derivatives. Installing it registers
+  `gashuu` on your `PATH` and adds a desktop entry; runtime dependencies
+  (dav1d, fontconfig, freetype, xcb, xkbcommon) are pulled in automatically:
+
+  ```bash
+  sudo apt install ./gashuu-*-amd64.deb
+  ```
+
+The AppImage is built against an older glibc for broad compatibility. If it
+fails to start on a minimal system, install FUSE (`sudo apt install libfuse2`)
+or run it with `--appimage-extract-and-run`.
 
 ## Features
 
