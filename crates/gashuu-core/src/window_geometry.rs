@@ -215,7 +215,12 @@ mod tests {
     fn grab_point_does_not_overflow_on_extreme_values() {
         // Hand-edited garbage must not panic (debug) when computing the grab point.
         let g = geom(u32::MAX, 600, i32::MAX, 0);
-        let monitors = [Rect { x: 0, y: 0, width: 100, height: 100 }];
+        let monitors = [Rect {
+            x: 0,
+            y: 0,
+            width: 100,
+            height: 100,
+        }];
         assert!(!g.is_position_visible(&monitors));
     }
 }
