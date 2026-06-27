@@ -68,6 +68,7 @@ jobs:
       - run: bash scripts/check-docs.sh
       - run: bash scripts/check-tokens.sh
       - run: bash scripts/check-release-macos-dist.sh
+      - run: bash scripts/check-release-linux-dist.sh
 
   # The Slint presentation crate, built and tested per OS. Only `-p gashuu` runs
   # here (the core job already covers gashuu-core), and fmt/clippy are not repeated

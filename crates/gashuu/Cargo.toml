@@ -2,6 +2,7 @@
 name = "gashuu"
 version = "0.8.0"
 edition = "2021"
+license = "MIT"
 
 [dependencies]
 gashuu-core = { path = "../gashuu-core" }
@@ -48,3 +49,26 @@ identifier = "io.github.yasuflatland-lf.gashuu"
 icon = ["ui/assets/app-icon.icns"]
 category = "public.app-category.entertainment"
 short_description = "Cross-platform manga viewer"
+
+# Linux .deb packaging, consumed by `cargo deb -p gashuu` in the release
+# workflow. Runtime deps are auto-detected via dpkg-shlibdeps (`depends =
+# "$auto"`) — the dav1d/fontconfig/freetype/xcb/xkbcommon shared libraries the
+# release binary dynamically links become declared package dependencies. Asset
+# source paths are relative to this Cargo.toml, except `target/release/...`
+# which cargo-deb resolves to the real workspace target directory.
+[package.metadata.deb]
+maintainer = "Yasuyuki Takeo <yasuflatland@gmail.com>"
+copyright = "2025-2026, Yasuyuki Takeo"
+section = "graphics"
+priority = "optional"
+depends = "$auto"
+extended-description = """\
+gashuu is a fast, elegant cross-platform manga / comic reader built with Rust \
+and Slint. It opens a folder of images or a .cbz/.zip/.cbr/.rar archive with \
+two-page spreads, right-to-left binding, zoom/pan, a thumbnail strip, a \
+cover-flow library, and persistent per-book settings, in an English / 日本語 UI."""
+assets = [
+    ["target/release/gashuu", "usr/bin/", "755"],
+    ["packaging/linux/gashuu.desktop", "usr/share/applications/", "644"],
+    ["ui/assets/app-icon.png", "usr/share/pixmaps/gashuu.png", "644"],
+]

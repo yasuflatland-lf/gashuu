@@ -1,7 +1,8 @@
 name: Release
 
-# Build the macOS (universal) and Windows (x86_64) executables and attach them
-# as zips to the GitHub Release for the tag. The Release must already exist
+# Build the macOS (universal) and Windows (x86_64) executables plus the Linux
+# (x86_64) installers — an AppImage and a .deb — and attach them to the GitHub
+# Release for the tag. The Release must already exist
 # (create it first via the GitHub UI or `gh release create <tag> ...`); this
 # workflow only uploads assets to it, it does not create the release.
 on:
@@ -227,6 +228,93 @@ jobs:
           path: gashuu-${{ env.TAG }}-macos-universal.zip
           if-no-files-found: error
 
+  build-linux:
+    name: build (Linux x86_64)
+    needs: preflight
+    # Build on the OLDEST supported Ubuntu (not ubuntu-latest) so the AppImage
+    # and .deb link against an older glibc and therefore install on a wider
+    # range of distros. CI feature-testing stays on ubuntu-latest; the older
+    # runner is a release-only choice for binary portability.
+    runs-on: ubuntu-22.04
+    env:
+      TAG: ${{ needs.preflight.outputs.tag }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          ref: ${{ needs.preflight.outputs.tag }}
+      - uses: jdx/mise-action@e6a8b3978addb5a52f2b4cd9d91eafa7f0ab959d # v4
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          key: release-linux
+          save-if: 'true'
+      # Slint's winit + femtovg backend links these system libraries on Linux;
+      # libdav1d-dev backs the image crate's AVIF decode (avif-native feature).
+      # Unlike macOS/Windows, dav1d is linked DYNAMICALLY here: the .deb declares
+      # it as a runtime dependency (via dpkg-shlibdeps) and linuxdeploy bundles
+      # the .so into the AppImage, so neither artifact needs the static-archive
+      # dance. `file` is required by linuxdeploy/appimagetool.
+      - name: Install system libraries + dav1d (apt)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libfontconfig1-dev libfreetype6-dev libxcb1-dev \
+            libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libxkbcommon-dev \
+            libdav1d-dev file
+      - name: Build release binary
+        run: cargo build --release -p gashuu
+      # ── .deb (cargo-deb) ──────────────────────────────────────────────────
+      # cargo-deb is a release-only tool (kept out of mise.toml so the CI app
+      # matrix stays lean); install it here on the release runner. `--locked`
+      # builds it from its own bundled lockfile for a reproducible install
+      # without pinning a patch version that would rot. `--no-build` reuses the
+      # binary built above; runtime deps come from [package.metadata.deb]
+      # depends="$auto" (dpkg-shlibdeps reads the dynamically linked .so set).
+      - name: Install cargo-deb
+        run: cargo install cargo-deb --locked
+      - name: Build the .deb
+        run: |
+          cargo deb -p gashuu --no-build --output "gashuu-${TAG}-amd64.deb"
+          ls -l "gashuu-${TAG}-amd64.deb"
+      # ── AppImage (linuxdeploy) ────────────────────────────────────────────
+      # linuxdeploy builds the AppDir from the binary, .desktop, and icon, copies
+      # in the dynamically linked shared libs (fontconfig/freetype/xcb/xkbcommon/
+      # dav1d), and the appimage plugin seals it into a single portable file.
+      - name: Build the AppImage
+        env:
+          # GitHub runners cannot reliably mount FUSE; tell the linuxdeploy and
+          # appimagetool AppImages to self-extract instead of FUSE-mounting.
+          APPIMAGE_EXTRACT_AND_RUN: '1'
+          # linuxdeploy-plugin-appimage reads OUTPUT for the final filename.
+          OUTPUT: gashuu-${{ needs.preflight.outputs.tag }}-x86_64.AppImage
+        run: |
+          # The .desktop declares Icon=gashuu, so the icon file's basename must
+          # be gashuu.png for linuxdeploy to wire it up.
+          cp crates/gashuu/ui/assets/app-icon.png gashuu.png
+          base=https://github.com/linuxdeploy
+          curl -fsSL -o linuxdeploy \
+            "$base/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage"
+          curl -fsSL -o linuxdeploy-plugin-appimage \
+            "$base/linuxdeploy-plugin-appimage/releases/download/continuous/linuxdeploy-plugin-appimage-x86_64.AppImage"
+          chmod +x linuxdeploy linuxdeploy-plugin-appimage
+          # linuxdeploy discovers the appimage plugin on PATH.
+          export PATH="$PWD:$PATH"
+
+          linuxdeploy --appdir AppDir \
+            --executable target/release/gashuu \
+            --desktop-file crates/gashuu/packaging/linux/gashuu.desktop \
+            --icon-file gashuu.png \
+            --output appimage
+          # Fall back to renaming if the plugin ignored OUTPUT.
+          [ -f "$OUTPUT" ] || mv gashuu*.AppImage "$OUTPUT"
+          ls -l "$OUTPUT"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: linux-installers
+          path: |
+            gashuu-${{ env.TAG }}-amd64.deb
+            gashuu-${{ env.TAG }}-x86_64.AppImage
+          if-no-files-found: error
+
   build-windows:
     name: build (Windows x86_64)
     needs: preflight
@@ -303,7 +391,7 @@ jobs:
     name: publish (attach to release)
     permissions:
       contents: write
-    needs: [preflight, build-macos, build-windows]
+    needs: [preflight, build-macos, build-windows, build-linux]
     runs-on: ubuntu-latest
     env:
       TAG: ${{ needs.preflight.outputs.tag }}
@@ -318,7 +406,7 @@ jobs:
       - name: Generate SHA256SUMS
         shell: bash
         run: |
-          find artifacts -type f -name '*.zip' -print0 \
+          find artifacts -type f \( -name '*.zip' -o -name '*.deb' -o -name '*.AppImage' \) -print0 \
             | sort -z \
             | while IFS= read -r -d '' path; do
                 sha256sum "$path" | sed 's#  .*/#  #'
@@ -330,7 +418,7 @@ jobs:
           gh release view "$TAG" >/dev/null 2>&1 \
             || { echo "::error::No GitHub Release found for $TAG. Create it first: gh release create $TAG --title $TAG --notes ..."; exit 1; }
           gh release upload "$TAG" SHA256SUMS --clobber
-          find artifacts -type f -name '*.zip' -print0 \
+          find artifacts -type f \( -name '*.zip' -o -name '*.deb' -o -name '*.AppImage' \) -print0 \
             | while IFS= read -r -d '' path; do
                 echo "Uploading: $path"
                 gh release upload "$TAG" "$path" --clobber
