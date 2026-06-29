@@ -6,7 +6,7 @@
 use crate::reading_progress::ReadingProgress;
 use crate::view_override::ViewOverride;
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 
@@ -139,6 +139,31 @@ fn book_order(a: &Book, b: &Book) -> std::cmp::Ordering {
         .then_with(|| a.path().as_os_str().cmp(b.path().as_os_str()))
 }
 
+/// Collapse one resolution group (books resolving to the same `key`) into a single
+/// survivor. The first member is the base — it keeps its `title` (the earliest-added
+/// identity) — and the rest fold in under the deterministic merge policy: `last_page`
+/// takes the max, `page_count` the first `Some` in vec order, `overrides` the first
+/// non-empty in vec order. The survivor's `path` is finally set to `key`, which
+/// re-canonicalizes a now-resolvable raw path even for a group of one. `members`
+/// is non-empty by construction (a group is only created when a member is pushed).
+fn merge_group(key: PathBuf, members: Vec<Book>) -> Book {
+    let mut iter = members.into_iter();
+    let mut survivor = iter
+        .next()
+        .expect("a resolution group has at least one member");
+    for member in iter {
+        survivor.last_page = survivor.last_page.max(member.last_page);
+        if survivor.page_count.is_none() {
+            survivor.page_count = member.page_count;
+        }
+        if survivor.overrides.is_empty() {
+            survivor.overrides = member.overrides;
+        }
+    }
+    survivor.path = key;
+    survivor
+}
+
 /// An ordered, de-duplicated shelf of books. Natural title order is the carousel
 /// order, with canonical path as the deterministic tie-break. Identity / dedup
 /// is on the canonical path (best-effort canonicalized at `add` time). Mirrors
@@ -259,6 +284,63 @@ impl Library {
         self.books.push(Book::from_path(canonical.clone()));
         self.books.sort_by(book_order);
         (canonical, true)
+    }
+
+    /// Re-canonicalize stored book paths and merge entries that resolve to the
+    /// same physical file into one. This self-heals a `library.json` written
+    /// before book identity was the add-time canonical path: a book added while
+    /// its file was missing keeps a raw/relative/`..`-bearing path, so when the
+    /// same file is later added once it resolves, the two divergent spellings end
+    /// up as two `Book` entries for one file with split reading progress.
+    ///
+    /// Unlike [`normalize`](Library::normalize) this performs filesystem I/O (the
+    /// per-book `canonicalize`, the same touch `add` and `book_is_available`
+    /// already make), so it is deliberately a SEPARATE pub(crate) routine invoked
+    /// explicitly from `library_store::from_json` before `normalize`, not folded
+    /// into the pure `normalize`.
+    ///
+    /// Resolution key: `book.path().canonicalize().unwrap_or_else(|_| raw)` — the
+    /// same rule `add_canonical` uses. A missing file fails `canonicalize`, so its
+    /// key is its raw path: it can never be merged away and its path is preserved
+    /// verbatim (a singleton group whose key equals its own raw path). Books are
+    /// grouped by key in first-seen (vec) order; each group collapses to one
+    /// survivor whose `path` is set to the canonical key (upgrading a now-resolvable
+    /// raw path even for a group of one). Cross-member field merge is deterministic:
+    /// `last_page` = max, `page_count` = first `Some` in vec order, `overrides` =
+    /// first non-empty in vec order, `title` = the first member's title.
+    /// `last_opened` is repointed from a merged-away / pre-upgrade spelling to the
+    /// survivor's canonical key (a genuine orphan is left for `normalize` to clear).
+    pub(crate) fn recanonicalize_and_merge(&mut self) {
+        let books = std::mem::take(&mut self.books);
+        // First-seen key order, the group members, and a remap from each book's
+        // ORIGINAL stored path to its group's canonical key (for `last_opened`).
+        let mut order: Vec<PathBuf> = Vec::new();
+        let mut groups: HashMap<PathBuf, Vec<Book>> = HashMap::new();
+        let mut remap: HashMap<PathBuf, PathBuf> = HashMap::new();
+        for book in books {
+            let key = book
+                .path()
+                .canonicalize()
+                .unwrap_or_else(|_| book.path().to_path_buf());
+            remap.insert(book.path().to_path_buf(), key.clone());
+            if !groups.contains_key(&key) {
+                order.push(key.clone());
+            }
+            groups.entry(key).or_default().push(book);
+        }
+        let mut survivors = Vec::with_capacity(order.len());
+        for key in order {
+            let members = groups.remove(&key).expect("group for first-seen key");
+            survivors.push(merge_group(key, members));
+        }
+        self.books = survivors;
+        // Repoint a `last_opened` spelled as a merged-away / pre-upgrade path to
+        // its survivor's canonical key. A path absent from `remap` (a genuine
+        // orphan) is left as-is for `normalize`'s orphan-clear.
+        if let Some(last_opened) = self.last_opened.take() {
+            self.last_opened = Some(remap.get(&last_opened).cloned().unwrap_or(last_opened));
+        }
+        self.books.sort_by(book_order);
     }
 
     /// Re-sort the shelf into natural title order (with canonical path tie-break)
@@ -1381,6 +1463,204 @@ mod tests {
             lib.last_opened(),
             Some(Path::new("/manga/a.cbz")),
             "normalize must keep a valid last_opened"
+        );
+    }
+
+    // --- recanonicalize_and_merge tests (re-canonicalize + duplicate merge on load) ---
+    //
+    // Each builds a `library.json` document with path spellings crafted directly
+    // (bypassing add-time canonicalization), so two entries can name the SAME
+    // on-disk file with different strings, then loads via `Library::from_json`.
+
+    /// Build a non-canonical spelling of `canonical` by routing through a `..`
+    /// detour (`<dir>/sub/../<name>`), creating the `sub` directory so the path
+    /// resolves. A `..` component is NOT folded away by `Path` comparison (unlike
+    /// `.`), so the result is genuinely distinct from `canonical` AND canonicalizes
+    /// back to it — faithfully reproducing the divergent-spelling bug (a plain `.`
+    /// segment would compare equal and the add-time dedup would already catch it).
+    fn detour_spelling(canonical: &Path) -> PathBuf {
+        let parent = canonical.parent().unwrap();
+        let sub = parent.join("sub");
+        std::fs::create_dir_all(&sub).unwrap();
+        sub.join("..").join(canonical.file_name().unwrap())
+    }
+
+    #[test]
+    fn recanonicalize_merges_two_spellings_of_same_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("Book.cbz");
+        std::fs::write(&file, []).unwrap();
+        let canonical = file.canonicalize().unwrap();
+        let non_canonical = detour_spelling(&canonical);
+        assert_ne!(
+            canonical, non_canonical,
+            "the two spellings must differ as strings"
+        );
+
+        // Two entries naming the SAME file. Each field is set so the merge policy
+        // is non-vacuous: max last_page comes from member[1]; the first `Some`
+        // page_count is member[1]'s (member[0] is the unknown `0`); the first
+        // non-empty override is member[0]'s; the title is member[0]'s.
+        let json = serde_json::json!({
+            "version": 1,
+            "books": [
+                {"path": canonical.to_str().unwrap(), "title": "Book", "last_page": 3,
+                 "page_count": 0, "overrides": {"reading_direction": "rtl"}},
+                {"path": non_canonical.to_str().unwrap(), "title": "Other", "last_page": 7,
+                 "page_count": 20},
+            ]
+        })
+        .to_string();
+
+        let lib = Library::from_json(&json).unwrap();
+
+        assert_eq!(
+            lib.books().len(),
+            1,
+            "two spellings of one file merge into a single book"
+        );
+        let book = &lib.books()[0];
+        assert_eq!(
+            book.path(),
+            canonical.as_path(),
+            "survivor path is the canonical key"
+        );
+        assert_eq!(book.last_page(), 7, "last_page is the max across members");
+        assert_eq!(
+            book.page_count_opt(),
+            Some(20),
+            "page_count is the first Some in vec order"
+        );
+        assert_eq!(
+            book.title(),
+            "Book",
+            "title is the first member's title (earliest-added identity)"
+        );
+        assert_eq!(
+            book.overrides().reading_direction,
+            Some(crate::view_modes::ReadingDirection::Rtl),
+            "overrides come from the first non-empty member"
+        );
+    }
+
+    #[test]
+    fn recanonicalize_upgrades_single_noncanonical_path() {
+        // A lone entry whose stored path is non-canonical but now resolves must
+        // have its path upgraded to canonical on load (group size 1, no merge).
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("Book.cbz");
+        std::fs::write(&file, []).unwrap();
+        let canonical = file.canonicalize().unwrap();
+        let non_canonical = detour_spelling(&canonical);
+
+        let json = serde_json::json!({
+            "version": 1,
+            "books": [
+                {"path": non_canonical.to_str().unwrap(), "title": "Book", "last_page": 5,
+                 "page_count": 0},
+            ]
+        })
+        .to_string();
+
+        let lib = Library::from_json(&json).unwrap();
+
+        assert_eq!(lib.books().len(), 1);
+        assert_eq!(
+            lib.books()[0].path(),
+            canonical.as_path(),
+            "a resolvable non-canonical path is upgraded to canonical on load"
+        );
+        assert_eq!(
+            lib.books()[0].last_page(),
+            5,
+            "the book's data survives the upgrade"
+        );
+    }
+
+    #[test]
+    fn recanonicalize_preserves_missing_path_unchanged() {
+        // A path that does not resolve (canonicalize fails) must be kept verbatim
+        // — neither dropped nor merged. This is the regression guard for the
+        // missing-file case.
+        let raw = "/manga/definitely/missing/Book.cbz";
+        let json = serde_json::json!({
+            "version": 1,
+            "books": [
+                {"path": raw, "title": "Book", "last_page": 9, "page_count": 0},
+            ]
+        })
+        .to_string();
+
+        let lib = Library::from_json(&json).unwrap();
+
+        assert_eq!(lib.books().len(), 1, "a missing-path book is kept");
+        assert_eq!(
+            lib.books()[0].path(),
+            Path::new(raw),
+            "the raw path is preserved unchanged"
+        );
+        assert_eq!(lib.books()[0].last_page(), 9);
+    }
+
+    #[test]
+    fn recanonicalize_repoints_last_opened_to_survivor() {
+        // last_opened spelled as the non-canonical (merged-away) path must be
+        // repointed to the surviving canonical path. Without the repoint,
+        // normalize's orphan-clear would reset it to None.
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("Book.cbz");
+        std::fs::write(&file, []).unwrap();
+        let canonical = file.canonicalize().unwrap();
+        let non_canonical = detour_spelling(&canonical);
+
+        let json = serde_json::json!({
+            "version": 1,
+            "books": [
+                {"path": canonical.to_str().unwrap(), "title": "Book", "last_page": 0,
+                 "page_count": 0},
+                {"path": non_canonical.to_str().unwrap(), "title": "Book", "last_page": 0,
+                 "page_count": 0},
+            ],
+            "last_opened": non_canonical.to_str().unwrap(),
+        })
+        .to_string();
+
+        let lib = Library::from_json(&json).unwrap();
+
+        assert_eq!(
+            lib.books().len(),
+            1,
+            "the duplicate spelling is merged away"
+        );
+        assert_eq!(
+            lib.last_opened(),
+            Some(canonical.as_path()),
+            "last_opened is repointed to the surviving canonical path"
+        );
+    }
+
+    #[test]
+    fn recanonicalize_keeps_books_in_natural_order() {
+        // After re-canonicalization/merge the shelf must still obey book_order.
+        // Missing paths are kept verbatim, so this also confirms the sort runs
+        // over the post-merge survivors.
+        let json = serde_json::json!({
+            "version": 1,
+            "books": [
+                {"path": "/manga/vol 10.cbz", "title": "vol 10", "last_page": 0, "page_count": 0},
+                {"path": "/manga/vol 1.cbz", "title": "vol 1", "last_page": 0, "page_count": 0},
+                {"path": "/manga/vol 2.cbz", "title": "vol 2", "last_page": 0, "page_count": 0},
+            ]
+        })
+        .to_string();
+
+        let lib = Library::from_json(&json).unwrap();
+
+        let titles: Vec<&str> = lib.books().iter().map(|b| b.title()).collect();
+        assert_eq!(
+            titles,
+            vec!["vol 1", "vol 2", "vol 10"],
+            "post-merge books obey natural title order"
         );
     }
 }

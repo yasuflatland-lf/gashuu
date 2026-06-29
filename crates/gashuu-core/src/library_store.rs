@@ -86,6 +86,10 @@ impl Library {
             value
         };
         let mut library: Library = serde_json::from_value(value).map_err(CoreError::Library)?;
+        // Re-canonicalize paths and merge duplicate identities (filesystem I/O)
+        // BEFORE the pure sort/orphan-clear in `normalize`, so every load
+        // self-heals a library written before book identity was the canonical path.
+        library.recanonicalize_and_merge();
         library.normalize();
         Ok(library)
     }
@@ -518,6 +522,40 @@ mod tests {
             lib.last_opened(),
             None,
             "orphan last_opened must be normalized to None on load"
+        );
+    }
+
+    #[test]
+    fn recanonicalize_round_trips_clean_library_byte_identically() {
+        // The byte-oracle: a library whose paths are already canonical and have
+        // no duplicates must survive the load-time re-canonicalization/merge
+        // byte-for-byte (no spurious upgrade or merge). Real temp files so
+        // canonicalize() is an identity on the stored keys. A non-default
+        // override + reading position make the comparison non-vacuous.
+        let dir = tempfile::tempdir().unwrap();
+        let mut lib = Library::new();
+        for name in ["a.cbz", "b.cbz"] {
+            let f = dir.path().join(name);
+            std::fs::write(&f, []).unwrap();
+            assert!(lib.add(f).is_some());
+        }
+        let canonical_b = dir.path().join("b.cbz").canonicalize().unwrap();
+        assert!(lib.set_last_page(&canonical_b, 4));
+        assert!(lib.set_page_count(&canonical_b, NonZeroUsize::new(12).unwrap()));
+        let ov = crate::view_override::ViewOverride {
+            reading_direction: Some(crate::view_modes::ReadingDirection::Rtl),
+            ..crate::view_override::ViewOverride::none()
+        };
+        assert!(lib.set_overrides(&canonical_b, ov));
+        lib.register_opened(&canonical_b, None);
+
+        let before = lib.to_json().unwrap();
+        let reloaded = Library::from_json(&before).unwrap();
+
+        assert_eq!(
+            reloaded.to_json().unwrap(),
+            before,
+            "a clean, all-canonical library round-trips byte-identically"
         );
     }
 
