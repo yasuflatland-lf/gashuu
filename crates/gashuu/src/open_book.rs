@@ -323,6 +323,7 @@ impl OpenBookUseCase {
             ui.as_weak(),
             state.borrow().current_source(),
             state.borrow().page_count(),
+            canonical.clone(),
         );
         let skipped = state.borrow().last_open_skipped();
         OpenOutcome::Success(notices_content(

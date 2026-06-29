@@ -5,12 +5,67 @@
 use crate::error::CoreError;
 use crate::image_ops::{decode_thumbnail, DecodedImage};
 use crate::page_source::PageSource;
+use crate::thumbnail_cache::{page_cache_key, ThumbnailCache};
 use rayon::prelude::*;
+use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 /// Default longer-edge size for generated thumbnails.
 pub const DEFAULT_THUMB_MAX_SIDE: u32 = 160;
+
+/// The borrows [`generate_thumbnails`] needs to persist each page's strip
+/// thumbnail to the on-disk cache. `path` supplies the cache-key inputs the
+/// [`PageSource`] trait does not expose; `cache` is the shared on-disk store (the
+/// same directory as covers, with disjoint keys via [`page_cache_key`]). Both
+/// `&ThumbnailCache` and `&Path` are `Send`/`Sync`, so one context is shared
+/// across the rayon `par_iter` without per-page cloning.
+#[derive(Clone, Copy)]
+pub struct PageThumbCache<'a> {
+    /// On-disk cache the page thumbnails are read from and written to.
+    pub cache: &'a ThumbnailCache,
+    /// Canonical book path that anchors each page's cache key.
+    pub path: &'a Path,
+}
+
+/// Filesystem mtime of `path` as whole seconds since the Unix epoch, or `0` when
+/// the file is missing / has no readable mtime. Mirrors the cover cache's key
+/// convention so a modified book regenerates its strip thumbnails automatically
+/// (the recomputed key no longer matches the stale on-disk entry).
+fn mtime_secs(path: &Path) -> i64 {
+    std::fs::metadata(path)
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
+/// Produce page `i`'s thumbnail, consulting the on-disk cache when `cache` is set.
+///
+/// With no cache context this is byte-for-byte the original behavior: read the
+/// page bytes and decode them. With a context, a cache hit skips the full-page
+/// read+decode entirely; a miss reads, decodes, then persists best-effort (core
+/// stays log-free, so the `put` `Result` is intentionally ignored).
+fn page_thumbnail(
+    source: &Arc<dyn PageSource>,
+    max_side: u32,
+    cache: Option<(PageThumbCache<'_>, i64)>,
+    i: usize,
+) -> Result<DecodedImage, CoreError> {
+    let Some((ctx, mtime)) = cache else {
+        let bytes = source.read_bytes(i)?;
+        return decode_thumbnail(&bytes, max_side);
+    };
+    let key = page_cache_key(ctx.path, mtime, max_side, i);
+    if let Some(img) = ctx.cache.get(&key) {
+        return Ok(img);
+    }
+    let bytes = source.read_bytes(i)?;
+    let img = decode_thumbnail(&bytes, max_side)?;
+    let _ = ctx.cache.put(&key, &img);
+    Ok(img)
+}
 
 /// Generate a thumbnail for every page of `source` in parallel, invoking
 /// `on_ready(index, result)` as each page completes (in arbitrary order).
@@ -25,22 +80,28 @@ pub const DEFAULT_THUMB_MAX_SIDE: u32 = 160;
 ///
 /// A per-page read/decode failure is delivered as `Err` to `on_ready` — never
 /// a panic. The UI is expected to render a placeholder cell for that index.
+///
+/// When `cache_ctx` is `Some`, each page's thumbnail is read from / written to the
+/// shared on-disk cache (a second open of an unchanged book performs zero
+/// full-page decodes). `cache_ctx == None` behaves exactly as before — no caching.
 pub fn generate_thumbnails<F>(
     source: Arc<dyn PageSource>,
     max_side: u32,
     cancelled: Arc<AtomicBool>,
+    cache_ctx: Option<PageThumbCache<'_>>,
     on_ready: F,
 ) where
     F: Fn(usize, Result<DecodedImage, CoreError>) + Send + Sync,
 {
     let n = source.list_pages().len();
+    // One stat for the whole strip: derive the mtime once when caching is active
+    // and reuse it as a per-page key input (the cover cache's convention).
+    let cache = cache_ctx.map(|ctx| (ctx, mtime_secs(ctx.path)));
     (0..n).into_par_iter().for_each(|i| {
         if cancelled.load(Ordering::Relaxed) {
             return;
         }
-        let res = source
-            .read_bytes(i)
-            .and_then(|b| decode_thumbnail(&b, max_side));
+        let res = page_thumbnail(&source, max_side, cache, i);
         if cancelled.load(Ordering::Relaxed) {
             return;
         }
@@ -99,11 +160,22 @@ mod tests {
     /// `None` simulate a read failure (returns `CoreError::IndexOutOfRange`).
     struct CountingSource {
         pages: Vec<Option<Vec<u8>>>,
+        /// Number of `read_bytes` calls so far — lets a cache test prove the
+        /// second open serves every page from disk without touching the source.
+        reads: std::sync::atomic::AtomicUsize,
     }
 
     impl CountingSource {
         fn new(pages: Vec<Option<Vec<u8>>>) -> Self {
-            Self { pages }
+            Self {
+                pages,
+                reads: std::sync::atomic::AtomicUsize::new(0),
+            }
+        }
+
+        /// Total `read_bytes` calls observed so far.
+        fn reads(&self) -> usize {
+            self.reads.load(Ordering::Relaxed)
         }
     }
 
@@ -119,6 +191,7 @@ mod tests {
         }
 
         fn read_bytes(&self, index: usize) -> Result<Vec<u8>, CoreError> {
+            self.reads.fetch_add(1, Ordering::Relaxed);
             // `Some(None)` (simulated read failure) and `None` (out-of-range) both
             // surface as IndexOutOfRange.
             match self.pages.get(index) {
@@ -148,12 +221,18 @@ mod tests {
         let delivered: Arc<Mutex<Vec<bool>>> = Arc::new(Mutex::new(vec![false; N]));
         let delivered_clone = Arc::clone(&delivered);
 
-        generate_thumbnails(source, DEFAULT_THUMB_MAX_SIDE, cancelled, move |i, res| {
-            assert!(res.is_ok(), "page {i} should decode successfully");
-            let mut guard = delivered_clone.lock().unwrap();
-            assert!(!guard[i], "page {i} delivered more than once");
-            guard[i] = true;
-        });
+        generate_thumbnails(
+            source,
+            DEFAULT_THUMB_MAX_SIDE,
+            cancelled,
+            None,
+            move |i, res| {
+                assert!(res.is_ok(), "page {i} should decode successfully");
+                let mut guard = delivered_clone.lock().unwrap();
+                assert!(!guard[i], "page {i} delivered more than once");
+                guard[i] = true;
+            },
+        );
 
         let guard = delivered.lock().unwrap();
         for (i, &seen) in guard.iter().enumerate() {
@@ -172,9 +251,15 @@ mod tests {
         let call_count = Arc::new(Mutex::new(0usize));
         let call_count_clone = Arc::clone(&call_count);
 
-        generate_thumbnails(source, DEFAULT_THUMB_MAX_SIDE, cancelled, move |_, _| {
-            *call_count_clone.lock().unwrap() += 1;
-        });
+        generate_thumbnails(
+            source,
+            DEFAULT_THUMB_MAX_SIDE,
+            cancelled,
+            None,
+            move |_, _| {
+                *call_count_clone.lock().unwrap() += 1;
+            },
+        );
 
         assert_eq!(
             *call_count.lock().unwrap(),
@@ -205,10 +290,16 @@ mod tests {
         let results: Arc<Mutex<Vec<Option<bool>>>> = Arc::new(Mutex::new(vec![None; N]));
         let results_clone = Arc::clone(&results);
 
-        generate_thumbnails(source, DEFAULT_THUMB_MAX_SIDE, cancelled, move |i, res| {
-            let mut guard = results_clone.lock().unwrap();
-            guard[i] = Some(res.is_ok());
-        });
+        generate_thumbnails(
+            source,
+            DEFAULT_THUMB_MAX_SIDE,
+            cancelled,
+            None,
+            move |i, res| {
+                let mut guard = results_clone.lock().unwrap();
+                guard[i] = Some(res.is_ok());
+            },
+        );
 
         let guard = results.lock().unwrap();
         for (i, &slot) in guard.iter().enumerate() {
@@ -230,9 +321,15 @@ mod tests {
         let called = Arc::new(Mutex::new(false));
         let called_clone = Arc::clone(&called);
 
-        generate_thumbnails(source, DEFAULT_THUMB_MAX_SIDE, cancelled, move |_, _| {
-            *called_clone.lock().unwrap() = true;
-        });
+        generate_thumbnails(
+            source,
+            DEFAULT_THUMB_MAX_SIDE,
+            cancelled,
+            None,
+            move |_, _| {
+                *called_clone.lock().unwrap() = true;
+            },
+        );
 
         assert!(
             !*called.lock().unwrap(),
@@ -294,9 +391,15 @@ mod tests {
         let call_count = Arc::new(Mutex::new(0usize));
         let call_count_clone = Arc::clone(&call_count);
 
-        generate_thumbnails(source, DEFAULT_THUMB_MAX_SIDE, cancelled, move |_, _| {
-            *call_count_clone.lock().unwrap() += 1;
-        });
+        generate_thumbnails(
+            source,
+            DEFAULT_THUMB_MAX_SIDE,
+            cancelled,
+            None,
+            move |_, _| {
+                *call_count_clone.lock().unwrap() += 1;
+            },
+        );
 
         assert_eq!(
             *call_count.lock().unwrap(),
@@ -361,5 +464,107 @@ mod tests {
             matches!(err, CoreError::Decode(_)),
             "expected a decode error, got {err:?}"
         );
+    }
+
+    // ---------------------------------------------------------------------------
+    // On-disk strip caching (PageThumbCache)
+    // ---------------------------------------------------------------------------
+
+    use crate::thumbnail_cache::ThumbnailCache;
+
+    /// Count the `*.png` entries written directly in `dir` (non-recursive).
+    fn png_count(dir: &std::path::Path) -> usize {
+        std::fs::read_dir(dir)
+            .unwrap()
+            .flatten()
+            .filter(|e| e.path().extension().is_some_and(|ext| ext == "png"))
+            .count()
+    }
+
+    /// Run `generate_thumbnails` over `pages` with the given cache context and
+    /// return the source so the caller can assert the `read_bytes` count.
+    fn run_strip(
+        pages: Vec<Option<Vec<u8>>>,
+        cache: &ThumbnailCache,
+        path: &std::path::Path,
+    ) -> Arc<CountingSource> {
+        let src = Arc::new(CountingSource::new(pages));
+        let source: Arc<dyn PageSource> = src.clone();
+        let cancelled = Arc::new(AtomicBool::new(false));
+        generate_thumbnails(
+            source,
+            DEFAULT_THUMB_MAX_SIDE,
+            cancelled,
+            Some(PageThumbCache { cache, path }),
+            |i, res| assert!(res.is_ok(), "page {i} should decode successfully"),
+        );
+        src
+    }
+
+    /// First open persists one PNG per page; the second open of the same unchanged
+    /// book serves every page from disk with ZERO `read_bytes` calls.
+    #[test]
+    fn cache_ctx_persists_then_serves_from_cache() {
+        const N: usize = 3;
+        let dir = tempfile::tempdir().unwrap();
+        let cache = ThumbnailCache::with_dir(dir.path().to_path_buf());
+        // A path that does not exist resolves to mtime 0 — stable across both runs.
+        let path = std::path::Path::new("/manga/book.cbz");
+        let pages: Vec<Option<Vec<u8>>> = (0..N).map(|_| Some(tiny_png(8, 8))).collect();
+
+        let first = run_strip(pages.clone(), &cache, path);
+        assert_eq!(first.reads(), N, "first open reads every page");
+        assert_eq!(
+            png_count(dir.path()),
+            N,
+            "first open persists one PNG per page"
+        );
+
+        let second = run_strip(pages, &cache, path);
+        assert_eq!(
+            second.reads(),
+            0,
+            "second open serves every page from the cache"
+        );
+    }
+
+    /// A modified book (mtime drift) regenerates: the recomputed key misses the
+    /// stale on-disk entry, so the page is read and decoded again.
+    #[test]
+    fn cache_ctx_regenerates_after_mtime_drift() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = ThumbnailCache::with_dir(dir.path().to_path_buf());
+        // A real file so its mtime is readable; drift it between the two runs.
+        let book = tempfile::NamedTempFile::new().unwrap();
+        let path = book.path();
+        let pages = vec![Some(tiny_png(8, 8))];
+
+        set_file_mtime(
+            path,
+            std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_000),
+        );
+        let first = run_strip(pages.clone(), &cache, path);
+        assert_eq!(first.reads(), 1, "first open reads the page");
+
+        set_file_mtime(
+            path,
+            std::time::UNIX_EPOCH + std::time::Duration::from_secs(2_000),
+        );
+        let second = run_strip(pages, &cache, path);
+        assert_eq!(
+            second.reads(),
+            1,
+            "a drifted mtime changes the key, forcing a re-read"
+        );
+    }
+
+    /// Set `path`'s mtime to `target` so a test controls the cache key the strip
+    /// derives across runs.
+    fn set_file_mtime(path: &std::path::Path, target: std::time::SystemTime) {
+        std::fs::File::options()
+            .write(true)
+            .open(path)
+            .and_then(|f| f.set_modified(target))
+            .expect("set fixture mtime");
     }
 }
