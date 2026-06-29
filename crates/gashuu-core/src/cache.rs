@@ -22,6 +22,70 @@ pub const DEFAULT_CAPACITY: usize = 50;
 /// Default prefetch radius: pages on each side of the current page to warm.
 pub const DEFAULT_PREFETCH_RADIUS: usize = 3;
 
+/// An LRU of decoded pages paired with a running total of their decoded bytes,
+/// kept together so ordering and byte accounting mutate atomically under one
+/// mutex. Eviction is two-dimensional: the `LruCache` capacity enforces the
+/// count ceiling, and `max_bytes` caps the total decoded-byte footprint. A
+/// single oversized page is retained as the floor (at least one entry always
+/// stays cached so the current page survives).
+struct PageStore {
+    lru: LruCache<usize, Arc<DecodedImage>>,
+    total_bytes: usize,
+    max_bytes: u64,
+}
+
+impl PageStore {
+    fn new(capacity: NonZeroUsize, max_bytes: u64) -> Self {
+        Self {
+            lru: LruCache::new(capacity),
+            total_bytes: 0,
+            max_bytes,
+        }
+    }
+
+    /// True when page `index` is cached (does not promote it).
+    fn contains(&self, index: &usize) -> bool {
+        self.lru.contains(index)
+    }
+
+    /// Return the cached page at `index`, promoting it in the LRU.
+    fn get(&mut self, index: &usize) -> Option<&Arc<DecodedImage>> {
+        self.lru.get(index)
+    }
+
+    /// Insert `img` at `index`, updating the byte total, then evict the LRU end
+    /// until both the count ceiling and the byte budget hold (always keeping the
+    /// just-inserted page plus at least one entry overall).
+    fn put(&mut self, index: usize, img: Arc<DecodedImage>) {
+        let new_bytes = img.rgba().len();
+        // Pre-empt the `LruCache`'s own count-ceiling eviction so the displaced
+        // entry's bytes are subtracted here instead of vanishing silently.
+        if !self.lru.contains(&index) && self.lru.len() == self.lru.cap().get() {
+            if let Some((_, evicted)) = self.lru.pop_lru() {
+                self.total_bytes -= evicted.rgba().len();
+            }
+        }
+        match self.lru.put(index, img) {
+            Some(old) => {
+                self.total_bytes = self.total_bytes - old.rgba().len() + new_bytes;
+            }
+            None => self.total_bytes += new_bytes,
+        }
+        self.evict_to_budget();
+    }
+
+    /// Drop least-recently-used pages while the byte total exceeds `max_bytes`,
+    /// retaining at least one entry (the floor for a single oversized page).
+    fn evict_to_budget(&mut self) {
+        while self.total_bytes as u64 > self.max_bytes && self.lru.len() > 1 {
+            match self.lru.pop_lru() {
+                Some((_, evicted)) => self.total_bytes -= evicted.rgba().len(),
+                None => break,
+            }
+        }
+    }
+}
+
 /// Neighbour indices within `radius` of `center`, clamped to `[0, len)` and
 /// excluding `center` itself (the current page is fetched by `get`). Ascending.
 fn prefetch_indices(center: usize, radius: usize, len: usize) -> Vec<usize> {
@@ -45,7 +109,7 @@ fn prefetch_indices(center: usize, radius: usize, len: usize) -> Vec<usize> {
 struct Inner {
     source: Arc<dyn PageSource>,
     len: usize,
-    cache: Mutex<LruCache<usize, Arc<DecodedImage>>>,
+    cache: Mutex<PageStore>,
     in_flight: Mutex<HashSet<usize>>,
 }
 
@@ -162,7 +226,7 @@ impl ImageCache {
             inner: Arc::new(Inner {
                 source,
                 len,
-                cache: Mutex::new(LruCache::new(cap)),
+                cache: Mutex::new(PageStore::new(cap, config.max_bytes())),
                 in_flight: Mutex::new(HashSet::new()),
             }),
             radius: config.radius(),
@@ -431,7 +495,7 @@ mod tests {
         let cache = ImageCache::new(src, CacheConfig::new(0, 0));
         let img = cache.get(0).unwrap();
         assert_eq!((img.width(), img.height()), (2, 3));
-        assert!(cache.inner.cache.lock().unwrap().len() <= 1);
+        assert!(cache.inner.cache.lock().unwrap().lru.len() <= 1);
     }
 
     #[test]
@@ -469,7 +533,7 @@ mod tests {
         for i in 0..10 {
             cache.get(i).unwrap();
         }
-        assert!(cache.inner.cache.lock().unwrap().len() <= 3);
+        assert!(cache.inner.cache.lock().unwrap().lru.len() <= 3);
     }
 
     // ---- prefetch: synchronous core, deterministic ----
@@ -517,5 +581,143 @@ mod tests {
         );
         // Requesting page 2 directly re-reads and surfaces the real decode error.
         assert!(cache.get(2).is_err());
+    }
+
+    // ---- PageStore: byte-budget eviction (unit, exact byte sizes) ----
+
+    /// A decoded image whose RGBA buffer is exactly `bytes` long (`bytes` must be
+    /// a multiple of 4). Laid out as a 1-row image so the size is precise.
+    fn sized_image(bytes: usize) -> Arc<DecodedImage> {
+        assert_eq!(bytes % 4, 0, "RGBA buffer length must be a multiple of 4");
+        let width = (bytes / 4) as u32;
+        Arc::new(DecodedImage::new(vec![0u8; bytes], width, 1).unwrap())
+    }
+
+    fn store(capacity: usize, max_bytes: u64) -> PageStore {
+        PageStore::new(NonZeroUsize::new(capacity).unwrap(), max_bytes)
+    }
+
+    #[test]
+    fn byte_budget_evicts_lru_and_caps_total() {
+        // Budget 250, pages of 100 bytes; count ceiling kept high so only the
+        // byte budget can evict.
+        let mut s = store(50, 250);
+        s.put(0, sized_image(100)); // total 100
+        s.put(1, sized_image(100)); // total 200
+        s.put(2, sized_image(100)); // total 300 > 250 -> evict LRU (page 0) -> 200
+        assert!(s.total_bytes as u64 <= 250, "total must stay within budget");
+        assert!(!s.contains(&0), "the oldest page must be evicted");
+        assert!(s.contains(&2), "the most-recent page must be retained");
+        assert!(s.contains(&1));
+    }
+
+    #[test]
+    fn byte_budget_keeps_single_oversized_page_as_floor() {
+        // A lone page larger than the budget is still cached (the floor).
+        let mut s = store(50, 100);
+        s.put(0, sized_image(400)); // 400 > 100 but len would drop to 0 -> kept
+        assert_eq!(s.lru.len(), 1, "at least one entry is always retained");
+        assert!(s.contains(&0));
+        assert_eq!(s.total_bytes, 400);
+    }
+
+    #[test]
+    fn count_ceiling_never_exceeded_with_byte_budget_slack() {
+        // Huge byte budget; many tiny pages must still respect the count ceiling.
+        let mut s = store(3, u64::MAX);
+        for i in 0..10 {
+            s.put(i, sized_image(4));
+        }
+        assert!(s.lru.len() <= 3, "count ceiling must never be exceeded");
+        // The byte total must match exactly what remains (3 pages x 4 bytes).
+        assert_eq!(s.total_bytes, 12);
+    }
+
+    #[test]
+    fn count_eviction_keeps_byte_total_in_sync() {
+        // When the LRU sheds an entry for the count ceiling, its bytes must be
+        // subtracted from the running total.
+        let mut s = store(2, u64::MAX);
+        s.put(0, sized_image(40));
+        s.put(1, sized_image(40));
+        s.put(2, sized_image(40)); // evicts page 0 (count ceiling)
+        assert_eq!(s.lru.len(), 2);
+        assert_eq!(s.total_bytes, 80, "evicted page's bytes must be subtracted");
+        assert!(!s.contains(&0));
+    }
+
+    #[test]
+    fn replacing_existing_key_adjusts_total() {
+        let mut s = store(50, u64::MAX);
+        s.put(0, sized_image(100));
+        assert_eq!(s.total_bytes, 100);
+        s.put(0, sized_image(40)); // same key, smaller buffer
+        assert_eq!(s.lru.len(), 1);
+        assert_eq!(s.total_bytes, 40, "re-put must replace, not accumulate");
+    }
+
+    // ---- ImageCache: byte budget wired through the real decode path ----
+
+    /// A `PageSource` returning a precomputed PNG that decodes to a large RGBA
+    /// buffer, so the byte budget (clamped floor 64 MiB) can be exercised.
+    struct LargeSource {
+        pages: usize,
+        bytes: Vec<u8>,
+        reads: Arc<AtomicUsize>,
+    }
+
+    impl PageSource for LargeSource {
+        fn list_pages(&self) -> Vec<PageEntry> {
+            vec![PageEntry { name: "p".into() }; self.pages]
+        }
+        fn read_bytes(&self, index: usize) -> Result<Vec<u8>, CoreError> {
+            if index >= self.pages {
+                return Err(CoreError::IndexOutOfRange {
+                    index,
+                    len: self.pages,
+                });
+            }
+            self.reads.fetch_add(1, Ordering::SeqCst);
+            Ok(self.bytes.clone())
+        }
+    }
+
+    #[test]
+    fn byte_budget_evicts_through_the_cache() {
+        // A 2048x2048 page decodes to 16 MiB; with the minimum 64 MiB budget,
+        // four pages fit exactly and the fifth forces an eviction.
+        let img = image::RgbaImage::from_pixel(2048, 2048, image::Rgba([3, 3, 3, 255]));
+        let mut bytes = Vec::new();
+        img.write_to(&mut Cursor::new(&mut bytes), image::ImageFormat::Png)
+            .unwrap();
+        let reads = Arc::new(AtomicUsize::new(0));
+        let src = Arc::new(LargeSource {
+            pages: 5,
+            bytes,
+            reads: Arc::clone(&reads),
+        }) as Arc<dyn PageSource>;
+        // radius 0 keeps prefetch inert; with_max_bytes clamps to MIN_MAX_BYTES (64 MiB).
+        let cache = ImageCache::new(src, CacheConfig::new(50, 0).with_max_bytes(0));
+
+        for i in 0..5 {
+            cache.get(i).unwrap();
+        }
+        assert_eq!(reads.load(Ordering::SeqCst), 5);
+
+        {
+            let store = cache.inner.cache.lock().unwrap();
+            assert!(
+                store.total_bytes as u64 <= 64 * 1024 * 1024,
+                "resident bytes must stay within the budget"
+            );
+            assert!(store.contains(&4), "the most-recent page is retained");
+            assert!(!store.contains(&0), "the oldest page was evicted by bytes");
+        }
+
+        // Page 0 was evicted -> a fresh read; page 4 is still cached -> no read.
+        cache.get(0).unwrap();
+        assert_eq!(reads.load(Ordering::SeqCst), 6);
+        cache.get(4).unwrap();
+        assert_eq!(reads.load(Ordering::SeqCst), 6);
     }
 }
