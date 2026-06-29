@@ -8,7 +8,7 @@
 //! text, carousel rebuild, thumbnail launch), so it lives in the UI crate.
 
 use std::cell::RefCell;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use gashuu_core::{CoreError, Library, Settings, ThumbnailCache};
@@ -281,15 +281,26 @@ impl OpenBookUseCase {
         };
         state.borrow_mut().apply_resolved_view(resolved);
         viewport.borrow_mut().set_fit(resolved.fit_mode);
-        // Persist the newly registered book (and any back-filled page count)
-        // immediately, mirroring the recents save-on-open above, so the library
-        // shelf stays consistent even if the app exits before the next leave point.
-        // Capture the result to surface AFTER refresh (surfacing now would be
-        // clobbered by the spread/status push). Borrow discipline: `register_opened`'s
-        // borrow_mut dropped at its `;`; this is a fresh borrow.
-        let library_save: Result<(), CoreError> = library.borrow().save();
-        if let Err(e) = &library_save {
-            tracing::error!(error = %e, "failed to save library on open");
+        // Persist the newly registered book (and any back-filled page count) so
+        // the library shelf stays consistent even if the app exits before the
+        // next leave point. This open-time write only needs to be DURABLE, not
+        // SYNCHRONOUS — the same content is re-saved at leave points and on exit
+        // — so serialize on the UI thread (cheap) under the existing borrow, then
+        // move the owned `(PathBuf, String)` (both `Send`) into a worker thread
+        // for the fsync-heavy `write_atomic`. A background write error is logged,
+        // never panics. Borrow discipline: `register_opened`'s borrow_mut dropped
+        // at its `;`; this is a fresh, short-lived borrow that drops before spawn.
+        match prepare_library_save(&library.borrow()) {
+            Ok((path, json)) => {
+                std::thread::spawn(move || {
+                    if let Err(e) = gashuu_core::write_atomic(&path, json.as_bytes()) {
+                        tracing::error!(error = %e, "background library save failed");
+                    }
+                });
+            }
+            Err(e) => {
+                tracing::error!(error = %e, "failed to prepare library save on open");
+            }
         }
         // When the stored page count was just back-filled/updated, rebuild the
         // carousel model so the home screen reflects the real total/progress when
@@ -326,11 +337,15 @@ impl OpenBookUseCase {
             canonical.clone(),
         );
         let skipped = state.borrow().last_open_skipped();
+        // The on-open library save now runs on a background thread (errors are
+        // logged there, never surfaced), so no synchronous save result reaches
+        // the open notices — pass `Ok` for the library-save slot. The settings
+        // save above stays synchronous and is still surfaced.
         OpenOutcome::Success(notices_content(
             skipped,
             skipped_detail,
             settings_save.as_ref(),
-            &library_save,
+            &Ok(()),
         ))
     }
 }
@@ -352,6 +367,21 @@ pub(crate) fn notices_content(
         settings_save_err: settings_save.and_then(|r| r.as_ref().err().map(|e| format!("{e}"))),
         library_save_err: library_save.as_ref().err().map(|e| format!("{e}")),
     }
+}
+
+/// Serialize the library for an off-thread save: resolve the on-disk target
+/// path and render the JSON, both on the calling (UI) thread under a shared
+/// borrow. The returned `(PathBuf, String)` are owned and `Send`, so the caller
+/// can move them into a worker thread that performs the fsync-heavy
+/// [`gashuu_core::atomic_write::write_atomic`] without holding the `Library`
+/// (which is `Rc<RefCell<…>>` and not `Send`).
+///
+/// This is the cheap half of a save (serialize) split from the expensive half
+/// (durable write); it mirrors what [`Library::save_to`] does internally but
+/// hands the pieces back instead of writing, keeping core `Library::save`
+/// unchanged.
+fn prepare_library_save(library: &Library) -> Result<(PathBuf, String), CoreError> {
+    Ok((Library::data_path()?, library.to_json()?))
 }
 
 /// Result of [`remove_empty_book`]: the removed book's display title (captured
@@ -523,6 +553,48 @@ mod tests {
         assert_eq!(c.skipped, 1);
         assert!(c.settings_save_err.is_some());
         assert!(c.library_save_err.is_none());
+    }
+
+    // ---- prepare_library_save (serialize half of the off-thread save) -----
+
+    #[test]
+    fn prepare_library_save_returns_data_path_and_json() {
+        let mut lib = Library::new();
+        lib.add(PathBuf::from("/manga/Vol 1.cbz"));
+        lib.add(PathBuf::from("/manga/Vol 2.cbz"));
+
+        let (path, json) = prepare_library_save(&lib).expect("prepare must succeed");
+
+        assert_eq!(
+            path,
+            Library::data_path().expect("data path must resolve"),
+            "path must match Library::data_path()"
+        );
+        assert_eq!(
+            json,
+            lib.to_json().expect("to_json must succeed"),
+            "json must match Library::to_json()"
+        );
+    }
+
+    #[test]
+    fn prepare_library_save_json_round_trips() {
+        let mut lib = Library::new();
+        lib.add(PathBuf::from("/manga/Round Trip.cbz"));
+
+        let (_path, json) = prepare_library_save(&lib).expect("prepare must succeed");
+        let restored = Library::from_json(&json).expect("from_json must parse");
+
+        assert_eq!(
+            restored.books().len(),
+            lib.books().len(),
+            "round-tripped library must carry the same books"
+        );
+        assert_eq!(
+            restored.to_json().expect("re-serialize must succeed"),
+            json,
+            "round-trip must be byte-stable"
+        );
     }
 
     // ---- remove_empty_book_with (the empty-book removal transaction) -------
