@@ -472,12 +472,12 @@ mod tests {
 
     use crate::thumbnail_cache::ThumbnailCache;
 
-    /// Count the `*.png` entries written directly in `dir` (non-recursive).
-    fn png_count(dir: &std::path::Path) -> usize {
+    /// Count the `*.qoi` cache entries written directly in `dir` (non-recursive).
+    fn qoi_count(dir: &std::path::Path) -> usize {
         std::fs::read_dir(dir)
             .unwrap()
             .flatten()
-            .filter(|e| e.path().extension().is_some_and(|ext| ext == "png"))
+            .filter(|e| e.path().extension().is_some_and(|ext| ext == "qoi"))
             .count()
     }
 
@@ -501,7 +501,7 @@ mod tests {
         src
     }
 
-    /// First open persists one PNG per page; the second open of the same unchanged
+    /// First open persists one QOI per page; the second open of the same unchanged
     /// book serves every page from disk with ZERO `read_bytes` calls.
     #[test]
     fn cache_ctx_persists_then_serves_from_cache() {
@@ -515,9 +515,9 @@ mod tests {
         let first = run_strip(pages.clone(), &cache, path);
         assert_eq!(first.reads(), N, "first open reads every page");
         assert_eq!(
-            png_count(dir.path()),
+            qoi_count(dir.path()),
             N,
-            "first open persists one PNG per page"
+            "first open persists one QOI per page"
         );
 
         let second = run_strip(pages, &cache, path);

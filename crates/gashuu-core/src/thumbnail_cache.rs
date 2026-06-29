@@ -82,9 +82,11 @@ impl ThumbnailCache {
 
     /// Look up a thumbnail in the cache.
     ///
-    /// Reads `<dir>/<key>.png` and decodes it into a `DecodedImage`. Returns
+    /// Reads `<dir>/<key>.qoi` and decodes it into a `DecodedImage`. Returns
     /// `None` if the file is missing, unreadable, or not a valid image; it
-    /// never panics.
+    /// never panics. A legacy `<key>.png` from a prior build is NOT read — it is
+    /// a clean miss (regenerated under the `.qoi` extension) and is reclaimed by
+    /// [`prune`](Self::prune)/[`clear`](Self::clear).
     ///
     /// A hit refreshes the file's mtime (touch-on-get), which is what makes
     /// [`prune`](Self::prune)'s mtime-ascending eviction near-LRU: live covers
@@ -93,7 +95,7 @@ impl ThumbnailCache {
     /// age out) and is best-effort — a failure (entry pruned mid-read, read-only
     /// fs) costs nothing but eviction-order precision.
     pub fn get(&self, key: &str) -> Option<DecodedImage> {
-        let path = self.dir.join(format!("{key}.png"));
+        let path = self.dir.join(format!("{key}.qoi"));
         let bytes = std::fs::read(&path).ok()?;
         let img = crate::image_ops::decode(&bytes).ok()?;
         let _ = std::fs::File::options()
@@ -105,28 +107,28 @@ impl ThumbnailCache {
 
     /// Store a thumbnail in the cache.
     ///
-    /// PNG-encodes `img` at its exact dimensions and writes it atomically to
-    /// `<dir>/<key>.png` via [`write_atomic`](crate::atomic_write::write_atomic),
+    /// QOI-encodes `img` at its exact dimensions and writes it atomically to
+    /// `<dir>/<key>.qoi` via [`write_atomic`](crate::atomic_write::write_atomic),
     /// which creates the cache directory if it does not exist and is the single
     /// owner of the temp-then-rename invariant (same-dir `NamedTempFile` +
     /// `sync_all` + rename). The atomic rename keeps a concurrent reader from
     /// seeing a torn file, and the random temp name means concurrent `put`s of
     /// the same key never collide on a fixed temp path.
     pub fn put(&self, key: &str, img: &DecodedImage) -> Result<(), CoreError> {
-        let png_bytes = encode_png(img)?;
-        let target = self.dir.join(format!("{key}.png"));
-        crate::atomic_write::write_atomic(&target, &png_bytes)?;
+        let qoi_bytes = encode_qoi(img)?;
+        let target = self.dir.join(format!("{key}.qoi"));
+        crate::atomic_write::write_atomic(&target, &qoi_bytes)?;
         Ok(())
     }
 
-    /// Best-effort delete the cover PNGs cached for `path`, across each of the
+    /// Best-effort delete the cover QOI files cached for `path`, across each of the
     /// given `max_sides` variants, and return how many files were removed.
     ///
     /// The cover for a book is keyed on `(path, mtime, max_side)` via the private
     /// [`cache_key`] derivation reused here, so the caller passes the CURRENT
     /// `mtime_secs` (the same value the cover was generated under). If the file's
     /// mtime has since drifted, the recomputed key no longer matches the stored
-    /// PNG; that PNG is then an undeletable-but-harmless orphan ([`prune`](Self::prune)
+    /// file; that file is then an undeletable-but-harmless orphan ([`prune`](Self::prune)
     /// reclaims it later — never `get`-touched, it ages to the front of the
     /// eviction order). This is best-effort by design: a missing file (cache
     /// miss) and any I/O error are SILENTLY skipped — callers may warn, never
@@ -136,7 +138,7 @@ impl ThumbnailCache {
             .iter()
             .filter(|&&max_side| {
                 let key = cache_key(path, mtime_secs, max_side);
-                let target = self.dir.join(format!("{key}.png"));
+                let target = self.dir.join(format!("{key}.qoi"));
                 std::fs::remove_file(&target).is_ok()
             })
             .count()
@@ -148,8 +150,8 @@ impl ThumbnailCache {
     /// Missing or unreadable cache directories are treated as empty, matching
     /// [`prune`](Self::prune)'s best-effort cleanup style. The sweep never
     /// recurses and only unlinks regular files whose names match the patterns
-    /// this cache writes: `*.png` thumbnails and `.tmpXXXXXX` interrupted
-    /// `write_atomic` temps.
+    /// this cache owns: `*.qoi` thumbnails (current), legacy `*.png` thumbnails
+    /// (reclaimed, never read), and `.tmpXXXXXX` interrupted `write_atomic` temps.
     pub fn clear(&self) -> ClearCacheReport {
         let mut report = ClearCacheReport::default();
         for_each_cache_file(&self.dir, |entry, meta| {
@@ -164,16 +166,22 @@ impl ThumbnailCache {
         report
     }
 
-    /// Sweep the cache directory down to `max_bytes` of stored `*.png` payload,
+    /// Sweep the cache directory down to `max_bytes` of stored `*.qoi` payload,
     /// evicting in ascending `(mtime, file name)` order — oldest first, the name
     /// as a deterministic tie-break. `get` refreshes a hit's mtime, so this order
     /// is near-LRU: a key-orphaned cover (its source's mtime drifted) is never
     /// read again, ages to the front, and is reclaimed once the cap is hit.
     ///
+    /// Legacy `*.png` entries from a prior build are never read (a clean miss
+    /// under the new `.qoi` extension), so the sweep unlinks every one it finds
+    /// as a one-time migration reclaim — counted in the removed totals but not in
+    /// the `.qoi` size cap.
+    ///
     /// Best-effort like [`purge_for`](Self::purge_for): a missing directory is a
     /// zero report (first launch), unreadable entries are skipped, a failed
     /// unlink is skipped (not counted) and the sweep continues. Files the cache
-    /// did not write (neither `*.png` nor its tmp shape) are NEVER touched.
+    /// does not own (neither `*.qoi`/legacy `*.png` nor its tmp shape) are NEVER
+    /// touched.
     pub fn prune(&self, max_bytes: u64) -> PruneReport {
         let mut report = PruneReport::default();
 
@@ -187,7 +195,7 @@ impl ThumbnailCache {
         }
 
         let now = std::time::SystemTime::now();
-        let mut pngs: Vec<CacheEntry> = Vec::new();
+        let mut entries: Vec<CacheEntry> = Vec::new();
         for_each_cache_file(&self.dir, |entry, meta| {
             let name = entry.file_name();
             let lossy = name.to_string_lossy();
@@ -208,8 +216,17 @@ impl ThumbnailCache {
                 }
                 return;
             }
+            // Legacy PNG entries are never read under the new `.qoi` extension;
+            // reclaim every one as a one-time migration sweep (outside the cap).
             if lossy.ends_with(".png") {
-                pngs.push(CacheEntry {
+                if std::fs::remove_file(entry.path()).is_ok() {
+                    report.removed_files += 1;
+                    report.removed_bytes += meta.len();
+                }
+                return;
+            }
+            if lossy.ends_with(".qoi") {
+                entries.push(CacheEntry {
                     path: entry.path(),
                     size: meta.len(),
                     // An unreadable mtime sorts as the epoch — evicted first,
@@ -220,9 +237,9 @@ impl ThumbnailCache {
             }
         });
 
-        let mut total: u64 = pngs.iter().map(|e| e.size).sum();
-        pngs.sort_by(|a, b| a.mtime.cmp(&b.mtime).then_with(|| a.name.cmp(&b.name)));
-        let mut victims = pngs.into_iter();
+        let mut total: u64 = entries.iter().map(|e| e.size).sum();
+        entries.sort_by(|a, b| a.mtime.cmp(&b.mtime).then_with(|| a.name.cmp(&b.name)));
+        let mut victims = entries.into_iter();
         while total > max_bytes {
             let Some(entry) = victims.next() else {
                 // Every remaining unlink failed; the leftover bytes stay counted.
@@ -239,9 +256,12 @@ impl ThumbnailCache {
     }
 }
 
+// Names this cache owns and may reclaim: current `.qoi` thumbnails, legacy `.png`
+// thumbnails (reclaim-only — never read after the codec switch), and `.tmpXXXXXX`
+// `write_atomic` temps.
 fn is_owned_cache_file_name(name: &std::ffi::OsStr) -> bool {
     let lossy = name.to_string_lossy();
-    lossy.ends_with(".png") || lossy.starts_with(TMP_NAME_PREFIX)
+    lossy.ends_with(".qoi") || lossy.ends_with(".png") || lossy.starts_with(TMP_NAME_PREFIX)
 }
 
 /// The shared scaffold of the directory sweeps ([`ThumbnailCache::clear`] /
@@ -266,11 +286,13 @@ fn for_each_cache_file(dir: &Path, mut visit: impl FnMut(&std::fs::DirEntry, &st
     }
 }
 
-/// The write-side codec: PNG-encode `img` at its exact dimensions. Split from the
-/// atomic-write/path concern in [`ThumbnailCache::put`] so the encode is testable
-/// in isolation. Errors with `MalformedImage` if the RGBA buffer length does not
-/// match `width * height * 4`, or propagates an `image` encode failure.
-fn encode_png(img: &DecodedImage) -> Result<Vec<u8>, CoreError> {
+/// The write-side codec: QOI-encode `img` at its exact dimensions. QOI is a fast
+/// lossless codec — these are regenerable throwaway caches where portability is
+/// irrelevant, so the slow PNG encode/decode is traded for QOI's speed. Split from
+/// the atomic-write/path concern in [`ThumbnailCache::put`] so the encode is
+/// testable in isolation. Errors with `MalformedImage` if the RGBA buffer length
+/// does not match `width * height * 4`, or propagates an `image` encode failure.
+fn encode_qoi(img: &DecodedImage) -> Result<Vec<u8>, CoreError> {
     let raw = image::RgbaImage::from_raw(img.width(), img.height(), img.rgba().to_vec())
         .ok_or_else(|| CoreError::MalformedImage {
             expected: (img.width() as usize)
@@ -279,12 +301,12 @@ fn encode_png(img: &DecodedImage) -> Result<Vec<u8>, CoreError> {
             actual: img.rgba().len(),
         })?;
 
-    let mut png_bytes: Vec<u8> = Vec::new();
+    let mut qoi_bytes: Vec<u8> = Vec::new();
     image::DynamicImage::ImageRgba8(raw).write_to(
-        &mut std::io::Cursor::new(&mut png_bytes),
-        image::ImageFormat::Png,
+        &mut std::io::Cursor::new(&mut qoi_bytes),
+        image::ImageFormat::Qoi,
     )?;
-    Ok(png_bytes)
+    Ok(qoi_bytes)
 }
 
 /// Result of one [`ThumbnailCache::clear`] sweep. The cache is best-effort:
@@ -305,7 +327,7 @@ pub struct PruneReport {
     pub removed_files: usize,
     /// Sum of the unlinked files' sizes, in bytes.
     pub removed_bytes: u64,
-    /// Post-sweep total of the surviving `*.png` payload, in bytes — lets the
+    /// Post-sweep total of the surviving `*.qoi` payload, in bytes — lets the
     /// caller log "under the cap" without re-scanning the directory.
     pub retained_bytes: u64,
 }
@@ -334,10 +356,10 @@ mod tests {
         set_mtime(path, target);
     }
 
-    /// On-disk size of the cached PNG for `key` (seeded via `put`).
-    fn png_size(dir: &Path, key: &str) -> u64 {
-        std::fs::metadata(dir.join(format!("{key}.png")))
-            .expect("seeded png exists")
+    /// On-disk size of the cached QOI file for `key` (seeded via `put`).
+    fn qoi_size(dir: &Path, key: &str) -> u64 {
+        std::fs::metadata(dir.join(format!("{key}.qoi")))
+            .expect("seeded qoi exists")
             .len()
     }
 
@@ -417,6 +439,22 @@ mod tests {
         DecodedImage::new(rgba, 2, 3).expect("valid 2x3 RGBA")
     }
 
+    /// Encode `img` as VALID legacy PNG bytes — the format the cache wrote before
+    /// the QOI switch. Used to seed `.png` files for the migration tests so a miss
+    /// can only come from the new extension, never a decode failure.
+    fn encode_png_for_test(img: &DecodedImage) -> Vec<u8> {
+        let raw = image::RgbaImage::from_raw(img.width(), img.height(), img.rgba().to_vec())
+            .expect("valid RGBA buffer");
+        let mut png_bytes: Vec<u8> = Vec::new();
+        image::DynamicImage::ImageRgba8(raw)
+            .write_to(
+                &mut std::io::Cursor::new(&mut png_bytes),
+                image::ImageFormat::Png,
+            )
+            .expect("PNG encode");
+        png_bytes
+    }
+
     #[test]
     fn put_creates_directory_if_absent() {
         let dir = tempdir().unwrap();
@@ -433,14 +471,14 @@ mod tests {
     }
 
     #[test]
-    fn put_writes_key_dot_png_inside_dir() {
+    fn put_writes_key_dot_qoi_inside_dir() {
         let dir = tempdir().unwrap();
         let cache = ThumbnailCache::with_dir(dir.path().to_path_buf());
         let key = "cafebabe12345678";
         cache
             .put(key, &tiny_decoded_image())
             .expect("put must succeed");
-        let expected_path = dir.path().join(format!("{key}.png"));
+        let expected_path = dir.path().join(format!("{key}.qoi"));
         assert!(
             expected_path.exists(),
             "expected file at {expected_path:?} to exist"
@@ -459,9 +497,28 @@ mod tests {
         let dir = tempdir().unwrap();
         let cache = ThumbnailCache::with_dir(dir.path().to_path_buf());
         let key = "deadbeef01234567";
-        let path = dir.path().join(format!("{key}.png"));
-        std::fs::write(&path, b"this is not a PNG").unwrap();
+        let path = dir.path().join(format!("{key}.qoi"));
+        std::fs::write(&path, b"this is not a QOI").unwrap();
         assert!(cache.get(key).is_none());
+    }
+
+    #[test]
+    fn get_ignores_legacy_png_as_a_clean_miss() {
+        // A `.png` from a prior build is never read under the new `.qoi`
+        // extension: the lookup misses (and the file is later reclaimed by
+        // prune/clear), so the thumbnail is regenerated as `.qoi`.
+        let dir = tempdir().unwrap();
+        let cache = ThumbnailCache::with_dir(dir.path().to_path_buf());
+        let key = "1234567890abcdef";
+        // Seed a VALID legacy PNG so a miss can only come from the extension,
+        // not from a decode failure.
+        let legacy = encode_png_for_test(&tiny_decoded_image());
+        std::fs::write(dir.path().join(format!("{key}.png")), &legacy).unwrap();
+
+        assert!(
+            cache.get(key).is_none(),
+            "a legacy .png must be a clean miss under the .qoi extension"
+        );
     }
 
     #[test]
@@ -603,13 +660,13 @@ mod tests {
     fn clear_removes_owned_cache_files_and_reports_them() {
         let dir = tempdir().unwrap();
         let cache = ThumbnailCache::with_dir(dir.path().to_path_buf());
-        cache.put("aaaa", &tiny_decoded_image()).expect("seed png");
-        cache.put("bbbb", &tiny_decoded_image()).expect("seed png");
+        cache.put("aaaa", &tiny_decoded_image()).expect("seed qoi");
+        cache.put("bbbb", &tiny_decoded_image()).expect("seed qoi");
         // A `write_atomic` temp uses the `.tmpXXXXXX` prefix shape.
         let tmp = dir.path().join(".tmpcccc01");
         std::fs::write(&tmp, b"interrupted cache write").unwrap();
-        let expected_bytes = png_size(dir.path(), "aaaa")
-            + png_size(dir.path(), "bbbb")
+        let expected_bytes = qoi_size(dir.path(), "aaaa")
+            + qoi_size(dir.path(), "bbbb")
             + tmp.metadata().unwrap().len();
 
         let report = cache.clear();
@@ -625,23 +682,23 @@ mod tests {
     fn clear_keeps_foreign_files_and_nested_entries() {
         let dir = tempdir().unwrap();
         let cache = ThumbnailCache::with_dir(dir.path().to_path_buf());
-        cache.put("aaaa", &tiny_decoded_image()).expect("seed png");
+        cache.put("aaaa", &tiny_decoded_image()).expect("seed qoi");
         let stray = dir.path().join("README.txt");
         std::fs::write(&stray, b"not a cache entry").unwrap();
         let nested = dir.path().join("nested");
         std::fs::create_dir(&nested).unwrap();
-        let nested_png = nested.join("inside.png");
-        std::fs::write(&nested_png, b"nested foreign content").unwrap();
+        let nested_qoi = nested.join("inside.qoi");
+        std::fs::write(&nested_qoi, b"nested foreign content").unwrap();
 
         let report = cache.clear();
 
         assert_eq!(
             report.removed_files, 1,
-            "only the top-level owned png is removed"
+            "only the top-level owned qoi is removed"
         );
         assert!(stray.exists(), "foreign files in the cache dir survive");
         assert!(
-            nested_png.exists(),
+            nested_qoi.exists(),
             "clear does not recurse into directories"
         );
     }
@@ -666,7 +723,7 @@ mod tests {
         let cache = ThumbnailCache::with_dir(dir.path().to_path_buf());
         cache.put("aaaa", &tiny_decoded_image()).expect("seed");
         cache.put("bbbb", &tiny_decoded_image()).expect("seed");
-        let total = png_size(dir.path(), "aaaa") + png_size(dir.path(), "bbbb");
+        let total = qoi_size(dir.path(), "aaaa") + qoi_size(dir.path(), "bbbb");
 
         let report = cache.prune(total);
 
@@ -685,10 +742,10 @@ mod tests {
         let cache = ThumbnailCache::with_dir(dir.path().to_path_buf());
         for (key, age) in [("oldest", 3000), ("middle", 2000), ("newest", 1000)] {
             cache.put(key, &tiny_decoded_image()).expect("seed");
-            back_date(&dir.path().join(format!("{key}.png")), age);
+            back_date(&dir.path().join(format!("{key}.qoi")), age);
         }
-        let oldest = png_size(dir.path(), "oldest");
-        let cap = png_size(dir.path(), "middle") + png_size(dir.path(), "newest");
+        let oldest = qoi_size(dir.path(), "oldest");
+        let cap = qoi_size(dir.path(), "middle") + qoi_size(dir.path(), "newest");
 
         let report = cache.prune(cap);
 
@@ -704,7 +761,7 @@ mod tests {
     fn prune_equal_mtime_tie_breaks_by_file_name() {
         // Two entries with the SAME mtime and a cap that fits only one: the
         // file-name tie-break makes the eviction deterministic (ascending name
-        // order, so "aaaa.png" goes first).
+        // order, so "aaaa.qoi" goes first).
         let dir = tempdir().unwrap();
         let cache = ThumbnailCache::with_dir(dir.path().to_path_buf());
         // ONE shared instant: per-file `now()` reads would differ by microseconds
@@ -712,9 +769,9 @@ mod tests {
         let shared = std::time::SystemTime::now() - std::time::Duration::from_secs(2000);
         for key in ["bbbb", "aaaa"] {
             cache.put(key, &tiny_decoded_image()).expect("seed");
-            set_mtime(&dir.path().join(format!("{key}.png")), shared);
+            set_mtime(&dir.path().join(format!("{key}.qoi")), shared);
         }
-        let cap = png_size(dir.path(), "bbbb");
+        let cap = qoi_size(dir.path(), "bbbb");
 
         let report = cache.prune(cap);
 
@@ -727,8 +784,8 @@ mod tests {
     }
 
     #[test]
-    fn prune_zero_cap_removes_all_pngs() {
-        // Degenerate cap: every cached PNG goes; the directory itself stays.
+    fn prune_zero_cap_removes_all_qois() {
+        // Degenerate cap: every cached QOI goes; the directory itself stays.
         let dir = tempdir().unwrap();
         let cache = ThumbnailCache::with_dir(dir.path().to_path_buf());
         cache.put("aaaa", &tiny_decoded_image()).expect("seed");
@@ -744,8 +801,9 @@ mod tests {
 
     #[test]
     fn prune_ignores_files_that_are_not_cache_entries() {
-        // Safety pin: the sweep only ever deletes what the cache itself writes
-        // (`*.png`, stale tmp). A stray foreign file survives even a zero cap.
+        // Safety pin: the sweep only ever deletes what the cache itself owns
+        // (`*.qoi`, legacy `*.png`, stale tmp). A stray foreign file survives
+        // even a zero cap.
         let dir = tempdir().unwrap();
         let cache = ThumbnailCache::with_dir(dir.path().to_path_buf());
         let stray = dir.path().join("README.txt");
@@ -775,7 +833,7 @@ mod tests {
         assert_eq!(report.removed_files, 1, "the stale tmp is reclaimed");
         assert_eq!(report.removed_bytes, b"torn write leftover".len() as u64);
         assert!(!stale_tmp.exists(), "the stale tmp is gone");
-        assert!(cache.get("aaaa").is_some(), "the cached PNG is untouched");
+        assert!(cache.get("aaaa").is_some(), "the cached QOI is untouched");
     }
 
     #[test]
@@ -794,6 +852,52 @@ mod tests {
     }
 
     #[test]
+    fn prune_reclaims_legacy_png_outside_the_cap() {
+        // Legacy `.png` entries from a prior build are never read under the new
+        // `.qoi` extension, so prune reclaims every one regardless of the cap —
+        // even one whose mtime is newer than a kept `.qoi`. The `.qoi` payload
+        // alone decides the size cap; the legacy bytes are not counted against it.
+        let dir = tempdir().unwrap();
+        let cache = ThumbnailCache::with_dir(dir.path().to_path_buf());
+        cache.put("live", &tiny_decoded_image()).expect("seed qoi");
+        let legacy = dir.path().join("dead.png");
+        std::fs::write(&legacy, encode_png_for_test(&tiny_decoded_image())).unwrap();
+        let legacy_bytes = legacy.metadata().unwrap().len();
+        // A generous cap that the `.qoi` payload alone fits under.
+        let cap = qoi_size(dir.path(), "live");
+
+        let report = cache.prune(cap);
+
+        assert_eq!(report.removed_files, 1, "only the legacy png is reclaimed");
+        assert_eq!(report.removed_bytes, legacy_bytes);
+        assert_eq!(
+            report.retained_bytes, cap,
+            "retained total counts the .qoi payload only"
+        );
+        assert!(!legacy.exists(), "the legacy png is gone");
+        assert!(cache.get("live").is_some(), "the live qoi survives");
+    }
+
+    #[test]
+    fn clear_reclaims_legacy_png() {
+        // `clear` recognizes legacy `.png` as an owned entry and unlinks it
+        // alongside current `.qoi` thumbnails.
+        let dir = tempdir().unwrap();
+        let cache = ThumbnailCache::with_dir(dir.path().to_path_buf());
+        cache.put("live", &tiny_decoded_image()).expect("seed qoi");
+        let legacy = dir.path().join("dead.png");
+        std::fs::write(&legacy, encode_png_for_test(&tiny_decoded_image())).unwrap();
+        let expected_bytes = qoi_size(dir.path(), "live") + legacy.metadata().unwrap().len();
+
+        let report = cache.clear();
+
+        assert_eq!(report.removed_files, 2, "both qoi and legacy png cleared");
+        assert_eq!(report.removed_bytes, expected_bytes);
+        assert!(!legacy.exists(), "the legacy png is gone");
+        assert!(cache.get("live").is_none(), "the qoi is gone");
+    }
+
+    #[test]
     fn get_hit_advances_file_mtime() {
         // The near-LRU contract: a HIT refreshes the file's mtime so `prune`'s
         // mtime-ascending eviction order approximates least-recently-USED, and a
@@ -801,13 +905,13 @@ mod tests {
         let dir = tempdir().unwrap();
         let cache = ThumbnailCache::with_dir(dir.path().to_path_buf());
         cache.put("aaaa", &tiny_decoded_image()).expect("seed");
-        let png = dir.path().join("aaaa.png");
-        back_date(&png, 1000);
-        let before = std::fs::metadata(&png).unwrap().modified().unwrap();
+        let qoi = dir.path().join("aaaa.qoi");
+        back_date(&qoi, 1000);
+        let before = std::fs::metadata(&qoi).unwrap().modified().unwrap();
 
         assert!(cache.get("aaaa").is_some(), "pre-condition: a cache hit");
 
-        let after = std::fs::metadata(&png).unwrap().modified().unwrap();
+        let after = std::fs::metadata(&qoi).unwrap().modified().unwrap();
         assert!(
             after > before,
             "a hit must advance the mtime (touch-on-get)"
@@ -820,17 +924,17 @@ mod tests {
         // garbage to the back of the eviction order and keep it alive forever.
         let dir = tempdir().unwrap();
         let cache = ThumbnailCache::with_dir(dir.path().to_path_buf());
-        let png = dir.path().join("aaaa.png");
-        std::fs::write(&png, b"this is not a PNG").unwrap();
-        back_date(&png, 1000);
-        let before = std::fs::metadata(&png).unwrap().modified().unwrap();
+        let qoi = dir.path().join("aaaa.qoi");
+        std::fs::write(&qoi, b"this is not a QOI").unwrap();
+        back_date(&qoi, 1000);
+        let before = std::fs::metadata(&qoi).unwrap().modified().unwrap();
 
         assert!(
             cache.get("aaaa").is_none(),
             "pre-condition: a decode failure"
         );
 
-        let after = std::fs::metadata(&png).unwrap().modified().unwrap();
+        let after = std::fs::metadata(&qoi).unwrap().modified().unwrap();
         assert_eq!(after, before, "a failed decode must not refresh the mtime");
     }
 
