@@ -308,21 +308,6 @@ pub(crate) fn wire_viewport_handlers(ui: &ViewerWindow, viewport: &Rc<RefCell<Vi
         });
     }
     {
-        let ui_weak = ui.as_weak();
-        let viewport = Rc::clone(&viewport);
-        // `dy` is Slint's wheel `delta-y / 1px` passed straight through; the
-        // zoom-in/out sign convention lives in `ViewportState::zoom_at`
-        // (raw_delta > 0 = zoom in). If manual testing shows the wheel feels
-        // inverted on some platform, flip the sign here (one-liner) rather than
-        // in the pure step.
-        ui.on_zoom_at(move |x, y, dy| {
-            with_ui(&ui_weak, |ui| {
-                viewport.borrow_mut().zoom_at(x, y, dy);
-                apply_viewport(&ui, &viewport.borrow());
-            })
-        });
-    }
-    {
         let viewport = Rc::clone(&viewport);
         // Drag start: snapshot the current offset; no geometry change yet.
         ui.on_begin_pan(move || {
@@ -335,6 +320,40 @@ pub(crate) fn wire_viewport_handlers(ui: &ViewerWindow, viewport: &Rc<RefCell<Vi
         ui.on_pan_to(move |dx, dy| {
             with_ui(&ui_weak, |ui| {
                 viewport.borrow_mut().pan_to(dx, dy);
+                apply_viewport(&ui, &viewport.borrow());
+            })
+        });
+    }
+    {
+        let viewport = Rc::clone(&viewport);
+        // Pinch start: snapshot the current zoom factor; no geometry change yet
+        // (mirrors begin_pan for drag).
+        ui.on_begin_pinch(move || {
+            viewport.borrow_mut().begin_pinch();
+        });
+    }
+    {
+        let ui_weak = ui.as_weak();
+        let viewport = Rc::clone(&viewport);
+        // `scale` is the gesture's cumulative factor (1.0 at start); `x`/`y` are
+        // the focal point in viewport coordinates (cursor position on a trackpad).
+        // Note: the Slint callback order is (x, y, scale); pinch_to takes (scale, x, y).
+        ui.on_pinch_to(move |x, y, scale| {
+            with_ui(&ui_weak, |ui| {
+                viewport.borrow_mut().pinch_to(scale, x, y);
+                apply_viewport(&ui, &viewport.borrow());
+            })
+        });
+    }
+    {
+        let ui_weak = ui.as_weak();
+        let viewport = Rc::clone(&viewport);
+        // Incremental two-finger scroll pan while zoomed in. The sign is passed
+        // straight through from Slint; if scrolling feels inverted on some
+        // platform, flip it in the Slint `scroll-pan` call (one-liner), not here.
+        ui.on_scroll_pan(move |dx, dy| {
+            with_ui(&ui_weak, |ui| {
+                viewport.borrow_mut().pan_by(dx, dy);
                 apply_viewport(&ui, &viewport.borrow());
             })
         });
