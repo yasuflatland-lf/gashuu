@@ -196,12 +196,19 @@ impl Settings {
         // exceed MAX_RECENT_FILES and then persist forever (exit-save writes
         // in-memory state); enforce the cap here too.
         self.recent_files.truncate(MAX_RECENT_FILES);
-        // Floor a stored window size to the legible minimum, mirroring the cache
-        // clamps above (a hand-edited file could carry a tiny/zero size).
-        if let Some(g) = self.window.as_mut() {
-            let (w, h) = g.clamped_size();
-            g.width = w;
-            g.height = h;
+        // Normalize a stored window geometry. A corrupt (inflated) size is
+        // discarded so the app boots at its default size instead of an
+        // off-screen / unusable window; an otherwise-sane size is floored to the
+        // legible minimum, mirroring the cache clamps above (a hand-edited file
+        // could carry a tiny/zero size).
+        match self.window {
+            Some(g) if !g.is_size_sane() => self.window = None,
+            Some(ref mut g) => {
+                let (w, h) = g.clamped_size();
+                g.width = w;
+                g.height = h;
+            }
+            None => {}
         }
     }
 
@@ -785,6 +792,41 @@ mod tests {
                 y: 9,
             })
         );
+    }
+
+    #[test]
+    fn normalize_discards_inflated_window_geometry() {
+        // The corruption that blanked the window: a scale-factor round-trip
+        // inflated the stored size to an off-screen value. Such geometry is
+        // discarded so the app boots at its default size instead of an unusable
+        // window.
+        let mut s = Settings {
+            window: Some(WindowGeometry {
+                width: 110592,
+                height: 1982,
+                x: 0,
+                y: 66,
+            }),
+            ..Default::default()
+        };
+        s.normalize();
+        assert_eq!(s.window, None);
+    }
+
+    #[test]
+    fn normalize_keeps_a_sane_window_geometry() {
+        let geom = WindowGeometry {
+            width: 1400,
+            height: 900,
+            x: 100,
+            y: 100,
+        };
+        let mut s = Settings {
+            window: Some(geom),
+            ..Default::default()
+        };
+        s.normalize();
+        assert_eq!(s.window, Some(geom));
     }
 
     #[test]
