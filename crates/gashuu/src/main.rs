@@ -212,6 +212,8 @@ fn main() -> color_eyre::Result<()> {
         Rc::clone(&thumbs),
         Rc::clone(&covers),
         Rc::clone(&search),
+        Rc::clone(&selection),
+        Rc::clone(&localizer),
     ));
 
     // Seed the carousel from the persisted library so the home screen shows the

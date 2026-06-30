@@ -14,9 +14,10 @@ use std::rc::Rc;
 use gashuu_core::{CoreError, Library, Settings, ThumbnailCache};
 use slint::ComponentHandle;
 
-use crate::carousel::{bind_carousel_model, build_carousel_model, cover_requests};
+use crate::carousel_refresh::{refresh_library_carousel, CarouselRefresh};
 use crate::cover_loader::{purge_cover, CoverController};
-use crate::library_model::LibrarySearchState;
+use crate::i18n;
+use crate::library_model::{LibrarySearchState, LibrarySelectionState};
 use crate::thumbnail_strip::ThumbnailController;
 use crate::viewer_state::ViewerState;
 use crate::viewport::ViewportState;
@@ -88,9 +89,19 @@ pub(crate) struct OpenBookUseCase {
     /// Shared library-search filter, so the open-time page-count rebuild below
     /// preserves the active filter instead of rebuilding the full library.
     search: Rc<RefCell<LibrarySearchState>>,
+    /// Bulk-selection state, re-applied over the rebuilt rows by the shared
+    /// carousel-refresh chokepoint after an open-time page-count backfill.
+    selection: Rc<RefCell<LibrarySelectionState>>,
+    /// Localizer for the library-count / selection-toolbar strings the chokepoint
+    /// pushes after the projection changes.
+    localizer: Rc<i18n::Localizer>,
 }
 
 impl OpenBookUseCase {
+    // Nine explicit collaborators (the #151 explicit-handle policy: named
+    // params, not an AppState bundle). `selection` + `localizer` were added so
+    // `run` can delegate the open-time rebuild to `refresh_library_carousel`.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         state: Rc<RefCell<ViewerState>>,
         settings: Rc<RefCell<Settings>>,
@@ -99,6 +110,8 @@ impl OpenBookUseCase {
         thumbs: Rc<ThumbnailController>,
         covers: Rc<CoverController>,
         search: Rc<RefCell<LibrarySearchState>>,
+        selection: Rc<RefCell<LibrarySelectionState>>,
+        localizer: Rc<i18n::Localizer>,
     ) -> Self {
         Self {
             state,
@@ -108,6 +121,8 @@ impl OpenBookUseCase {
             thumbs,
             covers,
             search,
+            selection,
+            localizer,
         }
     }
 
@@ -311,23 +326,33 @@ impl OpenBookUseCase {
         // intentionally NOT reset here — this is a page-count refresh, not a filter
         // update. The `library.borrow()` drops before `covers.start`'s `borrow_mut`.
         if count_changed {
-            // Recompute the filter against the changed library, then build the
-            // model and cover requests under one borrow that drops before the bind
-            // and `covers.start`. The rebuild resets each visible row's cover to a
-            // placeholder; re-streaming repaints hits and regenerates misses, and
-            // the epoch bump supersedes any covers still streaming from the old model.
-            let (model, cover_reqs) = {
+            // Route the open-time rebuild through the SAME carousel chokepoint as
+            // the boot/query/add paths so it can't drift from them: it refreshes the
+            // library count + idle-strip label, re-applies the path-keyed bulk
+            // selection over the rebuilt rows, re-pushes the selection-toolbar
+            // strings, and dispatches covers focus-first — all of which the old
+            // open-coded rebuild silently dropped.
+            //
+            // The chokepoint READS `visible_indices()` but does NOT recompute, so
+            // recompute the active filter here first, under a borrow that drops
+            // before `refresh_library_carousel` takes its own `library` borrows.
+            {
                 let lib = library.borrow();
-                let mut search = self.search.borrow_mut();
-                search.recompute(&lib);
-                let indices = search.visible_indices();
-                (
-                    build_carousel_model(&lib, indices),
-                    cover_requests(&lib, indices),
-                )
-            };
-            bind_carousel_model(ui, model);
-            covers.start(ui.as_weak(), library, cover_reqs);
+                self.search.borrow_mut().recompute(&lib);
+            }
+            refresh_library_carousel(
+                ui,
+                &CarouselRefresh {
+                    library,
+                    covers,
+                    search: &self.search,
+                    selection: &self.selection,
+                    localizer: &self.localizer,
+                },
+                // Page-count refresh, NOT a filter change: never reset the
+                // carousel's focused index (matches the old open-coded path).
+                false,
+            );
         }
         // Kick off parallel thumbnail generation for the newly opened source.
         thumbs.start(
