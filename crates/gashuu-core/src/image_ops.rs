@@ -129,9 +129,18 @@ pub fn decode(bytes: &[u8]) -> Result<DecodedImage, CoreError> {
 /// `max_side` px, preserving aspect ratio. Reuses the same two-layer bomb guard
 /// as `decode` (header pre-read + check_pixel_limit + Limits-bounded full decode)
 /// via the shared `decode_dynamic`: the source page is fully decoded before
-/// downscaling (no format supports arbitrary scaled decode), so peak RAM per call
-/// is one full-res page — the same as `decode`, which bounds memory under the
-/// rayon pool's parallelism.
+/// downscaling, so peak RAM per call is one full-res page — the same as `decode`,
+/// which bounds memory under the rayon pool's parallelism.
+///
+/// JPEG scale-on-decode (DCT 1/2, 1/4, 1/8 reduction) was investigated as a
+/// fast path for the common manga case. The pinned `image` 0.25 decodes JPEG via
+/// `zune-jpeg` (see `Cargo.lock`: `image` 0.25.x → `zune-jpeg` 0.5.x), and that
+/// backend exposes no scaled-decode API: `image::codecs::jpeg::JpegDecoder` has
+/// only `new`, and `zune_core::options::DecoderOptions` offers max-dimension
+/// rejection limits, not power-of-two reduction. The old `JpegDecoder::scale`
+/// from the pre-0.25 `jpeg-decoder` backend was dropped in that migration. The
+/// fast path is an optimization, never a correctness requirement, so we keep the
+/// full-decode path for JPEG too until the pinned backend regains scaled decode.
 pub fn decode_thumbnail(bytes: &[u8], max_side: u32) -> Result<DecodedImage, CoreError> {
     let img = decode_dynamic(bytes)?;
     // Only downscale: if the image already fits within max_side × max_side, return
@@ -168,6 +177,18 @@ mod tests {
         let img = image::RgbaImage::from_pixel(w, h, image::Rgba([100, 150, 200, 255]));
         let mut bytes = Vec::new();
         img.write_to(&mut Cursor::new(&mut bytes), image::ImageFormat::Avif)
+            .unwrap();
+        bytes
+    }
+
+    /// Encode an RGB JPEG in-process, mirroring `png_bytes` — no committed binary
+    /// fixtures. JPEG has no alpha channel, so this builds an `RgbImage`. JPEG is
+    /// lossy, so callers assert structural properties (dimensions, aspect) rather
+    /// than pixel-exact values.
+    fn jpeg_bytes(w: u32, h: u32) -> Vec<u8> {
+        let img = image::RgbImage::from_pixel(w, h, image::Rgb([120, 60, 30]));
+        let mut bytes = Vec::new();
+        img.write_to(&mut Cursor::new(&mut bytes), image::ImageFormat::Jpeg)
             .unwrap();
         bytes
     }
@@ -379,6 +400,47 @@ mod tests {
             thumb.height(),
             10,
             "thumbnail upscaled height: got {}",
+            thumb.height()
+        );
+    }
+
+    // --- JPEG thumbnails (the common manga case; see decode_thumbnail docs) ---
+
+    #[test]
+    fn decode_thumbnail_jpeg_wide_image_fits_max_side() {
+        // 200x100 JPEG: longer edge is width=200. With max_side=64, the longer edge
+        // must be bounded by 64 and the 2:1 aspect preserved within tolerance.
+        // (JPEG is lossy and decodes in 8/16-px MCU blocks, so allow ±2px.)
+        let bytes = jpeg_bytes(200, 100);
+        let thumb = decode_thumbnail(&bytes, 64).unwrap();
+        assert!(thumb.width() <= 64, "width {} > max_side 64", thumb.width());
+        assert!(
+            thumb.height() <= 64,
+            "height {} > max_side 64",
+            thumb.height()
+        );
+        let expected_height = thumb.width() / 2;
+        let diff = (thumb.height() as i64 - expected_height as i64).unsigned_abs();
+        assert!(
+            diff <= 2,
+            "aspect ratio not preserved: w={} h={} expected_h~={}",
+            thumb.width(),
+            thumb.height(),
+            expected_height
+        );
+    }
+
+    #[test]
+    fn decode_thumbnail_jpeg_does_not_upscale() {
+        // Source 24x16 JPEG already fits within max_side=64, so the downscale-only
+        // guard must return it at its original decoded dimensions (no upscaling).
+        let bytes = jpeg_bytes(24, 16);
+        let thumb = decode_thumbnail(&bytes, 64).unwrap();
+        assert_eq!(
+            (thumb.width(), thumb.height()),
+            (24, 16),
+            "jpeg thumbnail upscaled: got {}x{}",
+            thumb.width(),
             thumb.height()
         );
     }
