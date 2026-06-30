@@ -20,10 +20,12 @@
 use crate::to_slint_image;
 use crate::{ThumbnailItem, ViewerWindow};
 use gashuu_core::{
-    generate_thumbnails, CoreError, DecodedImage, PageSource, DEFAULT_THUMB_MAX_SIDE,
+    generate_thumbnails, CoreError, DecodedImage, PageSource, PageThumbCache, ThumbnailCache,
+    DEFAULT_THUMB_MAX_SIDE,
 };
 use slint::{Model, ModelRc, VecModel};
 use std::cell::RefCell;
+use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering::Relaxed};
 use std::sync::Arc;
@@ -141,11 +143,17 @@ impl ThumbnailController {
     /// `page_count` unloaded placeholders (`loaded = false`), then (when `source`
     /// is `Some`) spawns a worker that streams decoded thumbnails back via
     /// `invoke_from_event_loop`. Invoked after every successful open.
+    ///
+    /// `path` is the canonical book path used to key each page's thumbnail in the
+    /// on-disk cache so a second open of the same unchanged book reads ~10-30 KB
+    /// PNGs instead of re-decoding every full-resolution page. `None` (or a cache
+    /// dir that cannot be built) degrades gracefully to no persistence.
     pub fn start(
         &self,
         ui_weak: slint::Weak<ViewerWindow>,
         source: Option<Arc<dyn PageSource>>,
         page_count: usize,
+        path: Option<PathBuf>,
     ) {
         // 1. Supersede the previous generation and take this one's fresh cancel flag.
         let cancel_flag = self.rotate_cancel();
@@ -191,7 +199,36 @@ impl ThumbnailController {
             }
         };
         std::thread::spawn(move || {
-            generate_thumbnails(source, DEFAULT_THUMB_MAX_SIDE, cancel_flag, on_ready);
+            // Build the on-disk cache on the worker (ThumbnailCache is not Clone
+            // and holds only a directory, so this is cheap and side-steps a !Send
+            // capture — mirrors cover_loader). Best-effort: with no book path or an
+            // unavailable cache dir, fall back to no persistence (the strip still
+            // generates, just isn't cached). One worker => the degraded state is
+            // logged once.
+            let cache = match path.as_deref() {
+                Some(_) => match ThumbnailCache::new() {
+                    Ok(cache) => Some(cache),
+                    Err(e) => {
+                        tracing::warn!(
+                            error = %e,
+                            "no thumbnail cache available; strip thumbnails will not be persisted"
+                        );
+                        None
+                    }
+                },
+                None => None,
+            };
+            let cache_ctx = match (cache.as_ref(), path.as_deref()) {
+                (Some(cache), Some(path)) => Some(PageThumbCache { cache, path }),
+                _ => None,
+            };
+            generate_thumbnails(
+                source,
+                DEFAULT_THUMB_MAX_SIDE,
+                cancel_flag,
+                cache_ctx,
+                on_ready,
+            );
         });
     }
 }

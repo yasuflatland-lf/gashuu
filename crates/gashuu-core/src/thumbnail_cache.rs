@@ -20,6 +20,22 @@ pub fn cache_key(path: &Path, mtime_secs: i64, max_side: u32) -> String {
     format!("{hash:016x}")
 }
 
+/// Build a stable cache key for a single thumbnail-strip page.
+///
+/// Identical FNV-1a construction to [`cache_key`] PLUS the `page_index` folded in
+/// after `max_side`. Folding the page index keeps strip keys disjoint from cover
+/// keys (covers never fold a page index), so a strip thumbnail and a cover at the
+/// same `(path, mtime_secs, max_side)` never collide on disk — even at page 0,
+/// which still folds eight extra zero bytes through the hash.
+pub fn page_cache_key(path: &Path, mtime_secs: i64, max_side: u32, page_index: usize) -> String {
+    let mut hash = FNV_OFFSET_BASIS;
+    fnv1a(&mut hash, path.as_os_str().as_encoded_bytes());
+    fnv1a(&mut hash, &mtime_secs.to_le_bytes());
+    fnv1a(&mut hash, &max_side.to_le_bytes());
+    fnv1a(&mut hash, &page_index.to_le_bytes());
+    format!("{hash:016x}")
+}
+
 const FNV_OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
 const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
 
@@ -296,7 +312,7 @@ pub struct PruneReport {
 
 #[cfg(test)]
 mod tests {
-    use super::{cache_key, ClearCacheReport, PruneReport, ThumbnailCache};
+    use super::{cache_key, page_cache_key, ClearCacheReport, PruneReport, ThumbnailCache};
     use crate::image_ops::DecodedImage;
     use std::path::Path;
     use tempfile::tempdir;
@@ -361,6 +377,36 @@ mod tests {
         let key2 = cache_key(Path::new("/tmp/book/page-002.png"), 1234, 160);
 
         assert_ne!(key1, key2);
+    }
+
+    #[test]
+    fn page_cache_key_is_stable_for_same_inputs() {
+        let path = Path::new("/manga/book.cbz");
+        let key1 = page_cache_key(path, 1234, 160, 7);
+        let key2 = page_cache_key(path, 1234, 160, 7);
+
+        assert_eq!(key1, key2);
+        assert_eq!(key1.len(), 16);
+    }
+
+    #[test]
+    fn page_cache_key_differs_on_page_index() {
+        let path = Path::new("/manga/book.cbz");
+        let key0 = page_cache_key(path, 1234, 160, 0);
+        let key1 = page_cache_key(path, 1234, 160, 1);
+
+        assert_ne!(key0, key1, "different pages must not share a strip key");
+    }
+
+    #[test]
+    fn page_cache_key_is_disjoint_from_cover_key() {
+        // A strip thumbnail folds the page index even at page 0, so it never
+        // collides with the cover key at the same (path, mtime, max_side).
+        let path = Path::new("/manga/book.cbz");
+        let cover = cache_key(path, 1234, 160);
+        let page0 = page_cache_key(path, 1234, 160, 0);
+
+        assert_ne!(cover, page0, "strip keys must be disjoint from cover keys");
     }
 
     /// Synthesize a tiny 2x3 solid-red RGBA DecodedImage in memory (no files).
