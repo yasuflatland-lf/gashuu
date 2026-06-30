@@ -41,7 +41,10 @@ pub use reading_progress::ReadingProgress;
 pub use search::book_matches;
 pub use settings::{Settings, MAX_RECENT_FILES, SETTINGS_VERSION};
 pub use spread::{next_leading, normalize_leading, prev_leading, spread_at, Spread, SpreadContext};
-pub use thumbnail::{generate_cover, generate_thumbnails, PageThumbCache, DEFAULT_THUMB_MAX_SIDE};
+pub use thumbnail::{
+    generate_cover, generate_one_thumbnail, generate_thumbnails, PageThumbCache,
+    DEFAULT_THUMB_MAX_SIDE,
+};
 pub use thumbnail_cache::{
     cache_key, page_cache_key, ClearCacheReport, PruneReport, ThumbnailCache,
 };

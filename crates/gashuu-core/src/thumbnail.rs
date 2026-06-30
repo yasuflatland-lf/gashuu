@@ -109,6 +109,34 @@ pub fn generate_thumbnails<F>(
     });
 }
 
+/// Produce a single page's thumbnail, consulting the on-disk cache when
+/// `cache_ctx` is set.
+///
+/// This is the lazy, per-page counterpart to [`generate_thumbnails`]: the UI's
+/// strip controller drives it one visible page at a time so a freshly opened book
+/// decodes only the pages near the viewport instead of all `N`. It reuses the same
+/// `page_cache_key` + `decode_thumbnail` path as the all-pages generator, so a page
+/// persisted by either route is a cache hit for the other.
+///
+/// With a cache context a hit skips the full-page read+decode; a miss reads,
+/// decodes, then persists best-effort (the `put` `Result` is intentionally ignored
+/// — core stays log-free). `cache_ctx == None` always reads + decodes, no caching.
+///
+/// Cancellation is the caller's concern: the controller checks its cancel flag
+/// immediately before and after this call, so a superseded generation neither
+/// starts disk work it could avoid nor delivers a stale result.
+pub fn generate_one_thumbnail(
+    source: &Arc<dyn PageSource>,
+    max_side: u32,
+    page_index: usize,
+    cache_ctx: Option<PageThumbCache<'_>>,
+) -> Result<DecodedImage, CoreError> {
+    // Mirror the all-pages generator's key convention: stat once, here for a single
+    // page, and feed the mtime into the same per-page cache key.
+    let cache = cache_ctx.map(|ctx| (ctx, mtime_secs(ctx.path)));
+    page_thumbnail(source, max_side, cache, page_index)
+}
+
 /// Generate the cover thumbnail for `source`: a thumbnail of page index 0 whose
 /// longer edge is at most `max_side` px.
 ///
@@ -555,6 +583,89 @@ mod tests {
             second.reads(),
             1,
             "a drifted mtime changes the key, forcing a re-read"
+        );
+    }
+
+    // ---------------------------------------------------------------------------
+    // Single-page lazy generation (generate_one_thumbnail)
+    // ---------------------------------------------------------------------------
+
+    /// `generate_one_thumbnail` with no cache reads + decodes the requested page
+    /// each time, leaving other pages untouched (the lazy O(visible) contract).
+    #[test]
+    fn one_thumbnail_no_cache_reads_only_requested_page() {
+        let pages: Vec<Option<Vec<u8>>> = (0..5).map(|_| Some(tiny_png(8, 8))).collect();
+        let src = Arc::new(CountingSource::new(pages));
+        let source: Arc<dyn PageSource> = src.clone();
+
+        let img = generate_one_thumbnail(&source, DEFAULT_THUMB_MAX_SIDE, 2, None)
+            .expect("page 2 decodes");
+        assert!(img.width() > 0 && img.height() > 0);
+        assert_eq!(src.reads(), 1, "exactly one page read for one request");
+    }
+
+    /// First call for a page is a cache miss (one read + one persisted cache
+    /// entry); a second call for the SAME page is served from disk with zero reads.
+    #[test]
+    fn one_thumbnail_cache_miss_then_hit() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = ThumbnailCache::with_dir(dir.path().to_path_buf());
+        let path = std::path::Path::new("/manga/book.cbz");
+        let src = Arc::new(CountingSource::new(vec![
+            Some(tiny_png(8, 8)),
+            Some(tiny_png(8, 8)),
+        ]));
+        let source: Arc<dyn PageSource> = src.clone();
+
+        generate_one_thumbnail(
+            &source,
+            DEFAULT_THUMB_MAX_SIDE,
+            1,
+            Some(PageThumbCache {
+                cache: &cache,
+                path,
+            }),
+        )
+        .expect("miss decodes");
+        assert_eq!(src.reads(), 1, "miss reads the page once");
+        // Count cache entries codec-agnostically (the on-disk codec may be PNG
+        // or QOI depending on which sibling changes have landed); the page is
+        // persisted regardless of extension.
+        let persisted = std::fs::read_dir(dir.path())
+            .unwrap()
+            .flatten()
+            .filter(|e| {
+                e.path()
+                    .extension()
+                    .is_some_and(|ext| ext == "png" || ext == "qoi")
+            })
+            .count();
+        assert_eq!(persisted, 1, "miss persists one cache entry");
+
+        generate_one_thumbnail(
+            &source,
+            DEFAULT_THUMB_MAX_SIDE,
+            1,
+            Some(PageThumbCache {
+                cache: &cache,
+                path,
+            }),
+        )
+        .expect("hit serves from cache");
+        assert_eq!(src.reads(), 1, "hit performs no further read");
+    }
+
+    /// An undecodable page surfaces its error rather than panicking, so the
+    /// controller can mark just that cell failed.
+    #[test]
+    fn one_thumbnail_propagates_decode_error() {
+        let src = Arc::new(CountingSource::new(vec![Some(b"not-an-image".to_vec())]));
+        let source: Arc<dyn PageSource> = src.clone();
+        let err = generate_one_thumbnail(&source, DEFAULT_THUMB_MAX_SIDE, 0, None)
+            .expect_err("corrupt bytes should error");
+        assert!(
+            matches!(err, CoreError::Decode(_)),
+            "expected a decode error, got {err:?}"
         );
     }
 

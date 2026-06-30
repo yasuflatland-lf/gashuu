@@ -27,15 +27,28 @@ export component ThumbnailStrip inherits Rectangle {
     // The page index that should receive the highlight border.
     in property <int> current-index;
 
-    // ── Callback ───────────────────────────────────────────────────────────────
+    // ── Callbacks ──────────────────────────────────────────────────────────────
     // Fired with the 0-based page index when the user clicks a thumbnail cell.
     callback thumbnail-clicked(int);
+    // Fired (with pixel geometry, not indices) whenever the strip scrolls or
+    // resizes so Rust can lazily decode only the pages near the viewport. Args:
+    // the first on-screen content pixel (= -viewport-x), the viewport width, and
+    // the per-cell stride (cell-width + cell-spacing). The Rust controller maps
+    // this to a page window (+margin) and requests only the not-yet-decoded pages.
+    callback visible-range-changed(length /* first-px */, length /* viewport-w */, length /* cell-stride */);
 
     // ── Sizing constants ───────────────────────────────────────────────────────
     private property <length> cell-width: 110px;
     private property <length> cell-height: 130px;
     private property <length> cell-spacing: 6px;
     private property <length> image-area-height: 100px;
+
+    // Resizing the strip can widen the visible window; re-evaluate the visible
+    // range so newly-uncovered cells backfill. (The initial bind does not fire
+    // `changed`; the Rust controller requests a leading window at open time.)
+    changed width => {
+        root.visible-range-changed(-fl.viewport-x, root.width, root.cell-width + root.cell-spacing);
+    }
 
     // ── Colors ─────────────────────────────────────────────────────────────────
     // Strip background matches the viewer's black aesthetic.
@@ -45,7 +58,7 @@ export component ThumbnailStrip inherits Rectangle {
     // source of truth; cells fit within whatever height it provides.
 
     // ── Scrollable content ─────────────────────────────────────────────────────
-    Flickable {
+    fl := Flickable {
         x: 0;
         y: 0;
         width: root.width;
@@ -54,6 +67,13 @@ export component ThumbnailStrip inherits Rectangle {
         // the number of cells so Slint knows the scrollable extent.
         viewport-width: (root.cell-width + root.cell-spacing) * root.thumbnails.length + root.cell-spacing;
         viewport-height: root.height;
+
+        // Each scroll surfaces the current pixel geometry so the Rust controller
+        // can backfill newly-visible pages. viewport-x is <= 0 as the user scrolls
+        // right; the first on-screen content pixel is therefore -viewport-x.
+        changed viewport-x => {
+            root.visible-range-changed(-self.viewport-x, root.width, root.cell-width + root.cell-spacing);
+        }
 
         HorizontalLayout {
             x: root.cell-spacing;

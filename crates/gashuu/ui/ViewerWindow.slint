@@ -157,6 +157,10 @@ export component ViewerWindow inherits Window {
     changed height => { root.resized(self.width, self.height); }
 
     callback thumbnail-clicked(int);
+    // Forwarded from the thumbnail strip so the Rust controller can lazily decode
+    // only the pages near the visible viewport. Args mirror ThumbnailStrip's
+    // callback: first on-screen content pixel, viewport width, per-cell stride.
+    callback thumbnail-strip-visible-range-changed(length, length, length);
     callback toggle-thumbnails();
 
     public function focus-pages() { fs.focus(); }
@@ -675,6 +679,9 @@ export component ViewerWindow inherits Window {
             thumbnails: root.thumbnails;
             current-index: root.current-index;
             thumbnail-clicked(page) => { root.thumbnail-clicked(page); }
+            visible-range-changed(first-px, viewport-w, cell-stride) => {
+                root.thumbnail-strip-visible-range-changed(first-px, viewport-w, cell-stride);
+            }
         }
     }
 
