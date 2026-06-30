@@ -72,8 +72,10 @@ or run it with `--appimage-extract-and-run`.
   oversized, or corrupt entries are skipped and counted in the status bar.
 - **Library** — a cover-flow carousel with real cover art and per-book reading-progress
   bars, in numeric-aware title order (*vol 1*, *vol 2*, *vol 10* sort naturally). Empty
-  folders/archives are rejected on add and auto-removed if found empty later. The NavBar
-  includes a live search field that filters books by title or path.
+  folders/archives are rejected on add and auto-removed if found empty later. Opening a book
+  whose file has moved or whose drive isn't mounted keeps you on the Library with a message
+  instead of a blank viewer. The NavBar includes a live search field that filters books by
+  title or path.
 - **Spreads** — single page, two-page spread, or **auto** (picks single/double from the
   window aspect ratio and follows resizes live). Right-to-left (manga) or left-to-right
   binding, with a standalone or paired cover layout.
