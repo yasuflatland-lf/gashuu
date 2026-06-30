@@ -13,6 +13,7 @@ pub mod library;
 pub mod library_store;
 pub(crate) mod ordering;
 pub mod page_source;
+pub(crate) mod persist;
 pub mod reading_progress;
 pub mod search;
 pub mod settings;

@@ -145,33 +145,10 @@ impl Settings {
 
     /// Parse JSON, migrating older schema versions to the current shape.
     pub fn from_json(json: &str) -> Result<Self, CoreError> {
-        let value: serde_json::Value = serde_json::from_str(json)?;
-        if !value.is_object() {
-            // Reject non-object roots (e.g. `5`, `[]`, `"x"`, `true`, `null`): `migrate`
-            // indexes into the value as a map and would otherwise panic. Surface as a
-            // typed error so the presentation layer's corrupt-file recovery handles it.
-            // We cannot use `from_value::<Self>` here because all fields carry
-            // `#[serde(default)]`, so serde would happily deserialize an array (or other
-            // non-object) into an all-defaults Settings — defeating the safety contract.
-            // Deserializing into a Map forces serde_json to emit an invalid-type error,
-            // which is guaranteed for a non-object value, hence `unwrap_err`.
-            let err = serde_json::from_value::<serde_json::Map<String, serde_json::Value>>(value)
-                .unwrap_err();
-            return Err(err.into());
-        }
-        // Use a checked conversion instead of a truncating `as u32` cast so that a
-        // crafted future-version value (> u32::MAX) is treated as unknown (0) rather
-        // than silently wrapping and triggering an unexpected migration.
-        let from = value
-            .get("version")
-            .and_then(|v| v.as_u64())
-            .and_then(|n| u32::try_from(n).ok())
-            .unwrap_or(0);
-        let value = if from < SETTINGS_VERSION {
-            migrate(value, from)
-        } else {
-            value
-        };
+        // The non-object guard + truncating-cast-safe version resolution + migrate
+        // dispatch are single-homed in `persist`. `CoreError::Settings` is `#[from]`,
+        // so both `?`s convert the `serde_json::Error` automatically.
+        let value = crate::persist::parse_versioned_object(json, SETTINGS_VERSION, migrate)?;
         let mut settings: Self = serde_json::from_value(value)?;
         settings.normalize();
         Ok(settings)

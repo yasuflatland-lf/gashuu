@@ -69,22 +69,11 @@ impl Library {
 
     /// Parse JSON, migrating older schema versions to the current shape.
     pub fn from_json(json: &str) -> Result<Self, CoreError> {
-        let value: serde_json::Value = serde_json::from_str(json).map_err(CoreError::Library)?;
-        if !value.is_object() {
-            let err = serde_json::from_value::<serde_json::Map<String, serde_json::Value>>(value)
-                .unwrap_err();
-            return Err(CoreError::Library(err));
-        }
-        let from = value
-            .get("version")
-            .and_then(|v| v.as_u64())
-            .and_then(|n| u32::try_from(n).ok())
-            .unwrap_or(0);
-        let value = if from < LIBRARY_VERSION {
-            migrate(value, from)
-        } else {
-            value
-        };
+        // The non-object guard + truncating-cast-safe version resolution + migrate
+        // dispatch are single-homed in `persist`. `CoreError::Library` is deliberately
+        // NOT `#[from]` (see error.rs), so every error is mapped explicitly.
+        let value = crate::persist::parse_versioned_object(json, LIBRARY_VERSION, migrate)
+            .map_err(CoreError::Library)?;
         let mut library: Library = serde_json::from_value(value).map_err(CoreError::Library)?;
         // Re-canonicalize paths and merge duplicate identities (filesystem I/O)
         // BEFORE the pure sort/orphan-clear in `normalize`, so every load
