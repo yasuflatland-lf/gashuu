@@ -45,11 +45,9 @@ import { Toggle } from "components/Toggle.slint";
 import { Dropdown } from "components/Dropdown.slint";
 import { PrimaryButton } from "components/PrimaryButton.slint";
 import { SecondaryButton } from "components/SecondaryButton.slint";
+import { GlassModal } from "components/GlassModal.slint";
 
-export component SettingsDialog inherits Rectangle {
-    // ── Full-area semi-transparent backdrop ──────────────────────────────────
-    background: Theme.scrim;
-
+export component SettingsDialog inherits GlassModal {
     // ── In-out properties (two-way bound to UI controls) ─────────────────────
     // Index into ["Left to Right", "Right to Left"].
     in-out property <int> reading-direction-index;
@@ -114,524 +112,487 @@ export component SettingsDialog inherits Rectangle {
         fs.focus();
     }
 
-    // ── Backdrop dismiss ──────────────────────────────────────────────────────
-    // A click anywhere on the scrim (outside the panel) closes the dialog. Clicks
-    // inside the panel are absorbed by the panel's own lowest-layer TouchArea
-    // below, so they never reach this one.
-    TouchArea {
-        clicked => {
-            root.close-settings();
+    // ── Panel geometry + backdrop wiring (glass chrome lives in GlassModal) ────
+    // Responsive width: shows the full 432px on roomy windows, but never
+    // overflows a narrow one — it shrinks to leave a small space-md gutter
+    // on each side (mirrors the height clamp below, which reads the same
+    // `root` — the SettingsDialog root that fills the window).
+    panel-width: min(Theme.settings-w, root.width - 2 * Theme.space-md);
+    // Content-hug height inside the Marcotte clamp (spec 2026-06-04): the
+    // panel is exactly header + body content + footer tall — no dead slack
+    // for the Flickable to absorb — but never taller than the window minus a
+    // gutter each side (then the body scrolls). A Flickable does NOT
+    // propagate its content's preferred height (that's why it can scroll),
+    // so the sum is assembled explicitly from the named parts.
+    panel-height: min(
+        Theme.space-lg + header-row.preferred-height + content.preferred-height + footer-block.height,
+        max(0px, root.height - 2 * Theme.space-huge));
+    backdrop-clicked => { root.close-settings(); }
+
+    // ── FocusScope: Esc-to-close + initial focus on the first control ──────
+    // WRAPS the panel content so it is a genuine ANCESTOR of every control:
+    // on appear it hands focus to the first control (Segmented's public
+    // focus-control()) — it does NOT keep focus itself, so arrow-key control
+    // and first-control-focus both work. On Esc, closes; all other keys are
+    // rejected so they reach the focused child control. A focused child atom's
+    // FocusScope rejects unhandled keys; Slint then walks UP the focused item's
+    // parent chain, which passes through this scope, so Esc fires here.
+    // Slotted as GlassModal's @children, after GlassModal's click-absorber —
+    // FocusScope does not intercept pointer events, so empty-panel clicks fall
+    // through to that absorber regardless of declaration order; controls keep
+    // hit-test priority over the absorber's TouchArea because they are declared
+    // after it.
+    fs := FocusScope {
+        x: 0;
+        y: 0;
+        width: parent.width;
+        height: parent.height;
+        init => {
+            direction-control.focus-control();
         }
-    }
-
-    // ── Glass panel ───────────────────────────────────────────────────────────
-    panel := Rectangle {
-        // Responsive width: shows the full 432px on roomy windows, but never
-        // overflows a narrow one — it shrinks to leave a small space-md gutter
-        // on each side (mirrors the height clamp below, which reads the same
-        // `parent` — the SettingsDialog root that fills the window).
-        width: min(Theme.settings-w, parent.width - 2 * Theme.space-md);
-        // Content-hug height inside the Marcotte clamp (spec 2026-06-04): the
-        // panel is exactly header + body content + footer tall — no dead slack
-        // for the Flickable to absorb — but never taller than the window minus a
-        // gutter each side (then the body scrolls). A Flickable does NOT
-        // propagate its content's preferred height (that's why it can scroll),
-        // so the sum is assembled explicitly from the named parts.
-        height: min(
-            Theme.space-lg + header-row.preferred-height + content.preferred-height + footer-block.height,
-            max(0px, parent.height - 2 * Theme.space-huge));
-        x: Theme.snap((parent.width - self.width) / 2);
-        y: Theme.snap((parent.height - self.height) / 2);
-
-        // Glass layers 1, 2, 4: a top-sheen FILL gradient (not opacity), a 1px
-        // soft rim, and ONE drop shadow. No nested glass / no second shadow.
-        background: @linear-gradient(180deg, Theme.glass-sheen-top 0%, Theme.glass-fill 46%);
-        border-radius: Theme.settings-radius;
-        border-width: 1px;
-        border-color: Theme.glass-border;
-        drop-shadow-color: Theme.shadow-popover;
-        drop-shadow-blur: 22px;
-        drop-shadow-offset-y: 8px;
-
-        // Layer 3: 1px top inner highlight, inset horizontally by ~half the radius
-        // so it stays inside the rounded corners (NavBar idiom).
-        Rectangle {
-            x: Theme.space-md;
-            y: 1px;
-            width: parent.width - 2 * Theme.space-md;
-            height: 1px;
-            background: Theme.glass-highlight;
+        key-pressed(event) => {
+            if (event.text == Key.Escape) {
+                root.close-settings();
+                return accept;
+            }
+            return reject;
         }
 
-        // Panel click absorber: lowest interactive layer. Any click that lands on
-        // the panel (not on a control) stops here instead of bubbling to the
-        // backdrop TouchArea — so clicking the panel never dismisses the dialog.
-        TouchArea { }
-
-        // ── FocusScope: Esc-to-close + initial focus on the first control ──────
-        // WRAPS the panel content so it is a genuine ANCESTOR of every control:
-        // on appear it hands focus to the first control (Segmented's public
-        // focus-control()) — it does NOT keep focus itself, so arrow-key control
-        // and first-control-focus both work. On Esc, closes; all other keys are
-        // rejected so they reach the focused child control. A focused child atom's
-        // FocusScope rejects unhandled keys; Slint then walks UP the focused item's
-        // parent chain, which passes through this scope, so Esc fires here.
-        // Fills the panel (declared after the absorber — FocusScope does not
-        // intercept pointer events, so empty-panel clicks fall through to the
-        // absorber regardless of declaration order; controls keep hit-test priority
-        // over the absorber's TouchArea because they are declared after it).
-        fs := FocusScope {
+        // ── Panel content: sticky header, scrollable body, sticky footer ───
+        body-col := VerticalLayout {
             x: 0;
             y: 0;
             width: parent.width;
             height: parent.height;
-            init => {
-                direction-control.focus-control();
-            }
-            key-pressed(event) => {
-                if (event.text == Key.Escape) {
-                    root.close-settings();
-                    return accept;
+            padding-top: Theme.space-lg;
+
+            // ── Sticky header ─────────────────────────────────────────────────
+            header-row := HorizontalLayout {
+                padding-left: Theme.space-xl;
+                padding-right: Theme.space-xl;
+                padding-bottom: Theme.space-md;
+                Text {
+                    // "Book settings" when editing the current book's per-book
+                    // override (opened from the Viewer); plain "Settings" for the
+                    // global defaults (Library screen).
+                    text: root.show-reset-button ? Strings.settings-book-title : Strings.settings-title;
+                    font-size: Theme.font-title;
+                    font-weight: Theme.weight-semibold;
+                    color: Theme.text-high;
+                    horizontal-alignment: left;
+                    accessible-role: text;
+                    accessible-label: root.show-reset-button ? Strings.settings-book-title : Strings.settings-title;
                 }
-                return reject;
             }
 
-            // ── Panel content: sticky header, scrollable body, sticky footer ───
-            body-col := VerticalLayout {
-                x: 0;
-                y: 0;
-                width: parent.width;
-                height: parent.height;
-                padding-top: Theme.space-lg;
+            // ── Scrollable body ───────────────────────────────────────────────
+            // A Flickable (not std ScrollView — its native scrollbar paints a
+            // light palette that breaks the glass, design §6.3). The viewport
+            // height is the intrinsic content height, so it scrolls ONLY when the
+            // content overflows the visible body (clamped-window case).
+            body := Flickable {
+                vertical-stretch: 1;
+                viewport-width: self.width;
+                viewport-height: content.preferred-height;
 
-                // ── Sticky header ─────────────────────────────────────────────────
-                header-row := HorizontalLayout {
+                content := VerticalLayout {
                     padding-left: Theme.space-xl;
                     padding-right: Theme.space-xl;
-                    padding-bottom: Theme.space-md;
-                    Text {
-                        // "Book settings" when editing the current book's per-book
-                        // override (opened from the Viewer); plain "Settings" for the
-                        // global defaults (Library screen).
-                        text: root.show-reset-button ? Strings.settings-book-title : Strings.settings-title;
-                        font-size: Theme.font-title;
-                        font-weight: Theme.weight-semibold;
-                        color: Theme.text-high;
-                        horizontal-alignment: left;
-                        accessible-role: text;
-                        accessible-label: root.show-reset-button ? Strings.settings-book-title : Strings.settings-title;
-                    }
-                }
+                    // φ ladder (spec 2026-06-04): 22px between sections
+                    // (≈ Fibonacci 21), and the same 22px below the last
+                    // section so the footer hairline reads as the final
+                    // section boundary.
+                    spacing: Theme.space-xxl;
+                    padding-bottom: Theme.space-xxl;
+                    alignment: start;
 
-                // ── Scrollable body ───────────────────────────────────────────────
-                // A Flickable (not std ScrollView — its native scrollbar paints a
-                // light palette that breaks the glass, design §6.3). The viewport
-                // height is the intrinsic content height, so it scrolls ONLY when the
-                // content overflows the visible body (clamped-window case).
-                body := Flickable {
-                    vertical-stretch: 1;
-                    viewport-width: self.width;
-                    viewport-height: content.preferred-height;
-
-                    content := VerticalLayout {
-                        padding-left: Theme.space-xl;
-                        padding-right: Theme.space-xl;
-                        // φ ladder (spec 2026-06-04): 22px between sections
-                        // (≈ Fibonacci 21), and the same 22px below the last
-                        // section so the footer hairline reads as the final
-                        // section boundary.
-                        spacing: Theme.space-xxl;
-                        padding-bottom: Theme.space-xxl;
-                        alignment: start;
-
-                        // ── Section: Reading ──────────────────────────────────────
-                        VerticalLayout {
-                            spacing: Theme.space-lg;
-                            Text {
-                                text: Strings.settings-section-reading;
-                                font-size: Theme.font-label;
-                                // Semibold eyebrow: hierarchy stays position/whitespace/
-                                // color (Apple grouped-list IA); weight alone separates
-                                // it from the regular row labels (spec 2026-06-04).
-                                font-weight: Theme.weight-semibold;
-                                color: Theme.text-dim;
-                                horizontal-alignment: left;
-                            }
-                            SettingRow {
-                                label: Strings.settings-direction-label;
-                                direction-control := Segmented {
-                                    model: [Strings.settings-direction-ltr, Strings.settings-direction-rtl];
-                                    current-index <=> root.reading-direction-index;
-                                    a11y-label: Strings.settings-direction-a11y;
-                                    selected(i) => {
-                                        root.set-reading-direction(i);
-                                    }
-                                }
-                            }
-                            SettingRow {
-                                label: Strings.settings-spread-label;
-                                Segmented {
-                                    model: [Strings.settings-spread-single, Strings.settings-spread-double, Strings.settings-spread-auto];
-                                    current-index <=> root.spread-mode-index;
-                                    a11y-label: Strings.settings-spread-a11y;
-                                    selected(i) => {
-                                        root.set-spread-mode(i);
-                                    }
+                    // ── Section: Reading ──────────────────────────────────────
+                    VerticalLayout {
+                        spacing: Theme.space-lg;
+                        Text {
+                            text: Strings.settings-section-reading;
+                            font-size: Theme.font-label;
+                            // Semibold eyebrow: hierarchy stays position/whitespace/
+                            // color (Apple grouped-list IA); weight alone separates
+                            // it from the regular row labels (spec 2026-06-04).
+                            font-weight: Theme.weight-semibold;
+                            color: Theme.text-dim;
+                            horizontal-alignment: left;
+                        }
+                        SettingRow {
+                            label: Strings.settings-direction-label;
+                            direction-control := Segmented {
+                                model: [Strings.settings-direction-ltr, Strings.settings-direction-rtl];
+                                current-index <=> root.reading-direction-index;
+                                a11y-label: Strings.settings-direction-a11y;
+                                selected(i) => {
+                                    root.set-reading-direction(i);
                                 }
                             }
                         }
-
-                        // ── Section: Display ──────────────────────────────────────
-                        VerticalLayout {
-                            spacing: Theme.space-lg;
-                            Text {
-                                text: Strings.settings-section-display;
-                                font-size: Theme.font-label;
-                                font-weight: Theme.weight-semibold;
-                                color: Theme.text-dim;
-                                horizontal-alignment: left;
-                            }
-                            SettingRow {
-                                label: Strings.settings-cover-label;
-                                Segmented {
-                                    model: [Strings.settings-cover-standalone, Strings.settings-cover-paired];
-                                    current-index <=> root.cover-mode-index;
-                                    a11y-label: Strings.settings-cover-a11y;
-                                    selected(i) => {
-                                        root.set-cover-mode(i);
-                                    }
+                        SettingRow {
+                            label: Strings.settings-spread-label;
+                            Segmented {
+                                model: [Strings.settings-spread-single, Strings.settings-spread-double, Strings.settings-spread-auto];
+                                current-index <=> root.spread-mode-index;
+                                a11y-label: Strings.settings-spread-a11y;
+                                selected(i) => {
+                                    root.set-spread-mode(i);
                                 }
-                            }
-                            SettingRow {
-                                label: Strings.settings-fit-label;
-                                Segmented {
-                                    model: [Strings.settings-fit-whole, Strings.settings-fit-width, Strings.settings-fit-actual];
-                                    current-index <=> root.fit-mode-index;
-                                    a11y-label: Strings.settings-fit-a11y;
-                                    selected(i) => {
-                                        root.set-fit-mode(i);
-                                    }
-                                }
-                            }
-                        }
-
-                        // ── Section: Performance ──────────────────────────────────
-                        VerticalLayout {
-                            spacing: Theme.space-lg;
-                            Text {
-                                text: Strings.settings-section-performance;
-                                font-size: Theme.font-label;
-                                font-weight: Theme.weight-semibold;
-                                color: Theme.text-dim;
-                                horizontal-alignment: left;
-                            }
-                            SettingRow {
-                                // A long label, but the Japanese settings-allow-rar-label below is the column-sizing driver.
-                                label: Strings.settings-cache-label;
-                                trailing: true;
-                                Stepper {
-                                    value <=> root.cache-size;
-                                    minimum: 1;
-                                    maximum: 100;
-                                    a11y-label: Strings.settings-cache-a11y;
-                                    a11y-decrease-label: Strings.stepper-decrease-cache;
-                                    a11y-increase-label: Strings.stepper-increase-cache;
-                                    edited(v) => {
-                                        root.set-cache-size(v);
-                                    }
-                                }
-                            }
-                            SettingRow {
-                                label: Strings.settings-preload-label;
-                                trailing: true;
-                                Stepper {
-                                    value <=> root.preload-pages;
-                                    minimum: 0;
-                                    maximum: 5;
-                                    a11y-label: Strings.settings-preload-a11y;
-                                    a11y-decrease-label: Strings.stepper-decrease-preload;
-                                    a11y-increase-label: Strings.stepper-increase-preload;
-                                    edited(v) => {
-                                        root.set-preload-pages(v);
-                                    }
-                                }
-                            }
-                            SettingRow {
-                                label: Strings.settings-track-recent-label;
-                                trailing: true;
-                                Toggle {
-                                    checked <=> root.track-recent;
-                                    a11y-label: Strings.settings-track-recent-a11y;
-                                    toggled(b) => {
-                                        root.set-track-recent(b);
-                                    }
-                                }
-                            }
-                            SettingRow {
-                                label: Strings.settings-allow-rar-label;
-                                trailing: true;
-                                Toggle {
-                                    checked <=> root.allow-rar-archives;
-                                    a11y-label: Strings.settings-allow-rar-a11y;
-                                    toggled(b) => {
-                                        root.set-allow-rar-archives(b);
-                                    }
-                                }
-                            }
-                            // Performance note at the label left margin.
-                            Text {
-                                text: Strings.settings-performance-note;
-                                font-size: Theme.font-micro;
-                                color: Theme.text-dim;
-                                horizontal-alignment: left;
-                                wrap: word-wrap;
-                            }
-                        }
-
-                        // ── Section: General ──────────────────────────────────────
-                        // App-global settings (language). Shown ONLY when the dialog
-                        // edits the Library default (show-reset-button == false); the
-                        // Viewer's per-book dialog hides it, as a global control has no
-                        // place among one book's settings.
-                        if !root.show-reset-button : VerticalLayout {
-                            spacing: Theme.space-lg;
-                            Text {
-                                text: Strings.settings-section-general;
-                                font-size: Theme.font-label;
-                                font-weight: Theme.weight-semibold;
-                                color: Theme.text-dim;
-                                horizontal-alignment: left;
-                            }
-                            SettingRow {
-                                label: Strings.settings-language-label;
-                                trailing: true;
-                                Dropdown {
-                                    // Language names are deliberately NOT translated:
-                                    // a language switcher always shows each option
-                                    // in its own tongue, so a user lost in the
-                                    // wrong language can still find their own.
-                                    model: ["English", "日本語"];
-                                    current-index <=> root.language-index;
-                                    a11y-label: Strings.settings-language-a11y;
-                                    selected(i) => {
-                                        root.set-language(i);
-                                    }
-                                }
-                            }
-                        }
-
-                        // ── Section: Data ─────────────────────────────────────────
-                        // The data-clearing utilities, promoted out of General into
-                        // their own section (spec 2026-06-08). Reuses the exact section
-                        // pattern (eyebrow + the space-xxl inter-section gap from the
-                        // parent layout; NO divider line). The two SecondaryButtons
-                        // stack VERTICALLY and FULL-WIDTH so the long Japanese labels
-                        // each sit on one line and the pair reads as one cohesive group.
-                        // App-global utilities (clear history / cover cache): shown ONLY
-                        // in the Library default dialog (show-reset-button == false), not
-                        // in the Viewer's per-book dialog.
-                        if !root.show-reset-button : VerticalLayout {
-                            spacing: Theme.space-lg;
-                            Text {
-                                text: Strings.settings-section-data;
-                                font-size: Theme.font-label;
-                                font-weight: Theme.weight-semibold;
-                                color: Theme.text-dim;
-                                horizontal-alignment: left;
-                            }
-                            // Clear actions: immediate (no confirmation), status feedback
-                            // is surfaced via data-action-status. These are data-clearing
-                            // utilities, so they use the LOW-PROMINENCE bordered-neutral
-                            // SecondaryButton (HIG; NOT the affirmative accent PrimaryButton,
-                            // and deliberately NOT red — danger stays scarce). Full-width is
-                            // achieved at the call site via horizontal-stretch (overrides
-                            // SecondaryButton's own horizontal-stretch: 0), leaving the
-                            // component untouched; space-sm separates the stacked buttons.
-                            VerticalLayout {
-                                spacing: Theme.space-sm;
-                                SecondaryButton {
-                                    horizontal-stretch: 1;
-                                    text: Strings.settings-clear-history-label;
-                                    clicked => {
-                                        root.clear-reading-history();
-                                    }
-                                }
-                                SecondaryButton {
-                                    horizontal-stretch: 1;
-                                    text: Strings.settings-clear-cache-label;
-                                    clicked => {
-                                        root.clear-cover-cache();
-                                    }
-                                }
-                            }
-                            // Transient feedback line for clear-history / clear-cache
-                            // actions. Hidden when empty to avoid layout slack.
-                            if root.data-action-status != "" : Text {
-                                text: root.data-action-status;
-                                font-size: Theme.font-micro;
-                                color: Theme.text-dim;
-                                horizontal-alignment: left;
-                                wrap: word-wrap;
                             }
                         }
                     }
-                }
 
-                // ── Sticky footer ─────────────────────────────────────────────────
-                footer-block := Rectangle {
-                    vertical-stretch: 0;
-                    // Symmetric space-lg above/below the row — 14px ≈ Fib 13,
-                    // the SAME ladder rung as the body's row gap, so the footer
-                    // breathes on the row rhythm (bumped from space-md after
-                    // visual review: 10px read cramped around the 32px buttons
-                    // beside the 21px bottom corner). The panel's bottom inset
-                    // is owned HERE (body-col padding-bottom is gone).
-                    height: footer-row.preferred-height + 2 * Theme.space-lg;
-
-                    // 1px hairline top edge honestly marks the scroll boundary.
-                    Rectangle {
-                        x: 0;
-                        y: 0;
-                        width: parent.width;
-                        height: 1px;
-                        background: Theme.hairline;
+                    // ── Section: Display ──────────────────────────────────────
+                    VerticalLayout {
+                        spacing: Theme.space-lg;
+                        Text {
+                            text: Strings.settings-section-display;
+                            font-size: Theme.font-label;
+                            font-weight: Theme.weight-semibold;
+                            color: Theme.text-dim;
+                            horizontal-alignment: left;
+                        }
+                        SettingRow {
+                            label: Strings.settings-cover-label;
+                            Segmented {
+                                model: [Strings.settings-cover-standalone, Strings.settings-cover-paired];
+                                current-index <=> root.cover-mode-index;
+                                a11y-label: Strings.settings-cover-a11y;
+                                selected(i) => {
+                                    root.set-cover-mode(i);
+                                }
+                            }
+                        }
+                        SettingRow {
+                            label: Strings.settings-fit-label;
+                            Segmented {
+                                model: [Strings.settings-fit-whole, Strings.settings-fit-width, Strings.settings-fit-actual];
+                                current-index <=> root.fit-mode-index;
+                                a11y-label: Strings.settings-fit-a11y;
+                                selected(i) => {
+                                    root.set-fit-mode(i);
+                                }
+                            }
+                        }
                     }
 
-                    // Footer order: [Shortcuts] … [Reset to global] [Close]. The
-                    // default (stretch) alignment lets the single stretch spacer
-                    // own the slack, pinning Shortcuts to the LEFT edge and the
-                    // action button(s) hard RIGHT (both-ends, HIG; spec
-                    // 2026-06-04). A literal `alignment: start` DISABLES child
-                    // stretch factors — the old bug that glued Close to
-                    // Shortcuts (docs/patterns.md). `space-between` would
-                    // scatter 3+ items instead of grouping Reset with Close. The
-                    // Reset button only appears in the per-book (viewer)
-                    // context; the 377px panel minus the two space-xl gutters
-                    // cannot fit the full "Reset to global defaults" label
-                    // beside Shortcuts and Close on one line, so the label is
-                    // shortened to "Reset to global" (the accessible-label
-                    // carries the full intent).
-                    footer-row := HorizontalLayout {
-                        x: 0;
-                        y: Theme.space-lg;
-                        width: parent.width;
-                        // EXPLICIT height: an element placed outside a layout
-                        // defaults to its PARENT's size, so without this the row
-                        // filled the whole footer-block, its y-offset pushed it
-                        // space-md past the panel bottom, and the cross-axis
-                        // stretch inflated the Close button to the full block
-                        // height (docs/patterns.md). Content height restores the
-                        // symmetric space-md insets the block height budgets for.
-                        height: self.preferred-height;
-                        padding-left: Theme.space-xl;
-                        padding-right: Theme.space-xl;
-                        spacing: Theme.space-md;
-
-                        // LEFT: a focusable "Shortcuts" link. Sits in the Tab order
-                        // between the controls and Close (declaration order). Activating
-                        // it fires root.open-shortcuts() via three paths: mouse click
-                        // (TouchArea), keyboard Return/Space (key-pressed), and the
-                        // accessible default action (accessible-action-default). Esc is
-                        // rejected here so it propagates up to the ancestor `fs` Esc
-                        // handler and closes the dialog (standard Slint upward-walk).
-                        shortcuts := FocusScope {
-                            horizontal-stretch: 0;
-                            width: shortcuts-label.preferred-width;
-                            // No height override: the scope stretches to the row
-                            // height so the label centers on the SAME horizontal
-                            // centerline as the Close button (spec 2026-06-04).
-                            // Idle goes text-dim (static affordance); focus brightens to
-                            // text-high so the Tab ring is visible without an accent rule
-                            // (accent stays interactive/selected-only).
-                            shortcuts-label := Text {
-                                height: 100%;
-                                text: Strings.settings-shortcuts-label;
-                                font-size: Theme.font-label;
-                                color: parent.has-focus ? Theme.text-high : Theme.text-dim;
-                                horizontal-alignment: left;
-                                vertical-alignment: center;
+                    // ── Section: Performance ──────────────────────────────────
+                    VerticalLayout {
+                        spacing: Theme.space-lg;
+                        Text {
+                            text: Strings.settings-section-performance;
+                            font-size: Theme.font-label;
+                            font-weight: Theme.weight-semibold;
+                            color: Theme.text-dim;
+                            horizontal-alignment: left;
+                        }
+                        SettingRow {
+                            // A long label, but the Japanese settings-allow-rar-label below is the column-sizing driver.
+                            label: Strings.settings-cache-label;
+                            trailing: true;
+                            Stepper {
+                                value <=> root.cache-size;
+                                minimum: 1;
+                                maximum: 100;
+                                a11y-label: Strings.settings-cache-a11y;
+                                a11y-decrease-label: Strings.stepper-decrease-cache;
+                                a11y-increase-label: Strings.stepper-increase-cache;
+                                edited(v) => {
+                                    root.set-cache-size(v);
+                                }
                             }
-                            // Mouse activation.
-                            TouchArea {
-                                width: shortcuts-label.preferred-width;
-                                height: shortcuts-label.preferred-height;
+                        }
+                        SettingRow {
+                            label: Strings.settings-preload-label;
+                            trailing: true;
+                            Stepper {
+                                value <=> root.preload-pages;
+                                minimum: 0;
+                                maximum: 5;
+                                a11y-label: Strings.settings-preload-a11y;
+                                a11y-decrease-label: Strings.stepper-decrease-preload;
+                                a11y-increase-label: Strings.stepper-increase-preload;
+                                edited(v) => {
+                                    root.set-preload-pages(v);
+                                }
+                            }
+                        }
+                        SettingRow {
+                            label: Strings.settings-track-recent-label;
+                            trailing: true;
+                            Toggle {
+                                checked <=> root.track-recent;
+                                a11y-label: Strings.settings-track-recent-a11y;
+                                toggled(b) => {
+                                    root.set-track-recent(b);
+                                }
+                            }
+                        }
+                        SettingRow {
+                            label: Strings.settings-allow-rar-label;
+                            trailing: true;
+                            Toggle {
+                                checked <=> root.allow-rar-archives;
+                                a11y-label: Strings.settings-allow-rar-a11y;
+                                toggled(b) => {
+                                    root.set-allow-rar-archives(b);
+                                }
+                            }
+                        }
+                        // Performance note at the label left margin.
+                        Text {
+                            text: Strings.settings-performance-note;
+                            font-size: Theme.font-micro;
+                            color: Theme.text-dim;
+                            horizontal-alignment: left;
+                            wrap: word-wrap;
+                        }
+                    }
+
+                    // ── Section: General ──────────────────────────────────────
+                    // App-global settings (language). Shown ONLY when the dialog
+                    // edits the Library default (show-reset-button == false); the
+                    // Viewer's per-book dialog hides it, as a global control has no
+                    // place among one book's settings.
+                    if !root.show-reset-button : VerticalLayout {
+                        spacing: Theme.space-lg;
+                        Text {
+                            text: Strings.settings-section-general;
+                            font-size: Theme.font-label;
+                            font-weight: Theme.weight-semibold;
+                            color: Theme.text-dim;
+                            horizontal-alignment: left;
+                        }
+                        SettingRow {
+                            label: Strings.settings-language-label;
+                            trailing: true;
+                            Dropdown {
+                                // Language names are deliberately NOT translated:
+                                // a language switcher always shows each option
+                                // in its own tongue, so a user lost in the
+                                // wrong language can still find their own.
+                                model: ["English", "日本語"];
+                                current-index <=> root.language-index;
+                                a11y-label: Strings.settings-language-a11y;
+                                selected(i) => {
+                                    root.set-language(i);
+                                }
+                            }
+                        }
+                    }
+
+                    // ── Section: Data ─────────────────────────────────────────
+                    // The data-clearing utilities, promoted out of General into
+                    // their own section (spec 2026-06-08). Reuses the exact section
+                    // pattern (eyebrow + the space-xxl inter-section gap from the
+                    // parent layout; NO divider line). The two SecondaryButtons
+                    // stack VERTICALLY and FULL-WIDTH so the long Japanese labels
+                    // each sit on one line and the pair reads as one cohesive group.
+                    // App-global utilities (clear history / cover cache): shown ONLY
+                    // in the Library default dialog (show-reset-button == false), not
+                    // in the Viewer's per-book dialog.
+                    if !root.show-reset-button : VerticalLayout {
+                        spacing: Theme.space-lg;
+                        Text {
+                            text: Strings.settings-section-data;
+                            font-size: Theme.font-label;
+                            font-weight: Theme.weight-semibold;
+                            color: Theme.text-dim;
+                            horizontal-alignment: left;
+                        }
+                        // Clear actions: immediate (no confirmation), status feedback
+                        // is surfaced via data-action-status. These are data-clearing
+                        // utilities, so they use the LOW-PROMINENCE bordered-neutral
+                        // SecondaryButton (HIG; NOT the affirmative accent PrimaryButton,
+                        // and deliberately NOT red — danger stays scarce). Full-width is
+                        // achieved at the call site via horizontal-stretch (overrides
+                        // SecondaryButton's own horizontal-stretch: 0), leaving the
+                        // component untouched; space-sm separates the stacked buttons.
+                        VerticalLayout {
+                            spacing: Theme.space-sm;
+                            SecondaryButton {
+                                horizontal-stretch: 1;
+                                text: Strings.settings-clear-history-label;
                                 clicked => {
-                                    root.open-shortcuts();
+                                    root.clear-reading-history();
                                 }
                             }
-                            // Keyboard activation: Return and Space open the overlay;
-                            // everything else is rejected so keys propagate to ancestors
-                            // (Esc in particular must reach the ancestor `fs` to close).
-                            key-pressed(event) => {
-                                if (event.text == Key.Return || event.text == Key.Space) {
-                                    root.open-shortcuts();
-                                    return accept;
+                            SecondaryButton {
+                                horizontal-stretch: 1;
+                                text: Strings.settings-clear-cache-label;
+                                clicked => {
+                                    root.clear-cover-cache();
                                 }
-                                return reject;
-                            }
-                            accessible-role: button;
-                            accessible-label: Strings.shortcuts-title;
-                            // Accessibility default action mirrors NavItem/Toggle idiom.
-                            accessible-action-default => { root.open-shortcuts(); }
-                        }
-
-                        // Stretch spacer: pushes the action button(s) hard right.
-                        Rectangle { horizontal-stretch: 1; }
-
-                        // RIGHT (per-book only): reset the current book's overrides
-                        // back to the global defaults. Reuses PrimaryButton (no
-                        // secondary variant exists); Close stays the rightmost,
-                        // last-resort action. Shown only in the viewer context.
-                        if root.show-reset-button : PrimaryButton {
-                            text: Strings.settings-reset-to-global;
-                            clicked => {
-                                root.reset-to-global();
                             }
                         }
-
-                        // RIGHT: Close — the reused PrimaryButton, always visible in
-                        // the sticky footer even while the body scrolls.
-                        PrimaryButton {
-                            text: Strings.common-close;
-                            clicked => {
-                                root.close-settings();
-                            }
+                        // Transient feedback line for clear-history / clear-cache
+                        // actions. Hidden when empty to avoid layout slack.
+                        if root.data-action-status != "" : Text {
+                            text: root.data-action-status;
+                            font-size: Theme.font-micro;
+                            color: Theme.text-dim;
+                            horizontal-alignment: left;
+                            wrap: word-wrap;
                         }
                     }
                 }
             }
 
-            // ── Self-drawn scroll indicator ───────────────────────────────────
-            // Only when the body content overflows its visible height. A thin rail
-            // (track-prog) with an accent thumb whose size/offset derive from the
-            // Flickable viewport geometry. Show/hide via `visible:` ONLY (no
-            // opacity — HiDPI blur rule). No edge fades. Declared as a sibling of
-            // the content layout inside `fs`, so its y is computed in THIS scope's
-            // space: body-col.y (the content layout’s own offset within fs) + body.y
-            // (the body Flickable’s y within that layout). Deriving y this way
-            // — rather than from a bare `body.y` — keeps the rail aligned even if
-            // the content layout is ever given a non-zero offset within `fs`.
-            Rectangle {
-                visible: body.viewport-height > body.height;
-                x: parent.width - Theme.settings-scroll-indicator-w - Theme.space-xxs;
-                y: body-col.y + body.y;
-                width: Theme.settings-scroll-indicator-w;
-                height: body.height;
-                background: Theme.track-prog;
-                border-radius: Theme.settings-scroll-indicator-w / 2;
-                // Clip the thumb so elastic overscroll (viewport-y briefly positive)
-                // cannot render the thumb above the rail bounds.
-                clip: true;
+            // ── Sticky footer ─────────────────────────────────────────────────
+            footer-block := Rectangle {
+                vertical-stretch: 0;
+                // Symmetric space-lg above/below the row — 14px ≈ Fib 13,
+                // the SAME ladder rung as the body's row gap, so the footer
+                // breathes on the row rhythm (bumped from space-md after
+                // visual review: 10px read cramped around the 32px buttons
+                // beside the 21px bottom corner). The panel's bottom inset
+                // is owned HERE (body-col padding-bottom is gone).
+                height: footer-row.preferred-height + 2 * Theme.space-lg;
 
-                // Thumb: proportional size and offset from the scroll position.
+                // 1px hairline top edge honestly marks the scroll boundary.
                 Rectangle {
                     x: 0;
+                    y: 0;
                     width: parent.width;
-                    height: parent.height * (body.height / max(body.viewport-height, 1px));
-                    y: -body.viewport-y * (parent.height / max(body.viewport-height, 1px));
-                    background: Theme.accent;
-                    border-radius: Theme.settings-scroll-indicator-w / 2;
+                    height: 1px;
+                    background: Theme.hairline;
                 }
+
+                // Footer order: [Shortcuts] … [Reset to global] [Close]. The
+                // default (stretch) alignment lets the single stretch spacer
+                // own the slack, pinning Shortcuts to the LEFT edge and the
+                // action button(s) hard RIGHT (both-ends, HIG; spec
+                // 2026-06-04). A literal `alignment: start` DISABLES child
+                // stretch factors — the old bug that glued Close to
+                // Shortcuts (docs/patterns.md). `space-between` would
+                // scatter 3+ items instead of grouping Reset with Close. The
+                // Reset button only appears in the per-book (viewer)
+                // context; the 377px panel minus the two space-xl gutters
+                // cannot fit the full "Reset to global defaults" label
+                // beside Shortcuts and Close on one line, so the label is
+                // shortened to "Reset to global" (the accessible-label
+                // carries the full intent).
+                footer-row := HorizontalLayout {
+                    x: 0;
+                    y: Theme.space-lg;
+                    width: parent.width;
+                    // EXPLICIT height: an element placed outside a layout
+                    // defaults to its PARENT's size, so without this the row
+                    // filled the whole footer-block, its y-offset pushed it
+                    // space-md past the panel bottom, and the cross-axis
+                    // stretch inflated the Close button to the full block
+                    // height (docs/patterns.md). Content height restores the
+                    // symmetric space-md insets the block height budgets for.
+                    height: self.preferred-height;
+                    padding-left: Theme.space-xl;
+                    padding-right: Theme.space-xl;
+                    spacing: Theme.space-md;
+
+                    // LEFT: a focusable "Shortcuts" link. Sits in the Tab order
+                    // between the controls and Close (declaration order). Activating
+                    // it fires root.open-shortcuts() via three paths: mouse click
+                    // (TouchArea), keyboard Return/Space (key-pressed), and the
+                    // accessible default action (accessible-action-default). Esc is
+                    // rejected here so it propagates up to the ancestor `fs` Esc
+                    // handler and closes the dialog (standard Slint upward-walk).
+                    shortcuts := FocusScope {
+                        horizontal-stretch: 0;
+                        width: shortcuts-label.preferred-width;
+                        // No height override: the scope stretches to the row
+                        // height so the label centers on the SAME horizontal
+                        // centerline as the Close button (spec 2026-06-04).
+                        // Idle goes text-dim (static affordance); focus brightens to
+                        // text-high so the Tab ring is visible without an accent rule
+                        // (accent stays interactive/selected-only).
+                        shortcuts-label := Text {
+                            height: 100%;
+                            text: Strings.settings-shortcuts-label;
+                            font-size: Theme.font-label;
+                            color: parent.has-focus ? Theme.text-high : Theme.text-dim;
+                            horizontal-alignment: left;
+                            vertical-alignment: center;
+                        }
+                        // Mouse activation.
+                        TouchArea {
+                            width: shortcuts-label.preferred-width;
+                            height: shortcuts-label.preferred-height;
+                            clicked => {
+                                root.open-shortcuts();
+                            }
+                        }
+                        // Keyboard activation: Return and Space open the overlay;
+                        // everything else is rejected so keys propagate to ancestors
+                        // (Esc in particular must reach the ancestor `fs` to close).
+                        key-pressed(event) => {
+                            if (event.text == Key.Return || event.text == Key.Space) {
+                                root.open-shortcuts();
+                                return accept;
+                            }
+                            return reject;
+                        }
+                        accessible-role: button;
+                        accessible-label: Strings.shortcuts-title;
+                        // Accessibility default action mirrors NavItem/Toggle idiom.
+                        accessible-action-default => { root.open-shortcuts(); }
+                    }
+
+                    // Stretch spacer: pushes the action button(s) hard right.
+                    Rectangle { horizontal-stretch: 1; }
+
+                    // RIGHT (per-book only): reset the current book's overrides
+                    // back to the global defaults. Reuses PrimaryButton (no
+                    // secondary variant exists); Close stays the rightmost,
+                    // last-resort action. Shown only in the viewer context.
+                    if root.show-reset-button : PrimaryButton {
+                        text: Strings.settings-reset-to-global;
+                        clicked => {
+                            root.reset-to-global();
+                        }
+                    }
+
+                    // RIGHT: Close — the reused PrimaryButton, always visible in
+                    // the sticky footer even while the body scrolls.
+                    PrimaryButton {
+                        text: Strings.common-close;
+                        clicked => {
+                            root.close-settings();
+                        }
+                    }
+                }
+            }
+        }
+
+        // ── Self-drawn scroll indicator ───────────────────────────────────
+        // Only when the body content overflows its visible height. A thin rail
+        // (track-prog) with an accent thumb whose size/offset derive from the
+        // Flickable viewport geometry. Show/hide via `visible:` ONLY (no
+        // opacity — HiDPI blur rule). No edge fades. Declared as a sibling of
+        // the content layout inside `fs`, so its y is computed in THIS scope's
+        // space: body-col.y (the content layout’s own offset within fs) + body.y
+        // (the body Flickable’s y within that layout). Deriving y this way
+        // — rather than from a bare `body.y` — keeps the rail aligned even if
+        // the content layout is ever given a non-zero offset within `fs`.
+        Rectangle {
+            visible: body.viewport-height > body.height;
+            x: parent.width - Theme.settings-scroll-indicator-w - Theme.space-xxs;
+            y: body-col.y + body.y;
+            width: Theme.settings-scroll-indicator-w;
+            height: body.height;
+            background: Theme.track-prog;
+            border-radius: Theme.settings-scroll-indicator-w / 2;
+            // Clip the thumb so elastic overscroll (viewport-y briefly positive)
+            // cannot render the thumb above the rail bounds.
+            clip: true;
+
+            // Thumb: proportional size and offset from the scroll position.
+            Rectangle {
+                x: 0;
+                width: parent.width;
+                height: parent.height * (body.height / max(body.viewport-height, 1px));
+                y: -body.viewport-y * (parent.height / max(body.viewport-height, 1px));
+                background: Theme.accent;
+                border-radius: Theme.settings-scroll-indicator-w / 2;
             }
         }
     }
