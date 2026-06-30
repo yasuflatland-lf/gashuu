@@ -231,6 +231,7 @@ viewer-direction-rtl = 右→左
 
 # Parameterized status/error strings
 viewer-open-error = エラー: { $error }
+viewer-open-inaccessible = 『{ $title }』を開けませんでした。ファイルが見つからないか、保存先のボリュームに接続できません。
 viewer-page-unavailable = （ページ { $page } は表示できません）
 viewer-decode-error = デコードエラー: { $error }
 

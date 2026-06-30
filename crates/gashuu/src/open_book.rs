@@ -419,6 +419,18 @@ pub(crate) struct EmptyBookRemoval {
     pub(crate) save_error: Option<String>,
 }
 
+/// The display title to show for `path`: the stored `Book::title` when the book
+/// is in the library, else the core path-derivation (`gashuu_core::display_title`).
+/// Single-homes the "stored title preferred, path-derived fallback" rule shared
+/// by the empty-book removal transaction and the failed-open status message.
+pub(crate) fn book_display_title(lib: &Library, path: &Path) -> String {
+    lib.books()
+        .iter()
+        .find(|b| b.path() == path)
+        .map(|b| b.title().to_string())
+        .unwrap_or_else(|| gashuu_core::display_title(path))
+}
+
 /// The single home of the empty-book removal transaction: capture the display
 /// title (stored `Book::title` preferred, `gashuu_core::display_title` fallback
 /// when the book was never added) → `Library::remove` (idempotent) → save (only
@@ -456,12 +468,7 @@ fn remove_empty_book_with(
 ) -> EmptyBookRemoval {
     // Prefer the stored Book's title; fall back to the core path-derivation
     // when the book was never added. Captured BEFORE removal.
-    let title = lib
-        .books()
-        .iter()
-        .find(|b| b.path() == path)
-        .map(|b| b.title().to_string())
-        .unwrap_or_else(|| gashuu_core::display_title(path));
+    let title = book_display_title(lib, path);
     // `Library::remove` is idempotent and returns false when the book is
     // absent; it also clears `last_opened` when it pointed at this book.
     let removed = lib.remove(path);

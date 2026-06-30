@@ -271,8 +271,23 @@ fn open_and_enter(
     // Writes back the OLD book first, opens the new path, then resumes its
     // stored page. Empty sources are removed instead of entering the viewer.
     let outcome = open_book.run(ui, path, SkippedDetail::None);
-    let enter_viewer = !matches!(outcome, app::OpenOutcome::EmptyBookRemoved { .. });
+    // Enter the Viewer ONLY on a clean open. An empty source was already removed
+    // (no viewer); a FAILED open must not drop the user into a 0-page Viewer
+    // either — the old `!EmptyBookRemoved` guard let `Error` through, so a book
+    // whose file had moved (or whose volume was unmounted) opened a blank stage.
+    let enter_viewer = matches!(outcome, app::OpenOutcome::Success(..));
+    let open_failed = matches!(outcome, app::OpenOutcome::Error(_));
     finalize_open(ui, state, viewport, pages, refresh, outcome);
+    // When the open failed because the file is gone (moved) or its volume isn't
+    // mounted, replace finalize_open's raw I/O status with a plain-language,
+    // book-named message. A failure with the file STILL present (e.g. a corrupt
+    // archive) keeps finalize_open's detailed error instead.
+    if open_failed && !path.exists() {
+        let title = app::book_display_title(&refresh.library.borrow(), path);
+        ui.set_status_text(
+            crate::i18n::dynamic::open_inaccessible(refresh.localizer.loader(), &title).into(),
+        );
+    }
     // Derive the title from authoritative post-open state so failed opens never
     // display the requested path as the current book.
     ui.set_current_book_name(current_book_name(state).into());
