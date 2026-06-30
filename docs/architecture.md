@@ -179,10 +179,7 @@ pan clamping (`clamp_offset`/`centered_offset`), cursor-anchored zoom (`anchored
 `settings.rs`. Persistent user settings serialized to JSON in the OS config dir via
 `directories::ProjectDirs`. The view-mode vocabulary it persists
 (`reading_direction`/`spread_mode`/`cover_mode`/`fit_mode`/`language`/`key_bindings`) now lives in
-`view_modes.rs` (see below); `Settings` is just one consumer. `seen_guide`: a `bool` (default `false`,
-`#[serde(default)]`) the UI flips to `true` + saves once the first-run guide is dismissed;
-`SETTINGS_VERSION` stays 1 and the frozen snapshot carries `"seen_guide": false` — same
-forward/backward-compat treatment as `cover_mode`/`fit_mode`.
+`view_modes.rs` (see below); `Settings` is just one consumer.
 
 **This is the first use of `serde` in core.** The headless boundary still holds (no
 slint/tracing). I/O shape: `load_from`/`save_to` take explicit paths (tempfile-testable);
@@ -355,9 +352,11 @@ Two pure scrubber-support helpers:
 and clears `open_file` — returning `ViewerState` to the no-book-open state. Display modes
 (`reading_direction`/`spread_mode`/`cover_mode`) and `cache_config`/`viewport_aspect` are
 deliberately preserved (closing a book is not a settings reset). Called by
-`RemoveBooksUseCase::run` when the open book is among the deleted ones; `RemoveBooksUseCase::run`
-itself also calls `ui.set_current_book_name("".into())` (`app.rs`~:481). The UI wiring sets this
-name at boot and on a successful open via `current_book_name` from `view_sync.rs`.
+`RemoveBooksUseCase::run` (headless) when the open book is among the deleted ones; the matching
+title-bar blank — `ui.set_current_book_name("".into())` — is the Slint side of that close and lives
+in `carousel_refresh::finalize_remove` (`carousel_refresh.rs:302`), gated on the outcome's
+`closed_open_book` flag, NOT in `run`. The UI wiring sets this name at boot and on a successful open
+via `current_book_name` from `view_sync.rs`.
 
 ### ViewportState
 
@@ -390,11 +389,28 @@ projection; falls back to 0 when `None`, filtered out, or empty).
 
 ### app
 
-`app.rs`. `OpenBookUseCase` — the open-a-book application use case extracted from `main.rs` in
-#67. Holds six shared collaborators as `Rc<RefCell<…>>` fields: `ViewerState`, `Settings`,
-`ViewportState`, `Library`, `ThumbnailController` (`Rc`), and `CoverController` (`Rc`). There
-is NO `NavState` field — `NavState` stays in `main.rs`. The return value (#114) is built from two
-types and a single export:
+`app.rs`. A thin re-export facade (split #241) that keeps the established `crate::app::*` import
+paths stable after the open-a-book and bulk-remove use cases moved into their own modules (they share
+no state and no call path, so each got its own home). The whole file is two `pub(crate) use` blocks:
+
+```rust
+pub(crate) use crate::open_book::{
+    remove_empty_book, NoticesContent, OpenBookUseCase, OpenOutcome, SkippedDetail,
+};
+pub(crate) use crate::remove_books::{confirm_delete_content, RemoveBooksUseCase};
+```
+
+So `app::OpenBookUseCase`, `app::remove_empty_book`, `app::RemoveBooksUseCase`, etc. still resolve;
+the definitions live in `open_book.rs` and `remove_books.rs` (the two entries below).
+
+### open_book
+
+`open_book.rs`. `OpenBookUseCase` — the open-a-book application use case extracted from `main.rs`
+(#67). Holds seven shared collaborators as `Rc`/`Rc<RefCell<…>>` fields: `ViewerState`, `Settings`,
+`ViewportState`, `Library`, `ThumbnailController` (`Rc`), `CoverController` (`Rc`), and
+`LibrarySearchState` (the last so the open-time page-count rebuild preserves the active
+library-search filter instead of rebuilding the full library). There is NO `NavState` field —
+`NavState` stays in `main.rs`. The return value (#114) is built from two types and a single export:
 
 - `run(&self, path, skipped_detail) -> OpenOutcome` — writes back the previous book's position;
   opens the source; reconciles + saves settings; registers the book in `Library` and jumps to the
@@ -443,26 +459,36 @@ still holds the outgoing book's per-book modes there; reconciling would clobber 
 defaults — see [patterns.md](patterns.md), "Write-direction invariant audit"). It then applies the
 just-opened book's `ResolvedView` via `ViewerState::apply_resolved_view` (+ `ViewportState::set_fit`).
 
-The parallel destructive use case (#129) lives in the same module:
+### remove_books
+
+`remove_books.rs`. The "remove the selected books" bulk-delete use case (#129), split out of
+`app.rs` (#241) — the destructive parallel to `open_book`. Lean and HEADLESS: every member returns
+data and touches no Slint; the UI tail lives in `carousel_refresh::finalize_remove`.
 
 - `RemoveBooksUseCase` — the "remove the selected books" use case. Holds four shared collaborators
   as `Rc<RefCell<…>>` fields: `ViewerState`, `Library`, `LibrarySearchState`, and
-  `LibrarySelectionState`. `run(&self, ui) -> RemoveOutcome` executes the full destructive
-  transaction in the non-negotiable order: snapshot selected paths → mutate+save with rollback
-  (via `remove_books_with_rollback`) → best-effort cover purge via `cover_loader::purge_cover`
+  `LibrarySelectionState`. `run(&self) -> RemoveOutcome` (no `ui` arg — headless) executes the full
+  destructive transaction in the non-negotiable order: snapshot selected paths → mutate+save with
+  rollback (via `remove_books_with_rollback`) → best-effort cover purge via `cover_loader::purge_cover`
   (the single home of the cover-key recipe; `mtime_secs` and `COVER_MAX_SIDE` are private to
-  `cover_loader.rs`; `tracing::warn`-only on miss) → clear the viewer via
-  `ViewerState::close()` and blank the title bar when the open book was deleted → recompute the
-  search projection → clear the selection (success only; `SaveFailed` preserves it so the user can
-  retry). Returns `RemoveOutcome::NoSelection` (empty selection guard), `RemoveOutcome::SaveFailed
-  { error }` (shelf rolled back byte-identically via `Library::restore`; selection preserved), or
-  `RemoveOutcome::Removed { n, closed_open_book }`. The caller (`handlers/library.rs`'s `wire_selection_handlers`) rebuilds the carousel,
-  clamps the focused index, and composes the status line from the outcome.
+  `cover_loader.rs`; `tracing::warn`-only on miss) → clear the viewer via `ViewerState::close()`
+  (headless state only) when the open book was deleted, recording `closed_open_book` in the outcome
+  so the Slint side can blank the title bar → recompute the search projection → clear the selection
+  (success only; `SaveFailed` preserves it so the user can retry). Returns
+  `RemoveOutcome::NoSelection` (empty selection guard), `RemoveOutcome::SaveFailed { error }` (shelf
+  rolled back byte-identically via `Library::restore`; selection preserved), or
+  `RemoveOutcome::Removed { n, closed_open_book }`. The caller (`handlers/library.rs`'s
+  `wire_selection_handlers`) hands the outcome to `carousel_refresh::finalize_remove`, which rebuilds
+  the carousel, clamps the focused index, blanks the viewer title (`ui.set_current_book_name("".into())`,
+  `carousel_refresh.rs:302`) when `closed_open_book`, and composes the status line.
 - `remove_books_with_rollback(library, paths, save)` — the transaction primitive: captures full
   `Book` clones before removal, calls `Library::remove_many`, then calls `save`; on `Err` calls
   `Library::restore(removed_books)` (byte-identical rollback — avoids the `add()`-trap that would
   reset `last_page`/`page_count`) and propagates the error. The injected `save` closure makes it
   unit-testable against a failing or succeeding save.
+- `removed_contains_open(open_file, removed) -> bool` — pure decision helper: whether the currently
+  open file (`None` when no book is open) is among the removed paths, compared by canonical path
+  identity. Keeps `run` a thin orchestration shell, testable in isolation from the live `ViewerWindow`.
 - `confirm_delete_content(loader, selection, search, library, open_file) -> ConfirmDeleteContent`
   — pure (no I/O, no Slint) builder for the confirm dialog body: title with total count, up to 10
   book titles in selection (BTreeSet path) order, an "…and M more" line when count > 10, an "N
@@ -531,18 +557,35 @@ alongside it; `matching_indices` is the fast-path delegate when no paths are for
 
 Bulk-delete feature (#126/#128), `library_model.rs` (pub(crate) struct). Owns the active
 selection as a `BTreeSet<PathBuf>` keyed by canonical path — the same key `Library::add` uses —
-so the selection survives query changes and carousel rebuilds. Key mutators: `toggle(path)` (adds
-or removes one path); `select_visible(search, library)` / `deselect_visible(search, library)`
-(select/deselect only the visible projection — out-of-view selected paths are never touched,
-preserving the "selection is orthogonal to the query" invariant; used by the Select-all button and
-Cmd/Ctrl+A); `clear()` (success-path reset, called by `RemoveBooksUseCase` on success only). Key
+so the selection survives query changes and carousel rebuilds. It owns ONLY the path-set invariant
+(selection is ORTHOGONAL to the search query); the "act on just the visible slice" joins live
+OUTSIDE it in `selection_projection.rs` (next entry). Key mutators: `toggle(path)` (adds or removes
+one path), `insert(path)` / `remove(path)` (the single-path primitives the projection joins build
+on), and `clear()` (success-path reset, called by `RemoveBooksUseCase` on success only). Key
 accessors: `count()` (total selection size, across the whole library); `selected() -> impl
 Iterator<Item=&Path>` (BTreeSet path-sorted order — deterministic for the confirm-dialog title
-list and the `RemoveBooksUseCase` removal snapshot); `contains(path) -> bool`;
-`all_visible_selected(search, library) -> bool` (drives the Select-all toggle direction).
-`visible_selected_count(search, library) -> usize` counts how many selected paths appear in the
-current visible projection (used by the toolbar's "N outside search" indicator and by
-`confirm_delete_content`). Used as a collaborator by `RemoveBooksUseCase` (#129).
+list and the `RemoveBooksUseCase` removal snapshot); `contains(path) -> bool`. Used as a
+collaborator by `RemoveBooksUseCase` (#129).
+
+### selection_projection
+
+`selection_projection.rs`. The selection-over-projection JOINS — the four ops that combine the pure
+`LibrarySelectionState` path-set with the search projection (`LibrarySearchState::visible_indices()`)
+and the `Library`. They are FREE FUNCTIONS (NOT methods on `LibrarySelectionState`), each taking a
+`&mut`/`& LibrarySelectionState` as the FIRST argument plus `&LibrarySearchState, &Library`, so the
+selection type keeps only its path-set invariant while "operate on just the visible slice" stays a
+separate, composable concern:
+
+- `select_visible(&mut selection, search, library)` — select every currently visible book, leaving
+  already-selected non-visible books untouched. Drives the Select-all button and Cmd/Ctrl+A.
+- `deselect_visible(&mut selection, search, library)` — deselect every currently visible book,
+  leaving selected-but-filtered-out books untouched (the orthogonality invariant).
+- `all_visible_selected(&selection, search, library) -> bool` — whether every visible book is
+  selected (`false` for an empty projection); drives the Select-all toggle direction.
+- `visible_selected_count(&selection, search, library) -> usize` — how many selected paths appear in
+  the current visible projection (the toolbar's "N outside search" indicator and `confirm_delete_content`).
+
+All four share a private `visible_paths(search, library)` join and are headlessly unit-tested in-module.
 
 ### carousel
 
@@ -551,6 +594,21 @@ current visible projection (used by the toolbar's "N outside search" indicator a
 ### carousel refresh / projection (`carousel_refresh.rs`)
 
 `carousel_refresh.rs` (extracted from `main.rs`, mirroring the `view_sync.rs` split). Owns the carousel-refresh/projection cluster: `refresh_library_carousel` (the single chokepoint that rebuilds + binds the filtered carousel model, optionally resets focus, re-applies the path-keyed selection, and (re)starts focus-prioritized cover loading), the `CarouselRefresh` borrowed-collaborator bundle it takes (`library` / `covers` / `search` / `selection` / `localizer`, all `pub(crate)`), the visible-index projection helpers (`visible_index_to_path`, `visible_focus_index_for_path`, `entry_focus_index` (private), `snap_carousel_focus_to_last_opened`, `clamp_focused_index`), and `push_selection_strings` (the selection-toolbar string chokepoint). UI-thread only; driven almost entirely from `handlers/library.rs` and `handlers/settings.rs`, with `go_to_library`/`go_to_viewer` (still in `main.rs`) routing their carousel work through it via the crate-root re-exports.
+
+### page_count_prefetch
+
+`page_count_prefetch.rs`. The background page-count prefetch concern for the library carousel. A book
+whose page count is unknown is resolved on a `cover_loader` rayon worker from the SAME archive open
+that produces its cover (no extra `ArchiveLoader::open`). Because a worker cannot touch the `!Send`
+`Rc<RefCell<Library>>`, `push_and_marshal_count` (worker side) does two things: it pushes a
+`ResolvedCount { path, count }` onto a `Send` `Arc<Mutex<Vec<ResolvedCount>>>` queue for later
+UI-thread persistence (zero-page archives map `count == 0` to `None`, so nothing is queued), and it
+`marshal_total`s the count onto the carousel row (`set_carousel_total`) for immediate display, both
+behind the cover-epoch guard so a superseded generation is dropped. `PageCountPrefetch` owns the
+queue: `queue()` hands a `Send` clone to a worker; `apply(&library)` drains it on the UI thread,
+calls `Library::set_page_count`, and saves ONCE if anything changed (called at the next `start`);
+`flush(&library)` re-applies on shutdown. `ResolvedCount` is a named struct (not a bare tuple) so the
+queue element reads as "a resolved fact being carried home".
 
 ### enum_adapters
 
@@ -604,10 +662,10 @@ subtracts 1. Replaces the removed `page_counter.rs`. The viewer wires the parsed
 ### handlers
 
 `handlers/` module (#151). Slint callback registration, split by feature area. `mod.rs` declares
-the three sub-modules and re-exports all eight `wire_*` fns at the `handlers::` level so `main.rs`
+the four sub-modules and re-exports all nine `wire_*` fns at the `handlers::` level so `main.rs`
 needs no sub-module path. Each `wire_*` fn takes `&ui` and exactly the `Rc` handles its closures
 clone — the per-closure `Rc::clone` list IS that handler's dependency list (#151 panel constraint:
-no AppState bundle, explicit handle lists only). The three feature files are:
+no AppState bundle, explicit handle lists only). The four feature files are:
 
 - **`handlers/library.rs`**: `wire_open_handlers` (open-folder, open-archive, add-books,
   add-folder), `wire_carousel_handlers` (carousel search/open/continue-reading/move/back),
@@ -616,20 +674,58 @@ no AppState bundle, explicit handle lists only). The three feature files are:
   instance inline (the use case's full collaborator list is only available here) and owns the
   `on_empty_book_detected` UI thread handler.
 - **`handlers/settings.rs`**: `wire_settings_handlers` (settings dialog open/close, shortcuts
-  overlay open/close, reset-overrides, first-run guide dismissal),
+  overlay open/close, reset-overrides),
   `wire_view_mode_handlers` (view-mode setter callbacks — reading direction, spread, cover, fit,
   language, cache/preload/track; the language arm calls `localizer.switch` then `apply`).
 - **`handlers/viewer.rs`**: `wire_viewer_input_handlers` (thumbnail click, page-jump, chrome
   reveal, scrubber preview/commit, thumbnail-strip toggle), `wire_viewport_handlers` (viewport
   size + pan/zoom callbacks), `wire_nav_handlers` (keyboard nav hub: page turns, mode toggles,
   GoToLibrary, window resize).
+- **`handlers/drag_drop.rs`**: `wire_drag_drop_handlers` (OS file/folder drag-and-drop onto the
+  Library screen). Installs the single `on_winit_window_event` filter that toggles the drop-zone
+  overlay on hover and debounces a drop's per-file `DroppedFile` burst into one batched
+  `AddController::start` (the pure `drop_action_for` winit-event → `DropAction` mapping is the
+  testable core). See the dedicated `### handlers/drag_drop` entry below.
 
 `fn main` = boot (tracing, settings/library load, Slint window, localizer, Rc construction, seed
-carousel, prune) + 8 wire calls + `ui.run()` + exit flush (count persistence, write-back,
+carousel, prune) + 9 wire calls + `ui.run()` + exit flush (count persistence, write-back,
 view-mode persistence, settings save). All callback closures live in `handlers/`; `main.rs` retains
 `refresh`, `finalize_open`, `go_to_library`/`go_to_viewer`, and the add-batch helpers, plus the
 crate-root re-exports for the `view_sync.rs` and `carousel_refresh.rs` seams (the carousel-refresh
 /projection cluster itself now lives in `carousel_refresh.rs`).
+
+### handlers/drag_drop
+
+`handlers/drag_drop.rs`. OS file/folder drag-and-drop onto the Library screen. Slint exposes no
+stable file-drop API, so this bridges the winit backend's raw `WindowEvent`s (behind the
+`unstable-winit-030` feature) into the EXISTING bulk-add pipeline — dropped paths are handed straight
+to `add_loader::AddController::start`, reusing dedup, the reject rules, the archive policy, and the
+add toast (`gashuu-core` untouched; drag-drop is just a new presentation-layer SOURCE of the same
+`paths` the Add buttons produce). `drop_action_for(&WindowEvent) -> DropAction` is the pure, testable
+mapping (`HoveredFile` → `ShowOverlay`, `HoveredFileCancelled` → `HideOverlay`, `DroppedFile(path)`
+→ `Buffer(path)`, everything else → `Ignore`). `wire_drag_drop_handlers(ui, settings, adder)` installs
+ONE `on_winit_window_event` filter (the single such slot — `window_state.rs` deliberately installs
+none, see below) that toggles the `drag-active` overlay bool and, because winit delivers one
+`DroppedFile` per file with NO "drop complete" event, debounces the burst: each drop buffers its path
+and re-arms a single-shot `DROP_DEBOUNCE` (50 ms) timer whose tick drains the whole batch into ONE
+`start` (so a multi-file drop is one supersede epoch / one progress run / one notice). Add is gated
+to `screen == 0`; the filter always returns `EventResult::Propagate`. UI-thread only — no `Send`
+state crosses a boundary here.
+
+### window_state
+
+`window_state.rs`. Persist and restore the OS window geometry (size + position) across launches.
+Geometry is read ONCE at exit and applied ONCE at startup — never tracked live — so this installs NO
+winit event handler and cannot collide with the single `on_winit_window_event` slot drag-drop owns.
+Everything is in physical pixels (matching `gashuu_core::WindowGeometry`). `restore_geometry(ui,
+settings)` is a no-op when nothing was saved; otherwise it arms a zero-delay single-shot timer
+(`arm_apply`) that defers the apply until the lazily-created winit window exists (winit 0.30 creates
+it only after `run()` spins), re-arming up to ~30 ticks. `apply_geometry` always applies the clamped
+size (`WindowGeometry::clamped_size`) and applies the saved position only when it still lands on a
+monitor (`is_position_visible`), else centers on the primary monitor (`center_in`).
+`capture_geometry(ui, &mut settings)` snapshots the live `size()`/`position()` into `settings.window`
+after `run()` returns. `monitor_rects` enumerates monitor bounds (primary first) via
+`with_winit_window`, returning empty on a non-winit build so placement falls back to the OS.
 
 ### Slint UI files
 
@@ -824,12 +920,9 @@ any-MISS, and hands a `SpreadDecodeRequest` to `dispatch_spread` on a miss.
 
 **`components/ConfirmDialog.slint`** (issue 127, NEW; wired in `ViewerWindow` for the bulk-delete path, #129): a GENERIC two-choice confirm/cancel modal — no domain vocabulary. Every string on screen arrives through `in` properties (`title`, `body-lines: [string]`, `info-text`, `warning-text`, `confirm-label`, `cancel-label`) so the same component is reusable across confirm decisions. Clones the `SettingsDialog` / `ShortcutsOverlay` glass idiom (scrim + four-layer fake-glass object). Mounted in `ViewerWindow` behind `if root.show-confirm-delete` (an `if`-gate so the node is constructed only when needed). Cancel / Esc / backdrop click fire the `cancel` callback (Slint-side: set `show-confirm-delete = false`, restore carousel focus — selection PRESERVED); the confirm `DangerButton` fires the `confirm()` callback (`ConfirmDialog.slint:117`), which `ViewerWindow` forwards as `confirm => { root.confirm-delete-accepted(); }` (ViewerWindow.slint:591), and Rust registers on `ui.on_confirm_delete_accepted` to run `RemoveBooksUseCase` and dismiss the modal. `Enter` is wired to Cancel (the destructive action is never on `Enter`).
 
-**`FirstRunGuide.slint`** (NEW): dismissable once-only overlay; a local `GuideLine`
-component dedupes the key-reference rows.
-
 **`Theme.slint`** (NEW; completed #70): a single Slint `global Theme` that centralises all visual design
 tokens — colors, corner radii, spacing, font sizes, component sizes, shadow colors, motion durations, and font weights —
-sourced from `/DESIGN.md`. ALL UI components reference `Theme.*`; the three previously-inline-hex dialogs (ThumbnailStrip, SettingsDialog, FirstRunGuide) were migrated in #70, and `scripts/check-tokens.sh` is now unconditionally blocking for the whole UI (no allowlist).
+sourced from `/DESIGN.md`. ALL UI components reference `Theme.*`; the previously-inline-hex dialogs (ThumbnailStrip, SettingsDialog) were migrated in #70, and `scripts/check-tokens.sh` is now unconditionally blocking for the whole UI (no allowlist).
 
 **`PageView.slint`**: the page canvas; hosts pan/zoom via a single `TouchArea`.
 A `reveal()` callback, fired on `changed mouse-x` / `changed mouse-y` (pointer-move),
@@ -844,11 +937,11 @@ pointer-release fires `commit`. Its preview thumbs use the shared `ThumbnailCell
 
 **`ViewerWindow.slint`**: hosts the two `if root.show-X : Component` overlays
 (last children = front), a "Settings…" toolbar button, the in/in-out properties + setter
-callbacks, and a FocusScope key-guard. The wiring (dialog/guide lifecycle) was originally registered in `main.rs` and has since
+callbacks, and a FocusScope key-guard. The wiring (dialog lifecycle) was originally registered in `main.rs` and has since
 been extracted to `handlers/settings.rs`; the 8 enum↔index helper fns moved to `enum_adapters.rs`; the key-bindings help text is now composed via the localizer and pushed via `ui.set_key_bindings_text(…)` from `handlers/settings.rs`. It carries a two-screen model: `in property <int>
 screen` gates the Library `Carousel` (screen 0) vs the Viewer body (screen 1) via
 `visible: root.screen == N` (not `if` — see [patterns.md](patterns.md) for the Slint id-scoping
-reason); Settings/Guide overlays remain viewer-scoped. It mounts the
+reason); Settings overlays remain viewer-scoped. It mounts the
 `Scrubber` as auto-hiding chrome inside the screen-1 viewer,
 driven by a `chrome-shown` bool + an idle `Timer`; chrome is revealed on pointer-move (via
 `PageView.reveal()`) and scrubber drag — NOT on page turns (arrows / Space / Backspace / tap /

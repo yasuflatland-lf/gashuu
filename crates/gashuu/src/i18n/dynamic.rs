@@ -5,10 +5,10 @@
 //! Each function takes a `&FluentLanguageLoader` borrowed from a [`super::Localizer`]
 //! and returns a freshly formatted [`String`] in the active locale.
 //!
-//! The `format_status` and `format_notices` aggregators are gated behind the
-//! types from Wave 1B (`crate::app`) and Wave 2 (`crate::viewer_state`); they
-//! will not compile until those waves land.  Individual message functions that
-//! depend only on `gashuu_core` types compile immediately.
+//! The `format_status` and `format_notices` aggregators apply the active locale to
+//! the language-free content structs from `crate::viewer_state` (`StatusContent`)
+//! and `crate::app` (`NoticesContent`) respectively; the remaining functions format
+//! individual messages from `gashuu_core` types.
 
 use crate::app::{NoticesContent, SkippedDetail};
 use crate::viewer_state::{StatusContent, StatusKind};
