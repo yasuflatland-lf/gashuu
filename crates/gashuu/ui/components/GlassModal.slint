@@ -1,0 +1,74 @@
+// GlassModal — the shared glass-panel shell for the app's modal dialogs.
+//
+// Single-sources the chrome that SettingsDialog, ShortcutsOverlay, and
+// ConfirmDialog used to copy-paste verbatim: a full-area Theme.scrim backdrop
+// with click-to-dismiss, a centered glass panel (top-sheen FILL gradient, 1px
+// soft rim, glass border, ONE drop shadow), a 1px top inner highlight rim, and a
+// lowest-layer click-absorber so a click ON the panel never dismisses. Each
+// dialog `inherits GlassModal`, sets `panel-width`/`panel-height`, wires
+// `backdrop-clicked`, and supplies its own FocusScope + content as @children
+// (slotted INTO the panel, so the dialog's FocusScope stays a genuine ancestor
+// of its controls and keeps its own key model). GlassModal carries NO domain
+// vocabulary and NO key handling.
+//
+// Colors / lengths come from Theme.* only (no inline hex; scripts/check-tokens.sh).
+import { Theme } from "../Theme.slint";
+
+export component GlassModal inherits Rectangle {
+    // Panel geometry strategy differs per dialog → received as in-props.
+    in property <length> panel-width;
+    in property <length> panel-height;
+    // Fired when the scrim outside the panel is clicked.
+    callback backdrop-clicked();
+
+    // ── Full-area semi-transparent backdrop ───────────────────────────────────
+    background: Theme.scrim;
+
+    // ── Backdrop dismiss ──────────────────────────────────────────────────────
+    // A click anywhere on the scrim (outside the panel) dismisses. Clicks inside
+    // the panel are absorbed by the panel's lowest-layer TouchArea, so they never
+    // reach this one.
+    TouchArea {
+        clicked => {
+            root.backdrop-clicked();
+        }
+    }
+
+    // ── Glass panel ───────────────────────────────────────────────────────────
+    panel := Rectangle {
+        width: root.panel-width;
+        height: root.panel-height;
+        x: Theme.snap((parent.width - self.width) / 2);
+        y: Theme.snap((parent.height - self.height) / 2);
+
+        // Glass layers 1, 2, 4: a top-sheen FILL gradient (not opacity), a 1px
+        // soft rim, and ONE drop shadow. No nested glass / no second shadow.
+        background: @linear-gradient(180deg, Theme.glass-sheen-top 0%, Theme.glass-fill 46%);
+        border-radius: Theme.settings-radius;
+        border-width: 1px;
+        border-color: Theme.glass-border;
+        drop-shadow-color: Theme.shadow-popover;
+        drop-shadow-blur: 22px;
+        drop-shadow-offset-y: 8px;
+
+        // Layer 3: 1px top inner highlight, inset horizontally by ~half the radius
+        // so it stays inside the rounded corners (NavBar idiom).
+        Rectangle {
+            x: Theme.space-md;
+            y: 1px;
+            width: parent.width - 2 * Theme.space-md;
+            height: 1px;
+            background: Theme.glass-highlight;
+        }
+
+        // Panel click absorber: lowest interactive layer, declared BEFORE
+        // @children. A click that lands on the panel (not on a control) stops here
+        // instead of bubbling to the backdrop TouchArea — so clicking the panel
+        // never dismisses. Controls in @children are declared after it, so they
+        // keep hit-test priority.
+        TouchArea { }
+
+        // The dialog's FocusScope + content.
+        @children
+    }
+}
