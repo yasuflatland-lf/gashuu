@@ -27,12 +27,13 @@ RAR requires a C++ compiler on every OS (see [docs/toolchain.md](toolchain.md)).
 
 - **Two-page spread (Single/Double/Auto)** with active RTL/LTR binding and `cover_mode` (Standalone/Paired).
 - Space = next / Backspace = prev (reading order, direction-independent); arrows are direction-aware (LTR → = next, RTL ← = next).
+- **Pointer / gesture page-turn**: a single click/tap (left half → `nav("left")`, right half → `nav("right")`) and a two-finger trackpad horizontal swipe (≥60 px, with an idle-gap guard against momentum-scroll re-fire) both route through the SAME `nav()` seam as the arrow keys, so reading direction is resolved once (RTL: left = next). The swipe yields to two-finger pan while zoomed in (dominant-axis gate); both are suppressed under any open modal.
 - `Auto` picks single vs double from the window aspect ratio (landscape/square → single, portrait → double) and follows resizes live; composes with RTL/LTR and cover mode.
 - Runtime toggles: **D** = spread mode (3-cycle: single → double → auto), **R** = reading direction, **C** = cover mode — each mutates RUNTIME state only (`ViewerState`); `reconcile_settings` mirrors the modes into `Settings` at the next save (issue #32), still persisted via save-on-exit (not per-key).
 
 ### Zoom, pan, and fit modes
 
-- **Zoom/pan**: wheel = zoom-at-cursor, drag = pan; keys `+`/`-`/`0`/`1`/`f`.
+- **Zoom/pan**: backed by the pure core `viewport.rs` (`fit_scale` / `clamp_zoom` [`ZOOM_MIN`=1.0, `ZOOM_MAX`=8.0] / `anchored_zoom` / `clamp_offset`) and the presentation-layer `ViewportState` (`src/viewport.rs`: `zoom_at` / `zoom_step` / `pan_to` / `begin_pan` / `set_fit` / `cycle_fit`), which holds the live zoom/pan/fit. Input: mouse wheel / two-finger trackpad vertical scroll = zoom-at-cursor (`scroll-event` `delta-y` → `ViewportState::zoom_at`); drag = pan; keys `+`/`-`/`0`/`1`/`f`.
 - **Fit modes**: Whole/Width/Actual (`fit_mode` persisted).
 - Zoom/pan are session-only (not persisted).
 - Explicit image-bomb pixel guard (`check_pixel_limit`/`ImageTooLarge`).
@@ -46,7 +47,7 @@ RAR requires a C++ compiler on every OS (see [docs/toolchain.md](toolchain.md)).
 
 ### Parallel thumbnail strip
 
-- rayon-generated thumbnails for all pages, streamed to the UI as each completes.
+- rayon-generated thumbnails, streamed to the UI as each completes. Generation is **lazy** (later evolution, not the original eager slice): `start` paints `N` `Loading` placeholders but decodes only the first `INITIAL_VISIBLE_PAGES` (16); the rest backfill on demand as the strip scrolls/resizes (`visible-range-changed`, `VISIBLE_MARGIN`=3), each batch streamed in. Reuses the per-page disk cache (`PageThumbCache`) across opens; an epoch + cancel double-guard stops a superseded book's batches.
 - Click a thumb or press `T` to jump to any page (via `ViewerState::jump_to`).
 - `T` also toggles the strip.
 - Failed thumbs render distinctly (red ✕).
@@ -237,8 +238,7 @@ field / UI for the cap.
 - Progressive per-slot double-spread display (rejected — per-slot geometry would fracture the unified zoom/pan content rectangle; the spread applies atomically).
 - Thumbnail-strip follow-ups:
   - RTL strip ordering (the strip ships ascending order + current-page highlight only).
-  - Lazy/on-demand thumbnail generation (the strip eagerly generates all).
-  - Virtual scroll for huge archives.
+  - Virtual scroll for huge archives — only *decode* is lazy/on-demand (see "Parallel thumbnail strip"); the model still materializes one cell per page (`(0..page_count)` `set_vec`), so the row model is not yet windowed.
 - Nested archives.
 - `ComicInfo.xml` metadata.
 - Password-protected ZIP/RAR.
@@ -250,7 +250,7 @@ field / UI for the cap.
 - `recent_files`-management / theme settings UI.
 - The three multi-file-loading follow-ups SHIPPED (see "Per-book page totals, fallible save, and load-failure notice" above): on-screen library-load-failure notice, fallible `to_json` (no silent serialize-error discard on save), and real carousel `total`/`progress` via persisted page counts. Covers now stream in (see "Library carousel covers" above).
 - Backdrop-click / Esc dialog dismissal (settings dialogs close via their own button only).
-- Viewer non-goals: touch/pinch, rotation/minimap/scrollbar, click-to-turn, per-page independent zoom in Double mode, and 60fps is NOT CI-asserted (manual/telemetry only).
+- Viewer non-goals: rotation/minimap/scrollbar, per-page independent zoom in Double mode, and 60fps is NOT CI-asserted (manual/telemetry only). Input that DID ship is documented above (see the spread/navigation and zoom/pan sections): click/tap-to-turn, two-finger trackpad swipe-to-turn, and scroll/wheel zoom-at-cursor + drag-pan via `ViewportState`. A dedicated trackpad pinch/magnify (`PinchGesture`) handler is not separately wired — zoom is driven by the `scroll-event` `delta-y`.
 - Linux release artifacts and a `.desktop` entry (macOS + Windows ship via `release.yml`; Linux's Slint system-library deps make a portable artifact heavier — deferred).
 - Code signing / notarization for release binaries (macOS Developer ID + notarytool, Windows Authenticode) — `release.yml` ships unsigned with documented `SIGNING SEAM` insertion points.
 - Auto-creating the GitHub Release (the release must pre-exist; `release.yml` only uploads assets to it).
