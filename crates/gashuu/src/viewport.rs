@@ -31,6 +31,9 @@ pub struct ViewportState {
     content_size: (f32, f32),
     /// Offset snapshot captured at drag start (absolute-delta panning).
     pan_origin: (f32, f32),
+    /// Zoom factor snapshot captured at pinch-gesture start (the gesture's
+    /// cumulative `scale` multiplies this, never the live zoom — non-cumulative).
+    pinch_origin_zoom: f32,
 }
 
 impl ViewportState {
@@ -44,6 +47,7 @@ impl ViewportState {
             vp_size: (0.0, 0.0),
             content_size: (0.0, 0.0),
             pan_origin: (0.0, 0.0),
+            pinch_origin_zoom: vp::ZOOM_MIN,
         }
     }
 
@@ -195,6 +199,39 @@ impl ViewportState {
         );
     }
 
+    /// Snapshot the current zoom factor as the pinch origin (called at gesture
+    /// start). The gesture's cumulative `scale` multiplies this snapshot, so the
+    /// zoom is `base * scale` rather than a per-event accumulation.
+    pub fn begin_pinch(&mut self) {
+        self.pinch_origin_zoom = self.zoom;
+    }
+
+    /// Continuous pinch zoom anchored at `(anchor_x, anchor_y)`. `scale` is the
+    /// gesture's cumulative factor (1.0 at gesture start, `> 1` zoom in, `< 1`
+    /// zoom out); the target zoom is `pinch_origin_zoom * scale`, clamped to
+    /// `[ZOOM_MIN, ZOOM_MAX]`. Non-finite or non-positive `scale` is a no-op
+    /// (defensive — a degenerate gesture frame must not corrupt the offset).
+    pub fn pinch_to(&mut self, scale: f32, anchor_x: f32, anchor_y: f32) {
+        if !scale.is_finite() || scale <= 0.0 {
+            return;
+        }
+        let old_scale = self.scale();
+        let new_zoom = vp::clamp_zoom(self.pinch_origin_zoom * scale);
+        // The fit baseline is unchanged; only the (already-clamped) zoom differs.
+        let new_scale = new_zoom * self.fit();
+        let (nx, ny) = vp::anchored_zoom(
+            anchor_x,
+            anchor_y,
+            old_scale,
+            new_scale,
+            self.offset.0,
+            self.offset.1,
+        );
+        self.offset = (nx, ny);
+        self.zoom = new_zoom;
+        self.reclamp();
+    }
+
     /// Slint render geometry: `(content_x, content_y, content_w, content_h)`.
     /// The offset is re-clamped here so the returned position is always valid even
     /// if state mutated without an explicit clamp.
@@ -273,6 +310,7 @@ mod tests {
         assert_eq!(s.vp_size, (0.0, 0.0));
         assert_eq!(s.content_size, (0.0, 0.0));
         assert_eq!(s.pan_origin, (0.0, 0.0));
+        assert!(approx(s.pinch_origin_zoom, vp::ZOOM_MIN));
     }
 
     // ---- set_content -------------------------------------------------------
@@ -617,5 +655,88 @@ mod tests {
             approx(s.zoom, vp::ZOOM_MIN),
             "cycle_fit must reset zoom to 1.0"
         );
+    }
+
+    // ---- begin_pinch / pinch_to --------------------------------------------
+
+    #[test]
+    fn pinch_to_keeps_anchored_point_and_scales() {
+        // Square content overflows both axes once zoomed, so the clamp's
+        // centering branch never overrides the anchored offset.
+        let mut s = square_state();
+        s.zoom_step(true);
+        s.zoom_step(true);
+        let (ax, ay) = (160.0, 40.0);
+        let scale_before = s.scale();
+        let point_before = content_point_under(&s, ax, ay);
+        s.begin_pinch();
+        s.pinch_to(1.3, ax, ay);
+        assert!(s.scale() > scale_before, "pinch in must increase scale");
+        let point_after = content_point_under(&s, ax, ay);
+        assert!(
+            approx(point_before.0, point_after.0) && approx(point_before.1, point_after.1),
+            "anchor content point must stay put: {point_before:?} vs {point_after:?}"
+        );
+    }
+
+    #[test]
+    fn pinch_to_clamps_at_max() {
+        let mut s = square_state();
+        s.begin_pinch();
+        s.pinch_to(1000.0, 100.0, 100.0);
+        assert!(
+            approx(s.zoom, vp::ZOOM_MAX),
+            "pinch in must clamp to ZOOM_MAX"
+        );
+    }
+
+    #[test]
+    fn pinch_to_clamps_at_min() {
+        let mut s = square_state();
+        s.zoom_step(true);
+        s.zoom_step(true);
+        s.begin_pinch();
+        s.pinch_to(0.0001, 100.0, 100.0);
+        assert!(
+            approx(s.zoom, vp::ZOOM_MIN),
+            "pinch out must clamp to ZOOM_MIN"
+        );
+    }
+
+    #[test]
+    fn pinch_to_is_relative_to_origin_snapshot_not_cumulative() {
+        let mut s = square_state();
+        s.zoom_step(true); // base zoom 1.1 (in [1, 8], so base*1.5 won't clamp)
+        s.begin_pinch();
+        s.pinch_to(1.5, 100.0, 100.0);
+        let zoom_first = s.zoom;
+        // Same gesture scale again: still relative to the begin_pinch snapshot, so
+        // the zoom must NOT change (base * 1.5 both times), unlike a cumulative model.
+        s.pinch_to(1.5, 100.0, 100.0);
+        assert!(
+            approx(s.zoom, zoom_first),
+            "pinch_to must be base*scale from the snapshot, not cumulative: {zoom_first} vs {}",
+            s.zoom
+        );
+    }
+
+    #[test]
+    fn pinch_to_invalid_scale_is_noop() {
+        let mut s = square_state();
+        s.zoom_step(true);
+        s.begin_pinch();
+        let zoom_before = s.zoom;
+        let offset_before = s.offset;
+        for bad in [0.0_f32, -1.0, f32::NAN, f32::INFINITY] {
+            s.pinch_to(bad, 100.0, 100.0);
+            assert!(
+                approx(s.zoom, zoom_before),
+                "scale {bad} must be a no-op (zoom)"
+            );
+            assert!(
+                approx(s.offset.0, offset_before.0) && approx(s.offset.1, offset_before.1),
+                "scale {bad} must be a no-op (offset)"
+            );
+        }
     }
 }

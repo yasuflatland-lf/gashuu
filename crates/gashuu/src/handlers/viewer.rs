@@ -324,6 +324,27 @@ pub(crate) fn wire_viewport_handlers(ui: &ViewerWindow, viewport: &Rc<RefCell<Vi
             })
         });
     }
+    {
+        let viewport = Rc::clone(&viewport);
+        // Pinch start: snapshot the current zoom factor; no geometry change yet
+        // (mirrors begin_pan for drag).
+        ui.on_begin_pinch(move || {
+            viewport.borrow_mut().begin_pinch();
+        });
+    }
+    {
+        let ui_weak = ui.as_weak();
+        let viewport = Rc::clone(&viewport);
+        // `scale` is the gesture's cumulative factor (1.0 at start); `x`/`y` are
+        // the focal point in viewport coordinates (cursor position on a trackpad).
+        // Note: the Slint callback order is (x, y, scale); pinch_to takes (scale, x, y).
+        ui.on_pinch_to(move |x, y, scale| {
+            with_ui(&ui_weak, |ui| {
+                viewport.borrow_mut().pinch_to(scale, x, y);
+                apply_viewport(&ui, &viewport.borrow());
+            })
+        });
+    }
 }
 
 /// Registers the keyboard navigation hub and window-resize callbacks onto `ui`.
