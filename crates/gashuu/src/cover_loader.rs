@@ -29,19 +29,20 @@
 //! and `slint::Image` (both `!Send`) are NEVER moved: the model is re-fetched and
 //! the image built INSIDE the event-loop closure.
 
-use crate::page_count_prefetch::{self, PageCountPrefetch};
+use crate::page_count_prefetch::{self, PageCountPrefetch, ResolvedCount};
 use crate::to_slint_image;
 use crate::{CarouselItem, ViewerWindow};
 use gashuu_core::{
     cache_key, generate_cover, ArchiveLoader, DecodedImage, Library, ThumbnailCache,
 };
+use lru::LruCache;
 use slint::{Model, VecModel};
 use std::cell::RefCell;
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering::Relaxed};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 /// Immutable cover-cache retention policy: how big the on-disk cover cache may
 /// grow (`max_bytes`) and the longer-edge size of generated covers (`max_side`).
@@ -86,6 +87,86 @@ impl CoverCachePolicy {
         max_bytes: 256 * 1024 * 1024,
         max_side: 512,
     };
+}
+
+/// Byte budget for the in-memory decoded-cover LRU ([`CoverMemCache`]). A cover
+/// is at most `max_side` (512) on its longer edge, so a decoded RGBA buffer is at
+/// most 512×512×4 ≈ 1 MiB; 64 MiB therefore holds ~64 covers, a generous bound
+/// for the rows a carousel sweeps back and forth over. This is a pure RAM/latency
+/// tunable (it never touches the on-disk cache or any cache key), so it can be
+/// raised or lowered freely without invalidating anything on disk.
+const COVER_MEM_BUDGET_BYTES: u64 = 64 * 1024 * 1024;
+
+/// Process-lifetime, byte-budgeted in-memory LRU of decoded covers, checked
+/// BEFORE the disk read in `spawn_load`. The on-disk cover cache HIT path still
+/// `fs::read`s and PNG-decodes `<cache>/<key>.png` on every call
+/// (`ThumbnailCache::get`), so a carousel scrolled back and forth re-decodes the
+/// same covers repeatedly; serving an already-decoded cover from here removes
+/// that repeat work. Covers are held as `Arc<DecodedImage>` so a mem hit is a
+/// cheap refcount bump rather than an RGBA buffer copy.
+///
+/// Eviction is by running byte total, not entry count: each `insert` adds the new
+/// buffer's bytes and pops the least-recently-used entry until the total is back
+/// within `budget`, always keeping at least one entry so a single oversized cover
+/// is still served from memory (the floor). Shared across rayon workers behind an
+/// `Arc<Mutex<_>>`; the lock is held only around `get`/`insert`, never across a
+/// decode or any I/O.
+struct CoverMemCache {
+    /// Unbounded by entry count — the byte budget is the only cap, enforced in
+    /// `insert`. Values are shared so a hit clones the `Arc`, not the bytes.
+    lru: LruCache<String, Arc<DecodedImage>>,
+    /// Running sum of `rgba().len()` over every cached cover; the eviction key.
+    total_bytes: u64,
+    /// Soft cap in bytes. `insert` evicts down to it (floor of one entry).
+    budget: u64,
+}
+
+impl CoverMemCache {
+    /// Build an empty cache with the default [`COVER_MEM_BUDGET_BYTES`] budget.
+    fn new() -> Self {
+        Self {
+            lru: LruCache::unbounded(),
+            total_bytes: 0,
+            budget: COVER_MEM_BUDGET_BYTES,
+        }
+    }
+
+    /// Build an empty cache with an explicit byte budget. Test-only so unit tests
+    /// can exercise eviction with tiny buffers instead of allocating 64 MiB.
+    #[cfg(test)]
+    fn with_budget(budget: u64) -> Self {
+        Self {
+            lru: LruCache::unbounded(),
+            total_bytes: 0,
+            budget,
+        }
+    }
+
+    /// Fetch a cached cover by `key`, promoting it to most-recently-used (so a
+    /// cover touched on this carousel pass survives a later eviction). Returns a
+    /// cheap `Arc` clone, never a copy of the RGBA bytes.
+    fn get(&mut self, key: &str) -> Option<Arc<DecodedImage>> {
+        self.lru.get(key).map(Arc::clone)
+    }
+
+    /// Insert (or replace) a cover, then evict least-recently-used entries until
+    /// the running byte total is within `budget`. Replacing an existing key first
+    /// subtracts the old buffer's bytes so the total stays exact. At least one
+    /// entry is always kept, so a single cover larger than the whole budget is
+    /// still served from memory rather than thrashing in and out.
+    fn insert(&mut self, key: String, img: Arc<DecodedImage>) {
+        let added = img.rgba().len() as u64;
+        if let Some(prev) = self.lru.put(key, img) {
+            self.total_bytes = self.total_bytes.saturating_sub(prev.rgba().len() as u64);
+        }
+        self.total_bytes = self.total_bytes.saturating_add(added);
+        while self.total_bytes > self.budget && self.lru.len() > 1 {
+            let Some((_, evicted)) = self.lru.pop_lru() else {
+                break;
+            };
+            self.total_bytes = self.total_bytes.saturating_sub(evicted.rgba().len() as u64);
+        }
+    }
 }
 
 /// Sweep the cover cache down to the policy's `max_bytes` on a rayon worker.
@@ -157,6 +238,12 @@ pub struct CoverController {
     /// (display vs persist are independent — the queue is only the persistence
     /// bridge). See [`PageCountPrefetch`].
     prefetch: PageCountPrefetch,
+    /// Process-lifetime, thread-shared, byte-budgeted LRU of decoded covers,
+    /// checked before the disk read in `spawn_load` so a cover decoded once this
+    /// session is not re-read + re-PNG-decoded on a later carousel pass. Behind an
+    /// `Arc<Mutex<_>>` because rayon workers share it; the lock is held only around
+    /// `get`/`insert`, never across a decode or any I/O. See [`CoverMemCache`].
+    mem: Arc<Mutex<CoverMemCache>>,
 }
 
 impl Default for CoverController {
@@ -247,13 +334,15 @@ fn set_cover_failed(ui: &ViewerWindow, row: usize) {
 /// Marshal one cover image onto the UI thread for carousel row `row`: the
 /// event-loop closure applies the epoch-guard + upgrade preamble, then writes
 /// the row via `set_cover`. The `slint::Image` is built INSIDE this closure
-/// (it is `!Send`); the captured `img` is the Send `DecodedImage`.
+/// (it is `!Send`); the captured `img` is the Send `Arc<DecodedImage>` (an `Arc`
+/// so a memory-cached cover is shared, not buffer-copied, into the closure —
+/// `to_slint_image` reads it through the `Arc`'s `Deref`).
 fn marshal_cover(
     weak: slint::Weak<ViewerWindow>,
     epoch: Arc<AtomicUsize>,
     my_epoch: usize,
     row: usize,
-    img: DecodedImage,
+    img: Arc<DecodedImage>,
 ) {
     if let Err(e) = slint::invoke_from_event_loop(move || {
         // Drop results from a superseded generation (library refreshed since).
@@ -345,6 +434,50 @@ fn should_signal_empty<S, E>(open_result: &Result<S, E>, page_count: Option<NonZ
     open_result.is_ok() && page_count.is_none()
 }
 
+/// After a cover HIT (in-memory OR on-disk), resolve a still-unknown page count
+/// with one archive open and stream it to the row. Shared by both hit branches of
+/// `spawn_load`: the cover is already marshalled, so this only fixes the "1 / 0"
+/// display. An opened-but-empty book raises the empty-book signal; a count-open
+/// FAILURE is logged, not fatal — the row keeps the cover already shown (no failed
+/// marking). Runs on the rayon worker, touching only `Send` state; cancel is
+/// re-checked after the open before crossing to the UI thread.
+fn resolve_count_after_hit(
+    pending: &Arc<Mutex<Vec<ResolvedCount>>>,
+    weak: &slint::Weak<ViewerWindow>,
+    epoch: &Arc<AtomicUsize>,
+    my_epoch: usize,
+    cancel: &Arc<AtomicBool>,
+    row: usize,
+    path: PathBuf,
+) {
+    // TODO(#175-followup): use open_with_policy once ArchivePolicy is threaded
+    // through CoverRequest / CarouselRefresh.
+    let open_result = ArchiveLoader::open(&path);
+    match &open_result {
+        Ok(source) => {
+            let count = source.list_pages().len();
+            // Post-open cancel re-check before crossing to the UI thread.
+            if cancel.load(Relaxed) {
+                return;
+            }
+            // Opened cleanly but zero pages: signal the empty book (count == 0
+            // also means push_and_marshal_count below queues nothing —
+            // NonZeroUsize::new(0) is None).
+            if should_signal_empty(&open_result, NonZeroUsize::new(count)) {
+                marshal_empty_book(weak, epoch, my_epoch, path.clone());
+            }
+            page_count_prefetch::push_and_marshal_count(
+                pending, weak, epoch, my_epoch, row, path, count,
+            );
+        }
+        Err(e) => {
+            // A count-open failure is NOT a cover failure: the cover was already
+            // marshalled, so the row keeps it (no failed marking, log only).
+            tracing::warn!(path = %path.display(), error = %e, "cover: count open failed");
+        }
+    }
+}
+
 impl CoverController {
     /// Build the controller. Call once during UI setup.
     pub fn new() -> Self {
@@ -352,6 +485,7 @@ impl CoverController {
             epoch: Arc::new(AtomicUsize::new(0)),
             cancel: RefCell::new(Arc::new(AtomicBool::new(false))),
             prefetch: PageCountPrefetch::new(),
+            mem: Arc::new(Mutex::new(CoverMemCache::new())),
         }
     }
 
@@ -378,14 +512,18 @@ impl CoverController {
     /// decode, archive open, page-0 decode) ever runs on the UI thread.
     ///
     /// Worker flow: derive `cache_key` (reads the mtime HERE, not at dispatch) →
-    /// try the disk cache. HIT → marshal the decoded cover to the row, then, when
-    /// the count is still unknown, resolve it with one archive open. MISS → open
+    /// try the in-memory cover LRU FIRST. MEM HIT → marshal the shared
+    /// `Arc<DecodedImage>` straight to the row (no `fs::read`, no PNG decode),
+    /// then resolve a still-unknown count. Otherwise try the disk cache. DISK HIT
+    /// → the read + decode happens once here, the result is interned into the mem
+    /// LRU (so the next carousel pass is a mem hit), then marshalled. MISS → open
     /// the source, capture the count from the same open (when needed), generate +
-    /// store the cover, then marshal count and cover; an open or decode FAILURE
-    /// marshals the row failed instead (issue 144). Cancel is polled before each
-    /// heavy step and re-checked before crossing to the UI thread; every crossing
-    /// goes through the epoch-guarded marshal helpers. Capture rule: only `Send`
-    /// values enter the closure.
+    /// store the cover (disk + mem), then marshal count and cover; an open or
+    /// decode FAILURE marshals the row failed instead (issue 144). Cancel is
+    /// polled before each heavy step and re-checked before crossing to the UI
+    /// thread; every crossing goes through the epoch-guarded marshal helpers. The
+    /// mem `Mutex` is held only around `get`/`insert`, never across a decode or
+    /// any I/O. Capture rule: only `Send` values enter the closure.
     fn spawn_load(
         &self,
         ui_weak: &slint::Weak<ViewerWindow>,
@@ -397,6 +535,7 @@ impl CoverController {
         let epoch = Arc::clone(&self.epoch);
         let cancel = Arc::clone(cancel_flag);
         let pending = self.prefetch.queue();
+        let mem = Arc::clone(&self.mem);
         rayon::spawn(move || {
             // Bail before the heavy work if a newer generation superseded us.
             if cancel.load(Relaxed) {
@@ -413,41 +552,39 @@ impl CoverController {
                 mtime_secs(&req.path),
                 CoverCachePolicy::DEFAULT.max_side,
             );
-            // HIT: the decode is already done on disk; read + decode it on THIS
-            // worker and stream it to the row first (the count open below may be
-            // slow — the user should not wait on it to see the cover).
+            // MEM HIT: this cover was decoded earlier this session. Serve the
+            // shared `Arc` straight to the row — no `fs::read`, no PNG decode.
+            // Hold the lock only for the `get`. (Take it via `lock().ok()` so a
+            // poisoned mutex degrades to a disk read instead of panicking the
+            // worker — covers are best-effort.)
+            let cached = mem.lock().ok().and_then(|mut c| c.get(&key));
+            if let Some(decoded) = cached {
+                marshal_cover(weak.clone(), Arc::clone(&epoch), my_epoch, req.row, decoded);
+                // Cover is shown but the page count may still be unknown —
+                // resolve it with one archive open so the row shows "1 / N".
+                if req.needs_count && !cancel.load(Relaxed) {
+                    resolve_count_after_hit(
+                        &pending, &weak, &epoch, my_epoch, &cancel, req.row, req.path,
+                    );
+                }
+                return;
+            }
+            // DISK HIT: the decode is already done on disk; read + decode it on
+            // THIS worker, intern it into the mem LRU so the next carousel pass is
+            // a mem hit, then stream it to the row first (the count open below may
+            // be slow — the user should not wait on it to see the cover).
             if let Some(decoded) = cache.get(&key) {
+                let decoded = Arc::new(decoded);
+                if let Ok(mut c) = mem.lock() {
+                    c.insert(key.clone(), Arc::clone(&decoded));
+                }
                 marshal_cover(weak.clone(), Arc::clone(&epoch), my_epoch, req.row, decoded);
                 // Cover is cached but the page count may still be unknown —
                 // resolve it with one archive open so the row shows "1 / N".
                 if req.needs_count && !cancel.load(Relaxed) {
-                    // TODO(#175-followup): use open_with_policy once ArchivePolicy
-                    // is threaded through CoverRequest / CarouselRefresh.
-                    let open_result = ArchiveLoader::open(&req.path);
-                    match &open_result {
-                        Ok(source) => {
-                            let count = source.list_pages().len();
-                            // Post-open cancel re-check before crossing to the UI thread.
-                            if cancel.load(Relaxed) {
-                                return;
-                            }
-                            // Opened cleanly but zero pages: signal the empty book
-                            // (count == 0 also means push_and_marshal_count below
-                            // queues nothing — NonZeroUsize::new(0) is None).
-                            if should_signal_empty(&open_result, NonZeroUsize::new(count)) {
-                                marshal_empty_book(&weak, &epoch, my_epoch, req.path.clone());
-                            }
-                            page_count_prefetch::push_and_marshal_count(
-                                &pending, &weak, &epoch, my_epoch, req.row, req.path, count,
-                            );
-                        }
-                        Err(e) => {
-                            // A count-open failure is NOT a cover failure: the
-                            // cached cover was already marshalled above, so the
-                            // row keeps it (no failed marking, log only).
-                            tracing::warn!(path = %req.path.display(), error = %e, "cover: count open failed");
-                        }
-                    }
+                    resolve_count_after_hit(
+                        &pending, &weak, &epoch, my_epoch, &cancel, req.row, req.path,
+                    );
                 }
                 return;
             }
@@ -501,6 +638,13 @@ impl CoverController {
             // failure is non-fatal (we already have the image to show).
             if let Err(e) = cache.put(&key, &decoded) {
                 tracing::warn!(path = %req.path.display(), error = %e, "cover: cache put failed");
+            }
+            // Intern into the mem LRU so a later carousel pass over this row is a
+            // mem hit (no disk read + decode). Wrap in `Arc` so the marshal below
+            // shares the buffer instead of copying it.
+            let decoded = Arc::new(decoded);
+            if let Ok(mut c) = mem.lock() {
+                c.insert(key, Arc::clone(&decoded));
             }
             // Post-generate cancel re-check before crossing to the UI thread
             // (mirrors generate_thumbnails' second cancel poll).
@@ -574,6 +718,100 @@ impl CoverController {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Build an `Arc<DecodedImage>` whose RGBA buffer is exactly `bytes` long, so
+    /// `CoverMemCache`'s byte accounting can be driven with tiny, predictable
+    /// allocations. `bytes` must be a multiple of 4 (RGBA), enforced by the
+    /// `DecodedImage::new` invariant (`rgba.len() == width * height * 4`); we make
+    /// a `bytes/4`-wide, 1-tall image.
+    fn cover_of(bytes: usize) -> Arc<DecodedImage> {
+        assert_eq!(bytes % 4, 0, "test cover bytes must be a multiple of 4");
+        let width = (bytes / 4) as u32;
+        Arc::new(
+            DecodedImage::new(vec![0u8; bytes], width, 1).expect("valid RGBA dimensions for test"),
+        )
+    }
+
+    /// Inserting past the budget evicts least-recently-used entries so the running
+    /// total never exceeds the budget. Budget = 12 bytes; three 8-byte covers can
+    /// hold at most one (8 ≤ 12 < 16), so each insert evicts the prior one.
+    #[test]
+    fn insert_past_budget_evicts_lru_and_caps_total() {
+        let mut c = CoverMemCache::with_budget(12);
+        c.insert("a".into(), cover_of(8));
+        c.insert("b".into(), cover_of(8));
+        c.insert("c".into(), cover_of(8));
+        assert!(
+            c.total_bytes <= 12,
+            "running total {} must stay within the budget",
+            c.total_bytes
+        );
+        assert_eq!(c.lru.len(), 1, "only the most-recent cover survives");
+        assert!(c.get("c").is_some(), "the most-recently inserted survives");
+        assert!(c.get("a").is_none(), "the oldest was evicted");
+        assert!(c.get("b").is_none(), "the middle was evicted");
+    }
+
+    /// `get` promotes an entry to most-recently-used, so a promoted entry survives
+    /// a later eviction while the now-oldest untouched entry is dropped. Budget 16
+    /// holds two 8-byte covers; touching "a" then inserting "c" must evict "b".
+    #[test]
+    fn get_promotes_mru_so_touched_entry_survives_eviction() {
+        let mut c = CoverMemCache::with_budget(16);
+        c.insert("a".into(), cover_of(8));
+        c.insert("b".into(), cover_of(8));
+        assert!(c.get("a").is_some(), "promote a to MRU (b is now the LRU)");
+        c.insert("c".into(), cover_of(8));
+        assert!(c.get("a").is_some(), "promoted entry survived eviction");
+        assert!(c.get("c").is_some(), "newly inserted entry is present");
+        assert!(
+            c.get("b").is_none(),
+            "the un-promoted LRU entry was evicted"
+        );
+        assert!(c.total_bytes <= 16, "total stays within the budget");
+    }
+
+    /// A single entry larger than the whole budget is retained (floor = 1): the
+    /// eviction loop stops at one entry rather than dropping the only cover, so an
+    /// oversized cover is still served from memory instead of thrashing.
+    #[test]
+    fn single_oversized_entry_is_retained_as_floor() {
+        let mut c = CoverMemCache::with_budget(8);
+        c.insert("big".into(), cover_of(64));
+        assert_eq!(c.lru.len(), 1, "the oversized entry is kept as the floor");
+        assert!(c.get("big").is_some(), "oversized cover is still served");
+        // A second oversized insert still leaves exactly one (the newest) entry.
+        c.insert("big2".into(), cover_of(64));
+        assert_eq!(c.lru.len(), 1, "floor stays at one even when over budget");
+        assert!(c.get("big2").is_some(), "the newest oversized cover wins");
+        assert!(
+            c.get("big").is_none(),
+            "the prior oversized cover was evicted"
+        );
+    }
+
+    /// Re-inserting an existing key replaces its value and adjusts the running
+    /// total by the byte delta (old subtracted, new added) rather than
+    /// double-counting — so a replace never inflates `total_bytes`.
+    #[test]
+    fn reinsert_same_key_replaces_without_double_counting() {
+        let mut c = CoverMemCache::with_budget(64);
+        c.insert("k".into(), cover_of(8));
+        c.insert("k".into(), cover_of(16));
+        assert_eq!(c.lru.len(), 1, "same key replaces, not appends");
+        assert_eq!(c.total_bytes, 16, "total reflects only the new buffer");
+        let got = c.get("k").expect("key present");
+        assert_eq!(got.rgba().len(), 16, "the replacement value is served");
+    }
+
+    /// The default constructor uses the documented 64 MiB budget tunable.
+    #[test]
+    fn default_budget_is_the_documented_constant() {
+        let c = CoverMemCache::new();
+        assert_eq!(c.budget, COVER_MEM_BUDGET_BYTES);
+        assert_eq!(c.budget, 64 * 1024 * 1024);
+        assert_eq!(c.total_bytes, 0, "a fresh cache holds nothing");
+    }
 
     /// The cover-cache policy values are load-bearing for on-disk compatibility:
     /// `max_side` (512) is a `cache_key` / `purge_for` ingredient, so the

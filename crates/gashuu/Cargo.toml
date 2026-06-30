@@ -15,6 +15,9 @@ gashuu-core = { path = "../gashuu-core" }
 slint = { version = "=1.17.0", features = ["unstable-winit-030"] }
 rfd = "0.17"
 rayon = "1"
+# Bounded in-memory decoded-cover LRU in `cover_loader.rs` (kept off the disk
+# cache read path). Same version core already resolves, so no new lockfile entry.
+lru = "0.18"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 color-eyre = "0.6"
