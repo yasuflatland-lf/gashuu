@@ -15,6 +15,15 @@ use serde::{Deserialize, Serialize};
 pub const MIN_WINDOW_WIDTH: u32 = 480;
 pub const MIN_WINDOW_HEIGHT: u32 = 600;
 
+/// Sanity ceiling for a restored window size. A stored value above this is
+/// treated as corrupt — not merely too large — and the whole geometry is
+/// discarded for the default boot size rather than clamped (an off-screen window
+/// is useless). 16384 is far beyond any real display yet well under the values a
+/// scale-factor round-trip bug can inflate a size to across launches (the failure
+/// that motivated this guard reached 110592).
+pub const MAX_WINDOW_WIDTH: u32 = 16384;
+pub const MAX_WINDOW_HEIGHT: u32 = 16384;
+
 /// Vertical offset from the window top to a point on the title bar's grab area.
 /// The on-screen test requires THIS point to land on a monitor, so the window is
 /// always draggable even when its body extends past a screen edge.
@@ -57,6 +66,15 @@ impl WindowGeometry {
             self.width.max(MIN_WINDOW_WIDTH),
             self.height.max(MIN_WINDOW_HEIGHT),
         )
+    }
+
+    /// True when the stored size is within the sane maximum. A larger value means
+    /// the persisted geometry is corrupt (e.g. inflated by a HiDPI scale-factor
+    /// round-trip) and should be discarded for the default boot size. The lower
+    /// bound is intentionally NOT a sanity failure: a too-small size is floored by
+    /// `clamped_size` rather than thrown away.
+    pub fn is_size_sane(&self) -> bool {
+        self.width <= MAX_WINDOW_WIDTH && self.height <= MAX_WINDOW_HEIGHT
     }
 
     /// Top-center grab point a little below the window's top edge. Uses
@@ -222,5 +240,36 @@ mod tests {
             height: 100,
         }];
         assert!(!g.is_position_visible(&monitors));
+    }
+
+    #[test]
+    fn size_sane_accepts_a_normal_window() {
+        assert!(geom(1400, 900, 100, 100).is_size_sane());
+    }
+
+    #[test]
+    fn size_sane_accepts_a_tiny_window() {
+        // Below the legible minimum is still "sane" — `clamped_size` floors it
+        // rather than discarding the geometry; only an absurdly large size is
+        // treated as corrupt.
+        assert!(geom(10, 10, 0, 0).is_size_sane());
+    }
+
+    #[test]
+    fn size_sane_rejects_a_scale_factor_inflated_width() {
+        // The real corruption that blanked the window: a HiDPI round-trip inflated
+        // the width across launches until it reached 110592 (= 1728 * 2^6).
+        let g = geom(110592, 1982, 0, 66);
+        assert!(!g.is_size_sane());
+    }
+
+    #[test]
+    fn size_sane_rejects_a_height_above_the_maximum() {
+        assert!(!geom(1400, MAX_WINDOW_HEIGHT + 1, 0, 0).is_size_sane());
+    }
+
+    #[test]
+    fn size_sane_accepts_exactly_the_maximum() {
+        assert!(geom(MAX_WINDOW_WIDTH, MAX_WINDOW_HEIGHT, 0, 0).is_size_sane());
     }
 }

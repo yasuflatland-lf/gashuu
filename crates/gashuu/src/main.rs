@@ -78,6 +78,34 @@ fn load_or_default<T: Default>(
     }
 }
 
+/// Rewrite an existing `settings.json` when it no longer matches the canonical
+/// serialization of the loaded settings — i.e. the file was corrupt (recovered to
+/// defaults) or carried out-of-bounds values that `Settings::normalize` repaired
+/// (e.g. an inflated window size discarded for the default). This persists the
+/// repair at startup so a bad file is fixed immediately instead of relying on the
+/// next clean exit. A missing file is left untouched (a fresh install writes on its
+/// first real save). Best-effort: a write failure is logged and surfaced, never
+/// fatal.
+fn repair_settings_file_if_needed(settings: &Settings, errs: &mut Vec<String>) {
+    let Ok(path) = Settings::config_path() else {
+        return;
+    };
+    if !path.exists() {
+        return;
+    }
+    let on_disk = std::fs::read_to_string(&path).unwrap_or_default();
+    let Ok(canonical) = settings.to_json() else {
+        return;
+    };
+    if canonical == on_disk {
+        return;
+    }
+    if let Err(e) = settings.save_to(&path) {
+        tracing::warn!(error = %e, "failed to rewrite repaired settings file");
+        errs.push(format!("settings rewrite ({e})"));
+    }
+}
+
 fn main() -> color_eyre::Result<()> {
     color_eyre::install()?;
     // Slint's text layout (parley -> icu_segmenter) emits a `log::warn!` for every
@@ -101,6 +129,13 @@ fn main() -> color_eyre::Result<()> {
     // set after that call.
     let mut load_errs: Vec<String> = Vec::new();
     let settings = load_or_default("settings", Settings::load, &mut load_errs);
+    // Self-heal an invalid settings file. `load_or_default` + `Settings::normalize`
+    // already give us sane in-memory values (a corrupt file falls back to defaults;
+    // an out-of-bounds window size is discarded), but the bad bytes are still on
+    // disk. If an existing settings.json no longer matches the canonical
+    // serialization of what we loaded, rewrite it now so the repair is persisted at
+    // startup — not deferred to the next clean exit, which a crash could skip.
+    repair_settings_file_if_needed(&settings, &mut load_errs);
     let library = load_or_default("library", Library::load, &mut load_errs);
 
     let ui = ViewerWindow::new()?;
