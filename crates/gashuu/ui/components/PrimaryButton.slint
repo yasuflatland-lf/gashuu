@@ -8,6 +8,7 @@
 // Hover      : background darkens slightly via .darker(0.08)
 // Press      : background darkens further via .darker(0.20)
 // All colors are routed through Theme — no raw hex inline.
+// Accessibility: carries accessible-role/label/action-default (mirrors Secondary/Danger).
 
 import { Theme } from "../Theme.slint";
 
@@ -65,6 +66,12 @@ export component PrimaryButton inherits Rectangle {
             vertical-alignment: center;
         }
     }
+
+    // ── Accessibility ─────────────────────────────────────────────────────────
+    accessible-role: button;
+    accessible-label: root.text;
+    // Let a screen-reader activation gesture fire the same callback as a click.
+    accessible-action-default => { root.clicked(); }
 
     // ── Interaction ───────────────────────────────────────────────────────────
     // TouchArea is non-focusable in Slint — it does NOT steal keyboard focus
