@@ -406,15 +406,20 @@ the definitions live in `open_book.rs` and `remove_books.rs` (the two entries be
 ### open_book
 
 `open_book.rs`. `OpenBookUseCase` — the open-a-book application use case extracted from `main.rs`
-(#67). Holds seven shared collaborators as `Rc`/`Rc<RefCell<…>>` fields: `ViewerState`, `Settings`,
-`ViewportState`, `Library`, `ThumbnailController` (`Rc`), `CoverController` (`Rc`), and
-`LibrarySearchState` (the last so the open-time page-count rebuild preserves the active
-library-search filter instead of rebuilding the full library). There is NO `NavState` field —
-`NavState` stays in `main.rs`. The return value (#114) is built from two types and a single export:
+(#67). Holds nine shared collaborators as `Rc`/`Rc<RefCell<…>>` fields: `ViewerState`, `Settings`,
+`ViewportState`, `Library`, `ThumbnailController` (`Rc`), `CoverController` (`Rc`),
+`LibrarySearchState` (so the open-time page-count rebuild preserves the active library-search filter
+instead of rebuilding the full library), and — added so that rebuild can delegate to the shared
+`carousel_refresh::refresh_library_carousel` chokepoint instead of open-coding it (#317) —
+`LibrarySelectionState` (re-applies the path-keyed bulk selection over the rebuilt rows) and
+`i18n::Localizer` (composes the library-count / selection-toolbar strings). There is NO `NavState`
+field — `NavState` stays in `main.rs`. The return value (#114) is built from two types and a single
+export:
 
 - `run(&self, path, skipped_detail) -> OpenOutcome` — writes back the previous book's position;
   opens the source; reconciles + saves settings; registers the book in `Library` and jumps to the
-  resume page; rebuilds the carousel model; launches thumbnails. On failure returns
+  resume page; on a page-count change rebuilds the carousel via the shared
+  `refresh_library_carousel` chokepoint (#317); launches thumbnails. On failure returns
   `OpenOutcome::Error(String)` (pre-captured `format!("{e}")`); on success returns
   `OpenOutcome::Success(NoticesContent)`. **`run` does NOT transition screens** and contains ZERO
   `crate::i18n` imports — all formatting is deferred to `main.rs::finalize_open`.
