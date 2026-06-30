@@ -14,9 +14,9 @@
 //                      check.svg icon-only form (same colorize idiom as
 //                      SelectionBadge), keeping the full label as the
 //                      accessible-label.
-//   3. Exit capsule  — circular NavItem-style capsule with close.svg (Cancel
-//                      Fill — disc + knocked-out ✕), colorized via the same
-//                      Image/colorize idiom as the select-all icon.
+//   3. Exit capsule  — a `NavItem` instance (close.svg, Cancel Fill — disc +
+//                      knocked-out ✕). The toolbar's `active` gate maps onto
+//                      NavItem's `enabled` so a parked bar exposes no action.
 //
 // Width HUGS content via the root's intrinsic preferred width — but ONLY when the
 // component is instantiated as a LAYOUT CHILD: an absolutely positioned (x/y)
@@ -39,6 +39,7 @@
 // rule 2; scripts/check-tokens.sh enforces this). Theme lives one directory up.
 import { Theme } from "../Theme.slint";
 import { DangerButton } from "DangerButton.slint";
+import { NavItem } from "NavItem.slint";
 
 export component SelectionToolbar inherits Rectangle {
     // ── Public API ────────────────────────────────────────────────────────────
@@ -265,59 +266,19 @@ export component SelectionToolbar inherits Rectangle {
             clicked => { if (root.active) { root.request-delete(); } }
         }
 
-        // ── 4. Exit capsule — circular NavItem-style close button ───────────
-        // Circular capsule matching NavItem exactly (nav-capsule diameter, radius-pill
-        // corner). Uses close.svg (Cancel Fill — disc + knocked-out ✕), recolored
-        // via colorize exactly like check.svg in the select-all capsule above.
-        exit-capsule := Rectangle {
-            width: Theme.nav-capsule;
-            height: Theme.nav-capsule;
-            border-radius: Theme.radius-pill;
-
-            // Default appearance: same stable transparent ring as NavItem.
-            background: transparent;
-            border-width: 1px;
-            border-color: transparent;
-            animate background, border-color { duration: Theme.motion-fast; }
-
-            // States: pressed > hover (NavItem ordering).
-            states [
-                pressed when exit-touch.pressed : {
-                    exit-capsule.background: Theme.accent-glow.darker(0.10);
-                    exit-capsule.border-color: Theme.accent;
-                }
-                hover when exit-touch.has-hover : {
-                    exit-capsule.background: Theme.accent-glow;
-                    exit-capsule.border-color: Theme.accent;
-                    exit-capsule.drop-shadow-color: Theme.accent-glow;
-                    exit-capsule.drop-shadow-blur: 12px;
-                }
-            ]
-
-            // close.svg glyph: Cancel Fill icon (disc + knocked-out ✕).
-            // Colorize via binding (not states[]) — child element rule.
-            Image {
-                source: @image-url("../assets/close.svg");
-                width: Theme.nav-icon;
-                height: Theme.nav-icon;
-                x: (parent.width - self.width) / 2;
-                y: (parent.height - self.height) / 2;
-                image-fit: contain;
-                // Brighten on hover/press; default to the calmer mid tone (NavItem idiom).
-                colorize: exit-touch.has-hover || exit-touch.pressed ? Theme.text-high : Theme.text-mid;
-            }
-
-            // Accessibility: screen-reader gets the provided exit label. Gated on
-            // `active` so a slid-away toolbar exposes no working action.
-            accessible-role: button;
-            accessible-label: root.exit-a11y;
-            accessible-action-default => { if (root.active) { root.exit(); } }
-
-            exit-touch := TouchArea {
-                // Slid-away bars must never take input even if clip hit-testing leaks.
-                enabled: root.active;
-                clicked => { root.exit(); }
-            }
+        // ── 4. Exit capsule — a NavItem close button ─────────────────────────
+        // Now an instance of NavItem (was a hand-rolled NavItem-style capsule:
+        // nav-capsule diameter, radius-pill corner, same pressed/hover accent
+        // ring + glow, same close.svg colorize idiom). `enabled: root.active`
+        // maps the toolbar's slid-in/visible gate onto NavItem's input + a11y
+        // gate, so a parked (slid-away) bar exposes no working pointer /
+        // screen-reader action — exactly the old `exit-touch.enabled` + a11y
+        // guard. `active` stays default-false: no persistent lit ring here.
+        NavItem {
+            icon: @image-url("../assets/close.svg");
+            a11y-label: root.exit-a11y;
+            enabled: root.active;
+            clicked => { root.exit(); }
         }
     }
 }
