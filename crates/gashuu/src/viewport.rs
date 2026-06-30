@@ -199,6 +199,22 @@ impl ViewportState {
         );
     }
 
+    /// Pan by an INCREMENTAL delta (trackpad/wheel scroll): the new offset is
+    /// `offset + (dx, dy)`, then clamped. Unlike `pan_to` (absolute from a drag
+    /// press point), each call accumulates onto the live offset, so a stream of
+    /// scroll events scrolls continuously.
+    pub fn pan_by(&mut self, dx: f32, dy: f32) {
+        let (dw, dh) = self.displayed();
+        self.offset = vp::clamp_offset(
+            dw,
+            dh,
+            self.vp_size.0,
+            self.vp_size.1,
+            self.offset.0 + dx,
+            self.offset.1 + dy,
+        );
+    }
+
     /// Snapshot the current zoom factor as the pinch origin (called at gesture
     /// start). The gesture's cumulative `scale` multiplies this snapshot, so the
     /// zoom is `base * scale` rather than a per-event accumulation.
@@ -541,6 +557,56 @@ mod tests {
         let (ox2, oy2) = s.offset;
         assert!(approx(ox2, 0.0), "x must clamp to high bound 0, got {ox2}");
         assert!(approx(oy2, 0.0), "y must clamp to high bound 0, got {oy2}");
+    }
+
+    // ---- pan_by ------------------------------------------------------------
+
+    #[test]
+    fn pan_by_accumulates_incrementally() {
+        let mut s = square_state();
+        s.zoom_step(true);
+        s.zoom_step(true);
+        // Overflow range per axis is [vp - disp, 0]; start centered (~-21), step
+        // twice by a small delta that stays inside the range to observe pure
+        // accumulation rather than clamping.
+        let start = s.offset;
+        s.pan_by(-10.0, -10.0);
+        let first = s.offset;
+        assert!(
+            approx(first.0, start.0 - 10.0) && approx(first.1, start.1 - 10.0),
+            "first pan_by must move offset by (-10,-10): {start:?} -> {first:?}"
+        );
+        s.pan_by(-10.0, -10.0);
+        let second = s.offset;
+        assert!(
+            approx(second.0, first.0 - 10.0) && approx(second.1, first.1 - 10.0),
+            "pan_by must accumulate onto the live offset (not absolute): {first:?} -> {second:?}"
+        );
+    }
+
+    #[test]
+    fn pan_by_clamps_at_boundary() {
+        let mut s = square_state();
+        s.zoom_step(true);
+        s.zoom_step(true);
+        let (dw, dh) = s.displayed();
+        s.pan_by(-100000.0, -100000.0);
+        let (ox, oy) = s.offset;
+        let lo_x = s.vp_size.0 - dw;
+        let lo_y = s.vp_size.1 - dh;
+        assert!(approx(ox, lo_x), "x clamps to low bound {lo_x}, got {ox}");
+        assert!(approx(oy, lo_y), "y clamps to low bound {lo_y}, got {oy}");
+    }
+
+    #[test]
+    fn pan_by_on_fitting_content_stays_centered() {
+        // 400x300 in 200x200 (Whole) -> displayed 200x150, both axes fit, so
+        // clamp_offset takes the centering branch and overrides any pan delta.
+        let mut s = state_with(FitMode::Whole);
+        s.pan_by(500.0, -500.0);
+        let (ox, oy) = s.offset;
+        assert!(approx(ox, 0.0), "x stays centered 0, got {ox}");
+        assert!(approx(oy, 25.0), "y stays centered 25, got {oy}");
     }
 
     // ---- Width fit vertical overflow ---------------------------------------

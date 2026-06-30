@@ -345,6 +345,19 @@ pub(crate) fn wire_viewport_handlers(ui: &ViewerWindow, viewport: &Rc<RefCell<Vi
             })
         });
     }
+    {
+        let ui_weak = ui.as_weak();
+        let viewport = Rc::clone(&viewport);
+        // Incremental two-finger scroll pan while zoomed in. The sign is passed
+        // straight through from Slint; if scrolling feels inverted on some
+        // platform, flip it in the Slint `scroll-pan` call (one-liner), not here.
+        ui.on_scroll_pan(move |dx, dy| {
+            with_ui(&ui_weak, |ui| {
+                viewport.borrow_mut().pan_by(dx, dy);
+                apply_viewport(&ui, &viewport.borrow());
+            })
+        });
+    }
 }
 
 /// Registers the keyboard navigation hub and window-resize callbacks onto `ui`.
