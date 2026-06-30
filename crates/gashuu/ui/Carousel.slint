@@ -309,6 +309,46 @@ component CoverCard inherits Rectangle {
     }
 }
 
+// File-private sunken card shared by the empty-library CTA and the no-results
+// state: same surface / radius / hairline border / centered title + subtitle.
+// The two states differ only in their strings, the fixed panel height, and
+// whether a CTA is slotted via @children (empty-state only). Container-relative
+// geometry (the width clamp and the x/y centering) is set by each call site,
+// NOT here: a component's root element cannot reference `parent`, so that
+// geometry must live where `parent` resolves (the carousel). The card owns its
+// fixed height via `panel-height`.
+component EmptyStatePanel inherits Rectangle {
+    in property <string> title;
+    in property <string> subtitle;
+    in property <length> panel-height;   // 200px (CTA) / 160px (no-results)
+    height: root.panel-height;
+    background: Theme.surface-sunken;
+    border-radius: Theme.radius-lg;
+    border-width: 1px;
+    border-color: Theme.hairline;
+    VerticalLayout {
+        alignment: center;
+        spacing: Theme.space-md;
+        padding: Theme.space-xl;
+        Text {
+            text: root.title;
+            color: Theme.text;
+            font-size: Theme.font-title;
+            font-weight: Theme.weight-bold;
+            horizontal-alignment: center;
+        }
+        Text {
+            text: root.subtitle;
+            color: Theme.text-muted;
+            font-size: Theme.font-micro;
+            horizontal-alignment: center;
+        }
+        // Optional CTA slot — LAST child so it stacks under the subtitle. The
+        // empty-state call site passes a CTA here; the no-results site passes none.
+        @children
+    }
+}
+
 export component Carousel inherits Rectangle {
     // ── Frozen public contract ────────────────────────────────────────────────
     in property <[CarouselItem]> items;
@@ -509,50 +549,30 @@ export component Carousel inherits Rectangle {
           //    book shows the no-results panel below instead of this add CTA. The
           //    CTA button fires add-books() via a TouchArea (wired in PR-L) and
           //    restores keyboard focus to the carousel. ─────────────────────────
-          if root.library-book-count == 0 : Rectangle {
-              // Fluid panel width (DESIGN.md "Responsive Behavior"): clamp the
-              // sunken empty-state panel to the carousel width so it never clips
-              // on a narrow window nor stretches too wide on a large one.
+          if root.library-book-count == 0 : EmptyStatePanel {
+              // Fluid panel width (DESIGN.md "Responsive Behavior"): clamp to the
+              // carousel width so it never clips on a narrow window nor stretches
+              // too wide. Centered via absolute x/y (this slot is not a layout).
               width: Math.clamp(parent.width - 2 * Theme.space-xl, 280px, 360px);
-              height: 200px;
               x: Theme.snap((parent.width - self.width) / 2);
               y: Theme.snap((parent.height - self.height) / 2);
-              background: Theme.surface-sunken;
-              border-radius: Theme.radius-lg;
-              border-width: 1px;
-              border-color: Theme.hairline;
-              VerticalLayout {
+              title: Strings.carousel-empty-title;
+              subtitle: Strings.carousel-empty-subtitle;
+              panel-height: 200px;
+              // CTA button: fires add-books() on click and restores keyboard
+              // focus to the carousel. The hand-built accent Rectangle was
+              // replaced by the shared PrimaryButton (DESIGN.md
+              // components.button-primary): same accent background, same label
+              // wording, same Theme.radius-md corners, ≥32px hit area.
+              HorizontalLayout {
                   alignment: center;
-                  spacing: Theme.space-md;
-                  padding: Theme.space-xl;
-                  Text {
-                      text: Strings.carousel-empty-title;
-                      color: Theme.text;
-                      font-size: Theme.font-title;
-                      font-weight: Theme.weight-bold;
-                      horizontal-alignment: center;
-                  }
-                  Text {
-                      text: Strings.carousel-empty-subtitle;
-                      color: Theme.text-muted;
-                      font-size: Theme.font-micro;
-                      horizontal-alignment: center;
-                  }
-                  // CTA button: fires add-books() on click and restores keyboard
-                  // focus to the carousel. The hand-built accent Rectangle was
-                  // replaced by the shared PrimaryButton (DESIGN.md
-                  // components.button-primary): same accent background, same label
-                  // wording, same Theme.radius-md corners, ≥32px hit area.
-                  HorizontalLayout {
-                      alignment: center;
-                      PrimaryButton {
-                          // Wording tracks the dialog flavor behind add-books():
-                          // combined files+folders on macOS, files-only elsewhere.
-                          text: root.combined-add-picker
-                              ? Strings.carousel-empty-cta
-                              : Strings.carousel-empty-cta-files;
-                          clicked => { root.add-books(); root.focus-self(); }
-                      }
+                  PrimaryButton {
+                      // Wording tracks the dialog flavor behind add-books():
+                      // combined files+folders on macOS, files-only elsewhere.
+                      text: root.combined-add-picker
+                          ? Strings.carousel-empty-cta
+                          : Strings.carousel-empty-cta-files;
+                      clicked => { root.add-books(); root.focus-self(); }
                   }
               }
           }
@@ -561,33 +581,13 @@ export component Carousel inherits Rectangle {
           // Distinct from the empty-library CTA above: there ARE books, the
           // active search just hides them all. NO add CTA here — only guidance to
           // adjust the query. Uses Theme.* color tokens only.
-          if root.library-book-count > 0 && root.items.length == 0 : Rectangle {
+          if root.library-book-count > 0 && root.items.length == 0 : EmptyStatePanel {
               width: Math.clamp(parent.width - 2 * Theme.space-xl, 280px, 360px);
-              height: 160px;
               x: Theme.snap((parent.width - self.width) / 2);
               y: Theme.snap((parent.height - self.height) / 2);
-              background: Theme.surface-sunken;
-              border-radius: Theme.radius-lg;
-              border-width: 1px;
-              border-color: Theme.hairline;
-              VerticalLayout {
-                  alignment: center;
-                  spacing: Theme.space-md;
-                  padding: Theme.space-xl;
-                  Text {
-                      text: Strings.carousel-no-results-title;
-                      color: Theme.text;
-                      font-size: Theme.font-title;
-                      font-weight: Theme.weight-bold;
-                      horizontal-alignment: center;
-                  }
-                  Text {
-                      text: Strings.carousel-no-results-hint;
-                      color: Theme.text-muted;
-                      font-size: Theme.font-micro;
-                      horizontal-alignment: center;
-                  }
-              }
+              title: Strings.carousel-no-results-title;
+              subtitle: Strings.carousel-no-results-hint;
+              panel-height: 160px;
           }
 
           // ── Two-finger horizontal swipe → one-step book move ──────────────
