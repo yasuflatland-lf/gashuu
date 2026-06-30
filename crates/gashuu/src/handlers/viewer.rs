@@ -308,21 +308,6 @@ pub(crate) fn wire_viewport_handlers(ui: &ViewerWindow, viewport: &Rc<RefCell<Vi
         });
     }
     {
-        let ui_weak = ui.as_weak();
-        let viewport = Rc::clone(&viewport);
-        // `dy` is Slint's wheel `delta-y / 1px` passed straight through; the
-        // zoom-in/out sign convention lives in `ViewportState::zoom_at`
-        // (raw_delta > 0 = zoom in). If manual testing shows the wheel feels
-        // inverted on some platform, flip the sign here (one-liner) rather than
-        // in the pure step.
-        ui.on_zoom_at(move |x, y, dy| {
-            with_ui(&ui_weak, |ui| {
-                viewport.borrow_mut().zoom_at(x, y, dy);
-                apply_viewport(&ui, &viewport.borrow());
-            })
-        });
-    }
-    {
         let viewport = Rc::clone(&viewport);
         // Drag start: snapshot the current offset; no geometry change yet.
         ui.on_begin_pan(move || {
