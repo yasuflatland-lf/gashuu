@@ -27,6 +27,7 @@ pub mod viewport;
 pub mod window_geometry;
 
 pub use archive_loader::{ArchiveLoader, ArchivePolicy};
+pub use atomic_write::write_atomic;
 pub use cache::{ImageCache, DEFAULT_CAPACITY, DEFAULT_PREFETCH_RADIUS};
 pub use cache_config::{CacheConfig, MAX_CACHE_SIZE, MAX_PREFETCH_RADIUS};
 pub use error::CoreError;

@@ -25,7 +25,7 @@ use std::path::Path;
 /// all bytes; flush and `sync_all` the file's data to disk; persist (rename) it
 /// over `path`; then best-effort fsync the parent directory so the rename itself
 /// is durable. All I/O failures surface as `CoreError::Io`.
-pub(crate) fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), CoreError> {
+pub fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), CoreError> {
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
     std::fs::create_dir_all(parent)?;
 
