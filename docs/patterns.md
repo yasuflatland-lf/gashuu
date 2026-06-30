@@ -347,9 +347,9 @@ Encode a tiny valid PNG, patch the IHDR width/height bytes to oversized dims, an
 
 and `refresh` legitimately calls `set_content(0.0, 0.0)` on the decode-error / empty-folder paths (view-matches-status). Do NOT add non-negative `debug_assert`s to `fit_scale`/`set_content`/`resize`: they would panic on this legitimate zero path.
 
-### Wheel zoom uses sign-only normalization (platform-independent)
+### Zoom inputs: keyboard step (sign-only) + native pinch (continuous)
 
-`step` = `ZOOM_STEP`(=1.1) / `1/ZOOM_STEP` / `1.0` by the sign of the raw delta — magnitude ignored. Convention `raw_delta>0`=zoom-in; the platform flip point is documented in the Slint `on_zoom_at` callback. Keyboard `+`/`-` anchors at the viewport CENTER; the wheel anchors at the cursor.
+Two-finger scroll no longer zooms (it pans when zoomed, turns pages at fit). There are two zoom inputs. Keyboard `+`/`-` calls `zoom_step`, which steps `zoom` by `ZOOM_STEP`(=1.1) / `1/ZOOM_STEP` via the sign-only `zoom_at` (magnitude ignored → platform-independent), anchored at the viewport CENTER. Native trackpad/touch pinch calls `pinch_to(scale, ax, ay)`: the `ScaleRotateGestureHandler` reports a CUMULATIVE `scale` (1.0 at gesture start, base snapshotted by `begin_pinch`), so the target zoom is `pinch_origin_zoom * scale`, anchored at the focal `center` (cursor on a trackpad). Both paths clamp to `[ZOOM_MIN, ZOOM_MAX]` and re-anchor through the shared `anchored_zoom`.
 
 ### Slint zoom/pan plumbing
 
@@ -1297,7 +1297,7 @@ When a fully-prototyped feature is dropped before it is pushed (here Private Mod
 
 ### `scroll-event` handlers need their own `modal-open` guard — the keyboard `FocusScope` guard does NOT cover them
 
-The carousel `FocusScope.key-pressed` has `if (root.modal-open) { return reject; }` at the top, but that guard only applies to keyboard events dispatched through that `FocusScope`. A `scroll-event` on a `TouchArea` is NOT routed through `FocusScope`; it reaches the `TouchArea`'s own `scroll-event` handler directly. Without an explicit `if (root.modal-open) { return reject; }` in the scroll handler, a two-finger horizontal swipe over an open modal (whose backdrop `TouchArea` has no `scroll-event` and so doesn't absorb it) will fall through to the underlying swipe handler and move the carousel under the modal. Fix: repeat the `modal-open` guard as the **first** statement in every `scroll-event` handler that must be modal-aware.
+The carousel `FocusScope.key-pressed` has `if (root.modal-open) { return reject; }` at the top, but that guard only applies to keyboard events dispatched through that `FocusScope`. A `scroll-event` on a `TouchArea` is NOT routed through `FocusScope`; it reaches the `TouchArea`'s own `scroll-event` handler directly. Without an explicit `if (root.modal-open) { return reject; }` in the scroll handler, a two-finger horizontal swipe over an open modal (whose backdrop `TouchArea` has no `scroll-event` and so doesn't absorb it) will fall through to the underlying swipe handler and move the carousel under the modal. Fix: repeat the `modal-open` guard as the **first** statement in every `scroll-event` handler that must be modal-aware. In the viewer, `PageView` now takes an `in property <bool> modal-open` (bound from `ViewerWindow` to `show-settings || show-shortcuts || show-confirm-delete`) and gates BOTH the `scroll-event` first line AND the `ScaleRotateGestureHandler.enabled` on it — backdrops absorb pointer clicks but not scroll/gesture events.
 
 ### `show-confirm-delete` must appear in every modal guard expression — `modal-open` is the authoritative source
 
@@ -1309,7 +1309,11 @@ A fixed-duration cooldown (fire gesture → lock for N ms) fails because macOS's
 
 ### Zoom detection without a new Rust property — compare `content-w/h` to viewport size
 
-`PageView.slint` receives `content-w`/`content-h` (the displayed content rectangle, already computed by Rust's viewport math). At fit-zoom (scale = 1), at most one dimension fills the viewport — the other is ≤ viewport size. At any zoom > 1.0, at least one dimension exceeds the viewport. The guard `root.content-w > root.width + 2px || root.content-h > root.height + 2px` (±2px tolerates float rounding) reliably detects "zoomed in" for both portrait and landscape pages without adding a new Rust-computed property or modifying ViewerWindow. Applied to disable horizontal swipe-to-turn while zoomed, letting two-finger drag handle horizontal panning instead.
+`PageView.slint` receives `content-w`/`content-h` (the displayed content rectangle, already computed by Rust's viewport math). At fit-zoom (scale = 1), at most one dimension fills the viewport — the other is ≤ viewport size. At any zoom > 1.0, at least one dimension exceeds the viewport. The guard `root.content-w > root.width + 2px || root.content-h > root.height + 2px` (±2px tolerates float rounding) reliably detects "zoomed in" for both portrait and landscape pages without adding a new Rust-computed property or modifying ViewerWindow. Applied in `PageView.slint`'s `scroll-event`: while zoomed in, two-finger scroll routes to `scroll-pan` → `ViewportState::pan_by` (incremental `offset += delta`, then clamp) instead of turning a page; at fit, horizontal scroll turns one page and vertical scroll is a no-op. Drag-pan (`begin-pan`/`pan-to`, absolute-from-press) still works in parallel.
+
+### Native pinch zoom via `ScaleRotateGestureHandler` (Slint 1.17 built-in)
+
+Trackpad pinch on macOS/iOS (and touchscreen pinch on all platforms) comes from the Slint built-in `ScaleRotateGestureHandler` — no import; it expands to its parent's geometry by default, so its `center` is in the same coordinate space as a sibling `TouchArea`'s `mouse-x`/`mouse-y`. It exposes a CUMULATIVE `scale` (1.0 at gesture start) and a focal `center`; capture the base in `started` and apply `base * scale` in `updated`. In `PageView.slint` it sits as a sibling BEFORE the `TouchArea` (which stays topmost for pointer/scroll) and calls `begin-pinch()` / `pinch-to(center.x, center.y, scale)`. Gate it with `enabled: !root.modal-open` — gesture events bypass the FocusScope keyboard guard, exactly like `scroll-event`. `rotation` is ignored (a manga page does not rotate). The zoom math is the SAME anchored/clamped path as keyboard zoom (`anchored_zoom` + `clamp_zoom`), reached via `ViewportState::pinch_to` instead of the sign-only `zoom_at`.
 
 ### swipe-accum direction-reversal reset — sign-product detects opposite signs in one expression
 

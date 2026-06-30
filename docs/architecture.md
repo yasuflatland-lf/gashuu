@@ -362,7 +362,8 @@ name at boot and on a successful open via `current_book_name` from `view_sync.rs
 ### ViewportState
 
 `viewport.rs`. UI-layer mutable zoom/pan/fit + viewport size; delegates ALL clamping to core pure
-fns.
+fns. Input entry points: keyboard zoom (`zoom_step` → `zoom_at`), native pinch (`begin_pinch`/`pinch_to`),
+drag pan (`begin_pan`/`pan_to`), and scroll pan (`pan_by`).
 
 ### keymap
 
