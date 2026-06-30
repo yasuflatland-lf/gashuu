@@ -449,10 +449,15 @@ notice-plus-save-failure compose.
 `on_open_folder`, `on_open_archive`, `on_carousel_open`, and `on_carousel_continue_reading`. All call
 `finalize_open(&ui, &state, &viewport, &CarouselRefresh { … }, outcome)` after `run` returns — the
 signature gained the full `CarouselRefresh` deps (was just `&localizer`) because the
-`EmptyBookRemoved` arm may rebuild the carousel. The carousel-open / continue-reading sites also call
-`go_to_viewer`, but BOTH guard it with `enter_viewer = !matches!(outcome, EmptyBookRemoved { .. })`
-so an auto-removed empty source leaves the user on a refreshed Library instead of an empty viewer.
-See [patterns.md](patterns.md), "OpenOutcome pattern" and "finalize_open helper".
+`EmptyBookRemoved` arm may rebuild the carousel. The carousel-open / bookmark-jump open path
+(`handlers/library.rs::open_and_enter`) also calls `go_to_viewer`, but gates it on the POSITIVE
+outcome — `enter_viewer = matches!(outcome, OpenOutcome::Success(..))` (PR #334; was
+`!matches!(outcome, EmptyBookRemoved { .. })`, which ALSO entered the Viewer on a FAILED open and
+dropped the user into a blank 0-page stage). On `Error` it stays on the Library; when the file is
+missing or its volume is unmounted (`!path.exists()`) it replaces the raw I/O error with the
+book-named `viewer-open-inaccessible` message (title via `app::book_display_title`).
+See [patterns.md](patterns.md), "OpenOutcome pattern", "finalize_open helper", and "Gate a screen
+transition on the POSITIVE outcome".
 
 Lives in the UI crate because it coordinates Slint components; `gashuu-core` is untouched.
 
@@ -919,11 +924,11 @@ calls `ViewerState::spread_slots()` to classify the current spread, branches on 
 any-MISS, and hands a `SpreadDecodeRequest` to `dispatch_spread` on a miss.
 
 **`SettingsDialog.slint`** (issue 102 replaced its std-widgets `ComboBox`/`SpinBox`/`CheckBox` with the token-driven `Segmented`/`Stepper`/`Toggle`/`Dropdown` atoms): modal overlay editing active settings; two-way `current-index <=> in-out-prop` +
-`selected`/`edited`/`toggled` callbacks. Since issue 103/104 it is a **content-hug glass panel** (φ relocated into the component proportions; spec 2026-06-04) built from custom `components/` atoms; its footer "Shortcuts" link opens `ShortcutsOverlay`, and an `in property <int> focus-epoch` (bumped by `ViewerWindow.focus-settings()`) lets the parent re-focus this still-mounted dialog after the overlay closes.
+`selected`/`edited`/`toggled` callbacks. Since issue 103/104 it is a **content-hug glass panel** (φ relocated into the component proportions; spec 2026-06-04) built from custom `components/` atoms and inheriting the shared `GlassModal` shell for the scrim + panel chrome; its footer "Shortcuts" link opens `ShortcutsOverlay`, and an `in property <int> focus-epoch` (bumped by `ViewerWindow.focus-settings()`) lets the parent re-focus this still-mounted dialog after the overlay closes.
 
-**`ShortcutsOverlay.slint`** (issue 104, NEW): a second glass modal listing the keyboard shortcuts read-only, stacked OVER the still-mounted `SettingsDialog` (both `show-settings` and `show-shortcuts` true). Reuses the settings glass recipe (`settings-w`/`settings-radius` + all glass tokens; only `shortcuts-h` is new). Its ancestor `FocusScope` traps every key so focus can't leak to the dialog underneath; closing returns focus to the dialog via the epoch seam. The keyboard-shortcuts reference text documents the full selection grammar (#129): `x`, `Space`, `Cmd/Ctrl+A`, `Delete`/`Backspace`, `Esc`.
+**`ShortcutsOverlay.slint`** (issue 104, NEW): a second glass modal listing the keyboard shortcuts read-only, stacked OVER the still-mounted `SettingsDialog` (both `show-settings` and `show-shortcuts` true). Inherits the shared `GlassModal` shell for the scrim + glass panel (`settings-w` width; only `shortcuts-h` is new). Its ancestor `FocusScope` traps every key so focus can't leak to the dialog underneath; closing returns focus to the dialog via the epoch seam. The keyboard-shortcuts reference text documents the full selection grammar (#129): `x`, `Space`, `Cmd/Ctrl+A`, `Delete`/`Backspace`, `Esc`.
 
-**`components/ConfirmDialog.slint`** (issue 127, NEW; wired in `ViewerWindow` for the bulk-delete path, #129): a GENERIC two-choice confirm/cancel modal — no domain vocabulary. Every string on screen arrives through `in` properties (`title`, `body-lines: [string]`, `info-text`, `warning-text`, `confirm-label`, `cancel-label`) so the same component is reusable across confirm decisions. Clones the `SettingsDialog` / `ShortcutsOverlay` glass idiom (scrim + four-layer fake-glass object). Mounted in `ViewerWindow` behind `if root.show-confirm-delete` (an `if`-gate so the node is constructed only when needed). Cancel / Esc / backdrop click fire the `cancel` callback (Slint-side: set `show-confirm-delete = false`, restore carousel focus — selection PRESERVED); the confirm `DangerButton` fires the `confirm()` callback (`ConfirmDialog.slint:117`), which `ViewerWindow` forwards as `confirm => { root.confirm-delete-accepted(); }` (ViewerWindow.slint:591), and Rust registers on `ui.on_confirm_delete_accepted` to run `RemoveBooksUseCase` and dismiss the modal. `Enter` is wired to Cancel (the destructive action is never on `Enter`).
+**`components/ConfirmDialog.slint`** (issue 127, NEW; wired in `ViewerWindow` for the bulk-delete path, #129): a GENERIC two-choice confirm/cancel modal — no domain vocabulary. Every string on screen arrives through `in` properties (`title`, `body-lines: [string]`, `info-text`, `warning-text`, `confirm-label`, `cancel-label`) so the same component is reusable across confirm decisions. Inherits the shared `GlassModal` shell (scrim + four-layer fake-glass panel), like `SettingsDialog` / `ShortcutsOverlay`. Mounted in `ViewerWindow` behind `if root.show-confirm-delete` (an `if`-gate so the node is constructed only when needed). Cancel / Esc / backdrop click fire the `cancel` callback (Slint-side: set `show-confirm-delete = false`, restore carousel focus — selection PRESERVED); the confirm `DangerButton` fires the `confirm()` callback (`ConfirmDialog.slint:117`), which `ViewerWindow` forwards as `confirm => { root.confirm-delete-accepted(); }` (ViewerWindow.slint:591), and Rust registers on `ui.on_confirm_delete_accepted` to run `RemoveBooksUseCase` and dismiss the modal. `Enter` is wired to Cancel (the destructive action is never on `Enter`).
 
 **`Theme.slint`** (NEW; completed #70): a single Slint `global Theme` that centralises all visual design
 tokens — colors, corner radii, spacing, font sizes, component sizes, shadow colors, motion durations, and font weights —

@@ -149,8 +149,14 @@ export component ConfirmDialog inherits GlassModal {
     fs := FocusScope {
         x: 0;
         y: 0;
-        width: parent.width;
-        height: parent.height;
+        // Size to the glass PANEL, not `parent`. This FocusScope is slotted into
+        // GlassModal's `panel` via @children, but @children only relocates where
+        // the element DRAWS — in property expressions `parent` still resolves to
+        // the lexical parent, i.e. this dialog's root (which fills the window).
+        // `parent.width/height` would therefore stretch the content to the whole
+        // window and overflow the panel; `root.panel-*` is the panel's true size.
+        width: root.panel-width;
+        height: root.panel-height;
         init => {
             cancel-scope.focus();
         }

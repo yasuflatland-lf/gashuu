@@ -227,6 +227,7 @@ viewer-direction-rtl = RTL
 
 # Parameterized status/error strings
 viewer-open-error = Error: { $error }
+viewer-open-inaccessible = Couldn't open "{ $title }". The file is missing or its volume isn't connected.
 viewer-page-unavailable = (page { $page } unavailable)
 viewer-decode-error = Decode error: { $error }
 

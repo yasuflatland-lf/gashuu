@@ -4,6 +4,7 @@
 //! keeps the established `crate::app::*` paths stable for existing call sites.
 
 pub(crate) use crate::open_book::{
-    remove_empty_book, NoticesContent, OpenBookUseCase, OpenOutcome, SkippedDetail,
+    book_display_title, remove_empty_book, NoticesContent, OpenBookUseCase, OpenOutcome,
+    SkippedDetail,
 };
 pub(crate) use crate::remove_books::{confirm_delete_content, RemoveBooksUseCase};

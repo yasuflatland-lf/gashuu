@@ -73,6 +73,13 @@ pub(crate) fn open_error_str(loader: &FluentLanguageLoader, e_str: &str) -> Stri
     fl!(loader, "viewer-open-error", error = e_str)
 }
 
+/// Status line for a failed open whose source file is unreachable — moved, or on
+/// a volume that isn't mounted. Names the book and explains in plain language;
+/// the raw I/O error is logged in `OpenBookUseCase::run`, not surfaced here.
+pub(crate) fn open_inaccessible(loader: &FluentLanguageLoader, title: &str) -> String {
+    fl!(loader, "viewer-open-inaccessible", title = title)
+}
+
 /// Parenthesized marker for the trailing page of a spread that failed to decode.
 /// `page` is 1-based.
 pub(crate) fn page_unavailable(loader: &FluentLanguageLoader, page: usize) -> String {
@@ -681,6 +688,7 @@ mod tests {
         for loc in [en(), ja()] {
             let l = loc.loader();
             assert!(open_error(l, &"boom").contains("boom"));
+            assert!(open_inaccessible(l, "銃夢火星戦記 03巻").contains("銃夢火星戦記 03巻"));
             assert!(page_unavailable(l, 7).contains('7'));
             assert!(decode_error(l, &"bad").contains("bad"));
             assert!(failed_save_settings(l, &"io").contains("io"));
