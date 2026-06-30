@@ -86,9 +86,12 @@ export component PageView inherits Rectangle {
     property <length> tap-slop: 4px;
 
     // ── Two-finger horizontal swipe → page turn ──────────────────────────────
-    // Horizontal trackpad scroll (delta-x) turns ONE page at fit; while zoomed in,
-    // two-finger scroll pans instead, and vertical scroll no longer zooms (zoom
-    // comes from the native pinch gesture and the keyboard). Discrete: accumulate
+    // Horizontal trackpad scroll (delta-x) turns ONE page while the page fits
+    // HORIZONTALLY (content-w <= width); when the content overflows horizontally
+    // (zoomed in / wider than the viewport) two-finger scroll pans instead, and
+    // vertical scroll no longer zooms (zoom comes from the native pinch gesture and
+    // the keyboard). A tall Width-fit page (fills x, overflows y) still turns on a
+    // horizontal flick — it is at fit, not zoomed. Discrete: accumulate
     // delta-x, cross `swipe-threshold` → emit
     // ONE physical-direction token, mapped to nav() in ViewerWindow so keymap.rs
     // owns the RTL/LTR resolution and core owns the step size (single = 1 page,
@@ -183,17 +186,19 @@ export component PageView inherits Rectangle {
             if (root.modal-open) {
                 return reject;
             }
-            // Zoomed in: two-finger scroll pans the content on both axes. Replaces
-            // the old vertical-scroll-zoom and the "reject horizontal swipe when
-            // zoomed" branch — panning is now the zoomed-in scroll behavior.
-            if (root.content-w > root.width + 2px || root.content-h > root.height + 2px) {
-                root.scroll-pan(e.delta-x, e.delta-y);
-                return accept;
-            }
-            // At fit: horizontal scroll turns ONE page (discrete, idle-gap guarded
-            // against the macOS momentum tail); vertical scroll is a no-op (zoom
-            // now comes from pinch / keyboard). Dominant-axis gate (1.2x margin).
-            if (Math.abs(e.delta-x / 1px) > Math.abs(e.delta-y / 1px) * 1.2) {
+            // A horizontal-dominant swipe (1.2x margin) turns ONE page as long as
+            // the content fits HORIZONTALLY. Keying page-turn on horizontal fit
+            // (content-w <= width) — NOT "neither axis overflows" — is what keeps
+            // swipe-to-turn working under Width fit, where a tall page fills the
+            // viewport on x exactly but overflows on y: that page is at fit, not
+            // zoomed, so a horizontal flick must still turn the page (the vertical
+            // overflow is read by scrolling down, handled by the pan branch below).
+            // Only a genuine horizontal overflow (zoomed in / a page wider than the
+            // viewport) routes a horizontal gesture to panning instead. Discrete +
+            // idle-gap guarded against the macOS momentum tail (one swipe = one
+            // turn).
+            if (Math.abs(e.delta-x / 1px) > Math.abs(e.delta-y / 1px) * 1.2
+                && root.content-w <= root.width + 2px) {
                 if (root.swipe-armed) {
                     idle-timer.restart();
                     return accept;
@@ -208,6 +213,16 @@ export component PageView inherits Rectangle {
                     root.swipe-armed = true;
                     idle-timer.restart();
                 }
+                return accept;
+            }
+            // Otherwise two-finger scroll pans whatever overflows: a zoomed-in page
+            // (either axis) or a tall fit page scrolled vertically. core
+            // clamp_offset ignores deltas on an axis that already fits, so passing
+            // both deltas never nudges a fitting axis. Vertical scroll at fit with a
+            // page that fits both axes falls through to a no-op (zoom comes from
+            // pinch / keyboard, not scroll).
+            if (root.content-w > root.width + 2px || root.content-h > root.height + 2px) {
+                root.scroll-pan(e.delta-x, e.delta-y);
                 return accept;
             }
             return accept;
