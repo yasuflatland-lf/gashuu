@@ -7,7 +7,7 @@
     <meta name="description" content="gashuu is a fast, elegant manga / comic reader for immersive viewing." />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;700&family=Noto+Sans+JP:wght@400;500;700&display=swap" rel="stylesheet" />
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500&family=Noto+Sans+JP:wght@400;500&family=Noto+Serif+JP:wght@400;500;600&display=swap" rel="stylesheet" />
     <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
     <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
     <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
@@ -15,163 +15,136 @@
     <style type="text/tailwindcss">
       @theme {
         --font-sans: Inter, "Noto Sans JP", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-        --color-ink: #111116;
-        --color-paper: #fffaf0;
-        --color-manga: #f2e7cf;
-        --color-sumi: #1b1a18;
-        --color-vermilion: #f35f3d;
-        --color-matcha: #95b46a;
+        --font-serif: "Noto Serif JP", ui-serif, Georgia, serif;
+        /* Aesop-style palette: washi cream + sumi ink, near-monochrome.
+           The only chroma is the gashuu seal red, used as a 落款 one-point. */
+        --color-cream: #fffef2;     /* page background; text on dark surfaces (never #fff) */
+        --color-cream-alt: #faf9ee; /* faint surface differentiation, used sparingly */
+        --color-ink: #333333;       /* body, headings, primary button fill (never #000) */
+        --color-ink2: #666666;      /* supporting copy, leads */
+        --color-ink3: #9b9b95;      /* kickers, captions, disabled */
+        --color-line: #ced4da;      /* hairline rules, frames, dividers */
+        --color-seal: #e42a24;      /* SEAL red — logo + footer 角印 only; never on CTAs */
       }
-      @utility soft-shadow { box-shadow: 0 24px 80px rgba(32, 23, 10, .14), 0 4px 18px rgba(32, 23, 10, .08); }
-      @utility grid-bg { background-image: radial-gradient(rgba(17,17,22,.08) 1px, transparent 1px); background-size: 22px 22px; }
 
       /*
-        Typography & spacing system — golden ratio (φ ≈ 1.618) + Fibonacci.
-        Tuned to apple.com/jp proportions: confident display sizes, tight display
-        leading, a comfortable CJK body measure, optical size-based tracking, and a
-        single whitespace grid the whole page snaps to.
-
-        - Type: Inter (Latin / numerals) + Noto Sans JP. Each script keeps its own
-          metrics; CJK is closed up with `palt` (proportional alternates) rather
-          than Latin tracking, the CJK counterpart of tight display tracking.
-        - Modular scale: step = √φ ≈ 1.272, so every SECOND step lands on a clean
-          golden power — body 1 → subsection φ (1.618) → section φ² (2.618) → hero
-          φ³ (4.236). Hierarchy is carried by SIZE on a light display weight (500),
-          not heavy weights. Loaded weights 400 / 500 / 700 each map to a real face.
-        - Tracking ladder (optical, Apple-style): the larger the type the tighter
-          the tracking; near-zero at body; strongly positive only on caps labels.
-        - Leading: tight at display (≈1.08–1.12), opening to a comfortable CJK body
-          (≈1.6); φ (1.618) is the default leading for untiered text.
-        - Whitespace: one φ-ratio ladder (rhythm-*, each step ×φ ≈ Fibonacci index).
-          Tight WITHIN a group, wide BETWEEN groups, so proximity reads cleanly.
+        Typography — Aesop literary minimalism, rendered for Japanese.
+        - Headings: Noto Serif JP (mincho), weight 500; hierarchy by SIZE, not weight.
+        - Body / UI / Latin: Inter + Noto Sans JP, weight 400/500.
+        - Spacing: べた組み (full-width metrics). palt is OFF and letter-spacing is
+          normal — punctuation breathes the traditional way. The only positive
+          tracking is the uppercase kicker label. Headings open a hair (+0.02em).
+        - Leading is generous (book rhythm): hero ~1.42, section ~1.45, body ~1.9.
+        - Geometry: square corners everywhere, no drop shadows; depth comes from
+          cream/ink surface contrast and 1px hairlines only.
       */
       @layer base {
         html {
-          font-size: 17px;
+          font-size: 16px;
           text-rendering: optimizeLegibility;
           -webkit-font-smoothing: antialiased;
           -moz-osx-font-smoothing: grayscale;
         }
         body {
-          /* φ as the default leading for untiered text; each type-* tier overrides. */
-          line-height: 1.618;
-          /* Neutral default tracking — each type-* tier owns its optical tracking so
-             CJK body runs are never tightened by a global negative value. */
+          line-height: 1.9;
           letter-spacing: 0;
-          /* Close up Japanese punctuation proportionally (palt) and enable Latin
-             kerning so mixed JP / Latin runs sit tight. */
-          font-feature-settings: "palt" 1, "kern" 1;
+          /* palt OFF — no forced proportional metrics; full-width べた組み rhythm. */
+          font-feature-settings: normal;
           font-kerning: normal;
-          /* Avoid orphans / ragged last lines in body copy. */
           text-wrap: pretty;
         }
       }
 
       @layer utilities {
-        /* — Type tiers: fluid size (clamp) · leading · optical tracking — */
+        /* — Type tiers — */
         .type-kicker {
-          /* Uppercase Latin label — the only tier with positive tracking. */
-          font-size: clamp(0.74rem, 0.71rem + 0.12vw, 0.8rem);
+          /* The only positively-tracked element (uppercase Latin label). */
+          font-size: clamp(0.66rem, 0.63rem + 0.12vw, 0.72rem);
           line-height: 1;
-          letter-spacing: 0.16em;
+          letter-spacing: 0.2em;
           text-transform: uppercase;
-          font-weight: 700;
+          font-weight: 500;
         }
         .type-nav {
-          font-size: clamp(0.84rem, 0.81rem + 0.10vw, 0.92rem);
+          font-size: clamp(0.8rem, 0.78rem + 0.1vw, 0.85rem);
           line-height: 1.3;
-          letter-spacing: -0.006em;
+          letter-spacing: 0;
+          font-weight: 500;
         }
         .type-hero {
-          /* φ³ ≈ 4.236rem (≈72px). One confident line on desktop; palt + a small
-             negative tracking close the CJK glyphs without collision. Medium (500)
-             keeps the large display elegant rather than shouty. */
-          font-size: clamp(2.2rem, 1.3rem + 4vw, 4.236rem);
-          /* 1.1 keeps the desktop single line tight while giving the stacked
-             two-line CJK hero on narrow screens room not to collide. */
-          line-height: 1.1;
-          letter-spacing: -0.022em;
+          font-family: var(--font-serif);
           font-weight: 500;
+          font-size: clamp(1.875rem, 1.1rem + 3.4vw, 2.75rem);
+          line-height: 1.42;
+          letter-spacing: 0.02em;
         }
         .type-section {
-          /* φ² ≈ 2.618rem (≈44px). Shares the medium register; hierarchy by size. */
-          font-size: clamp(1.7rem, 1.28rem + 1.5vw, 2.618rem);
-          line-height: 1.12;
-          letter-spacing: -0.018em;
+          font-family: var(--font-serif);
           font-weight: 500;
-        }
-        .type-subsection {
-          /* φ ≈ 1.618rem (≈27px). */
-          font-size: clamp(1.3rem, 1.16rem + 0.55vw, 1.618rem);
-          line-height: 1.24;
-          letter-spacing: -0.015em;
-          font-weight: 700;
+          font-size: clamp(1.5rem, 1.28rem + 0.9vw, 1.75rem);
+          line-height: 1.45;
+          letter-spacing: 0.02em;
         }
         .type-card-title {
-          /* √φ ≈ 1.272rem (≈21.6px) — one modular step above body; weight 700 sets
-             it apart from the same-size lead. Keeps every tier on the scale. */
-          font-size: clamp(1.13rem, 1.05rem + 0.25vw, 1.272rem);
-          line-height: 1.35;
-          letter-spacing: -0.012em;
-          font-weight: 700;
+          font-family: var(--font-serif);
+          font-weight: 500;
+          font-size: 1.125rem;
+          line-height: 1.6;
+          letter-spacing: 0.01em;
         }
         .type-lead {
-          /* One √φ step above body (≈21.6px) — the apple.com/jp intro register.
-             Larger text, so leading is tighter than body. */
-          font-size: clamp(1.06rem, 1.0rem + 0.3vw, 1.272rem);
-          line-height: 1.55;
-          letter-spacing: -0.011em;
+          font-size: clamp(0.95rem, 0.92rem + 0.15vw, 1.0625rem);
+          line-height: 1.8;
+          letter-spacing: 0;
           font-weight: 400;
         }
         .type-body {
-          font-size: clamp(0.94rem, 0.91rem + 0.12vw, 1rem);
-          line-height: 1.62;
-          letter-spacing: -0.003em;
+          font-size: clamp(0.875rem, 0.86rem + 0.08vw, 0.9375rem);
+          line-height: 1.9;
+          letter-spacing: 0;
           font-weight: 400;
         }
-        /* — Measures: line length anchored on golden fractions — */
-        .measure-phi {
-          /* 38.2 : 61.8 golden split — a comfortable centered measure (~30 JP chars). */
-          max-width: 38.2rem;
-        }
-        /* — Whitespace ladder: each step ×φ (Fibonacci-indexed). Tight within a
-             group, wide between groups. The values are a clean φ-ratio progression. — */
-        .rhythm-8 { margin-top: 0.5rem; }
-        .rhythm-13 { margin-top: 0.8125rem; }
-        .rhythm-21 { margin-top: 1.3125rem; }
-        .rhythm-34 { margin-top: 2.125rem; }
-        .rhythm-55 { margin-top: 3.4375rem; }
-        .rhythm-89 { margin-top: 5.5625rem; }
-        .rhythm-144 { margin-top: 9rem; }
+        /* — Measure: comfortable centered line length (~30 JP chars). — */
+        .measure { max-width: 34rem; }
+        /* — Whitespace ladder (Aesop scale: 12 / 24 / 32 / 40 / 64 px). Tight
+             within a group, wide between groups. — */
+        .rhythm-12 { margin-top: 0.75rem; }
+        .rhythm-24 { margin-top: 1.5rem; }
+        .rhythm-32 { margin-top: 2rem; }
+        .rhythm-40 { margin-top: 2.5rem; }
+        .rhythm-64 { margin-top: 4rem; }
       }
     </style>
   </head>
-  <body class="bg-paper text-ink antialiased selection:bg-vermilion selection:text-white">
+  <body class="bg-cream text-ink antialiased selection:bg-seal selection:text-white">
     <div id="root"></div>
 
     <script type="text/babel">
       const { useEffect, useRef } = React;
 
-      function Badge({ children, tone = 'light' }) {
-        // tone="dark" for use on the dark (#workflow) band so the tracked label keeps
-        // light text on a faint translucent pill instead of the light-mode chip.
-        const styles = tone === 'dark'
-          ? "border-white/15 bg-white/[.06] text-white/70"
-          : "border-black/10 bg-white/70 text-black/70";
-        return <span className={`type-kicker inline-flex items-center gap-2 rounded-full border px-3 py-1.5 backdrop-blur ${styles}`}>{children}</span>;
+      // Small uppercase label — the page's only positively-tracked type and, by
+      // default, the quietest ink. No pill, no border: Aesop sets labels in plain
+      // tracked caps.
+      function Kicker({ children, className = '' }) {
+        return <p className={`type-kicker text-ink3 ${className}`}>{children}</p>;
       }
 
+      // Square, shadowless buttons. Primary is sumi-filled; secondary is a hairline
+      // outline. The seal red is deliberately NOT used here — buttons stay ink so the
+      // red reads as a signature, not an action color.
       function Button({ children, variant = 'primary', href = '#download' }) {
-        const base = "type-nav inline-flex items-center justify-center rounded-full px-6 py-3 font-bold transition hover:-translate-y-0.5 active:translate-y-0";
+        const base = "type-nav inline-flex items-center justify-center px-6 py-3 transition-colors";
         const styles = variant === 'primary'
-          ? "bg-ink text-white shadow-xl shadow-black/15 hover:bg-black"
-          : "border border-black/10 bg-white/70 text-ink backdrop-blur hover:bg-white";
+          ? "bg-ink text-cream border border-ink hover:bg-[#1f1e1c]"
+          : "bg-transparent text-ink border border-ink/25 hover:border-ink";
         return <a href={href} className={`${base} ${styles}`}>{children}</a>;
       }
+
       // A centered video showcase: heading + lead above a framed, autoplaying loop.
       // The clip plays muted with no chrome (apple.com-style); it starts only when
       // scrolled into view and pauses when out, and falls back to a poster + manual
-      // controls under prefers-reduced-motion.
+      // controls under prefers-reduced-motion. The frame is square with a single
+      // hairline border — no rounding, no shadow.
       function VideoSection({ kicker, title, lead, src, poster, alt, ratio }) {
         const videoRef = useRef(null);
         useEffect(() => {
@@ -196,14 +169,14 @@
           return () => io.disconnect();
         }, []);
         return (
-          <section className="mx-auto max-w-7xl px-5 py-[3.4375rem] md:py-[5.5625rem]">
-            <div className="mx-auto measure-phi text-center">
-              <p className="type-kicker text-black/40">{kicker}</p>
-              <h2 className="type-section rhythm-21 text-balance">{title}</h2>
-              <p className="type-lead rhythm-34 text-pretty text-black/62">{lead}</p>
+          <section className="mx-auto max-w-[1000px] px-6 py-[4rem] md:px-10 md:py-[6rem]">
+            <div className="mx-auto measure text-center">
+              <Kicker>{kicker}</Kicker>
+              <h2 className="type-section rhythm-24 text-balance">{title}</h2>
+              <p className="type-lead rhythm-24 text-pretty text-ink2">{lead}</p>
             </div>
-            <div className="rhythm-55 mx-auto w-full max-w-5xl">
-              <div className="relative overflow-hidden rounded-[2.125rem] border border-black/10 bg-black soft-shadow" style={{ aspectRatio: ratio }}>
+            <div className="rhythm-40 mx-auto w-full max-w-4xl">
+              <div className="relative overflow-hidden border border-line bg-black" style={{ aspectRatio: ratio }}>
                 <video
                   ref={videoRef}
                   autoPlay
@@ -232,36 +205,35 @@
       function App() {
         return (
           <div className="overflow-hidden">
-            <header className="fixed inset-x-0 top-0 z-50 border-b border-black/5 bg-paper/80 backdrop-blur-xl">
-              <nav className="mx-auto grid max-w-7xl grid-cols-[1fr_auto_1fr] items-center px-5 py-4">
-                <a href="#" className="flex items-center gap-3 font-bold tracking-tight justify-self-start">
-                  <img src="assets/logo.png" alt="gashuu app icon" className="h-10 w-10 rounded-xl object-cover" />
-                  <span>gashuu</span>
+            <header className="fixed inset-x-0 top-0 z-50 border-b border-line bg-cream/90 backdrop-blur">
+              <nav className="mx-auto grid max-w-[1000px] grid-cols-[1fr_auto_1fr] items-center px-6 py-4 md:px-10">
+                <a href="#" className="flex items-center gap-3 justify-self-start">
+                  <img src="assets/logo.png" alt="gashuu app icon" className="h-8 w-8 object-contain" />
+                  <span className="type-nav text-ink">gashuu</span>
                 </a>
-                <div className="type-nav hidden items-center gap-7 font-bold text-black/62 md:flex md:justify-self-center">
-                  <a href="#workflow" className="hover:text-black">機能</a>
-                  <a href="https://github.com/yasuflatland-lf/gashuu/releases" className="hover:text-black">Download</a>
-                  <a href="#faq" className="hover:text-black">FAQ</a>
+                <div className="type-nav hidden items-center gap-8 text-ink2 md:flex md:justify-self-center">
+                  <a href="#workflow" className="transition-colors hover:text-ink">機能</a>
+                  <a href="https://github.com/yasuflatland-lf/gashuu/releases" className="transition-colors hover:text-ink">Download</a>
+                  <a href="#faq" className="transition-colors hover:text-ink">FAQ</a>
                 </div>
                 <div className="hidden md:block justify-self-end" aria-hidden="true"></div>
               </nav>
             </header>
 
-            <section className="relative pt-[5.5625rem] pb-[3.4375rem] md:pt-[9rem] md:pb-[5.5625rem]">
-              <div className="absolute inset-0 -z-10 grid-bg opacity-70"></div>
-              <div className="absolute left-1/2 top-24 -z-10 h-80 w-80 -translate-x-1/2 rounded-full bg-vermilion/20 blur-3xl"></div>
-              <div className="mx-auto max-w-7xl px-5 text-center">
-                <h1 className="type-hero text-center">
+            <section className="px-6 pt-[6rem] pb-[4rem] md:px-10 md:pt-[9rem] md:pb-[6rem]">
+              <div className="mx-auto max-w-[1000px] text-center">
+                <Kicker>Desktop manga reader</Kicker>
+                <h1 className="type-hero rhythm-24 text-balance">
                   漫画を、<wbr />美しく読む。
                 </h1>
-                <p className="type-lead mx-auto rhythm-34 measure-phi text-pretty text-black/62">
+                <p className="type-lead mx-auto rhythm-32 measure text-pretty text-ink2">
                   gashuuは、高解像度コミックを軽快に読むためのデスクトップビューア。フォルダもアーカイブも、見開きもRTLも、作品ごとの読み心地も記憶。
                 </p>
-                <div className="rhythm-55 flex flex-col justify-center gap-3 sm:flex-row">
+                <div className="rhythm-40 flex flex-col justify-center gap-3 sm:flex-row">
                   <Button href="https://github.com/yasuflatland-lf/gashuu/releases">Get gashuu</Button>
-                  <Button variant="secondary" href="https://github.com/yasuflatland-lf/gashuu">View on GitHub</Button>
+                  <Button variant="secondary" href="https://github.com/yasuflatland-lf/gashuu">View on GitHub →</Button>
                 </div>
-                <p className="type-nav rhythm-21 tracking-normal text-black/45">Open source · MIT License · 画集 / gashuu</p>
+                <p className="type-nav rhythm-32 font-normal text-ink3">Open source · MIT License · 画集 / gashuu</p>
               </div>
             </section>
 
@@ -275,21 +247,21 @@
               ratio="946 / 634"
             />
 
-            <section className="bg-ink py-[5.5625rem] md:py-[9rem] text-white" id="workflow">
-              <div className="mx-auto max-w-7xl px-5">
-                <div className="mx-auto measure-phi text-center">
-                  <Badge tone="dark">Reading flow</Badge>
-                  <h2 className="type-section rhythm-21 text-balance">開いて、整えて、続きへ。</h2>
-                  <p className="type-lead rhythm-34 text-pretty text-white/58">
+            <section className="px-6 py-[4rem] md:px-10 md:py-[7.5rem]" id="workflow">
+              <div className="mx-auto max-w-[1000px]">
+                <div className="mx-auto measure text-center">
+                  <Kicker>Reading flow</Kicker>
+                  <h2 className="type-section rhythm-24 text-balance">開いて、整えて、続きへ。</h2>
+                  <p className="type-lead rhythm-24 text-pretty text-ink2">
                     フォルダもアーカイブも自然に本棚へ。作品ごとの設定を記憶するので、次に開けば昨日のページからすぐ戻れます。
                   </p>
                 </div>
-                <div className="rhythm-55 grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
+                <div className="rhythm-64 grid sm:grid-cols-3">
                   {features.map((f, i) => (
-                    <div key={f[1]} className="rounded-[1.75rem] border border-white/10 bg-white/[.06] p-7 transition hover:-translate-y-1 hover:bg-white/[.09]">
-                      <div className="mb-[1.3125rem] inline-flex rounded-full border border-white/10 bg-white/10 px-3 py-1 type-kicker text-white/62">{f[0]}</div>
-                      <h3 className="type-card-title">{f[1]}</h3>
-                      <p className="type-body rhythm-13 text-white/55">{f[2]}</p>
+                    <div key={f[1]} className={`px-2 text-center sm:px-8 ${i > 0 ? 'mt-10 border-t border-line pt-10 sm:mt-0 sm:border-l sm:border-t-0 sm:pt-0' : ''}`}>
+                      <Kicker>{f[0]}</Kicker>
+                      <h3 className="type-card-title rhythm-24">{f[1]}</h3>
+                      <p className="type-body rhythm-12 text-ink2">{f[2]}</p>
                     </div>
                   ))}
                 </div>
@@ -306,49 +278,49 @@
               ratio="900 / 634"
             />
 
-            <section className="mx-auto max-w-7xl px-5 py-[3.4375rem] md:py-[5.5625rem]" id="pricing">
-              <div className="rounded-[2.5rem] bg-manga p-[1.3125rem] md:p-[3.4375rem] soft-shadow">
-                <div className="grid gap-[3.4375rem] lg:grid-cols-[1fr_380px] lg:items-center">
-                  <div>
-                    <Badge>Open source desktop app</Badge>
-                    <h2 className="type-section rhythm-21 text-balance">無料で使える。</h2>
-                    <p className="type-lead rhythm-34 measure-phi text-pretty text-black/60">gashuuはMITライセンスのオープンソース。まずは使って、要望はGitHubのIssueやPRで。</p>
+            <section className="px-6 py-[4rem] md:px-10 md:py-[6rem]" id="pricing">
+              <div className="mx-auto max-w-[1000px] border border-line">
+                <div className="grid lg:grid-cols-[1fr_360px]">
+                  <div className="p-8 md:p-14">
+                    <Kicker>Open source desktop app</Kicker>
+                    <h2 className="type-section rhythm-24 text-balance">無料で使える。</h2>
+                    <p className="type-lead rhythm-24 measure text-pretty text-ink2">gashuuはMITライセンスのオープンソース。まずは使って、要望はGitHubのIssueやPRで。</p>
                   </div>
-                  <div className="rounded-[2rem] bg-white p-[2.125rem] ring-1 ring-black/10">
-                    <h3 className="type-subsection">gashuu Desktop</h3>
-                    <div className="rhythm-13 text-[clamp(2.62rem,2.08rem+2vw,3.4375rem)] font-bold leading-none tracking-[-0.02em]">¥0</div>
-                    <ul className="rhythm-34 space-y-3 text-sm font-medium text-black/65">
-                      <li>✓ Mac / Windows / Linux</li>
-                      <li>✓ フォルダ & コミックアーカイブ</li>
-                      <li>✓ 見開き / RTL / ズーム / サムネイル</li>
-                      <li>✓ 日本語/英語UI</li>
+                  <div className="border-t border-line bg-cream-alt p-8 md:p-10 lg:border-l lg:border-t-0">
+                    <h3 className="type-card-title">gashuu Desktop</h3>
+                    <div className="rhythm-12 font-serif text-[clamp(2.5rem,2rem+2vw,3.25rem)] font-medium leading-none">¥0</div>
+                    <ul className="rhythm-32 type-body space-y-3 text-ink2">
+                      <li className="flex gap-3"><span className="text-ink3" aria-hidden="true">—</span>Mac / Windows / Linux</li>
+                      <li className="flex gap-3"><span className="text-ink3" aria-hidden="true">—</span>フォルダ &amp; コミックアーカイブ</li>
+                      <li className="flex gap-3"><span className="text-ink3" aria-hidden="true">—</span>見開き / RTL / ズーム / サムネイル</li>
+                      <li className="flex gap-3"><span className="text-ink3" aria-hidden="true">—</span>日本語 / 英語UI</li>
                     </ul>
-                    <a id="download" href="https://github.com/yasuflatland-lf/gashuu/releases" className="rhythm-55 inline-flex w-full justify-center rounded-full bg-ink px-6 py-3 font-bold text-white">Download release</a>
+                    <a id="download" href="https://github.com/yasuflatland-lf/gashuu/releases" className="rhythm-40 type-nav inline-flex w-full justify-center border border-ink bg-ink px-6 py-3 text-cream transition-colors hover:bg-[#1f1e1c]">Download release</a>
                   </div>
                 </div>
               </div>
             </section>
 
-            <section className="mx-auto max-w-4xl px-5 py-[3.4375rem] md:py-[5.5625rem]" id="faq">
-              <p className="type-kicker text-center text-black/40">Support</p>
-              <h2 className="type-section rhythm-21 text-center text-balance">FAQ</h2>
-              <div className="rhythm-34 divide-y divide-black/10 rounded-[2rem] border border-black/10 bg-white/60 px-6">
+            <section className="mx-auto max-w-[760px] px-6 py-[4rem] md:px-10 md:py-[6rem]" id="faq">
+              <Kicker className="text-center">Support</Kicker>
+              <h2 className="type-section rhythm-24 text-center text-balance">FAQ</h2>
+              <div className="rhythm-40 border-t border-line">
                 {[
                   ['どんな形式に対応していますか？', '画像フォルダ、PNG/JPG/JPEG/AVIF、CBZ/ZIP/CBR/RARアーカイブを想定しています。'],
                   ['漫画の右綴じで読めますか？', 'はい。RTL/LTRを切り替えられ、矢印キーやスクラブの挙動も読み方向に合わせます。'],
                   ['設定は作品ごとに残りますか？', '読書方向、見開き、カバー配置、フィットモードは本ごとに保存できます。'],
                   ['重い画像でも安全ですか？', '巨大画像や展開爆弾を事前にチェックし、問題があればクラッシュではなくステータスで通知する設計です。']
-                ].map(([q,a]) => <details key={q} className="group py-5"><summary className="cursor-pointer list-none font-bold">{q}<span className="float-right text-black/35 group-open:rotate-45">+</span></summary><p className="type-body rhythm-13 text-black/58">{a}</p></details>)}
+                ].map(([q,a]) => <details key={q} className="group border-b border-line py-5"><summary className="type-nav flex cursor-pointer list-none items-center justify-between text-ink">{q}<span className="ml-4 text-ink3 transition-transform group-open:rotate-45">+</span></summary><p className="type-body rhythm-12 text-ink2">{a}</p></details>)}
               </div>
             </section>
 
-            <footer className="border-t border-black/10 px-5 py-[3.4375rem]">
-              <div className="mx-auto flex max-w-7xl flex-col justify-between gap-4 text-sm text-black/50 md:flex-row">
-                <div className="flex items-center gap-2 font-bold text-black">
-                  <img src="assets/logo.png" alt="gashuu app icon" className="h-6 w-6 rounded-md object-cover" />
-                  <span>gashuu</span>
+            <footer className="bg-ink text-cream">
+              <div className="mx-auto flex max-w-[1000px] flex-col justify-between gap-5 px-6 py-12 md:flex-row md:items-center md:px-10">
+                <div className="flex items-center gap-3">
+                  <img src="assets/logo.png" alt="gashuu app icon" className="h-7 w-7 object-contain" />
+                  <span className="type-nav">gashuu</span>
                 </div>
-                <div>Copyright © 2026 Yasuyuki Takeo. All rights reserved.</div>
+                <div className="type-body text-cream/55">Open source · MIT License · Copyright © 2026 Yasuyuki Takeo</div>
               </div>
             </footer>
           </div>
