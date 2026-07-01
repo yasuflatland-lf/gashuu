@@ -10,6 +10,10 @@ pub const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const RELEASES_LATEST_API: &str =
     "https://api.github.com/repos/yasuflatland-lf/gashuu/releases/latest";
 
+/// Human-facing release page opened by the "Release notes" link and the
+/// guided-install fallback.
+pub const RELEASES_PAGE_URL: &str = "https://github.com/yasuflatland-lf/gashuu/releases/latest";
+
 /// User-Agent required by the GitHub API. Includes the app version.
 pub fn user_agent() -> String {
     format!("gashuu/{CURRENT_VERSION}")
@@ -20,6 +24,7 @@ pub fn user_agent() -> String {
 pub enum UpdateError {
     Http(String),
     Io(String),
+    Verify(String),
 }
 
 impl std::fmt::Display for UpdateError {
@@ -27,6 +32,7 @@ impl std::fmt::Display for UpdateError {
         match self {
             UpdateError::Http(m) => write!(f, "network error: {m}"),
             UpdateError::Io(m) => write!(f, "I/O error: {m}"),
+            UpdateError::Verify(m) => write!(f, "verification failed: {m}"),
         }
     }
 }
