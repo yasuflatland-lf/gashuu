@@ -1,0 +1,282 @@
+// UpdateAvailableDialog — notifies the user a newer gashuu release is available
+// (auto-update epic, Task 9). A GENERIC three-choice modal built on the shared
+// GlassModal shell, mirroring ConfirmDialog.slint's FocusScope/key-handling
+// structure exactly (same glass idiom, same modal-key-trap model), but with
+// THREE actions instead of two: Update now / Later / Skip this version.
+//
+// DISMISS / KEY MODEL (mirrors ConfirmDialog's modal-key-trap, extended to 3
+// stops — docs/patterns.md FocusScope-ancestor + modal-key-trap):
+//   • Backdrop click  → later()  (scrim TouchArea outside the panel).
+//   • Esc             → later().
+//   • Enter / Return  → later().  Never bound to Update now, so a reflexive
+//     Enter can never kick off a download — Update now is reachable ONLY by
+//     pointer click or by Tab→Space, even while it holds focus (its FocusScope
+//     rejects Enter/Esc so they bubble UP to the ancestor `fs`, which maps both
+//     to later()).
+//   • Every OTHER key → swallowed (accept), same modal-trap rationale as
+//     ConfirmDialog: this is a modal over live content, so the ancestor `fs`
+//     consumes all unhandled keys.
+// `fs` WRAPS the panel content so it is a genuine ANCESTOR of the buttons (same
+// upward-walk reasoning as ConfirmDialog — see that file's header comment for
+// the full i-slint-core citation).
+//
+// DEFAULT FOCUS: Later (the safe, non-committing choice — same role Cancel
+// plays in ConfirmDialog). Set on `fs.init`; re-instantiated fresh on every
+// `if root.show-update-available` mount (ViewerWindow's USAGE CONTRACT — see
+// ConfirmDialog's header comment), so no focus-epoch plumbing is needed here
+// (this dialog is never stacked under another overlay).
+//
+// TAB ORDER: Update now → Later → Skip this version → (wrap). Unlike
+// ConfirmDialog's 2-stop toggle (where Tab and Backtab are the same flip),
+// 3 stops need direction, so this handler distinguishes Key.Tab (forward) from
+// Key.Backtab / shift+Key.Tab (backward) — see the `fs.key-pressed` comment.
+//
+// BUTTON FOCUS / Tab / Space: PrimaryButton/SecondaryButton are TouchArea-based
+// and therefore NON-focusable (repo convention). Each is wrapped in a
+// file-private FocusButton (a FocusScope) — a duplicate of ConfirmDialog's
+// file-private wrapper (that one is not exported, so it cannot be imported;
+// per-file file-private atoms are the established pattern here — see
+// NavBar/Stepper's file-private SearchField / StepButton).
+//
+// RELEASE NOTES LINK: deliberately mouse/screen-reader-activation only (a
+// plain Rectangle + TouchArea with accessible-* hooks, PrimaryButton's own
+// baseline pattern before ConfirmDialog's FocusButton wrapper adds Tab
+// reachability). It is NOT folded into the Tab cycle: it is gated by
+// `if root.notes-available`, and an if-gated id lives in a child scope the
+// ANCESTOR `fs` cannot name (docs/patterns.md) — the ancestor could not send
+// focus to it via the manual rotation above even if it wanted to. Update now /
+// Later / Skip this version — the three real decisions — stay fully
+// keyboard-reachable, which is the bar that matters here.
+import { Theme } from "../Theme.slint";
+import { Strings } from "../Strings.slint";
+import { PrimaryButton } from "PrimaryButton.slint";
+import { SecondaryButton } from "SecondaryButton.slint";
+import { GlassModal } from "GlassModal.slint";
+
+// File-private focus wrapper — see ConfirmDialog.slint's FocusButton for the
+// full rationale (kept file-private/duplicated per that file's own precedent).
+component FocusButton inherits FocusScope {
+    callback pressed;
+    width: slot.preferred-width;
+    height: slot.preferred-height;
+    key-pressed(event) => {
+        if (event.text == Key.Space) {
+            root.pressed();
+            return accept;
+        }
+        return reject;
+    }
+    Rectangle {
+        x: -Theme.space-xxs;
+        y: -Theme.space-xxs;
+        width: parent.width + 2 * Theme.space-xxs;
+        height: parent.height + 2 * Theme.space-xxs;
+        background: transparent;
+        border-radius: Theme.radius-md + Theme.space-xxs;
+        border-width: parent.has-focus ? 1px : 0px;
+        border-color: parent.has-focus ? Theme.accent : transparent;
+        drop-shadow-color: parent.has-focus ? Theme.accent-glow : transparent;
+        drop-shadow-blur: parent.has-focus ? Theme.space-sm : 0px;
+        animate border-color { duration: Theme.motion-fast; }
+    }
+    slot := HorizontalLayout {
+        @children
+    }
+}
+
+export component UpdateAvailableDialog inherits GlassModal {
+    // ── Public API (pinned — auto-update epic Task 9 signature) ───────────────
+    in property <string> current-version;
+    in property <string> latest-version;
+    // Whether the release has notes to show (gates the "Release notes" link).
+    in property <bool> notes-available: true;
+    // True while a download/self-replace is running (shows `status-text`).
+    in property <bool> in-progress: false;
+    // Pre-composed transient status (e.g. "Downloading…", "Verifying…").
+    in property <string> status-text;
+
+    // Fired on the "Update now" button (pointer click or Tab→Space).
+    callback accept();
+    // Fired on Esc, Return/Enter, backdrop click, or the "Later" button.
+    callback later();
+    // Fired on the "Skip this version" button.
+    callback skip();
+    // Fired on the "Release notes" link.
+    callback notes();
+
+    // ── Panel geometry + backdrop wiring (glass chrome lives in GlassModal) ────
+    // Same fluid-width clamp as ConfirmDialog/SettingsDialog (shared settings-w
+    // token); height hugs the content.
+    panel-width: min(Theme.settings-w, root.width - 2 * Theme.space-xl);
+    panel-height: body-col.preferred-height;
+    backdrop-clicked => { root.later(); }
+
+    // ── FocusScope: Esc/Enter → later, Tab/Backtab rotate 3 stops ─────────────
+    // WRAPS the panel content so it is a genuine ANCESTOR of the button scopes
+    // (see the file header comment for the full rationale).
+    fs := FocusScope {
+        x: 0;
+        y: 0;
+        // Size to the glass PANEL, not `parent` — see ConfirmDialog.slint's
+        // identical comment (GlassModal's @children content is sized to the
+        // WINDOW; `root.panel-*` is the panel's true size).
+        width: root.panel-width;
+        height: root.panel-height;
+        init => {
+            later-scope.focus();
+        }
+        key-pressed(event) => {
+            // Esc and Return/Enter BOTH defer — Return is deliberately the safe
+            // choice so a reflexive press can never fire accept(), even when
+            // Update now holds focus (its scope rejects everything but Space
+            // via its catch-all `return reject`, so Return bubbles up to here).
+            if (event.text == Key.Escape || event.text == Key.Return) {
+                root.later();
+                return EventResult.accept;
+            }
+            // Forward Tab: Update now → Later → Skip this version → (wrap).
+            if (event.text == Key.Tab && !event.modifiers.shift) {
+                if (accept-scope.has-focus) {
+                    later-scope.focus();
+                } else if (later-scope.has-focus) {
+                    skip-scope.focus();
+                } else {
+                    accept-scope.focus();
+                }
+                return EventResult.accept;
+            }
+            // Backward (Backtab, or shift+Tab — backend-dependent, same
+            // caveat as ConfirmDialog): Skip this version → Later → Update now
+            // → (wrap).
+            if (event.text == Key.Backtab || (event.text == Key.Tab && event.modifiers.shift)) {
+                if (skip-scope.has-focus) {
+                    later-scope.focus();
+                } else if (later-scope.has-focus) {
+                    accept-scope.focus();
+                } else {
+                    skip-scope.focus();
+                }
+                return EventResult.accept;
+            }
+            // Catch-all: swallow every other key so nothing leaks to content
+            // mounted behind this modal. Note: `accept`/`reject` are ambiguous
+            // bare identifiers here because this component ALSO declares a
+            // callback named `accept()` (the pinned public API) — the fully
+            // qualified `EventResult.accept` disambiguates (bare `accept`
+            // resolves to the callback, which then needs `()` — "Callback must
+            // be called" — a gotcha specific to this dialog, unlike
+            // ConfirmDialog's `confirm`/`cancel` callback names, which never
+            // collide with the enum).
+            return EventResult.accept;
+        }
+
+        // ── Panel content: title, version row, notes link, status, buttons ────
+        body-col := VerticalLayout {
+            x: 0;
+            y: 0;
+            width: parent.width;
+            padding: Theme.space-xl;
+            spacing: Theme.space-lg;
+
+            // ── Title ──────────────────────────────────────────────────────
+            Text {
+                text: Strings.update-available-title;
+                font-size: Theme.font-title;
+                font-weight: Theme.weight-semibold;
+                color: Theme.text-high;
+                horizontal-alignment: left;
+                wrap: word-wrap;
+                accessible-role: text;
+                accessible-label: Strings.update-available-title;
+            }
+
+            // ── "current → latest" row ────────────────────────────────────
+            Text {
+                text: root.current-version + " \u{2192} " + root.latest-version;
+                font-size: Theme.font-body;
+                color: Theme.text-mid;
+                horizontal-alignment: left;
+                wrap: word-wrap;
+            }
+
+            // ── Release notes link (mouse/screen-reader only — see header) ──
+            if root.notes-available : Rectangle {
+                height: notes-label.preferred-height;
+                notes-label := Text {
+                    text: Strings.update-notes-label;
+                    font-size: Theme.font-label;
+                    font-weight: Theme.weight-medium;
+                    color: Theme.accent;
+                    horizontal-alignment: left;
+                }
+                TouchArea {
+                    width: notes-label.preferred-width;
+                    height: notes-label.preferred-height;
+                    clicked => {
+                        root.notes();
+                    }
+                }
+                accessible-role: button;
+                accessible-label: Strings.update-notes-label;
+                accessible-action-default => { root.notes(); }
+            }
+
+            // ── Transient status (download/verify progress) ─────────────────
+            if root.in-progress : Text {
+                text: root.status-text;
+                font-size: Theme.font-label;
+                color: Theme.text-dim;
+                horizontal-alignment: left;
+                wrap: word-wrap;
+            }
+
+            // ── Action row: [Update now] [Later] [Skip this version] ───────
+            // Default (stretch) alignment + a leading stretch spacer pin the
+            // buttons hard right (same idiom as ConfirmDialog — a literal
+            // `alignment:` would DISABLE the spacer's stretch).
+            HorizontalLayout {
+                spacing: Theme.space-md;
+
+                Rectangle { horizontal-stretch: 1; }
+
+                // Update now — the affirmative action, styled as the single
+                // accent CTA (never destructive, so PrimaryButton not
+                // DangerButton).
+                accept-scope := FocusButton {
+                    pressed => { root.accept(); }
+                    PrimaryButton {
+                        text: Strings.update-accept-label;
+                        clicked => {
+                            root.accept();
+                        }
+                    }
+                }
+
+                // Later — holds the default focus on open; the safe,
+                // non-committing choice (same role as ConfirmDialog's Cancel).
+                later-scope := FocusButton {
+                    pressed => { root.later(); }
+                    SecondaryButton {
+                        text: Strings.update-later-label;
+                        clicked => {
+                            root.later();
+                        }
+                    }
+                }
+
+                // Skip this version — a low-prominence utility action
+                // (bordered neutral, same weight class as the Settings
+                // dialog's "Clear reading history" utilities).
+                skip-scope := FocusButton {
+                    pressed => { root.skip(); }
+                    SecondaryButton {
+                        text: Strings.update-skip-label;
+                        clicked => {
+                            root.skip();
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
