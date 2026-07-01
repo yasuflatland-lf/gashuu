@@ -85,6 +85,29 @@ settings-shortcuts-label = ⌨ Shortcuts
 # Footer: Reset to global (per-book settings only)
 settings-reset-to-global = Reset to global
 
+# About section (auto-update epic)
+settings-section-about = About
+settings-auto-update-label = Check for updates automatically
+settings-auto-update-a11y = Check for updates automatically
+settings-check-updates-label = Check for updates now
+
+# ---- update ----
+
+# UpdateAvailableDialog
+update-available-title = Update available
+update-notes-label = Release notes
+update-accept-label = Update now
+update-later-label = Later
+update-skip-label = Skip this version
+
+# Dynamic status line shown in the About section during a manual/startup
+# update check (see handlers/update.rs).
+update-status-checking = Checking for updates…
+update-status-latest = You're on the latest version.
+update-status-failed = Couldn't check for updates.
+update-status-downloading = Downloading…
+update-status-download-failed = Download failed. Opening the release page…
+
 # ---- shortcuts ----
 
 # ShortcutsOverlay panel header / SettingsDialog footer accessible-label.

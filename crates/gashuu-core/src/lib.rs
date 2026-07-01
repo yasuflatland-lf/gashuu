@@ -22,6 +22,7 @@ pub mod spread;
 mod test_fixtures;
 pub mod thumbnail;
 pub mod thumbnail_cache;
+pub mod update;
 pub mod view_modes;
 pub mod view_override;
 pub mod viewport;
@@ -49,6 +50,12 @@ pub use thumbnail::{
 pub use thumbnail_cache::{
     cache_key, page_cache_key, ClearCacheReport, PruneReport, ThumbnailCache,
 };
+pub use update::asset::select_asset;
+pub use update::check::{should_check, CHECK_INTERVAL_SECS};
+pub use update::packaging::{detect_packaging, Packaging, UpdateStrategy};
+pub use update::release::{parse_latest_release, Asset, ReleaseInfo};
+pub use update::verify::{parse_sha256sums, sha256_hex, verify};
+pub use update::version::{is_update_available, should_notify};
 pub use view_modes::{
     CoverMode, FitMode, KeyBindings, Language, ReadingDirection, SpreadLayout, SpreadMode,
 };

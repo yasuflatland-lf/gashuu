@@ -27,6 +27,11 @@ export global Strings {
     in property <string> settings-section-data: "Data";
     in property <string> settings-clear-history-label: "Clear reading history";
     in property <string> settings-clear-cache-label: "Clear cover cache";
+    // ── SettingsDialog: About (auto-update epic, Task 10) ─────────────────────
+    in property <string> settings-section-about: "About";
+    in property <string> settings-auto-update-label: "Check for updates automatically";
+    in property <string> settings-auto-update-a11y: "Check for updates automatically";
+    in property <string> settings-check-updates-label: "Check for updates now";
     in property <string> settings-direction-label: "Direction";
     in property <string> settings-direction-ltr: "Left to Right";
     in property <string> settings-direction-rtl: "Right to Left";
@@ -92,6 +97,21 @@ export global Strings {
 
     // ── ConfirmDialog ─────────────────────────────────────────────────────────
     in property <string> confirm-delete-cancel: "Cancel";
+
+    // ── UpdateAvailableDialog (auto-update epic, Task 9) ──────────────────────
+    in property <string> update-available-title: "Update available";
+    in property <string> update-notes-label: "Release notes";
+    in property <string> update-accept-label: "Update now";
+    in property <string> update-later-label: "Later";
+    in property <string> update-skip-label: "Skip this version";
+    // Dynamic status messages set from Rust during a manual/startup update
+    // check (see handlers/update.rs); Rust reads these getters rather than
+    // hardcoding English literals so the status line is localized too.
+    in property <string> update-status-checking: "Checking for updates…";
+    in property <string> update-status-latest: "You're on the latest version.";
+    in property <string> update-status-failed: "Couldn't check for updates.";
+    in property <string> update-status-downloading: "Downloading…";
+    in property <string> update-status-download-failed: "Download failed. Opening the release page…";
 
     // ── SelectionToolbar ──────────────────────────────────────────────────────
     in property <string> selection-enter: "Select";

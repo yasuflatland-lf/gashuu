@@ -87,6 +87,29 @@ settings-shortcuts-label = ⌨ ショートカット
 # Footer: Reset to global (per-book settings only)
 settings-reset-to-global = 全体設定に戻す
 
+# About section (auto-update epic)
+settings-section-about = バージョン情報
+settings-auto-update-label = 起動時にアップデートを確認する
+settings-auto-update-a11y = 起動時にアップデートを自動的に確認します
+settings-check-updates-label = 今すぐ確認
+
+# ---- update ----
+
+# UpdateAvailableDialog
+update-available-title = アップデートがあります
+update-notes-label = リリースノート
+update-accept-label = 今すぐ更新
+update-later-label = 後で
+update-skip-label = このバージョンをスキップ
+
+# Dynamic status line shown in the About section during a manual/startup
+# update check (see handlers/update.rs).
+update-status-checking = アップデートを確認しています…
+update-status-latest = 最新バージョンです。
+update-status-failed = アップデートを確認できませんでした。
+update-status-downloading = ダウンロードしています…
+update-status-download-failed = ダウンロードに失敗しました。リリースページを開きます…
+
 # ---- shortcuts ----
 
 # ShortcutsOverlay panel header / SettingsDialog footer accessible-label.

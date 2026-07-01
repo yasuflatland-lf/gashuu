@@ -23,5 +23,6 @@ expression: "Settings::default().to_json().unwrap()"
   "track_recent_files": false,
   "recent_files": [],
   "language": "en",
-  "allow_rar_archives": true
+  "allow_rar_archives": true,
+  "auto_update_check": true
 }

@@ -9,6 +9,7 @@ import { Scrubber } from "Scrubber.slint";
 import { ViewerPill } from "components/ViewerPill.slint";
 import { Strings } from "Strings.slint";
 import { ConfirmDialog } from "components/ConfirmDialog.slint";
+import { UpdateAvailableDialog } from "components/UpdateAvailableDialog.slint";
 import { DropZone } from "components/DropZone.slint";
 
 // Re-export so Rust gets the `ui.global::<Strings>()` accessor — Slint only
@@ -256,6 +257,23 @@ export component ViewerWindow inherits Window {
     in property <string> confirm-delete-info;
     in property <string> confirm-delete-warning;
     callback confirm-delete-accepted();
+    // ── Update-available modal (auto-update epic, Task 9) ─────────────────────
+    // `show-update-available` gates the modal mount below; it is `in-out` so
+    // Rust opens it (after a background release check finds a newer version)
+    // and the dialog's own `later`/`skip` paths can close it WITHOUT a Rust
+    // round-trip, mirroring `show-confirm-delete`. The five content properties
+    // are pushed by Rust; `update-notes-available` and `update-in-progress`
+    // gate optional dialog content (the release-notes link / status line).
+    in-out property <bool> show-update-available: false;
+    in property <string> update-current-version;
+    in property <string> update-latest-version;
+    in property <bool> update-notes-available: true;
+    in property <bool> update-in-progress: false;
+    in property <string> update-status-text;
+    callback update-accept();
+    callback update-later();
+    callback update-skip();
+    callback update-notes();
     // Add-picker triggers forwarded from the Carousel toolbar and CTA. Rust
     // decides the dialog flavor behind add-books (files+folders on macOS,
     // files-only elsewhere — see `combined-add-picker`).
@@ -316,6 +334,19 @@ export component ViewerWindow inherits Window {
     callback clear-reading-history();
     callback clear-cover-cache();
     callback set-language(int);
+    // ── SettingsDialog: About / auto-update (auto-update epic, Task 10) ───────
+    // Root twins forwarded straight through to SettingsDialog's `app-version` /
+    // `auto-update-check` / `check-for-updates()` / `set-auto-update-check(bool)`
+    // — same reason as every other root twin in this file: Slint exposes only
+    // the root window surface to Rust.
+    in property <string> settings-app-version;
+    in-out property <bool> settings-auto-update-check: true;
+    // Transient feedback for the manual "Check for updates now" button; forwarded
+    // straight to SettingsDialog's `update-status` (same one-way in-prop shape as
+    // `data-action-status`/`settings-app-version`).
+    in property <string> settings-update-status;
+    callback settings-check-for-updates();
+    callback settings-set-auto-update-check(bool);
 
     // ── Library screen ────────────────────────────────────────────────────────
     // Both screens are always instantiated and toggled with `visible` (rather
@@ -333,7 +364,7 @@ export component ViewerWindow inherits Window {
         combined-add-picker: root.combined-add-picker;
         // Suppress the carousel's keyboard seams while a modal overlays the
         // Library — same condition the Viewer FocusScope uses (see `fs` below).
-        modal-open: root.show-settings || root.show-shortcuts || root.show-confirm-delete;
+        modal-open: root.show-settings || root.show-shortcuts || root.show-confirm-delete || root.show-update-available;
         search-changed(q) => { root.library-search-changed(q); }
         // The nav's Settings button opens the EXISTING SettingsDialog: route the
         // click straight to the shared `open-settings` flow (same handler the
@@ -466,7 +497,7 @@ export component ViewerWindow inherits Window {
             fs := FocusScope {
                 key-pressed(event) => {
                     // Suppress background navigation while a modal overlay is open.
-                    if (root.show-settings || root.show-shortcuts) { return reject; }
+                    if (root.show-settings || root.show-shortcuts || root.show-confirm-delete || root.show-update-available) { return reject; }
                     if (event.text == Key.LeftArrow) {
                         root.nav("left");
                         return accept;
@@ -518,7 +549,7 @@ export component ViewerWindow inherits Window {
                     content-y: root.content-y;
                     content-w: root.content-w;
                     content-h: root.content-h;
-                    modal-open: root.show-settings || root.show-shortcuts || root.show-confirm-delete;
+                    modal-open: root.show-settings || root.show-shortcuts || root.show-confirm-delete || root.show-update-available;
                     begin-pan() => { root.begin-pan(); }
                     pan-to(dx, dy) => { root.pan-to(dx, dy); }
                     begin-pinch() => { root.begin-pinch(); }
@@ -534,7 +565,7 @@ export component ViewerWindow inherits Window {
                     // pointer input, but a tap must never leak a page turn under
                     // an overlay if that ever changes (belt-and-braces).
                     tapped(tx) => {
-                        if (!root.show-settings && !root.show-shortcuts && !root.show-confirm-delete) {
+                        if (!root.show-settings && !root.show-shortcuts && !root.show-confirm-delete && !root.show-update-available) {
                             root.nav(tx < self.width / 2 ? "left" : "right");
                         }
                     }
@@ -543,7 +574,7 @@ export component ViewerWindow inherits Window {
                     // so keymap.rs resolves reading direction once. Same modal
                     // guard as tapped (belt-and-braces under an overlay).
                     page-swipe(dir) => {
-                        if (!root.show-settings && !root.show-shortcuts && !root.show-confirm-delete) {
+                        if (!root.show-settings && !root.show-shortcuts && !root.show-confirm-delete && !root.show-update-available) {
                             root.nav(dir);
                         }
                     }
@@ -725,6 +756,16 @@ export component ViewerWindow inherits Window {
         clear-reading-history() => { root.clear-reading-history(); }
         clear-cover-cache() => { root.clear-cover-cache(); }
         set-language(i) => { root.set-language(i); }
+        // About / auto-update (auto-update epic, Task 10): app-version is a
+        // one-way in-prop (Rust-composed, like data-action-status above);
+        // auto-update-check is two-way bound AND its own callback fires so
+        // Rust can persist the change — same double-wiring as track-recent /
+        // allow-rar-archives above.
+        app-version: root.settings-app-version;
+        auto-update-check <=> root.settings-auto-update-check;
+        update-status: root.settings-update-status;
+        check-for-updates() => { root.settings-check-for-updates(); }
+        set-auto-update-check(b) => { root.settings-set-auto-update-check(b); }
         close-settings() => { root.close-settings(); }
         reset-to-global() => { root.reset-overrides(); }
     }
@@ -761,6 +802,29 @@ export component ViewerWindow inherits Window {
         danger: true;
         confirm => { root.confirm-delete-accepted(); }
         cancel => { root.show-confirm-delete = false; carousel.focus-self(); }
+    }
+    // ── Update-available modal (auto-update epic, Task 9) ─────────────────────
+    // Mounted LAST (topmost) — a background release check can fire while any
+    // other screen/modal is up, so it must paint over everything, including
+    // the confirm-delete dialog above. The `if` gate is this dialog's USAGE
+    // CONTRACT (same reason as confirm-delete: re-instantiating on every open
+    // re-focuses "Later" via its own `init`, so no focus-epoch is needed).
+    // `later`/`skip` are pure Slint — they close the dialog themselves,
+    // mirroring confirm-delete's `cancel` — while `accept`/`notes` cross to
+    // Rust (download/self-replace, or opening the release page) without
+    // closing the dialog here; Rust owns that lifecycle in a later task.
+    if root.show-update-available : UpdateAvailableDialog {
+        width: root.width;
+        height: root.height;
+        current-version: root.update-current-version;
+        latest-version: root.update-latest-version;
+        notes-available: root.update-notes-available;
+        in-progress: root.update-in-progress;
+        status-text: root.update-status-text;
+        accept => { root.update-accept(); }
+        later => { root.show-update-available = false; root.update-later(); }
+        skip => { root.show-update-available = false; root.update-skip(); }
+        notes => { root.update-notes(); }
     }
 
     // Grab keyboard focus on startup so arrow keys work without a click.

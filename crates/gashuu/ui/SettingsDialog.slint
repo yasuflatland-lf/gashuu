@@ -68,6 +68,19 @@ export component SettingsDialog inherits GlassModal {
     // Index into the language dropdown model (En=0, Ja=1 — enum_adapters.rs
     // owns the authoritative ordering).
     in-out property <int> language-index;
+    // ── About / auto-update (auto-update epic, Task 10) ───────────────────────
+    // The running app's version (e.g. "0.11.0"), pre-composed in Rust from
+    // CARGO_PKG_VERSION — a plain `in` prop, like `data-action-status` below.
+    in property <string> app-version;
+    // Whether the app checks GitHub Releases for a newer version on startup.
+    in-out property <bool> auto-update-check: true;
+    // Transient feedback for the manual "Check for updates now" button (e.g.
+    // "Checking…" / "You're on the latest version." / "Couldn't check for
+    // updates."). Empty string = no message shown, same convention as
+    // `data-action-status` below. Rust clears it once a newer version is found
+    // (the update-available dialog takes over), on the next manual check, and
+    // on the next dialog open (on_open_settings sets it back to "").
+    in property <string> update-status;
     // True when this dialog edits the CURRENT book's per-book settings (opened
     // from the Viewer): shows the per-book title and the reset-to-global button.
     in property <bool> show-reset-button: false;
@@ -91,6 +104,10 @@ export component SettingsDialog inherits GlassModal {
     callback clear-reading-history();
     // Fired immediately when the user clicks "Clear cover cache" — no confirmation.
     callback clear-cover-cache();
+    // Fired when the user toggles "Check for updates automatically".
+    callback set-auto-update-check(bool);
+    // Fired when the user clicks "Check for updates now".
+    callback check-for-updates();
     // Fired on Esc, backdrop-click, or the Close button.
     callback close-settings();
     // Fired when the user activates the "Shortcuts" footer link (mouse click,
@@ -436,6 +453,61 @@ export component SettingsDialog inherits GlassModal {
                         // actions. Hidden when empty to avoid layout slack.
                         if root.data-action-status != "" : Text {
                             text: root.data-action-status;
+                            font-size: Theme.font-micro;
+                            color: Theme.text-dim;
+                            horizontal-alignment: left;
+                            wrap: word-wrap;
+                        }
+                    }
+
+                    // ── Section: About (auto-update epic, Task 10) ────────────
+                    // App-global, like General/Data above: shown ONLY in the
+                    // Library default dialog, not the Viewer's per-book dialog.
+                    // Reuses the exact section pattern (eyebrow + the space-xxl
+                    // inter-section gap from the parent layout; NO divider line).
+                    if !root.show-reset-button : VerticalLayout {
+                        spacing: Theme.space-lg;
+                        Text {
+                            text: Strings.settings-section-about;
+                            font-size: Theme.font-label;
+                            font-weight: Theme.weight-semibold;
+                            color: Theme.text-dim;
+                            horizontal-alignment: left;
+                        }
+                        // "gashuu <version>" — informational only, same weight
+                        // class as settings-performance-note below.
+                        Text {
+                            text: "gashuu " + root.app-version;
+                            font-size: Theme.font-body;
+                            color: Theme.text-mid;
+                            horizontal-alignment: left;
+                        }
+                        SettingRow {
+                            label: Strings.settings-auto-update-label;
+                            trailing: true;
+                            Toggle {
+                                checked <=> root.auto-update-check;
+                                a11y-label: Strings.settings-auto-update-a11y;
+                                toggled(b) => {
+                                    root.set-auto-update-check(b);
+                                }
+                            }
+                        }
+                        // Manual check: same low-prominence bordered-neutral
+                        // SecondaryButton as the Data section's utilities above
+                        // (NOT the affirmative accent PrimaryButton — checking
+                        // for updates is a utility action, not a CTA).
+                        SecondaryButton {
+                            horizontal-stretch: 1;
+                            text: Strings.settings-check-updates-label;
+                            clicked => {
+                                root.check-for-updates();
+                            }
+                        }
+                        // Transient feedback line for the manual check, same
+                        // hidden-when-empty gate + styling as data-action-status.
+                        if root.update-status != "" : Text {
+                            text: root.update-status;
                             font-size: Theme.font-micro;
                             color: Theme.text-dim;
                             horizontal-alignment: left;

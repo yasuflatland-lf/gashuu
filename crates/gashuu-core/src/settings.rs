@@ -64,6 +64,17 @@ pub struct Settings {
     /// keeps a `None` out of the document, so the default snapshot is unchanged.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub window: Option<WindowGeometry>,
+    /// When `true` (the default), check GitHub Releases for a newer version on
+    /// startup (throttled to once per 24h). `default_true` so files written
+    /// before this field existed adopt the enabled default.
+    #[serde(default = "default_true")]
+    pub auto_update_check: bool,
+    /// A version the user chose to skip; that version is never re-notified.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skipped_version: Option<String>,
+    /// UNIX seconds of the last automatic update check (for the 24h throttle).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_update_check: Option<i64>,
 }
 
 fn default_version() -> u32 {
@@ -76,6 +87,9 @@ fn default_preload_pages() -> usize {
     DEFAULT_PREFETCH_RADIUS
 }
 fn default_allow_rar() -> bool {
+    true
+}
+fn default_true() -> bool {
     true
 }
 
@@ -95,6 +109,9 @@ impl Default for Settings {
             language: Language::default(),
             allow_rar_archives: true,
             window: None,
+            auto_update_check: true,
+            skipped_version: None,
+            last_update_check: None,
         }
     }
 }
@@ -254,6 +271,12 @@ mod tests {
             "allow_rar_archives must default to true"
         );
         assert_eq!(s.language, Language::En);
+        assert!(
+            s.auto_update_check,
+            "auto_update_check must default to true"
+        );
+        assert_eq!(s.skipped_version, None);
+        assert_eq!(s.last_update_check, None);
     }
 
     fn non_default_settings() -> Settings {
@@ -284,6 +307,10 @@ mod tests {
                 x: 120,
                 y: -40,
             }),
+            // Differ from defaults (true / None / None) so round-trip tests are not vacuous.
+            auto_update_check: false,
+            skipped_version: Some("v9.9.9".to_string()),
+            last_update_check: Some(1_700_000_000),
         }
     }
 
@@ -877,5 +904,35 @@ mod tests {
         let json2 = s.to_json().unwrap();
         let s2 = Settings::from_json(&json2).unwrap();
         assert!(!s2.allow_rar_archives);
+    }
+
+    #[test]
+    fn update_fields_round_trip() {
+        let s = Settings {
+            auto_update_check: false,
+            skipped_version: Some("0.12.0".to_string()),
+            last_update_check: Some(1_712_345_678),
+            ..Default::default()
+        };
+        let parsed = Settings::from_json(&s.to_json().unwrap()).unwrap();
+        assert!(!parsed.auto_update_check);
+        assert_eq!(parsed.skipped_version.as_deref(), Some("0.12.0"));
+        assert_eq!(parsed.last_update_check, Some(1_712_345_678));
+    }
+
+    #[test]
+    fn missing_auto_update_check_loads_as_true() {
+        let s = Settings::from_json(r#"{"version":1}"#).unwrap();
+        assert!(
+            s.auto_update_check,
+            "absent auto_update_check must load as true"
+        );
+    }
+
+    #[test]
+    fn none_skipped_and_last_check_are_omitted_from_json() {
+        let json = Settings::default().to_json().unwrap();
+        assert!(!json.contains("skipped_version"));
+        assert!(!json.contains("last_update_check"));
     }
 }

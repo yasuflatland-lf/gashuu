@@ -26,6 +26,7 @@ mod page_loader;
 mod remove_books;
 mod selection_projection;
 mod thumbnail_strip;
+mod update;
 mod view_sync;
 mod viewer_state;
 mod viewport;
@@ -305,6 +306,11 @@ fn main() -> color_eyre::Result<()> {
     // File/folder drag-and-drop onto the Library screen, feeding the same bulk-add
     // pipeline as the Add buttons (handlers/drag_drop.rs).
     handlers::wire_drag_drop_handlers(&ui, &settings, &adder);
+    // GitHub Releases update checker (auto-update epic): wire the dialog/
+    // settings callbacks, then kick off a throttled, non-forced background
+    // check. Reuses the SAME shared settings cell every other handler mutates.
+    handlers::wire_update_handlers(&ui, &settings);
+    handlers::start_update_check(&ui, &settings, false);
 
     // Restore the last window size + position before the first paint. No-op on a
     // fresh install; off-screen positions are dropped in favor of centering.
