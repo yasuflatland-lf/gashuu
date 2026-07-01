@@ -171,6 +171,10 @@ export global Theme {
 
     // ── Motion ────────────────────────────────────────────────────────────────
     out property <duration> motion-fast: 180ms;     // chrome fades (existing value)
+    // Screen-transition tempo (settings drill-in slide + panel-height ease): long
+    // enough to read a horizontal push, short enough to stay snappy — between the
+    // 180ms chrome fade and the 480ms cover-flow travel.
+    out property <duration> motion-med: 260ms;
     // The easing lives in the animate block — Slint has no <easing> property type,
     // so cubic-bezier(0.16, 1, 0.3, 1) cannot be stored as a Theme token and must
     // be repeated at each animate site.
