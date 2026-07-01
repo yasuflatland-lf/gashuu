@@ -1,0 +1,6 @@
+# pnpm 11 enforces a default minimumReleaseAge (24h) supply-chain gate that rejects
+# any lockfile entry published within the last day. This repo already gates release
+# age at the Renovate level (the renovate/stability-days check), so the pnpm gate is
+# redundant and only breaks `pnpm install --frozen-lockfile` in CI whenever the
+# committed lockfile happens to contain a freshly published package. Disable it.
+minimumReleaseAge: 0
