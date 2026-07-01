@@ -3,4 +3,5 @@
 //! self-replacement; this module owns "what should we decide" so it can be
 //! unit-tested without side effects.
 
+pub mod check;
 pub mod version;

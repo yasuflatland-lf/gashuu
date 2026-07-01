@@ -50,6 +50,7 @@ pub use thumbnail::{
 pub use thumbnail_cache::{
     cache_key, page_cache_key, ClearCacheReport, PruneReport, ThumbnailCache,
 };
+pub use update::check::{should_check, CHECK_INTERVAL_SECS};
 pub use update::version::{is_update_available, should_notify};
 pub use view_modes::{
     CoverMode, FitMode, KeyBindings, Language, ReadingDirection, SpreadLayout, SpreadMode,
