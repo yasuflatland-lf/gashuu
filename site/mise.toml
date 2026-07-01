@@ -1,8 +1,8 @@
 # Toolchain + task runner for the landing site. Directory-scoped: the repo-root
 # mise.toml stays Rust-only, so Rust CI jobs never pull node. Activates on `cd site`.
 [tools]
-node = "22"
-pnpm = "10"
+node = "24"
+pnpm = "11"
 
 [tasks.dev]
 description = "Vite dev server"
