@@ -50,6 +50,7 @@ pub use thumbnail::{
 pub use thumbnail_cache::{
     cache_key, page_cache_key, ClearCacheReport, PruneReport, ThumbnailCache,
 };
+pub use update::asset::select_asset;
 pub use update::check::{should_check, CHECK_INTERVAL_SECS};
 pub use update::packaging::{detect_packaging, Packaging, UpdateStrategy};
 pub use update::release::{parse_latest_release, Asset, ReleaseInfo};
