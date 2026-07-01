@@ -36,6 +36,13 @@ opener = { version = "0.7", features = ["reveal"] }
 # (macOS reveal path). Core already depends on this; the UI crate needs its
 # own declaration to call `UserDirs` directly.
 directories = "6"
+# Extract the Windows portable .exe from the release .zip during self-update.
+# Same version core already resolves (deflate-only), so no new lockfile entry.
+zip = { version = "8", default-features = false, features = ["deflate"] }
+# Atomically replace the running executable in place (handles the Windows
+# rename-self restriction). Used for Windows-portable self-update; AppImage
+# replaces $APPIMAGE directly instead (running exe is a read-only squashfs).
+self-replace = "1"
 
 [build-dependencies]
 # Pinned to match the exact `slint` version above (they must stay in lockstep).

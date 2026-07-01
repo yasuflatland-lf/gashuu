@@ -126,8 +126,8 @@ action**: self-replace on the two safe forms, a reliable guided/manual path ever
 - Users are notified of new releases without leaving the app, on all three platforms, on a schedule
   that respects GitHub's rate limit and the user's control (toggle + skip-version).
 - The two packaging forms that can safely self-update (AppImage, Windows portable) get a one-click
-  path once PR2 lands; the two that cannot (macOS `.app`, deb) get a safe, reliable fallback instead
-  of a broken or fought-with-the-OS auto-replace.
+  in-place replace + relaunch; the two that cannot (macOS `.app`, deb) get a safe, reliable fallback
+  instead of a broken or fought-with-the-OS auto-replace.
 - Every decision (newer-version, which packaging, which asset, checksum match) is pure and
   nextest-covered; only the side-effecting glue (HTTP, download, replace, open/reveal) needs manual
   per-OS verification, which keeps the CI-provable surface as large as possible.
@@ -138,15 +138,19 @@ action**: self-replace on the two safe forms, a reliable guided/manual path ever
 
 - **First networking/TLS dependency in the workspace.** `ureq` (with its default rustls backend, no
   OpenSSL) is the first HTTP client gashuu has ever depended on, and lives entirely in the `gashuu`
-  UI crate. `opener` (open URLs / reveal files) is also new. PR2 adds `self_replace` (atomic
-  in-place binary replacement); `zip` was already a workspace dependency (CBZ/ZIP archive support,
-  ADR-0004) and PR2 reuses it to extract the downloaded Windows/macOS release zip rather than adding
-  a second zip crate.
-- **`SelfReplace` forms do not yet self-replace.** Until PR2 lands, `UpdateStrategy::SelfReplace`
-  (Linux AppImage, Windows portable) falls back to opening the release page in
-  `crates/gashuu/src/handlers/update.rs::wire_update_handlers`'s `on_update_accept` handler — the
-  consent dialog and packaging detection are live, but the promised one-click replace is not yet
-  wired for those two forms. This is a known, temporary gap, not a design flaw.
+  UI crate. `opener` (open URLs / reveal files) is also new. The self-replace step adds the
+  `self-replace` crate (atomic in-place binary replacement, imported as `self_replace`); `zip` was
+  already a workspace dependency (CBZ/ZIP archive support, ADR-0004) and is reused to extract the
+  downloaded Windows release zip rather than adding a second zip crate.
+- **Self-replace is per-form and not CI-verifiable.** `UpdateStrategy::SelfReplace` is wired
+  end-to-end (`on_update_accept` → `self_replace_update` → `prepare_self_replace` →
+  `apply_self_replace` / `relaunch_and_exit`), but the two forms replace differently and neither can
+  run on the CI/macOS-dev host: Windows uses the `self-replace` crate to swap `gashuu.exe`; AppImage
+  replaces the `$APPIMAGE` file (the running exe is a read-only mounted squashfs) via a staged
+  sibling `<name>.new` + `chmod +x` + atomic rename. Both are covered by unit tests (zip extraction)
+  plus the gates and hands-on per-OS runs; on any failure the handler falls back to opening the
+  release page, so a broken self-replace degrades to the guided path rather than stranding the user.
+  See `docs/patterns.md`.
 - **Unauthenticated GitHub API is a soft dependency on the 24h throttle holding.** If the throttle
   were ever bypassed or removed, unauthenticated calls could hit the 60 req/h/IP limit under heavy
   manual "Check now" use; accepted because the throttle is enforced in the same pure function

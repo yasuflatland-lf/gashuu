@@ -1,6 +1,7 @@
-//! Presentation-side update machinery: HTTP fetch/download, and (in PR2)
-//! self-replacement. Decision logic lives in `gashuu_core::update`.
+//! Presentation-side update machinery: HTTP fetch/download (`net`) and
+//! self-replacement (`install`). Decision logic lives in `gashuu_core::update`.
 
+pub mod install;
 pub mod net;
 
 /// The running app's version (compared against the latest release).
