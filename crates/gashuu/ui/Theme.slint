@@ -66,6 +66,14 @@ export global Theme {
     out property <length> scrubber-knob-size: 16px;
     out property <length> scrubber-knob-size-active: 20px;   // drag-grow target
 
+    // ── Viewer swipe-to-turn affordance ──────────────────────────────────────
+    // Edge glow band that lights on the side the fingers push toward as a two-finger
+    // swipe accumulates toward a page turn (PageView). The band is wide, so the color is
+    // accent at a soft alpha tuned to read over bright pages without dominating;
+    // its opacity still scales with swipe progress.
+    out property <length> viewer-swipe-glow-width: 280px;
+    out property <color> viewer-swipe-glow: #5b8cff4d;   // accent @ ~30% alpha (rgba(91,140,255,0.30))
+
     // ── Settings control atoms (issue 102) ───────────────────────────────────
     // Shared visible-capsule height for Segmented / Stepper / Toggle. The DESIGN
     // ~32px hit area is met by the surrounding row (see PR-B); the capsule is 30.
