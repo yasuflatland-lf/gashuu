@@ -33,3 +33,7 @@ crates/gashuu/ui/assets/app-icon.ico
 
 # Collected webcomic sample data (ops/collect_images downloads; not committed)
 ops/collect_images/output/
+
+# site (Node) build artifacts + deps
+site/node_modules/
+site/dist/
