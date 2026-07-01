@@ -234,7 +234,7 @@ pub(crate) fn wire_update_handlers(ui: &ViewerWindow, settings: &Rc<RefCell<Sett
 /// is never captured here.
 fn reveal_download(ui: &ViewerWindow, pkg: Packaging, info: ReleaseInfo) {
     ui.set_update_in_progress(true);
-    ui.set_update_status_text("Downloading…".into());
+    ui.set_update_status_text(ui.global::<Strings>().get_update_status_downloading());
     let weak = ui.as_weak();
     rayon::spawn(move || {
         let outcome = download_and_verify(pkg, &info);
@@ -251,8 +251,9 @@ fn reveal_download(ui: &ViewerWindow, pkg: Packaging, info: ReleaseInfo) {
                     ui.set_show_update_available(false);
                 }
                 Err(e) => {
+                    tracing::warn!(error = %e, "update download failed");
                     ui.set_update_status_text(
-                        format!("Download failed: {e}. Opening release page…").into(),
+                        ui.global::<Strings>().get_update_status_download_failed(),
                     );
                     if let Err(e) = opener::open(RELEASES_PAGE_URL) {
                         tracing::warn!(error = %e, "failed to open release page");
@@ -290,8 +291,14 @@ fn download_and_verify(pkg: Packaging, info: &ReleaseInfo) -> Result<PathBuf, Up
         )));
     }
 
+    // Defense-in-depth: the asset name is release-supplied. Strip any path
+    // components before joining it onto the Downloads dir so a maliciously
+    // crafted release asset name (e.g. containing `../`) can't escape it.
+    let file_name = std::path::Path::new(&asset.name)
+        .file_name()
+        .unwrap_or_else(|| std::ffi::OsStr::new(&asset.name));
     let dir = directories_download_dir();
-    let dest = dir.join(&asset.name);
+    let dest = dir.join(file_name);
     std::fs::write(&dest, &bytes).map_err(|e| UpdateError::Io(e.to_string()))?;
     Ok(dest)
 }

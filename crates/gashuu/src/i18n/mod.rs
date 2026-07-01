@@ -228,6 +228,10 @@ impl Localizer {
         strings.set_update_status_checking(fl!(self.loader, "update-status-checking").into());
         strings.set_update_status_latest(fl!(self.loader, "update-status-latest").into());
         strings.set_update_status_failed(fl!(self.loader, "update-status-failed").into());
+        strings.set_update_status_downloading(fl!(self.loader, "update-status-downloading").into());
+        strings.set_update_status_download_failed(
+            fl!(self.loader, "update-status-download-failed").into(),
+        );
 
         // ---- Plain pushes (SelectionToolbar) ------------------------------
         strings.set_selection_enter(fl!(self.loader, "selection-enter").into());

@@ -46,9 +46,12 @@ An in-app updater that checks GitHub Releases on startup (throttled to once per 
 notifies the user via a modal, and — on confirmation — takes a **hybrid, packaging-aware update
 action**: self-replace on the two safe forms, a reliable guided/manual path everywhere else.
 
-1. **Check timing.** On startup, deferred until the Slint event loop is running (the established
-   `Timer::single_shot(ZERO)` + `has_winit_window` re-arm idiom — see the window-geometry-persistence
-   harness in memory), gashuu-core's `should_check(last_check, now, CHECK_INTERVAL_SECS)` gates an
+1. **Check timing.** On startup, `handlers::start_update_check` is called directly, right before
+   `ui.run()`; its UI mutations only take effect once the Slint event loop is running, because they
+   are queued via `slint::invoke_from_event_loop` (the background fetch dispatches its callback
+   through that queue rather than touching the UI synchronously) — no `Timer::single_shot` idiom is
+   involved here (that idiom is used elsewhere, e.g. window-geometry-persistence, per memory).
+   gashuu-core's `should_check(last_check, now, CHECK_INTERVAL_SECS)` gates an
    automatic check to once per 24h (`CHECK_INTERVAL_SECS = 24 * 60 * 60`), and only if
    `Settings.auto_update_check` is enabled. A manual "Check for updates now" button in the Settings
    dialog's About section bypasses both the toggle and the throttle (`force = true`).
