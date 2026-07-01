@@ -15,6 +15,7 @@
 //! `download_and_verify`'s rayon closures follow the same rule: they capture
 //! only `weak` and the owned `Packaging`/`ReleaseInfo`, never `settings`.
 
+use crate::update::install::{apply_self_replace, extract_exe_from_zip, relaunch_and_exit};
 use crate::update::net::{download_bytes, fetch_latest_release_json};
 use crate::update::{UpdateError, CURRENT_VERSION, RELEASES_PAGE_URL};
 use crate::{Strings, ViewerWindow};
@@ -189,13 +190,7 @@ pub(crate) fn wire_update_handlers(ui: &ViewerWindow, settings: &Rc<RefCell<Sett
                     reveal_download(&ui, pkg, info);
                 }
                 UpdateStrategy::SelfReplace => {
-                    // PR1: no in-place replace yet — fall back to the release
-                    // page. A follow-up PR replaces this arm with the real
-                    // self-replace pipeline for AppImage/Windows.
-                    if let Err(e) = opener::open(RELEASES_PAGE_URL) {
-                        tracing::warn!(error = %e, "failed to open release page");
-                    }
-                    ui.set_show_update_available(false);
+                    self_replace_update(&ui, pkg, info);
                 }
             }
         });
@@ -227,47 +222,108 @@ pub(crate) fn wire_update_handlers(ui: &ViewerWindow, settings: &Rc<RefCell<Sett
     }
 }
 
+/// Shared setup for a download-driven update action (macOS reveal, self-replace):
+/// mark the dialog busy with a localized "downloading" status and hand back a
+/// weak handle for the background closure to marshal UI updates through.
+fn begin_update_download(ui: &ViewerWindow) -> slint::Weak<ViewerWindow> {
+    ui.set_update_in_progress(true);
+    ui.set_update_status_text(ui.global::<Strings>().get_update_status_downloading());
+    ui.as_weak()
+}
+
+/// Shared failure handling for a download-driven update action: clear the busy
+/// flag, log `context`, surface the localized "download failed" status, and fall
+/// back to opening the release page so the user is never stranded on a broken
+/// update. Runs on the UI thread.
+fn report_update_failure(ui: &ViewerWindow, context: &str, error: &UpdateError) {
+    ui.set_update_in_progress(false);
+    tracing::warn!(error = %error, "{context}");
+    ui.set_update_status_text(ui.global::<Strings>().get_update_status_download_failed());
+    if let Err(e) = opener::open(RELEASES_PAGE_URL) {
+        tracing::warn!(error = %e, "failed to open release page");
+    }
+}
+
 /// macOS: download the .zip, verify against SHA256SUMS, save to the Downloads
 /// dir, and reveal it in Finder for a manual drag-install. Runs the download on
 /// a rayon thread; marshals UI updates back. Only `weak` and owned data
 /// (`Packaging`, `ReleaseInfo`) cross the thread boundary — the settings cell
 /// is never captured here.
 fn reveal_download(ui: &ViewerWindow, pkg: Packaging, info: ReleaseInfo) {
-    ui.set_update_in_progress(true);
-    ui.set_update_status_text(ui.global::<Strings>().get_update_status_downloading());
-    let weak = ui.as_weak();
+    let weak = begin_update_download(ui);
     rayon::spawn(move || {
         let outcome = download_and_verify(pkg, &info);
         let _ = slint::invoke_from_event_loop(move || {
             let Some(ui) = weak.upgrade() else {
                 return;
             };
-            ui.set_update_in_progress(false);
             match outcome {
                 Ok(path) => {
+                    ui.set_update_in_progress(false);
                     if let Err(e) = opener::reveal(&path) {
                         tracing::warn!(error = %e, "failed to reveal downloaded update in file manager");
                     }
                     ui.set_show_update_available(false);
                 }
-                Err(e) => {
-                    tracing::warn!(error = %e, "update download failed");
+                Err(e) => report_update_failure(&ui, "update download failed", &e),
+            }
+        });
+    });
+}
+
+/// Linux AppImage / Windows portable: download + verify the new artifact,
+/// replace the running binary in place, and relaunch. Runs the download and
+/// replace on a rayon thread; marshals UI updates back. Only `weak` and owned
+/// data (`Packaging`, `ReleaseInfo`) cross the thread boundary — the settings
+/// cell is never captured here. On any failure the dialog surfaces the error
+/// and falls back to opening the release page for a manual download.
+fn self_replace_update(ui: &ViewerWindow, pkg: Packaging, info: ReleaseInfo) {
+    let weak = begin_update_download(ui);
+    rayon::spawn(move || {
+        let outcome = prepare_self_replace(pkg, &info);
+        let _ = slint::invoke_from_event_loop(move || match outcome {
+            Ok(exe) => {
+                if let Some(ui) = weak.upgrade() {
                     ui.set_update_status_text(
-                        ui.global::<Strings>().get_update_status_download_failed(),
+                        ui.global::<Strings>().get_update_status_restarting(),
                     );
-                    if let Err(e) = opener::open(RELEASES_PAGE_URL) {
-                        tracing::warn!(error = %e, "failed to open release page");
-                    }
+                }
+                // Let the "restarting" note paint, then relaunch + exit.
+                slint::Timer::single_shot(std::time::Duration::from_millis(900), move || {
+                    relaunch_and_exit(&exe);
+                });
+            }
+            Err(e) => {
+                if let Some(ui) = weak.upgrade() {
+                    report_update_failure(&ui, "self-update failed", &e);
                 }
             }
         });
     });
 }
 
+/// Download + verify the platform artifact, then replace the running binary in
+/// place, returning the executable path to relaunch. For Windows the verified
+/// download is the release `.zip` (SHA256SUMS covers the zip, so it is already
+/// verified by `download_and_verify`); the `.exe` is extracted from that
+/// verified archive before the swap. For AppImage the verified download is the
+/// `.AppImage` itself. Runs entirely on a background thread.
+fn prepare_self_replace(pkg: Packaging, info: &ReleaseInfo) -> Result<PathBuf, UpdateError> {
+    let verified = download_and_verify(pkg, info)?;
+    let to_apply = match pkg {
+        Packaging::WindowsPortable => {
+            let zip_bytes = std::fs::read(&verified).map_err(|e| UpdateError::Io(e.to_string()))?;
+            extract_exe_from_zip(&zip_bytes, &std::env::temp_dir())?
+        }
+        _ => verified,
+    };
+    apply_self_replace(pkg, &to_apply)
+}
+
 /// Download the platform asset + SHA256SUMS, verify, and write the asset into
 /// the user's Downloads directory (falling back to the temp dir). Returns the
-/// saved path. Shared by the macOS reveal path (PR1) and self-replace (a
-/// future PR).
+/// saved path. Shared by the macOS reveal path and the AppImage/Windows
+/// self-replace path.
 fn download_and_verify(pkg: Packaging, info: &ReleaseInfo) -> Result<PathBuf, UpdateError> {
     let asset = select_asset(pkg, &info.assets)
         .ok_or_else(|| UpdateError::Io("no matching release asset".into()))?;

@@ -232,6 +232,7 @@ impl Localizer {
         strings.set_update_status_download_failed(
             fl!(self.loader, "update-status-download-failed").into(),
         );
+        strings.set_update_status_restarting(fl!(self.loader, "update-status-restarting").into());
 
         // ---- Plain pushes (SelectionToolbar) ------------------------------
         strings.set_selection_enter(fl!(self.loader, "selection-enter").into());
