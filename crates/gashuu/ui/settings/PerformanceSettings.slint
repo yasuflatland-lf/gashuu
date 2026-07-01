@@ -1,0 +1,103 @@
+// PerformanceSettings — the "Performance" settings section as a standalone unit.
+//
+// Extracted verbatim from SettingsDialog.slint's inline Performance block: cache
+// size + preload steppers, track-recent + allow-rar toggles, and the trailing
+// performance note. Renders its own eyebrow (suppressible via `show-title`).
+// Keeps every existing a11y + stepper label. Public surface mirrors
+// SettingsDialog's Performance props exactly. Theme.* only.
+import { Theme } from "../Theme.slint";
+import { Strings } from "../Strings.slint";
+import { SettingRow } from "../components/SettingRow.slint";
+import { Stepper } from "../components/Stepper.slint";
+import { Toggle } from "../components/Toggle.slint";
+
+export component PerformanceSettings inherits VerticalLayout {
+    // LRU cache size in pages (>=1).
+    in-out property <int> cache-size;
+    // Background prefetch radius in pages (0 = disabled).
+    in-out property <int> preload-pages;
+    // Whether recent-files tracking is enabled.
+    in-out property <bool> track-recent;
+    // Whether RAR/CBR archive support is enabled.
+    in-out property <bool> allow-rar-archives;
+    callback set-cache-size(int);
+    callback set-preload-pages(int);
+    callback set-track-recent(bool);
+    callback set-allow-rar-archives(bool);
+    in property <bool> show-title: true;
+
+    // Focus the first control (the cache Stepper) on open / drill-in.
+    public function focus-first() {
+        cache-control.focus-control();
+    }
+
+    spacing: Theme.space-lg;
+    if root.show-title : Text {
+        text: Strings.settings-section-performance;
+        font-size: Theme.font-label;
+        font-weight: Theme.weight-semibold;
+        color: Theme.text-dim;
+        horizontal-alignment: left;
+    }
+    SettingRow {
+        // A long label, but the Japanese settings-allow-rar-label below is the column-sizing driver.
+        label: Strings.settings-cache-label;
+        trailing: true;
+        cache-control := Stepper {
+            value <=> root.cache-size;
+            minimum: 1;
+            maximum: 100;
+            a11y-label: Strings.settings-cache-a11y;
+            a11y-decrease-label: Strings.stepper-decrease-cache;
+            a11y-increase-label: Strings.stepper-increase-cache;
+            edited(v) => {
+                root.set-cache-size(v);
+            }
+        }
+    }
+    SettingRow {
+        label: Strings.settings-preload-label;
+        trailing: true;
+        Stepper {
+            value <=> root.preload-pages;
+            minimum: 0;
+            maximum: 5;
+            a11y-label: Strings.settings-preload-a11y;
+            a11y-decrease-label: Strings.stepper-decrease-preload;
+            a11y-increase-label: Strings.stepper-increase-preload;
+            edited(v) => {
+                root.set-preload-pages(v);
+            }
+        }
+    }
+    SettingRow {
+        label: Strings.settings-track-recent-label;
+        trailing: true;
+        Toggle {
+            checked <=> root.track-recent;
+            a11y-label: Strings.settings-track-recent-a11y;
+            toggled(b) => {
+                root.set-track-recent(b);
+            }
+        }
+    }
+    SettingRow {
+        label: Strings.settings-allow-rar-label;
+        trailing: true;
+        Toggle {
+            checked <=> root.allow-rar-archives;
+            a11y-label: Strings.settings-allow-rar-a11y;
+            toggled(b) => {
+                root.set-allow-rar-archives(b);
+            }
+        }
+    }
+    // Performance note at the label left margin.
+    Text {
+        text: Strings.settings-performance-note;
+        font-size: Theme.font-micro;
+        color: Theme.text-dim;
+        horizontal-alignment: left;
+        wrap: word-wrap;
+    }
+}

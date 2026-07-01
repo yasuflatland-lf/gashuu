@@ -38,14 +38,14 @@
 // shortcuts overlay (ShortcutsOverlay.slint) now owns that content.
 import { Theme } from "Theme.slint";
 import { Strings } from "Strings.slint";
-import { SettingRow } from "components/SettingRow.slint";
-import { Segmented } from "components/Segmented.slint";
-import { Stepper } from "components/Stepper.slint";
-import { Toggle } from "components/Toggle.slint";
-import { Dropdown } from "components/Dropdown.slint";
 import { PrimaryButton } from "components/PrimaryButton.slint";
-import { SecondaryButton } from "components/SecondaryButton.slint";
 import { GlassModal } from "components/GlassModal.slint";
+import { ReadingSettings } from "settings/ReadingSettings.slint";
+import { DisplaySettings } from "settings/DisplaySettings.slint";
+import { PerformanceSettings } from "settings/PerformanceSettings.slint";
+import { GeneralSettings } from "settings/GeneralSettings.slint";
+import { DataSettings } from "settings/DataSettings.slint";
+import { AboutSettings } from "settings/AboutSettings.slint";
 
 export component SettingsDialog inherits GlassModal {
     // ── In-out properties (two-way bound to UI controls) ─────────────────────
@@ -171,7 +171,7 @@ export component SettingsDialog inherits GlassModal {
         width: root.panel-width;
         height: root.panel-height;
         init => {
-            direction-control.focus-control();
+            reading-settings.focus-first();
         }
         key-pressed(event) => {
             if (event.text == Key.Escape) {
@@ -230,146 +230,46 @@ export component SettingsDialog inherits GlassModal {
                     alignment: start;
 
                     // ── Section: Reading ──────────────────────────────────────
-                    VerticalLayout {
-                        spacing: Theme.space-lg;
-                        Text {
-                            text: Strings.settings-section-reading;
-                            font-size: Theme.font-label;
-                            // Semibold eyebrow: hierarchy stays position/whitespace/
-                            // color (Apple grouped-list IA); weight alone separates
-                            // it from the regular row labels (spec 2026-06-04).
-                            font-weight: Theme.weight-semibold;
-                            color: Theme.text-dim;
-                            horizontal-alignment: left;
+                    reading-settings := ReadingSettings {
+                        reading-direction-index <=> root.reading-direction-index;
+                        spread-mode-index <=> root.spread-mode-index;
+                        set-reading-direction(i) => {
+                            root.set-reading-direction(i);
                         }
-                        SettingRow {
-                            label: Strings.settings-direction-label;
-                            direction-control := Segmented {
-                                model: [Strings.settings-direction-ltr, Strings.settings-direction-rtl];
-                                current-index <=> root.reading-direction-index;
-                                a11y-label: Strings.settings-direction-a11y;
-                                selected(i) => {
-                                    root.set-reading-direction(i);
-                                }
-                            }
-                        }
-                        SettingRow {
-                            label: Strings.settings-spread-label;
-                            Segmented {
-                                model: [Strings.settings-spread-single, Strings.settings-spread-double, Strings.settings-spread-auto];
-                                current-index <=> root.spread-mode-index;
-                                a11y-label: Strings.settings-spread-a11y;
-                                selected(i) => {
-                                    root.set-spread-mode(i);
-                                }
-                            }
+                        set-spread-mode(i) => {
+                            root.set-spread-mode(i);
                         }
                     }
 
                     // ── Section: Display ──────────────────────────────────────
-                    VerticalLayout {
-                        spacing: Theme.space-lg;
-                        Text {
-                            text: Strings.settings-section-display;
-                            font-size: Theme.font-label;
-                            font-weight: Theme.weight-semibold;
-                            color: Theme.text-dim;
-                            horizontal-alignment: left;
+                    DisplaySettings {
+                        cover-mode-index <=> root.cover-mode-index;
+                        fit-mode-index <=> root.fit-mode-index;
+                        set-cover-mode(i) => {
+                            root.set-cover-mode(i);
                         }
-                        SettingRow {
-                            label: Strings.settings-cover-label;
-                            Segmented {
-                                model: [Strings.settings-cover-standalone, Strings.settings-cover-paired];
-                                current-index <=> root.cover-mode-index;
-                                a11y-label: Strings.settings-cover-a11y;
-                                selected(i) => {
-                                    root.set-cover-mode(i);
-                                }
-                            }
-                        }
-                        SettingRow {
-                            label: Strings.settings-fit-label;
-                            Segmented {
-                                model: [Strings.settings-fit-whole, Strings.settings-fit-width, Strings.settings-fit-actual];
-                                current-index <=> root.fit-mode-index;
-                                a11y-label: Strings.settings-fit-a11y;
-                                selected(i) => {
-                                    root.set-fit-mode(i);
-                                }
-                            }
+                        set-fit-mode(i) => {
+                            root.set-fit-mode(i);
                         }
                     }
 
                     // ── Section: Performance ──────────────────────────────────
-                    VerticalLayout {
-                        spacing: Theme.space-lg;
-                        Text {
-                            text: Strings.settings-section-performance;
-                            font-size: Theme.font-label;
-                            font-weight: Theme.weight-semibold;
-                            color: Theme.text-dim;
-                            horizontal-alignment: left;
+                    PerformanceSettings {
+                        cache-size <=> root.cache-size;
+                        preload-pages <=> root.preload-pages;
+                        track-recent <=> root.track-recent;
+                        allow-rar-archives <=> root.allow-rar-archives;
+                        set-cache-size(v) => {
+                            root.set-cache-size(v);
                         }
-                        SettingRow {
-                            // A long label, but the Japanese settings-allow-rar-label below is the column-sizing driver.
-                            label: Strings.settings-cache-label;
-                            trailing: true;
-                            Stepper {
-                                value <=> root.cache-size;
-                                minimum: 1;
-                                maximum: 100;
-                                a11y-label: Strings.settings-cache-a11y;
-                                a11y-decrease-label: Strings.stepper-decrease-cache;
-                                a11y-increase-label: Strings.stepper-increase-cache;
-                                edited(v) => {
-                                    root.set-cache-size(v);
-                                }
-                            }
+                        set-preload-pages(v) => {
+                            root.set-preload-pages(v);
                         }
-                        SettingRow {
-                            label: Strings.settings-preload-label;
-                            trailing: true;
-                            Stepper {
-                                value <=> root.preload-pages;
-                                minimum: 0;
-                                maximum: 5;
-                                a11y-label: Strings.settings-preload-a11y;
-                                a11y-decrease-label: Strings.stepper-decrease-preload;
-                                a11y-increase-label: Strings.stepper-increase-preload;
-                                edited(v) => {
-                                    root.set-preload-pages(v);
-                                }
-                            }
+                        set-track-recent(b) => {
+                            root.set-track-recent(b);
                         }
-                        SettingRow {
-                            label: Strings.settings-track-recent-label;
-                            trailing: true;
-                            Toggle {
-                                checked <=> root.track-recent;
-                                a11y-label: Strings.settings-track-recent-a11y;
-                                toggled(b) => {
-                                    root.set-track-recent(b);
-                                }
-                            }
-                        }
-                        SettingRow {
-                            label: Strings.settings-allow-rar-label;
-                            trailing: true;
-                            Toggle {
-                                checked <=> root.allow-rar-archives;
-                                a11y-label: Strings.settings-allow-rar-a11y;
-                                toggled(b) => {
-                                    root.set-allow-rar-archives(b);
-                                }
-                            }
-                        }
-                        // Performance note at the label left margin.
-                        Text {
-                            text: Strings.settings-performance-note;
-                            font-size: Theme.font-micro;
-                            color: Theme.text-dim;
-                            horizontal-alignment: left;
-                            wrap: word-wrap;
+                        set-allow-rar-archives(b) => {
+                            root.set-allow-rar-archives(b);
                         }
                     }
 
@@ -378,140 +278,39 @@ export component SettingsDialog inherits GlassModal {
                     // edits the Library default (show-reset-button == false); the
                     // Viewer's per-book dialog hides it, as a global control has no
                     // place among one book's settings.
-                    if !root.show-reset-button : VerticalLayout {
-                        spacing: Theme.space-lg;
-                        Text {
-                            text: Strings.settings-section-general;
-                            font-size: Theme.font-label;
-                            font-weight: Theme.weight-semibold;
-                            color: Theme.text-dim;
-                            horizontal-alignment: left;
-                        }
-                        SettingRow {
-                            label: Strings.settings-language-label;
-                            trailing: true;
-                            Dropdown {
-                                // Language names are deliberately NOT translated:
-                                // a language switcher always shows each option
-                                // in its own tongue, so a user lost in the
-                                // wrong language can still find their own.
-                                model: ["English", "日本語"];
-                                current-index <=> root.language-index;
-                                a11y-label: Strings.settings-language-a11y;
-                                selected(i) => {
-                                    root.set-language(i);
-                                }
-                            }
+                    if !root.show-reset-button : GeneralSettings {
+                        language-index <=> root.language-index;
+                        set-language(i) => {
+                            root.set-language(i);
                         }
                     }
 
                     // ── Section: Data ─────────────────────────────────────────
-                    // The data-clearing utilities, promoted out of General into
-                    // their own section (spec 2026-06-08). Reuses the exact section
-                    // pattern (eyebrow + the space-xxl inter-section gap from the
-                    // parent layout; NO divider line). The two SecondaryButtons
-                    // stack VERTICALLY and FULL-WIDTH so the long Japanese labels
-                    // each sit on one line and the pair reads as one cohesive group.
                     // App-global utilities (clear history / cover cache): shown ONLY
                     // in the Library default dialog (show-reset-button == false), not
                     // in the Viewer's per-book dialog.
-                    if !root.show-reset-button : VerticalLayout {
-                        spacing: Theme.space-lg;
-                        Text {
-                            text: Strings.settings-section-data;
-                            font-size: Theme.font-label;
-                            font-weight: Theme.weight-semibold;
-                            color: Theme.text-dim;
-                            horizontal-alignment: left;
+                    if !root.show-reset-button : DataSettings {
+                        data-action-status: root.data-action-status;
+                        clear-reading-history() => {
+                            root.clear-reading-history();
                         }
-                        // Clear actions: immediate (no confirmation), status feedback
-                        // is surfaced via data-action-status. These are data-clearing
-                        // utilities, so they use the LOW-PROMINENCE bordered-neutral
-                        // SecondaryButton (HIG; NOT the affirmative accent PrimaryButton,
-                        // and deliberately NOT red — danger stays scarce). Full-width is
-                        // achieved at the call site via horizontal-stretch (overrides
-                        // SecondaryButton's own horizontal-stretch: 0), leaving the
-                        // component untouched; space-sm separates the stacked buttons.
-                        VerticalLayout {
-                            spacing: Theme.space-sm;
-                            SecondaryButton {
-                                horizontal-stretch: 1;
-                                text: Strings.settings-clear-history-label;
-                                clicked => {
-                                    root.clear-reading-history();
-                                }
-                            }
-                            SecondaryButton {
-                                horizontal-stretch: 1;
-                                text: Strings.settings-clear-cache-label;
-                                clicked => {
-                                    root.clear-cover-cache();
-                                }
-                            }
-                        }
-                        // Transient feedback line for clear-history / clear-cache
-                        // actions. Hidden when empty to avoid layout slack.
-                        if root.data-action-status != "" : Text {
-                            text: root.data-action-status;
-                            font-size: Theme.font-micro;
-                            color: Theme.text-dim;
-                            horizontal-alignment: left;
-                            wrap: word-wrap;
+                        clear-cover-cache() => {
+                            root.clear-cover-cache();
                         }
                     }
 
                     // ── Section: About (auto-update epic, Task 10) ────────────
                     // App-global, like General/Data above: shown ONLY in the
                     // Library default dialog, not the Viewer's per-book dialog.
-                    // Reuses the exact section pattern (eyebrow + the space-xxl
-                    // inter-section gap from the parent layout; NO divider line).
-                    if !root.show-reset-button : VerticalLayout {
-                        spacing: Theme.space-lg;
-                        Text {
-                            text: Strings.settings-section-about;
-                            font-size: Theme.font-label;
-                            font-weight: Theme.weight-semibold;
-                            color: Theme.text-dim;
-                            horizontal-alignment: left;
+                    if !root.show-reset-button : AboutSettings {
+                        app-version: root.app-version;
+                        auto-update-check <=> root.auto-update-check;
+                        update-status: root.update-status;
+                        set-auto-update-check(b) => {
+                            root.set-auto-update-check(b);
                         }
-                        // "gashuu <version>" — informational only, same weight
-                        // class as settings-performance-note below.
-                        Text {
-                            text: "gashuu " + root.app-version;
-                            font-size: Theme.font-body;
-                            color: Theme.text-mid;
-                            horizontal-alignment: left;
-                        }
-                        SettingRow {
-                            label: Strings.settings-auto-update-label;
-                            trailing: true;
-                            Toggle {
-                                checked <=> root.auto-update-check;
-                                a11y-label: Strings.settings-auto-update-a11y;
-                                toggled(b) => {
-                                    root.set-auto-update-check(b);
-                                }
-                            }
-                        }
-                        // Manual check: same low-prominence bordered-neutral
-                        // SecondaryButton as the Data section's utilities above
-                        // (NOT the affirmative accent PrimaryButton — checking
-                        // for updates is a utility action, not a CTA).
-                        SecondaryButton {
-                            horizontal-stretch: 1;
-                            text: Strings.settings-check-updates-label;
-                            clicked => {
-                                root.check-for-updates();
-                            }
-                        }
-                        // Transient feedback line for the manual check, same
-                        // hidden-when-empty gate + styling as data-action-status.
-                        if root.update-status != "" : Text {
-                            text: root.update-status;
-                            font-size: Theme.font-micro;
-                            color: Theme.text-dim;
-                            horizontal-alignment: left;
-                            wrap: word-wrap;
+                        check-for-updates() => {
+                            root.check-for-updates();
                         }
                     }
                 }

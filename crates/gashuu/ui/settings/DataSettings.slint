@@ -1,0 +1,62 @@
+// DataSettings — the "Data" settings section as a standalone unit.
+//
+// Extracted verbatim from SettingsDialog.slint's inline Data block: the two
+// full-width, low-prominence SecondaryButtons (clear reading history / clear
+// cover cache) that fire immediately (no confirmation), plus a hidden-when-empty
+// transient status line. Renders its own eyebrow (suppressible via `show-title`).
+// App-global, so the flat dialog gates it to the Library-default context. Theme.* only.
+import { Theme } from "../Theme.slint";
+import { Strings } from "../Strings.slint";
+import { SecondaryButton } from "../components/SecondaryButton.slint";
+
+export component DataSettings inherits VerticalLayout {
+    // Fired immediately when the user clicks "Clear reading history" — no confirmation.
+    callback clear-reading-history();
+    // Fired immediately when the user clicks "Clear cover cache" — no confirmation.
+    callback clear-cover-cache();
+    // Pre-composed feedback for the clear-history / clear-cache actions.
+    // Empty string = no message shown.
+    in property <string> data-action-status;
+    in property <bool> show-title: true;
+
+    spacing: Theme.space-lg;
+    if root.show-title : Text {
+        text: Strings.settings-section-data;
+        font-size: Theme.font-label;
+        font-weight: Theme.weight-semibold;
+        color: Theme.text-dim;
+        horizontal-alignment: left;
+    }
+    // Clear actions: immediate (no confirmation), status feedback is surfaced via
+    // data-action-status. These are data-clearing utilities, so they use the
+    // LOW-PROMINENCE bordered-neutral SecondaryButton (HIG; NOT the affirmative
+    // accent PrimaryButton, and deliberately NOT red — danger stays scarce).
+    // Full-width is achieved at the call site via horizontal-stretch (overrides
+    // SecondaryButton's own horizontal-stretch: 0); space-sm separates the pair.
+    VerticalLayout {
+        spacing: Theme.space-sm;
+        SecondaryButton {
+            horizontal-stretch: 1;
+            text: Strings.settings-clear-history-label;
+            clicked => {
+                root.clear-reading-history();
+            }
+        }
+        SecondaryButton {
+            horizontal-stretch: 1;
+            text: Strings.settings-clear-cache-label;
+            clicked => {
+                root.clear-cover-cache();
+            }
+        }
+    }
+    // Transient feedback line for clear-history / clear-cache actions. Hidden when
+    // empty to avoid layout slack.
+    if root.data-action-status != "" : Text {
+        text: root.data-action-status;
+        font-size: Theme.font-micro;
+        color: Theme.text-dim;
+        horizontal-alignment: left;
+        wrap: word-wrap;
+    }
+}

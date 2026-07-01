@@ -1,0 +1,56 @@
+// DisplaySettings — the "Display" settings section as a standalone unit.
+//
+// Extracted verbatim from SettingsDialog.slint's inline Display block (Cover +
+// Fit rows). Renders its own eyebrow (suppressible via `show-title`) so it can
+// be reused flat, in a drill-in sub-screen, or in the per-book dialog. Public
+// surface mirrors SettingsDialog's Display props exactly. Theme.* only.
+import { Theme } from "../Theme.slint";
+import { Strings } from "../Strings.slint";
+import { SettingRow } from "../components/SettingRow.slint";
+import { Segmented } from "../components/Segmented.slint";
+
+export component DisplaySettings inherits VerticalLayout {
+    // Index into ["Standalone", "Paired"].
+    in-out property <int> cover-mode-index;
+    // Index into ["Whole", "Width", "Actual"].
+    in-out property <int> fit-mode-index;
+    callback set-cover-mode(int);
+    callback set-fit-mode(int);
+    in property <bool> show-title: true;
+
+    // Focus the first control (the Cover Segmented) on open / drill-in.
+    public function focus-first() {
+        cover-control.focus-control();
+    }
+
+    spacing: Theme.space-lg;
+    if root.show-title : Text {
+        text: Strings.settings-section-display;
+        font-size: Theme.font-label;
+        font-weight: Theme.weight-semibold;
+        color: Theme.text-dim;
+        horizontal-alignment: left;
+    }
+    SettingRow {
+        label: Strings.settings-cover-label;
+        cover-control := Segmented {
+            model: [Strings.settings-cover-standalone, Strings.settings-cover-paired];
+            current-index <=> root.cover-mode-index;
+            a11y-label: Strings.settings-cover-a11y;
+            selected(i) => {
+                root.set-cover-mode(i);
+            }
+        }
+    }
+    SettingRow {
+        label: Strings.settings-fit-label;
+        Segmented {
+            model: [Strings.settings-fit-whole, Strings.settings-fit-width, Strings.settings-fit-actual];
+            current-index <=> root.fit-mode-index;
+            a11y-label: Strings.settings-fit-a11y;
+            selected(i) => {
+                root.set-fit-mode(i);
+            }
+        }
+    }
+}

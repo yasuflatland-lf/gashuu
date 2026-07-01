@@ -1,0 +1,64 @@
+// ReadingSettings — the "Reading" settings section as a standalone unit.
+//
+// Extracted verbatim from SettingsDialog.slint's inline Reading block so the
+// section becomes an independently composable unit (the flat dialog composes it,
+// and the HIG drill-in / per-book dialogs reuse it). Renders its own eyebrow
+// (suppressible via `show-title` so a drill-in sub-screen can supply its own
+// header) plus the Direction + Spread rows. The public property/callback surface
+// mirrors SettingsDialog's Reading props exactly, so wiring is a straight
+// pass-through. Colors / lengths come from Theme.* only (check-tokens.sh).
+import { Theme } from "../Theme.slint";
+import { Strings } from "../Strings.slint";
+import { SettingRow } from "../components/SettingRow.slint";
+import { Segmented } from "../components/Segmented.slint";
+
+export component ReadingSettings inherits VerticalLayout {
+    // Index into ["Left to Right", "Right to Left"].
+    in-out property <int> reading-direction-index;
+    // Index into ["Single", "Double", "Auto"].
+    in-out property <int> spread-mode-index;
+    callback set-reading-direction(int);
+    callback set-spread-mode(int);
+    // When false, the section eyebrow is suppressed (a drill-in sub-screen
+    // supplies its own header). Defaults true so the flat dialog is unchanged.
+    in property <bool> show-title: true;
+
+    // Focus the first control (the Direction Segmented) — the dialog calls this
+    // on open / on drill-in. Mirrors Segmented's `focus-control` seam idiom.
+    public function focus-first() {
+        direction-control.focus-control();
+    }
+
+    spacing: Theme.space-lg;
+    if root.show-title : Text {
+        text: Strings.settings-section-reading;
+        font-size: Theme.font-label;
+        // Semibold eyebrow: hierarchy stays position/whitespace/color (Apple
+        // grouped-list IA); weight alone separates it from the regular row labels.
+        font-weight: Theme.weight-semibold;
+        color: Theme.text-dim;
+        horizontal-alignment: left;
+    }
+    SettingRow {
+        label: Strings.settings-direction-label;
+        direction-control := Segmented {
+            model: [Strings.settings-direction-ltr, Strings.settings-direction-rtl];
+            current-index <=> root.reading-direction-index;
+            a11y-label: Strings.settings-direction-a11y;
+            selected(i) => {
+                root.set-reading-direction(i);
+            }
+        }
+    }
+    SettingRow {
+        label: Strings.settings-spread-label;
+        Segmented {
+            model: [Strings.settings-spread-single, Strings.settings-spread-double, Strings.settings-spread-auto];
+            current-index <=> root.spread-mode-index;
+            a11y-label: Strings.settings-spread-a11y;
+            selected(i) => {
+                root.set-spread-mode(i);
+            }
+        }
+    }
+}
