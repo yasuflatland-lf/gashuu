@@ -54,6 +54,7 @@ pub use update::asset::select_asset;
 pub use update::check::{should_check, CHECK_INTERVAL_SECS};
 pub use update::packaging::{detect_packaging, Packaging, UpdateStrategy};
 pub use update::release::{parse_latest_release, Asset, ReleaseInfo};
+pub use update::verify::{parse_sha256sums, sha256_hex, verify};
 pub use update::version::{is_update_available, should_notify};
 pub use view_modes::{
     CoverMode, FitMode, KeyBindings, Language, ReadingDirection, SpreadLayout, SpreadMode,

@@ -7,4 +7,5 @@ pub mod asset;
 pub mod check;
 pub mod packaging;
 pub mod release;
+pub mod verify;
 pub mod version;
