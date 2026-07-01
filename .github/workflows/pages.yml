@@ -24,16 +24,25 @@ jobs:
   deploy:
     name: deploy (github-pages)
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: site
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+      # node + pnpm come from site/mise.toml (install: false skips the root Rust
+      # toolchain). The landing page is a Vite build: site/dist is published.
+      - uses: jdx/mise-action@e6a8b3978addb5a52f2b4cd9d91eafa7f0ab959d # v4
+        with:
+          install: false
+      - run: mise trust && mise install
+      - run: mise exec -- pnpm install --frozen-lockfile
+      - run: mise run build
       - uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6
-      # The landing page is fully static (Tailwind v4 browser build + React via
-      # CDN), so there is no build step: site/ is uploaded as-is.
       - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5
         with:
-          path: site
+          path: site/dist
       - id: deployment
         uses: actions/deploy-pages@cd2ce8fcbc39b97be8ca5fce6e763baed58fa128 # v5

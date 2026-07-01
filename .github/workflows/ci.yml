@@ -136,3 +136,25 @@ jobs:
       - if: matrix.os == 'ubuntu-latest'
         run: cargo clippy -p gashuu --all-targets -- -D warnings
       - run: cargo nextest run -p gashuu --profile ci
+
+  # The landing site (site/): a pnpm + Vite + React + TS app. node + pnpm are
+  # pinned by site/mise.toml; the gate runs Biome, tsc, Knip and a production
+  # build. Independent of the Rust gates. Runs on every PR (like core/app) — the
+  # job is small and self-contained, so no path filtering is added.
+  site:
+    name: site (vite/react)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: site
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+      # install: false — do NOT auto-install the repo-root mise.toml's Rust
+      # toolchain. The site toolchain (node + pnpm) is in site/mise.toml and is
+      # installed below from the site working directory.
+      - uses: jdx/mise-action@e6a8b3978addb5a52f2b4cd9d91eafa7f0ab959d # v4
+        with:
+          install: false
+      - run: mise trust && mise install
+      - run: mise exec -- pnpm install --frozen-lockfile
+      - run: mise run check
