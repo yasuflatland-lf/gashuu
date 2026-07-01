@@ -74,6 +74,12 @@ export component SettingsDialog inherits GlassModal {
     in property <string> app-version;
     // Whether the app checks GitHub Releases for a newer version on startup.
     in-out property <bool> auto-update-check: true;
+    // Transient feedback for the manual "Check for updates now" button (e.g.
+    // "Checking…" / "You're on the latest version." / "Couldn't check for
+    // updates."). Empty string = no message shown, same convention as
+    // `data-action-status` below. Rust clears it once a newer version is found
+    // (the update-available dialog takes over) or on the next manual check.
+    in property <string> update-status;
     // True when this dialog edits the CURRENT book's per-book settings (opened
     // from the Viewer): shows the per-book title and the reset-to-global button.
     in property <bool> show-reset-button: false;
@@ -496,6 +502,15 @@ export component SettingsDialog inherits GlassModal {
                             clicked => {
                                 root.check-for-updates();
                             }
+                        }
+                        // Transient feedback line for the manual check, same
+                        // hidden-when-empty gate + styling as data-action-status.
+                        if root.update-status != "" : Text {
+                            text: root.update-status;
+                            font-size: Theme.font-micro;
+                            color: Theme.text-dim;
+                            horizontal-alignment: left;
+                            wrap: word-wrap;
                         }
                     }
                 }

@@ -341,6 +341,10 @@ export component ViewerWindow inherits Window {
     // the root window surface to Rust.
     in property <string> settings-app-version;
     in-out property <bool> settings-auto-update-check: true;
+    // Transient feedback for the manual "Check for updates now" button; forwarded
+    // straight to SettingsDialog's `update-status` (same one-way in-prop shape as
+    // `data-action-status`/`settings-app-version`).
+    in property <string> settings-update-status;
     callback settings-check-for-updates();
     callback settings-set-auto-update-check(bool);
 
@@ -759,6 +763,7 @@ export component ViewerWindow inherits Window {
         // allow-rar-archives above.
         app-version: root.settings-app-version;
         auto-update-check <=> root.settings-auto-update-check;
+        update-status: root.settings-update-status;
         check-for-updates() => { root.settings-check-for-updates(); }
         set-auto-update-check(b) => { root.settings-set-auto-update-check(b); }
         close-settings() => { root.close-settings(); }

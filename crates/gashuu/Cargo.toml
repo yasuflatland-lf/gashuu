@@ -25,6 +25,16 @@ i18n-embed = { version = "0.16", features = ["fluent-system"] }
 i18n-embed-fl = "0.10"
 rust-embed = "8"
 unic-langid = { version = "0.9", features = ["macros"] }
+# HTTP client for the update checker. Default features use rustls (no OpenSSL),
+# so the build stays cross-platform and self-contained. Runs on a rayon thread.
+ureq = "2"
+# Open the release page in the browser and reveal downloaded files in the OS
+# file manager (Finder/Explorer) for the guided-install paths.
+opener = "0.7"
+# Resolve the platform Downloads directory for the guided-install download
+# (macOS reveal path). Core already depends on this; the UI crate needs its
+# own declaration to call `UserDirs` directly.
+directories = "6"
 
 [build-dependencies]
 # Pinned to match the exact `slint` version above (they must stay in lockstep).
