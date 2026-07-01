@@ -31,7 +31,7 @@ ureq = "2"
 # Open the release page in the browser and reveal downloaded files in the OS
 # file manager (Finder/Explorer) for the guided-install paths. `reveal` is a
 # non-default feature that gates `opener::reveal`.
-opener = { version = "0.7", features = ["reveal"] }
+opener = { version = "0.8", features = ["reveal"] }
 # Resolve the platform Downloads directory for the guided-install download
 # (macOS reveal path). Core already depends on this; the UI crate needs its
 # own declaration to call `UserDirs` directly.
