@@ -1,0 +1,75 @@
+// AboutSettings — the "About" settings section as a standalone unit.
+//
+// Extracted verbatim from SettingsDialog.slint's inline About block (auto-update
+// epic, Task 10): the "gashuu <version>" line, the auto-update toggle, the manual
+// "Check for updates now" SecondaryButton, and a hidden-when-empty status line.
+// Renders its own eyebrow (suppressible via `show-title`). App-global, so the
+// flat dialog gates it to the Library-default context. Theme.* only.
+//
+// (The Shortcuts entry stays in the dialog footer for now — it is relocated into
+// this sub-screen in a later batch step.)
+import { Theme } from "../Theme.slint";
+import { Strings } from "../Strings.slint";
+import { SettingRow } from "../components/SettingRow.slint";
+import { Toggle } from "../components/Toggle.slint";
+import { SecondaryButton } from "../components/SecondaryButton.slint";
+
+export component AboutSettings inherits VerticalLayout {
+    // The running app's version (e.g. "0.11.0"), pre-composed in Rust.
+    in property <string> app-version;
+    // Whether the app checks GitHub Releases for a newer version on startup.
+    in-out property <bool> auto-update-check: true;
+    // Transient feedback for the manual "Check for updates now" button. Empty
+    // string = no message shown.
+    in property <string> update-status;
+    callback set-auto-update-check(bool);
+    callback check-for-updates();
+    in property <bool> show-title: true;
+
+    spacing: Theme.space-lg;
+    if root.show-title : Text {
+        text: Strings.settings-section-about;
+        font-size: Theme.font-label;
+        font-weight: Theme.weight-semibold;
+        color: Theme.text-dim;
+        horizontal-alignment: left;
+    }
+    // "gashuu <version>" — informational only, same weight class as the
+    // performance note.
+    Text {
+        text: "gashuu " + root.app-version;
+        font-size: Theme.font-body;
+        color: Theme.text-mid;
+        horizontal-alignment: left;
+    }
+    SettingRow {
+        label: Strings.settings-auto-update-label;
+        trailing: true;
+        Toggle {
+            checked <=> root.auto-update-check;
+            a11y-label: Strings.settings-auto-update-a11y;
+            toggled(b) => {
+                root.set-auto-update-check(b);
+            }
+        }
+    }
+    // Manual check: same low-prominence bordered-neutral SecondaryButton as the
+    // Data section's utilities (NOT the affirmative accent PrimaryButton —
+    // checking for updates is a utility action, not a CTA).
+    SecondaryButton {
+        horizontal-stretch: 1;
+        text: Strings.settings-check-updates-label;
+        clicked => {
+            root.check-for-updates();
+        }
+    }
+    // Transient feedback line for the manual check, same hidden-when-empty gate +
+    // styling as data-action-status.
+    if root.update-status != "" : Text {
+        text: root.update-status;
+        font-size: Theme.font-micro;
+        color: Theme.text-dim;
+        horizontal-alignment: left;
+        wrap: word-wrap;
+    }
+}
