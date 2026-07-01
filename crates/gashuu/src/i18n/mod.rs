@@ -208,6 +208,27 @@ impl Localizer {
         strings.set_common_close(fl!(self.loader, "common-close").into());
         strings.set_confirm_delete_cancel(fl!(self.loader, "confirm-delete-cancel").into());
 
+        // ---- Plain pushes (SettingsDialog: About / auto-update epic) ------
+        strings.set_settings_section_about(fl!(self.loader, "settings-section-about").into());
+        strings
+            .set_settings_auto_update_label(fl!(self.loader, "settings-auto-update-label").into());
+        strings.set_settings_auto_update_a11y(fl!(self.loader, "settings-auto-update-a11y").into());
+        strings.set_settings_check_updates_label(
+            fl!(self.loader, "settings-check-updates-label").into(),
+        );
+
+        // ---- Plain pushes (UpdateAvailableDialog) --------------------------
+        strings.set_update_available_title(fl!(self.loader, "update-available-title").into());
+        strings.set_update_notes_label(fl!(self.loader, "update-notes-label").into());
+        strings.set_update_accept_label(fl!(self.loader, "update-accept-label").into());
+        strings.set_update_later_label(fl!(self.loader, "update-later-label").into());
+        strings.set_update_skip_label(fl!(self.loader, "update-skip-label").into());
+
+        // ---- Plain pushes (update-check dynamic status, handlers/update.rs) -
+        strings.set_update_status_checking(fl!(self.loader, "update-status-checking").into());
+        strings.set_update_status_latest(fl!(self.loader, "update-status-latest").into());
+        strings.set_update_status_failed(fl!(self.loader, "update-status-failed").into());
+
         // ---- Plain pushes (SelectionToolbar) ------------------------------
         strings.set_selection_enter(fl!(self.loader, "selection-enter").into());
         strings.set_selection_exit_a11y(fl!(self.loader, "selection-exit-a11y").into());

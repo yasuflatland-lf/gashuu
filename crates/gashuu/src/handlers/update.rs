@@ -17,7 +17,7 @@
 
 use crate::update::net::{download_bytes, fetch_latest_release_json};
 use crate::update::{UpdateError, CURRENT_VERSION, RELEASES_PAGE_URL};
-use crate::ViewerWindow;
+use crate::{Strings, ViewerWindow};
 use gashuu_core::{
     detect_packaging, parse_latest_release, parse_sha256sums, select_asset, should_check,
     should_notify, verify, Packaging, ReleaseInfo, Settings, UpdateStrategy, CHECK_INTERVAL_SECS,
@@ -82,7 +82,7 @@ pub(crate) fn start_update_check(ui: &ViewerWindow, settings: &Rc<RefCell<Settin
     let weak = ui.as_weak();
     let skipped_for_decision = if force { None } else { skipped };
     if force {
-        ui.set_settings_update_status("Checking for updates…".into());
+        ui.set_settings_update_status(ui.global::<Strings>().get_update_status_checking());
     }
     rayon::spawn(move || {
         let result = fetch_latest_release_json()
@@ -113,12 +113,16 @@ pub(crate) fn start_update_check(ui: &ViewerWindow, settings: &Rc<RefCell<Settin
                 }
                 Some(_) => {
                     if force {
-                        ui.set_settings_update_status("You're on the latest version.".into());
+                        ui.set_settings_update_status(
+                            ui.global::<Strings>().get_update_status_latest(),
+                        );
                     }
                 }
                 None => {
                     if force {
-                        ui.set_settings_update_status("Couldn't check for updates.".into());
+                        ui.set_settings_update_status(
+                            ui.global::<Strings>().get_update_status_failed(),
+                        );
                     }
                 }
             }

@@ -104,6 +104,12 @@ export global Strings {
     in property <string> update-accept-label: "Update now";
     in property <string> update-later-label: "Later";
     in property <string> update-skip-label: "Skip this version";
+    // Dynamic status messages set from Rust during a manual/startup update
+    // check (see handlers/update.rs); Rust reads these getters rather than
+    // hardcoding English literals so the status line is localized too.
+    in property <string> update-status-checking: "Checking for updates…";
+    in property <string> update-status-latest: "You're on the latest version.";
+    in property <string> update-status-failed: "Couldn't check for updates.";
 
     // ── SelectionToolbar ──────────────────────────────────────────────────────
     in property <string> selection-enter: "Select";
