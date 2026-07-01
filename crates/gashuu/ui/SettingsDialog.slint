@@ -383,6 +383,9 @@ export component SettingsDialog inherits GlassModal {
                         }
                         row-reading := SettingsNavRow {
                             label: Strings.settings-section-reading;
+                            // Live preview of the current reading direction (read
+                            // only — reuses the direction option strings).
+                            value: root.reading-direction-index == 1 ? Strings.settings-direction-rtl : Strings.settings-direction-ltr;
                             clicked => {
                                 root.active-row = 0;
                                 root.current-screen = 1;
@@ -390,6 +393,11 @@ export component SettingsDialog inherits GlassModal {
                         }
                         row-display := SettingsNavRow {
                             label: Strings.settings-section-display;
+                            // Live preview of the current fit mode (reuses the fit
+                            // option strings; index 0/1/2 = Whole/Width/Actual).
+                            value: root.fit-mode-index == 0 ? Strings.settings-fit-whole
+                                : root.fit-mode-index == 1 ? Strings.settings-fit-width
+                                : Strings.settings-fit-actual;
                             clicked => {
                                 root.active-row = 1;
                                 root.current-screen = 2;
@@ -404,6 +412,9 @@ export component SettingsDialog inherits GlassModal {
                         }
                         row-general := SettingsNavRow {
                             label: Strings.settings-section-general;
+                            // Language name in its OWN tongue (deliberately
+                            // untranslated, matching the language dropdown).
+                            value: root.language-index == 1 ? "日本語" : "English";
                             clicked => {
                                 root.active-row = 3;
                                 root.current-screen = 4;
@@ -411,6 +422,8 @@ export component SettingsDialog inherits GlassModal {
                         }
                         row-about := SettingsNavRow {
                             label: Strings.settings-section-about;
+                            // Current app version (read only).
+                            value: root.app-version;
                             clicked => {
                                 root.active-row = 4;
                                 root.current-screen = 5;
