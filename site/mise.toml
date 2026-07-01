@@ -8,6 +8,10 @@ pnpm = "10"
 description = "Vite dev server"
 run = "pnpm dev"
 
+[tasks.preview]
+description = "Preview the production build locally"
+run = "pnpm preview"
+
 [tasks.build]
 description = "Type-check and produce the production build in dist/"
 run = "pnpm build"
