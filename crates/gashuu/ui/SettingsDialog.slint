@@ -48,6 +48,62 @@ import { DataSettings } from "settings/DataSettings.slint";
 import { AboutSettings } from "settings/AboutSettings.slint";
 import { SettingsNavRow } from "components/SettingsNavRow.slint";
 
+// Slide wrapper for one drill-in screen (issue 351). Clips a horizontal entrance
+// and hugs the inner content height, so `content.preferred-height` — hence the
+// eased `panel-height` — still content-hugs the active screen. Detail screens
+// enter from the RIGHT (drill-in, `from-left` default false); the top list enters
+// from the LEFT on back-navigation (`from-left: true`). On the initial dialog open
+// (`nav-animate` false) the content mounts in place at x: 0, so opening the dialog
+// never slides. Each call site slots its own screen content via @children and its
+// own focus `init` — the id it focuses is declared in the call site's scope, so
+// the focus call must live there (an id inside an `if` subtree is unreachable from
+// outside it).
+//
+// The entrance-flip is DEFERRED to after the first frame by a 1ms Timer, NOT done
+// in `init`: a fresh if-gated instance that flips `entered` in `init` SNAPS — init
+// runs before the inner `x` is first evaluated, so `x` mounts at 0 with no
+// off-screen start (patterns.md — "a new instance snaps with no transition"). The
+// Timer fires post-mount, so `x` mounts off-screen and then animates in. `running`
+// self-stops once `entered` flips, so it fires exactly once and never on the
+// static initial open (nav-animate false).
+component SlideScreen inherits Rectangle {
+    // Mirrors the dialog's `nav-animate`: false only for the static first open,
+    // true for every later screen swap so it slides.
+    in property <bool> nav-animate;
+    // The top list enters from the left (back-navigation); detail screens from the
+    // right (drill-in).
+    in property <bool> from-left: false;
+    // Inter-child gap for the slotted content (list rows: space-xs; General+Data:
+    // space-xxl; single-child detail screens leave the 0 default).
+    in property <length> content-spacing: 0px;
+    property <bool> entered: false;
+    // Off-screen start until `entered` flips: the left-entering list sits at
+    // -width, the right-entering detail screens at +width.
+    property <length> hidden-x: root.from-left ? -root.width : root.width;
+
+    clip: true;
+    height: mover.preferred-height;
+
+    Timer {
+        interval: 1ms;
+        running: root.nav-animate && !root.entered;
+        triggered => {
+            root.entered = true;
+        }
+    }
+
+    mover := VerticalLayout {
+        width: root.width;
+        x: (root.entered || !root.nav-animate) ? 0px : root.hidden-x;
+        spacing: root.content-spacing;
+        animate x {
+            duration: Theme.motion-med;
+            easing: ease-in-out;
+        }
+        @children
+    }
+}
+
 export component SettingsDialog inherits GlassModal {
     // ── In-out properties (two-way bound to UI controls) ─────────────────────
     // Index into ["Left to Right", "Right to Left"].
@@ -139,6 +195,11 @@ export component SettingsDialog inherits GlassModal {
     // Slint↔Rust surface.
     property <int> current-screen: 0;
     property <int> active-row: 0;
+    // Gates the drill-in slide so the dialog OPENS static (no slide on the first
+    // mount): it flips true on the first navigation and stays true for the life of
+    // the (re-instantiated-per-open) dialog. Each screen reads it to decide whether
+    // to enter from off-screen or mount in place.
+    property <bool> nav-animate: false;
 
     // ── Panel geometry + backdrop wiring (glass chrome lives in GlassModal) ────
     // Responsive width: shows the full 432px on roomy windows, but never
@@ -155,6 +216,16 @@ export component SettingsDialog inherits GlassModal {
     panel-height: min(
         Theme.space-lg + header-row.preferred-height + content.preferred-height + footer-block.height,
         max(0px, root.height - 2 * Theme.space-huge));
+    // Ease the content-hug height so a drill-in that changes the active screen's
+    // height glides instead of jumping. `animate` does NOT fire on the initial
+    // binding, so the dialog still opens at its resting height with no animation;
+    // only later screen swaps ease. (Only x and panel-height are animated — the
+    // glass drop-shadow stays static, since animating drop-shadow-* is version-
+    // fragile — docs/patterns.md.)
+    animate panel-height {
+        duration: Theme.motion-med;
+        easing: ease-in-out;
+    }
     backdrop-clicked => { root.close-settings(); }
 
     // ── FocusScope: Esc-to-close + initial focus on the first control ──────
@@ -192,6 +263,7 @@ export component SettingsDialog inherits GlassModal {
                 // pops back to the top list; from the top list (or the flat
                 // per-book dialog) it closes.
                 if (!root.show-reset-button && root.current-screen > 0) {
+                    root.nav-animate = true;
                     root.current-screen = 0;
                     return accept;
                 }
@@ -254,11 +326,13 @@ export component SettingsDialog inherits GlassModal {
                             width: back-label.preferred-width;
                             height: back-label.preferred-height;
                             clicked => {
+                                root.nav-animate = true;
                                 root.current-screen = 0;
                             }
                         }
                         key-pressed(event) => {
                             if (event.text == Key.Return || event.text == Key.Space) {
+                                root.nav-animate = true;
                                 root.current-screen = 0;
                                 return accept;
                             }
@@ -266,7 +340,10 @@ export component SettingsDialog inherits GlassModal {
                         }
                         accessible-role: button;
                         accessible-label: Strings.settings-title;
-                        accessible-action-default => { root.current-screen = 0; }
+                        accessible-action-default => {
+                            root.nav-animate = true;
+                            root.current-screen = 0;
+                        }
                     }
                     Text {
                         text: root.current-screen == 1 ? Strings.settings-section-reading
@@ -361,13 +438,16 @@ export component SettingsDialog inherits GlassModal {
                     // controls stay OUT of the Tab chain when inactive; only the
                     // active screen's content is instantiated, so
                     // `content.preferred-height` (hence panel-height) hugs it.
-                    if !root.show-reset-button && root.current-screen == 0 : VerticalLayout {
-                        spacing: Theme.space-xs;
+                    if !root.show-reset-button && root.current-screen == 0 : SlideScreen {
+                        // The top list enters from the LEFT on a back-navigation.
+                        from-left: true;
+                        nav-animate: root.nav-animate;
+                        content-spacing: Theme.space-xs;
                         // On (re)creation focus the originating row: the first row on
-                        // the initial mount (active-row defaults 0) or the row the
-                        // user drilled from when returning. `init` fires exactly when
-                        // this list is mounted, so the row already exists (whereas
-                        // `changed` can run before the gated subtree is built).
+                        // the initial mount (active-row defaults 0) or the row the user
+                        // drilled from when returning. `init` fires exactly when this
+                        // list is mounted, so the row already exists. The row ids are
+                        // declared in THIS if-subtree, so the focus init must live here.
                         init => {
                             if (root.active-row == 1) {
                                 row-display.focus-row();
@@ -387,6 +467,7 @@ export component SettingsDialog inherits GlassModal {
                             // only — reuses the direction option strings).
                             value: root.reading-direction-index == 1 ? Strings.settings-direction-rtl : Strings.settings-direction-ltr;
                             clicked => {
+                                root.nav-animate = true;
                                 root.active-row = 0;
                                 root.current-screen = 1;
                             }
@@ -399,6 +480,7 @@ export component SettingsDialog inherits GlassModal {
                                 : root.fit-mode-index == 1 ? Strings.settings-fit-width
                                 : Strings.settings-fit-actual;
                             clicked => {
+                                root.nav-animate = true;
                                 root.active-row = 1;
                                 root.current-screen = 2;
                             }
@@ -406,6 +488,7 @@ export component SettingsDialog inherits GlassModal {
                         row-performance := SettingsNavRow {
                             label: Strings.settings-section-performance;
                             clicked => {
+                                root.nav-animate = true;
                                 root.active-row = 2;
                                 root.current-screen = 3;
                             }
@@ -416,6 +499,7 @@ export component SettingsDialog inherits GlassModal {
                             // untranslated, matching the language dropdown).
                             value: root.language-index == 1 ? "日本語" : "English";
                             clicked => {
+                                root.nav-animate = true;
                                 root.active-row = 3;
                                 root.current-screen = 4;
                             }
@@ -425,14 +509,17 @@ export component SettingsDialog inherits GlassModal {
                             // Current app version (read only).
                             value: root.app-version;
                             clicked => {
+                                root.nav-animate = true;
                                 root.active-row = 4;
                                 root.current-screen = 5;
                             }
                         }
                     }
 
-                    // Screen 1 — Reading detail.
-                    if !root.show-reset-button && root.current-screen == 1 : VerticalLayout {
+                    // Screen 1 — Reading detail. Enters from the RIGHT on drill-in
+                    // (SlideScreen default).
+                    if !root.show-reset-button && root.current-screen == 1 : SlideScreen {
+                        nav-animate: root.nav-animate;
                         init => {
                             reading-detail.focus-first();
                         }
@@ -450,7 +537,8 @@ export component SettingsDialog inherits GlassModal {
                     }
 
                     // Screen 2 — Display detail.
-                    if !root.show-reset-button && root.current-screen == 2 : VerticalLayout {
+                    if !root.show-reset-button && root.current-screen == 2 : SlideScreen {
+                        nav-animate: root.nav-animate;
                         init => {
                             display-detail.focus-first();
                         }
@@ -468,7 +556,8 @@ export component SettingsDialog inherits GlassModal {
                     }
 
                     // Screen 3 — Performance detail.
-                    if !root.show-reset-button && root.current-screen == 3 : VerticalLayout {
+                    if !root.show-reset-button && root.current-screen == 3 : SlideScreen {
+                        nav-animate: root.nav-animate;
                         init => {
                             performance-detail.focus-first();
                         }
@@ -495,8 +584,9 @@ export component SettingsDialog inherits GlassModal {
 
                     // Screen 4 — General + Data detail. Data keeps its eyebrow as a
                     // sub-heading within the General screen (spec).
-                    if !root.show-reset-button && root.current-screen == 4 : VerticalLayout {
-                        spacing: Theme.space-xxl;
+                    if !root.show-reset-button && root.current-screen == 4 : SlideScreen {
+                        nav-animate: root.nav-animate;
+                        content-spacing: Theme.space-xxl;
                         init => {
                             general-detail.focus-first();
                         }
@@ -524,7 +614,8 @@ export component SettingsDialog inherits GlassModal {
                     // dialog scope: Esc / back / Tab all work and the back control is
                     // the first Tab stop. About now hosts the Shortcuts row, forwarded
                     // to the dialog's existing open-shortcuts() callback.
-                    if !root.show-reset-button && root.current-screen == 5 : VerticalLayout {
+                    if !root.show-reset-button && root.current-screen == 5 : SlideScreen {
+                        nav-animate: root.nav-animate;
                         init => {
                             fs.focus();
                         }
