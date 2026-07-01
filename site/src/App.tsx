@@ -1,4 +1,11 @@
-// Stub during scaffolding; sections are added in Tasks 2–4.
+import { Header } from './components/Header';
+import { Hero } from './components/Hero';
+
 export function App() {
-  return <div className="overflow-hidden" />;
+  return (
+    <div className="overflow-hidden">
+      <Header />
+      <Hero />
+    </div>
+  );
 }
