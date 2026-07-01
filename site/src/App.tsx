@@ -1,6 +1,9 @@
+import { FaqSection } from './components/FaqSection';
 import { FeaturesSection } from './components/FeaturesSection';
+import { Footer } from './components/Footer';
 import { Header } from './components/Header';
 import { Hero } from './components/Hero';
+import { PricingSection } from './components/PricingSection';
 import { VideoSection } from './components/VideoSection';
 import { asset } from './lib/asset';
 
@@ -28,6 +31,9 @@ export function App() {
         alt="gashuuのビューアで高解像度の漫画をなめらかに読むデモ"
         ratio="900 / 634"
       />
+      <PricingSection />
+      <FaqSection />
+      <Footer />
     </div>
   );
 }
