@@ -493,7 +493,7 @@ export component ViewerWindow inherits Window {
             fs := FocusScope {
                 key-pressed(event) => {
                     // Suppress background navigation while a modal overlay is open.
-                    if (root.show-settings || root.show-shortcuts) { return reject; }
+                    if (root.show-settings || root.show-shortcuts || root.show-confirm-delete || root.show-update-available) { return reject; }
                     if (event.text == Key.LeftArrow) {
                         root.nav("left");
                         return accept;
