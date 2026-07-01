@@ -48,6 +48,13 @@
         "/^dprint/"
       ],
       "groupName": "lint"
+    },
+    {
+      "description": "Group all landing site (site/) updates: JS/TS deps, biome and the node/pnpm toolchain (overrides the rust/typescript/lint groups above)",
+      "matchFileNames": [
+        "site/**"
+      ],
+      "groupName": "site"
     }
   ]
 }
