@@ -22,6 +22,8 @@ unrar = "0.5"
 # Atomic JSON persistence: write to a same-directory temp file, fsync, then rename
 # over the target so settings.json / library.json are never left truncated on crash.
 tempfile = "3"
+# Semver comparison for the update checker (compares release tag vs CARGO_PKG_VERSION).
+semver = "1"
 
 [dev-dependencies]
 insta = "1.47.2"

@@ -1886,6 +1886,7 @@ dependencies = [
  "lru",
  "mockall",
  "rayon",
+ "semver",
  "serde",
  "serde_json",
  "tempfile",
