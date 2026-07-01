@@ -231,6 +231,24 @@ field / UI for the cap.
   the two cleanup controls above survived. No new dependencies.
 - **Implemented on branch `refactor/add_private_mode`, pending merge** (not yet shipped on `main`).
 
+### Auto-update checker — GitHub Releases, hybrid packaging-aware (see [ADR-0013](ADRs/0013-auto-update.md))
+
+An in-app updater checks `releases/latest` on GitHub on startup (24h throttle, `Settings.auto_update_check`)
+and on demand (Settings dialog's About section "Check for updates now"), and notifies via
+`UpdateAvailableDialog` (Update now / Later / Skip this version) when a newer semver tag is found. The
+post-confirmation action is packaging-aware (`detect_packaging` from `current_exe()` + `$APPIMAGE`,
+no `cfg!(target_os)`): macOS `.app` downloads + SHA-256-verifies the asset then reveals it in Finder
+for a manual drag-install (its ad-hoc, non-notarized signing makes in-place replace unsafe); Linux
+`.deb` and any unrecognized build (e.g. `cargo run`) just open the GitHub release page (deb defers to
+apt/dpkg); Linux AppImage and Windows portable resolve to `SelfReplace`, but that arm still falls
+back to opening the release page until the in-place self-replace pipeline lands. Every downloaded
+asset is verified against the release's `SHA256SUMS` before use. **Implemented on branch
+`worktree-auto-update`**, shipped in two stages: notify + guided-download paths (all platforms)
+first, then in-place self-replace for AppImage/Windows.
+- No new `gashuu-core` I/O: `semver` (version compare) and `sha2` (checksum) are pure additions.
+  `gashuu` gains its first networking dependency, `ureq` (rustls), plus `opener` (open URL / reveal
+  in file manager).
+
 ---
 
 ## Deferred (intentionally out of scope)
