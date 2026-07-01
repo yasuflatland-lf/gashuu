@@ -4,4 +4,5 @@
 //! unit-tested without side effects.
 
 pub mod check;
+pub mod release;
 pub mod version;
