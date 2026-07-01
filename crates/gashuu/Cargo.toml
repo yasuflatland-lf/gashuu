@@ -27,7 +27,7 @@ rust-embed = "8"
 unic-langid = { version = "0.9", features = ["macros"] }
 # HTTP client for the update checker. Default features use rustls (no OpenSSL),
 # so the build stays cross-platform and self-contained. Runs on a rayon thread.
-ureq = "2"
+ureq = "3"
 # Open the release page in the browser and reveal downloaded files in the OS
 # file manager (Finder/Explorer) for the guided-install paths. `reveal` is a
 # non-default feature that gates `opener::reveal`.
