@@ -46,6 +46,7 @@ import { PerformanceSettings } from "settings/PerformanceSettings.slint";
 import { GeneralSettings } from "settings/GeneralSettings.slint";
 import { DataSettings } from "settings/DataSettings.slint";
 import { AboutSettings } from "settings/AboutSettings.slint";
+import { SettingsNavRow } from "components/SettingsNavRow.slint";
 
 export component SettingsDialog inherits GlassModal {
     // ── In-out properties (two-way bound to UI controls) ─────────────────────
@@ -129,6 +130,16 @@ export component SettingsDialog inherits GlassModal {
         fs.focus();
     }
 
+    // ── Drill-in navigation state (issue 348) ─────────────────────────────────
+    // Which screen the GLOBAL (Library) dialog shows: 0 = the grouped top-level
+    // list, 1..5 = a category detail (Reading / Display / Performance /
+    // General+Data / About). The per-book (Viewer) dialog ignores this and stays
+    // flat. `active-row` remembers which top-list row drilled in, so returning to
+    // the list restores focus to it. Internal state — not part of the public
+    // Slint↔Rust surface.
+    property <int> current-screen: 0;
+    property <int> active-row: 0;
+
     // ── Panel geometry + backdrop wiring (glass chrome lives in GlassModal) ────
     // Responsive width: shows the full 432px on roomy windows, but never
     // overflows a narrow one — it shrinks to leave a small space-md gutter
@@ -170,11 +181,20 @@ export component SettingsDialog inherits GlassModal {
         // window and overflow the panel; `root.panel-*` is the panel's true size.
         width: root.panel-width;
         height: root.panel-height;
-        init => {
-            reading-settings.focus-first();
-        }
+        // Initial focus is set by each content screen's own `init` (which fires on
+        // the initial mount, unlike `changed`): the per-book wrapper focuses its
+        // first control, and the global top list focuses its first row. An id
+        // declared inside an `if` subtree is not reachable from here, so the focus
+        // must live where the id is in scope.
         key-pressed(event) => {
             if (event.text == Key.Escape) {
+                // Two-stage Esc for the global drill-in: from a detail screen, Esc
+                // pops back to the top list; from the top list (or the flat
+                // per-book dialog) it closes.
+                if (!root.show-reset-button && root.current-screen > 0) {
+                    root.current-screen = 0;
+                    return accept;
+                }
                 root.close-settings();
                 return accept;
             }
@@ -190,11 +210,17 @@ export component SettingsDialog inherits GlassModal {
             padding-top: Theme.space-lg;
 
             // ── Sticky header ─────────────────────────────────────────────────
+            // Adaptive: the top-level title on the flat per-book dialog and the
+            // global top list (screen 0); a "‹ Settings" back control + category
+            // name on the global detail screens (1..5). The back control stays in
+            // the sticky header so it is always reachable while the body scrolls.
             header-row := HorizontalLayout {
                 padding-left: Theme.space-xl;
                 padding-right: Theme.space-xl;
                 padding-bottom: Theme.space-md;
-                Text {
+                spacing: Theme.space-sm;
+                // Top-level title (per-book always; global only on the top list).
+                if root.show-reset-button || root.current-screen == 0 : Text {
                     // "Book settings" when editing the current book's per-book
                     // override (opened from the Viewer); plain "Settings" for the
                     // global defaults (Library screen).
@@ -205,6 +231,56 @@ export component SettingsDialog inherits GlassModal {
                     horizontal-alignment: left;
                     accessible-role: text;
                     accessible-label: root.show-reset-button ? Strings.settings-book-title : Strings.settings-title;
+                }
+                // Sub-screen header (global detail screens): back control + category.
+                if !root.show-reset-button && root.current-screen != 0 : HorizontalLayout {
+                    spacing: Theme.space-sm;
+                    // Focusable "‹ Settings" back control: pops to the top list on
+                    // click / Return / Space / AT default. Esc is rejected so it
+                    // propagates to the ancestor `fs` (two-stage Esc).
+                    back-control := FocusScope {
+                        horizontal-stretch: 0;
+                        width: back-label.preferred-width;
+                        back-label := Text {
+                            height: 100%;
+                            text: "‹ " + Strings.settings-title;
+                            font-size: Theme.font-title;
+                            font-weight: Theme.weight-semibold;
+                            color: parent.has-focus ? Theme.text-high : Theme.text-dim;
+                            horizontal-alignment: left;
+                            vertical-alignment: center;
+                        }
+                        TouchArea {
+                            width: back-label.preferred-width;
+                            height: back-label.preferred-height;
+                            clicked => {
+                                root.current-screen = 0;
+                            }
+                        }
+                        key-pressed(event) => {
+                            if (event.text == Key.Return || event.text == Key.Space) {
+                                root.current-screen = 0;
+                                return accept;
+                            }
+                            return reject;
+                        }
+                        accessible-role: button;
+                        accessible-label: Strings.settings-title;
+                        accessible-action-default => { root.current-screen = 0; }
+                    }
+                    Text {
+                        text: root.current-screen == 1 ? Strings.settings-section-reading
+                            : root.current-screen == 2 ? Strings.settings-section-display
+                            : root.current-screen == 3 ? Strings.settings-section-performance
+                            : root.current-screen == 4 ? Strings.settings-section-general
+                            : Strings.settings-section-about;
+                        font-size: Theme.font-title;
+                        font-weight: Theme.weight-semibold;
+                        color: Theme.text-high;
+                        horizontal-alignment: left;
+                        vertical-alignment: center;
+                        accessible-role: text;
+                    }
                 }
             }
 
@@ -229,88 +305,226 @@ export component SettingsDialog inherits GlassModal {
                     padding-bottom: Theme.space-xxl;
                     alignment: start;
 
-                    // ── Section: Reading ──────────────────────────────────────
-                    reading-settings := ReadingSettings {
-                        reading-direction-index <=> root.reading-direction-index;
-                        spread-mode-index <=> root.spread-mode-index;
-                        set-reading-direction(i) => {
-                            root.set-reading-direction(i);
+                    // ══ Per-book (Viewer): flat — unchanged from the extraction ══
+                    // Reading + Display + Performance with their eyebrows; the
+                    // global-only General/Data/About are omitted, exactly as
+                    // before. The drill-in navigation below is global-only.
+                    if root.show-reset-button : VerticalLayout {
+                        spacing: Theme.space-xxl;
+                        init => {
+                            book-reading.focus-first();
                         }
-                        set-spread-mode(i) => {
-                            root.set-spread-mode(i);
+                        book-reading := ReadingSettings {
+                            reading-direction-index <=> root.reading-direction-index;
+                            spread-mode-index <=> root.spread-mode-index;
+                            set-reading-direction(i) => {
+                                root.set-reading-direction(i);
+                            }
+                            set-spread-mode(i) => {
+                                root.set-spread-mode(i);
+                            }
                         }
-                    }
-
-                    // ── Section: Display ──────────────────────────────────────
-                    DisplaySettings {
-                        cover-mode-index <=> root.cover-mode-index;
-                        fit-mode-index <=> root.fit-mode-index;
-                        set-cover-mode(i) => {
-                            root.set-cover-mode(i);
+                        DisplaySettings {
+                            cover-mode-index <=> root.cover-mode-index;
+                            fit-mode-index <=> root.fit-mode-index;
+                            set-cover-mode(i) => {
+                                root.set-cover-mode(i);
+                            }
+                            set-fit-mode(i) => {
+                                root.set-fit-mode(i);
+                            }
                         }
-                        set-fit-mode(i) => {
-                            root.set-fit-mode(i);
-                        }
-                    }
-
-                    // ── Section: Performance ──────────────────────────────────
-                    PerformanceSettings {
-                        cache-size <=> root.cache-size;
-                        preload-pages <=> root.preload-pages;
-                        track-recent <=> root.track-recent;
-                        allow-rar-archives <=> root.allow-rar-archives;
-                        set-cache-size(v) => {
-                            root.set-cache-size(v);
-                        }
-                        set-preload-pages(v) => {
-                            root.set-preload-pages(v);
-                        }
-                        set-track-recent(b) => {
-                            root.set-track-recent(b);
-                        }
-                        set-allow-rar-archives(b) => {
-                            root.set-allow-rar-archives(b);
-                        }
-                    }
-
-                    // ── Section: General ──────────────────────────────────────
-                    // App-global settings (language). Shown ONLY when the dialog
-                    // edits the Library default (show-reset-button == false); the
-                    // Viewer's per-book dialog hides it, as a global control has no
-                    // place among one book's settings.
-                    if !root.show-reset-button : GeneralSettings {
-                        language-index <=> root.language-index;
-                        set-language(i) => {
-                            root.set-language(i);
+                        PerformanceSettings {
+                            cache-size <=> root.cache-size;
+                            preload-pages <=> root.preload-pages;
+                            track-recent <=> root.track-recent;
+                            allow-rar-archives <=> root.allow-rar-archives;
+                            set-cache-size(v) => {
+                                root.set-cache-size(v);
+                            }
+                            set-preload-pages(v) => {
+                                root.set-preload-pages(v);
+                            }
+                            set-track-recent(b) => {
+                                root.set-track-recent(b);
+                            }
+                            set-allow-rar-archives(b) => {
+                                root.set-allow-rar-archives(b);
+                            }
                         }
                     }
 
-                    // ── Section: Data ─────────────────────────────────────────
-                    // App-global utilities (clear history / cover cache): shown ONLY
-                    // in the Library default dialog (show-reset-button == false), not
-                    // in the Viewer's per-book dialog.
-                    if !root.show-reset-button : DataSettings {
-                        data-action-status: root.data-action-status;
-                        clear-reading-history() => {
-                            root.clear-reading-history();
+                    // ══ Global (Library): HIG drill-in navigation ══
+                    // Screen 0 — the grouped top-level list. Each row drills into a
+                    // category. Value previews are added in a later batch step.
+                    // Sub-screens are gated by `if current-screen == N` so their
+                    // controls stay OUT of the Tab chain when inactive; only the
+                    // active screen's content is instantiated, so
+                    // `content.preferred-height` (hence panel-height) hugs it.
+                    if !root.show-reset-button && root.current-screen == 0 : VerticalLayout {
+                        spacing: Theme.space-xs;
+                        // On (re)creation focus the originating row: the first row on
+                        // the initial mount (active-row defaults 0) or the row the
+                        // user drilled from when returning. `init` fires exactly when
+                        // this list is mounted, so the row already exists (whereas
+                        // `changed` can run before the gated subtree is built).
+                        init => {
+                            if (root.active-row == 1) {
+                                row-display.focus-row();
+                            } else if (root.active-row == 2) {
+                                row-performance.focus-row();
+                            } else if (root.active-row == 3) {
+                                row-general.focus-row();
+                            } else if (root.active-row == 4) {
+                                row-about.focus-row();
+                            } else {
+                                row-reading.focus-row();
+                            }
                         }
-                        clear-cover-cache() => {
-                            root.clear-cover-cache();
+                        row-reading := SettingsNavRow {
+                            label: Strings.settings-section-reading;
+                            clicked => {
+                                root.active-row = 0;
+                                root.current-screen = 1;
+                            }
+                        }
+                        row-display := SettingsNavRow {
+                            label: Strings.settings-section-display;
+                            clicked => {
+                                root.active-row = 1;
+                                root.current-screen = 2;
+                            }
+                        }
+                        row-performance := SettingsNavRow {
+                            label: Strings.settings-section-performance;
+                            clicked => {
+                                root.active-row = 2;
+                                root.current-screen = 3;
+                            }
+                        }
+                        row-general := SettingsNavRow {
+                            label: Strings.settings-section-general;
+                            clicked => {
+                                root.active-row = 3;
+                                root.current-screen = 4;
+                            }
+                        }
+                        row-about := SettingsNavRow {
+                            label: Strings.settings-section-about;
+                            clicked => {
+                                root.active-row = 4;
+                                root.current-screen = 5;
+                            }
                         }
                     }
 
-                    // ── Section: About (auto-update epic, Task 10) ────────────
-                    // App-global, like General/Data above: shown ONLY in the
-                    // Library default dialog, not the Viewer's per-book dialog.
-                    if !root.show-reset-button : AboutSettings {
-                        app-version: root.app-version;
-                        auto-update-check <=> root.auto-update-check;
-                        update-status: root.update-status;
-                        set-auto-update-check(b) => {
-                            root.set-auto-update-check(b);
+                    // Screen 1 — Reading detail.
+                    if !root.show-reset-button && root.current-screen == 1 : VerticalLayout {
+                        init => {
+                            reading-detail.focus-first();
                         }
-                        check-for-updates() => {
-                            root.check-for-updates();
+                        reading-detail := ReadingSettings {
+                            show-title: false;
+                            reading-direction-index <=> root.reading-direction-index;
+                            spread-mode-index <=> root.spread-mode-index;
+                            set-reading-direction(i) => {
+                                root.set-reading-direction(i);
+                            }
+                            set-spread-mode(i) => {
+                                root.set-spread-mode(i);
+                            }
+                        }
+                    }
+
+                    // Screen 2 — Display detail.
+                    if !root.show-reset-button && root.current-screen == 2 : VerticalLayout {
+                        init => {
+                            display-detail.focus-first();
+                        }
+                        display-detail := DisplaySettings {
+                            show-title: false;
+                            cover-mode-index <=> root.cover-mode-index;
+                            fit-mode-index <=> root.fit-mode-index;
+                            set-cover-mode(i) => {
+                                root.set-cover-mode(i);
+                            }
+                            set-fit-mode(i) => {
+                                root.set-fit-mode(i);
+                            }
+                        }
+                    }
+
+                    // Screen 3 — Performance detail.
+                    if !root.show-reset-button && root.current-screen == 3 : VerticalLayout {
+                        init => {
+                            performance-detail.focus-first();
+                        }
+                        performance-detail := PerformanceSettings {
+                            show-title: false;
+                            cache-size <=> root.cache-size;
+                            preload-pages <=> root.preload-pages;
+                            track-recent <=> root.track-recent;
+                            allow-rar-archives <=> root.allow-rar-archives;
+                            set-cache-size(v) => {
+                                root.set-cache-size(v);
+                            }
+                            set-preload-pages(v) => {
+                                root.set-preload-pages(v);
+                            }
+                            set-track-recent(b) => {
+                                root.set-track-recent(b);
+                            }
+                            set-allow-rar-archives(b) => {
+                                root.set-allow-rar-archives(b);
+                            }
+                        }
+                    }
+
+                    // Screen 4 — General + Data detail. Data keeps its eyebrow as a
+                    // sub-heading within the General screen (spec).
+                    if !root.show-reset-button && root.current-screen == 4 : VerticalLayout {
+                        spacing: Theme.space-xxl;
+                        init => {
+                            general-detail.focus-first();
+                        }
+                        general-detail := GeneralSettings {
+                            show-title: false;
+                            language-index <=> root.language-index;
+                            set-language(i) => {
+                                root.set-language(i);
+                            }
+                        }
+                        DataSettings {
+                            show-title: true;
+                            data-action-status: root.data-action-status;
+                            clear-reading-history() => {
+                                root.clear-reading-history();
+                            }
+                            clear-cover-cache() => {
+                                root.clear-cover-cache();
+                            }
+                        }
+                    }
+
+                    // Screen 5 — About detail. AboutSettings has no focusable-first
+                    // seam (its first control is a Toggle), so focus falls to the
+                    // dialog scope: Esc / back / Tab all work and the back control is
+                    // the first Tab stop.
+                    if !root.show-reset-button && root.current-screen == 5 : VerticalLayout {
+                        init => {
+                            fs.focus();
+                        }
+                        AboutSettings {
+                            show-title: false;
+                            app-version: root.app-version;
+                            auto-update-check <=> root.auto-update-check;
+                            update-status: root.update-status;
+                            set-auto-update-check(b) => {
+                                root.set-auto-update-check(b);
+                            }
+                            check-for-updates() => {
+                                root.check-for-updates();
+                            }
                         }
                     }
                 }
@@ -373,7 +587,11 @@ export component SettingsDialog inherits GlassModal {
                     // accessible default action (accessible-action-default). Esc is
                     // rejected here so it propagates up to the ancestor `fs` Esc
                     // handler and closes the dialog (standard Slint upward-walk).
-                    shortcuts := FocusScope {
+                    // Shown on the top list (screen 0) and the flat per-book dialog
+                    // — which never leaves screen 0 — but hidden on the global
+                    // detail screens, where the footer collapses to Close only. (Its
+                    // permanent home is the About sub-screen in a later batch step.)
+                    if root.current-screen == 0 : FocusScope {
                         horizontal-stretch: 0;
                         width: shortcuts-label.preferred-width;
                         // No height override: the scope stretches to the row
