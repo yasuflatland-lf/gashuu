@@ -6,8 +6,9 @@
 // Renders its own eyebrow (suppressible via `show-title`). App-global, so the
 // flat dialog gates it to the Library-default context. Theme.* only.
 //
-// (The Shortcuts entry stays in the dialog footer for now — it is relocated into
-// this sub-screen in a later batch step.)
+// Also hosts the "Shortcuts" entry (relocated here from the dialog footer): a
+// SettingsNavRow-style row that opens the keyboard-shortcuts overlay, so the
+// footer collapses to a single Close action on every screen.
 import { Theme } from "../Theme.slint";
 import { Strings } from "../Strings.slint";
 import { SettingRow } from "../components/SettingRow.slint";
@@ -24,6 +25,10 @@ export component AboutSettings inherits VerticalLayout {
     in property <string> update-status;
     callback set-auto-update-check(bool);
     callback check-for-updates();
+    // Fired when the user activates the "Shortcuts" row (mouse / Return / Space /
+    // AT default). The dialog forwards it to its own open-shortcuts() callback,
+    // which ViewerWindow already wires to the ShortcutsOverlay.
+    callback open-shortcuts();
     in property <bool> show-title: true;
 
     spacing: Theme.space-lg;
@@ -71,5 +76,62 @@ export component AboutSettings inherits VerticalLayout {
         color: Theme.text-dim;
         horizontal-alignment: left;
         wrap: word-wrap;
+    }
+
+    // ── Shortcuts ─────────────────────────────────────────────────────────────
+    // Opens the keyboard-shortcuts overlay. Styled like a SettingsNavRow (label +
+    // chevron, hover/focus accent-glow fill), driven by DIRECT Theme.* bindings on
+    // touch.has-hover / fs.has-focus (NavItem precedent — a states[] block cannot
+    // assign a child's property). Activates on click / Return / Space / AT default;
+    // Esc is REJECTED so it walks up to the dialog's ancestor FocusScope (the
+    // two-stage Esc). The visible label carries the ⌨ glyph; the accessible label
+    // is the plain shortcuts title (no glyph) for screen readers.
+    Rectangle {
+        height: Theme.settings-row-h;
+        border-radius: Theme.radius-md;
+        background: (shortcuts-touch.has-hover || shortcuts-fs.has-focus) ? Theme.accent-glow : transparent;
+        animate background { duration: Theme.motion-fast; }
+
+        shortcuts-fs := FocusScope {
+            key-pressed(event) => {
+                if (event.text == Key.Return || event.text == Key.Space) {
+                    root.open-shortcuts();
+                    return accept;
+                }
+                return reject;
+            }
+        }
+
+        HorizontalLayout {
+            padding-left: Theme.space-sm;
+            padding-right: Theme.space-sm;
+            spacing: Theme.space-sm;
+            Text {
+                text: Strings.settings-shortcuts-label;
+                font-size: Theme.font-body;
+                color: (shortcuts-touch.has-hover || shortcuts-fs.has-focus) ? Theme.text-high : Theme.text-mid;
+                horizontal-alignment: left;
+                vertical-alignment: center;
+            }
+            Rectangle { horizontal-stretch: 1; }
+            Text {
+                text: "›";
+                font-size: Theme.font-title;
+                color: Theme.text-faint;
+                horizontal-alignment: right;
+                vertical-alignment: center;
+            }
+        }
+
+        shortcuts-touch := TouchArea {
+            clicked => {
+                shortcuts-fs.focus();
+                root.open-shortcuts();
+            }
+        }
+
+        accessible-role: button;
+        accessible-label: Strings.shortcuts-title;
+        accessible-action-default => { root.open-shortcuts(); }
     }
 }

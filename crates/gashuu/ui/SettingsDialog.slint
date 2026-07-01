@@ -522,7 +522,8 @@ export component SettingsDialog inherits GlassModal {
                     // Screen 5 — About detail. AboutSettings has no focusable-first
                     // seam (its first control is a Toggle), so focus falls to the
                     // dialog scope: Esc / back / Tab all work and the back control is
-                    // the first Tab stop.
+                    // the first Tab stop. About now hosts the Shortcuts row, forwarded
+                    // to the dialog's existing open-shortcuts() callback.
                     if !root.show-reset-button && root.current-screen == 5 : VerticalLayout {
                         init => {
                             fs.focus();
@@ -537,6 +538,9 @@ export component SettingsDialog inherits GlassModal {
                             }
                             check-for-updates() => {
                                 root.check-for-updates();
+                            }
+                            open-shortcuts() => {
+                                root.open-shortcuts();
                             }
                         }
                     }
@@ -563,20 +567,18 @@ export component SettingsDialog inherits GlassModal {
                     background: Theme.hairline;
                 }
 
-                // Footer order: [Shortcuts] … [Reset to global] [Close]. The
-                // default (stretch) alignment lets the single stretch spacer
-                // own the slack, pinning Shortcuts to the LEFT edge and the
-                // action button(s) hard RIGHT (both-ends, HIG; spec
-                // 2026-06-04). A literal `alignment: start` DISABLES child
-                // stretch factors — the old bug that glued Close to
-                // Shortcuts (docs/patterns.md). `space-between` would
-                // scatter 3+ items instead of grouping Reset with Close. The
-                // Reset button only appears in the per-book (viewer)
-                // context; the 377px panel minus the two space-xl gutters
-                // cannot fit the full "Reset to global defaults" label
-                // beside Shortcuts and Close on one line, so the label is
-                // shortened to "Reset to global" (the accessible-label
-                // carries the full intent).
+                // Footer order: [Shortcuts?] … [Reset to global?] [Close]. The
+                // GLOBAL dialog moved its Shortcuts link into the About sub-screen,
+                // so its footer is Close-only on every screen. The per-book (Viewer)
+                // dialog has no About screen — and the settings dialog is the only
+                // path to the shortcuts overlay — so it keeps the left Shortcuts
+                // link (gated on show-reset-button), giving [Shortcuts] … [Reset]
+                // [Close]. A single stretch spacer owns the slack and pins the
+                // action button(s) hard RIGHT (both-ends, HIG; spec 2026-06-04). A
+                // literal `alignment: start` DISABLES child stretch factors — the
+                // old bug that glued Close to Shortcuts (docs/patterns.md). The Reset
+                // button only appears in the per-book context; its label is shortened
+                // to "Reset to global" (the accessible-label carries the full intent).
                 footer-row := HorizontalLayout {
                     x: 0;
                     y: Theme.space-lg;
@@ -593,26 +595,18 @@ export component SettingsDialog inherits GlassModal {
                     padding-right: Theme.space-xl;
                     spacing: Theme.space-md;
 
-                    // LEFT: a focusable "Shortcuts" link. Sits in the Tab order
-                    // between the controls and Close (declaration order). Activating
-                    // it fires root.open-shortcuts() via three paths: mouse click
-                    // (TouchArea), keyboard Return/Space (key-pressed), and the
-                    // accessible default action (accessible-action-default). Esc is
-                    // rejected here so it propagates up to the ancestor `fs` Esc
-                    // handler and closes the dialog (standard Slint upward-walk).
-                    // Shown on the top list (screen 0) and the flat per-book dialog
-                    // — which never leaves screen 0 — but hidden on the global
-                    // detail screens, where the footer collapses to Close only. (Its
-                    // permanent home is the About sub-screen in a later batch step.)
-                    if root.current-screen == 0 : FocusScope {
+                    // LEFT (per-book only): a focusable "Shortcuts" link. The GLOBAL
+                    // dialog relocated Shortcuts into the About sub-screen, but the
+                    // per-book (Viewer) dialog has no About screen — and the settings
+                    // dialog is the only path to the shortcuts overlay — so the
+                    // per-book footer keeps the link. Activates on mouse click /
+                    // Return / Space / AT default; Esc is rejected so it walks up to
+                    // the ancestor `fs` and closes the dialog.
+                    if root.show-reset-button : FocusScope {
                         horizontal-stretch: 0;
                         width: shortcuts-label.preferred-width;
-                        // No height override: the scope stretches to the row
-                        // height so the label centers on the SAME horizontal
-                        // centerline as the Close button (spec 2026-06-04).
-                        // Idle goes text-dim (static affordance); focus brightens to
-                        // text-high so the Tab ring is visible without an accent rule
-                        // (accent stays interactive/selected-only).
+                        // Idle text-dim (static affordance); focus brightens to
+                        // text-high so the Tab ring shows without an accent rule.
                         shortcuts-label := Text {
                             height: 100%;
                             text: Strings.settings-shortcuts-label;
@@ -621,7 +615,6 @@ export component SettingsDialog inherits GlassModal {
                             horizontal-alignment: left;
                             vertical-alignment: center;
                         }
-                        // Mouse activation.
                         TouchArea {
                             width: shortcuts-label.preferred-width;
                             height: shortcuts-label.preferred-height;
@@ -629,9 +622,6 @@ export component SettingsDialog inherits GlassModal {
                                 root.open-shortcuts();
                             }
                         }
-                        // Keyboard activation: Return and Space open the overlay;
-                        // everything else is rejected so keys propagate to ancestors
-                        // (Esc in particular must reach the ancestor `fs` to close).
                         key-pressed(event) => {
                             if (event.text == Key.Return || event.text == Key.Space) {
                                 root.open-shortcuts();
@@ -641,11 +631,12 @@ export component SettingsDialog inherits GlassModal {
                         }
                         accessible-role: button;
                         accessible-label: Strings.shortcuts-title;
-                        // Accessibility default action mirrors NavItem/Toggle idiom.
                         accessible-action-default => { root.open-shortcuts(); }
                     }
 
-                    // Stretch spacer: pushes the action button(s) hard right.
+                    // Stretch spacer: owns the slack and pushes the action button(s)
+                    // hard right. On the global dialog (no Shortcuts link) this is the
+                    // first footer child, so the footer reads as Close-only.
                     Rectangle { horizontal-stretch: 1; }
 
                     // RIGHT (per-book only): reset the current book's overrides
