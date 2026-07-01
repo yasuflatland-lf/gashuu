@@ -1,0 +1,33 @@
+# Toolchain + task runner for the landing site. Directory-scoped: the repo-root
+# mise.toml stays Rust-only, so Rust CI jobs never pull node. Activates on `cd site`.
+[tools]
+node = "22"
+pnpm = "10"
+
+[tasks.dev]
+description = "Vite dev server"
+run = "pnpm dev"
+
+[tasks.preview]
+description = "Preview the production build locally"
+run = "pnpm preview"
+
+[tasks.build]
+description = "Type-check and produce the production build in dist/"
+run = "pnpm build"
+
+[tasks.lint]
+description = "Biome format + lint check"
+run = "pnpm lint"
+
+[tasks.typecheck]
+description = "TypeScript project type-check"
+run = "pnpm typecheck"
+
+[tasks.knip]
+description = "Detect unused files, exports and dependencies"
+run = "pnpm knip"
+
+[tasks.check]
+description = "Full PR gate: lint + typecheck + knip + build"
+depends = ["lint", "typecheck", "knip", "build"]
