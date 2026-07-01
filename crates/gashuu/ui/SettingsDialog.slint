@@ -78,7 +78,8 @@ export component SettingsDialog inherits GlassModal {
     // "Checking…" / "You're on the latest version." / "Couldn't check for
     // updates."). Empty string = no message shown, same convention as
     // `data-action-status` below. Rust clears it once a newer version is found
-    // (the update-available dialog takes over) or on the next manual check.
+    // (the update-available dialog takes over), on the next manual check, and
+    // on the next dialog open (on_open_settings sets it back to "").
     in property <string> update-status;
     // True when this dialog edits the CURRENT book's per-book settings (opened
     // from the Viewer): shows the per-book title and the reset-to-global button.

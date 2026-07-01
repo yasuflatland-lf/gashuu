@@ -10,7 +10,7 @@ pub(crate) mod settings;
 pub(crate) mod update;
 pub(crate) mod viewer;
 
-// Re-export each wire_* fn at the handlers:: level so main.rs needs no sub-module path.
+// Re-export each wire_* fn (plus start_update_check) at the handlers:: level so main.rs needs no sub-module path.
 pub(crate) use drag_drop::wire_drag_drop_handlers;
 pub(crate) use library::{wire_carousel_handlers, wire_open_handlers, wire_selection_handlers};
 pub(crate) use settings::{wire_settings_handlers, wire_view_mode_handlers};

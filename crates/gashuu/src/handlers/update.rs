@@ -44,7 +44,7 @@ fn stash_release(info: ReleaseInfo) {
 
 /// Read back the most recently fetched release (a clone) for the dialog's
 /// action handlers. UI-thread only.
-fn take_release() -> Option<ReleaseInfo> {
+fn latest_release() -> Option<ReleaseInfo> {
     LATEST.with(|c| c.borrow().clone())
 }
 
@@ -75,7 +75,9 @@ pub(crate) fn start_update_check(ui: &ViewerWindow, settings: &Rc<RefCell<Settin
     {
         let mut s = settings.borrow_mut();
         s.last_update_check = Some(now);
-        let _ = s.save();
+        if let Err(e) = s.save() {
+            tracing::warn!(error = %e, "failed to persist last update check timestamp");
+        }
     }
     let weak = ui.as_weak();
     let skipped_for_decision = if force { None } else { skipped };
@@ -135,7 +137,9 @@ pub(crate) fn wire_update_handlers(ui: &ViewerWindow, settings: &Rc<RefCell<Sett
     // Release notes → open the release page in the browser. No settings
     // capture needed; runs entirely on the UI thread.
     ui.on_update_notes(|| {
-        let _ = opener::open(RELEASES_PAGE_URL);
+        if let Err(e) = opener::open(RELEASES_PAGE_URL) {
+            tracing::warn!(error = %e, "failed to open release notes page");
+        }
     });
 
     // Later → the .slint already flips show-update-available = false before
@@ -146,10 +150,12 @@ pub(crate) fn wire_update_handlers(ui: &ViewerWindow, settings: &Rc<RefCell<Sett
     {
         let settings = Rc::clone(settings);
         ui.on_update_skip(move || {
-            if let Some(info) = take_release() {
+            if let Some(info) = latest_release() {
                 let mut s = settings.borrow_mut();
                 s.skipped_version = Some(info.version);
-                let _ = s.save();
+                if let Err(e) = s.save() {
+                    tracing::warn!(error = %e, "failed to persist skipped update version");
+                }
             }
         });
     }
@@ -162,7 +168,7 @@ pub(crate) fn wire_update_handlers(ui: &ViewerWindow, settings: &Rc<RefCell<Sett
             let Some(ui) = weak.upgrade() else {
                 return;
             };
-            let Some(info) = take_release() else {
+            let Some(info) = latest_release() else {
                 return;
             };
             let exe = std::env::current_exe().unwrap_or_default();
@@ -170,7 +176,9 @@ pub(crate) fn wire_update_handlers(ui: &ViewerWindow, settings: &Rc<RefCell<Sett
             let pkg = detect_packaging(&exe, appimage.as_deref());
             match pkg.strategy() {
                 UpdateStrategy::OpenReleasePage => {
-                    let _ = opener::open(RELEASES_PAGE_URL);
+                    if let Err(e) = opener::open(RELEASES_PAGE_URL) {
+                        tracing::warn!(error = %e, "failed to open release page");
+                    }
                     ui.set_show_update_available(false);
                 }
                 UpdateStrategy::RevealDownload => {
@@ -180,7 +188,9 @@ pub(crate) fn wire_update_handlers(ui: &ViewerWindow, settings: &Rc<RefCell<Sett
                     // PR1: no in-place replace yet — fall back to the release
                     // page. A follow-up PR replaces this arm with the real
                     // self-replace pipeline for AppImage/Windows.
-                    let _ = opener::open(RELEASES_PAGE_URL);
+                    if let Err(e) = opener::open(RELEASES_PAGE_URL) {
+                        tracing::warn!(error = %e, "failed to open release page");
+                    }
                     ui.set_show_update_available(false);
                 }
             }
@@ -195,7 +205,9 @@ pub(crate) fn wire_update_handlers(ui: &ViewerWindow, settings: &Rc<RefCell<Sett
         ui.on_settings_set_auto_update_check(move |v| {
             let mut s = settings.borrow_mut();
             s.auto_update_check = v;
-            let _ = s.save();
+            if let Err(e) = s.save() {
+                tracing::warn!(error = %e, "failed to persist auto-update toggle");
+            }
         });
     }
     // Settings: "Check for updates now" — force = true bypasses the enabled
@@ -229,14 +241,18 @@ fn reveal_download(ui: &ViewerWindow, pkg: Packaging, info: ReleaseInfo) {
             ui.set_update_in_progress(false);
             match outcome {
                 Ok(path) => {
-                    let _ = opener::reveal(&path);
+                    if let Err(e) = opener::reveal(&path) {
+                        tracing::warn!(error = %e, "failed to reveal downloaded update in file manager");
+                    }
                     ui.set_show_update_available(false);
                 }
                 Err(e) => {
                     ui.set_update_status_text(
                         format!("Download failed: {e}. Opening release page…").into(),
                     );
-                    let _ = opener::open(RELEASES_PAGE_URL);
+                    if let Err(e) = opener::open(RELEASES_PAGE_URL) {
+                        tracing::warn!(error = %e, "failed to open release page");
+                    }
                 }
             }
         });

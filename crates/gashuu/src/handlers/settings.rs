@@ -83,6 +83,10 @@ pub(crate) fn wire_settings_handlers(
                 // Clear any stale data-clearing status from a prior open so the
                 // feedback line starts hidden each time the dialog opens.
                 ui.set_data_action_status("".into());
+                // Same for the manual "Check for updates now" feedback line —
+                // otherwise a stale "You're on the latest version." from a prior
+                // open would persist across close/reopen.
+                ui.set_settings_update_status(Default::default());
                 ui.set_language_index(language_to_index(s.language));
                 ui.set_key_bindings_text(
                     crate::i18n::dynamic::shortcuts_help(localizer.loader()).into(),
