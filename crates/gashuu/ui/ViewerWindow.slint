@@ -334,6 +334,15 @@ export component ViewerWindow inherits Window {
     callback clear-reading-history();
     callback clear-cover-cache();
     callback set-language(int);
+    // ── SettingsDialog: About / auto-update (auto-update epic, Task 10) ───────
+    // Root twins forwarded straight through to SettingsDialog's `app-version` /
+    // `auto-update-check` / `check-for-updates()` / `set-auto-update-check(bool)`
+    // — same reason as every other root twin in this file: Slint exposes only
+    // the root window surface to Rust.
+    in property <string> settings-app-version;
+    in-out property <bool> settings-auto-update-check: true;
+    callback settings-check-for-updates();
+    callback settings-set-auto-update-check(bool);
 
     // ── Library screen ────────────────────────────────────────────────────────
     // Both screens are always instantiated and toggled with `visible` (rather
@@ -743,6 +752,15 @@ export component ViewerWindow inherits Window {
         clear-reading-history() => { root.clear-reading-history(); }
         clear-cover-cache() => { root.clear-cover-cache(); }
         set-language(i) => { root.set-language(i); }
+        // About / auto-update (auto-update epic, Task 10): app-version is a
+        // one-way in-prop (Rust-composed, like data-action-status above);
+        // auto-update-check is two-way bound AND its own callback fires so
+        // Rust can persist the change — same double-wiring as track-recent /
+        // allow-rar-archives above.
+        app-version: root.settings-app-version;
+        auto-update-check <=> root.settings-auto-update-check;
+        check-for-updates() => { root.settings-check-for-updates(); }
+        set-auto-update-check(b) => { root.settings-set-auto-update-check(b); }
         close-settings() => { root.close-settings(); }
         reset-to-global() => { root.reset-overrides(); }
     }
