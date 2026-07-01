@@ -85,26 +85,50 @@ export component PageView inherits Rectangle {
     // Max press-to-release travel still counted as a tap (not a pan).
     property <length> tap-slop: 4px;
 
-    // ── Two-finger horizontal swipe → page turn ──────────────────────────────
-    // Horizontal trackpad scroll (delta-x) turns ONE page while the page fits
+    // ── Two-finger horizontal swipe → page turn (with edge affordance) ────────
+    // Horizontal trackpad scroll (delta-x) turns pages while the page fits
     // HORIZONTALLY (content-w <= width); when the content overflows horizontally
     // (zoomed in / wider than the viewport) two-finger scroll pans instead, and
     // vertical scroll no longer zooms (zoom comes from the native pinch gesture and
     // the keyboard). A tall Width-fit page (fills x, overflows y) still turns on a
-    // horizontal flick — it is at fit, not zoomed. Discrete: accumulate
-    // delta-x, cross `swipe-threshold` → emit
-    // ONE physical-direction token, mapped to nav() in ViewerWindow so keymap.rs
-    // owns the RTL/LTR resolution and core owns the step size (single = 1 page,
-    // spread = 1 two-page spread). ONE physical swipe = ONE turn: after firing,
-    // an idle-gap guard swallows the rest of the gesture AND the macOS
-    // momentum-phase tail; every swallowed event restarts the idle countdown, so
-    // the guard clears only once events truly STOP — a long drag or the momentum
-    // tail can no longer re-fire and skip a page/spread.
+    // horizontal flick — it is at fit, not zoomed. Discrete: accumulate delta-x,
+    // cross `swipe-threshold` → emit ONE physical-direction token, mapped to nav()
+    // in ViewerWindow so keymap.rs owns the RTL/LTR resolution and core owns the
+    // step size (single = 1 page, spread = 1 two-page spread).
+    //
+    // CONSECUTIVE turns, sharp but no double-fire: after a turn the gesture LATCHES.
+    // The macOS momentum tail decays monotonically, so the latch stays on through it
+    // and unlatches only on a clear sign of a NEW swipe — a lull (`|dx|` below
+    // `swipe-release-delta`: the tail dying or the finger lifting) OR a velocity
+    // SPIKE (`|dx|` jumping back up by `swipe-spike-jump` above the decaying
+    // momentum: a deliberate re-flick). The small release-delta means a single
+    // flick's whole tail is swallowed, so it can NEVER turn a 2nd page/spread; the
+    // spike test lets a fast re-flick turn the next page immediately, so consecutive
+    // swipes stay sharp. (A fixed post-turn cooldown does NOT work: macOS momentum
+    // outlasts any fixed window on a fast flick, re-crossing the threshold once the
+    // lock clears — it double-fires in spread mode.)
+    //
+    // AFFORDANCE: `swipe-progress` (0..1 = |accum| / threshold) lights an edge glow
+    // on the side the fingers push toward; it peaks as the swipe reaches the
+    // threshold and — because `swipe-accum` resets to 0 on the turn — eases back out
+    // (animate opacity), reading as a turn-confirmation flash. A partial swipe that
+    // stalls below the threshold is zeroed by `decay-timer`, so its glow fades too.
+    // When the page is zoomed in the turn branch is never taken, so the glow never
+    // lights — its ABSENCE signals "not page-turn mode".
     callback page-swipe(string);   // "left" / "right" — physical swipe direction
-    property <length> swipe-threshold: 60px;   // higher = heavier; page turns stay deliberate
-    property <duration> swipe-idle-gap: 120ms; // quiet time that ends one swipe
-    property <float> swipe-accum: 0;
-    property <bool> swipe-armed: false;        // gesture owns input until it goes idle
+    property <length> swipe-threshold: 100px;     // higher = heavier / less sensitive; page turns stay deliberate
+    property <length> swipe-release-delta: 6px;   // lull travel that unlatches; small so a single flick's whole tail is swallowed (no double-fire)
+    property <length> swipe-spike-jump: 25px;     // a re-flick that spikes |dx| back up by at least this above the decaying momentum unlatches; higher = duller consecutive swipes (needs a more deliberate re-flick)
+    property <duration> swipe-idle-gap: 90ms;     // fallback: unlatch this long after events stop (finger lifted, no momentum)
+    property <duration> swipe-decay-gap: 140ms;   // quiet time before a partial (sub-threshold) swipe's glow fades
+    property <float> swipe-accum: 0;              // signed px accumulated toward the next turn (also drives the glow)
+    property <float> swipe-prev-dx: 0;            // |delta-x| of the previous event, for spike (re-flick) detection
+    property <bool> swipe-latched: false;         // owns input after a turn until a lull or a re-flick spike
+    // 0..1 progress toward the next turn; drives the edge-glow opacity.
+    property <float> swipe-progress: Math.clamp(Math.abs(root.swipe-accum) / (root.swipe-threshold / 1px), 0, 1);
+    // Glow opacity = progress * gain (clamped), so it reaches full at 1/gain of the
+    // threshold and becomes visible EARLY in the swipe. Higher = shows sooner.
+    property <float> swipe-glow-gain: 2.0;
 
     background: Theme.canvas;
     clip: true;
@@ -158,15 +182,52 @@ export component PageView inherits Rectangle {
         slot-height: root.height;
     }
 
+    // ── Swipe-to-turn edge affordance ────────────────────────────────────────
+    // Two pointer-transparent edge bands (a plain Rectangle never captures input)
+    // that glow on the side the FINGERS PUSH TOWARD as a horizontal swipe
+    // accumulates toward a page turn: a rightward swipe (accum > 0) lights the RIGHT
+    // edge, a leftward swipe (accum < 0) lights the LEFT edge. Opacity tracks
+    // `swipe-progress` scaled by `swipe-glow-gain`; the
+    // `animate opacity` gives BOTH the live ramp AND the ease-out after a turn or a
+    // partial swipe resets the accumulator (the turn-confirmation flash — see the
+    // swipe doc comment above). Painted over the page image, clipped to the
+    // viewport edges by PageView's `clip: true`.
+    Rectangle {
+        x: 0;
+        width: Theme.viewer-swipe-glow-width;
+        height: 100%;
+        background: @linear-gradient(90deg, Theme.viewer-swipe-glow 0%, transparent 100%);
+        opacity: root.swipe-accum < 0 ? Math.min(root.swipe-progress * root.swipe-glow-gain, 1) : 0;
+        animate opacity { duration: Theme.motion-fast; easing: ease-out; }
+    }
+    Rectangle {
+        x: root.width - self.width;
+        width: Theme.viewer-swipe-glow-width;
+        height: 100%;
+        background: @linear-gradient(90deg, transparent 0%, Theme.viewer-swipe-glow 100%);
+        opacity: root.swipe-accum > 0 ? Math.min(root.swipe-progress * root.swipe-glow-gain, 1) : 0;
+        animate opacity { duration: Theme.motion-fast; easing: ease-out; }
+    }
+
     // TouchArea is non-focusable and will not steal keyboard focus from the
     // FocusScope in ViewerWindow. The existing fs.focus() convention is unaffected.
-    // Idle-gap guard (re-armable): after a swipe fires one turn, every further
-    // horizontal scroll event restarts this countdown, so it clears only once the
-    // events stop (the user lifts and the OS momentum dies) — one swipe = one turn.
-    idle-timer := Timer {
+    // Latch-release fallback (re-armable): while latched after a turn, every
+    // swallowed event restarts this; if the stream stops WITHOUT a sub-release-delta
+    // lull (finger lifted with no momentum) it fires after `swipe-idle-gap` and
+    // clears the latch. The common case — a lull below `swipe-release-delta` —
+    // clears the latch directly in scroll-event, sooner than this.
+    release-timer := Timer {
         interval: root.swipe-idle-gap;
-        running: root.swipe-armed;
-        triggered => { root.swipe-armed = false; }
+        running: root.swipe-latched;
+        triggered => { root.swipe-latched = false; }
+    }
+    // Partial-swipe decay (re-armable): while a sub-threshold accumulation is
+    // pending, every scroll event restarts this countdown; when the gesture pauses
+    // it zeroes `swipe-accum` so the edge glow fades instead of hanging.
+    decay-timer := Timer {
+        interval: root.swipe-decay-gap;
+        running: root.swipe-accum != 0 && !root.swipe-latched;
+        triggered => { root.swipe-accum = 0; }
     }
 
     // Native pinch: macOS/iOS trackpad + touchscreens. `scale` is cumulative
@@ -199,10 +260,26 @@ export component PageView inherits Rectangle {
             // turn).
             if (Math.abs(e.delta-x / 1px) > Math.abs(e.delta-y / 1px) * 1.2
                 && root.content-w <= root.width + 2px) {
-                if (root.swipe-armed) {
-                    idle-timer.restart();
-                    return accept;
+                // After a turn the gesture is LATCHED. Unlatch (→ this event begins a
+                // fresh swipe, falling through to accumulate) only on a clear sign of
+                // a NEW swipe, not the tail of the one that just fired:
+                //   • a lull — |dx| < release-delta (the tail died / finger lifted), OR
+                //   • a velocity SPIKE — |dx| jumps back up above the monotonically
+                //     decaying momentum by `swipe-spike-jump` (a deliberate re-flick).
+                // The small release-delta swallows a single flick's whole tail (no
+                // double-fire, even in spread mode); the spike test keeps consecutive
+                // swipes sharp. Otherwise swallow the event and re-arm the idle guard.
+                if (root.swipe-latched) {
+                    if (Math.abs(e.delta-x / 1px) < root.swipe-release-delta / 1px
+                        || Math.abs(e.delta-x / 1px) > root.swipe-prev-dx + root.swipe-spike-jump / 1px) {
+                        root.swipe-latched = false;
+                    } else {
+                        root.swipe-prev-dx = Math.abs(e.delta-x / 1px);
+                        release-timer.restart();
+                        return accept;
+                    }
                 }
+                root.swipe-prev-dx = Math.abs(e.delta-x / 1px);
                 if (e.delta-x / 1px * root.swipe-accum < 0) {
                     root.swipe-accum = 0;
                 }
@@ -210,8 +287,10 @@ export component PageView inherits Rectangle {
                 if (Math.abs(root.swipe-accum) >= root.swipe-threshold / 1px) {
                     root.page-swipe(root.swipe-accum > 0 ? "right" : "left");
                     root.swipe-accum = 0;
-                    root.swipe-armed = true;
-                    idle-timer.restart();
+                    root.swipe-latched = true;
+                } else {
+                    // Sub-threshold: keep the glow alive but arm its idle fade.
+                    decay-timer.restart();
                 }
                 return accept;
             }
