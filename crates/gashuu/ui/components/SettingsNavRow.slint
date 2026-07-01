@@ -1,0 +1,103 @@
+// SettingsNavRow — one drill-in list row for the HIG settings navigator.
+//
+// A full-width, focusable row: a leading `label`, an optional trailing `value`
+// (dim preview text, hidden when empty), and a trailing chevron. Activates on
+// mouse click, Return, or Space, firing `clicked()`; Esc is REJECTED so it
+// propagates to the dialog's ancestor FocusScope (which owns the two-stage Esc).
+// Hover / focus lift the fill to `accent-glow` and brighten the label — driven by
+// DIRECT bindings reading `touch.has-hover` / `fs.has-focus` (NavItem precedent:
+// a `states[]` block cannot assign a child element's property). Colors / lengths
+// come from Theme.* only (scripts/check-tokens.sh).
+import { Theme } from "../Theme.slint";
+
+export component SettingsNavRow inherits Rectangle {
+    // ── Public API ────────────────────────────────────────────────────────────
+    in property <string> label;
+    // Optional dim preview of the current value (e.g. "Right to Left"); hidden
+    // when empty. Populated by a later batch step — empty here.
+    in property <string> value;
+    callback clicked();
+
+    // Externally focus this row: the dialog focuses the originating row when the
+    // user navigates back to the top list. Mirrors the `focus-control` seam idiom
+    // (Segmented / Dropdown / Stepper) — a parent cannot name an id inside a child
+    // component, so the focus is exposed as a public function.
+    public function focus-row() {
+        fs.focus();
+    }
+
+    // ── Row ground ──────────────────────────────────────────────────────────────
+    height: Theme.settings-row-h;
+    border-radius: Theme.radius-md;
+    // Idle transparent; hover OR keyboard focus lift the fill to accent-glow.
+    // A binding (not states[]) so the same expression can also brighten the label
+    // (a child element) below.
+    background: (touch.has-hover || fs.has-focus) ? Theme.accent-glow : transparent;
+    animate background { duration: Theme.motion-fast; }
+
+    // ── Keyboard (one Tab stop) ──────────────────────────────────────────────────
+    // Return / Space activate; everything else (Esc in particular) is rejected so
+    // it walks up to the dialog's ancestor FocusScope.
+    fs := FocusScope {
+        key-pressed(event) => {
+            if (event.text == Key.Return || event.text == Key.Space) {
+                root.clicked();
+                return accept;
+            }
+            return reject;
+        }
+    }
+
+    // ── Row content: label · spacer · value · chevron ───────────────────────────
+    HorizontalLayout {
+        padding-left: Theme.space-sm;
+        padding-right: Theme.space-sm;
+        spacing: Theme.space-sm;
+
+        Text {
+            text: root.label;
+            font-size: Theme.font-body;
+            // Brighten on hover/focus; calm mid tone idle (color only — no opacity).
+            color: (touch.has-hover || fs.has-focus) ? Theme.text-high : Theme.text-mid;
+            horizontal-alignment: left;
+            vertical-alignment: center;
+        }
+
+        // Slack: pushes the value + chevron onto the right rail.
+        Rectangle { horizontal-stretch: 1; }
+
+        // Trailing value preview — hidden (not just empty-string) when unset so it
+        // reserves no layout width.
+        if root.value != "" : Text {
+            text: root.value;
+            font-size: Theme.font-body;
+            color: Theme.text-dim;
+            horizontal-alignment: right;
+            vertical-alignment: center;
+        }
+
+        // Trailing chevron affordance.
+        Text {
+            text: "›";
+            font-size: Theme.font-title;
+            color: Theme.text-faint;
+            horizontal-alignment: right;
+            vertical-alignment: center;
+        }
+    }
+
+    // ── Mouse activation ────────────────────────────────────────────────────────
+    // Declared last so it sits above the (non-interactive) content; TouchArea is
+    // non-focusable, so it never steals the keyboard focus from `fs`.
+    touch := TouchArea {
+        clicked => {
+            fs.focus();
+            root.clicked();
+        }
+    }
+
+    // ── Accessibility ─────────────────────────────────────────────────────────
+    accessible-role: button;
+    accessible-label: root.value != "" ? root.label + ", " + root.value : root.label;
+    accessible-action-default => { root.clicked(); }
+}
