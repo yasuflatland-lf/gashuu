@@ -5,6 +5,10 @@
   ],
   "minimumReleaseAge": "7 days",
   "internalChecksFilter": "strict",
+  "lockFileMaintenance": {
+    "description": "Refresh Cargo.lock (and other lockfiles) on a schedule so TRANSITIVE crates advance to newer compatible versions. Most of our advisory-ignore entries in deny.toml are unmaintained transitive deps (paste, ttf-parser, proc-macro-error2, quick-xml) that we cannot bump directly; keeping the lock fresh lets them drop out as their framework parents (Slint, winit, image, i18n-embed) migrate away, at which point cargo-deny's `--deny advisory-not-detected` flags the now-stale ignore for removal.",
+    "enabled": true
+  },
   "packageRules": [
     {
       "description": "Supply-chain: only adopt releases that are at least 7 days old",

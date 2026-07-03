@@ -19,10 +19,12 @@ jobs:
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
       - uses: jdx/mise-action@e6a8b3978addb5a52f2b4cd9d91eafa7f0ab959d # v4
-      - run: cargo install cargo-audit --locked
       - run: cargo install cargo-deny --locked
-      # Keep the exception explicit in CI as well as .cargo/audit.toml so
-      # cargo-audit still suppresses this known transitive advisory even if
-      # config discovery changes across cargo-audit releases.
-      - run: cargo audit --ignore RUSTSEC-2024-0436
-      - run: cargo deny check advisories sources
+      # cargo-deny is the single source of truth for advisory exceptions: every
+      # ignore lives once in deny.toml with a documented reason (previously the
+      # same exceptions were duplicated across .cargo/audit.toml + this CLI +
+      # deny.toml and drifted). `--deny advisory-not-detected` escalates a STALE
+      # ignore (its crate has left the tree, so the exception is no longer needed)
+      # from a warning to a hard failure — CI goes red the moment an ignore can be
+      # removed, which is the forcing function to prune deny.toml.
+      - run: cargo deny check advisories sources --deny advisory-not-detected

@@ -25,13 +25,20 @@ Slint links system libraries on **Linux** only: `libfontconfig1-dev libfreetype6
 
 ### dav1d dependency: system C library for AVIF decode (knowing exception)
 
-**`image` is declared `{ version = "0.25", features = ["avif-native"] }` (always-on, NO feature
-gate, mirroring the `unrar` stance) and requires `dav1d >= 1.3.0` at BUILD time on all 3 OS** —
-resolved by the `dav1d-sys`/`system-deps` build chain (pkg-config, or the `SYSTEM_DEPS_DAV1D_*`
-env overrides CI uses). This is the second knowing exception to the `zip` "no native toolchain"
-stance; the decoder choice and license rationale live in
-[ADR-0010](ADRs/0010-avif-decode-via-dav1d.md) (dav1d is BSD-2-Clause, recorded in
-[THIRD_PARTY_LICENSES.md](../THIRD_PARTY_LICENSES.md)).
+**`image` is declared `{ version = "0.25", default-features = false, features = ["png", "jpeg",
+"qoi", "avif-native"] }`** — an explicit DECODE-oriented allowlist (defaults OFF, same stance as
+`zip`). gashuu only ever DECODES pages (`png`/`jpeg`/`avif`) and ENCODES only to `png`
+(cache/thumbnails) and `qoi` (thumbnail cache), so every other default format — and, crucially,
+the `avif` **encode** feature that pulls the whole `ravif` -> `rav1e` AV1 encoder — is excluded,
+keeping `rav1e` out of the shipped binary. **`avif-native` enables AVIF decode via dav1d and
+requires `dav1d >= 1.3.0` at BUILD time on all 3 OS** — resolved by the `dav1d-sys`/`system-deps`
+build chain (pkg-config, or the `SYSTEM_DEPS_DAV1D_*` env overrides CI uses). This is the second
+knowing exception to the `zip` "no native toolchain" stance; the decoder choice and license
+rationale live in [ADR-0010](ADRs/0010-avif-decode-via-dav1d.md) (dav1d is BSD-2-Clause, recorded
+in [THIRD_PARTY_LICENSES.md](../THIRD_PARTY_LICENSES.md)). **Caveat:** `rav1e` (and its `paste` /
+RUSTSEC-2024-0436 advisory) still appears in `Cargo.lock` because Slint's build-time `.slint`
+compiler (`i-slint-compiler`) depends on `image` with its DEFAULT features — outside our control;
+trimming gashuu's own features does not remove it (see the ignore reason in `deny.toml`).
 
 Dev setup — **macOS**: `brew install dav1d` (verify: `pkg-config --modversion dav1d`).
 **Linux**: `sudo apt-get install -y libdav1d-dev` (Ubuntu 24.04 ships 1.4.1). **Windows**:
