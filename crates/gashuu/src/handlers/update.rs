@@ -56,6 +56,20 @@ fn now_unix() -> i64 {
         .unwrap_or(0)
 }
 
+/// Restore keyboard focus to whichever screen is underneath a just-dismissed
+/// update dialog. Mirrors the screen-aware focus restore in
+/// `handlers/settings.rs` (`on_close_settings`): screen 0 = Library, so focus
+/// the carousel; screen 1 = Viewer, so focus the page area. Without this,
+/// dismissing the dialog leaves no focused element and every key is dead until
+/// the user clicks (issue #359). UI-thread only.
+fn restore_focus_after_dialog(ui: &ViewerWindow) {
+    if ui.get_screen() == 0 {
+        ui.invoke_focus_carousel();
+    } else {
+        ui.invoke_focus_pages();
+    }
+}
+
 /// Kick off a background update check. `force = true` bypasses the enabled
 /// flag and the 24h throttle (used by the manual "Check now" button).
 pub(crate) fn start_update_check(ui: &ViewerWindow, settings: &Rc<RefCell<Settings>>, force: bool) {
@@ -148,11 +162,22 @@ pub(crate) fn wire_update_handlers(ui: &ViewerWindow, settings: &Rc<RefCell<Sett
     });
 
     // Later → the .slint already flips show-update-available = false before
-    // firing this callback; nothing left to persist.
-    ui.on_update_later(|| {});
+    // firing this callback; nothing left to persist. Restore keyboard focus to
+    // the screen underneath so key input is not left dead (issue #359).
+    {
+        let weak = ui.as_weak();
+        ui.on_update_later(move || {
+            if let Some(ui) = weak.upgrade() {
+                restore_focus_after_dialog(&ui);
+            }
+        });
+    }
 
     // Skip this version → persist skipped_version so it is never re-notified.
+    // The .slint flips show-update-available = false before firing this
+    // callback; restore keyboard focus to the screen underneath (issue #359).
     {
+        let weak = ui.as_weak();
         let settings = Rc::clone(settings);
         ui.on_update_skip(move || {
             if let Some(info) = latest_release() {
@@ -161,6 +186,9 @@ pub(crate) fn wire_update_handlers(ui: &ViewerWindow, settings: &Rc<RefCell<Sett
                 if let Err(e) = s.save() {
                     tracing::warn!(error = %e, "failed to persist skipped update version");
                 }
+            }
+            if let Some(ui) = weak.upgrade() {
+                restore_focus_after_dialog(&ui);
             }
         });
     }
@@ -184,7 +212,11 @@ pub(crate) fn wire_update_handlers(ui: &ViewerWindow, settings: &Rc<RefCell<Sett
                     if let Err(e) = opener::open(RELEASES_PAGE_URL) {
                         tracing::warn!(error = %e, "failed to open release page");
                     }
+                    // This branch dismisses the dialog (the RevealDownload /
+                    // SelfReplace branches keep it open), so restore keyboard
+                    // focus to the screen underneath (issue #359).
                     ui.set_show_update_available(false);
+                    restore_focus_after_dialog(&ui);
                 }
                 UpdateStrategy::RevealDownload => {
                     reveal_download(&ui, pkg, info);
