@@ -4,6 +4,8 @@ ignore = [
   { id = "RUSTSEC-2024-0436", reason = "paste is a transitive dependency of the AVIF stack (rav1e -> ravif -> image); the advisory is informational/unmaintained and has no patched version. Remove this once `cargo tree -i paste --locked` no longer finds paste." },
   { id = "RUSTSEC-2026-0173", reason = "proc-macro-error2 is unmaintained, used transitively by i18n-embed-fl; no safe upgrade is available. Remove once i18n-embed-fl drops this dependency." },
   { id = "RUSTSEC-2026-0192", reason = "ttf-parser is unmaintained, pulled in transitively via Slint (usvg -> resvg -> fontdb) and winit (sctk-adwaita -> ab_glyph -> owned_ttf_parser); no safe upgrade is available. Remove once Slint and winit migrate off ttf-parser (e.g. to skrifa)." },
+  { id = "RUSTSEC-2026-0194", reason = "quick-xml 0.39 is a Linux-only, build-time transitive dependency of wayland-scanner (via winit -> Slint) that parses trusted, crate-bundled Wayland protocol XML, not attacker-controlled input. Pinned to 0.39 by wayland-scanner; no reachable patched version. Remove once winit/wayland-scanner upgrade quick-xml." },
+  { id = "RUSTSEC-2026-0195", reason = "See RUSTSEC-2026-0194: same quick-xml 0.39 build-time pin via wayland-scanner (Linux-only, trusted Wayland protocol XML, not attacker-controlled). No reachable patched version." },
 ]
 
 [sources]
