@@ -8,7 +8,7 @@
 //! text, carousel rebuild, thumbnail launch), so it lives in the UI crate.
 
 use std::cell::RefCell;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::rc::Rc;
 
 use gashuu_core::{CoreError, Library, Settings, ThumbnailCache};
@@ -298,24 +298,17 @@ impl OpenBookUseCase {
         viewport.borrow_mut().set_fit(resolved.fit_mode);
         // Persist the newly registered book (and any back-filled page count) so
         // the library shelf stays consistent even if the app exits before the
-        // next leave point. This open-time write only needs to be DURABLE, not
-        // SYNCHRONOUS — the same content is re-saved at leave points and on exit
-        // — so serialize on the UI thread (cheap) under the existing borrow, then
-        // move the owned `(PathBuf, String)` (both `Send`) into a worker thread
-        // for the fsync-heavy `write_atomic`. A background write error is logged,
-        // never panics. Borrow discipline: `register_opened`'s borrow_mut dropped
-        // at its `;`; this is a fresh, short-lived borrow that drops before spawn.
-        match prepare_library_save(&library.borrow()) {
-            Ok((path, json)) => {
-                std::thread::spawn(move || {
-                    if let Err(e) = gashuu_core::write_atomic(&path, json.as_bytes()) {
-                        tracing::error!(error = %e, "background library save failed");
-                    }
-                });
-            }
-            Err(e) => {
-                tracing::error!(error = %e, "failed to prepare library save on open");
-            }
+        // next leave point. This is a SYNCHRONOUS save on the UI thread, exactly
+        // like every other leave point (position / view-override write-back,
+        // empty-book removal, bulk remove). It MUST stay synchronous: a detached
+        // background write could land AFTER a later synchronous save and revert
+        // the reading position or drop a just-added book. Serializing here keeps
+        // the open-time write strictly ordered with respect to those saves. A
+        // save error is logged, never panics. Borrow discipline:
+        // `register_opened`'s borrow_mut dropped at its `;`; this is a fresh,
+        // short-lived borrow that drops at the end of this statement.
+        if let Err(e) = library.borrow().save() {
+            tracing::error!(error = %e, "failed to save library on open");
         }
         // When the stored page count was just back-filled/updated, rebuild the
         // carousel model so the home screen reflects the real total/progress when
@@ -362,9 +355,10 @@ impl OpenBookUseCase {
             canonical.clone(),
         );
         let skipped = state.borrow().last_open_skipped();
-        // The on-open library save now runs on a background thread (errors are
-        // logged there, never surfaced), so no synchronous save result reaches
-        // the open notices — pass `Ok` for the library-save slot. The settings
+        // The on-open library save above is synchronous but best-effort: its
+        // result is only logged (like every other leave-point save) and is not
+        // surfaced in the open notices, and the same content is re-saved at the
+        // next leave point — so pass `Ok` for the library-save slot. The settings
         // save above stays synchronous and is still surfaced.
         OpenOutcome::Success(notices_content(
             skipped,
@@ -392,21 +386,6 @@ pub(crate) fn notices_content(
         settings_save_err: settings_save.and_then(|r| r.as_ref().err().map(|e| format!("{e}"))),
         library_save_err: library_save.as_ref().err().map(|e| format!("{e}")),
     }
-}
-
-/// Serialize the library for an off-thread save: resolve the on-disk target
-/// path and render the JSON, both on the calling (UI) thread under a shared
-/// borrow. The returned `(PathBuf, String)` are owned and `Send`, so the caller
-/// can move them into a worker thread that performs the fsync-heavy
-/// [`gashuu_core::atomic_write::write_atomic`] without holding the `Library`
-/// (which is `Rc<RefCell<…>>` and not `Send`).
-///
-/// This is the cheap half of a save (serialize) split from the expensive half
-/// (durable write); it mirrors what [`Library::save_to`] does internally but
-/// hands the pieces back instead of writing, keeping core `Library::save`
-/// unchanged.
-fn prepare_library_save(library: &Library) -> Result<(PathBuf, String), CoreError> {
-    Ok((Library::data_path()?, library.to_json()?))
 }
 
 /// Result of [`remove_empty_book`]: the removed book's display title (captured
@@ -587,45 +566,47 @@ mod tests {
         assert!(c.library_save_err.is_none());
     }
 
-    // ---- prepare_library_save (serialize half of the off-thread save) -----
+    // ---- synchronous open-time library save (issue #360) ------------------
 
     #[test]
-    fn prepare_library_save_returns_data_path_and_json() {
+    fn synchronous_open_save_is_visible_on_disk_before_returning() {
+        // Regression guard for #360: the open-time library save was a detached
+        // `std::thread::spawn`, so a slow open-time write could land AFTER a
+        // later synchronous leave-point save and revert the reading position or
+        // drop a just-added book. The fix makes it a SYNCHRONOUS `Library::save`
+        // on the UI thread (via `save_to` under the hood). This exercises that
+        // exact contract on a temp path (the production call targets the OS data
+        // path, which has no test seam): after `register_opened` records a book +
+        // its back-filled page count, a synchronous save is IMMEDIATELY reflected
+        // on disk by a subsequent read — no thread-join, no race window.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = dir.path().join("library.json");
+
         let mut lib = Library::new();
-        lib.add(PathBuf::from("/manga/Vol 1.cbz"));
-        lib.add(PathBuf::from("/manga/Vol 2.cbz"));
+        let book = PathBuf::from("/manga/Just Opened Vol.cbz");
+        // Mirror the open path: register the book with a known page count, then
+        // save synchronously (the production `library.borrow().save()` is
+        // `save_to(data_path())`).
+        lib.register_opened(&book, std::num::NonZeroUsize::new(42));
+        lib.save_to(&store).expect("synchronous save must succeed");
 
-        let (path, json) = prepare_library_save(&lib).expect("prepare must succeed");
-
+        // The write completed before control returned here (no background thread
+        // to await): reloading immediately reflects the just-opened book.
+        let reloaded = Library::load_from(&store).expect("reload must succeed");
+        let stored = reloaded
+            .books()
+            .iter()
+            .find(|b| b.path() == book)
+            .expect("the just-opened book must be persisted synchronously");
         assert_eq!(
-            path,
-            Library::data_path().expect("data path must resolve"),
-            "path must match Library::data_path()"
+            stored.page_count_opt(),
+            Some(42),
+            "the back-filled page count must be on disk after the synchronous save"
         );
         assert_eq!(
-            json,
-            lib.to_json().expect("to_json must succeed"),
-            "json must match Library::to_json()"
-        );
-    }
-
-    #[test]
-    fn prepare_library_save_json_round_trips() {
-        let mut lib = Library::new();
-        lib.add(PathBuf::from("/manga/Round Trip.cbz"));
-
-        let (_path, json) = prepare_library_save(&lib).expect("prepare must succeed");
-        let restored = Library::from_json(&json).expect("from_json must parse");
-
-        assert_eq!(
-            restored.books().len(),
-            lib.books().len(),
-            "round-tripped library must carry the same books"
-        );
-        assert_eq!(
-            restored.to_json().expect("re-serialize must succeed"),
-            json,
-            "round-trip must be byte-stable"
+            reloaded.last_opened(),
+            Some(book.as_path()),
+            "last_opened must point at the just-opened book on disk"
         );
     }
 
