@@ -15,7 +15,6 @@ use crate::{
     selection_projection,
 };
 use crate::{viewer_state::ViewerState, viewport::ViewportState};
-use app::SkippedDetail;
 use gashuu_core::{Library, Settings};
 use slint::ComponentHandle;
 use std::cell::RefCell;
@@ -178,7 +177,7 @@ fn open_and_enter(
 ) {
     // Writes back the OLD book first, opens the new path, then resumes its
     // stored page. Empty sources are removed instead of entering the viewer.
-    let outcome = open_book.run(ui, path, SkippedDetail::None);
+    let outcome = open_book.run(ui, path);
     // Enter the Viewer ONLY on a clean open. An empty source was already removed
     // (no viewer); a FAILED open must not drop the user into a 0-page Viewer
     // either — the old `!EmptyBookRemoved` guard let `Error` through, so a book

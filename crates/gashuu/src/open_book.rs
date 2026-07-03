@@ -3,8 +3,9 @@
 //! [`OpenBookUseCase`] bundles the seven shared collaborators the open path
 //! coordinates (state, settings, viewport, library, thumbs, covers, search) as
 //! fields, so the open sites call [`OpenBookUseCase::run`] with just the per-call
-//! `ui`, `path`, and `skipped_detail` instead of threading a nine-argument free
-//! fn under `#[allow(clippy::too_many_arguments)]`. It touches Slint (status
+//! `ui` and `path` (`skipped_detail` is derived internally) instead of threading
+//! a nine-argument free fn under `#[allow(clippy::too_many_arguments)]`. It
+//! touches Slint (status
 //! text, carousel rebuild, thumbnail launch), so it lives in the UI crate.
 
 use std::cell::RefCell;
@@ -73,11 +74,7 @@ pub(crate) enum OpenOutcome {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SkippedDetail {
     None,
-    // Retained for the i18n skipped-notice mapping (`i18n::dynamic`) and its tests.
-    // Its only production constructor was the open-archive handler, which was
-    // removed as dead code; threading this through the live archive-open path is a
-    // separate follow-up, so the variant is currently matched/tested but not built.
-    #[allow(dead_code)]
+    /// The open source was an archive; skip reasons name zip-slip / oversized entries.
     Archive,
 }
 
@@ -140,14 +137,10 @@ impl OpenBookUseCase {
     /// The caller (`main.rs`) is responsible for calling `refresh()` and
     /// formatting notices via `i18n::dynamic`.
     ///
-    /// `skipped_detail` is [`SkippedDetail::None`] for folders and
-    /// [`SkippedDetail::Archive`] for archives.
-    pub(crate) fn run(
-        &self,
-        ui: &ViewerWindow,
-        path: &Path,
-        skipped_detail: SkippedDetail,
-    ) -> OpenOutcome {
+    /// The `skipped_detail` suffix is DERIVED internally from `path`
+    /// ([`SkippedDetail::None`] for folders, [`SkippedDetail::Archive`] for
+    /// archives), not passed by the caller.
+    pub(crate) fn run(&self, ui: &ViewerWindow, path: &Path) -> OpenOutcome {
         // Alias the fields so the moved body reads identically at its call
         // sites. In the old free fn `thumbs`/`covers` were `&ThumbnailController`
         // / `&CoverController`; here they are `&Rc<ThumbnailController>` /
@@ -360,6 +353,11 @@ impl OpenBookUseCase {
             canonical.clone(),
         );
         let skipped = state.borrow().last_open_skipped();
+        let skipped_detail = if path.is_dir() {
+            SkippedDetail::None
+        } else {
+            SkippedDetail::Archive
+        };
         // The on-open library save above is synchronous but best-effort: its
         // result is only logged (like every other leave-point save) and is not
         // surfaced in the open notices, and the same content is re-saved at the
