@@ -24,6 +24,7 @@
 //! ever on the UI thread.
 
 use crate::to_slint_image;
+use crate::ui_marshal::marshal_to_ui;
 use crate::{ThumbnailItem, ViewerWindow};
 use gashuu_core::{
     generate_one_thumbnail, CoreError, DecodedImage, PageSource, PageThumbCache, ThumbnailCache,
@@ -137,14 +138,7 @@ fn marshal_cell(
     i: usize,
     make_cell: impl FnOnce() -> ThumbCell + Send + 'static,
 ) {
-    if let Err(e) = slint::invoke_from_event_loop(move || {
-        // Drop results from a superseded generation.
-        if epoch.load(Relaxed) != my_epoch {
-            return;
-        }
-        let Some(ui) = weak.upgrade() else {
-            return;
-        };
+    marshal_to_ui(weak, epoch, my_epoch, "thumbnail", move |ui| {
         // Re-fetch the model on the UI thread (never move the Rc across threads);
         // any non-Send cell payload (e.g. a slint::Image) is built here.
         let model = ui.get_thumbnails();
@@ -154,9 +148,7 @@ fn marshal_cell(
         if i < vm.row_count() {
             vm.set_row_data(i, thumbnail_item(i, make_cell()));
         }
-    }) {
-        tracing::debug!(page = i, error = %e, "dropped thumbnail update; event loop gone");
-    }
+    });
 }
 
 /// Per-generation state captured at `start`: the source + cache inputs, the
@@ -191,14 +183,11 @@ struct Inner {
 
 impl Inner {
     /// Supersede the previous generation's cancel flag and install a fresh one,
-    /// returning a clone of the new flag for the just-started generation. Each
-    /// `RefCell` borrow is confined to its own statement (dropped at the `;`) so no
-    /// two overlap — collapsing these into one expression would compile but panic
-    /// at runtime with a double borrow. Shared shape with `CoverController`.
+    /// returning a clone of the new flag for the just-started generation. Delegates
+    /// to the shared [`crate::ui_marshal::rotate_cancel`], which single-homes the
+    /// one-borrow-per-statement discipline; shared shape with `CoverController`.
     fn rotate_cancel(&self) -> Arc<AtomicBool> {
-        self.cancel.borrow().store(true, Relaxed);
-        *self.cancel.borrow_mut() = Arc::new(AtomicBool::new(false));
-        Arc::clone(&self.cancel.borrow())
+        crate::ui_marshal::rotate_cancel(&self.cancel)
     }
 
     /// Decode the not-yet-requested subset of `pages` (clamped to the current

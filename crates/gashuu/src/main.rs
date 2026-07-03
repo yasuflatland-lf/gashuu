@@ -26,6 +26,7 @@ mod page_loader;
 mod remove_books;
 mod selection_projection;
 mod thumbnail_strip;
+mod ui_marshal;
 mod update;
 mod view_sync;
 mod viewer_state;

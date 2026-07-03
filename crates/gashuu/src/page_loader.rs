@@ -11,6 +11,8 @@
 //! `Rc`, `VecModel`, viewport state, and the localizer are never captured.
 
 #[cfg(not(test))]
+use crate::ui_marshal::marshal_to_ui;
+#[cfg(not(test))]
 use crate::{apply_spread_images, to_slint_image, ViewerWindow};
 #[cfg(not(test))]
 use gashuu_core::DecodedImage;
@@ -22,13 +24,6 @@ use std::marker::PhantomData;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
 use std::sync::Arc;
-
-/// True when `my_epoch` still matches the live controller generation.
-///
-/// Kept pure so stale-marshal behavior can be tested without a Slint event loop.
-pub fn is_current(epoch: &AtomicUsize, my_epoch: usize) -> bool {
-    epoch.load(Relaxed) == my_epoch
-}
 
 /// Owns viewer page-decode dispatch bookkeeping.
 ///
@@ -407,18 +402,11 @@ fn marshal_spread(
     single: bool,
     trailing_failed: Option<usize>,
 ) {
-    if let Err(e) = slint::invoke_from_event_loop(move || {
-        if !is_current(&epoch, my_epoch) {
-            return;
-        }
-        let Some(ui) = weak.upgrade() else {
-            return;
-        };
-
+    marshal_to_ui(weak, epoch, my_epoch, "page-decode", move |ui| {
         let (content_w, content_h) = content_size(&leading, trailing.as_deref());
         let leading = to_slint_image(&leading);
         let trailing = trailing.as_deref().map(to_slint_image);
-        apply_spread_images(&ui, leading, trailing, single);
+        apply_spread_images(ui, leading, trailing, single);
         ui.invoke_spread_anchored(
             content_w,
             content_h,
@@ -427,9 +415,7 @@ fn marshal_spread(
             page_i32(leading_idx),
             optional_page_i32(trailing_idx),
         );
-    }) {
-        tracing::debug!(error = %e, "dropped page decode update; event loop gone");
-    }
+    });
 }
 
 #[cfg(not(test))]
@@ -439,17 +425,9 @@ fn marshal_page_decode_error(
     my_epoch: usize,
     index: usize,
 ) {
-    if let Err(e) = slint::invoke_from_event_loop(move || {
-        if !is_current(&epoch, my_epoch) {
-            return;
-        }
-        let Some(ui) = weak.upgrade() else {
-            return;
-        };
+    marshal_to_ui(weak, epoch, my_epoch, "page-decode-error", move |ui| {
         ui.invoke_page_decode_error(page_i32(index));
-    }) {
-        tracing::debug!(index, error = %e, "dropped page decode error; event loop gone");
-    }
+    });
 }
 
 #[cfg(not(test))]
@@ -476,17 +454,6 @@ fn optional_page_i32(index: Option<usize>) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
-
-    #[test]
-    fn is_current_returns_false_after_generation_is_superseded() {
-        let epoch = AtomicUsize::new(1);
-        assert!(is_current(&epoch, 1));
-
-        epoch.store(2, Relaxed);
-
-        assert!(!is_current(&epoch, 1));
-    }
 
     #[test]
     fn dispatched_pages_are_deduplicated_cleared_and_reset_with_source() {

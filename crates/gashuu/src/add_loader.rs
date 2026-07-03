@@ -34,6 +34,7 @@
 //! dropped, so a second add started mid-probe cleanly supersedes the first with
 //! no stale clobber.
 
+use crate::ui_marshal::marshal_to_ui;
 use crate::ViewerWindow;
 use gashuu_core::{ArchiveLoader, ArchivePolicy, CoreError};
 use std::cell::RefCell;
@@ -211,17 +212,9 @@ fn marshal_progress(
     done: usize,
     total: usize,
 ) {
-    if let Err(e) = slint::invoke_from_event_loop(move || {
-        if epoch.load(Relaxed) != my_epoch {
-            return;
-        }
-        let Some(ui) = weak.upgrade() else {
-            return;
-        };
+    marshal_to_ui(weak, epoch, my_epoch, "add-progress", move |ui| {
         ui.invoke_add_progress(done as i32, total as i32);
-    }) {
-        tracing::debug!(error = %e, "dropped add progress; event loop gone");
-    }
+    });
 }
 
 /// Marshal the final `add-finalize` onto the UI thread once the last probe
@@ -229,17 +222,9 @@ fn marshal_progress(
 /// `take_outcomes`) and runs the apply half. The epoch is carried through so a
 /// superseded batch's finalize is a no-op. Only `Send` values cross.
 fn marshal_finalize(weak: slint::Weak<ViewerWindow>, epoch: Arc<AtomicUsize>, my_epoch: usize) {
-    if let Err(e) = slint::invoke_from_event_loop(move || {
-        if epoch.load(Relaxed) != my_epoch {
-            return;
-        }
-        let Some(ui) = weak.upgrade() else {
-            return;
-        };
+    marshal_to_ui(weak, epoch, my_epoch, "add-finalize", move |ui| {
         ui.invoke_add_finalize(my_epoch as i32);
-    }) {
-        tracing::debug!(error = %e, "dropped add finalize; event loop gone");
-    }
+    });
 }
 
 #[cfg(test)]

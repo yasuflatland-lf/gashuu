@@ -11,10 +11,11 @@
 //! [`PageCountPrefetch::apply`] at the next `start` and at shutdown
 //! ([`PageCountPrefetch::flush`]).
 
+use crate::carousel::update_carousel_row;
 use crate::library_model::clamp_to_i32;
-use crate::{CarouselItem, ViewerWindow};
+use crate::ui_marshal::marshal_to_ui;
+use crate::ViewerWindow;
 use gashuu_core::Library;
-use slint::{Model, VecModel};
 use std::cell::RefCell;
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
@@ -39,15 +40,7 @@ pub(crate) struct ResolvedCount {
 /// instead of "1 / 0" the moment the background count resolves. `progress` is left
 /// untouched — an unread book is 0 % regardless of its (now known) total.
 fn set_carousel_total(ui: &ViewerWindow, row: usize, total: i32) {
-    let model = ui.get_carousel_items();
-    let Some(vm) = model.as_any().downcast_ref::<VecModel<CarouselItem>>() else {
-        return;
-    };
-    if row < vm.row_count() {
-        let mut item = vm.row_data(row).expect("row < row_count checked above");
-        item.total = total;
-        vm.set_row_data(row, item);
-    }
+    update_carousel_row(ui, row, |item| item.total = total);
 }
 
 /// Marshal a resolved page `count` onto the UI thread as carousel row `row`'s
@@ -63,17 +56,9 @@ fn marshal_total(
     count: usize,
 ) {
     let total = clamp_to_i32(count);
-    if let Err(e) = slint::invoke_from_event_loop(move || {
-        if epoch.load(Relaxed) != my_epoch {
-            return;
-        }
-        let Some(ui) = weak.upgrade() else {
-            return;
-        };
-        set_carousel_total(&ui, row, total);
-    }) {
-        tracing::debug!(row, error = %e, "dropped total update; event loop gone");
-    }
+    marshal_to_ui(weak, epoch, my_epoch, "total", move |ui| {
+        set_carousel_total(ui, row, total);
+    });
 }
 
 /// Worker-side: record a resolved page `count` for `path`/`row`. Queues `(path,
