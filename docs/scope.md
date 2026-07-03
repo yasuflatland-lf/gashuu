@@ -57,7 +57,7 @@ RAR requires a C++ compiler on every OS (see [docs/toolchain.md](toolchain.md)).
 
 - Every opened book is registered in the `Library` (`Library::add` on a successful open, with an immediate `save()` mirroring the recents save-on-open).
 - The last-read page is written back to `library.json` at every leave point: ↑ to Library, opening another book, and app exit.
-- Re-opening a book resumes at its stored last page (via `OpenBookUseCase::run` → `jump_to`). Resume/write-back is observable for books opened through Open Folder / Open Archive.
+- Re-opening a book resumes at its stored last page (via `OpenBookUseCase::run` → `jump_to`). Resume/write-back is observable for books opened through the library carousel (Return / center-cover double-click) and the add flow.
 - The `on_carousel_open` path is wired (resolves carousel index → book path → `OpenBookUseCase::run`). It was originally inert until the carousel was populated (covered by "Library cover-flow carousel rendering" below). (A seam-only version would have been inert because no book is added to the Library — that gap, surfaced in review, is why `Library::add`-on-open shipped here.)
 
 ### Settings dialog and first-run guide
