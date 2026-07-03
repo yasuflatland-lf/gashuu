@@ -446,7 +446,7 @@ open-time and cover-time removal paths share `main.rs::empty_book_removed_status
 notice-plus-save-failure compose.
 
 `main.rs` constructs one instance and shares it (`Rc`) into the open-handler closures:
-`on_open_folder`, `on_open_archive`, `on_carousel_open`, and `on_carousel_continue_reading`. All call
+`on_carousel_open` and `on_carousel_continue_reading`. Both call
 `finalize_open(&ui, &state, &viewport, &CarouselRefresh { … }, outcome)` after `run` returns — the
 signature gained the full `CarouselRefresh` deps (was just `&localizer`) because the
 `EmptyBookRemoved` arm may rebuild the carousel. The carousel-open / bookmark-jump open path
@@ -677,7 +677,7 @@ needs no sub-module path. Each `wire_*` fn takes `&ui` and exactly the `Rc` hand
 clone — the per-closure `Rc::clone` list IS that handler's dependency list (#151 panel constraint:
 no AppState bundle, explicit handle lists only). The four feature files are:
 
-- **`handlers/library.rs`**: `wire_open_handlers` (open-folder, open-archive, add-books,
+- **`handlers/library.rs`**: `wire_open_handlers` (add-books,
   add-folder), `wire_carousel_handlers` (carousel search/open/continue-reading/move/back),
   `wire_selection_handlers` (toggle/cover-click/select-all/exit selection; bulk-delete confirm +
   confirm-accepted; empty-book-detected auto-removal). Also constructs the `RemoveBooksUseCase`
@@ -966,9 +966,6 @@ always win; and forwarded the Carousel's `continue-reading()` callback up to the
 Rust handling.
 
 ### rfd file/folder picker
-
-`on_open_archive` → `rfd` `pick_file` filtered to cbz/zip/cbr/rar (the filter dispatch goes
-through `open_path` via `ArchiveLoader`). "Open Archive" button lives in `ViewerWindow.slint`.
 
 Library-side pickers: `on_add_books` (né `on_add_files`; filtered cbz/zip/cbr/rar —
 `pick_files_or_folders` on macOS, where one NSOpenPanel picks archives AND folders in a single
