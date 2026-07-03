@@ -1,11 +1,15 @@
-//! Shared test-only RAR/CBR fixtures and helpers (PR7).
+//! Shared test-only RAR/CBR and AVIF fixtures and helpers (PR7).
 //!
-//! RAR has no Rust encoder, so these `.cbr` archives are committed as base64
-//! *text* — mirroring the insta `.snap` "committed text, not a binary fixture"
-//! exception already used in the project. Each blob was produced by the
-//! hand-written RAR4 store-format generator `.claude/plans/pr7-fixture-gen.py`
-//! and verified byte-for-byte against the real `unrar` crate (0.5.8). Full
-//! provenance + observed-value tables live in `.claude/plans/pr7-fixture.md`.
+//! RAR and AVIF both lack an in-tree Rust encoder, so their fixtures are
+//! committed as base64 *text* — mirroring the insta `.snap` "committed text, not
+//! a binary fixture" exception already used in the project. The `.cbr` blobs were
+//! produced by the hand-written RAR4 store-format generator
+//! `.claude/plans/pr7-fixture-gen.py` and verified byte-for-byte against the real
+//! `unrar` crate (0.5.8). Full provenance + observed-value tables live in
+//! `.claude/plans/pr7-fixture.md`. The AVIF blob (see [`SAMPLE_AVIF_8X6_B64`]) is
+//! committed for a different reason: gashuu deliberately builds `image` WITHOUT
+//! its `avif` encode feature, so `ravif`/`rav1e` can no longer synthesize AVIF
+//! bytes in-memory the way `png_bytes` does.
 //!
 //! Centralizing the blobs here removes the duplication that previously lived in
 //! both `page_source::rar` and `archive_loader` test modules.
@@ -73,4 +77,24 @@ pub(crate) fn write_cbr_with_suffix(b64: &str, suffix: &str) -> NamedTempFile {
     file.write_all(&bytes).expect("write cbr bytes");
     file.flush().expect("flush cbr bytes");
     tmp
+}
+
+/// A tiny 8×6 AVIF page fixture, committed as base64 *text* (see the module docs
+/// for why AVIF, like RAR, can no longer be synthesized in-memory: gashuu-core
+/// builds `image` WITHOUT its `avif` encode feature, so `ravif`/`rav1e` is not
+/// linkable from this crate's tests). NOTE: `rav1e` (and its `paste` /
+/// RUSTSEC-2024-0436 advisory) still appears in `Cargo.lock` via Slint's
+/// build-time compiler — see the ignore reason in `deny.toml` — but it is no
+/// longer reachable from gashuu-core's own build to synthesize a fixture.
+///
+/// Produced once by encoding an 8×6 solid RGBA image through `image`'s ravif
+/// encoder before that feature was dropped; decoding it exercises the
+/// `avif-native` (dav1d) decode path used in production.
+pub(crate) const SAMPLE_AVIF_8X6_B64: &str = "AAAAGGZ0eXBhdmlmAAAAAG1pZjFtaWFmAAAA0m1ldGEAAAAAAAAAIWhkbHIAAAAAAAAAAHBpY3QAAAAAAAAAAAAAAAAAAAAADnBpdG0AAAAAAAEAAAAeaWxvYwAAAABEAAABAAEAAAABAAAA8gAAACsAAAAjaWluZgAAAAAAAQAAABVpbmZlAgAAAAABAABhdjAxAAAAAFZpcHJwAAAAOGlwY28AAAAUaXNwZQAAAAAAAAAIAAAABgAAAAxhdjFDgT8AAAAAABBwaXhpAAAAAAMICAgAAAAWaXBtYQAAAAAAAAABAAEDAYIDAAAAM21kYXQSAAoIP8i9IQENBtAyHWWCL0MnE/zAACAAEAAAAAAAAAAABiPoE42RY8+Y";
+
+/// Base64-decode [`SAMPLE_AVIF_8X6_B64`] into the raw AVIF file bytes.
+pub(crate) fn avif_8x6_bytes() -> Vec<u8> {
+    base64::engine::general_purpose::STANDARD
+        .decode(SAMPLE_AVIF_8X6_B64)
+        .expect("avif fixture base64 must decode")
 }

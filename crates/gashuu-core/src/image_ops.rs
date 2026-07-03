@@ -169,16 +169,14 @@ mod tests {
         bytes
     }
 
-    /// Synthesize a tiny AVIF in-process via the ravif encoder (in `image`'s
-    /// default feature set), mirroring `png_bytes` — no committed binary
-    /// fixtures. Decoding it exercises the `avif-native` (dav1d) feature; the
-    /// rav1e encode is slow in debug builds, so keep fixture dimensions tiny.
-    fn avif_bytes(w: u32, h: u32) -> Vec<u8> {
-        let img = image::RgbaImage::from_pixel(w, h, image::Rgba([100, 150, 200, 255]));
-        let mut bytes = Vec::new();
-        img.write_to(&mut Cursor::new(&mut bytes), image::ImageFormat::Avif)
-            .unwrap();
-        bytes
+    /// The 8×6 AVIF fixture used by the decode tests below. gashuu builds `image`
+    /// WITHOUT its `avif` encode feature (only `avif-native`/dav1d decode), so
+    /// AVIF bytes can no longer be synthesized in-process like `png_bytes`; the
+    /// fixture is committed as base64 text in `test_fixtures` alongside the RAR
+    /// blobs (same "no in-tree encoder" rationale). Decoding it exercises the
+    /// `avif-native` (dav1d) path.
+    fn avif_bytes() -> Vec<u8> {
+        crate::test_fixtures::avif_8x6_bytes()
     }
 
     /// Encode an RGB JPEG in-process, mirroring `png_bytes` — no committed binary
@@ -462,7 +460,7 @@ mod tests {
     /// and RGBA length), not pixel-exact values.
     #[test]
     fn decode_avif_reports_dimensions_and_rgba_length() {
-        let decoded = decode(&avif_bytes(8, 6)).unwrap();
+        let decoded = decode(&avif_bytes()).unwrap();
         assert_eq!(decoded.width(), 8);
         assert_eq!(decoded.height(), 6);
         assert_eq!(decoded.rgba().len(), 8 * 6 * 4);
@@ -470,7 +468,7 @@ mod tests {
 
     #[test]
     fn decode_thumbnail_avif_fits_max_side() {
-        let thumb = decode_thumbnail(&avif_bytes(8, 6), 4).unwrap();
+        let thumb = decode_thumbnail(&avif_bytes(), 4).unwrap();
         assert!(thumb.width() <= 4, "width {} > max_side 4", thumb.width());
         assert!(
             thumb.height() <= 4,

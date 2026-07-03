@@ -56,8 +56,10 @@ winresource = "0.1"
 [dev-dependencies]
 # `testing` feature exposes MockPageSource for ViewerState unit tests;
 # image is used to synthesize tiny PNG bytes in tests (no committed binary fixtures).
+# `default-features = false` + `png` keeps the `ravif`/`rav1e` AVIF encoder (and
+# its `paste` advisory) out of the graph — these tests only ever write PNG.
 gashuu-core = { path = "../gashuu-core", features = ["testing"] }
-image = "0.25"
+image = { version = "0.25", default-features = false, features = ["png"] }
 tempfile = "3"
 # fluent-syntax is used only by tests to parse .ftl catalogs; it is not a
 # direct production dependency (though it arrives transitively at runtime via

@@ -4,9 +4,20 @@ version = "0.12.0"
 edition = "2021"
 
 [dependencies]
-# `avif-native` enables AVIF DECODE via dav1d (BSD-2-Clause C library; the second
-# native-toolchain exception after `unrar` — see docs/toolchain.md and ADR-0010).
-image = { version = "0.25", features = ["avif-native"] }
+# Explicit format allowlist — `default-features = false` drops `image`'s default
+# encoders/decoders we never use AND, critically, the `avif` ENCODE feature that
+# pulls the whole `ravif` -> `rav1e` AV1 encoder (and its `paste` /
+# RUSTSEC-2024-0436 advisory). gashuu only DECODES images; it encodes solely to
+# PNG (cache/thumbnails/tests) and QOI (thumbnail cache). Formats: `png`, `jpeg`,
+# `qoi` (thumbnail cache codec), and `avif-native` = AVIF DECODE via dav1d
+# (BSD-2-Clause C library; the second native-toolchain exception after `unrar` —
+# see docs/toolchain.md and ADR-0010). AVIF ENCODE is intentionally absent.
+image = { version = "0.25", default-features = false, features = [
+    "png",
+    "jpeg",
+    "qoi",
+    "avif-native",
+] }
 walkdir = "2"
 zip = { version = "8", default-features = false, features = ["deflate"] }
 thiserror = "2"
