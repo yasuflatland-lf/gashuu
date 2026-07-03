@@ -21,18 +21,20 @@ use slint::ComponentHandle;
 use std::cell::RefCell;
 use std::rc::Rc;
 
-/// Registers the open-folder/open-archive and add-books/add-folder callbacks onto `ui`.
+/// Registers the add-books/add-folder callbacks onto `ui`.
 /// Panel constraint (#151): explicit handle list IS the dependency list — no AppState bundle.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn wire_open_handlers(
     ui: &ViewerWindow,
-    state: &Rc<RefCell<ViewerState>>,
-    viewport: &Rc<RefCell<ViewportState>>,
+    // Retained for call-site stability (`main` wires every handler group with the
+    // same collaborator list); the add-only paths below no longer touch these.
+    _state: &Rc<RefCell<ViewerState>>,
+    _viewport: &Rc<RefCell<ViewportState>>,
     settings: &Rc<RefCell<Settings>>,
     library: &Rc<RefCell<Library>>,
-    open_book: &Rc<app::OpenBookUseCase>,
+    _open_book: &Rc<app::OpenBookUseCase>,
     covers: &Rc<cover_loader::CoverController>,
-    pages: &Rc<PageController>,
+    _pages: &Rc<PageController>,
     adder: &Rc<add_loader::AddController>,
     search: &Rc<RefCell<LibrarySearchState>>,
     selection: &Rc<RefCell<LibrarySelectionState>>,
@@ -41,107 +43,13 @@ pub(crate) fn wire_open_handlers(
     // Rebind the `&Rc<_>` parameters to owned `Rc` locals so each closure's
     // `Rc::clone(&handle)` prelude stays byte-identical to its pre-extraction
     // form in `main` (cloning an owned `Rc`, not a `&Rc`).
-    let state = Rc::clone(state);
-    let viewport = Rc::clone(viewport);
     let settings = Rc::clone(settings);
     let library = Rc::clone(library);
-    let open_book = Rc::clone(open_book);
     let covers = Rc::clone(covers);
-    let pages = Rc::clone(pages);
     let adder = Rc::clone(adder);
     let search = Rc::clone(search);
     let selection = Rc::clone(selection);
     let localizer = Rc::clone(localizer);
-
-    // Open Folder button: pick a directory, open it, refresh the view, and start thumbnail generation.
-    {
-        let ui_weak = ui.as_weak();
-        let open_book = Rc::clone(&open_book);
-        let state = Rc::clone(&state);
-        let viewport = Rc::clone(&viewport);
-        let pages = Rc::clone(&pages);
-        let localizer = Rc::clone(&localizer);
-        // `finalize_open` may rebuild the carousel (empty-book auto-removal), so it
-        // needs the full carousel-refresh deps, not just the localizer.
-        let library = Rc::clone(&library);
-        let covers = Rc::clone(&covers);
-        let search = Rc::clone(&search);
-        let selection = Rc::clone(&selection);
-        ui.on_open_folder(move || {
-            with_ui(&ui_weak, |ui| {
-                let Some(dir) = rfd::FileDialog::new().pick_folder() else {
-                    return;
-                };
-                let outcome = open_book.run(&ui, &dir, SkippedDetail::None);
-                finalize_open(
-                    &ui,
-                    &state,
-                    &viewport,
-                    &pages,
-                    &CarouselRefresh {
-                        library: &library,
-                        covers: &covers,
-                        search: &search,
-                        selection: &selection,
-                        localizer: &localizer,
-                    },
-                    outcome,
-                );
-                // Title-bar book name is derived from the AUTHORITATIVE post-open
-                // state (the canonical `open_file`), not the raw dialog path, so a
-                // FAILED open never shows the name of a book that did not open: on
-                // failure `open_file` is unchanged (the previously open book, if
-                // any) and `run` already set an `Error:` status.
-                ui.set_current_book_name(current_book_name(&state).into());
-            })
-        });
-    }
-
-    // Open Archive button: pick a CBZ/ZIP/CBR/RAR file, open it, refresh the view, and start thumbnail generation.
-    {
-        let ui_weak = ui.as_weak();
-        let open_book = Rc::clone(&open_book);
-        let state = Rc::clone(&state);
-        let viewport = Rc::clone(&viewport);
-        let pages = Rc::clone(&pages);
-        let localizer = Rc::clone(&localizer);
-        // `finalize_open` may rebuild the carousel (empty-book auto-removal), so it
-        // needs the full carousel-refresh deps, not just the localizer.
-        let library = Rc::clone(&library);
-        let covers = Rc::clone(&covers);
-        let search = Rc::clone(&search);
-        let selection = Rc::clone(&selection);
-        ui.on_open_archive(move || {
-            with_ui(&ui_weak, |ui| {
-                let Some(file) = rfd::FileDialog::new()
-                    .add_filter("Comic archive", &["cbz", "zip", "cbr", "rar"])
-                    .pick_file()
-                else {
-                    return;
-                };
-                let outcome = open_book.run(&ui, &file, SkippedDetail::Archive);
-                finalize_open(
-                    &ui,
-                    &state,
-                    &viewport,
-                    &pages,
-                    &CarouselRefresh {
-                        library: &library,
-                        covers: &covers,
-                        search: &search,
-                        selection: &selection,
-                        localizer: &localizer,
-                    },
-                    outcome,
-                );
-                // Title-bar book name is derived from the AUTHORITATIVE post-open
-                // state (the canonical `open_file`), so a FAILED open (corrupt /
-                // non-archive file) never shows the picked file's name: on failure
-                // `open_file` is unchanged and `run` already set an `Error:` status.
-                ui.set_current_book_name(current_book_name(&state).into());
-            })
-        });
-    }
 
     // Add Books button: pick comic sources and add them to the library. On
     // macOS a single NSOpenPanel picks archives AND folders together
@@ -384,23 +292,16 @@ pub(crate) fn wire_carousel_handlers(
         let selection = Rc::clone(&selection);
         ui.on_carousel_open(move |index| {
             with_ui(&ui_weak, |ui| {
-                // Resolve the focused VISIBLE carousel index to a Library book
-                // path through the search state's projection: the carousel row is
-                // an index into `visible_indices`, which maps to the underlying
-                // library row. Capture the visible/library lengths INSIDE the
-                // borrow scope so the out-of-range warn below can report them
-                // without a fresh borrow. Both `Ref`s drop at the block's `}`.
-                let (path, visible_len, library_len) = {
-                    let search = search.borrow();
-                    let visible = search.visible_indices().get(index as usize).copied();
-                    let lib = library.borrow();
-                    let path = visible
-                        .and_then(|library_index| lib.books().get(library_index))
-                        .map(|book| book.path().to_path_buf());
-                    (path, search.visible_indices().len(), lib.books().len())
-                };
-                let Some(path) = path else {
+                // Resolve the focused VISIBLE carousel index to a Library book path
+                // through the search state's projection — the SAME hop
+                // `on_carousel_toggle_selection` / `on_carousel_cover_clicked` use,
+                // so the visible→library projection rule stays single-homed in
+                // `visible_index_to_path`.
+                let Some(path) = visible_index_to_path(&library, &search, index) else {
                     // Index out of range (carousel and library out of sync) — no-op.
+                    // Desync diagnostics (cold path): re-borrow is safe — the helper's borrows dropped.
+                    let visible_len = search.borrow().visible_indices().len();
+                    let library_len = library.borrow().books().len();
                     tracing::warn!(
                         index,
                         visible_len,

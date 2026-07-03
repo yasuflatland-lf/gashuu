@@ -73,6 +73,11 @@ pub(crate) enum OpenOutcome {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SkippedDetail {
     None,
+    // Retained for the i18n skipped-notice mapping (`i18n::dynamic`) and its tests.
+    // Its only production constructor was the open-archive handler, which was
+    // removed as dead code; threading this through the live archive-open path is a
+    // separate follow-up, so the variant is currently matched/tested but not built.
+    #[allow(dead_code)]
     Archive,
 }
 
