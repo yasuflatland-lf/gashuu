@@ -4,4 +4,10 @@
 # informational unmaintained advisory with no patched version. Keep the
 # Security workflow blocking on all other RustSec findings, but remove this
 # exception once `cargo tree -i paste --locked` is empty.
-ignore = ["RUSTSEC-2024-0436"]
+#
+# RUSTSEC-2026-0194 / -0195: `quick-xml` 0.39 is a Linux-only, build-time
+# transitive dependency of `wayland-scanner` (via `winit` -> Slint) that parses
+# trusted, crate-bundled Wayland protocol XML, not attacker-controlled input.
+# It is pinned to 0.39 by `wayland-scanner`, so no patched version is reachable.
+# Remove once `winit`/`wayland-scanner` upgrade `quick-xml`.
+ignore = ["RUSTSEC-2024-0436", "RUSTSEC-2026-0194", "RUSTSEC-2026-0195"]
