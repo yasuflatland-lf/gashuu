@@ -725,10 +725,13 @@ export component ViewerWindow inherits Window {
     // top of all page content. Slint children paint back-to-front in
     // declaration order: first-declared = behind, last-declared = topmost.
     // Explicit width/height fill the window surface.
-    // show-settings and show-shortcuts are BOTH true while the shortcuts
-    // overlay is open (modal-over-modal), so declaration order is load-bearing:
-    // ShortcutsOverlay MUST remain the last child so it paints above
-    // SettingsDialog.
+    // The modal stack, back-to-front (matching the declaration order below), is:
+    //   SettingsDialog → ShortcutsOverlay → ConfirmDialog → UpdateAvailableDialog
+    // Declaration order is load-bearing. show-settings and show-shortcuts are
+    // BOTH true while the shortcuts overlay is open (modal-over-modal), so
+    // ShortcutsOverlay MUST be declared AFTER SettingsDialog to paint above it.
+    // UpdateAvailableDialog is declared last so a background release check can
+    // surface over anything else on screen.
     if root.show-settings : SettingsDialog {
         width: root.width;
         height: root.height;
@@ -769,7 +772,9 @@ export component ViewerWindow inherits Window {
         close-settings() => { root.close-settings(); }
         reset-to-global() => { root.reset-overrides(); }
     }
-    // ShortcutsOverlay: must stay LAST (topmost) — see stacking-order note above.
+    // ShortcutsOverlay: declared AFTER SettingsDialog so it paints above it —
+    // see the modal-stack note above. ConfirmDialog and UpdateAvailableDialog
+    // are declared later still, so they stack above this overlay when open.
     if root.show-shortcuts : ShortcutsOverlay {
         width: root.width;
         height: root.height;
