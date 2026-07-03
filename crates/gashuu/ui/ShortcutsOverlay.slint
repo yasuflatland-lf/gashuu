@@ -18,7 +18,9 @@
 // Layering: this overlay's root is itself a full-area Theme.scrim. It stacks
 // over the SettingsDialog (which also draws a scrim), so the dialog dims a
 // second time behind this panel — intended layering, the two scrims compound to
-// signal "modal over modal".
+// signal "modal over modal". This overlay is NOT the topmost modal, though: in
+// ViewerWindow the ConfirmDialog and UpdateAvailableDialog are declared after
+// it, so they paint above this overlay when open.
 //
 // MODAL-OVER-MODAL TRAP: the SettingsDialog stays MOUNTED and keyboard-operable
 // underneath. If a Tab/arrow key leaked past this overlay it would silently
