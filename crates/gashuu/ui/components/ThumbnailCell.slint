@@ -12,7 +12,7 @@
 //                         with a slowly spinning loading icon (motion = "processing",
 //                         distinguishing it from the static error state)
 //   !loaded && failed   → "decode failed" placeholder (Theme.error-surface +
-//                         Theme.error border) with a centered broken-image icon
+//                         Theme.error border) with a centered "no image" icon
 //                         (and an optional label under it) — the tint MUST stay
 //                         distinct from a loading cell so a permanent failure is
 //                         visually separable (the "view must match status" rule).
@@ -94,8 +94,8 @@ export component ThumbnailCell inherits Rectangle {
     }
 
     // ── State 3: !loaded && failed → red-tinted "decode failed" placeholder ────
-    // Surface + 1px border + a centered broken-image icon, all in the failed hue
-    // (matches how ThumbnailStrip tints this state). A broken-image SVG replaces
+    // Surface + 1px border + a centered "no image" icon, all in the failed hue
+    // (matches how ThumbnailStrip tints this state). A no-image SVG replaces
     // the old "✕" Text glyph so the mark renders identically on every font (no
     // tofu fallback). When `failed-label` is non-empty (centered carousel cover
     // only) it is captioned under the icon; the small surfaces stay icon-only.
@@ -117,7 +117,7 @@ export component ThumbnailCell inherits Rectangle {
             padding: Theme.space-sm;
 
             Image {
-                source: @image-url("../assets/broken-image.svg");
+                source: @image-url("../assets/no-image.svg");
                 colorize: Theme.error;
                 width: Math.min(root.inner-w, root.inner-h) * 40%;
                 height: self.width;

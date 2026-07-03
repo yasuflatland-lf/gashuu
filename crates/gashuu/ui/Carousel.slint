@@ -214,18 +214,20 @@ component CoverCard inherits Rectangle {
             highlighted: false;
         }
 
-        // Unavailable: grayed card + broken-cover glyph.
+        // Unavailable: grayed card + "no image" glyph. An SVG (colorized to the
+        // faint text hue) replaces the old "⛌" Text glyph, which rendered as a
+        // tofu box on fonts lacking U+26CC.
         if !root.available : Rectangle {
             x: 0; y: 0; width: 100%; height: 100%;
             border-radius: Theme.radius-sm;
             background: Theme.surface-sunken;
-            Text {
-                width: 100%; height: 100%;
-                text: "⛌";
-                color: Theme.text-faint;
-                font-size: 48px;
-                horizontal-alignment: center;
-                vertical-alignment: center;
+            Image {
+                source: @image-url("assets/no-image.svg");
+                colorize: Theme.text-faint;
+                width: Math.min(parent.width, parent.height) * 40%;
+                height: self.width;
+                x: (parent.width - self.width) / 2;
+                y: (parent.height - self.height) / 2;
             }
         }
 
