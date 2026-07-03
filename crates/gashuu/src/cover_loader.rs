@@ -29,8 +29,10 @@
 //! and `slint::Image` (both `!Send`) are NEVER moved: the model is re-fetched and
 //! the image built INSIDE the event-loop closure.
 
+use crate::carousel::update_carousel_row;
 use crate::page_count_prefetch::{self, PageCountPrefetch, ResolvedCount};
 use crate::to_slint_image;
+use crate::ui_marshal::marshal_to_ui;
 use crate::{CarouselItem, ViewerWindow};
 use gashuu_core::{
     cache_key, generate_cover, ArchiveLoader, DecodedImage, Library, ThumbnailCache,
@@ -291,16 +293,10 @@ pub(crate) fn purge_cover(cache: &ThumbnailCache, path: &std::path::Path) {
 /// row-count bound check tolerates a model that shrank since the request was
 /// built (e.g. a book removed between scheduling and delivery).
 fn set_cover(ui: &ViewerWindow, row: usize, img: slint::Image) {
-    let model = ui.get_carousel_items();
-    let Some(vm) = model.as_any().downcast_ref::<VecModel<CarouselItem>>() else {
-        return;
-    };
-    if row < vm.row_count() {
-        let mut item = vm.row_data(row).expect("row < row_count checked above");
+    update_carousel_row(ui, row, |item| {
         item.cover = img;
         item.cover_loaded = true;
-        vm.set_row_data(row, item);
-    }
+    });
 }
 
 /// Mark carousel row `row`'s cover load as FAILED in `vm` (issue 144): swaps
@@ -344,19 +340,10 @@ fn marshal_cover(
     row: usize,
     img: Arc<DecodedImage>,
 ) {
-    if let Err(e) = slint::invoke_from_event_loop(move || {
-        // Drop results from a superseded generation (library refreshed since).
-        if epoch.load(Relaxed) != my_epoch {
-            return;
-        }
-        let Some(ui) = weak.upgrade() else {
-            return;
-        };
+    marshal_to_ui(weak, epoch, my_epoch, "cover", move |ui| {
         // Build the `!Send` slint::Image here, on the UI thread, then write the row.
-        set_cover(&ui, row, to_slint_image(&img));
-    }) {
-        tracing::debug!(row, error = %e, "dropped cover update; event loop gone");
-    }
+        set_cover(ui, row, to_slint_image(&img));
+    });
 }
 
 /// Marshal a FAILED cover load onto the UI thread for carousel row `row`
@@ -373,18 +360,9 @@ fn marshal_failed(
     my_epoch: usize,
     row: usize,
 ) {
-    if let Err(e) = slint::invoke_from_event_loop(move || {
-        // Drop results from a superseded generation (library refreshed since).
-        if epoch.load(Relaxed) != my_epoch {
-            return;
-        }
-        let Some(ui) = weak.upgrade() else {
-            return;
-        };
-        set_cover_failed(&ui, row);
-    }) {
-        tracing::debug!(row, error = %e, "dropped cover-failed update; event loop gone");
-    }
+    marshal_to_ui(weak, epoch, my_epoch, "cover-failed", move |ui| {
+        set_cover_failed(ui, row);
+    });
 }
 
 /// Marshal an "empty book detected" signal onto the UI thread for the book at
@@ -407,19 +385,15 @@ fn marshal_empty_book(
     my_epoch: usize,
     path: PathBuf,
 ) {
-    let weak = weak.clone();
-    let epoch = Arc::clone(epoch);
-    if let Err(e) = slint::invoke_from_event_loop(move || {
-        if epoch.load(Relaxed) != my_epoch {
-            return;
-        }
-        let Some(ui) = weak.upgrade() else {
-            return;
-        };
-        ui.invoke_empty_book_detected(path.to_string_lossy().as_ref().into());
-    }) {
-        tracing::debug!(error = %e, "dropped empty-book signal; event loop gone");
-    }
+    marshal_to_ui(
+        weak.clone(),
+        Arc::clone(epoch),
+        my_epoch,
+        "empty-book",
+        move |ui| {
+            ui.invoke_empty_book_detected(path.to_string_lossy().as_ref().into());
+        },
+    );
 }
 
 /// Worker-side decision: should opening a book's source and counting its pages
@@ -490,14 +464,11 @@ impl CoverController {
     }
 
     /// Supersede the previous generation's cancel flag and install a fresh one,
-    /// returning a clone of the new flag for the just-started generation. Each
-    /// `RefCell` borrow is confined to its own statement (dropped at the `;`) so no
-    /// two overlap — collapsing these into one expression would compile but panic
-    /// at runtime with a double borrow. Shared shape with `ThumbnailController`.
+    /// returning a clone of the new flag for the just-started generation. Delegates
+    /// to the shared [`crate::ui_marshal::rotate_cancel`], which single-homes the
+    /// one-borrow-per-statement discipline; shared shape with `ThumbnailController`.
     fn rotate_cancel(&self) -> Arc<AtomicBool> {
-        self.cancel.borrow().store(true, Relaxed);
-        *self.cancel.borrow_mut() = Arc::new(AtomicBool::new(false));
-        Arc::clone(&self.cancel.borrow())
+        crate::ui_marshal::rotate_cancel(&self.cancel)
     }
 
     /// Persist any still-pending prefetched page counts. Call once on shutdown

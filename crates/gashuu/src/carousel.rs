@@ -74,13 +74,20 @@ pub(crate) fn bind_carousel_model(
     model
 }
 
-/// Set the `selected` flag of carousel row `row`, on the UI thread. The
-/// bulk-selection counterpart of `cover_loader::set_cover` — same `!Send`
-/// `VecModel`-via-`ui` re-fetch and row-bounds check (tolerating a model that
-/// shrank since the click was scheduled), swapping ONLY the row's `selected` so
-/// the accent check badge appears/disappears without rebuilding the model or
-/// restarting the cover stream.
-pub(crate) fn set_carousel_selected(ui: &ViewerWindow, row: usize, selected: bool) {
+/// Read-modify-write a single carousel row on the UI thread: re-fetch the `!Send`
+/// `VecModel` through `ui` (never moved across threads), bounds-check `row`
+/// against the CURRENT row count (tolerating a model that shrank since the
+/// request was built — e.g. a book removed between scheduling and delivery),
+/// clone the row, apply `f` to mutate exactly one field, and write it back.
+/// Single-homes the fetch + downcast + bounds-check + read-modify-write that the
+/// per-field carousel writers (`set_cover`, `set_carousel_total`,
+/// `set_carousel_selected`) each repeated. A model whose downcast fails or whose
+/// `row` is out of range is a silent no-op, matching the previous per-site guards.
+pub(crate) fn update_carousel_row(
+    ui: &ViewerWindow,
+    row: usize,
+    f: impl FnOnce(&mut CarouselItem),
+) {
     use slint::Model;
     let model = ui.get_carousel_items();
     let Some(vm) = model.as_any().downcast_ref::<VecModel<CarouselItem>>() else {
@@ -88,9 +95,19 @@ pub(crate) fn set_carousel_selected(ui: &ViewerWindow, row: usize, selected: boo
     };
     if row < vm.row_count() {
         let mut item = vm.row_data(row).expect("row < row_count checked above");
-        item.selected = selected;
+        f(&mut item);
         vm.set_row_data(row, item);
     }
+}
+
+/// Set the `selected` flag of carousel row `row`, on the UI thread. The
+/// bulk-selection counterpart of `cover_loader::set_cover` — same `!Send`
+/// `VecModel`-via-`ui` re-fetch and row-bounds check (tolerating a model that
+/// shrank since the click was scheduled), swapping ONLY the row's `selected` so
+/// the accent check badge appears/disappears without rebuilding the model or
+/// restarting the cover stream.
+pub(crate) fn set_carousel_selected(ui: &ViewerWindow, row: usize, selected: bool) {
+    update_carousel_row(ui, row, |item| item.selected = selected);
 }
 
 /// Re-apply the bulk-selection flags over the CURRENTLY VISIBLE carousel rows:
