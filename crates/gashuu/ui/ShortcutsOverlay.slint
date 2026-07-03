@@ -18,7 +18,9 @@
 // Layering: this overlay's root is itself a full-area Theme.scrim. It stacks
 // over the SettingsDialog (which also draws a scrim), so the dialog dims a
 // second time behind this panel — intended layering, the two scrims compound to
-// signal "modal over modal".
+// signal "modal over modal". This overlay is NOT the topmost modal, though: in
+// ViewerWindow the ConfirmDialog and UpdateAvailableDialog are declared after
+// it, so they paint above this overlay when open.
 //
 // MODAL-OVER-MODAL TRAP: the SettingsDialog stays MOUNTED and keyboard-operable
 // underneath. If a Tab/arrow key leaked past this overlay it would silently
@@ -40,6 +42,7 @@ import { Theme } from "Theme.slint";
 import { PrimaryButton } from "components/PrimaryButton.slint";
 import { Strings } from "Strings.slint";
 import { GlassModal } from "components/GlassModal.slint";
+import { ScrollIndicator } from "components/ScrollIndicator.slint";
 
 export component ShortcutsOverlay inherits GlassModal {
     // ── Public interface (pinned — sibling agents code against this) ───────────
@@ -202,37 +205,22 @@ export component ShortcutsOverlay inherits GlassModal {
             }
         }
 
-        // ── Self-drawn scroll indicator ───────────────────────────────────
-        // Only when the body content overflows its visible height. A thin rail
-        // (track-prog) with an accent thumb whose size/offset derive from the
-        // Flickable viewport geometry. Show/hide via `visible:` ONLY (no
-        // opacity — HiDPI blur rule). Declared as a sibling of the content
-        // layout inside `fs`, so its y is computed in THIS scope's space:
-        // body-col.y (the content layout's own offset within fs) + body.y
-        // (the body Flickable's y within that layout) — derived this way
-        // rather than from a bare `body.y` so the rail stays aligned even if
-        // the content layout is ever given a non-zero offset within `fs`.
-        Rectangle {
-            visible: body.viewport-height > body.height;
+        // ── Self-drawn scroll indicator (shared ScrollIndicator atom) ─────
+        // Only when the body content overflows its visible height. Declared as
+        // a sibling of the content layout inside `fs`, so its y is computed in
+        // THIS scope's space: body-col.y (the content layout's own offset
+        // within fs) + body.y (the body Flickable's y within that layout) —
+        // derived this way rather than from a bare `body.y` so the rail stays
+        // aligned even if the content layout is ever given a non-zero offset
+        // within `fs`. The rail/thumb math, fill and auto-hide live in
+        // ScrollIndicator; placement (x/y/height) stays here in the caller's
+        // scope.
+        ScrollIndicator {
             x: parent.width - Theme.settings-scroll-indicator-w - Theme.space-xxs;
             y: body-col.y + body.y;
-            width: Theme.settings-scroll-indicator-w;
             height: body.height;
-            background: Theme.track-prog;
-            border-radius: Theme.settings-scroll-indicator-w / 2;
-            // Clip the thumb so elastic overscroll (viewport-y briefly positive)
-            // cannot render the thumb above the rail bounds.
-            clip: true;
-
-            // Thumb: proportional size and offset from the scroll position.
-            Rectangle {
-                x: 0;
-                width: parent.width;
-                height: parent.height * (body.height / max(body.viewport-height, 1px));
-                y: -body.viewport-y * (parent.height / max(body.viewport-height, 1px));
-                background: Theme.accent;
-                border-radius: Theme.settings-scroll-indicator-w / 2;
-            }
+            content-height: body.viewport-height;
+            viewport-y: body.viewport-y;
         }
     }
 }

@@ -144,6 +144,46 @@ impl ThumbnailCache {
             .count()
     }
 
+    /// Best-effort delete the per-page STRIP QOI files cached for `path` — every
+    /// `max_side` in `max_sides` crossed with every page index in `0..page_count`
+    /// — and return how many files were removed.
+    ///
+    /// The strip sibling of [`purge_for`](Self::purge_for): where that reclaims a
+    /// book's single COVER key `(path, mtime, max_side)` via [`cache_key`], this
+    /// reclaims the per-page keys `(path, mtime, max_side, i)` via
+    /// [`page_cache_key`] — the exact derivation the strip generator wrote them
+    /// under — so a removed book's strip thumbnails are targeted-deleted instead of
+    /// orphaned until the size-cap sweep. Page index 0 is INCLUDED: `page_cache_key`
+    /// folds the page index even at 0 (eight zero bytes), so page 0's strip has its
+    /// own on-disk file distinct from the cover.
+    ///
+    /// The caller passes the CURRENT `mtime_secs` (the value the strips were
+    /// generated under). If the file's mtime has since drifted, the recomputed keys
+    /// no longer match the stored files; those become undeletable-but-harmless
+    /// orphans ([`prune`](Self::prune) reclaims them later). Best-effort by design,
+    /// exactly like [`purge_for`](Self::purge_for): a missing file (cache miss) and
+    /// any I/O error are SILENTLY skipped — callers may warn, never error — so the
+    /// count is only the files actually unlinked.
+    pub fn purge_pages_for(
+        &self,
+        path: &Path,
+        mtime_secs: i64,
+        max_sides: &[u32],
+        page_count: usize,
+    ) -> usize {
+        let mut removed = 0;
+        for &max_side in max_sides {
+            for i in 0..page_count {
+                let key = page_cache_key(path, mtime_secs, max_side, i);
+                let target = self.dir.join(format!("{key}.qoi"));
+                if std::fs::remove_file(&target).is_ok() {
+                    removed += 1;
+                }
+            }
+        }
+        removed
+    }
+
     /// Clear every top-level file owned by this cache directory and report what
     /// was actually removed.
     ///
@@ -640,6 +680,89 @@ mod tests {
             cache.get(&key).is_some(),
             "the seeded cover is left intact when no sides are requested"
         );
+    }
+
+    #[test]
+    fn purge_pages_for_removes_all_strip_thumbnails_for_a_book() {
+        // A book's per-page strip thumbnails live under page_cache_key (the page
+        // index folded in, so each page is a distinct on-disk file). purge_pages_for
+        // reclaims every one across 0..page_count, leaving no orphaned strip .qoi
+        // behind — while the cover (a plain cache_key with no page index) is the
+        // sibling purge_for's job and survives the strip purge.
+        let dir = tempdir().unwrap();
+        let cache = ThumbnailCache::with_dir(dir.path().to_path_buf());
+        let path = Path::new("/manga/book.cbz");
+        let mtime = 1234;
+        let max_side = 160;
+        let page_count = 5;
+
+        // Seed one strip thumbnail per page under the exact key purge_pages_for derives.
+        for i in 0..page_count {
+            let key = page_cache_key(path, mtime, max_side, i);
+            cache.put(&key, &tiny_decoded_image()).expect("seed strip");
+        }
+        // Seed the cover too (disjoint key — it must NOT be swept by the strip purge).
+        let cover_key = cache_key(path, mtime, max_side);
+        cache
+            .put(&cover_key, &tiny_decoded_image())
+            .expect("seed cover");
+
+        let removed = cache.purge_pages_for(path, mtime, &[max_side], page_count);
+        assert_eq!(
+            removed, page_count,
+            "every strip page is removed and counted"
+        );
+        for i in 0..page_count {
+            let key = page_cache_key(path, mtime, max_side, i);
+            assert!(
+                cache.get(&key).is_none(),
+                "strip page {i} is gone after the strip purge"
+            );
+        }
+        assert!(
+            cache.get(&cover_key).is_some(),
+            "the cover survives the strip purge (it is purge_for's job)"
+        );
+
+        // The sibling purge_for then reclaims the cover.
+        let removed_cover = cache.purge_for(path, mtime, &[max_side]);
+        assert_eq!(removed_cover, 1, "the cover is reclaimed by purge_for");
+        assert!(
+            cache.get(&cover_key).is_none(),
+            "the cover is gone after purge_for"
+        );
+    }
+
+    #[test]
+    fn purge_pages_for_overshooting_page_count_skips_missing_keys() {
+        // A page_count larger than the strips actually on disk is best-effort: the
+        // extra page indices simply derive keys with no file, so only the present
+        // pages are removed and counted — no error, no panic.
+        let dir = tempdir().unwrap();
+        let cache = ThumbnailCache::with_dir(dir.path().to_path_buf());
+        let path = Path::new("/manga/book.cbz");
+        let mtime = 42;
+        let max_side = 160;
+        let present = 3;
+
+        for i in 0..present {
+            let key = page_cache_key(path, mtime, max_side, i);
+            cache.put(&key, &tiny_decoded_image()).expect("seed strip");
+        }
+
+        // Overshoot: ask for 10 pages though only 3 strips exist on disk.
+        let removed = cache.purge_pages_for(path, mtime, &[max_side], 10);
+        assert_eq!(
+            removed, present,
+            "only the present strips are removed/counted; the missing keys are skipped"
+        );
+        for i in 0..present {
+            let key = page_cache_key(path, mtime, max_side, i);
+            assert!(
+                cache.get(&key).is_none(),
+                "present strip {i} was removed by the overshooting purge"
+            );
+        }
     }
 
     #[test]

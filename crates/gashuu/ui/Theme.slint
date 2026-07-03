@@ -224,6 +224,20 @@ export global Theme {
     // sized to read with a font-label (12px) line next to it.
     out property <length> button-icon: 16px;
 
+    // ── Push button geometry (Primary / Secondary / DangerButton) ──
+    // Shared hit-area + padding for the three push buttons (a Rectangle sized to
+    // its label). `button-min-h` meets the DESIGN >= 32px hit-area requirement;
+    // `button-pad-x` is the horizontal label inset. The vertical padding is
+    // deliberately ASYMMETRIC (9 top / 7 bottom, 16px total): Slint metric-centers
+    // the full font line box, which sits a descender-less label ~1px high of the
+    // button's visual center, so the extra pixel goes to the top to optically
+    // center the label (docs/patterns.md optical-centering entry). Do NOT tidy to
+    // 8/8 — the split is the correction.
+    out property <length> button-min-h: 32px;
+    out property <length> button-pad-x: 16px;
+    out property <length> button-pad-top: 9px;
+    out property <length> button-pad-bottom: 7px;
+
     // ── Nav search field sizing (issue #88: live library search) ──
     // Length-only tokens; the field's colors reuse the surface / text / accent
     // tokens above (surface-sunken ground, glass-border idle edge, accent focus

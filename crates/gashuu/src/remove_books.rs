@@ -11,6 +11,7 @@
 //! [`finalize_remove`](crate::carousel_refresh::finalize_remove).
 
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
@@ -86,6 +87,21 @@ pub(crate) fn remove_books_with_rollback(
     }
 }
 
+/// Filesystem mtime of `path` as whole seconds since the Unix epoch, or `0` when
+/// the file is missing / has no readable mtime. Mirrors the cover cache's key
+/// convention (and `cover_loader`'s private `mtime_secs`) so a removed book's strip
+/// thumbnails are purged under the SAME key the strip generator wrote them under.
+/// Computed inline here rather than imported from `cover_loader` so this strip
+/// purge does not force a change to that module's private surface.
+fn removed_book_mtime_secs(path: &Path) -> i64 {
+    std::fs::metadata(path)
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
 /// Decide whether the currently open file is among the removed paths (so the
 /// viewer must be cleared). Pure and testable in isolation from the live
 /// `ViewerWindow`, so `RemoveBooksUseCase::run` can stay a thin orchestration
@@ -153,6 +169,28 @@ impl RemoveBooksUseCase {
             return RemoveOutcome::NoSelection;
         }
 
+        // 1b. Snapshot each selected book's page count BEFORE the removal drops the
+        //     Library entries, so the strip-thumbnail purge below can iterate the
+        //     exact per-page cache keys (page_cache_key folds the page index) the
+        //     strips were generated under. A book with an unknown count is simply
+        //     absent from the map — the strip purge skips it (rely on the size-cap
+        //     prune sweep). The borrow is confined to this block so the mutable
+        //     borrow in step 2 cannot conflict.
+        let page_counts: HashMap<PathBuf, usize> = {
+            let library = self.library.borrow();
+            paths
+                .iter()
+                .filter_map(|path| {
+                    library
+                        .books()
+                        .iter()
+                        .find(|b| b.path() == path.as_path())
+                        .and_then(Book::page_count_opt)
+                        .map(|count| (path.clone(), count))
+                })
+                .collect()
+        };
+
         // 2. Mutate + save with rollback. The `library.borrow_mut()` is confined
         //    to this statement so the cover-purge borrow below cannot conflict.
         let report = match remove_books_with_rollback(&mut self.library.borrow_mut(), &paths, |l| {
@@ -169,12 +207,33 @@ impl RemoveBooksUseCase {
             }
         };
 
-        // 3. Best-effort purge of each removed book's persistent cover.
-        //    A cache-construction failure skips the purge wholesale.
+        // 3. Best-effort purge of each removed book's persistent cover AND its
+        //    per-page strip thumbnails. A cache-construction failure skips both
+        //    purges wholesale.
         match ThumbnailCache::new() {
             Ok(cache) => {
                 for path in &report.removed {
                     purge_cover(&cache, path);
+                }
+                // Strip thumbnails are keyed PER PAGE (page_cache_key folds the page
+                // index), so `purge_cover` — which reclaims only the cover key —
+                // leaves them orphaned (issue #361). Reclaim each removed book's
+                // strips explicitly, under the SAME mtime recipe the strip generator
+                // wrote them under (fs mtime secs, 0 fallback — identical to the
+                // cover path) and at DEFAULT_THUMB_MAX_SIDE (the size strips are
+                // generated at). A book whose page count is unknown is absent from
+                // `page_counts`: with no page span to iterate we skip it here and let
+                // the size-cap prune sweep reclaim its strips later.
+                for path in &report.removed {
+                    if let Some(&n) = page_counts.get(path) {
+                        let mtime = removed_book_mtime_secs(path);
+                        cache.purge_pages_for(
+                            path,
+                            mtime,
+                            &[gashuu_core::DEFAULT_THUMB_MAX_SIDE],
+                            n,
+                        );
+                    }
                 }
             }
             Err(e) => {

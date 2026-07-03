@@ -14,6 +14,7 @@ import { Strings } from "../Strings.slint";
 import { SettingRow } from "../components/SettingRow.slint";
 import { Toggle } from "../components/Toggle.slint";
 import { SecondaryButton } from "../components/SecondaryButton.slint";
+import { SettingsNavRow } from "../components/SettingsNavRow.slint";
 
 export component AboutSettings inherits VerticalLayout {
     // The running app's version (e.g. "0.11.0"), pre-composed in Rust.
@@ -79,59 +80,16 @@ export component AboutSettings inherits VerticalLayout {
     }
 
     // ── Shortcuts ─────────────────────────────────────────────────────────────
-    // Opens the keyboard-shortcuts overlay. Styled like a SettingsNavRow (label +
-    // chevron, hover/focus accent-glow fill), driven by DIRECT Theme.* bindings on
-    // touch.has-hover / fs.has-focus (NavItem precedent — a states[] block cannot
-    // assign a child's property). Activates on click / Return / Space / AT default;
-    // Esc is REJECTED so it walks up to the dialog's ancestor FocusScope (the
-    // two-stage Esc). The visible label carries the ⌨ glyph; the accessible label
-    // is the plain shortcuts title (no glyph) for screen readers.
-    Rectangle {
-        height: Theme.settings-row-h;
-        border-radius: Theme.radius-md;
-        background: (shortcuts-touch.has-hover || shortcuts-fs.has-focus) ? Theme.accent-glow : transparent;
-        animate background { duration: Theme.motion-fast; }
-
-        shortcuts-fs := FocusScope {
-            key-pressed(event) => {
-                if (event.text == Key.Return || event.text == Key.Space) {
-                    root.open-shortcuts();
-                    return accept;
-                }
-                return reject;
-            }
+    // Opens the keyboard-shortcuts overlay. Reuses the SettingsNavRow atom (the
+    // same drill-in row anatomy as the four view-settings nav rows): hover/focus
+    // accent-glow fill, chevron, click / Return / Space / AT-default activation,
+    // and Esc rejected so it walks up to the dialog's ancestor FocusScope. The
+    // plain shortcuts title (no glyph) is passed as the label so the accessible
+    // name stays clean and consistent with the other glyph-less nav rows.
+    SettingsNavRow {
+        label: Strings.shortcuts-title;
+        clicked => {
+            root.open-shortcuts();
         }
-
-        HorizontalLayout {
-            padding-left: Theme.space-sm;
-            padding-right: Theme.space-sm;
-            spacing: Theme.space-sm;
-            Text {
-                text: Strings.settings-shortcuts-label;
-                font-size: Theme.font-body;
-                color: (shortcuts-touch.has-hover || shortcuts-fs.has-focus) ? Theme.text-high : Theme.text-mid;
-                horizontal-alignment: left;
-                vertical-alignment: center;
-            }
-            Rectangle { horizontal-stretch: 1; }
-            Text {
-                text: "›";
-                font-size: Theme.font-title;
-                color: Theme.text-faint;
-                horizontal-alignment: right;
-                vertical-alignment: center;
-            }
-        }
-
-        shortcuts-touch := TouchArea {
-            clicked => {
-                shortcuts-fs.focus();
-                root.open-shortcuts();
-            }
-        }
-
-        accessible-role: button;
-        accessible-label: Strings.shortcuts-title;
-        accessible-action-default => { root.open-shortcuts(); }
     }
 }

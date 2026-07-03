@@ -32,7 +32,7 @@ export component SecondaryButton inherits Rectangle {
     // drives width; explicit padding drives height via the layout's padding).
     // A min-height of 32px satisfies the DESIGN >= 32px hit-area requirement and
     // matches PrimaryButton exactly.
-    min-height: 32px;
+    min-height: Theme.button-min-h;
     horizontal-stretch: 0;
     vertical-stretch: 0;
 
@@ -61,16 +61,17 @@ export component SecondaryButton inherits Rectangle {
 
     // ── Label ─────────────────────────────────────────────────────────────────
     HorizontalLayout {
-        padding-left: 16px;
-        padding-right: 16px;
+        padding-left: Theme.button-pad-x;
+        padding-right: Theme.button-pad-x;
         // Optical centering (same correction as PrimaryButton / the Segmented
         // labels): Slint metric-centers the full font line box, which sits a
         // descender-less label ~1px high of the button's visual center. The label
         // is a layout child whose y the LAYOUT owns, so the nudge lives in an
-        // asymmetric vertical-padding split (9/7 — the 16px total is unchanged),
-        // not a `y:` binding (docs/patterns.md optical-centering entry).
-        padding-top: 9px;
-        padding-bottom: 7px;
+        // asymmetric vertical-padding split (9/7 — the 16px total is unchanged;
+        // see the button-pad-* tokens in Theme.slint), not a `y:` binding
+        // (docs/patterns.md optical-centering entry).
+        padding-top: Theme.button-pad-top;
+        padding-bottom: Theme.button-pad-bottom;
         alignment: center;
 
         Text {

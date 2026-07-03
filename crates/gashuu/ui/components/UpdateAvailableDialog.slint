@@ -32,11 +32,10 @@
 // Key.Backtab / shift+Key.Tab (backward) — see the `fs.key-pressed` comment.
 //
 // BUTTON FOCUS / Tab / Space: PrimaryButton/SecondaryButton are TouchArea-based
-// and therefore NON-focusable (repo convention). Each is wrapped in a
-// file-private FocusButton (a FocusScope) — a duplicate of ConfirmDialog's
-// file-private wrapper (that one is not exported, so it cannot be imported;
-// per-file file-private atoms are the established pattern here — see
-// NavBar/Stepper's file-private SearchField / StepButton).
+// and therefore NON-focusable (repo convention). Each is wrapped in the shared
+// FocusButton (a FocusScope), imported from FocusButton.slint — the same wrapper
+// ConfirmDialog uses (extracted for reuse in issue 362; the ancestor `fs` rotates
+// focus between the button stops on Tab).
 //
 // RELEASE NOTES LINK: deliberately mouse/screen-reader-activation only (a
 // plain Rectangle + TouchArea with accessible-* hooks, PrimaryButton's own
@@ -52,37 +51,7 @@ import { Strings } from "../Strings.slint";
 import { PrimaryButton } from "PrimaryButton.slint";
 import { SecondaryButton } from "SecondaryButton.slint";
 import { GlassModal } from "GlassModal.slint";
-
-// File-private focus wrapper — see ConfirmDialog.slint's FocusButton for the
-// full rationale (kept file-private/duplicated per that file's own precedent).
-component FocusButton inherits FocusScope {
-    callback pressed;
-    width: slot.preferred-width;
-    height: slot.preferred-height;
-    key-pressed(event) => {
-        if (event.text == Key.Space) {
-            root.pressed();
-            return accept;
-        }
-        return reject;
-    }
-    Rectangle {
-        x: -Theme.space-xxs;
-        y: -Theme.space-xxs;
-        width: parent.width + 2 * Theme.space-xxs;
-        height: parent.height + 2 * Theme.space-xxs;
-        background: transparent;
-        border-radius: Theme.radius-md + Theme.space-xxs;
-        border-width: parent.has-focus ? 1px : 0px;
-        border-color: parent.has-focus ? Theme.accent : transparent;
-        drop-shadow-color: parent.has-focus ? Theme.accent-glow : transparent;
-        drop-shadow-blur: parent.has-focus ? Theme.space-sm : 0px;
-        animate border-color { duration: Theme.motion-fast; }
-    }
-    slot := HorizontalLayout {
-        @children
-    }
-}
+import { FocusButton } from "FocusButton.slint";
 
 export component UpdateAvailableDialog inherits GlassModal {
     // ── Public API (pinned — auto-update epic Task 9 signature) ───────────────

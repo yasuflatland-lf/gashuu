@@ -1,0 +1,43 @@
+// FocusButton — a focus wrapper that makes a non-focusable, TouchArea-based
+// button atom (DangerButton / PrimaryButton / SecondaryButton) a Tab stop and
+// Space-activatable WITHOUT editing the atom (issue 127; extracted for reuse in
+// issue 362). Shared by ConfirmDialog and UpdateAvailableDialog, which both need
+// keyboard-reachable buttons inside a modal-key-trap (same idiom as NavBar's
+// SearchField and Stepper's StepButton). Inherits FocusScope so the parent reads
+// `has-focus` and calls `focus()` directly (used by each dialog's ancestor `fs`
+// to rotate focus between the button stops on Tab). Sizes to its slotted button
+// via the `@children` layout. Space fires `pressed`; Tab/Backtab/Enter/Esc are
+// rejected so they bubble to the ancestor `fs` (which owns the key model in ONE
+// place).
+import { Theme } from "../Theme.slint";
+
+export component FocusButton inherits FocusScope {
+    callback pressed;
+    width: slot.preferred-width;
+    height: slot.preferred-height;
+    key-pressed(event) => {
+        if (event.text == Key.Space) {
+            root.pressed();
+            return accept;
+        }
+        return reject;
+    }
+    // Focus ring: accent border + soft accent-glow halo (the Toggle/Segmented
+    // idiom), drawn just outside the button.
+    Rectangle {
+        x: -Theme.space-xxs;
+        y: -Theme.space-xxs;
+        width: parent.width + 2 * Theme.space-xxs;
+        height: parent.height + 2 * Theme.space-xxs;
+        background: transparent;
+        border-radius: Theme.radius-md + Theme.space-xxs;
+        border-width: parent.has-focus ? 1px : 0px;
+        border-color: parent.has-focus ? Theme.accent : transparent;
+        drop-shadow-color: parent.has-focus ? Theme.accent-glow : transparent;
+        drop-shadow-blur: parent.has-focus ? Theme.space-sm : 0px;
+        animate border-color { duration: Theme.motion-fast; }
+    }
+    slot := HorizontalLayout {
+        @children
+    }
+}
