@@ -89,6 +89,17 @@ pub(crate) fn probe_path(index: usize, path: PathBuf, policy: ArchivePolicy) -> 
     ProbeOutcome { index, path, kind }
 }
 
+/// Completed fraction of a bulk add for the progress bar fill, in `[0.0, 1.0]`.
+/// Returns `0.0` for an empty batch (no divide-by-zero) and clamps so a stray
+/// over-count never overfills the bar. Pure so the mapping is unit-testable
+/// without a Slint event loop.
+pub(crate) fn add_progress_ratio(done: usize, total: usize) -> f32 {
+    if total == 0 {
+        return 0.0;
+    }
+    (done as f32 / total as f32).clamp(0.0, 1.0)
+}
+
 /// Owns the bulk-add async bookkeeping: the supersede `epoch` and the current
 /// generation's probe-outcome accumulator. Like `CoverController`, it does NOT
 /// own any `!Send` `Rc` collaborator — the apply half re-acquires those in the
@@ -343,5 +354,16 @@ mod tests {
             ctrl.take_outcomes(0).is_none(),
             "a superseded generation's finalize drains nothing"
         );
+    }
+
+    /// The bar fill fraction is done/total, with a zero-guard for the empty
+    /// batch and a clamp so an over-count can never exceed a full bar.
+    #[test]
+    fn add_progress_ratio_maps_counts_to_fraction() {
+        assert_eq!(add_progress_ratio(0, 18), 0.0, "start of batch is empty");
+        assert_eq!(add_progress_ratio(9, 18), 0.5, "half done is half full");
+        assert_eq!(add_progress_ratio(18, 18), 1.0, "all done is full");
+        assert_eq!(add_progress_ratio(0, 0), 0.0, "empty batch never divides by zero");
+        assert_eq!(add_progress_ratio(20, 18), 1.0, "over-count clamps to full");
     }
 }
