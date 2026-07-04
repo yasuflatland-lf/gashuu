@@ -93,6 +93,7 @@ pub(crate) fn probe_path(index: usize, path: PathBuf, policy: ArchivePolicy) -> 
 /// Returns `0.0` for an empty batch (no divide-by-zero) and clamps so a stray
 /// over-count never overfills the bar. Pure so the mapping is unit-testable
 /// without a Slint event loop.
+#[allow(dead_code)]
 pub(crate) fn add_progress_ratio(done: usize, total: usize) -> f32 {
     if total == 0 {
         return 0.0;
