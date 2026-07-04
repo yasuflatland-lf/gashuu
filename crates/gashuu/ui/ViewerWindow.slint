@@ -342,7 +342,7 @@ export component ViewerWindow inherits Window {
 
     // ── Bulk-add progress hairline ────────────────────────────────────────────
     // Full-width 3px bar pinned to the very bottom edge while an add probes. The
-    // accent fill grows to `add-progress` (determinate), and a shimmer band sweeps
+    // accent fill grows to `add-progress-ratio` (determinate), and a shimmer band sweeps
     // continuously via animation-tick() so a stalled count still reads as alive.
     // Gated by `add-active` so animation-tick() is unreferenced (zero repaint cost)
     // when idle — same principle as the page-decode LoadingSlot.
