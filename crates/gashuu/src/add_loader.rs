@@ -363,7 +363,11 @@ mod tests {
         assert_eq!(add_progress_ratio(0, 18), 0.0, "start of batch is empty");
         assert_eq!(add_progress_ratio(9, 18), 0.5, "half done is half full");
         assert_eq!(add_progress_ratio(18, 18), 1.0, "all done is full");
-        assert_eq!(add_progress_ratio(0, 0), 0.0, "empty batch never divides by zero");
+        assert_eq!(
+            add_progress_ratio(0, 0),
+            0.0,
+            "empty batch never divides by zero"
+        );
         assert_eq!(add_progress_ratio(20, 18), 1.0, "over-count clamps to full");
     }
 }
