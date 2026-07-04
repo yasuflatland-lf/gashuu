@@ -99,6 +99,13 @@ export component ViewerWindow inherits Window {
     // Add notice — skips/failures only. Rust sets this (and clears `status-text`);
     // the toast auto-dismisses. In-out so the auto-dismiss Timer can clear it to "".
     in-out property <string> add-toast-text;
+    // Bulk-add loading affordance (the on_add_progress / on_add_finalize handlers
+    // drive these): `add-active` is true while a batch is probing (shows the bottom
+    // bar); `add-progress-ratio` is the completed fraction 0.0..1.0 driving the fill
+    // width. Named `add-progress-ratio` (not `add-progress`) because a
+    // `callback add-progress(int, int)` already exists on this component.
+    in property <bool> add-active: false;
+    in property <float> add-progress-ratio: 0.0;
     // Book display name (set by handlers/library.rs on open, "" otherwise). Declared on
     // the root because Rust binds only to the root surface; consumed by the title label.
     in property <string> current-book-name;
@@ -331,6 +338,41 @@ export component ViewerWindow inherits Window {
         color: Theme.text-muted;
         font-size: Theme.font-micro;
         horizontal-alignment: center;
+    }
+
+    // ── Bulk-add progress hairline ────────────────────────────────────────────
+    // Full-width 3px bar pinned to the very bottom edge while an add probes. The
+    // accent fill grows to `add-progress-ratio` (determinate), and a shimmer band sweeps
+    // continuously via animation-tick() so a stalled count still reads as alive.
+    // Gated by `add-active` so animation-tick() is unreferenced (zero repaint cost)
+    // when idle — same principle as the page-decode LoadingSlot.
+    if root.screen == 0 && root.add-active: Rectangle {
+        x: 0;
+        y: root.height - self.height;
+        width: root.width;
+        height: 3px;
+        background: Theme.placeholder;
+        clip: true;
+
+        // Determinate fill: eases to the new width on each probe completion.
+        Rectangle {
+            x: 0;
+            width: parent.width * root.add-progress-ratio;
+            height: parent.height;
+            background: Theme.accent;
+            animate width { duration: Theme.motion-fast; }
+        }
+
+        // Perpetual shimmer band: a fixed-width highlight sweeping left→right once
+        // every ~1.15s, so motion never stops even while the fill sits at 0.
+        Rectangle {
+            property <float> phase: Math.mod(animation-tick() / 1150ms, 1.0);
+            width: parent.width * 40%;
+            height: parent.height;
+            x: -self.width + (parent.width + self.width) * phase;
+            background: @linear-gradient(90deg,
+                transparent 0%, Theme.progress-shimmer 50%, transparent 100%);
+        }
     }
 
     // ── Library add-error toast ───────────────────────────────────────────────

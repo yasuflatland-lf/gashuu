@@ -4,6 +4,10 @@ export global Theme {
     // ── Colors: accent ──────────────────────────────────────────────────────
     out property <color> accent: #5b8cff;
     out property <color> accent-glow: #5b8cff40;   // rgba(91,140,255,0.25)
+    // Moving-highlight tint for the bulk-add progress bar's shimmer sweep — a
+    // light accent at ~60% alpha so it reads over both the accent fill and the
+    // neutral track. (Component-inline hex is forbidden; the token lives here.)
+    out property <color> progress-shimmer: #a0beff99;
     out property <color> success: #41c98a;
 
     // ── Colors: surface ladder ──────────────────────────────────────────────

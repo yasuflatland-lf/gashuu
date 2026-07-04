@@ -96,17 +96,18 @@ pub(crate) fn wire_open_handlers(
         let localizer = Rc::clone(&localizer);
         ui.on_add_progress(move |done, total| {
             with_ui(&ui_weak, |ui| {
+                let done = done.max(0) as usize;
+                let total = total.max(0) as usize;
                 // A new add is underway: clear any lingering error toast from the
                 // previous add so it doesn't float over this operation's progress.
                 ui.set_add_toast_text("".into());
                 ui.set_status_text(
-                    crate::i18n::dynamic::adding_progress(
-                        localizer.loader(),
-                        done.max(0) as usize,
-                        total.max(0) as usize,
-                    )
-                    .into(),
+                    crate::i18n::dynamic::adding_progress(localizer.loader(), done, total).into(),
                 );
+                // Show the bottom progress hairline and advance its determinate
+                // fill. Epoch-guarded upstream, so only live-generation ticks reach here.
+                ui.set_add_active(true);
+                ui.set_add_progress_ratio(crate::add_loader::add_progress_ratio(done, total));
             })
         });
     }
@@ -140,6 +141,10 @@ pub(crate) fn wire_open_handlers(
                     op,
                     localizer.loader(),
                 );
+                // This generation's add is complete — hide the progress hairline.
+                // (Superseded finalizes returned early above, so a newer in-flight
+                // add's bar is left running for its own finalize to retire.)
+                ui.set_add_active(false);
             })
         });
     }
