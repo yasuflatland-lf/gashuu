@@ -1,51 +1,23 @@
 // UpdateAvailableDialog — notifies the user a newer gashuu release is available
-// (auto-update epic, Task 9). A GENERIC three-choice modal built on the shared
-// GlassModal shell, mirroring ConfirmDialog.slint's FocusScope/key-handling
-// structure exactly (same glass idiom, same modal-key-trap model), but with
-// THREE actions instead of two: Update now / Later / Skip this version.
+// (auto-update epic). GENERIC three-choice modal on GlassModal, mirroring
+// ConfirmDialog's FocusScope/key-trap structure (see that file's header for the
+// full i-slint-core rationale), with THREE actions: Update now / Later / Skip.
 //
-// DISMISS / KEY MODEL (mirrors ConfirmDialog's modal-key-trap, extended to 3
-// stops — docs/patterns.md FocusScope-ancestor + modal-key-trap):
-//   • Backdrop click  → later()  (scrim TouchArea outside the panel).
-//   • Esc             → later().
-//   • Enter / Return  → later().  Never bound to Update now, so a reflexive
-//     Enter can never kick off a download — Update now is reachable ONLY by
-//     pointer click or by Tab→Space, even while it holds focus (its FocusScope
-//     rejects Enter/Esc so they bubble UP to the ancestor `fs`, which maps both
-//     to later()).
-//   • Every OTHER key → swallowed (accept), same modal-trap rationale as
-//     ConfirmDialog: this is a modal over live content, so the ancestor `fs`
-//     consumes all unhandled keys.
-// `fs` WRAPS the panel content so it is a genuine ANCESTOR of the buttons (same
-// upward-walk reasoning as ConfirmDialog — see that file's header comment for
-// the full i-slint-core citation).
+// KEY MODEL: backdrop click, Esc, and Enter/Return ALL map to later(). Update now
+// is NEVER bound to Enter (reachable only by click or Tab→Space, even while it holds
+// focus); every OTHER key is swallowed. `fs` WRAPS the panel so it's a genuine
+// ANCESTOR of the buttons (upward key walk).
 //
-// DEFAULT FOCUS: Later (the safe, non-committing choice — same role Cancel
-// plays in ConfirmDialog). Set on `fs.init`; re-instantiated fresh on every
-// `if root.show-update-available` mount (ViewerWindow's USAGE CONTRACT — see
-// ConfirmDialog's header comment), so no focus-epoch plumbing is needed here
-// (this dialog is never stacked under another overlay).
+// DEFAULT FOCUS: Later (safe, non-committing). Set on `fs.init`; re-instantiated on
+// every `if` mount (ViewerWindow usage contract), so no focus-epoch needed (never
+// stacked). TAB ORDER: Update now → Later → Skip → wrap; unlike ConfirmDialog's
+// 2-stop toggle, 3 stops need direction, so the handler distinguishes Tab (forward)
+// from Backtab / shift+Tab (backward).
 //
-// TAB ORDER: Update now → Later → Skip this version → (wrap). Unlike
-// ConfirmDialog's 2-stop toggle (where Tab and Backtab are the same flip),
-// 3 stops need direction, so this handler distinguishes Key.Tab (forward) from
-// Key.Backtab / shift+Key.Tab (backward) — see the `fs.key-pressed` comment.
-//
-// BUTTON FOCUS / Tab / Space: PrimaryButton/SecondaryButton are TouchArea-based
-// and therefore NON-focusable (repo convention). Each is wrapped in the shared
-// FocusButton (a FocusScope), imported from FocusButton.slint — the same wrapper
-// ConfirmDialog uses (extracted for reuse in issue 362; the ancestor `fs` rotates
-// focus between the button stops on Tab).
-//
-// RELEASE NOTES LINK: deliberately mouse/screen-reader-activation only (a
-// plain Rectangle + TouchArea with accessible-* hooks, PrimaryButton's own
-// baseline pattern before ConfirmDialog's FocusButton wrapper adds Tab
-// reachability). It is NOT folded into the Tab cycle: it is gated by
-// `if root.notes-available`, and an if-gated id lives in a child scope the
-// ANCESTOR `fs` cannot name (docs/patterns.md) — the ancestor could not send
-// focus to it via the manual rotation above even if it wanted to. Update now /
-// Later / Skip this version — the three real decisions — stay fully
-// keyboard-reachable, which is the bar that matters here.
+// Buttons are TouchArea-based/non-focusable, each wrapped in the shared FocusButton
+// (issue 362). The RELEASE NOTES LINK is mouse/AT-only and NOT in the Tab cycle: it
+// is `if`-gated, so its id lives in a child scope the ancestor `fs` cannot name — the
+// three real decisions stay fully keyboard-reachable, which is what matters.
 import { Theme } from "../Theme.slint";
 import { Strings } from "../Strings.slint";
 import { PrimaryButton } from "PrimaryButton.slint";
@@ -73,32 +45,28 @@ export component UpdateAvailableDialog inherits GlassModal {
     // Fired on the "Release notes" link.
     callback notes();
 
-    // ── Panel geometry + backdrop wiring (glass chrome lives in GlassModal) ────
-    // Same fluid-width clamp as ConfirmDialog/SettingsDialog (shared settings-w
-    // token); height hugs the content.
+    // Panel geometry + backdrop (glass chrome in GlassModal). Same fluid-width
+    // clamp as ConfirmDialog (settings-w token); height hugs the content.
     panel-width: min(Theme.settings-w, root.width - 2 * Theme.space-xl);
     panel-height: body-col.preferred-height;
     backdrop-clicked => { root.later(); }
 
-    // ── FocusScope: Esc/Enter → later, Tab/Backtab rotate 3 stops ─────────────
-    // WRAPS the panel content so it is a genuine ANCESTOR of the button scopes
-    // (see the file header comment for the full rationale).
+    // FocusScope: Esc/Enter → later, Tab/Backtab rotate 3 stops. WRAPS the panel as
+    // a genuine ANCESTOR of the button scopes (see the header for the rationale).
     fs := FocusScope {
         x: 0;
         y: 0;
-        // Size to the glass PANEL, not `parent` — see ConfirmDialog.slint's
-        // identical comment (GlassModal's @children content is sized to the
-        // WINDOW; `root.panel-*` is the panel's true size).
+        // Size to the glass PANEL, not `parent` (see ConfirmDialog): @children content
+        // is sized to the WINDOW; `root.panel-*` is the panel's true size.
         width: root.panel-width;
         height: root.panel-height;
         init => {
             later-scope.focus();
         }
         key-pressed(event) => {
-            // Esc and Return/Enter BOTH defer — Return is deliberately the safe
-            // choice so a reflexive press can never fire accept(), even when
-            // Update now holds focus (its scope rejects everything but Space
-            // via its catch-all `return reject`, so Return bubbles up to here).
+            // Esc and Return/Enter BOTH defer to later() — the safe choice, so a
+            // reflexive press never fires accept(), even when Update now holds focus
+            // (its scope rejects all but Space, so Return bubbles up here).
             if (event.text == Key.Escape || event.text == Key.Return) {
                 root.later();
                 return EventResult.accept;
@@ -114,9 +82,8 @@ export component UpdateAvailableDialog inherits GlassModal {
                 }
                 return EventResult.accept;
             }
-            // Backward (Backtab, or shift+Tab — backend-dependent, same
-            // caveat as ConfirmDialog): Skip this version → Later → Update now
-            // → (wrap).
+            // Backward (Backtab, or shift+Tab — backend-dependent, same caveat as
+            // ConfirmDialog): Skip → Later → Update now → (wrap).
             if (event.text == Key.Backtab || (event.text == Key.Tab && event.modifiers.shift)) {
                 if (skip-scope.has-focus) {
                     later-scope.focus();
@@ -127,15 +94,10 @@ export component UpdateAvailableDialog inherits GlassModal {
                 }
                 return EventResult.accept;
             }
-            // Catch-all: swallow every other key so nothing leaks to content
-            // mounted behind this modal. Note: `accept`/`reject` are ambiguous
-            // bare identifiers here because this component ALSO declares a
-            // callback named `accept()` (the pinned public API) — the fully
-            // qualified `EventResult.accept` disambiguates (bare `accept`
-            // resolves to the callback, which then needs `()` — "Callback must
-            // be called" — a gotcha specific to this dialog, unlike
-            // ConfirmDialog's `confirm`/`cancel` callback names, which never
-            // collide with the enum).
+            // Catch-all: swallow every other key. NOTE: bare `accept`/`reject` are
+            // ambiguous here because this component declares an `accept()` callback,
+            // so use the qualified `EventResult.accept` (bare `accept` resolves to the
+            // callback → "Callback must be called").
             return EventResult.accept;
         }
 
@@ -199,18 +161,15 @@ export component UpdateAvailableDialog inherits GlassModal {
                 wrap: word-wrap;
             }
 
-            // ── Action row: [Update now] [Later] [Skip this version] ───────
-            // Default (stretch) alignment + a leading stretch spacer pin the
-            // buttons hard right (same idiom as ConfirmDialog — a literal
-            // `alignment:` would DISABLE the spacer's stretch).
+            // Action row, pinned right by a leading stretch spacer (same idiom as
+            // ConfirmDialog — a literal `alignment:` would DISABLE the stretch).
             HorizontalLayout {
                 spacing: Theme.space-md;
 
                 Rectangle { horizontal-stretch: 1; }
 
-                // Update now — the affirmative action, styled as the single
-                // accent CTA (never destructive, so PrimaryButton not
-                // DangerButton).
+                // Update now — the affirmative action, the single accent CTA (never
+                // destructive, so PrimaryButton not DangerButton).
                 accept-scope := FocusButton {
                     pressed => { root.accept(); }
                     PrimaryButton {
@@ -233,9 +192,8 @@ export component UpdateAvailableDialog inherits GlassModal {
                     }
                 }
 
-                // Skip this version — a low-prominence utility action
-                // (bordered neutral, same weight class as the Settings
-                // dialog's "Clear reading history" utilities).
+                // Skip this version — a low-prominence utility action (bordered
+                // neutral, like the Settings dialog's utility actions).
                 skip-scope := FocusButton {
                     pressed => { root.skip(); }
                     SecondaryButton {

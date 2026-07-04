@@ -1,16 +1,5 @@
-// Toggle — token-driven on/off switch (issue 102, PR-A/3).
-//
-// Drop-in replacement for the std-widgets `CheckBox` row in the settings dialog:
-// SAME `checked` (two-way) + `toggled(bool)` shape, painted from `Theme.*`. A
-// capsule (radius = height/2) whose track is `accent` when on / `track-prog` when off
-// (the darker `track` tone sat too close to the glass fill to read as a track —
-// HIG switches keep the off state plainly visible); a white knob with a subtle
-// depth shadow slides left↔right by animating its `x` (NOT opacity — HiDPI
-// blur) on the Carousel's spring curve. In the PR-A interim layout it is paired
-// with a sibling label `Text`.
-//
-// Keyboard (when focused): Space/Enter toggles. Focus shows an `accent` border +
-// a soft `accent-glow` halo. All colors/lengths are `Theme.*` (check-tokens.sh).
+// Toggle — token-driven CheckBox-replacement switch (issue 102). Off track is
+// `track-prog` (darker `track` reads too close to glass); knob slides via `x`, not opacity (HiDPI).
 import { Theme } from "../Theme.slint";
 
 export component Toggle inherits Rectangle {
@@ -19,18 +8,14 @@ export component Toggle inherits Rectangle {
     in property <string> a11y-label;
     callback toggled(bool);
 
-    // ── Pill (fixed φ-proportion track — Apple's 51×31 switch ratio). WIDTH and
-    //    HEIGHT are explicit bindings, not min-*: a layout stretches children
-    //    across its cross axis past min-height, so inside the SettingRow slot the
-    //    30px track inflated to the 34px row height (breaking φ and bloating the
-    //    knob) — the atom pins its own size. ────────────────────────────────────
+    // Pill (Apple's 51×31 φ ratio): WIDTH/HEIGHT are explicit, not min-* — a layout
+    // stretches children past min-height, inflating the 30px track to the 34px row.
     width: Theme.toggle-track-w;
     height: Theme.settings-control-h;
     horizontal-stretch: 0;
     vertical-stretch: 0;
-    // TRUE capsule (radius = height/2), like Apple's switch track: radius-pill
-    // renders an ELLIPSE on the non-square track (femtovg per-axis clamp, see
-    // docs/patterns.md). The knob below is square, so its radius-pill is fine.
+    // TRUE capsule (radius = height/2): radius-pill renders an ELLIPSE on the
+    // non-square track (femtovg per-axis clamp, patterns.md). The square knob is fine.
     border-radius: self.height / 2;
     background: root.checked ? Theme.accent : Theme.track-prog;
     border-width: 1px;
@@ -54,9 +39,8 @@ export component Toggle inherits Rectangle {
             : Theme.toggle-knob-inset;
         background: Theme.text;
         border-radius: Theme.radius-pill;
-        // HIG knob depth: one subtle drop shadow lifts the knob off the track
-        // (the Scrubber knob's single-shadow idiom; the focus halo lives on the
-        // root, so each element still carries at most one shadow).
+        // HIG knob depth: one subtle drop shadow lifts the knob (focus halo lives on
+        // root, so each element still carries at most one shadow — Scrubber idiom).
         drop-shadow-color: Theme.shadow-popover;
         drop-shadow-blur: 4px;
         drop-shadow-offset-y: 1px;

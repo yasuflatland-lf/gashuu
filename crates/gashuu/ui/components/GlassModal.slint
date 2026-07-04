@@ -1,17 +1,5 @@
-// GlassModal — the shared glass-panel shell for the app's modal dialogs.
-//
-// Single-sources the chrome that SettingsDialog, ShortcutsOverlay, and
-// ConfirmDialog used to copy-paste verbatim: a full-area Theme.scrim backdrop
-// with click-to-dismiss, a centered glass panel (top-sheen FILL gradient, 1px
-// soft rim, glass border, ONE drop shadow), a 1px top inner highlight rim, and a
-// lowest-layer click-absorber so a click ON the panel never dismisses. Each
-// dialog `inherits GlassModal`, sets `panel-width`/`panel-height`, wires
-// `backdrop-clicked`, and supplies its own FocusScope + content as @children
-// (slotted INTO the panel, so the dialog's FocusScope stays a genuine ancestor
-// of its controls and keeps its own key model). GlassModal carries NO domain
-// vocabulary and NO key handling.
-//
-// Colors / lengths come from Theme.* only (no inline hex; scripts/check-tokens.sh).
+// GlassModal — shared glass-panel modal shell (scrim backdrop + centered glass panel).
+// @children slot INTO the panel so the dialog's FocusScope stays a genuine ancestor of controls.
 import { Theme } from "../Theme.slint";
 
 export component GlassModal inherits Rectangle {
@@ -24,10 +12,8 @@ export component GlassModal inherits Rectangle {
     // ── Full-area semi-transparent backdrop ───────────────────────────────────
     background: Theme.scrim;
 
-    // ── Backdrop dismiss ──────────────────────────────────────────────────────
-    // A click anywhere on the scrim (outside the panel) dismisses. Clicks inside
-    // the panel are absorbed by the panel's lowest-layer TouchArea, so they never
-    // reach this one.
+    // Backdrop dismiss: a click on the scrim (outside the panel) dismisses. Clicks
+    // inside the panel are absorbed by its lowest-layer TouchArea, never reaching here.
     TouchArea {
         clicked => {
             root.backdrop-clicked();
@@ -61,11 +47,8 @@ export component GlassModal inherits Rectangle {
             background: Theme.glass-highlight;
         }
 
-        // Panel click absorber: lowest interactive layer, declared BEFORE
-        // @children. A click that lands on the panel (not on a control) stops here
-        // instead of bubbling to the backdrop TouchArea — so clicking the panel
-        // never dismisses. Controls in @children are declared after it, so they
-        // keep hit-test priority.
+        // Panel click absorber: declared BEFORE @children so a click on the panel (not a
+        // control) stops here, not bubbling to the backdrop; @children keep hit-test priority.
         TouchArea { }
 
         // The dialog's FocusScope + content.

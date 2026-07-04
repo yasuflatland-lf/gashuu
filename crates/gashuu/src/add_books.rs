@@ -68,9 +68,8 @@ pub(crate) fn apply_outcomes(
             }
             ProbeKind::Counted(count) => {
                 if let Some(canonical) = lib.add(path).map(std::path::Path::to_path_buf) {
-                    // Record the probed count on the freshly inserted book so it
-                    // shows "1 / N" before its first open. `set_page_count`
-                    // re-finds the book by its canonical path.
+                    // Record the probed count so a freshly inserted book shows "1 / N"
+                    // before its first open (set_page_count re-finds it by canonical path).
                     lib.set_page_count(&canonical, count);
                     added.push(canonical);
                 }
@@ -138,15 +137,8 @@ mod tests {
         apply_outcomes(lib, outcomes)
     }
 
-    // ---- add_paths (empty-book rule) -------------------------------------
-    //
-    // Since the empty-book rule, `add_paths` PROBES each source before insert:
-    // a source must contain at least one image page to be added. A folder is the
-    // cheapest fixture — a zero-byte `*.png` counts as a page (listing is
-    // extension-based), an empty folder probes to `EmptyBook`, and a nonexistent
-    // path probes to an I/O error. These helpers build real temp dirs so probing
-    // sees a genuine filesystem (the same reason the older tests already used
-    // tempdirs: `Library::add` canonicalizes).
+    // add_paths PROBES each source before insert (empty-book rule: a source needs >=1 image
+    // page). These helpers build real temp dirs so probing sees a genuine filesystem.
 
     /// Create a fresh temp directory under `parent/<name>` holding `pages`
     /// zero-byte `*.png` files (so it probes to a `pages`-page book). With
@@ -322,9 +314,8 @@ mod tests {
 
     #[test]
     fn add_paths_unreadable_path_is_skipped() {
-        // A nonexistent path cannot be opened (I/O error), so it is rejected as a
-        // skip — never added (an "unreadable" source is NOT classified as empty,
-        // but is still kept out of the library).
+        // A nonexistent path is an I/O error (unreadable, NOT empty), so it is
+        // rejected as a skip and kept out of the library rather than added.
         let mut lib = gashuu_core::Library::new();
         let report = add_paths(
             &mut lib,
@@ -365,10 +356,8 @@ mod tests {
 
     #[test]
     fn add_paths_returns_input_order_while_books_are_natural_order() {
-        // Focus follows the FIRST input path, not natural order: `add_paths`
-        // returns the inserted paths in INPUT order, whereas `lib.books()` keeps
-        // them in NATURAL (sorted) order. Both share one parent dir so their leaf
-        // names (vol1, vol10) drive the natural sort.
+        // `add_paths` returns inserted paths in INPUT order (focus follows the first),
+        // whereas `lib.books()` keeps NATURAL order — vol1/vol10 leaf names drive the sort.
         let mut lib = gashuu_core::Library::new();
         let root = tempfile::tempdir().expect("tempdir");
         let vol10 = canon(&make_book_dir(root.path(), "vol10", 1));
@@ -392,12 +381,8 @@ mod tests {
         assert_eq!(books, vec![vol1, vol10]);
     }
 
-    // Note: `build_carousel_model` is now headless (it builds the model from
-    // visible indices; `bind_carousel_model` does the UI bind), and is unit-tested
-    // directly in `carousel::tests`. The Library -> carousel row mapping invariants
-    // (length, 1-based `current`, availability, natural `Library::books()` order)
-    // are covered by `library_model::tests` against the pure `carousel_data` /
-    // `carousel_data_for_indices` helpers that the builder delegates to.
+    // `build_carousel_model` is headless and unit-tested in `carousel::tests`; the
+    // Library -> carousel row invariants live in `library_model::tests` (carousel_data).
 
     // ---- select_add_notice (reject-empty-books status routing) --------------
 

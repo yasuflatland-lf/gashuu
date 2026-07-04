@@ -67,12 +67,8 @@ impl RarSource {
             let header = match header {
                 Ok(h) => h,
                 Err(_) => {
-                    // unrar's List iterator is non-resumable: after any per-entry error it
-                    // sets `damaged` and yields None forever, so (unlike ZipSource's random-
-                    // access by_index skip+count) we cannot skip an interior bad entry and
-                    // continue. Surface the good pages already indexed and count the failure,
-                    // matching the project's skip+count policy as far as the format allows
-                    // (we can only drop the trailing remainder, not an interior entry).
+                    // unrar's List iterator is non-resumable: after any error it sets `damaged`
+                    // and yields None forever, so we surface good pages + count the failure only.
                     skipped += 1;
                     break;
                 }
@@ -90,13 +86,8 @@ impl RarSource {
                 }
                 continue;
             };
-            // Shared page-membership decision: flatten any image at any depth into
-            // a page (CBRs may wrap pages in a folder, unlike FolderSource's
-            // max_depth(1)); non-images / macOS metadata are expected noise; an
-            // oversized image is a counted skip. The directory check above (kept
-            // ahead of `enclosed_name` so an unsafe-named dir is never miscounted),
-            // the zip-slip guard, and the sequential `read_header` walk stay
-            // rar-specific; only the post-`enclosed_name` decision is shared.
+            // Shared page-membership decision: flatten any image at any depth into a page
+            // (CBRs wrap pages in folders); the dir check stays ahead so it isn't miscounted.
             match classify_entry(&safe, header.is_directory(), header.unpacked_size, max) {
                 EntryClass::Page => entries.push(EntryMeta {
                     seq_index,
@@ -145,11 +136,8 @@ impl RarSource {
                 });
             };
             if seq == meta.seq_index {
-                // Postcondition guard: the reached entry's safe name MUST match
-                // the name recorded for this `seq_index` during listing. If the
-                // two passes ever desynchronize we would silently return the
-                // wrong page's bytes; turn that into a loud dev/test failure
-                // instead. (A true invariant check, not a legitimate zero-path.)
+                // Postcondition guard: the reached entry's safe name MUST match the name
+                // recorded for this `seq_index`; a desync would silently return wrong bytes.
                 debug_assert_eq!(
                     enclosed_name(&cursor.entry().filename)
                         .map(|p| p.to_string_lossy().into_owned())
@@ -157,10 +145,8 @@ impl RarSource {
                     Some(meta.name.as_str()),
                     "seq_index desynchronized between listing and processing passes",
                 );
-                // The declared size was already screened at open time; this
-                // re-validates the declared `unpacked_size` against `max` in case
-                // the entry changed between the listing and reading passes (see
-                // the `read_entry` doc — this is NOT a streaming `take` cap).
+                // Re-validate the declared `unpacked_size` against `max` in case the entry
+                // changed between passes (see read_entry doc — NOT a streaming `take` cap).
                 if cursor.entry().unpacked_size > max {
                     return Err(CoreError::EntryTooLarge {
                         name: meta.name.clone(),
@@ -220,10 +206,8 @@ mod tests {
         let cbr = write_cbr(SAMPLE_CBR_B64);
         let src = RarSource::open(cbr.path()).unwrap();
 
-        // Derive the expected order by applying the real `natural_cmp` to the
-        // surviving image names, so the test pins "natural order" rather than a
-        // hardcoded guess about how the `sub/` prefix sorts. `notes.txt` is
-        // excluded (not an image); `sub/3.png` is kept (flattening).
+        // Derive the expected order by applying real `natural_cmp` to the surviving names,
+        // so the test pins "natural order" not a hardcoded guess about the `sub/` prefix.
         let mut expected = vec!["1.png", "2.png", "10.png", "sub/3.png"];
         expected.sort_by(|a, b| natural_cmp(a, b));
         let expected: Vec<String> = expected.into_iter().map(String::from).collect();
@@ -335,9 +319,8 @@ mod tests {
 
     #[test]
     fn open_skips_entries_over_declared_size_limit() {
-        // A 10-byte ceiling at open time skips every PNG (declared-size tier),
-        // leaving no pages. `notes.txt` and the `sub/` directory header are
-        // filtered before the size check, so they do not inflate the count.
+        // A 10-byte ceiling skips every PNG (declared-size tier), leaving no pages.
+        // `notes.txt` and the `sub/` dir header are filtered before the size check.
         let cbr = write_cbr(SAMPLE_CBR_B64);
         let src = RarSource::open_with_limit(cbr.path(), 10).unwrap();
         assert!(src.list_pages().is_empty());
@@ -346,9 +329,8 @@ mod tests {
 
     #[test]
     fn read_entry_over_actual_size_limit_errors() {
-        // Open with the default limit so entries pass open-time indexing, then
-        // read index 3 (`sub/3.png`, archive seq 5) through a tiny per-read cap
-        // — pairing the read-time ceiling with the sequential skip walk.
+        // Open with the default limit so entries pass indexing, then read index 3
+        // (`sub/3.png`, seq 5) through a tiny per-read cap alongside the skip walk.
         let cbr = write_cbr(SAMPLE_CBR_B64);
         let src = RarSource::open(cbr.path()).unwrap();
         assert!(!src.list_pages().is_empty());
@@ -376,9 +358,8 @@ mod tests {
 
     #[test]
     fn open_missing_file_errors_as_rar() {
-        // `unrar` opens the file itself and reports its own open failure, so a
-        // missing file surfaces as `CoreError::Rar`, not `CoreError::Io` (unlike
-        // `ZipSource`, which opens the file and would surface `CoreError::Io`).
+        // `unrar` opens the file itself, so a missing file surfaces as `CoreError::Rar`,
+        // not `CoreError::Io` (unlike `ZipSource`, which would surface `CoreError::Io`).
         let Err(e) = RarSource::open("/nonexistent-xyz.cbr") else {
             panic!("expected a Rar error opening a missing file");
         };

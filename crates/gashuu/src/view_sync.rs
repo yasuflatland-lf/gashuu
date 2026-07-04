@@ -260,9 +260,8 @@ mod tests {
         let mut viewport = ViewportState::from_settings(&Settings::default());
         viewport.set_fit(FitMode::Actual);
 
-        // ...start from a Settings whose NON-mirrored fields hold NON-default values
-        // (use struct-update syntax to avoid clippy::field_reassign_with_default),
-        // so we can prove reconcile touches ONLY the four display-mode fields.
+        // NON-mirrored fields set to NON-default via struct-update (dodges
+        // clippy::field_reassign_with_default) to prove reconcile touches only the four.
         let mut settings = Settings {
             cache_size: 99,
             preload_pages: 7,
@@ -272,9 +271,8 @@ mod tests {
         };
         reconcile_settings(&state, &viewport, &mut settings);
 
-        // The four mirrored fields now match the runtime (defaults Rtl/Auto/
-        // Standalone/Width all DIFFER from the values set above, so this can't pass
-        // vacuously)...
+        // The four mirrored fields now match the runtime; defaults (Rtl/Auto/Standalone/
+        // Width) all differ from the values set above, so this can't pass vacuously.
         assert_eq!(settings.reading_direction, ReadingDirection::Ltr);
         assert_eq!(settings.spread_mode, SpreadMode::Double);
         assert_eq!(settings.cover_mode, CoverMode::Paired);
@@ -290,10 +288,8 @@ mod tests {
 
     #[test]
     fn current_book_name_empty_after_failed_open() {
-        // The bug guard: a FAILED open must leave the title-bar name empty when
-        // nothing was previously open. `current_book_name` reads the authoritative
-        // `open_file()` (left None by a failed `open_folder`), not the dialog path,
-        // so it can never surface the name of a book that did not open.
+        // Bug guard: a FAILED open must leave the title-bar name empty. `current_book_name`
+        // reads authoritative `open_file()` (None after a failed open), never the dialog path.
         let state = Rc::new(RefCell::new(ViewerState::new()));
         // Sanity: blank before any open.
         assert_eq!(current_book_name(&state), "");
@@ -311,9 +307,8 @@ mod tests {
 
     #[test]
     fn current_book_name_is_folder_name_after_successful_open() {
-        // A SUCCESSFUL folder open derives the directory name from the canonical
-        // `open_file()`. Uses a real temp dir (an empty folder opens fine as a
-        // FolderSource), mirroring `viewer_state::tests` for open_file.
+        // A SUCCESSFUL folder open derives the directory name from canonical `open_file()`.
+        // Uses a real temp dir (an empty folder opens fine as a FolderSource).
         let dir = std::env::temp_dir().join(format!("gashuu_title_ok_{}", std::process::id()));
         std::fs::create_dir_all(&dir).expect("create temp dir");
         let leaf = dir

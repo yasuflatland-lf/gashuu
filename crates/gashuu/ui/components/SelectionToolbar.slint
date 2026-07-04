@@ -1,42 +1,14 @@
-// SelectionToolbar — organism shown BELOW the NavBar during bulk-selection mode.
+// SelectionToolbar — glass pill shown BELOW the NavBar during bulk-selection.
+// Cells: count pill (accent MODE INDICATOR, never danger), select-all capsule
+// (HIG bordered; collapses to check.svg when `narrow`), and a NavItem exit whose
+// `active` gate maps onto NavItem's `enabled`.
 //
-// A glass pill (following NavBar.slint's four-layer glass idiom with two intentional
-// departures — see the glass-layer comment below) with three
-// inline cells left→right:
-//   1. Count pill    — accent-bordered MODE INDICATOR; shows the pre-composed count
-//                      string from Rust; never red/danger — selection is always accent.
-//                      A TRUE capsule (nav-capsule-radius): radius-pill on a
-//                      non-square rect renders an ELLIPSE (femtovg per-axis clamp,
-//                      docs/patterns.md).
-//   2. Select-all capsule — interactive HIG "bordered" capsule (chip fill +
-//                      hairline ring at idle; accent on hover/press); label =
-//                      select-all-label. When `narrow` is true: collapses to the
-//                      check.svg icon-only form (same colorize idiom as
-//                      SelectionBadge), keeping the full label as the
-//                      accessible-label.
-//   3. Exit capsule  — a `NavItem` instance (close.svg, Cancel Fill — disc +
-//                      knocked-out ✕). The toolbar's `active` gate maps onto
-//                      NavItem's `enabled` so a parked bar exposes no action.
-//
-// Width HUGS content via the root's intrinsic preferred width — but ONLY when the
-// component is instantiated as a LAYOUT CHILD: an absolutely positioned (x/y)
-// instance silently defaults to its PARENT's width (docs/patterns.md "An element
-// placed OUTSIDE a layout defaults to its PARENT's size" — this bit us: the pill
-// spanned the full window). Carousel therefore wraps the toolbar in a full-width
-// centering `HorizontalLayout { alignment: center; }`. Still no binding-loop risk
-// (see NavBar header) because no expression reads the layout's own preferred-width.
-// The text cells carry explicit widths measured from their labels' preferred-width
-// (the explicit-width idiom, established by the former select pill, which now lives
-// in the NavBar as a capsule): an `if`-gated inner layout does NOT propagate
-// preferred width to its parent Rectangle, which is what clipped the select-all
-// label.
-//
-// Deliberately Strings-agnostic: the component does NOT import Strings. All
-// human-visible text (count-text, select-all-label, exit-a11y) is composed in
-// Rust and passed via in-properties.
-//
-// Colors / lengths come from Theme.* only — NO inline brand hex (DESIGN.md
-// rule 2; scripts/check-tokens.sh enforces this). Theme lives one directory up.
+// Layout gotchas: width HUGS content only as a LAYOUT CHILD — an absolute (x/y)
+// instance defaults to its PARENT's width, so Carousel wraps it in a centering
+// HorizontalLayout. Text cells take explicit widths from label preferred-width
+// because an `if`-gated inner layout does NOT propagate it (that clipped select-all).
+// Count pill radius-pill on a non-square rect renders an ELLIPSE (femtovg per-axis
+// clamp). Strings-agnostic: all visible text comes from Rust. Theme.* only.
 import { Theme } from "../Theme.slint";
 import { DangerButton } from "DangerButton.slint";
 import { NavItem } from "NavItem.slint";
@@ -56,12 +28,9 @@ export component SelectionToolbar inherits Rectangle {
     in property <string> delete-label;
     // Gates the DangerButton: hidden at N=0 (decision D2 — hidden, not disabled).
     in property <bool> has-selection;
-    // True only while this toolbar is the VISIBLE (slid-in) bar. The §2.6 slide
-    // transition keeps the toolbar ALWAYS instantiated inside a `clip: true`
-    // strip and slides it out of view when inactive; this flag is ANDed into
-    // every TouchArea `enabled` binding and every `accessible-action-default`
-    // guard so a slid-away bar never takes pointer/keyboard/screen-reader input
-    // even if clip hit-testing leaks (belt-and-braces — docs/patterns.md).
+    // True only while this toolbar is the VISIBLE (slid-in) bar; it stays
+    // instantiated in a `clip: true` strip and slides out when inactive. ANDed into
+    // every enabled/a11y guard so a slid-away bar takes no input if clip leaks.
     in property <bool> active: true;
     callback select-all();
     callback exit();
@@ -69,40 +38,29 @@ export component SelectionToolbar inherits Rectangle {
     // which opens the ConfirmDialog.
     callback request-delete();
 
-    // ── Shape & size ──────────────────────────────────────────────────────────
-    // With `horizontal-stretch: 0` and no explicit width, the root adopts its
-    // preferred content size from the HorizontalLayout — no binding-loop risk
-    // because no width binding reads the layout's own preferred-width.
+    // No explicit width: the root adopts its HorizontalLayout's preferred size —
+    // no binding-loop risk since nothing reads its own preferred-width.
     height: Theme.nav-pill-height;
     horizontal-stretch: 0;
     vertical-stretch: 0;
 
-    // ── Glass approximation (layers 1, 2, 4 — same anatomy as NavBar's glass recipe,
-    //    with two intentional departures: border-color is Theme.accent for
-    //    mode-context differentiation (spec §2.5), and the drop shadow is
-    //    active-gated to stop bleed from the parked position) ──────────────────
+    // Glass layers 1/2/4 as in NavBar, with two departures: accent border for
+    // mode-context (spec 2.5), and the drop shadow is active-gated (see below).
     background: Theme.glass-fill;
     border-radius: Theme.nav-pill-radius;
     border-width: 1px;
     border-color: Theme.accent;
-    // Drop shadow ONLY while this toolbar is the visible (slid-in) bar. When
-    // parked (active == false) the toolbar sits at y: -height inside the strip's
-    // `clip: true` band with its bottom edge exactly at the strip top, so its
-    // offset-down/blurred shadow would otherwise bleed BELOW its bounds into the
-    // visible strip (the clip cuts only what falls OUTSIDE the strip — the
-    // in-strip portion of the shadow is NOT clipped; verified against femtovg's
-    // scissor clip + draw_box_shadow). Gating the color to `transparent` makes
-    // draw_box_shadow early-return (alpha == 0), so a parked toolbar paints no
-    // shadow at all. Direct ternary, not states[] (states[] can't set child
-    // props; this is the root's own prop). NO opacity (HiDPI child-blur rule).
+    // Drop shadow ONLY while visible (slid-in). Parked (active == false), the
+    // toolbar sits at y: -height inside the `clip: true` strip, so its offset/blur
+    // shadow would bleed into the visible strip (clip cuts only what's OUTSIDE it).
+    // Gating the color to `transparent` makes draw_box_shadow early-return (alpha 0).
+    // Direct ternary, not states[] (root's own prop). NO opacity (HiDPI child-blur).
     drop-shadow-color: root.active ? Theme.shadow-popover : transparent;
     drop-shadow-blur: 22px;
     drop-shadow-offset-y: 8px;
 
-    // ── Glass approximation (layer 3): top inner highlight rim ────────────────
-    // A 1px decorative line just below the top edge (y: 1px), inset
-    // horizontally by half the pill height so it stays inside the rounded
-    // corners (NavBar idiom — same geometry).
+    // Glass layer 3: top highlight rim, inset horizontally by half the pill height
+    // so it stays inside the rounded corners (same as NavBar).
     Rectangle {
         x: Theme.nav-pill-height / 2;
         y: 1px;
@@ -117,16 +75,12 @@ export component SelectionToolbar inherits Rectangle {
         padding: Theme.nav-pill-pad;
         alignment: center;
 
-        // ── 1. Count pill — accent-bordered MODE INDICATOR ───────────────────
-        // A capsule with an accent border and accent-glow background that
-        // clearly signals "selection mode is active". Text is read-only (not a
-        // button). Never red/danger — selection is strictly accent language.
+        // Count pill — accent MODE INDICATOR (accent border + glow). Read-only text,
+        // not a button; never red/danger — selection is strictly accent language.
         count-pill := Rectangle {
             height: Theme.nav-capsule;
-            // Explicit width measured from the label (explicit-width idiom) with the
-            // HIG capsule inset; the Math.max floor keeps the pill from collapsing
-            // below a circle on an empty string (Slint rejects width + min-width
-            // on the same element, so the floor lives inside the expression).
+            // Explicit width from the label + HIG inset; Math.max floors it at a circle
+            // (Slint rejects width + min-width together, so the floor is in-expression).
             width: Math.max(Theme.nav-capsule, count-label.preferred-width + 2 * Theme.nav-capsule-pad);
             horizontal-stretch: 0;
             border-radius: Theme.nav-capsule-radius;
@@ -140,10 +94,8 @@ export component SelectionToolbar inherits Rectangle {
                 font-size: Theme.font-label;
                 font-weight: Theme.weight-medium;
                 x: (parent.width - self.width) / 2;
-                // Optical centering: metric-center then nudge down by 1px so the
-                // glyph mass (no descenders) reads visually centered inside the
-                // tight capsule — see docs/patterns.md "vertical-alignment: center
-                // centers the font's METRIC line box" and DangerButton (9/7 split).
+                // Optical centering: metric-center + 1px down so the descender-less
+                // glyph reads centered (docs/patterns.md metric line box; DangerButton 9/7).
                 y: (parent.height - self.height) / 2 + 1px;
                 horizontal-alignment: center;
                 vertical-alignment: center;
@@ -155,21 +107,14 @@ export component SelectionToolbar inherits Rectangle {
             accessible-label: root.count-text;
         }
 
-        // ── 2. Select-all capsule — HIG "bordered" interactive capsule ────────
-        // Idle: chip fill + hairline ring, so the control reads as a button at
-        // rest (HIG: buttons are identifiable). Hover/press keep the NavItem
-        // accent idiom (accent-glow fill + accent ring; darker fill on press).
-        // Wider than the circular exit capsule to hold a text label; in narrow
-        // mode collapses to the check.svg icon-only form (same colorize idiom as
-        // SelectionBadge). The full select-all-label is always the
-        // accessible-label regardless of narrow/wide mode.
+        // Select-all capsule — HIG bordered: idle chip fill + hairline ring (reads
+        // as a button), accent on hover/press. Narrow mode collapses to check.svg
+        // icon-only; the full select-all-label is always the accessible-label.
         select-all-capsule := Rectangle {
             height: Theme.nav-capsule;
-            // Explicit width (explicit-width idiom): a circle in narrow mode; the
-            // measured label + HIG capsule inset in wide mode. The label Text is
-            // UNCONDITIONAL (visible-gated) so it stays measurable — an if-gated
-            // inner layout does not propagate preferred width, which is what let
-            // the exit ✕ overlap this label.
+            // Explicit width: circle in narrow mode, else measured label + HIG inset.
+            // The label Text is UNCONDITIONAL (visible-gated) to stay measurable — an
+            // if-gated layout won't propagate preferred width (that let exit overlap it).
             width: root.narrow
                 ? Theme.nav-capsule
                 : sa-label.preferred-width + 2 * Theme.nav-capsule-pad;
@@ -211,9 +156,8 @@ export component SelectionToolbar inherits Rectangle {
                 colorize: sa-touch.has-hover || sa-touch.pressed ? Theme.text-high : Theme.text-mid;
             }
 
-            // Unconditional (visible-gated, NOT if-gated): the root's explicit
-            // width binding reads sa-label.preferred-width, so the element must
-            // always exist; an `if` id is also unreachable from the parent.
+            // Unconditional (visible-gated, not if-gated): the width binding reads
+            // sa-label.preferred-width, so it must always exist and stay measurable.
             sa-label := Text {
                 visible: !root.narrow;
                 text: root.select-all-label;
@@ -229,9 +173,8 @@ export component SelectionToolbar inherits Rectangle {
                 vertical-alignment: center;
             }
 
-            // Accessibility: always expose the full label, even in icon-only mode.
-            // The action is gated on `active` so a slid-away toolbar exposes no
-            // working screen-reader action (mirrors the TouchArea enabled gate).
+            // Accessibility: always expose the full label, even icon-only. Action
+            // gated on `active` so a slid-away bar exposes no working a11y action.
             accessible-role: button;
             accessible-label: root.select-all-label;
             accessible-action-default => { if (root.active) { root.select-all(); } }
@@ -243,37 +186,24 @@ export component SelectionToolbar inherits Rectangle {
             }
         }
 
-        // ── 3. Delete button — the ONLY red element in the app's chrome ───────
-        // The destructive DangerButton, the toolbar's single danger affordance
-        // (count pill and capsules stay strictly accent). `if`-gated on
-        // `has-selection`: at N=0 the button is HIDDEN, not disabled — a
-        // deliberate decision (D2) so an empty selection offers no delete target
-        // at all (an `if` gate also costs zero layout space, unlike `visible:`).
-        // DangerButton is TouchArea-based and non-focusable, so keyboard focus
-        // stays on the carousel FocusScope (toolbar convention); it carries its
-        // own accessible role/label/action-default. NARROW MODE: the toolbar
-        // collapses only the SELECT-ALL label to an icon (above); this delete
-        // button KEEPS its full text label at every width because hiding the
-        // label on a destructive control is a safety hazard (approved spec).
+        // Delete button — the ONLY red element in the app chrome; `if`-gated on
+        // has-selection so at N=0 it is HIDDEN not disabled (decision D2; an `if`
+        // costs zero layout space, unlike visible:). TouchArea-based/non-focusable,
+        // so focus stays on the carousel. KEEPS its full text label at every width —
+        // hiding the label on a destructive control is a safety hazard (approved).
         if root.has-selection : DangerButton {
             text: root.delete-label;
             // Leading trash glyph (delete.svg, recolored white by the button);
             // the label stays — the icon supplements, never replaces it.
             icon: @image-url("../assets/delete.svg");
-            // DangerButton owns its TouchArea (no `enabled` pass-through), so gate
-            // the forwarded action on `active`: a slid-away toolbar must not open
-            // the ConfirmDialog even if a click/screen-reader gesture leaks through.
+            // DangerButton owns its TouchArea (no `enabled` pass-through), so gate the
+            // forwarded action on `active` — a slid-away bar must not open the dialog.
             clicked => { if (root.active) { root.request-delete(); } }
         }
 
-        // ── 4. Exit capsule — a NavItem close button ─────────────────────────
-        // Now an instance of NavItem (was a hand-rolled NavItem-style capsule:
-        // nav-capsule diameter, radius-pill corner, same pressed/hover accent
-        // ring + glow, same close.svg colorize idiom). `enabled: root.active`
-        // maps the toolbar's slid-in/visible gate onto NavItem's input + a11y
-        // gate, so a parked (slid-away) bar exposes no working pointer /
-        // screen-reader action — exactly the old `exit-touch.enabled` + a11y
-        // guard. `active` stays default-false: no persistent lit ring here.
+        // Exit capsule — a NavItem close button. `enabled: root.active` maps the
+        // toolbar's visible gate onto NavItem's input + a11y gate, so a parked bar
+        // exposes no working action. `active` stays default-false: no lit ring.
         NavItem {
             icon: @image-url("../assets/close.svg");
             a11y-label: root.exit-a11y;

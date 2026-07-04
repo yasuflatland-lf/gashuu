@@ -161,9 +161,8 @@ pub(crate) fn wire_update_handlers(ui: &ViewerWindow, settings: &Rc<RefCell<Sett
         }
     });
 
-    // Later → the .slint already flips show-update-available = false before
-    // firing this callback; nothing left to persist. Restore keyboard focus to
-    // the screen underneath so key input is not left dead (issue #359).
+    // Later → the .slint already flipped show-update-available=false; nothing to persist.
+    // Restore keyboard focus to the screen underneath or key input is dead (issue #359).
     {
         let weak = ui.as_weak();
         ui.on_update_later(move || {
@@ -173,9 +172,8 @@ pub(crate) fn wire_update_handlers(ui: &ViewerWindow, settings: &Rc<RefCell<Sett
         });
     }
 
-    // Skip this version → persist skipped_version so it is never re-notified.
-    // The .slint flips show-update-available = false before firing this
-    // callback; restore keyboard focus to the screen underneath (issue #359).
+    // Skip this version → persist skipped_version so it is never re-notified. Restore
+    // keyboard focus to the screen underneath the dismissed dialog (issue #359).
     {
         let weak = ui.as_weak();
         let settings = Rc::clone(settings);
@@ -212,9 +210,8 @@ pub(crate) fn wire_update_handlers(ui: &ViewerWindow, settings: &Rc<RefCell<Sett
                     if let Err(e) = opener::open(RELEASES_PAGE_URL) {
                         tracing::warn!(error = %e, "failed to open release page");
                     }
-                    // This branch dismisses the dialog (the RevealDownload /
-                    // SelfReplace branches keep it open), so restore keyboard
-                    // focus to the screen underneath (issue #359).
+                    // This branch dismisses the dialog (RevealDownload/SelfReplace keep it
+                    // open), so restore focus to the screen underneath (issue #359).
                     ui.set_show_update_available(false);
                     restore_focus_after_dialog(&ui);
                 }
@@ -228,9 +225,8 @@ pub(crate) fn wire_update_handlers(ui: &ViewerWindow, settings: &Rc<RefCell<Sett
         });
     }
 
-    // Settings: manual auto-update toggle persists immediately (unlike most
-    // other settings, which batch-save on dialog close) so the preference
-    // survives even if the app exits abnormally before the dialog is closed.
+    // Auto-update toggle persists immediately (unlike other settings, which batch-save
+    // on dialog close) so the preference survives an abnormal exit.
     {
         let settings = Rc::clone(settings);
         ui.on_settings_set_auto_update_check(move |v| {
@@ -379,9 +375,8 @@ fn download_and_verify(pkg: Packaging, info: &ReleaseInfo) -> Result<PathBuf, Up
         )));
     }
 
-    // Defense-in-depth: the asset name is release-supplied. Strip any path
-    // components before joining it onto the Downloads dir so a maliciously
-    // crafted release asset name (e.g. containing `../`) can't escape it.
+    // Defense-in-depth: the asset name is release-supplied. Strip path components before
+    // joining onto the Downloads dir so a crafted name (e.g. `../`) can't escape it.
     let file_name = std::path::Path::new(&asset.name)
         .file_name()
         .unwrap_or_else(|| std::ffi::OsStr::new(&asset.name));

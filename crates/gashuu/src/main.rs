@@ -1,8 +1,5 @@
-// On Windows, a GUI binary built for the default "console" subsystem spawns an
-// extra console window alongside the app window on launch. Switch RELEASE builds
-// to the "windows" subsystem so end users see only the app window; debug builds
-// keep the console so `tracing` output stays visible while developing. The
-// attribute is a no-op on non-Windows targets.
+// Windows release builds use the "windows" subsystem to suppress the extra console
+// window; debug keeps the console for `tracing`. No-op on non-Windows targets.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 slint::include_modules!();
@@ -110,13 +107,8 @@ fn repair_settings_file_if_needed(settings: &Settings, errs: &mut Vec<String>) {
 
 fn main() -> color_eyre::Result<()> {
     color_eyre::install()?;
-    // Slint's text layout (parley -> icu_segmenter) emits a `log::warn!` for every
-    // CJK run because ICU4X bundles no Japanese line-break dictionary. Segmentation
-    // still works via a per-character fallback, so the resulting "ICU4X data error:
-    // No segmentation model for language: ja" lines are pure noise. They reach this
-    // subscriber through tracing-subscriber's tracing-log bridge; silence the
-    // `icu_provider` target that emits them while leaving any RUST_LOG override for
-    // our own targets intact (a target directive overrides the global default).
+    // ICU4X bundles no Japanese line-break dictionary, so Slint's text layout spams a
+    // `log::warn!` per CJK run; silence the `icu_provider` target, keeping RUST_LOG.
     let env_filter = tracing_subscriber::EnvFilter::from_default_env().add_directive(
         "icu_provider=off"
             .parse()
@@ -124,19 +116,12 @@ fn main() -> color_eyre::Result<()> {
     );
     tracing_subscriber::fmt().with_env_filter(env_filter).init();
 
-    // Load persisted settings and library through `load_or_default` — the single
-    // home of the corrupt-file recovery policy (default-on-error + collect a
-    // notice). Errors are collected and surfaced on the home screen after the
-    // initial refresh, which itself overwrites status-text, so the notice must be
-    // set after that call.
+    // Load settings/library via `load_or_default` (default-on-error + collect a notice).
+    // Surface the notices AFTER the initial refresh, which overwrites status-text.
     let mut load_errs: Vec<String> = Vec::new();
     let settings = load_or_default("settings", Settings::load, &mut load_errs);
-    // Self-heal an invalid settings file. `load_or_default` + `Settings::normalize`
-    // already give us sane in-memory values (a corrupt file falls back to defaults;
-    // an out-of-bounds window size is discarded), but the bad bytes are still on
-    // disk. If an existing settings.json no longer matches the canonical
-    // serialization of what we loaded, rewrite it now so the repair is persisted at
-    // startup — not deferred to the next clean exit, which a crash could skip.
+    // Self-heal an invalid settings file: in-memory values are already sane, but the
+    // bad bytes persist. Rewrite at startup so a crash before clean exit can't lose it.
     repair_settings_file_if_needed(&settings, &mut load_errs);
     let library = load_or_default("library", Library::load, &mut load_errs);
 
@@ -145,10 +130,8 @@ fn main() -> color_eyre::Result<()> {
     // every static string into the Strings global before the first paint.
     let localizer = Rc::new(i18n::Localizer::new(settings.language));
     localizer.apply(&ui);
-    // Platform capability, pushed once: macOS' NSOpenPanel picks files AND
-    // folders in one panel, so the Library NavBar collapses its two add
-    // capsules into a single combined one (the dialog flavor itself is decided
-    // in `on_add_books`). Compile-time constant — never changes at runtime.
+    // macOS' NSOpenPanel picks files AND folders in one panel, so the NavBar collapses
+    // its two add capsules into one combined capsule. Compile-time constant.
     ui.set_combined_add_picker(cfg!(target_os = "macos"));
     let state = Rc::new(RefCell::new(ViewerState::from_settings(&settings)));
     let viewport = Rc::new(RefCell::new(ViewportState::from_settings(&settings)));
@@ -158,54 +141,38 @@ fn main() -> color_eyre::Result<()> {
     // clamp, and later PR-L's add / PR-R's position write-back can all reach it.
     let library = Rc::new(RefCell::new(library));
 
-    // Thumbnail-strip controller. Owns the strip's backing model and the
-    // generation bookkeeping (epoch + cancel double-guard); its `new` binds the
-    // model into the UI via `set_thumbnails` internally. Wrapped in `Rc` so both
-    // open handlers (via `OpenBookUseCase`) can share the single controller.
+    // Thumbnail-strip controller: owns the backing model + generation bookkeeping
+    // (epoch + cancel guard). `Rc` so both open handlers share one controller.
     let thumbs = Rc::new(ThumbnailController::new(&ui));
 
-    // Cover controller for the library carousel. Owns the epoch + cancel
-    // double-guard; `start` is called after the carousel model is (re)built so a
-    // library refresh supersedes any covers still streaming from the prior view.
+    // Cover controller for the carousel (epoch + cancel guard). `start` runs after the
+    // model is (re)built so a refresh supersedes covers still streaming from the prior view.
     let covers = Rc::new(cover_loader::CoverController::new());
 
     // Page controller for the viewer body. Owns async page-decode epoch and
     // dispatch dedup for cache-miss spreads.
     let pages = Rc::new(page_loader::PageController::new());
 
-    // Bulk-add controller (issue 206): probes each picked source off the UI
-    // thread so a bulk add never freezes the event loop. Owns the supersede
-    // epoch + per-generation outcome accumulator; the add handlers call `start`,
-    // and the `add-finalize` callback runs the apply half on the UI thread.
-    // Shared via `Rc` so the add and finalize handlers see one controller.
+    // Bulk-add controller (issue 206): probes each source off the UI thread so a bulk
+    // add never freezes the event loop. `start` dispatches; `add-finalize` applies.
     let adder = Rc::new(add_loader::AddController::new());
 
-    // Shared library-search filter state. Owned here and shared via `Rc` with the
-    // search-query callback (live filtering), the add/open backfill paths, and the
-    // open-time page-count rebuild in `OpenBookUseCase`, so every path projects the
-    // SAME visible-index set. Starts on the empty query (every book visible).
+    // Shared library-search filter state, so every path (search, add/open backfill,
+    // open-time rebuild) projects the SAME visible-index set. Starts on the empty query.
     let search = Rc::new(RefCell::new(LibrarySearchState::default()));
     ui.set_library_search_query("".into());
-    // Seed the visible set against the loaded library under the empty query
-    // (every book visible). `set_query` recomputes internally, so the search
-    // state is consistent before the first `refresh_library_carousel`, which now
-    // only READS `visible_indices()`.
+    // Seed the visible set under the empty query so search state is consistent before
+    // the first `refresh_library_carousel`, which only READS `visible_indices()`.
     search
         .borrow_mut()
         .set_query(String::new(), &library.borrow());
 
-    // Shared bulk-selection state (bulk-delete epic, PR-2). Owned here and shared
-    // via `Rc` with the carousel toggle / cover-click / exit handlers and the
-    // carousel refresh (which re-applies the selection flags over the rebuilt
-    // visible rows). Keyed by path, so it is orthogonal to the search projection —
-    // a query change never drops a selection. Nothing is deleted in this PR.
+    // Shared bulk-selection state, keyed by path so it is orthogonal to the search
+    // projection — a query change never drops a selection.
     let selection = Rc::new(RefCell::new(LibrarySelectionState::default()));
 
-    // The "open a book" use-case, bundling the shared collaborators it threads
-    // (state, settings, viewport, library, thumbs, covers, search). Built once and
-    // shared via `Rc` by the Open Folder / Open Archive / carousel-open handlers so
-    // the open flow lives in exactly one place (`app::OpenBookUseCase`). The search
-    // state lets the open-time page-count rebuild preserve the active filter.
+    // The "open a book" use-case, shared via `Rc` so the open flow lives in one place
+    // (`app::OpenBookUseCase`); the search state preserves the active filter on rebuild.
     let open_book = Rc::new(app::OpenBookUseCase::new(
         Rc::clone(&state),
         Rc::clone(&settings),
@@ -218,14 +185,8 @@ fn main() -> color_eyre::Result<()> {
         Rc::clone(&localizer),
     ));
 
-    // Seed the carousel from the persisted library so the home screen shows the
-    // saved books on boot. The empty-query visible set was already computed by the
-    // `set_query(String::new(), …)` seed above; `refresh_library_carousel` reads
-    // those visible indices, builds + binds the filtered model, resets carousel
-    // focus to 0, and starts cover loading for the visible rows in ONE place — so
-    // the initial build and every later filter/add refresh share the same code
-    // path. Cover streaming is started exactly once here (no separate
-    // `covers.start`).
+    // Seed the carousel from the persisted library so boot shows saved books. This is
+    // the single build+bind+focus-reset+cover-start path; cover streaming starts once here.
     refresh_library_carousel(
         &ui,
         &CarouselRefresh {
@@ -237,19 +198,16 @@ fn main() -> color_eyre::Result<()> {
         },
         true,
     );
-    // Continue reading: the app boots on the Library screen, so override the
-    // refresh's reset-to-0 with a one-shot snap to the last-read book's visible
-    // row, resolved through the empty-query visible set seeded above.
+    // Continue reading: override the refresh's reset-to-0 with a one-shot snap to the
+    // last-read book's visible row (resolved through the empty-query visible set).
     snap_carousel_focus_to_last_opened(&ui, &library, &search);
 
-    // One startup sweep keeps the cover cache under its size cap and reclaims
-    // key-orphaned covers (issue 143). Dispatched AFTER the initial cover
-    // stream above so the visible covers grab the rayon workers first.
+    // One startup sweep keeps the cover cache under its size cap + reclaims orphans
+    // (issue 143). Dispatched AFTER the initial stream so visible covers get workers first.
     cover_loader::spawn_cache_prune();
 
-    // Top-level screen state machine. App boots to Library (the carousel home).
-    // Held in an Rc<RefCell<…>> so the carousel callbacks and the Viewer's
-    // GoToLibrary key arm can all flip it through the seam functions below.
+    // Top-level screen state machine (boots to Library). `Rc<RefCell<…>>` so carousel
+    // callbacks and the Viewer's GoToLibrary arm can flip it via the seam functions.
     let nav = Rc::new(RefCell::new(NavState::new()));
     // Push the initial screen so the window shows the Library on boot.
     ui.set_screen(screen_to_index(nav.borrow().screen()));
@@ -269,10 +227,8 @@ fn main() -> color_eyre::Result<()> {
         ui.as_weak(),
     );
 
-    // Surface any load failures AFTER the initial refresh, which overwrites
-    // status-text with "No folder opened". The carousel/home screen is visible
-    // at this point, so the user sees the notice immediately. Missing files
-    // return Ok(default), so this fires only on genuine failures.
+    // Surface load failures AFTER the initial refresh (which overwrites status-text).
+    // Missing files return Ok(default), so this fires only on genuine failures.
     if !load_errs.is_empty() {
         ui.set_status_text(
             crate::i18n::dynamic::load_failed(localizer.loader(), &load_errs.join(" and ")).into(),
@@ -307,9 +263,8 @@ fn main() -> color_eyre::Result<()> {
     // File/folder drag-and-drop onto the Library screen, feeding the same bulk-add
     // pipeline as the Add buttons (handlers/drag_drop.rs).
     handlers::wire_drag_drop_handlers(&ui, &settings, &adder);
-    // GitHub Releases update checker (auto-update epic): wire the dialog/
-    // settings callbacks, then kick off a throttled, non-forced background
-    // check. Reuses the SAME shared settings cell every other handler mutates.
+    // GitHub Releases update checker: wire the dialog/settings callbacks, then kick off
+    // a throttled, non-forced background check. Reuses the shared settings cell.
     handlers::wire_update_handlers(&ui, &settings);
     handlers::start_update_check(&ui, &settings, false);
 
@@ -318,19 +273,14 @@ fn main() -> color_eyre::Result<()> {
     window_state::restore_geometry(&ui, &settings.borrow());
 
     ui.run()?;
-    // Persist any page counts the cover prefetch resolved after the last carousel
-    // refresh, so a book counted this session shows its real total next launch
-    // instead of being re-counted by re-opening its archive. Safe here: the event
-    // loop has exited, so `library` is unborrowed.
+    // Persist page counts the cover prefetch resolved after the last refresh, so a book
+    // counted this session isn't re-counted next launch. Safe: event loop exited.
     covers.flush_counts(&library);
-    // Write the current reading position back to the library before exit.
-    // The `state` and `library` RefCells are no longer borrowed (the event
-    // loop has exited), so there is no borrow conflict here.
+    // Write the current reading position back to the library before exit. Safe: the
+    // event loop has exited, so `state`/`library` are unborrowed.
     write_back_position(&state, &library);
-    // Persist the open book's view modes to its override on exit, then mirror into
-    // the GLOBAL Settings only when no book is open (the ADR-0007 clobber guard
-    // lives inside `persist_view_modes`). cache/preload/track are saved
-    // unconditionally below.
+    // Persist the open book's view modes to its override, mirroring into GLOBAL Settings
+    // only when no book is open (ADR-0007 clobber guard lives in `persist_view_modes`).
     persist_view_modes(
         ViewModeRoute::AppExit,
         &state,
@@ -338,9 +288,8 @@ fn main() -> color_eyre::Result<()> {
         &settings,
         &library,
     );
-    // Record the final window geometry so the next launch restores it. The window
-    // handle is still alive here (the event loop has exited but `ui` is in scope),
-    // and `settings` is unborrowed.
+    // Record the final window geometry so the next launch restores it. Safe: the window
+    // handle is still alive (`ui` in scope) and `settings` is unborrowed.
     window_state::capture_geometry(&ui, &mut settings.borrow_mut());
 
     if let Err(e) = settings.borrow().save() {
@@ -514,10 +463,8 @@ pub(crate) fn refresh(
                 apply_viewport(ui, &viewport.borrow());
                 ui.set_leading_loading(leading_missing);
                 ui.set_trailing_loading(trailing_missing);
-                // Mounting the LoadingSlot perturbs PageView's TouchArea
-                // hit-testing under a stationary cursor and emits a phantom
-                // `changed mouse-x`; suppress the resulting pointer-reveal so the
-                // chrome does not flip on every cache-MISS page turn.
+                // Mounting the LoadingSlot perturbs PageView's TouchArea hit-testing (phantom
+                // `changed mouse-x`); suppress the pointer-reveal so chrome doesn't flip on MISS.
                 ui.invoke_arm_pointer_reveal_suppression();
 
                 #[cfg(not(test))]
@@ -527,9 +474,8 @@ pub(crate) fn refresh(
             }
         }
         None => {
-            // Source loaded but empty (or no source yet): clear and show single
-            // so the view matches the status text ("No folder opened" / "Folder
-            // contains no images").
+            // Source loaded but empty (or none yet): clear and show single so the view
+            // matches the status text ("No folder opened" / "Folder contains no images").
             ui.set_status_text(crate::i18n::dynamic::format_status(loader, &content).into());
             pages.clear_target();
             clear_page_view(ui, viewport);
@@ -539,16 +485,14 @@ pub(crate) fn refresh(
     // leading page after every navigation/refresh.
     ui.set_current_index(state.index() as i32);
 
-    // Seed the scrubber chrome from the current spread. The scrubber uses 1-based
-    // numbers; `double` mirrors whether the current spread has a trailing page.
-    // These are display-only and do NOT change the page body.
+    // Seed the scrubber chrome (1-based) from the current spread; `double` mirrors
+    // whether it has a trailing page. Display-only — does NOT change the page body.
     let total = state.page_count();
     let current_1based = current_page_1based(state);
     ui.set_scrubber_total_pages(total as i32);
     ui.set_scrubber_current_page(current_1based as i32);
-    // `preview_is_double` resolves the trailing page using the SAME layout as the
-    // body (and is decode-free), so it is the exact "current spread has a trailing
-    // page" predicate without re-running `current_spread`'s decode.
+    // `preview_is_double` resolves the trailing page with the SAME layout as the body
+    // (decode-free), so it's the exact "has a trailing page" predicate without decoding.
     let is_double = state.preview_is_double(state.index());
     ui.set_scrubber_double(is_double);
     ui.set_page_jump_text(format!("{}", current_1based).into());
@@ -610,11 +554,8 @@ fn finalize_open(
             save_error,
         } => {
             pages.set_source();
-            // The source opened cleanly but has zero pages: the use case already
-            // removed it from the library (if present) and re-saved. This arm does
-            // NOT switch screens (see the `enter_viewer` guard at the carousel/
-            // bookmark sites); the shared finalize rebuilds the carousel and shows
-            // the notice when this path owns the removal.
+            // Source opened cleanly but has zero pages: already removed + re-saved. This
+            // arm does NOT switch screens (see the `enter_viewer` guard at the open sites).
             finalize_empty_book_removed(
                 ui,
                 deps,
@@ -664,17 +605,11 @@ fn apply_viewport(ui: &ViewerWindow, viewport: &ViewportState) {
 fn go_to_library(ui: &ViewerWindow, nav: &Rc<RefCell<NavState>>, deps: &CarouselRefresh) {
     nav.borrow_mut().to_library();
     ui.set_screen(screen_to_index(nav.borrow().screen()));
-    // The Library's bottom strip renders `status-text` (its only consumer), so
-    // the Viewer's page status ("12–13 / 200 [double · RTL]") written by
-    // `refresh` would otherwise leak under the carousel, where it is
-    // meaningless. Clear it on entry; add/save feedback is set AFTER this.
+    // Clear status-text on entry: the Library strip renders it, so the Viewer's page
+    // status would otherwise leak under the carousel. Add/save feedback is set AFTER.
     ui.set_status_text("".into());
-    // Rebuild so the model reflects the CURRENT `last_opened` (freshness), then
-    // override the chokepoint's reset-to-0 with the continue-reading snap.
-    // Two writes: refresh_library_carousel sets focused-index to 0 (reset_focus =
-    // true), then the snap below sets the real target — the second always wins.
-    // Keeping reset_focus = true documents that entry owns the focus, not the
-    // residual viewer focus.
+    // Rebuild so the model reflects the CURRENT `last_opened`, then override the
+    // reset-to-0 with the continue-reading snap (reset_focus=true: entry owns focus).
     refresh_library_carousel(ui, deps, true);
     snap_carousel_focus_to_last_opened(ui, deps.library, deps.search);
     // Restore keyboard focus to the carousel so its key seams work immediately.

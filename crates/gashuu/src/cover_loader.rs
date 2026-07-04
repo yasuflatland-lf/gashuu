@@ -434,9 +434,8 @@ fn resolve_count_after_hit(
             if cancel.load(Relaxed) {
                 return;
             }
-            // Opened cleanly but zero pages: signal the empty book (count == 0
-            // also means push_and_marshal_count below queues nothing —
-            // NonZeroUsize::new(0) is None).
+            // Opened cleanly but zero pages: signal the empty book (count == 0 also means
+            // push_and_marshal_count below queues nothing — NonZeroUsize::new(0) is None).
             if should_signal_empty(&open_result, NonZeroUsize::new(count)) {
                 marshal_empty_book(weak, epoch, my_epoch, path.clone());
             }
@@ -512,9 +511,8 @@ impl CoverController {
             if cancel.load(Relaxed) {
                 return;
             }
-            // Reconstruct the cache on this thread (ThumbnailCache is not Clone
-            // and holds only a dir, so this is cheap and side-steps a !Send/!Clone
-            // capture). `start` already logged the no-cache-dir case once.
+            // Reconstruct the cache on this thread: ThumbnailCache isn't Clone and holds only a
+            // dir, so this is cheap and side-steps a !Send/!Clone capture.
             let Ok(cache) = ThumbnailCache::new() else {
                 return;
             };
@@ -523,11 +521,8 @@ impl CoverController {
                 mtime_secs(&req.path),
                 CoverCachePolicy::DEFAULT.max_side,
             );
-            // MEM HIT: this cover was decoded earlier this session. Serve the
-            // shared `Arc` straight to the row — no `fs::read`, no PNG decode.
-            // Hold the lock only for the `get`. (Take it via `lock().ok()` so a
-            // poisoned mutex degrades to a disk read instead of panicking the
-            // worker — covers are best-effort.)
+            // MEM HIT: cover decoded earlier this session — serve the shared Arc straight to the
+            // row (no fs::read/decode). lock().ok() degrades a poisoned mutex to a disk read.
             let cached = mem.lock().ok().and_then(|mut c| c.get(&key));
             if let Some(decoded) = cached {
                 marshal_cover(weak.clone(), Arc::clone(&epoch), my_epoch, req.row, decoded);
@@ -540,10 +535,8 @@ impl CoverController {
                 }
                 return;
             }
-            // DISK HIT: the decode is already done on disk; read + decode it on
-            // THIS worker, intern it into the mem LRU so the next carousel pass is
-            // a mem hit, then stream it to the row first (the count open below may
-            // be slow — the user should not wait on it to see the cover).
+            // DISK HIT: read + decode on THIS worker, intern into the mem LRU so the next
+            // carousel pass is a mem hit, then stream to the row first (the count open may be slow).
             if let Some(decoded) = cache.get(&key) {
                 let decoded = Arc::new(decoded);
                 if let Ok(mut c) = mem.lock() {
@@ -559,14 +552,8 @@ impl CoverController {
                 }
                 return;
             }
-            // MISS: open the source for THIS book. An unreadable file marks the
-            // row FAILED (issue 144) so the user can tell a permanent failure
-            // from a still-loading placeholder — log and marshal, never panic.
-            // Cancel re-check before crossing (mirrors marshal_empty_book's
-            // gate); the epoch guard inside marshal_failed drops superseded
-            // generations. An UNAVAILABLE (file-gone) book also lands here, but
-            // its card renders the distinct broken-cover treatment regardless —
-            // the flag is set yet never consulted (the two states stay separate).
+            // MISS: open the source. An unreadable file marks the row FAILED (issue 144) so a
+            // permanent failure is distinct from a loading placeholder; cancel-recheck before crossing.
             // TODO(#175-followup): use open_with_policy once ArchivePolicy
             // is threaded through CoverRequest / CarouselRefresh.
             let open_result = ArchiveLoader::open(&req.path);
@@ -580,13 +567,8 @@ impl CoverController {
                     return;
                 }
             };
-            // The same open yields the page count for free; capture it BEFORE
-            // `source` moves into generate_cover. Convert to the emptiness
-            // vocabulary at the probe boundary: `None` IS "opened cleanly but
-            // zero pages" — the same decision as `should_signal_empty`'s Ok arm
-            // (the HIT path keeps the helper for its `Result` shape). Signal the
-            // empty book and stop: no cover to generate (page 0 does not exist),
-            // no count to persist.
+            // The same open yields the page count for free; capture it BEFORE `source` moves into
+            // generate_cover. None = opened cleanly but zero pages → signal empty and stop.
             let Some(page_count) = NonZeroUsize::new(source.list_pages().len()) else {
                 if !cancel.load(Relaxed) {
                     marshal_empty_book(&weak, &epoch, my_epoch, req.path);
@@ -610,9 +592,8 @@ impl CoverController {
             if let Err(e) = cache.put(&key, &decoded) {
                 tracing::warn!(path = %req.path.display(), error = %e, "cover: cache put failed");
             }
-            // Intern into the mem LRU so a later carousel pass over this row is a
-            // mem hit (no disk read + decode). Wrap in `Arc` so the marshal below
-            // shares the buffer instead of copying it.
+            // Intern into the mem LRU so a later carousel pass over this row is a mem hit
+            // (no disk read + decode). Wrap in Arc so the marshal below shares, not copies.
             let decoded = Arc::new(decoded);
             if let Ok(mut c) = mem.lock() {
                 c.insert(key, Arc::clone(&decoded));
@@ -658,9 +639,8 @@ impl CoverController {
         // 2. Tag this generation so superseded callbacks are dropped.
         let my_epoch = self.epoch.fetch_add(1, Relaxed) + 1;
 
-        // Probe the disk cache once so the no-cache-dir degraded state (covers
-        // stay placeholders) is logged ONCE here, not by every worker. Workers
-        // rebuild their own handle — it only holds a directory path.
+        // Probe the disk cache once so the no-cache-dir degraded state is logged ONCE here,
+        // not by every worker (workers rebuild their own handle — it only holds a dir path).
         if let Err(e) = ThumbnailCache::new() {
             tracing::warn!(error = %e, "no cover cache available; covers stay placeholders");
             return;

@@ -74,13 +74,8 @@ pub(crate) struct SpreadSlots {
 /// index is RAW; the caller normalizes it to a valid spread leading via
 /// `ViewerState::jump_to` (which respects single/double + cover mode), so this
 /// helper carries NO layout awareness — only direction and clamping.
-//
-// Single source of rounding (#71 Part D): the Slint scrubber now passes the RAW
-// clamped knob fraction up via `preview(float)`/`commit(float)`, and the
-// `on_scrub_preview`/`on_scrub_commit` wiring in `handlers/viewer.rs` calls THIS helper to
-// resolve the page. So it has a real runtime caller (no longer `#[allow(dead_code)]`)
-// AND is the authoritative spec the unit tests below pin — the former in-Slint
-// `drag-page` rounding is gone, so there is exactly one place this mapping lives.
+// Single source of rounding (#71 Part D): the Slint scrubber passes the RAW clamped
+// fraction via preview/commit; `handlers/viewer.rs` resolves the page through this helper.
 pub fn scrub_fraction_to_page(fraction: f32, page_count: usize, rtl: bool) -> usize {
     if page_count == 0 {
         return 0;
@@ -257,9 +252,8 @@ impl ViewerState {
         ctx.spread_at(lead).trailing.is_some()
     }
 
-    // Test-only accessors (same #[allow(dead_code)] convention as the existing
-    // page_count()/index() accessors: in a binary crate, pub is not a public API
-    // surface, so -D warnings flags cfg(test)-only callers as dead code).
+    // Test-only accessors: in a binary crate `pub` is not a public API surface, so
+    // `-D warnings` flags cfg(test)-only callers as dead code (hence #[allow(dead_code)]).
     /// The cache configuration applied to newly opened books.
     #[allow(dead_code)]
     pub fn cache_config(&self) -> CacheConfig {
@@ -280,9 +274,8 @@ impl ViewerState {
         }
         self.last_open_skipped = skipped;
         self.set_source(source);
-        // Canonicalize best-effort; fall back to the verbatim path on error
-        // (same policy as Library::add — identity is the canonical form when
-        // available, verbatim otherwise).
+        // Canonicalize best-effort, falling back to the verbatim path on error (same
+        // policy as Library::add: canonical form when available, verbatim otherwise).
         self.open_file = Some(path.canonicalize().unwrap_or_else(|_| path.to_path_buf()));
         Ok(())
     }

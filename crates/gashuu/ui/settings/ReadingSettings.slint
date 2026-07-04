@@ -1,12 +1,5 @@
-// ReadingSettings — the "Reading" settings section as a standalone unit.
-//
-// Extracted verbatim from SettingsDialog.slint's inline Reading block so the
-// section becomes an independently composable unit (the flat dialog composes it,
-// and the HIG drill-in / per-book dialogs reuse it). Renders its own eyebrow
-// (suppressible via `show-title` so a drill-in sub-screen can supply its own
-// header) plus the Direction + Spread rows. The public property/callback surface
-// mirrors SettingsDialog's Reading props exactly, so wiring is a straight
-// pass-through. Colors / lengths come from Theme.* only (check-tokens.sh).
+// ReadingSettings — the "Reading" section (Direction + Spread rows) as a standalone unit.
+// Renders its own eyebrow (suppressible via `show-title`); mirrors SettingsDialog's Reading props.
 import { Theme } from "../Theme.slint";
 import { Strings } from "../Strings.slint";
 import { SettingRow } from "../components/SettingRow.slint";

@@ -75,12 +75,8 @@ pub(crate) fn push_and_marshal_count(
     path: PathBuf,
     count: usize,
 ) {
-    // Persist only while OUR generation is still current. A superseded generation
-    // (library refreshed since dispatch) may have counted a since-changed archive;
-    // the fresh generation re-dispatches any book still missing a count, so dropping
-    // a stale push here cannot lose a real count — it only avoids overwriting a good
-    // one (e.g. a count just back-filled by opening the book). Mirrors the epoch
-    // guard inside `marshal_total` (the display side).
+    // Persist only while OUR generation is current: a stale push can't lose a count
+    // (the fresh generation re-dispatches), it only clobbers a good one. Mirrors `marshal_total`.
     if epoch.load(Relaxed) == my_epoch {
         if let Some(nz) = NonZeroUsize::new(count) {
             pending

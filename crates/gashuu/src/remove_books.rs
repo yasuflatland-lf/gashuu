@@ -169,13 +169,8 @@ impl RemoveBooksUseCase {
             return RemoveOutcome::NoSelection;
         }
 
-        // 1b. Snapshot each selected book's page count BEFORE the removal drops the
-        //     Library entries, so the strip-thumbnail purge below can iterate the
-        //     exact per-page cache keys (page_cache_key folds the page index) the
-        //     strips were generated under. A book with an unknown count is simply
-        //     absent from the map — the strip purge skips it (rely on the size-cap
-        //     prune sweep). The borrow is confined to this block so the mutable
-        //     borrow in step 2 cannot conflict.
+        // 1b. Snapshot page counts BEFORE removal drops entries so the strip purge can
+        //     iterate per-page cache keys; borrow scoped so step 2's mut borrow can't clash.
         let page_counts: HashMap<PathBuf, usize> = {
             let library = self.library.borrow();
             paths
@@ -207,23 +202,15 @@ impl RemoveBooksUseCase {
             }
         };
 
-        // 3. Best-effort purge of each removed book's persistent cover AND its
-        //    per-page strip thumbnails. A cache-construction failure skips both
-        //    purges wholesale.
+        // 3. Best-effort purge of each removed book's cover AND its per-page strip
+        //    thumbnails; a cache-construction failure skips both purges wholesale.
         match ThumbnailCache::new() {
             Ok(cache) => {
                 for path in &report.removed {
                     purge_cover(&cache, path);
                 }
-                // Strip thumbnails are keyed PER PAGE (page_cache_key folds the page
-                // index), so `purge_cover` — which reclaims only the cover key —
-                // leaves them orphaned (issue #361). Reclaim each removed book's
-                // strips explicitly, under the SAME mtime recipe the strip generator
-                // wrote them under (fs mtime secs, 0 fallback — identical to the
-                // cover path) and at DEFAULT_THUMB_MAX_SIDE (the size strips are
-                // generated at). A book whose page count is unknown is absent from
-                // `page_counts`: with no page span to iterate we skip it here and let
-                // the size-cap prune sweep reclaim its strips later.
+                // Strips are keyed PER PAGE, so `purge_cover` (cover key only) orphans
+                // them (issue #361); reclaim under the same mtime+max-side the generator used.
                 for path in &report.removed {
                     if let Some(&n) = page_counts.get(path) {
                         let mtime = removed_book_mtime_secs(path);
@@ -241,10 +228,8 @@ impl RemoveBooksUseCase {
             }
         }
 
-        // 4. If the open book was deleted, close the viewer's open book to the
-        //    no-book-open state (there is no previous book to fall back to). This
-        //    is headless state only; the `closed_open_book` flag records that the
-        //    centered title-bar name must be blanked, which `finalize_remove` does.
+        // 4. If the open book was deleted, close it (no previous book to fall back to).
+        //    Headless only; `closed_open_book` tells `finalize_remove` to blank the title.
         let closed_open_book = {
             let open_file = self.state.borrow().open_file().map(Path::to_path_buf);
             if removed_contains_open(open_file.as_deref(), &report.removed) {
@@ -314,9 +299,8 @@ pub(crate) fn confirm_delete_content(
 ) -> ConfirmDeleteContent {
     let count = selection.count();
 
-    // List up to CAP resolvable titles in selection (BTreeSet path) order. A
-    // selected path absent from the library is skipped from the LIST (it still
-    // counts toward `count` for the title — see the fn doc).
+    // List up to CAP resolvable titles in selection order; a path absent from the
+    // library is skipped from the LIST but still counts toward `count` (see fn doc).
     let mut body_lines: Vec<String> = selection
         .selected()
         .filter_map(|path| library.books().iter().find(|b| b.path() == path))
@@ -388,10 +372,8 @@ mod tests {
 
     #[test]
     fn rollback_restores_library_byte_identically_on_save_failure() {
-        // The whole point of the rollback path: a failed save must leave the
-        // in-memory shelf byte-for-byte identical to its pre-removal state, even
-        // when removed books carried non-default last_page/page_count (the
-        // add()-trap would otherwise reset those and the JSON would differ).
+        // The rollback path's whole point: a failed save must leave the shelf byte-
+        // identical, even for non-default last_page/page_count the add()-trap would reset.
         let mut lib = lib_with_three();
         let before = lib.to_json().unwrap();
 
@@ -434,9 +416,8 @@ mod tests {
 
     #[test]
     fn report_excludes_not_found_paths_from_the_removed_count() {
-        // A stale selection path (matching no stored book) is reported as
-        // not_found, NOT counted among removed — so the user-facing "removed N"
-        // never over-counts a path that was already gone.
+        // A stale path (no stored book) is reported not_found, NOT among removed,
+        // so the user-facing "removed N" never over-counts a path already gone.
         let mut lib = lib_with_three();
         let report = remove_books_with_rollback(
             &mut lib,
@@ -485,13 +466,8 @@ mod tests {
         );
     }
 
-    // ---- confirm_delete_content -------------------------------------------
-    //
-    // These build a real En `FluentLanguageLoader` via `Localizer`, so they
-    // exercise the actual `i18n::dynamic::confirm_delete_*` functions (cluster
-    // A2). Assertions are STRUCTURAL (line counts, the title's count digit,
-    // presence/absence of the optional lines) rather than byte-exact strings, so
-    // they pin this builder's composition without coupling to A2's exact wording.
+    // These build a real En loader and assert STRUCTURALLY (line counts, count digits)
+    // rather than byte-exact strings, to avoid coupling to the i18n functions' wording.
 
     use gashuu_core::Language;
 
@@ -562,13 +538,8 @@ mod tests {
 
     #[test]
     fn confirm_content_both_truncation_and_outside_search_lines_appended() {
-        // 12 books total; narrow the query to "book00" (exact-prefix, substring
-        // match) so only book00 is visible, but select all 12.
-        //   count(12) > CAP(10)           ⇒ "…and 2 more" line at index CAP.
-        //   visible_selected(1) < count   ⇒ outside-search line at index CAP+1.
-        // The two counts (M=2 vs N=11) are distinct, so the assertions are tight.
-        // Ordering contract: the "and M more" line ALWAYS precedes the
-        // outside-search line.
+        // Narrow the query so only book00 is visible but select all 12 (M=2, N=11 distinct).
+        // Ordering contract: "and M more" ALWAYS precedes the outside-search line.
         let (lib, mut search, mut sel) = delete_fixture(12);
         // Only "book00" contains the literal "book00" as a substring (book01 etc.
         // do not); the query is an exact substring match, case-insensitive.
@@ -675,20 +646,14 @@ mod tests {
 
     #[test]
     fn confirm_content_skips_unresolvable_path_from_list_but_counts_it_in_title() {
-        // Projection drift: a selected path with no library entry is skipped from
-        // the title LIST but still counts toward the title count (honesty rule).
-        // The unresolvable path is also (necessarily) outside the visible search,
-        // so an outside-search line is appended after the single resolvable title.
+        // Projection drift: a path with no library entry is skipped from the LIST but
+        // still counts (honesty rule), and being outside search adds an outside-search line.
         let (lib, search, mut sel) = delete_fixture(1);
         sel.toggle(PathBuf::from("/manga/book00.cbz")); // resolvable
         sel.toggle(PathBuf::from("/manga/ghost.cbz")); // not in library
         let loc = en_loader();
         let content = confirm_delete_content(loc.loader(), &sel, &search, &lib, None);
 
-        // The single resolvable title leads the body; the unresolvable path never
-        // appears as its own title line.  The ghost is also outside the visible
-        // search projection, so an outside-search line is always appended after
-        // the single resolvable title: body_lines = [title, outside-search] → len 2.
         assert_eq!(
             content.body_lines.len(),
             2,

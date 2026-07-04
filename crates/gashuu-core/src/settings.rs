@@ -162,9 +162,8 @@ impl Settings {
 
     /// Parse JSON, migrating older schema versions to the current shape.
     pub fn from_json(json: &str) -> Result<Self, CoreError> {
-        // The non-object guard + truncating-cast-safe version resolution + migrate
-        // dispatch are single-homed in `persist`. `CoreError::Settings` is `#[from]`,
-        // so both `?`s convert the `serde_json::Error` automatically.
+        // Non-object guard + version resolution + migrate dispatch are single-homed in
+        // `persist`. `CoreError::Settings` is `#[from]`, so both `?`s convert automatically.
         let value = crate::persist::parse_versioned_object(json, SETTINGS_VERSION, migrate)?;
         let mut settings: Self = serde_json::from_value(value)?;
         settings.normalize();
@@ -186,15 +185,11 @@ impl Settings {
         let cfg = self.cache_config();
         self.cache_size = cfg.capacity();
         self.preload_pages = cfg.radius();
-        // push_recent caps recent_files on write, but a hand-edited file could
-        // exceed MAX_RECENT_FILES and then persist forever (exit-save writes
-        // in-memory state); enforce the cap here too.
+        // push_recent caps recent_files on write, but a hand-edited file could exceed
+        // MAX_RECENT_FILES and persist forever (exit-save writes in-memory state); cap here.
         self.recent_files.truncate(MAX_RECENT_FILES);
-        // Normalize a stored window geometry. A corrupt (inflated) size is
-        // discarded so the app boots at its default size instead of an
-        // off-screen / unusable window; an otherwise-sane size is floored to the
-        // legible minimum, mirroring the cache clamps above (a hand-edited file
-        // could carry a tiny/zero size).
+        // Normalize a stored window geometry: a corrupt (inflated) size is discarded (boot
+        // at default, not off-screen); an otherwise-sane size is floored to the minimum.
         match self.window {
             Some(g) if !g.is_size_sane() => self.window = None,
             Some(ref mut g) => {
@@ -280,9 +275,8 @@ mod tests {
     }
 
     fn non_default_settings() -> Settings {
-        // Every field must DIFFER from `Settings::default()` (Rtl / Auto / Standalone
-        // / Width), or the round-trip tests below pass even when save/load drops the
-        // field (the value would be re-supplied by the default).
+        // Every field must DIFFER from `Settings::default()`, or the round-trip tests pass
+        // even when save/load drops a field (the default would re-supply the value).
         Settings {
             version: SETTINGS_VERSION,
             reading_direction: ReadingDirection::Ltr,
@@ -456,9 +450,8 @@ mod tests {
         .to_string();
         let s = Settings::from_json(&json).unwrap();
         assert_eq!(s.fit_mode, FitMode::Whole);
-        // The explicit keys must parse as written — "ltr"/"single" are now
-        // NON-default variants, so these also prove explicit values win over
-        // the defaults.
+        // The explicit keys must parse as written — "ltr"/"single" are NON-default
+        // variants, so these also prove explicit values win over the defaults.
         assert_eq!(s.reading_direction, ReadingDirection::Ltr);
         assert_eq!(s.spread_mode, SpreadMode::Single);
         assert_eq!(s.cover_mode, CoverMode::Standalone);
@@ -466,9 +459,8 @@ mod tests {
 
     #[test]
     fn from_json_unknown_fit_mode_value_errors() {
-        // An unknown fit_mode variant (e.g. "auto") is not covered by #[serde(default)],
-        // which only supplies a default when the key is absent. serde rejects an
-        // unrecognised variant, so from_json must return Err(CoreError::Settings(_)).
+        // An unknown fit_mode variant isn't covered by #[serde(default)] (which only fills an
+        // ABSENT key); serde rejects it, so from_json returns Err(CoreError::Settings(_)).
         let json = serde_json::json!({
             "version": SETTINGS_VERSION,
             "fit_mode": "auto",
@@ -800,10 +792,8 @@ mod tests {
 
     #[test]
     fn normalize_discards_inflated_window_geometry() {
-        // The corruption that blanked the window: a scale-factor round-trip
-        // inflated the stored size to an off-screen value. Such geometry is
-        // discarded so the app boots at its default size instead of an unusable
-        // window.
+        // The corruption that blanked the window: a scale-factor round-trip inflated the
+        // stored size off-screen. Such geometry is discarded so the app boots at default.
         let mut s = Settings {
             window: Some(WindowGeometry {
                 width: 110592,
@@ -847,9 +837,8 @@ mod tests {
     #[test]
     fn normalize_clamps_out_of_range_fields() {
         use crate::cache_config::{MAX_CACHE_SIZE, MAX_PREFETCH_RADIUS};
-        // A `Settings` built any way other than `from_json` (e.g. hand-built in
-        // memory) must still be brought back inside its domain invariants by
-        // `normalize`, mirroring `Library::normalize`.
+        // A `Settings` built any way other than `from_json` (e.g. hand-built in memory)
+        // must still be brought inside its domain invariants by `normalize`.
         let mut s = Settings {
             cache_size: MAX_CACHE_SIZE + 50,
             preload_pages: MAX_PREFETCH_RADIUS + 10,

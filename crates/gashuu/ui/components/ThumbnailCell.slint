@@ -1,24 +1,5 @@
-// One thumbnail treatment shared by the three thumbnail surfaces — the page
-// strip, the scrubber preview popover, and the library covers (DESIGN.md
-// "Iteration / Agent Prompt Guide" rule 6: shared rounding / shadow /
-// loading / failed treatment across all three). Centralizing the cell here
-// keeps every call site declarative and guarantees the surfaces can't drift
-// apart visually.
-//
-// Three mutually-exclusive states are modeled as explicit booleans (Figma
-// variant parity), exactly as ThumbnailStrip drives them today:
-//   loaded              → the real thumbnail Image (contain-fit, inset by border)
-//   !loaded && !failed  → neutral "still loading" placeholder (Theme.placeholder)
-//                         with a slowly spinning loading icon (motion = "processing",
-//                         distinguishing it from the static error state)
-//   !loaded && failed   → "decode failed" placeholder (Theme.error-surface +
-//                         Theme.error border) with a centered "no image" icon
-//                         (and an optional label under it) — the tint MUST stay
-//                         distinct from a loading cell so a permanent failure is
-//                         visually separable (the "view must match status" rule).
-//
-// Colors come from Theme.* only — NO inline brand hex (DESIGN.md rule 2;
-// scripts/check-tokens.sh enforces this). Theme lives one directory up.
+// One thumbnail treatment shared by three surfaces (page strip, scrubber preview,
+// library covers) so they can't drift apart; three mutually-exclusive states below.
 import { Theme } from "../Theme.slint";
 
 export component ThumbnailCell inherits Rectangle {
@@ -32,14 +13,12 @@ export component ThumbnailCell inherits Rectangle {
     // Corner rounding: pages / thumbnail cells use Theme.radius-xs (3px,
     // DESIGN.md "Shapes"); library covers pass Theme.radius-sm (6px).
     in property <length> radius: Theme.radius-xs;
-    // A short label drawn UNDER the error icon (State 3 only). Defaults to "" so
-    // the small surfaces (page strip / scrubber preview) stay icon-only; only the
-    // centered carousel cover passes a non-empty value to caption the failure.
+    // A short label drawn UNDER the error icon (State 3 only). Defaults to "" so small
+    // surfaces stay icon-only; only the carousel cover passes a value to caption failure.
     in property <string> failed-label;
 
-    // ── Border widths (adopted verbatim from ThumbnailStrip's two widths) ──────
-    // Highlighted cell vs neutral cell — the accent ring is wider so the current
-    // page reads clearly while a resting cell keeps a quiet 1px hairline.
+    // Border widths (verbatim from ThumbnailStrip): the accent highlight ring is
+    // wider so the current page reads clearly; a resting cell keeps a 1px hairline.
     private property <length> border-highlight: 3px;
     private property <length> border-neutral: 1px;
     // The active border width, used both for the visible border and to inset the
@@ -66,10 +45,8 @@ export component ThumbnailCell inherits Rectangle {
         image-fit: contain;
     }
 
-    // ── State 2: !loaded && !failed → neutral "loading" placeholder ────────────
-    // Placeholder fill plus a centered, slowly spinning loading icon. The motion
-    // (a continuous spin) reads as "processing" and keeps this state visually
-    // distinct from the static failed state below.
+    // State 2: !loaded && !failed → neutral "loading" placeholder. The continuous
+    // spin reads as "processing", keeping it distinct from the static failed state.
     if !root.loaded && !root.failed : Rectangle {
         x: root.border-w;
         y: root.border-w;
@@ -85,20 +62,14 @@ export component ThumbnailCell inherits Rectangle {
             height: self.width;
             x: (parent.width - self.width) / 2;
             y: (parent.height - self.height) / 2;
-            // Continuous slow spin = "processing" (motion distinguishes the
-            // loading state from the static error state). Uses the
-            // non-deprecated transform-rotation (Slint 1.16.1), which pivots
-            // about the element's own centre by default.
+            // Continuous slow spin = "processing". Uses the non-deprecated
+            // transform-rotation (Slint 1.16.1), which pivots about its own centre.
             transform-rotation: 360deg * (animation-tick() / 2s);
         }
     }
 
-    // ── State 3: !loaded && failed → red-tinted "decode failed" placeholder ────
-    // Surface + 1px border + a centered "no image" icon, all in the failed hue
-    // (matches how ThumbnailStrip tints this state). A no-image SVG replaces
-    // the old "✕" Text glyph so the mark renders identically on every font (no
-    // tofu fallback). When `failed-label` is non-empty (centered carousel cover
-    // only) it is captioned under the icon; the small surfaces stay icon-only.
+    // State 3: !loaded && failed → red-tinted "decode failed" placeholder. A no-image
+    // SVG (not a "✕" text glyph) avoids tofu fallback; `failed-label` captions the cover.
     if !root.loaded && root.failed : Rectangle {
         x: root.border-w;
         y: root.border-w;

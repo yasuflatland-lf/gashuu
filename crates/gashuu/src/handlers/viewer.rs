@@ -31,9 +31,8 @@ pub(crate) fn wire_viewer_input_handlers(
     let pages = Rc::clone(pages);
     let localizer = Rc::clone(localizer);
 
-    // Async page-decode bridge: `page_loader` applies Slint images on the event
-    // loop, then invokes this scalar callback so the UI-thread-only viewport and
-    // localizer can update geometry/status.
+    // Async page-decode bridge: `page_loader` applies images on the event loop, then
+    // invokes this scalar callback so the UI-thread viewport/localizer update geometry.
     {
         let ui_weak = ui.as_weak();
         let state = Rc::clone(&state);
@@ -48,10 +47,8 @@ pub(crate) fn wire_viewer_input_handlers(
                     pages.clear_dispatched_spread(leading, trailing);
                     ui.set_leading_loading(false);
                     ui.set_trailing_loading(false);
-                    // Unmounting the LoadingSlot perturbs PageView's TouchArea
-                    // hit-testing the same way the mount does (see main.rs MISS
-                    // path); suppress the phantom pointer-reveal so the decode
-                    // finish does not flip the chrome under a stationary cursor.
+                    // Unmounting the LoadingSlot perturbs PageView's TouchArea hit-testing
+                    // (see main.rs MISS path); suppress the phantom pointer-reveal on decode finish.
                     ui.invoke_arm_pointer_reveal_suppression();
                     let failed = (trailing_failed >= 0).then_some(trailing_failed as usize);
                     let status = state.borrow().status_content();
@@ -86,10 +83,8 @@ pub(crate) fn wire_viewer_input_handlers(
                     crate::i18n::dynamic::decode_error(localizer.loader(), &detail).into(),
                 );
                 clear_page_view(&ui, &viewport);
-                // clear_page_view unmounts the LoadingSlot (loading flags →
-                // false), which perturbs PageView's TouchArea hit-testing under a
-                // stationary cursor; suppress the phantom pointer-reveal so a
-                // decode error does not flip the chrome (mirrors on_spread_anchored).
+                // clear_page_view unmounts the LoadingSlot, perturbing PageView's TouchArea
+                // hit-testing; suppress the phantom pointer-reveal (mirrors on_spread_anchored).
                 ui.invoke_arm_pointer_reveal_suppression();
             })
         });
@@ -175,9 +170,8 @@ pub(crate) fn wire_viewer_input_handlers(
         });
     }
 
-    // Reveal the auto-hiding chrome and re-arm its idle-fade countdown. Fired on
-    // mouse-move over the page and on a scrubber drag (arrow turns reveal via the
-    // `nav` handler below).
+    // Reveal the auto-hiding chrome and re-arm its idle-fade. Fired on mouse-move over
+    // the page and on scrubber drag (arrow turns reveal via the `nav` handler below).
     {
         let ui_weak = ui.as_weak();
         ui.on_reveal_chrome(move || {
@@ -187,10 +181,8 @@ pub(crate) fn wire_viewer_input_handlers(
         });
     }
 
-    // Drag preview: update ONLY the popover thumbnails + counter for the page
-    // under the knob. The page body is unchanged until commit (spec decision 11).
-    // Thumbnails are pulled from the EXISTING PR8a VecModel<ThumbnailItem> by page
-    // index — no new decode, UI thread only (the Rc model is never crossed).
+    // Drag preview: update ONLY the popover thumbnails + counter; the page body is
+    // unchanged until commit (spec decision 11). Thumbnails from the existing model, no decode.
     {
         let ui_weak = ui.as_weak();
         let state = Rc::clone(&state);
@@ -200,14 +192,12 @@ pub(crate) fn wire_viewer_input_handlers(
                 if total == 0 {
                     return;
                 }
-                // Single source of rounding: resolve the raw knob fraction to a
-                // 0-based page via the pure `scrub_fraction_to_page` (clamp, RTL
-                // inversion, round-half-up) — the Slint side no longer rounds.
+                // Single source of rounding: resolve the knob fraction to a 0-based page via
+                // `scrub_fraction_to_page` (clamp, RTL inversion, round-half-up).
                 let rtl = matches!(state.borrow().reading_direction(), ReadingDirection::Rtl);
                 let lead = scrub_fraction_to_page(frac, total, rtl);
-                // Decide whether this previewed spread is double using the SAME layout
-                // resolution the body uses, so the popover shows 1 vs 2 thumbs
-                // correctly (the pure helper carries no layout; ViewerState owns it).
+                // Decide if this previewed spread is double using the SAME layout the body
+                // uses, so the popover shows 1 vs 2 thumbs correctly (ViewerState owns layout).
                 let is_double = state.borrow().preview_is_double(lead);
                 ui.set_scrubber_double(is_double);
                 // Trailing page of the previewed spread (clamped to the last page),
@@ -217,9 +207,8 @@ pub(crate) fn wire_viewer_input_handlers(
                 } else {
                     None
                 };
-                // Pull thumbnail state (image + loaded/failed flags) from the
-                // existing model (no decode) and push it so the popover renders
-                // the loading/failed placeholder, not a blank cell.
+                // Pull thumbnail state (image + loaded/failed flags) from the existing model
+                // (no decode) so the popover renders the loading/failed placeholder, not blank.
                 let model = ui.get_thumbnails();
                 let a = thumb_state_at(&model, lead);
                 ui.set_scrubber_preview_a(a.image);
@@ -248,17 +237,13 @@ pub(crate) fn wire_viewer_input_handlers(
         let localizer = Rc::clone(&localizer);
         ui.on_scrub_commit(move |frac| {
             with_ui(&ui_weak, |ui| {
-                // Single source of rounding: resolve the raw release fraction to a
-                // page via `scrub_fraction_to_page` (the same helper the preview
-                // path uses), then jump. `page_count`/`reading_direction` reads and
-                // the `borrow_mut()` jump_to each drop at their `;` before refresh
-                // takes a fresh borrow.
+                // Single source of rounding: resolve the release fraction to a page via
+                // `scrub_fraction_to_page` (same helper as preview), then jump.
                 let total = state.borrow().page_count();
                 let rtl = matches!(state.borrow().reading_direction(), ReadingDirection::Rtl);
                 let page = scrub_fraction_to_page(frac, total, rtl);
-                // Refresh unconditionally — unlike the nav handler, a scrub commit always
-                // re-seeds the scrubber knob + counter to the committed spread, even when
-                // the resolved leading equals the current index (a no-op jump).
+                // Refresh unconditionally: unlike the nav handler, a scrub commit always
+                // re-seeds the scrubber + counter, even when the jump is a no-op.
                 let _moved = state.borrow_mut().jump_to(page);
                 refresh(
                     &ui,
@@ -273,9 +258,8 @@ pub(crate) fn wire_viewer_input_handlers(
         });
     }
 
-    // Toggle the thumbnail strip's visibility. No refresh needed: showing/hiding
-    // the strip changes PageView's height, which fires the existing
-    // `viewport-resized` wiring automatically.
+    // Toggle the thumbnail strip. No refresh needed: showing/hiding it changes PageView's
+    // height, which auto-fires the existing `viewport-resized` wiring.
     {
         let ui_weak = ui.as_weak();
         ui.on_toggle_thumbnails(move || {
@@ -291,12 +275,8 @@ pub(crate) fn wire_viewer_input_handlers(
 pub(crate) fn wire_viewport_handlers(ui: &ViewerWindow, viewport: &Rc<RefCell<ViewportState>>) {
     let viewport = Rc::clone(viewport);
 
-    // Zoom/pan input callbacks forwarded from PageView via ViewerWindow.
-    // Each updates the `ViewportState` and re-pushes geometry.
-    // Borrow-scoping rule: never hold a `borrow_mut()` while constructing the
-    // `&viewport.borrow()` argument to `apply_viewport`. Mutate in one statement
-    // (the temporary `borrow_mut` drops at the `;`), then take a fresh immutable
-    // borrow for apply.
+    // Zoom/pan callbacks from PageView: update ViewportState, then re-push geometry.
+    // Borrow rule: never hold `borrow_mut()` while building `&viewport.borrow()` for apply.
     {
         let ui_weak = ui.as_weak();
         let viewport = Rc::clone(&viewport);
@@ -335,9 +315,8 @@ pub(crate) fn wire_viewport_handlers(ui: &ViewerWindow, viewport: &Rc<RefCell<Vi
     {
         let ui_weak = ui.as_weak();
         let viewport = Rc::clone(&viewport);
-        // `scale` is the gesture's cumulative factor (1.0 at start); `x`/`y` are
-        // the focal point in viewport coordinates (cursor position on a trackpad).
-        // Note: the Slint callback order is (x, y, scale); pinch_to takes (scale, x, y).
+        // `scale` is cumulative (1.0 at start); `x`/`y` are the focal point in viewport
+        // coords. NOTE: Slint callback order is (x, y, scale); pinch_to takes (scale, x, y).
         ui.on_pinch_to(move |x, y, scale| {
             with_ui(&ui_weak, |ui| {
                 viewport.borrow_mut().pinch_to(scale, x, y);
@@ -348,9 +327,8 @@ pub(crate) fn wire_viewport_handlers(ui: &ViewerWindow, viewport: &Rc<RefCell<Vi
     {
         let ui_weak = ui.as_weak();
         let viewport = Rc::clone(&viewport);
-        // Incremental two-finger scroll pan while zoomed in. The sign is passed
-        // straight through from Slint; if scrolling feels inverted on some
-        // platform, flip it in the Slint `scroll-pan` call (one-liner), not here.
+        // Two-finger scroll pan while zoomed in. Sign passes straight through from Slint;
+        // if inverted on some platform, flip it in the Slint `scroll-pan` call, not here.
         ui.on_scroll_pan(move |dx, dy| {
             with_ui(&ui_weak, |ui| {
                 viewport.borrow_mut().pan_by(dx, dy);
@@ -399,9 +377,8 @@ pub(crate) fn wire_nav_handlers(
         // `settings` is captured only to satisfy `persist_view_modes`'s signature
         // on the GoToLibrary leave point; the LeaveViewer route never reads it.
         let settings = Rc::clone(&settings);
-        // The carousel-refresh collaborators are captured because the GoToLibrary
-        // arm rebuilds the carousel on entry (continue-reading freshness +
-        // focus snap) through `go_to_library` / `refresh_library_carousel`.
+        // The carousel-refresh collaborators are captured because the GoToLibrary arm
+        // rebuilds the carousel on entry via `go_to_library` / `refresh_library_carousel`.
         let covers = Rc::clone(&covers);
         let search = Rc::clone(&search);
         let selection = Rc::clone(&selection);
@@ -425,25 +402,18 @@ pub(crate) fn wire_nav_handlers(
                                 ui.as_weak(),
                             );
                         }
-                        // Log every page-turn latency (cache hits target <50ms; the
-                        // first visit to a page also includes a synchronous decode).
-                        // Observe with RUST_LOG=debug.
+                        // Log every page-turn latency (cache hits target <50ms; first visit
+                        // to a page includes a synchronous decode). Observe with RUST_LOG=debug.
                         tracing::debug!(
                             elapsed_ms = started.elapsed().as_secs_f64() * 1000.0,
                             moved,
                             "page turn"
                         );
-                        // Page turns deliberately do NOT reveal the auto-hiding
-                        // chrome: turning pages (arrows / Space / Backspace / tap /
-                        // swipe — all route here through `nav`) should stay quiet so
-                        // the menu and scrubber don't flash on every turn. The chrome
-                        // still reveals on pointer movement (`reveal-chrome-from-pointer`)
-                        // and during scrubber drags (`on_scrub_preview`).
+                        // Page turns deliberately do NOT reveal the auto-hiding chrome, so the
+                        // menu/scrubber don't flash on every turn (pointer move + drag still reveal).
                     }
                     // Runtime state is the single source of truth for these modes;
-                    // `persist_view_modes` routes them into `Settings` or the
-                    // per-book override at the next leave point (no per-key
-                    // Settings write).
+                    // `persist_view_modes` routes them to Settings/override at the next leave.
                     KeyCommand::ToggleSpread => {
                         if state.borrow_mut().toggle_spread() {
                             refresh(
@@ -480,12 +450,8 @@ pub(crate) fn wire_nav_handlers(
                             );
                         }
                     }
-                    // Zoom/fit commands mutate `ViewportState`, then push geometry.
-                    // The viewport owns `fit_mode` at runtime; `persist_view_modes`
-                    // routes it into `Settings` or the per-book override at the
-                    // next leave point (zoom/pan stay session-only). Each mutates
-                    // in its own statement, then applies geometry with a fresh
-                    // immutable borrow (never hold borrow_mut across apply).
+                    // Zoom/fit mutate ViewportState then push geometry; viewport owns fit_mode
+                    // (persisted at leave, zoom/pan session-only). Never hold borrow across apply.
                     KeyCommand::ZoomIn => {
                         viewport.borrow_mut().zoom_step(true);
                         apply_viewport(&ui, &viewport.borrow());
@@ -498,9 +464,8 @@ pub(crate) fn wire_nav_handlers(
                         viewport.borrow_mut().reset();
                         apply_viewport(&ui, &viewport.borrow());
                     }
-                    // Fit changes reset zoom + re-center. The viewport owns `fit_mode`;
-                    // `persist_view_modes` persists it at the next leave point
-                    // (zoom/pan are NOT persisted — session-only).
+                    // Fit changes reset zoom + re-center; the viewport owns fit_mode,
+                    // persisted at the next leave (zoom/pan are session-only).
                     KeyCommand::FitActual => {
                         viewport.borrow_mut().set_fit(FitMode::Actual);
                         apply_viewport(&ui, &viewport.borrow());
@@ -509,21 +474,16 @@ pub(crate) fn wire_nav_handlers(
                         viewport.borrow_mut().cycle_fit();
                         apply_viewport(&ui, &viewport.borrow());
                     }
-                    // Toggle the thumbnail strip. No refresh needed: the strip's
-                    // appearance changes PageView's height, which auto-fires the
-                    // existing `viewport-resized` wiring.
+                    // Toggle the thumbnail strip. No refresh needed: it changes PageView's
+                    // height, which auto-fires the existing `viewport-resized` wiring.
                     KeyCommand::ToggleThumbnails => {
                         ui.set_show_thumbnails(!ui.get_show_thumbnails());
                     }
                     // Up arrow returns to the Library carousel. Direction-independent
                     // (decoded in keymap); the seam flips NavState + syncs `screen`.
                     KeyCommand::GoToLibrary => {
-                        // Write the current position AND this book's view modes back
-                        // before leaving the viewer, so a D/R/C/fit toggle made while
-                        // reading persists to the book even without opening settings.
-                        // View-mode routing goes through `persist_view_modes`
-                        // (ADR-0007). Both confine their borrows to single statements,
-                        // dropping before go_to_library borrows the UI.
+                        // Write position AND view modes back before leaving, so a D/R/C/fit
+                        // toggle while reading persists without opening settings (ADR-0007 routing).
                         write_back_position(&state, &library);
                         persist_view_modes(
                             ViewModeRoute::LeaveViewer,
@@ -532,10 +492,8 @@ pub(crate) fn wire_nav_handlers(
                             &settings,
                             &library,
                         );
-                        // `go_to_library` rebuilds the carousel on entry so the
-                        // continue-reading ribbon reflects the `last_opened` just
-                        // persisted above, and snaps focus to that book. The
-                        // CarouselRefresh borrows are cheap `&Rc` references.
+                        // `go_to_library` rebuilds the carousel on entry so the continue-reading
+                        // ribbon reflects the `last_opened` just persisted, and snaps focus to it.
                         go_to_library(
                             &ui,
                             &nav,
@@ -553,9 +511,8 @@ pub(crate) fn wire_nav_handlers(
         });
     }
 
-    // Viewport resize: re-resolve SpreadMode::Auto against the new window aspect;
-    // refresh only when the effective layout actually flipped (no churn while
-    // merely resizing in Single or Double mode).
+    // Viewport resize: re-resolve SpreadMode::Auto against the new aspect; refresh only
+    // when the effective layout actually flipped (no churn when resizing Single/Double).
     {
         let ui_weak = ui.as_weak();
         let state = Rc::clone(&state);

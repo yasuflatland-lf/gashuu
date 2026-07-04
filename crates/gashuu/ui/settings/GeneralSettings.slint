@@ -1,9 +1,5 @@
-// GeneralSettings — the "General" settings section as a standalone unit.
-//
-// Extracted verbatim from SettingsDialog.slint's inline General block (the
-// language dropdown only). Renders its own eyebrow (suppressible via
-// `show-title`). App-global, so the flat dialog gates it to the Library-default
-// context; the component itself is context-neutral. Theme.* only.
+// GeneralSettings — the "General" section (language dropdown only) as a standalone unit.
+// Renders its own eyebrow (suppressible via `show-title`); context-neutral. Theme.* only.
 import { Theme } from "../Theme.slint";
 import { Strings } from "../Strings.slint";
 import { SettingRow } from "../components/SettingRow.slint";
@@ -33,9 +29,8 @@ export component GeneralSettings inherits VerticalLayout {
         label: Strings.settings-language-label;
         trailing: true;
         language-control := Dropdown {
-            // Language names are deliberately NOT translated: a language switcher
-            // always shows each option in its own tongue, so a user lost in the
-            // wrong language can still find their own.
+            // Language names are deliberately NOT translated: a switcher shows each option in its
+            // own tongue, so a user lost in the wrong language can still find their own.
             model: ["English", "日本語"];
             current-index <=> root.language-index;
             a11y-label: Strings.settings-language-a11y;

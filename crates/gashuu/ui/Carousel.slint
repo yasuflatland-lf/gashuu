@@ -1,36 +1,9 @@
-// Library cover-flow carousel.
-//
-// Renders a full cover-flow row built from the `Library` model: a centered
-// focused cover (accent ring), dimmed neighbors, a per-cover progress bar, a
-// centered focused-book meta block, and a grayed broken-cover placeholder for
-// unavailable books. Falls back to an empty-state CTA when there are 0 books.
-// PR-L added the always-visible "Add files… / Add folder…" toolbar and wired
-// the empty-state CTA to the folder/file picker (via add-books(), né
-// add-files() — renamed when macOS gained the combined files+folders panel).
-//
-// The public contract — the `CarouselItem` struct, the `Carousel` component,
-// its `items`/`focused-index` properties, the `open(int)`/`move(int)`/`back()`
-// callbacks (plus PR-L's `add-books()`/`add-folder()`), and `focus-self()` —
-// is frozen and MUST NOT change here. PR-V streams real cover images into the
-// model (covers are placeholders until then).
-//
-// Focus: the component owns its own FocusScope. `focus-self()` restores
-// keyboard focus to it (the carousel counterpart of ViewerWindow's
-// `focus-pages()` recovery rule).
-//
-// Styling references `Theme.*` tokens only — NO inline brand hex (DESIGN.md).
-// Key seams (handled in the FocusScope): Left/Right -> move(-1/+1),
-// Return -> open(focused-index), Down -> back(). Pointer seams: the left/right
-// step zones fire the same move(-1/+1) one book per click, and a double-click
-// on the CENTER strip (the zones' gap) fires the same open(int) with the
-// cover's index (normal mode only — see the cover-flow row).
+// Library cover-flow carousel. Public contract (CarouselItem, Carousel, its
+// properties/callbacks) is FROZEN. Styling uses Theme.* only — NO inline hex.
 import { Theme } from "Theme.slint";
 import { Strings } from "Strings.slint";
-// Shared design-system components (P2 componentization, issue #71): the
-// reading-progress bar, the empty-state primary CTA button, and the shared
-// thumbnail cell used by all three thumbnail surfaces (page strip / scrubber
-// preview / library covers). The local private ProgressBar was deleted in
-// favor of the extracted components/ProgressBar.slint (move-only: same body).
+// Shared design-system components (issue 71 componentization). The local private
+// ProgressBar was deleted in favor of components/ProgressBar.slint (move-only).
 import { ProgressBar } from "components/ProgressBar.slint";
 import { PrimaryButton } from "components/PrimaryButton.slint";
 import { ThumbnailCell } from "components/ThumbnailCell.slint";
@@ -39,16 +12,8 @@ import { SelectionBadge } from "components/SelectionBadge.slint";
 import { BookmarkRibbon } from "components/BookmarkRibbon.slint";
 import { SelectionToolbar } from "components/SelectionToolbar.slint";
 
-// Frozen by PR-0b; populated by PR-C (covers via PR-V). One book in the shelf.
-// `selected` (bulk-delete PR-2) marks the book as picked in selection mode, so
-// the cover renders an accent check badge; populated from `LibrarySelectionState`
-// in the carousel rebuild path and on every toggle.
-// `bookmarked` (continue-reading) is true when this is the last-opened book;
-// drives the BookmarkRibbon overlay on the cover card.
-// `cover-failed` (issue 144) is true when the cover load failed permanently
-// (unreadable archive / decode failure); the card renders the shared failed
-// treatment so the user can tell "failed" from "still loading". Set by
-// `CoverController` via `marshal_failed`; a model rebuild resets it to false.
+// One book in the shelf. `selected` (from LibrarySelectionState) draws the check badge;
+// `cover-failed` (issue 144) is set by CoverController::marshal_failed, reset on rebuild.
 export struct CarouselItem {
     cover: image,
     title: string,
@@ -62,29 +27,17 @@ export struct CarouselItem {
     cover-loaded: bool, // true = cover image arrived from CoverController (not yet = loading placeholder)
 }
 
-// File-private cover-flow card: de-duplicates the per-cover card so the
-// two z-order passes in `Carousel` can share ONE body (DESIGN.md covers; the
-// patterns.md "shared PRIVATE sub-component within one file" tool). NOT exported,
-// so the frozen public contract is untouched.
-//
-// Why two passes instead of `z`: Slint 1.16.1 cannot set per-Repeater-item z
-// (docs/patterns.md), so the centered cover is layered on top purely by DRAW
-// ORDER. Pass 1 is the always-on BACKING layer (`show: true`, every book);
-// pass 2, declared AFTER pass 1, redraws ONLY the centered card on top so it
-// wins z-order. This prevents a fast Left/Right sweep from toggling a
-// passed-through book's only instance off-then-on (which blanked its cover for
-// one frame — the "gap-toothed" bug). Both passes bind identical geometry —
-// pure functions of the same `flow-position` scalar (see the cover-flow row) —
-// so the pass hand-off lands at matching positions with no pop.
+// File-private cover-flow card (NOT exported), shared by both z-order passes.
+// Slint 1.16.1 has no per-Repeater-item z, so draw order layers it: pass 1 =
+// always-on backing (every book), pass 2 = centered card redrawn on top. Stops a
+// fast sweep blanking a passed-through book for one frame (the "gap-toothed" bug);
+// both passes bind identical geometry (pure fns of `flow-position`) so no pop.
 component CoverCard inherits Rectangle {
     // Layer gate + per-card state (all driven by the enclosing `for`).
     in property <bool> show;       // this pass should draw this card
     in property <bool> centered;   // idx == round(flow-position): the card at the VISUAL center; ring + shadow
-    // Only the pass-2 TOP copy of the centered card paints the drop-shadow; the
-    // pass-1 backing copy sets `elevated: false` so the centered book's
-    // semi-transparent shadow (Theme.shadow-card) is not composited
-    // twice (which would darken it). Neighbors never carry a shadow regardless
-    // (gated by `centered`).
+    // Only the pass-2 top copy paints the drop-shadow; the pass-1 backing copy sets
+    // `elevated: false` so the semi-transparent shadow isn't composited twice (darkened).
     in property <bool> elevated: true;
     in property <float> flow-delta; // idx - flow-position: signed FLOAT distance from the visual center
     // Geometry tunables, forwarded from the Carousel root.
@@ -94,27 +47,22 @@ component CoverCard inherits Rectangle {
     in property <float> neighbor-scale;
     in property <float> neighbor-opacity;
     in property <length> ring-width;
-    // Enclosing cover-flow row geometry. A component ROOT cannot read `parent`
-    // (the parent is unknown until instantiation), so the row's width and vertical
-    // anchor are passed in by each `for` (which CAN read `parent` at its call site).
+    // Enclosing row geometry, passed in per-`for`: a component ROOT cannot read
+    // `parent` (the call site can), so width and vertical anchor come from outside.
     in property <length> row-width;
     in property <length> row-cy;
     // Item data.
     in property <image> cover-source;
     in property <bool> available;
     in property <float> progress;
-    // Cover load failed permanently (issue 144): drives the shared failed
-    // treatment on the ThumbnailCell below. Only meaningful while `available`
-    // is true — an unavailable book renders its own distinct broken-cover
-    // treatment regardless (the two states stay visually separate).
+    // Cover load failed permanently (issue 144): drives the shared failed treatment.
+    // Only meaningful while `available` — an unavailable book has its own broken-cover look.
     in property <bool> cover-failed;
     // true once CoverController streams in a real image. Starts false so the
     // neutral loading placeholder is shown instead of a black default image.
     in property <bool> cover-loaded;
-    // Bulk-selection (PR-2). `selected` draws the accent check badge;
-    // `selection-mode` is forwarded for future selection-only chrome. `interactive`
-    // gates the cover TouchArea so only the pass-1 backing copy fires the click
-    // (the pass-2 top copy of the centered card sets it false — see the two for-loops).
+    // Bulk-selection (PR-2). `selected` draws the check badge. `interactive` gates
+    // the cover TouchArea so only the pass-1 backing copy fires (pass-2 sets it false).
     in property <bool> selected;
     in property <bool> selection-mode;
     in property <bool> interactive;
@@ -122,54 +70,33 @@ component CoverCard inherits Rectangle {
     // renders a ribbon at the top-left of the cover, independent of `available`.
     in property <bool> bookmarked;
     callback clicked;
-    // Double-click on the cover (pass-1 only, via the same `cover-touch`
-    // gating as `clicked`). The Carousel decides what it means (open in
-    // normal mode, nothing in selection mode) — CoverCard stays presentational.
+    // Double-click on the cover (pass-1 only, same gating as `clicked`). The
+    // Carousel decides what it means — CoverCard stays presentational.
     callback double-clicked;
 
-    // Position/size/opacity: every value below is a PURE function of `flow-delta`
-    // — the card carries NO `animate` blocks. The cover-flow row animates ONE
-    // scalar (`flow-position`) and each card merely tracks it, so rapid
-    // Left/Right input retargets a single animation instead of restarting N
-    // per-card 480ms timers (the old per-card `animate x` left the center slot
-    // empty during a fast sweep — docs/patterns.md "animation altitude").
+    // Every value below is a PURE function of `flow-delta` (no per-card `animate`):
+    // the row animates ONE scalar, so a fast sweep never leaves the center slot
+    // empty (patterns.md "animation altitude").
     x: root.row-width / 2 + root.flow-delta * root.cover-step - self.width / 2;
     y: root.row-cy - self.height / 2;
-    // Size/opacity interpolate CONTINUOUSLY with the float distance from the
-    // visual center: full size/opacity at d == 0, neighbor scale/opacity from
-    // d >= 1 outward (the clamp floor). `scale-factor` single-sources the size
-    // interpolation (the Scrubber's named-derived-value style); opacity keeps
-    // its own clamp because its floor is `neighbor-opacity`, not the scale.
-    // Because `width` is slaved to the same scalar as `x`, the x formula's
-    // `self.width / 2` term no longer chases a mid-animation width (the old
-    // second-order lag).
+    // Size/opacity interpolate continuously with distance from center (full at d==0,
+    // neighbor floor from d>=1). `scale-factor` single-sources the size; `width`
+    // slaved to the same scalar as `x` avoids the old mid-animation second-order lag.
     private property <float> scale-factor: Math.clamp(
         1.0 - Math.abs(root.flow-delta) * (1.0 - root.neighbor-scale),
         root.neighbor-scale, 1.0);
     width: root.cover-w * root.scale-factor;
     height: root.cover-h * root.scale-factor;
-    // Opacity holds FULL across the center half (|flow-delta| <= 0.5), then fades
-    // linearly to `neighbor-opacity` out to the immediate-neighbor slot
-    // (|flow-delta| == 1). The flat opaque plateau fixes the mid-move "the cover
-    // BEHIND bleeds through the front book" artifact: the visually centered card is
-    // `Math.round(flow-position)`, so its |flow-delta| never exceeds 0.5 — with the
-    // plateau it now stays FULLY opaque for the whole slide and nothing shows
-    // through it (the centered card is full-size and overlaps its neighbors on top,
-    // so any sub-1.0 opacity used to reveal the overlapped neighbor). The plateau
-    // edge is pinned to 0.5 — the round() center hand-off point — ON PURPOSE: at
-    // the instant the visual center hands off from one card to the next, BOTH sit
-    // at |flow-delta| == 0.5 where this curve equals exactly 1.0, so the hand-off
-    // carries no opacity pop. The slope `2 * (1 - neighbor-opacity)` lands the fade
-    // on `neighbor-opacity` at |flow-delta| == 1. At rest the look is unchanged:
-    // centered d==0 -> 1.0, immediate neighbors d==±1 -> neighbor-opacity, farther
-    // cards clamped to it.
+    // Opacity holds FULL across the center half (|flow-delta| <= 0.5) then fades to
+    // `neighbor-opacity` at the neighbor slot (==1). The flat plateau fixes the
+    // mid-move "cover behind bleeds through" artifact (centered card is round(),
+    // so |flow-delta| <= 0.5). Plateau edge pinned to 0.5 — the hand-off point where
+    // both cards sit at exactly 1.0 — so the center hand-off carries no opacity pop.
     opacity: Math.clamp(
         1.0 - (Math.abs(root.flow-delta) - 0.5) * 2 * (1.0 - root.neighbor-opacity),
         root.neighbor-opacity, 1.0);
-    // Layer gate only. Every loaded cover stays visible at EVERY window width
-    // (user decision: the former narrow-window neighbor-drop hid all but the
-    // centered cover ± one at/below 560px, which read as thumbnails vanishing on
-    // resize and during moves). Cards past the window edge clip naturally.
+    // Layer gate only. Every loaded cover stays visible at EVERY width (user
+    // decision: the former narrow-window neighbor-drop read as covers vanishing).
     visible: root.show;
 
     // The cover card: rounded, card shadow on the centered cover only, accent ring.
@@ -178,32 +105,18 @@ component CoverCard inherits Rectangle {
         height: 100%;
         border-radius: Theme.radius-sm;               // DESIGN.md covers 6px
         background: Theme.surface-raised;             // placeholder backing
-        // Card shadow on the CENTERED cover only (DESIGN.md elevation.card).
-        // Neighbors sit at 0.45 opacity and don't need one — dropping it keeps the
-        // cover-flow GPU-cheap. Also gated on `elevated` so only the pass-2 top
-        // copy paints it: the pass-1 backing copy of the centered book sets
-        // `elevated: false`, else the semi-transparent shadow composites twice.
+        // Card shadow on the CENTERED cover only (DESIGN.md elevation.card); gated on
+        // `elevated` so only the pass-2 top copy paints it (else it composites twice).
         drop-shadow-blur: (root.centered && root.elevated) ? 22px : 0px;
         drop-shadow-color: Theme.shadow-card;
-        // Focus ring: 3px accent outline on the centered cover. In selection mode
-        // ONLY, a non-centered cover also gets a thin 1px accent ring while hovered
-        // (§2.4 selection-mode hover affordance) — a pointer hint that the cover is
-        // a selectable target. `cover-touch` is the pass-1-only cover TouchArea
-        // (enabled: root.interactive); since it is non-interactive on pass 2 it
-        // reports no hover there, so the hover ring is single-source like the
-        // click. Normal mode (selection-mode false) shows nothing on hover.
+        // Focus ring: 3px accent on the centered cover; in selection mode only, a
+        // hovered non-centered cover gets a 1px ring (single-source via pass-1 `cover-touch`).
         border-width: root.centered ? root.ring-width : (root.selection-mode && cover-touch.has-hover ? 1px : 0px);
         border-color: Theme.accent;
 
-        // Cover image via the shared ThumbnailCell (DESIGN.md rule 6: one
-        // thumbnail treatment across page strip / scrubber / covers). The accent
-        // focus ring is drawn by this `cover` Rectangle (DESIGN cover.focusOutline),
-        // so the cell stays `highlighted: false` to avoid a double ring (covers
-        // signal focus via scale + opacity + the card's own ring).
-        // `cover-failed` (issue 144) flips the cell into its shared failed
-        // treatment (error tint + glyph), so a permanently failed cover load is
-        // visually separable from the loading placeholder; an un-failed row
-        // keeps the streamed cover (or the placeholder backing while loading).
+        // Cover image via the shared ThumbnailCell. `highlighted: false` avoids a
+        // double ring (this Rectangle draws the accent ring); `cover-failed` (issue 144)
+        // flips the cell into the shared failed treatment vs the loading placeholder.
         if root.available : ThumbnailCell {
             x: 0; y: 0; width: 100%; height: 100%;
             radius: Theme.radius-sm;
@@ -214,9 +127,8 @@ component CoverCard inherits Rectangle {
             highlighted: false;
         }
 
-        // Unavailable: grayed card + "no image" glyph. An SVG (colorized to the
-        // faint text hue) replaces the old "⛌" Text glyph, which rendered as a
-        // tofu box on fonts lacking U+26CC.
+        // Unavailable: grayed card + "no image" SVG glyph (replaced the old "⛌" Text
+        // glyph, which rendered as a tofu box on fonts lacking U+26CC).
         if !root.available : Rectangle {
             x: 0; y: 0; width: 100%; height: 100%;
             border-radius: Theme.radius-sm;
@@ -232,38 +144,19 @@ component CoverCard inherits Rectangle {
             }
         }
 
-        // Bulk-selection check badge (PR-2; two-state §2.3). Rendered inside
-        // `cover` so it sits on the artwork, pinned to the top-right with a small
-        // inset. Drawn in BOTH z-order passes (pass-2's centered copy paints over
-        // pass-1, so the badge must live on both or it would vanish on the centered
-        // card) — this block is the shared CoverCard body, so both passes get it.
-        // Gated on `selection-mode` (not `selected`) so EVERY cover shows a badge
-        // while selecting; `checked` then renders the filled (selected) disc or the
-        // hollow (unselected) ring. Accent disc + white check — RED stays reserved
-        // for the PR-5 delete button.
+        // Bulk-selection check badge, pinned top-right. Gated on `selection-mode` (not
+        // `selected`) so EVERY cover shows a badge while selecting; `checked` fills it.
+        // Lives in the shared body so both z-order passes draw it (else it vanishes centered).
         if root.selection-mode : SelectionBadge {
             checked: root.selected;
             x: parent.width - self.width - Theme.space-xs;
             y: Theme.space-xs;
         }
 
-        // Continue-reading ribbon (BookmarkRibbon). CARD-EXTERNAL PROTRUSION: the
-        // ribbon floats FULLY CLEAR of the cover's top edge (negative y, zero
-        // overlap — user decision after a visual check superseded the earlier
-        // tucked-in placement). Same protrusion family as the ProgressBar that
-        // renders below the cover at `y: parent.height + …`; no ancestor clips
-        // this region, so a negative y is safe.
-        // Clearance = Theme.space-md (10 px) ≈ ribbon height / φ²
-        // (26 / 2.618 ≈ 9.9) — the same φ² derivation the nav-search-radius
-        // token documents, on the repo's Fibonacci/φ sizing ladder.
-        // The area above the cover is covered by the dark stage gradient, so the
-        // white glyph keeps contrast regardless of cover art — the reason the
-        // ribbon sits outside the card.
-        // TOP-LEFT placement does NOT conflict with SelectionBadge's top-right
-        // corner: both render simultaneously when a bookmarked book is also
-        // selected (edge case 5).
-        // Rendered regardless of `available` — a file-gone book still shows its
-        // "continue reading" status (edge case 4).
+        // Continue-reading ribbon: card-external protrusion, floats fully clear of the
+        // cover's top edge (negative y — no ancestor clips this region, so it's safe).
+        // Top-left, so it never conflicts with SelectionBadge (top-right); rendered
+        // regardless of `available` (a file-gone book still shows "continue reading").
         if root.bookmarked : BookmarkRibbon {
             x: Theme.space-xs;
             y: -self.height - Theme.space-md;
@@ -278,25 +171,11 @@ component CoverCard inherits Rectangle {
         progress: root.progress;
     }
 
-    // ── Cover click target (PR-2 — the repo's FIRST cover pointer interaction) ──
-    // An INVISIBLE click rectangle (NOT the shrunken artwork), pinned centered on
-    // the card. Width = max(cover-step, card width):
-    //   - NEIGHBOR cards (width == cover-w * neighbor-scale at rest): cover-step wins,
-    //     so a shrunken side cover is still a comfortable `cover-step`-wide click target.
-    //   - CENTERED card (width == cover-w at rest): the card width wins, so the WHOLE
-    //     centered cover is clickable — including the selection badge pinned to its
-    //     top-right corner. A bare `cover-step`-wide target (cover-step < cover-w)
-    //     left the badge in a dead zone, so clicking it in selection mode toggled
-    //     nothing; the always-visible selection-mode rings then advertised a target
-    //     the centered cover's hit-area never reached (badge inset + space-xs all sit
-    //     right of a cover-step-wide centered target). Math.max fixes that without
-    //     shrinking the deliberate neighbor target.
-    // `enabled: root.interactive` ensures ONLY the pass-1 backing copy fires
-    // (pass-2's centered copy passes `interactive: false`, so a click on the centered
-    // card is handled exactly once — see the two for-loops in Carousel). The
-    // TouchArea is non-focusable (repo convention, see NavItem / docs/patterns.md
-    // "TouchArea click focus recovery"), so keyboard focus stays on the carousel
-    // FocusScope; handlers/library.rs restores carousel focus after handling.
+    // Invisible click rectangle, centered on the card. Width = max(cover-step, card
+    // width): neighbors get a comfortable cover-step target, while the centered card
+    // uses its full width so the top-right selection badge isn't in a dead zone.
+    // `enabled: root.interactive` fires only the pass-1 backing copy (handled once).
+    // Non-focusable (repo convention), so keyboard focus stays on the carousel.
     cover-touch := TouchArea {
         enabled: root.interactive;
         width: Math.max(root.cover-step, parent.width);
@@ -304,22 +183,15 @@ component CoverCard inherits Rectangle {
         x: (parent.width - self.width) / 2;
         y: 0;
         clicked => { root.clicked(); }
-        // Slint fires `clicked` on EVERY click and `double-clicked` IN ADDITION
-        // on the second (vendored i-slint-core 1.16.1 input_items.rs: clicked
-        // always, then double_clicked when click_count % 2 == 1) — so a
-        // double-click is focus, focus, open in normal mode.
+        // Slint fires `clicked` on EVERY click and `double-clicked` IN ADDITION on the
+        // second (vendored input_items.rs) — so a double-click is focus, focus, open.
         double-clicked => { root.double-clicked(); }
     }
 }
 
-// File-private sunken card shared by the empty-library CTA and the no-results
-// state: same surface / radius / hairline border / centered title + subtitle.
-// The two states differ only in their strings, the fixed panel height, and
-// whether a CTA is slotted via @children (empty-state only). Container-relative
-// geometry (the width clamp and the x/y centering) is set by each call site,
-// NOT here: a component's root element cannot reference `parent`, so that
-// geometry must live where `parent` resolves (the carousel). The card owns its
-// fixed height via `panel-height`.
+// File-private sunken card shared by the empty-library CTA and the no-results state.
+// Container-relative geometry (width clamp, x/y centering) is set by each call site,
+// NOT here: a component ROOT cannot reference `parent`, so it lives where parent resolves.
 component EmptyStatePanel inherits Rectangle {
     in property <string> title;
     in property <string> subtitle;
@@ -365,57 +237,36 @@ export component Carousel inherits Rectangle {
     // shows a single combined add capsule. Pushed once from Rust at boot.
     in property <bool> combined-add-picker;
 
-    // ── Library search seams (issue #88) ──────────────────────────────────────
-    // `search-query` mirrors the NavBar field; `library-book-count` is the TOTAL
-    // book count (independent of the active filter) so the empty-library CTA and
-    // the no-results state can be told apart. `search-changed` carries the
-    // debounced query to Rust. `settings` bubbles the glass-pill Settings click
-    // up to ViewerWindow, which routes it into the existing `open-settings` flow
-    // (`on_open_settings` in handlers/settings.rs) — the SAME SettingsDialog reached from the
-    // Viewer's TitleBar "Settings…" button. The dialog overlays the Library
-    // carousel; closing it returns keyboard focus to the carousel.
+    // ── Library search seams (issue 88) ───────────────────────────────────────
+    // `library-book-count` is filter-INDEPENDENT so the empty-library CTA and no-results
+    // are told apart; `settings` routes to the shared open-settings flow (Viewer's dialog).
     in-out property <string> search-query;
     in property <int> library-book-count;
     callback search-changed(string);
     callback settings();
-    // The NavBar bookmark capsule: jump to the continue-reading book (resume at
-    // its saved page) when one exists, else surface a no-bookmark status notice.
-    // Bubbles up to ViewerWindow (and handlers/library.rs) the same way `settings` does.
+    // NavBar bookmark capsule: jump to the continue-reading book (resume at its saved
+    // page), else a no-bookmark notice. Bubbles up to ViewerWindow like `settings`.
     callback continue-reading();
-    // True while a modal overlay (settings / shortcuts) is open over the
-    // Library. The carousel still holds keyboard focus, so its FocusScope must
-    // suppress all key arms — otherwise Left/Right, `/`, Down, and Return would
-    // act on the carousel underneath the modal (mirrors the Viewer FocusScope
-    // guard in ViewerWindow.slint). Bound by ViewerWindow to the same condition.
+    // True while a modal overlays the Library. The carousel still holds focus, so its
+    // FocusScope must suppress all key arms (else they act under the modal).
     in property <bool> modal-open;
 
-    // ── Bulk-selection seams (bulk-delete epic, PR-2) ─────────────────────────
-    // `selection-mode` tracks whether the carousel is in selection mode (entered
-    // by `x`, exited by Esc). It is `in-out` so the key arms below flip it locally
-    // AND ViewerWindow/Rust can observe/reset it. `toggle-selection(int)` toggles
-    // the focused book's membership (keyboard `x`/Space); `cover-clicked(int)` is
-    // the pointer entry (a cover TouchArea click). `exit-selection()` clears the
-    // selection and leaves the mode (Esc). All three are forwarded through
-    // ViewerWindow to handlers/library.rs (mirrors the open/move/back forwarding).
+    // ── Bulk-selection seams (PR-2) ───────────────────────────────────────────
+    // `selection-mode` is `in-out` so the key arms flip it locally AND Rust can
+    // observe/reset. toggle/cover-clicked/exit forward to handlers/library.rs.
     in-out property <bool> selection-mode;
     callback toggle-selection(int);   // visible carousel index to toggle
     callback cover-clicked(int);      // visible carousel index whose cover was clicked
     callback exit-selection();        // Esc: clear selection + leave selection mode
-    // ── SelectionToolbar seams (bulk-delete epic, PR-4) ───────────────────────
-    // `selection-count-text` is the pre-composed count label from Rust (e.g.
-    // "3 selected" or "5 selected (2 outside search)"); `select-all-label` flips between the "Select all"/"Deselect
-    // all" wording. `select-all()` fires from BOTH the toolbar button and the
-    // Cmd/Ctrl+A key arm (Rust decides select-vs-deselect). All three are forwarded
-    // through ViewerWindow to handlers/library.rs (mirrors the PR-2 seams above).
+    // ── SelectionToolbar seams (PR-4) ─────────────────────────────────────────
+    // `selection-count-text`/`select-all-label` are pre-composed in Rust; `select-all()`
+    // fires from BOTH the toolbar button and the Cmd/Ctrl+A key arm.
     in property <string> selection-count-text;
     in property <string> select-all-label;
     callback select-all();
-    // ── Delete seams (bulk-delete epic, PR-5) ─────────────────────────────────
-    // `delete-label` is the pre-composed destructive label from Rust (e.g.
-    // "Delete (3)…"); `has-selection` gates the toolbar DangerButton. Both fire
-    // the SAME `request-delete()` action: the toolbar button and the
-    // Delete/Backspace key arm below. Forwarded through ViewerWindow to handlers/library.rs
-    // (mirrors the PR-4 seams above), which opens the ConfirmDialog.
+    // ── Delete seams (PR-5) ───────────────────────────────────────────────────
+    // `delete-label` pre-composed in Rust; `has-selection` gates the DangerButton.
+    // `request-delete()` fires from the toolbar AND Delete/Backspace (opens ConfirmDialog).
     in property <string> delete-label;
     in property <bool> has-selection;
     callback request-delete();
@@ -426,35 +277,20 @@ export component Carousel inherits Rectangle {
     // FocusScope focus recovery (mirrors ViewerWindow's focus-pages() rule).
     public function focus-self() { fs.focus(); }
 
-    // ── Cover-flow geometry (local tunables; colors/spacing come from Theme) ──
-    // Covers are laid out centered on `flow-position` (the animated float that
-    // chases `focused-index`; see the cover-flow row); each cover's float
-    // distance from the visual center drives its position, scale, and opacity.
-    //
-    // RESPONSIVE (DESIGN.md "Responsive Behavior / Carousel"): the centered cover
-    // width tracks the live window width instead of a fixed 200px. It scales as a
-    // fraction of `root.width`, clamped to a usable band so it never collapses on
-    // a narrow window nor balloons on an ultra-wide one. The 7:10 manga aspect is
-    // preserved by deriving `cover-h` from `cover-w`. `cover-step` is recomputed
-    // from the live `cover-w` so neighbor spacing follows the centered size.
+    // ── Cover-flow geometry (local tunables; colors/spacing from Theme) ───────
+    // Covers center on `flow-position`; each cover's float distance drives position/scale/
+    // opacity. RESPONSIVE: cover-w tracks live window width (clamped); cover-h/step derive.
     private property <length> cover-w: Math.clamp(root.width * 0.26, 140px, 240px); // centered cover width (responsive)
     private property <length> cover-h: root.cover-w * 1.4;  // 7:10 manga cover aspect (280/200 = 1.4)
     private property <length> cover-margin: 4px;       // visible gap between two side (neighbor) covers
     private property <float> neighbor-scale: 0.618;    // side covers shrink to 1/φ (centered : neighbor = φ : 1)
     private property <float> neighbor-opacity: 0.45;   // DESIGN.md components.cover.sideOpacity
-    // Step between adjacent cover centers. Sized so two SIDE covers (each at
-    // `neighbor-scale`) clear each other by exactly `cover-margin` — that is the
-    // boundary the eye reads as "books overlapping" in the cover row. Step =
-    // one neighbor's full width + the gap. The centered cover is full-size, so it
-    // still overlaps its immediate neighbors and is drawn on top (z-order pass 2),
-    // preserving the cover-flow depth; only the side-to-side overlap is removed.
+    // Step between adjacent cover centers = one neighbor's full width + cover-margin,
+    // so side covers just clear each other; the full-size centered cover still overlaps.
     private property <length> cover-step: root.cover-w * root.neighbor-scale + root.cover-margin;
     private property <length> ring-width: 3px;         // DESIGN.md cover.focusOutline 3px
-    // Narrow-window breakpoint. Drives ONLY the SelectionToolbar's icon-only
-    // select-all collapse (DESIGN.md selectAllNarrowBreakpoint). The cover-flow
-    // itself renders every model item at every width: the former neighbor-drop
-    // (centered cover ± one at/below this threshold) was removed by user
-    // decision so loaded covers never vanish on resize or during moves.
+    // Narrow breakpoint. Drives ONLY the SelectionToolbar's icon-only select-all
+    // collapse; the cover-flow renders every item at every width (neighbor-drop removed).
     private property <length> narrow-threshold: 560px;
     private property <bool> narrow: root.width <= root.narrow-threshold;
 
@@ -468,22 +304,14 @@ export component Carousel inherits Rectangle {
     }
 
     // ── Keyboard seams ──────────────────────────────────────────────────────
-    // The carousel is the focused screen on the Library route, so it owns key
-    // input here. Left/Right move focus, Return opens the focused book, Down
-    // returns to the currently-open book. Up is a no-op in the Library: the
-    // carousel's FocusScope rejects it and no ancestor handles it. In the
-    // Viewer screen, ViewerWindow's own FocusScope catches Up and fires
-    // GoToLibrary.
+    // The carousel owns key input on the Library route. Up is a no-op here
+    // (FocusScope rejects it); the Viewer's own FocusScope catches Up → GoToLibrary.
     fs := FocusScope {
         key-pressed(event) => {
             // Suppress background navigation while a modal overlay is open.
             if (root.modal-open) { return reject; }
-            // ── Bulk-selection arms (PR-2). Placed AFTER the modal reject so
-            //    modals keep priority; the existing arms below are untouched.
-            //    Return deliberately stays "open" in BOTH modes (handled below).
-            // `x` enters selection mode (from normal) and toggles the focused book;
-            // in selection mode it just toggles. `Space` toggles only in selection
-            // mode (normal-mode Space falls through / rejects as before).
+            // Bulk-selection arms (PR-2), after the modal reject so modals keep priority.
+            // `x` enters selection mode + toggles; `Space` toggles only in selection mode.
             if (event.text == "x") {
                 root.selection-mode = true;
                 root.toggle-selection(root.focused-index);
@@ -493,34 +321,16 @@ export component Carousel inherits Rectangle {
                 root.toggle-selection(root.focused-index);
                 return accept;
             }
-            // Cmd/Ctrl+A — select/deselect all (selection mode only). The repo's
-            // FIRST modifier-key arm. One action, two triggers: this and the
-            // toolbar's Select-all button both fire root.select-all() (Rust decides
-            // select-vs-deselect). Verified against the vendored winit backend
-            // (i-slint-backend-winit-1.16.1/event_loop.rs to_slint_key): Slint's
-            // `event.text` is built from winit's logical key (Key::Character => the
-            // letter), NOT the control-character form, so Cmd/Ctrl+A delivers
-            // event.text == "a" (lowercase) here, never "\u{1}". On macOS Slint maps
-            // Cmd -> control and physical Ctrl -> meta (KeyboardModifiers doc), so
-            // testing BOTH control || meta catches Cmd+A on macOS, Ctrl+A on
-            // Windows/Linux, and physical Ctrl+A on macOS alike. Gated on
-            // selection-mode so normal-mode Cmd/Ctrl+A falls through (reject); a
-            // bare `a` (no modifier) never matches the modifier guard.
+            // Cmd/Ctrl+A — select/deselect all (selection mode only). Slint's event.text
+            // is the logical letter "a" (not "\u{1}"); on macOS Cmd->control, Ctrl->meta,
+            // so testing BOTH control || meta covers Cmd+A and Ctrl+A on every platform.
             if (root.selection-mode && (event.modifiers.control || event.modifiers.meta) && event.text == "a") {
                 root.select-all();
                 return accept;
             }
-            // Delete / Backspace — the destructive arm (selection mode only). One
-            // action, two triggers: this and the toolbar's DangerButton both fire
-            // root.request-delete(); Rust opens the ConfirmDialog. We `accept` even
-            // when nothing is selected (N=0): Rust no-ops on an empty set, and
-            // accepting unconditionally keeps the key swallowed inside selection
-            // mode rather than letting it leak to an ancestor handler. Both
-            // Key.Delete (forward delete) and Key.Backspace are bound because the
-            // two read identically as "remove the selected books" on the keyboards
-            // that lack the other; both exist in Slint 1.16.1's Key namespace
-            // (verified against the vendored i-slint-common key_codes.rs:
-            // U+007F => Delete, U+0008 => Backspace).
+            // Delete / Backspace — destructive arm (selection mode only); fires
+            // request-delete() (Rust opens the ConfirmDialog). `accept` even when N=0 so
+            // the key stays swallowed in selection mode. Both keys bound (keyboards vary).
             if (root.selection-mode && (event.text == Key.Delete || event.text == Key.Backspace)) {
                 root.request-delete();
                 return accept;
@@ -535,9 +345,8 @@ export component Carousel inherits Rectangle {
                 }
                 return reject;
             }
-            // `/` focuses the search field — but ONLY while the carousel owns
-            // focus. Once the search field has focus, `/` is ordinary text input
-            // (this FocusScope no longer receives the key).
+            // `/` focuses the search field, but ONLY while the carousel owns focus
+            // (once the field has focus, `/` is ordinary text input).
             if (event.text == "/") { root.focus-search(); return accept; }
             if (event.text == Key.LeftArrow) { root.move(-1); return accept; }
             if (event.text == Key.RightArrow) { root.move(1); return accept; }
@@ -546,27 +355,19 @@ export component Carousel inherits Rectangle {
             return reject;
         }
 
-          // ── Empty state (0 books in the LIBRARY): the picker call-to-action
-          //    (DESIGN.md "Empty Library"). Gated on the total book count, NOT on
-          //    the filtered `items` length, so an active search that hides every
-          //    book shows the no-results panel below instead of this add CTA. The
-          //    CTA button fires add-books() via a TouchArea (wired in PR-L) and
-          //    restores keyboard focus to the carousel. ─────────────────────────
+          // Empty state (0 books in the LIBRARY): the picker CTA. Gated on the TOTAL
+          // book count, NOT filtered `items`, so a no-match search shows no-results below.
           if root.library-book-count == 0 : EmptyStatePanel {
-              // Fluid panel width (DESIGN.md "Responsive Behavior"): clamp to the
-              // carousel width so it never clips on a narrow window nor stretches
-              // too wide. Centered via absolute x/y (this slot is not a layout).
+              // Fluid panel width: clamp to the carousel width (never clips/stretches).
+              // Centered via absolute x/y (this slot is not a layout).
               width: Math.clamp(parent.width - 2 * Theme.space-xl, 280px, 360px);
               x: Theme.snap((parent.width - self.width) / 2);
               y: Theme.snap((parent.height - self.height) / 2);
               title: Strings.carousel-empty-title;
               subtitle: Strings.carousel-empty-subtitle;
               panel-height: 200px;
-              // CTA button: fires add-books() on click and restores keyboard
-              // focus to the carousel. The hand-built accent Rectangle was
-              // replaced by the shared PrimaryButton (DESIGN.md
-              // components.button-primary): same accent background, same label
-              // wording, same Theme.radius-md corners, ≥32px hit area.
+              // CTA button (shared PrimaryButton): fires add-books() and restores
+              // keyboard focus to the carousel.
               HorizontalLayout {
                   alignment: center;
                   PrimaryButton {
@@ -580,10 +381,8 @@ export component Carousel inherits Rectangle {
               }
           }
 
-          // ── No-results state (library has books, filter matches none) ────────
-          // Distinct from the empty-library CTA above: there ARE books, the
-          // active search just hides them all. NO add CTA here — only guidance to
-          // adjust the query. Uses Theme.* color tokens only.
+          // No-results state (library has books, filter matches none). Distinct from
+          // the empty-library CTA: NO add CTA here, only guidance to adjust the query.
           if root.library-book-count > 0 && root.items.length == 0 : EmptyStatePanel {
               width: Math.clamp(parent.width - 2 * Theme.space-xl, 280px, 360px);
               x: Theme.snap((parent.width - self.width) / 2);
@@ -593,26 +392,12 @@ export component Carousel inherits Rectangle {
               panel-height: 160px;
           }
 
-          // ── Two-finger horizontal swipe → one-step book move ──────────────
-          // Trackpad horizontal scroll (delta-x) steps the focus by one book,
-          // reusing the SAME move(±1) the Left/Right keys fire. Discrete by
-          // design (matches the codebase's keyboard-first model): accumulate
-          // delta-x, and once |accum| crosses `swipe-threshold` fire ONE move,
-          // then a cooldown Timer swallows the macOS momentum-phase tail so one
-          // flick never flies through several books. This TouchArea is the
-          // ANCESTOR of the cover + step-zone TouchAreas: neither has a
-          // scroll-event handler, so scroll events fall through to this ancestor
-          // while pointer clicks are still absorbed front-to-back by the
-          // cover/zone, so this wrapper never steals a tap.
-          //
-          // GATED on `items.length > 0`: with zero visible books there is
-          // nothing to swipe through, AND this full-size TouchArea is declared
-          // AFTER (paints ABOVE) the empty-state / no-results panels — so left
-          // ungated it would block clicks on the empty-state "add books" CTA
-          // behind it (a TouchArea absorbs pointer events even with no `clicked`
-          // arm; the cover/zone children that normally take the tap don't exist
-          // when the library is empty). The gate matches the cover-flow row's,
-          // which is now this TouchArea's only child.
+          // Two-finger horizontal swipe → one-step move, reusing the Left/Right move(±1).
+          // Accumulate delta-x; on crossing `swipe-threshold` fire ONE move, then a
+          // cooldown Timer swallows the macOS momentum tail so one flick == one book.
+          // Ancestor of the cover/step-zone TouchAreas (scroll falls through; taps don't).
+          // GATED on `items.length > 0`: it paints ABOVE the empty-state panels, so
+          // ungated it would block the empty-state "add books" CTA behind it.
           if root.items.length > 0 : TouchArea {
               width: 100%;
               height: 100%;
@@ -647,9 +432,8 @@ export component Carousel inherits Rectangle {
                   return accept;
               }
 
-          // ── Cover-flow row (>= 1 book) ───────────────────────────────────────
-          // The parent swipe TouchArea is already gated on `items.length > 0`,
-          // so this row exists only when there is at least one visible book.
+          // Cover-flow row (>= 1 book): the parent swipe TouchArea is already gated
+          // on `items.length > 0`, so this row exists only with a visible book.
           Rectangle {
               width: 100%;
               height: 100%;
@@ -658,19 +442,11 @@ export component Carousel inherits Rectangle {
               // below). Covers are centered horizontally on flow-position.
               property <length> row-cy: parent.height / 2 - 28px;
 
-              // ── Animation altitude: ONE animated scalar drives the whole row ──
-              // `flow-position` chases `focused-index` (int -> float binding) on
-              // the cinematic curve, and ALL card geometry derives from it as pure
-              // bindings (see CoverCard) — no per-card animations. A retarget
-              // mid-flight continues from the CURRENT animated value, so rapid
-              // Left/Right input keeps the row moving as one coherent band instead
-              // of leaving the center slot empty while N per-card timers restart.
-              // The card at Math.round(flow-position) is the VISUAL center: pass-2
-              // z-order, the accent ring, and the card shadow hand off card-by-card
-              // during a sweep, while `focused-index` stays the LOGICAL truth (the
-              // Return target and the meta block below). The easing never
-              // overshoots (control-point y's within [0, 1]), so the round can
-              // never land outside the Rust-clamped index range.
+              // Animation altitude: ONE animated scalar (`flow-position`) drives the row;
+              // all card geometry derives from it as pure bindings (no per-card animation),
+              // so a mid-flight retarget keeps the row coherent. `Math.round(flow-position)`
+              // is the VISUAL center (ring/shadow/pass-2); `focused-index` stays the LOGICAL
+              // truth. Easing never overshoots ([0,1] control points), so round stays in range.
               property <float> flow-position: root.focused-index;
               animate flow-position {
                   duration: Theme.motion-cinematic;
@@ -680,11 +456,8 @@ export component Carousel inherits Rectangle {
               // Math.round so the three pass bindings below cannot drift apart.
               property <int> visual-center: Math.round(self.flow-position);
 
-              // ── Cover-flow z-order: two passes (Slint 1.16.1 has no per-item z) ─
-              // Pass 1: backing layer, every book always visible (gap-toothed-bug fix).
-              // Pass 2: the CENTERED card (round(flow-position)) redrawn on top;
-              // shadow painted there only (elevated default).
-              // See CoverCard header for full rationale.
+              // Cover-flow z-order: two passes (Slint 1.16.1 has no per-item z). Pass 1 =
+              // backing layer (every book); pass 2 = centered card on top. See CoverCard header.
               for item[idx] in root.items : CoverCard {
                   show: true;
                   elevated: false;
@@ -706,19 +479,12 @@ export component Carousel inherits Rectangle {
                   bookmarked: item.bookmarked;
                   cover-failed: item.cover-failed;
                   cover-loaded: item.cover-loaded;
-                  // PR-2: ONLY the always-on pass-1 backing copy is click-interactive,
-                  // so each cover (including the centered one, whose pass-2 copy below
-                  // sets interactive:false) fires its TouchArea exactly once.
+                  // PR-2: ONLY the pass-1 backing copy is click-interactive, so each cover
+                  // (incl. the centered one, pass-2 = interactive:false) fires exactly once.
                   interactive: true;
                   clicked => { root.cover-clicked(idx); }
-                  // Double-click opens the book, via the SAME `open(int)` path as
-                  // Return (Rust resolves the visible index and enters the
-                  // viewer). In NORMAL mode the step zones above intercept every
-                  // side click, so this arm is only reachable on the CENTER strip
-                  // — the visually centered cover. Gated off in selection mode:
-                  // the two preceding `clicked` events have already toggled the
-                  // book twice (net no-op), and opening would yank the user out
-                  // of an in-progress selection.
+                  // Double-click opens via the SAME `open(int)` as Return; only reachable on
+                  // the CENTER strip. Gated off in selection mode (else it yanks you out mid-select).
                   double-clicked => { if (!root.selection-mode) { root.open(idx); } }
               }
               // Pass 2: centered card only, on top (elevated: true default → shadow painted once).
@@ -743,28 +509,16 @@ export component Carousel inherits Rectangle {
                   bookmarked: item.bookmarked;
                   cover-failed: item.cover-failed;
                   cover-loaded: item.cover-loaded;
-                  // PR-2: the pass-2 TOP copy of the centered card is NON-interactive
-                  // so the centered cover does not double-fire — its click is handled
-                  // by the pass-1 backing copy above (which is always shown).
+                  // PR-2: the pass-2 top copy is NON-interactive so the centered cover
+                  // doesn't double-fire — its click is handled by the pass-1 backing copy.
                   interactive: false;
               }
 
-              // ── Left/Right one-step zones (normal mode only) ──────────────────
-              // Everything OUTSIDE the centered cover's non-overlapped strip (the
-              // cover-step-wide tile around the row center) steps the focus by
-              // exactly ONE book toward the clicked side, via the SAME frozen
-              // move(int) the Left/Right keys use (Rust clamps). Declared AFTER
-              // both card passes so they hit-test ABOVE the per-card TouchAreas
-              // (the meta block below is Text-only and never hit-tests): with
-              // every cover always visible, the former jump-to-clicked focus
-              // skipped several books per side click. The zones wire NO double-clicked arm,
-              // so rapid side-clicking can never compose into an accidental open
-              // (patterns.md "double-clicked fires IN ADDITION"). `enabled:
-              // !root.selection-mode` makes them pointer-transparent in selection
-              // mode (a disabled TouchArea ignores input — vendored input_items.rs),
-              // so selection clicks keep toggling the CLICKED book. The center
-              // strip stays a GAP between the zones: the centered cover's own
-              // TouchArea still handles focus and double-click-to-open there.
+              // Left/Right one-step zones (normal mode only): everything outside the
+              // centered cover's strip steps focus one book via the frozen move(int).
+              // Declared AFTER both passes so they hit-test ABOVE the per-card TouchAreas.
+              // NO double-clicked arm (else rapid side-clicks compose an accidental open);
+              // `enabled: !selection-mode` makes them pointer-transparent while selecting.
               TouchArea {
                   enabled: !root.selection-mode;
                   x: 0;
@@ -799,10 +553,8 @@ export component Carousel inherits Rectangle {
                       overflow: elide;
                   }
                   Text {
-                      // 1-based "current / total". `total` is 0 only until the cover
-                      // controller resolves the page count in the background (or the
-                      // book is opened); once resolved it is persisted and shows the
-                      // real count, so this no longer reads "1 / 0" for a fresh book.
+                      // 1-based "current / total". `total` is 0 only until the cover controller
+                      // resolves the page count (then persisted), so a fresh book won't read "1 / 0".
                       text: root.items[root.focused-index].current + " / " + root.items[root.focused-index].total;
                       color: Theme.text-muted;
                       font-size: Theme.font-label;
@@ -814,12 +566,9 @@ export component Carousel inherits Rectangle {
 
     }
 
-    // ── Top glass-pill nav (#83): centered, icon-only twin capsules. ──────────
-    // Drawn LAST so it paints on top of the cover-flow (Slint has no per-item z;
-    // paint order == declaration order). Kept OUTSIDE the FocusScope: it is mouse +
-    // screen-reader oriented, and keyboard navigation stays owned by the carousel.
-    // Clicking an item fires the existing rfd picker callback, then restores
-    // keyboard focus to the carousel (preserving the old toolbar behavior).
+    // ── Top glass-pill nav (issue 83) ─────────────────────────────────────────
+    // Drawn LAST so it paints on top (paint order == declaration order). Kept
+    // OUTSIDE the FocusScope; clicks fire the rfd picker then restore carousel focus.
     nav := NavBar {
         x: (parent.width - self.width) / 2;
         y: Theme.space-md;
@@ -837,19 +586,11 @@ export component Carousel inherits Rectangle {
         // glyph (same affordance, same asset) by user decision.
         bookmark-icon: @image-url("assets/bookmark.svg");
         selection-active: root.selection-mode;
-        // Parity with the former pill's gate: `items` is the VISIBLE projection, so
-        // under a no-results search the capsule faints exactly as the pill used to
-        // hide — a Select affordance over an empty library / no-results panel is
-        // noise. Deliberate divergence: we do NOT fold `!modal-open` in here. Like
-        // the sibling add/settings capsules, the modal backdrop absorber already
-        // blocks input; folding a modal flag in would flicker the capsule faint
-        // under the scrim.
+        // `items` is the VISIBLE projection, so the capsule faints under a no-results search.
+        // Deliberately does NOT fold `!modal-open` in (would flicker the capsule under the scrim).
         select-enabled: root.items.length > 0;
-        // Toggle the bulk-selection mode. The exit arm reproduces the Esc arm and
-        // the toolbar's `exit` EXACTLY: clear the local flag, then fire
-        // exit-selection() so Rust clears the selection set. The enter arm mirrors
-        // the former pill — enter the mode ONLY; do NOT toggle the focused book
-        // (that is the `x` key's job).
+        // Toggle bulk-selection mode. Exit clears the flag then fires exit-selection()
+        // (Rust clears the set). Enter enters the mode ONLY — it does NOT toggle (that's `x`).
         toggle-selection => {
             if (root.selection-mode) {
                 root.selection-mode = false;
@@ -858,54 +599,26 @@ export component Carousel inherits Rectangle {
                 root.selection-mode = true;
             }
         }
-        // §2.6: recede the NavBar behind the foreground SelectionToolbar. Bound to
-        // the SAME condition that slides the toolbar in (`selection-mode &&
-        // !modal-open`), so the veil fades in the same beat as the bar transition.
-        // The recede is purely a translucent veil (NO TouchArea) — the search
-        // field and every nav capsule stay fully usable while receded
-        // (selection-orthogonal). The veil's `animate background` (motion-fast)
-        // matches the strip's `animate y`, so both land together.
+        // Recede the NavBar behind the SelectionToolbar, bound to the same condition that
+        // slides the toolbar in. Purely a translucent veil (NO TouchArea), so capsules stay usable.
         receded: root.selection-mode && !root.modal-open;
         search-changed(q) => { root.search-changed(q); }
         search-exit => { root.focus-self(); }
         add-books => { root.add-books(); root.focus-self(); }
         add-folder => { root.add-folder(); root.focus-self(); }
         settings => { root.settings(); }
-        // Follow the `settings` forwarding style — NO root.focus-self(): the
-        // bookmark-present path opens a book and navigates to the Viewer (carousel
-        // focus is moot), and the no-bookmark path only pushes a status notice
-        // while the carousel FocusScope keeps owning key input. A refocus here
-        // would be a no-op at best and a focus-yank at worst.
+        // NO root.focus-self() here: the bookmark path navigates to the Viewer (focus
+        // moot), the no-bookmark path keeps carousel focus — a refocus would yank it.
         continue-reading => { root.continue-reading(); }
     }
 
-    // ── Bulk-selection chrome (§2.6): a clipped slide-strip below the NavBar ───
-    // Declared AFTER `nav := NavBar` (same paint-order / outside-FocusScope
-    // rationale as the NavBar above): mouse + screen-reader oriented, drawn on
-    // top of the cover-flow, and kept OUT of the keyboard focus chain so the
-    // carousel FocusScope keeps owning key input.
-    //
-    // The strip now hosts ONLY the SelectionToolbar: it slides DOWN into view in
-    // selection mode and UP out of view otherwise, inside this `clip: true` strip,
-    // on `y` between 0 (visible) and -height (tucked up under the NavBar, clipped
-    // away). The Select ENTRY no longer lives here — it is a toggle capsule INSIDE
-    // the NavBar (§3.2-4). NO `opacity` is used anywhere (HiDPI child-blur gotcha,
-    // docs/patterns.md — hard repo rule); the reveal is pure geometry plus the
-    // NavBar's own recede veil.
-    //
-    // STRIP HEIGHT — fixed at `Theme.nav-pill-height` (the SelectionToolbar root's
-    // own height). The FIXED height is deliberate: the strip reserves the same band
-    // in both modes, so the cover-flow content below never jumps when the mode
-    // flips, and the toolbar slides a FULL strip height to clear the clip edge
-    // cleanly. Anchored just below the NavBar via `nav.y`/`nav.height`.
-    //
-    // INPUT GUARD (belt-and-braces): a slid-away bar is clipped out of view but its
-    // TouchAreas could still hit-test if clipping leaks, so the slid-out toolbar is
-    // also disabled. The SelectionToolbar takes an `active` flag ANDed into every
-    // TouchArea/a11y action; that term matches the bar's own visible condition and
-    // folds in `!modal-open` (mirroring the FocusScope's modal reject guard) so a
-    // settings/guide/shortcuts modal suppresses the toolbar's pointer targets even
-    // mid-slide.
+    // ── Bulk-selection chrome: a clipped slide-strip below the NavBar ─────────
+    // Hosts ONLY the SelectionToolbar (slides on `y` inside `clip: true`). Kept OUT
+    // of the focus chain. NO `opacity` anywhere (HiDPI child-blur gotcha, patterns.md
+    // — hard repo rule); reveal is pure geometry. FIXED height so the cover-flow below
+    // never jumps on toggle. INPUT GUARD: the slid-out toolbar is also disabled via
+    // `active` (clipping can leak); `active` folds in `!modal-open` so a modal suppresses
+    // its pointer targets mid-slide.
     slide-strip := Rectangle {
         x: 0;
         y: nav.y + nav.height + Theme.nav-item-gap;
@@ -917,17 +630,11 @@ export component Carousel inherits Rectangle {
         // recede binding above, so the recede and the slide animate in the same beat.
         property <bool> toolbar-shown: root.selection-mode && !root.modal-open;
 
-        // SelectionToolbar — slides DOWN into view in selection mode and UP out of
-        // view otherwise. `exit` reproduces the Esc arm EXACTLY: clear the local
-        // mode flag and fire exit-selection().
-        //
-        // The toolbar is wrapped in a full-width CENTERING layout, not positioned
-        // with an x formula: the toolbar's content-hug width only resolves when it
-        // is a LAYOUT CHILD — absolutely positioned, it defaults to the PARENT's
-        // width and the glass bar spanned the whole window (docs/patterns.md "An
-        // element placed OUTSIDE a layout…"). Keeping that wrapper is what preserves
-        // the measured-width centering through the slide. The wrapper itself slides
-        // on `y`; `alignment: center` packs the toolbar at its preferred width.
+        // SelectionToolbar slides DOWN in selection mode, UP otherwise. `exit`
+        // reproduces the Esc arm. Wrapped in a full-width CENTERING layout (not an x
+        // formula): content-hug width only resolves as a LAYOUT CHILD — absolutely
+        // positioned it defaults to the parent's width and spans the whole window
+        // (patterns.md "An element placed OUTSIDE a layout…").
         toolbar-wrap := HorizontalLayout {
             x: 0;
             width: 100%;

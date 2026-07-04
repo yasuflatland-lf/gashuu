@@ -100,9 +100,8 @@ pub(crate) struct OpenBookUseCase {
 }
 
 impl OpenBookUseCase {
-    // Nine explicit collaborators (the #151 explicit-handle policy: named
-    // params, not an AppState bundle). `selection` + `localizer` were added so
-    // `run` can delegate the open-time rebuild to `refresh_library_carousel`.
+    // Nine explicit collaborators (#151 explicit-handle policy: named params, not an
+    // AppState bundle), which is why too_many_arguments is allowed below.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         state: Rc<RefCell<ViewerState>>,
@@ -141,11 +140,8 @@ impl OpenBookUseCase {
     /// ([`SkippedDetail::None`] for folders, [`SkippedDetail::Archive`] for
     /// archives), not passed by the caller.
     pub(crate) fn run(&self, ui: &ViewerWindow, path: &Path) -> OpenOutcome {
-        // Alias the fields so the moved body reads identically at its call
-        // sites. In the old free fn `thumbs`/`covers` were `&ThumbnailController`
-        // / `&CoverController`; here they are `&Rc<ThumbnailController>` /
-        // `&Rc<CoverController>`. `.start()` resolves through the extra `Rc`
-        // `Deref` transparently, so no statement in the body needed changing.
+        // Alias the fields so the moved body reads identically. These are now
+        // `&Rc<…>` not `&…`; `.start()` resolves through the extra `Rc` `Deref`.
         let state = &self.state;
         let settings = &self.settings;
         let viewport = &self.viewport;
@@ -153,15 +149,11 @@ impl OpenBookUseCase {
         let thumbs = &self.thumbs;
         let covers = &self.covers;
 
-        // Write back the position for the book that is currently open (if any)
-        // before we replace the source. `open_file()` is None when no book was
-        // open, so write_back_position is a no-op in that case.
+        // Write back the current book's position before we replace the source.
+        // `open_file()` is None when no book is open, so this is a no-op then.
         write_back_position(state, library);
-        // Also capture the OUTGOING book's runtime view modes into its per-book
-        // override before the source is replaced, so a bare D/R/C/fit toggle
-        // persists even when the settings dialog was never opened. No-op when no
-        // book is open. View-mode routing goes through `persist_view_modes`
-        // (ADR-0007 clobber-trap); `settings` is unread on this per-book route.
+        // Capture the OUTGOING book's view modes before the source is replaced, so a
+        // bare D/R/C/fit toggle persists without the settings dialog (ADR-0007 clobber-trap).
         persist_view_modes(
             ViewModeRoute::OpenDifferentBook,
             state,
@@ -169,18 +161,12 @@ impl OpenBookUseCase {
             settings,
             library,
         );
-        // Bind the result first so the `state.borrow_mut()` temporary drops before the
-        // `Ok` arm reads `state` again (a borrow held across the match would
-        // double-borrow-panic at the `canonical = state.borrow().open_file()...` read
-        // below).
+        // Bind the result first so the `borrow_mut()` temporary drops before the match;
+        // a borrow held across the match would double-borrow-panic at the read below.
         let policy = settings.borrow().archive_policy();
         let opened = state.borrow_mut().open_folder_with_policy(path, policy);
-        // Discriminate the open result only — the recents push + settings save are
-        // DEFERRED until after the empty-book check below, so a zero-page source
-        // pushes nothing to recents and triggers no settings save (the spec pins
-        // these side effects as bypassed for an empty book). For a non-empty book
-        // the deferred save runs at the original point in the flow, preserving the
-        // exact behavior (and the AFTER-refresh surfacing of its outcome).
+        // Discriminate the open result only — recents push + settings save are DEFERRED
+        // past the empty-book check so a zero-page source bypasses them (spec-pinned).
         match opened {
             Ok(()) => {
                 tracing::info!(path = %path.display(), "opened source");
@@ -190,33 +176,18 @@ impl OpenBookUseCase {
                 return OpenOutcome::Error(format!("{e}"));
             }
         }
-        // The CANONICAL key the source was opened under (read from `open_file`),
-        // not the raw dialog `path`, which may be a non-canonical dialog path. It is
-        // the same key `last_page`/`set_page_count`/`write_back_position` use. The
-        // `state.borrow()` `Ref` drops at the `;`.
+        // The CANONICAL key the source was opened under (from `open_file`), not the raw
+        // dialog `path` — the same key `last_page`/`set_page_count`/write-back use.
         let canonical = state.borrow().open_file().map(Path::to_path_buf);
         // `page_count_opt()` returns a `Copy` `Option<NonZeroUsize>`; the `state.borrow()` drops at the
         // `;` so it cannot conflict with the `library.borrow_mut()` below.
         let page_count = state.borrow().page_count_opt();
-        // Reject an empty book: the source opened cleanly but has zero pages, so it
-        // must NOT be entered in the viewer. Bail out HERE, before `register_opened`,
-        // so the bypassed side effects pinned by the spec never run — no recents
-        // push, no settings save (deferred below), no `register_opened`, no per-book
-        // view resolve, no library-save-on-open, no carousel rebuild, no thumbnail
-        // start. The cover purge now happens HERE too, inside `remove_empty_book`
-        // (deliberate Wave-2 #150 change). When `canonical` is None we cannot
-        // identify the book, so we keep the existing behavior and fall through to the
-        // warning branch below.
-        //
-        // Reviewer note: `ViewerState` still holds this empty source after the
-        // bail-out; that is inert (page_count == 0, the viewer is never shown) and
-        // the next successful open replaces it — by design, with no restore machinery.
+        // Reject an empty book: bail HERE, before `register_opened`, so spec-pinned side
+        // effects bypass (cover purge in `remove_empty_book`, #150); source left inert by design.
         if page_count.is_none() {
             if let Some(c) = canonical.as_deref() {
-                // The shared transaction: title capture → remove → save → cover
-                // purge. Wave-2 #150 DELIBERATELY added the purge here — the old
-                // "purge only in the cover-load path" asymmetry left a removed
-                // book's cached cover as unreachable garbage.
+                // Shared transaction: title capture → remove → save → cover purge. #150
+                // added the purge here; the old cover-load-only asymmetry orphaned cached covers.
                 let removal = remove_empty_book(library, c);
                 return OpenOutcome::EmptyBookRemoved {
                     title: removal.title,
@@ -225,17 +196,8 @@ impl OpenBookUseCase {
                 };
             }
         }
-        // The non-empty path resumes here. Run the DEFERRED recents push + settings
-        // save now that we know the book has pages — this is the same persistence
-        // the open-Ok arm used to do inline, moved past the empty-book bail-out so it
-        // is bypassed for a zero-page source. Behavior for a non-empty book is
-        // unchanged: `None` when recents tracking is off, `Some(result)` otherwise,
-        // surfaced AFTER refresh (composing onto the status line). We intentionally
-        // do NOT reconcile the runtime view modes into Settings here — the runtime
-        // currently holds the just-opened/outgoing book's per-book modes, not the
-        // global defaults; global view modes change only via the Library settings
-        // dialog and the no-book-open exit path. This save writes the recents list +
-        // cache/preload/track plus the UNCHANGED global view-mode fields.
+        // Non-empty path: run the DEFERRED recents push + settings save now (bypassed for
+        // zero-page). Does NOT reconcile runtime view modes into Settings (per-book, not global).
         let settings_save: Option<Result<(), CoreError>> = {
             let mut s = settings.borrow_mut();
             if s.track_recent_files {
@@ -249,17 +211,8 @@ impl OpenBookUseCase {
                 None
             }
         };
-        // `register_opened` performs the idempotent add, the page-count back-fill,
-        // and the resume lookup as one domain rule. The unknown total is carried by
-        // the type END-TO-END: `page_count_opt()` produced the `Option<NonZeroUsize>`
-        // at the read boundary, so there is no wrapping at this call site. A
-        // zero-page open never reaches here (the empty-book bail-out above returned
-        // for `None`), so `page_count` is always `Some(…)` in practice; the type
-        // keeps the contract honest without a `> 0` guard / `debug_assert` here.
-        // Borrow discipline: it holds `library.borrow_mut()` only for the
-        // `let reg = ...` line (released at its `;`, before the `jump_to` below);
-        // `state.borrow_mut().jump_to(...)` is a separate statement on a distinct
-        // `RefCell`.
+        // `register_opened` = idempotent add + back-fill + resume lookup; its `borrow_mut`
+        // is confined to the `let reg` line and released before `jump_to`, avoiding a clash.
         let count_changed = if let Some(c) = canonical.as_deref() {
             let reg = library.borrow_mut().register_opened(c, page_count);
             // Resume at the recorded position; for a never-read book `reached` is 0
@@ -267,24 +220,16 @@ impl OpenBookUseCase {
             state.borrow_mut().jump_to(reg.resume.reached());
             reg.count_changed
         } else {
-            // Unreachable in practice: a successful open always sets `open_file`.
-            // Log if the invariant ever breaks so the book-not-registered failure
-            // (no saved reading position) is debuggable instead of silent.
+            // Unreachable in practice: a successful open always sets `open_file`. Log if
+            // the invariant breaks so the book-not-registered failure isn't silent.
             tracing::warn!(
                 path = %path.display(),
                 "open_file was None after a successful open; book not registered in library"
             );
             false
         };
-        // Resolve THIS book's per-book override against the global defaults and
-        // apply it to the runtime BEFORE the first refresh, so the book opens with
-        // its own modes (empty override => the global defaults). This runs after
-        // `jump_to` above, so the resumed page is then re-anchored to a valid
-        // spread leading for the applied spread/cover modes.
-        //
-        // Borrow discipline: the `library`/`settings` shared borrows are confined
-        // to the block expression and drop at its `}`; `resolved` is `Copy`, so the
-        // `state`/`viewport` `borrow_mut()`s below hold no other borrow.
+        // Resolve this book's per-book override (empty => globals) and apply it BEFORE the
+        // first refresh, after `jump_to`, so the resumed page re-anchors to a valid leading.
         let resolved = {
             let overrides = canonical
                 .as_deref()
@@ -294,39 +239,16 @@ impl OpenBookUseCase {
         };
         state.borrow_mut().apply_resolved_view(resolved);
         viewport.borrow_mut().set_fit(resolved.fit_mode);
-        // Persist the newly registered book (and any back-filled page count) so
-        // the library shelf stays consistent even if the app exits before the
-        // next leave point. This is a SYNCHRONOUS save on the UI thread, exactly
-        // like every other leave point (position / view-override write-back,
-        // empty-book removal, bulk remove). It MUST stay synchronous: a detached
-        // background write could land AFTER a later synchronous save and revert
-        // the reading position or drop a just-added book. Serializing here keeps
-        // the open-time write strictly ordered with respect to those saves. A
-        // save error is logged, never panics. Borrow discipline:
-        // `register_opened`'s borrow_mut dropped at its `;`; this is a fresh,
-        // short-lived borrow that drops at the end of this statement.
+        // Persist the registered book + back-filled page count; this MUST stay a SYNCHRONOUS
+        // save, else a detached write could land after a later save and revert position/drop book.
         if let Err(e) = library.borrow().save() {
             tracing::error!(error = %e, "failed to save library on open");
         }
-        // When the stored page count was just back-filled/updated, rebuild the
-        // carousel model so the home screen reflects the real total/progress when
-        // the user returns to the library. Preserve the ACTIVE filter: recompute
-        // the shared search state and rebuild from its visible indices (not the
-        // full library), so an open-time backfill never resurrects filtered-out
-        // books. The carousel's focused index is a separate Slint property and is
-        // intentionally NOT reset here — this is a page-count refresh, not a filter
-        // update. The `library.borrow()` drops before `covers.start`'s `borrow_mut`.
+        // On a page-count back-fill, rebuild the carousel preserving the ACTIVE filter (from
+        // visible indices, no resurrecting filtered-out books); focused index NOT reset here.
         if count_changed {
-            // Route the open-time rebuild through the SAME carousel chokepoint as
-            // the boot/query/add paths so it can't drift from them: it refreshes the
-            // library count + idle-strip label, re-applies the path-keyed bulk
-            // selection over the rebuilt rows, re-pushes the selection-toolbar
-            // strings, and dispatches covers focus-first — all of which the old
-            // open-coded rebuild silently dropped.
-            //
-            // The chokepoint READS `visible_indices()` but does NOT recompute, so
-            // recompute the active filter here first, under a borrow that drops
-            // before `refresh_library_carousel` takes its own `library` borrows.
+            // Route through the SAME carousel chokepoint as boot/query/add so it can't drift.
+            // It reads `visible_indices()` but doesn't recompute, so recompute the filter first.
             {
                 let lib = library.borrow();
                 self.search.borrow_mut().recompute(&lib);
@@ -358,11 +280,8 @@ impl OpenBookUseCase {
         } else {
             SkippedDetail::Archive
         };
-        // The on-open library save above is synchronous but best-effort: its
-        // result is only logged (like every other leave-point save) and is not
-        // surfaced in the open notices, and the same content is re-saved at the
-        // next leave point — so pass `Ok` for the library-save slot. The settings
-        // save above stays synchronous and is still surfaced.
+        // The on-open library save is best-effort (logged, re-saved at the next leave
+        // point), so pass `Ok` for the library-save slot; the settings save is surfaced.
         OpenOutcome::Success(notices_content(
             skipped,
             skipped_detail,
@@ -422,9 +341,8 @@ pub(crate) fn book_display_title(lib: &Library, path: &Path) -> String {
 pub(crate) fn remove_empty_book(library: &RefCell<Library>, path: &Path) -> EmptyBookRemoval {
     // The `borrow_mut` is confined to this statement and drops at the `;`.
     let removal = remove_empty_book_with(&mut library.borrow_mut(), path, |l| l.save());
-    // Best-effort purge, OUTSIDE the seam so the transaction logic stays
-    // headless-testable. mtime drift / missing file is expected and only
-    // warned inside `purge_cover`; cache-construction failure skips it.
+    // Best-effort purge OUTSIDE the seam so the transaction stays headless-testable.
+    // mtime drift / missing file is expected (only warned); cache-construction failure skips it.
     if removal.removed {
         match ThumbnailCache::new() {
             Ok(cache) => purge_cover(&cache, path),
@@ -573,23 +491,15 @@ mod tests {
 
     #[test]
     fn synchronous_open_save_is_visible_on_disk_before_returning() {
-        // Regression guard for #360: the open-time library save was a detached
-        // `std::thread::spawn`, so a slow open-time write could land AFTER a
-        // later synchronous leave-point save and revert the reading position or
-        // drop a just-added book. The fix makes it a SYNCHRONOUS `Library::save`
-        // on the UI thread (via `save_to` under the hood). This exercises that
-        // exact contract on a temp path (the production call targets the OS data
-        // path, which has no test seam): after `register_opened` records a book +
-        // its back-filled page count, a synchronous save is IMMEDIATELY reflected
-        // on disk by a subsequent read — no thread-join, no race window.
+        // Regression guard for #360: the open-time save was a detached `thread::spawn`,
+        // so a slow write could land after a later save and revert position/drop a book.
         let dir = tempfile::tempdir().expect("tempdir");
         let store = dir.path().join("library.json");
 
         let mut lib = Library::new();
         let book = PathBuf::from("/manga/Just Opened Vol.cbz");
-        // Mirror the open path: register the book with a known page count, then
-        // save synchronously (the production `library.borrow().save()` is
-        // `save_to(data_path())`).
+        // Mirror the open path: register with a known page count, then save synchronously
+        // (production `library.borrow().save()` is `save_to(data_path())`).
         lib.register_opened(&book, std::num::NonZeroUsize::new(42));
         lib.save_to(&store).expect("synchronous save must succeed");
 

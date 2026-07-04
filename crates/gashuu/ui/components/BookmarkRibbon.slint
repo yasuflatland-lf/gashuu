@@ -1,25 +1,5 @@
-// BookmarkRibbon — the "continue reading" signifier overlaid on a library cover.
-//
-// Renders the bookmark SVG in Theme.text (white on the dark stage) — a quiet,
-// NON-INTERACTIVE status marker.  White is deliberately borrowed from the
-// typography token ladder; if the ribbon ever needs its own hue, the colorize
-// line below is the re-mint point.  The accent hue is reserved for interactive
-// elements only (DESIGN.md color semantics).  No background disc.  The single
-// `Image` element provides both the visual shape and the accessible label; it
-// does NOT enter the keyboard focus chain (no FocusScope, no TouchArea, no
-// focusable element).
-//
-// Sizing uses Theme.* length tokens only: the glyph is Theme.space-huge across —
-// same scale as SelectionBadge's disc — matching the approved design where the
-// ribbon is a comparable-scale affordance.
-//
-// Positioning (x/y) is the consumer's job: the consumer (Carousel) floats this
-// atom fully above the cover's top edge (a φ²-derived clearance, see Carousel) —
-// over the dark stage gradient, which guarantees contrast regardless of cover
-// art.
-//
-// Colors / lengths come from Theme.* only — NO inline brand hex (DESIGN.md
-// rule 2; scripts/check-tokens.sh enforces this). Theme lives one directory up.
+// BookmarkRibbon — a quiet, NON-INTERACTIVE "continue reading" cover signifier. White,
+// since accent is reserved for interactive; the consumer (Carousel) owns positioning.
 import { Theme } from "../Theme.slint";
 import { Strings } from "../Strings.slint";
 
@@ -30,10 +10,8 @@ export component BookmarkRibbon inherits Image {
     image-fit: contain;
     colorize: Theme.text;
 
-    // ── Accessibility ─────────────────────────────────────────────────────────
-    // `image` is the semantically correct non-interactive, non-focusable role
-    // for a pure visual signifier rendered from SVG; the label below supplies
-    // the meaning for assistive technology.
+    // Accessibility: `image` is the correct non-interactive, non-focusable role for a
+    // pure visual signifier; the label below supplies the meaning for assistive tech.
     accessible-role: image;
     accessible-label: Strings.continue-reading;
 }

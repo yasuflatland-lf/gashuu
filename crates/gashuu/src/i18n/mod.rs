@@ -18,9 +18,8 @@ use i18n_embed::fluent::{fluent_language_loader, FluentLanguageLoader};
 use i18n_embed::LanguageLoader as _;
 use i18n_embed_fl::fl;
 use loader::{langid_for, Localizations};
-// `ComponentHandle` must be in scope to call `.global::<T>()` on a Slint
-// component handle from within this submodule.  The `as _` form avoids an
-// unused-import warning when the trait name itself is never referenced directly.
+// `ComponentHandle` must be in scope to call `.global::<T>()` here; the `as _` form
+// avoids an unused-import warning since the trait name itself is never referenced.
 use crate::{Strings, ViewerWindow};
 use slint::ComponentHandle as _;
 
@@ -57,9 +56,8 @@ impl Localizer {
     pub(crate) fn new(lang: Language) -> Self {
         let loader = fluent_language_loader!();
 
-        // load_languages auto-appends the fallback ("en") when absent and
-        // replaces all loader state atomically; calling load_fallback_language
-        // first would be redundant — its effect is immediately discarded.
+        // load_languages auto-appends the fallback ("en") when absent and replaces all loader
+        // state atomically; a separate load_fallback_language call would be redundant.
         let requested = langid_for(lang);
         loader
             .load_languages(&Localizations, &[requested])
@@ -67,14 +65,8 @@ impl Localizer {
                 panic!("failed to load Fluent catalog for '{lang:?}': {e}");
             });
 
-        // Disable Unicode bidirectional isolation marks (FSI/PDI) around
-        // placeables.  The app is not bidirectional, and the catalog values
-        // are pinned byte-identical by exact-equality tests; leaving isolation
-        // marks enabled would insert invisible codepoints that break those
-        // comparisons.
-        //
-        // Per `FluentLanguageLoader::set_use_isolating`'s doc note, this has
-        // no effect until load_languages has been called; this call comes last.
+        // Disable bidi isolation marks (FSI/PDI): the app isn't bidirectional and they'd insert
+        // invisible codepoints breaking byte-identical tests. Must come AFTER load_languages.
         loader.set_use_isolating(false);
 
         Self { loader }
@@ -97,9 +89,8 @@ impl Localizer {
             .unwrap_or_else(|e| {
                 panic!("failed to switch Fluent catalog to '{lang:?}': {e}");
             });
-        // Re-apply after load_languages replaces all bundles; per
-        // `FluentLanguageLoader::set_use_isolating`'s doc note, the setting
-        // takes effect only after load_languages.
+        // Re-apply after load_languages replaces all bundles; per set_use_isolating's doc,
+        // the setting takes effect only after load_languages.
         self.loader.set_use_isolating(false);
     }
 
@@ -239,12 +230,8 @@ impl Localizer {
         strings.set_selection_exit_a11y(fl!(self.loader, "selection-exit-a11y").into());
         strings.set_selection_delete(fl!(self.loader, "selection-delete").into());
 
-        // ---- 4 pre-composed Stepper labels --------------------------------
-        //
-        // Composed here via Fluent named args so verb/noun order survives
-        // Japanese verb-final grammar — never Slint-side string concatenation.
-        // English: "Decrease Cache size in pages"
-        // Japanese: "キャッシュサイズ（ページ数）を減らす"  (label comes first)
+        // 4 pre-composed Stepper labels: composed via Fluent named args so verb/noun order
+        // survives Japanese verb-final grammar — never Slint-side string concatenation.
         let cache_label = fl!(self.loader, "settings-cache-a11y");
         strings.set_stepper_decrease_cache(
             fl!(
@@ -429,9 +416,8 @@ mod tests {
                 );
             }
 
-            // stepper-decrease: label = "Cache size in pages" (En) / "キャッシュサイズ（ページ数）" (Ja)
-            // En: "Decrease { $label }" — label embedded anywhere
-            // Ja: "{ $label }を減らす" — label comes first, result ends with "を減らす"
+            // stepper-decrease label: En "Decrease { $label }" (embedded anywhere);
+            // Ja "{ $label }を減らす" (label first, result ends with "を減らす").
             {
                 let label = match lang {
                     Language::En => "Cache size in pages".to_string(),
@@ -673,10 +659,8 @@ Selection:
             "After switch(Ja): expected '単ページ'"
         );
 
-        // Step 2: current_languages() reflects only the requested language.
-        // The fallback ("en") is auto-appended to the bundle set but is not
-        // included in current_languages() — this is expected FluentLanguageLoader
-        // behavior (stores caller-supplied list, not the extended load list).
+        // Step 2: current_languages() reflects only the requested language; the auto-appended
+        // fallback ("en") is not included (FluentLanguageLoader stores the caller-supplied list).
         let current = loc.loader.current_languages();
         assert_eq!(
             current,
@@ -783,10 +767,8 @@ Selection:
              and the Strings.slint stepper-increase-preload default"
         );
 
-        // ---- Japanese ------------------------------------------------------
-        // Byte-exact equality (not ends_with / starts_with): verb-final word
-        // order is the entire reason composition lives in Rust; a reorder like
-        // `減らす（{ $label }）` would still pass an ends_with check.
+        // Japanese byte-exact equality (not ends_with): verb-final word order is why composition
+        // lives in Rust — a reorder like `減らす（{ $label }）` would still pass an ends_with check.
         let ja = Localizer::new(Language::Ja);
 
         let ja_cache = get(&ja, "settings-cache-a11y");
@@ -981,10 +963,8 @@ Selection:
         );
     }
 
-    // ---- test 6c: duplicate-ID guard (integrated into existing test) --
-    // Note: the duplicate-ID check is incorporated into
-    // `all_ftl_ids_present_in_every_locale` above via a pre-collection
-    // assertion.  The existing test is replaced with the enhanced version.
+    // test 6c (duplicate-ID guard) is integrated into `all_ftl_ids_present_in_every_locale`
+    // above via a pre-collection assertion, not a standalone test.
 
     // ---- test 6d: message arguments match across locales --------------
 

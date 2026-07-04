@@ -1,36 +1,14 @@
-// NavBar — the top, centered "glass pill" holding the live library search field
-// (left), a thin divider, and the icon-only NavItems on the right: Add files /
-// Add folder / Select / Bookmark / Settings, or — when `combined-add-picker` is
-// set (macOS, where one NSOpenPanel picks files AND folders) — a single Add books
-// capsule plus Select plus Bookmark plus Settings.
-//
-// Slint 1.x has NO backdrop-blur, so the frosted-glass look is APPROXIMATED,
-// not rendered, with four cheap layers that read as glass without sampling
-// what is behind the pill:
-//   1. translucent fill   — Theme.glass-fill (surface tint at ~82% alpha)
-//   2. hairline border     — Theme.glass-border (1px, soft cool edge)
-//   3. top inner highlight — a 1px decorative rim (Theme.glass-highlight) that
-//                            fakes light catching the upper lip of the glass
-//   4. drop shadow         — Theme.shadow-popover, lifting the pill off content
-//
-// The width is sized explicitly from tokens (search field + the two or three
-// capsules + the inter-item gaps + divider + left/right padding) rather than
-// from a layout's preferred width: binding the root width to its own content
-// layout would create a width binding loop.
-//
-// Colors / lengths come from Theme.* only — NO inline brand hex (DESIGN.md
-// rule 2; scripts/check-tokens.sh enforces this). Theme lives one directory up.
+// NavBar — top centered "glass pill": search field, divider, icon-only capsules
+// (Add files/folder, or a combined Add-books on macOS, plus Select/Bookmark/Settings).
+// Slint 1.x has no backdrop-blur, so the glass is faked with 4 cheap layers; the
+// width is computed from tokens (not layout preferred-width) to avoid a binding
+// loop. Colors/lengths from Theme.* only (scripts/check-tokens.sh).
 import { Theme } from "../Theme.slint";
 import { Strings } from "../Strings.slint";
 import { NavItem } from "NavItem.slint";
 
-// File-private live search field (issue #88). A self-contained pill with a
-// leading magnifier icon, a placeholder, a TextInput, and a 120ms trailing
-// debounce Timer. Kept in this file so no new import path is needed.
-//
-// TextInput (not LineEdit) is used deliberately so EVERY color comes from
-// Theme.* — std-widgets' LineEdit paints its own native palette, which would
-// bypass the token rule and clash with the glass pill.
+// File-private live search field (issue 88). TextInput (not LineEdit) so every
+// color comes from Theme.* — LineEdit's native palette would bypass the token rule.
 component SearchField inherits Rectangle {
     // ── Public API ────────────────────────────────────────────────────────────
     in-out property <string> query;
@@ -45,10 +23,8 @@ component SearchField inherits Rectangle {
         input.select-all();
     }
 
-    // ── Shape: a rounded rectangle that blends into the pill, lighting its edge ──
-    // Background is transparent so the field reads as the same color as the
-    // surrounding glass pill (the sunken fill made it stand out as a darker box);
-    // the border alone delineates the field, brightening to accent on focus.
+    // Shape: transparent background so the field reads as the same glass color (a
+    // sunken fill stood out as a darker box); border delineates it, accent on focus.
     width: Theme.nav-search-width;
     height: Theme.nav-capsule;
     border-radius: Theme.nav-search-radius;
@@ -57,9 +33,7 @@ component SearchField inherits Rectangle {
     border-color: input.has-focus ? Theme.accent : Theme.search-border-rest;
     animate border-color { duration: Theme.motion-fast; }
 
-    // ── Leading magnifier icon ────────────────────────────────────────────────
-    // Colorized with the same idle tone NavItem uses for its icon (text-mid),
-    // so the search glyph reads as part of the same icon family.
+    // Leading magnifier icon: colorized text-mid to match NavItem's icon family.
     icon := Image {
         source: root.search-icon;
         width: Theme.nav-search-icon;
@@ -70,10 +44,8 @@ component SearchField inherits Rectangle {
         colorize: Theme.text-mid;
     }
 
-    // Text content starts AFTER the icon + a small gap so it never overlaps the
-    // glyph; the right inset mirrors the left padding. The placeholder and the
-    // input share the same column geometry (`text-x` / `text-width`).
-    // text-x = pad + icon + gap; text-width = field - text-x - pad.
+    // Text starts after the icon + a small gap so it never overlaps the glyph;
+    // placeholder and input share the same column geometry (text-x / text-width).
     property <length> text-x: Theme.nav-search-pad-x + Theme.nav-search-icon + Theme.space-xs;
     property <length> text-width: root.width - root.text-x - Theme.nav-search-pad-x;
 
@@ -109,9 +81,8 @@ component SearchField inherits Rectangle {
         accessible-label: Strings.navbar-search-a11y;
         accessible-placeholder-text: Strings.navbar-search-placeholder;
 
-        // Each keystroke (re)arms the trailing debounce: stop any pending fire,
-        // then restart the countdown, so the query callback fires ~120ms after
-        // the LAST edit.
+        // Each keystroke re-arms the trailing debounce, so the query callback
+        // fires ~120ms after the LAST edit.
         edited => {
             debounce.stop();
             debounce.start();
@@ -174,16 +145,12 @@ export component NavBar inherits Rectangle {
     // False on an empty library — the capsule dims/faints instead of
     // disappearing, so the computed pill width never jumps.
     in property <bool> select-enabled: true;
-    // True when the platform's native open panel can pick files AND folders in
-    // one dialog (macOS): the two add capsules collapse into a single combined
-    // one. Pushed once from Rust at boot — never changes at runtime.
+    // True when the platform's native panel picks files AND folders in one dialog
+    // (macOS): collapses the two add capsules into one. Pushed once from Rust at boot.
     in property <bool> combined-add-picker;
     in-out property <string> search-query;
-    // When true, a soft translucent veil is painted over the pill to visually
-    // recede the NavBar behind foreground content. Default false = no change.
-    // Wired in Carousel.slint to `selection-mode && !modal-open` (recede during
-    // selection, suppressed while a modal is open so the veil does not compound
-    // with a modal scrim).
+    // When true, a translucent veil recedes the NavBar behind foreground content;
+    // wired to `selection-mode && !modal-open` so it never compounds a modal scrim.
     in property <bool> receded: false;
     callback add-books();
     callback add-folder();
@@ -192,20 +159,14 @@ export component NavBar inherits Rectangle {
     callback search-exit();
     // Enter/exit bulk-selection.
     callback toggle-selection();
-    // Jump to the continue-reading book (resume at its saved page). ALWAYS
-    // enabled: with no bookmark the click intentionally answers with a status
-    // notice, so a faint capsule would hide the affordance instead of inviting it.
+    // Jump to the continue-reading book. ALWAYS enabled: with no bookmark the click
+    // answers with a status notice, so a faint capsule would hide the affordance.
     callback continue-reading();
 
     // Move keyboard focus into the search field (carousel `/` and click).
     public function focus-search() { search.focus-self(); }
 
-    // ── Shape & size ──────────────────────────────────────────────────────────
-    // Width is computed from tokens so the pill hugs its content WITHOUT a
-    // layout-preferred-width binding loop. Children left→right: search field,
-    // 1px divider, then the icon capsules — five of them (seven children, six
-    // gaps), or four when the combined add capsule replaces the file/folder
-    // pair (six children, five gaps).
+    // Width from tokens (not layout preferred-width) to avoid a binding loop.
     //   combined (macOS): search + 4*capsule + divider + 5*gap + 2*pad
     //   split (elsewhere): search + 5*capsule + divider + 6*gap + 2*pad
     height: Theme.nav-pill-height;
@@ -226,10 +187,8 @@ export component NavBar inherits Rectangle {
     drop-shadow-blur: 22px;
     drop-shadow-offset-y: 8px;
 
-    // ── Glass approximation (layer 3): top inner highlight rim ────────────────
-    // A thin decorative line just below the top edge, inset horizontally by
-    // ~half the height so it stays inside the rounded corners (a pill's corner
-    // radius caps at half its height).
+    // Glass layer 3: top highlight rim, inset horizontally by ~half the height so
+    // it stays inside the rounded corners (pill radius caps at half height).
     Rectangle {
         x: Theme.nav-pill-height / 2;
         y: 1px;
@@ -266,10 +225,9 @@ export component NavBar inherits Rectangle {
             }
         }
 
-        // Both the combined capsule and the files capsule fire the SAME
-        // `add-books()` intent: Rust is the single authority for which dialog
-        // flavor backs it (files+folders on macOS, files-only elsewhere).
-        // NavItem is TouchArea-based with no FocusScope id, so `if` is safe.
+        // Both the combined and files capsules fire the SAME add-books() intent;
+        // Rust picks the dialog flavor. NavItem is TouchArea-based (no FocusScope
+        // id), so `if` is safe.
         if root.combined-add-picker : NavItem {
             icon: root.plus-icon;
             a11y-label: Strings.navbar-add-books-a11y;
@@ -285,12 +243,9 @@ export component NavBar inherits Rectangle {
             a11y-label: Strings.navbar-add-folder-a11y;
             clicked => { root.add-folder(); }
         }
-        // Bulk-selection entry/exit toggle; gated by select-enabled (empty
-        // library faints the capsule rather than removing it, so pill width is
-        // stable). Intentionally NOT gated on modal state — like the sibling
-        // capsules it relies on the modal backdrop absorber to block input;
-        // folding a modal flag into `enabled` would flicker the capsule faint
-        // under the scrim.
+        // Bulk-selection toggle, gated by select-enabled (faint not removed → stable
+        // pill width). NOT modal-gated: the backdrop absorber blocks input, and
+        // folding a modal flag into `enabled` would flicker the capsule under the scrim.
         NavItem {
             icon: root.select-icon;
             a11y-label: Strings.selection-enter;
@@ -298,9 +253,8 @@ export component NavBar inherits Rectangle {
             enabled: root.select-enabled;
             clicked => { root.toggle-selection(); }
         }
-        // Jump to the continue-reading book. ALWAYS enabled — with no bookmark
-        // the click intentionally answers with a status notice, so a faint
-        // capsule would hide the affordance rather than invite the press.
+        // Continue-reading jump. ALWAYS enabled: with no bookmark the click answers
+        // with a status notice, so a faint capsule would hide the affordance.
         NavItem {
             icon: root.bookmark-icon;
             a11y-label: Strings.continue-reading;
@@ -313,13 +267,9 @@ export component NavBar inherits Rectangle {
         }
     }
 
-    // ── Recede veil (MUST be the last child — paints over all controls) ───────
-    // A soft translucent overlay that dims the NavBar when `receded` is true,
-    // signalling to the user that something else is in focus. Uses the same
-    // border-radius as the root capsule so the veil is clipped to the pill shape.
-    // NO TouchArea: the overlay is purely visual — all NavBar controls remain
-    // clickable through it (Slint Rectangles without a TouchArea are
-    // pointer-transparent by default).
+    // Recede veil — MUST be the last child (paints over all controls); shares the
+    // root radius to clip to the pill. No TouchArea, so controls stay clickable
+    // through it (Rectangles are pointer-transparent by default).
     Rectangle {
         x: 0;
         y: 0;

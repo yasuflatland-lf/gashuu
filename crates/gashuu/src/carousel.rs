@@ -25,20 +25,17 @@ fn to_carousel_item(data: &CarouselData) -> CarouselItem {
         total: data.total,
         progress: data.progress,
         available: data.available,
-        // Selection is orthogonal to the row derivation: the model is built
-        // unselected, then the bulk-selection flags are applied over the visible
-        // rows by `apply_selection_flags` (selection survives query changes).
+        // Selection is orthogonal to row derivation: the model is built unselected, then
+        // `apply_selection_flags` applies bulk selection over visible rows (survives query changes).
         selected: false,
         // Continue-reading: propagated from CarouselData (pure derivation in
         // `carousel_data_for_indices`; drives the BookmarkRibbon overlay).
         bookmarked: data.bookmarked,
-        // Cover loading starts (or restarts, on a rebuild) un-failed: the row
-        // shows the neutral loading placeholder until `CoverController` either
-        // streams a cover in or marks the load failed (issue 144).
+        // Cover loading starts (or restarts on rebuild) un-failed: the row shows the neutral
+        // loading placeholder until CoverController streams a cover or marks it failed (issue 144).
         cover_failed: false,
-        // Starts false so the neutral loading placeholder is shown instead of
-        // the black slint::Image::default() while the async worker is in flight.
-        // Set to true by set_cover() once a real image arrives.
+        // Starts false so the neutral loading placeholder shows (not the black default image)
+        // while the async worker is in flight; set_cover() flips it true once a real image arrives.
         cover_loaded: false,
     }
 }
@@ -216,10 +213,8 @@ pub(crate) fn thumb_state_at(model: &slint::ModelRc<ThumbnailItem>, page: usize)
         Some(item) if item.failed => ThumbState::failed(),
         Some(_) => ThumbState::loading(),
         None => {
-            // `page` is outside the thumbnail model — strip and page_count are
-            // out of sync (the model is built to exactly page_count rows). This
-            // is a desync, not a real in-progress load: fall back to the neutral
-            // loading placeholder, but log so the desync is diagnosable.
+            // `page` is outside the thumbnail model (strip/page_count desync): fall back to
+            // the neutral loading placeholder, but log so the desync is diagnosable.
             tracing::warn!(
                 page,
                 row_count = model.row_count(),
@@ -397,9 +392,8 @@ mod tests {
         use slint::Model;
 
         let mut lib = Library::new();
-        // A path that never existed: `add` falls back to the raw path (no
-        // canonicalize), so the book is stored unavailable. `register_opened`
-        // finds it via the same raw path and sets it as last_opened.
+        // A path that never existed: `add` falls back to the raw path (no canonicalize),
+        // so the book is stored unavailable; `register_opened` finds it via that same path.
         let path = std::path::PathBuf::from("/manga/gone.cbz");
         lib.register_opened(&path, None);
 
@@ -464,9 +458,8 @@ mod tests {
 
     #[test]
     fn loaded_page_overrides_failed_flag() {
-        // A (loaded && failed) item cannot occur by construction, but the loaded
-        // arm must still report failed=false so a future regression cannot
-        // surface a loaded-yet-failed preview.
+        // A (loaded && failed) item can't occur by construction, but the loaded arm must
+        // still report failed=false so a regression can't surface a loaded-yet-failed preview.
         let s = thumb_state_at(&model(vec![item(0, true, true)]), 0);
         assert!(s.loaded);
         assert!(!s.failed);

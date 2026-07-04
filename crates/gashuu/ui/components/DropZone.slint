@@ -1,16 +1,8 @@
 import { Theme } from "../Theme.slint";
 import { Strings } from "../Strings.slint";
 
-// Full-window drop-zone affordance, shown while an OS file/folder drag hovers the
-// Library screen (driven by ViewerWindow's `drag-active`, set from raw winit hover
-// events in handlers/drag_drop.rs).
-//
-// A solid near-white frame is inset from every window edge, with an icon + hint
-// centered on one horizontal line inside it. Purely visual: holds NO TouchArea,
-// so it never grabs pointer events from the carousel beneath and the OS
-// drag/drop continues uninterrupted. All translucency is the baked alpha of
-// `drop-scrim` — there is deliberately NO `opacity:` anywhere (it would blur the
-// SVG/text on HiDPI and fade the message).
+// Full-window drop-zone affordance during an OS drag over Library (ViewerWindow's
+// `drag-active`). Purely visual: NO TouchArea (OS drag continues), NO opacity (HiDPI blur).
 export component DropZone inherits Rectangle {
     // Recede the library to ~30% visible so the frame reads as foreground (the
     // translucency is the drop-scrim alpha, not an opacity layer).
@@ -29,10 +21,8 @@ export component DropZone inherits Rectangle {
         border-radius: Theme.radius-lg;
     }
 
-    // Centered message: icon + hint on the SAME horizontal line. The outer
-    // VerticalLayout fills the window and centers the row vertically; the inner
-    // HorizontalLayout centers the icon+text group horizontally. `no-wrap` keeps
-    // the short string on one line at its natural width (no per-glyph collapse).
+    // Centered message: icon + hint on one line. Outer VerticalLayout centers the row
+    // vertically; inner HorizontalLayout centers it horizontally; `no-wrap` keeps one line.
     VerticalLayout {
         width: 100%;
         height: 100%;

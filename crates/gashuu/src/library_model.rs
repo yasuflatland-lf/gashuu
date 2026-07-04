@@ -299,11 +299,8 @@ mod tests {
 
     #[test]
     fn book_row_derives_title_current_total_progress() {
-        // A real on-disk directory so `add` canonicalizes/derives a title and
-        // `book_is_available` is true (the path resolves). `last_page` defaults to 0
-        // for a freshly-added book (no position recorded yet), so this row is
-        // the "unread, total unknown" case: current = 1, total = 0,
-        // progress = 0.0, available = true.
+        // Freshly-added book: `add` derives a title, the path resolves (available), and
+        // `last_page` defaults to 0 — the "unread, total unknown" case (current=1, total=0).
         let dir = tempfile::tempdir().expect("tempdir");
         let mut lib = Library::new();
         assert!(lib.add(dir.path().to_path_buf()).is_some());
@@ -327,9 +324,8 @@ mod tests {
 
     #[test]
     fn unavailable_book_marked_unavailable() {
-        // Add a real directory (so `add` succeeds + canonicalizes), then delete
-        // it so the stored path no longer resolves: the book STAYS in the shelf
-        // and the row is marked unavailable (no auto-prune — spec §9).
+        // Add a real directory, then delete it so the stored path no longer resolves: the
+        // book STAYS in the shelf, marked unavailable (no auto-prune — spec §9).
         let dir = tempfile::tempdir().expect("tempdir");
         let path: PathBuf = dir.path().to_path_buf();
         let mut lib = Library::new();
@@ -399,9 +395,8 @@ mod tests {
 
     #[test]
     fn carousel_data_total_and_progress_from_page_count() {
-        // An opened book has a persisted page count; the row must surface it as
-        // the real `total` and compute `progress = ReadingProgress::fraction()`
-        // (reached=4, total=10 → 0.4), with `current` the 1-based display page.
+        // An opened book has a persisted page count: the row surfaces it as the real
+        // `total` and computes `progress = fraction()` (reached=4, total=10 → 0.4).
         let dir = tempfile::tempdir().expect("tempdir");
         let mut lib = Library::new();
         assert!(lib.add(dir.path().to_path_buf()).is_some());
@@ -433,9 +428,8 @@ mod tests {
 
     #[test]
     fn recompute_forced_branch_excludes_non_matching_non_forced_books() {
-        // The forced-visible branch keeps the query match (alpha) AND the forced
-        // path (beta) visible, but a book matching NEITHER the query nor the
-        // forced set (gamma) must stay hidden.
+        // The forced-visible branch keeps the query match (alpha) AND the forced path
+        // (beta), but a book matching NEITHER (gamma) must stay hidden.
         let mut lib = Library::new();
         assert!(lib.add(PathBuf::from("/manga/alpha.cbz")).is_some());
         assert!(lib.add(PathBuf::from("/manga/beta.cbz")).is_some());
@@ -494,9 +488,8 @@ mod tests {
 
     #[test]
     fn selection_toggle_on_path_not_in_library_still_selects_and_deselects() {
-        // Selection is path-keyed, not library-keyed: a path that was never added
-        // to any Library still toggles cleanly. The selection state owns the set
-        // of selected paths independently of what books exist.
+        // Selection is path-keyed, not library-keyed: a path never added to any Library
+        // still toggles cleanly — the state owns its set independently of what books exist.
         let mut sel = LibrarySelectionState::default();
         let path = PathBuf::from("/manga/never-added.cbz");
         assert!(!sel.contains(&path));
@@ -542,9 +535,8 @@ mod tests {
 
     #[test]
     fn selection_is_orthogonal_to_search_query() {
-        // Selecting a book then narrowing the query so it is filtered OUT of the
-        // visible set must NOT drop the selection: it stays selected and reappears
-        // when the query clears (selection lives independently of the projection).
+        // Selecting a book then narrowing the query so it is filtered OUT must NOT drop
+        // the selection: it stays selected and reappears when the query clears.
         let mut lib = Library::new();
         assert!(lib.add(PathBuf::from("/manga/alpha.cbz")).is_some());
         assert!(lib.add(PathBuf::from("/manga/beta.cbz")).is_some());
@@ -606,11 +598,8 @@ mod tests {
 
     #[test]
     fn carousel_data_bookmarked_false_when_last_opened_filtered_out() {
-        // When the last-opened book (alpha) is excluded from the index slice
-        // (as a search filter would do), the returned row for beta must have
-        // bookmarked == false — the ribbon must not bleed onto visible books
-        // that are not actually the last-opened book.
-        // Natural sort: "alpha" < "beta", so alpha is index 0, beta is index 1.
+        // When the last-opened book (alpha) is excluded from the index slice (as a search
+        // filter would), beta's row must be bookmarked == false — the ribbon must not bleed.
         let mut lib = Library::new();
         let alpha = PathBuf::from("/manga/alpha.cbz");
         let beta = PathBuf::from("/manga/beta.cbz");

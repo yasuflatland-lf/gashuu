@@ -1,39 +1,22 @@
-// DangerButton — DESIGN.md `components.button-danger`
-//
-// The filled destructive-action button (used by the bulk-delete epic). A
-// structural clone of PrimaryButton, swapping the accent ground for the deeper
-// `Theme.danger` red (white label passes WCAG AA on the dark canvas) and adding
-// a `Theme.danger-glow` hover/focus ring.
-//
-// Background : Theme.danger  (destructive red; red is scarce — buttons only)
-// Corner     : Theme.radius-md (8px)
-// Padding    : 16px vertical total, split 9 top / 7 bottom for optical
-//              centering / 16px horizontal (size to label + padding)
-// Label      : Theme.font-label (12px), Theme.weight-medium (500), Theme.text (white)
-// Hover      : background darkens via .darker(0.08) + danger-glow ring
-// Press      : background darkens further via .darker(0.20) + danger-glow ring
-// All colors are routed through Theme — no raw hex inline.
-// Accessibility: role/label/action-default are added here; PrimaryButton now
-// carries the same hooks (a11y is consistent across all three push buttons).
+// DangerButton — DESIGN.md `components.button-danger`. The filled destructive
+// button: a structural clone of PrimaryButton with the deeper Theme.danger red
+// (white label passes WCAG AA) + a danger-glow hover/press ring. Vertical padding
+// is split 9/7 for optical centering. Colors via Theme only; a11y hooks match the
+// other push buttons.
 
 import { Theme } from "../Theme.slint";
 
 export component DangerButton inherits Rectangle {
     // ── Public API ────────────────────────────────────────────────────────────
     in property <string> text;
-    // Optional leading glyph (e.g. the trash icon on the toolbar delete button).
-    // Unset by default — an empty image has width 0, which gates the Image out,
-    // so existing consumers (ConfirmDialog) render label-only and unchanged.
-    // The icon NEVER replaces the label: keeping the text visible on a
-    // destructive control at every width is an approved safety requirement
-    // (see SelectionToolbar's delete cell).
+    // Optional leading glyph. Unset by default — an empty image has width 0, so the
+    // Image gates out and existing consumers render label-only, unchanged. The icon
+    // NEVER replaces the label: text on a destructive control is a safety requirement.
     in property <image> icon;
     callback clicked;
 
-    // ── Sizing: label + 16px horizontal / 8px vertical padding ───────────────
-    // The root Rectangle sizes itself to its content (HorizontalLayout min-size
-    // drives width; explicit padding drives height via the layout's padding).
-    // A min-height of 32px satisfies the DESIGN ≥ 32px hit-area requirement.
+    // Sizing: root sizes to content (layout min-size drives width, padding drives
+    // height); min-height 32px meets the DESIGN hit-area requirement.
     min-height: Theme.button-min-h;
     horizontal-stretch: 0;
     vertical-stretch: 0;
@@ -44,18 +27,11 @@ export component DangerButton inherits Rectangle {
 
     animate background { duration: Theme.motion-fast; }
 
-    // ── States: hover and press darken the danger background + light the glow ──
-    // Priority: pressed > hover (Slint evaluates first matching state wins, so
-    // list pressed before hover — same ordering used by PrimaryButton / NavItem).
-    // Only ROOT-level properties are set here: Slint 1.x cannot assign a child
-    // element's properties from a states[] block, but background and the
-    // drop-shadow-* glow are the root's own. The glow ring is borrowed from
-    // NavItem's idiom — root-level drop-shadow-* props only, with the glow blur
-    // intentionally NOT animated (animating drop-shadow is version-fragile, see
-    // NavItem.slint). PrimaryButton's states set only root.background, so it is
-    // not the glow source. Deliberate divergence: DangerButton lights the glow on
-    // BOTH pressed and hover (NavItem fires it on hover only) for more emphatic
-    // press feedback on a destructive action.
+    // States — pressed listed before hover (Slint: first match wins). Only ROOT
+    // props here (Slint 1.x can't set child props from states[]); the glow is
+    // root-level drop-shadow-*, with the blur NOT animated (animating drop-shadow is
+    // version-fragile — see NavItem). Unlike NavItem, the glow lights on BOTH pressed
+    // and hover, for more emphatic feedback on a destructive action.
     states [
         pressed when touch.pressed : {
             root.background: Theme.danger.darker(0.20);
@@ -73,22 +49,16 @@ export component DangerButton inherits Rectangle {
     HorizontalLayout {
         padding-left: Theme.button-pad-x;
         padding-right: Theme.button-pad-x;
-        // Optical centering (same correction as PrimaryButton / the Segmented
-        // labels): Slint metric-centers the full font line box, which sits a
-        // descender-less label ~1px high of the button's visual center. The label
-        // is a layout child whose y the LAYOUT owns, so the nudge lives in an
-        // asymmetric vertical-padding split (9/7 — the 16px total is unchanged;
-        // see the button-pad-* tokens in Theme.slint), not a `y:` binding
-        // (docs/patterns.md optical-centering entry).
+        // Optical centering: Slint metric-centers the full font line box, sitting a
+        // descender-less label ~1px high. The layout owns the label's y, so the nudge
+        // is an asymmetric vertical-padding split (9/7, 16px total), not a `y:` binding.
         padding-top: Theme.button-pad-top;
         padding-bottom: Theme.button-pad-bottom;
         spacing: Theme.space-xs;
         alignment: center;
 
-        // Leading glyph, present only when a consumer supplies an icon. The
-        // single-path SVG is recolored to the label white via `colorize`
-        // (docs/patterns.md "First image assets"); wrapped in a VerticalLayout
-        // cell so the glyph centers against the label's line box.
+        // Leading glyph (only when a consumer supplies an icon). Recolored white via
+        // `colorize`; wrapped in a VerticalLayout so it centers on the label's line box.
         if root.icon.width > 0 : VerticalLayout {
             alignment: center;
             Image {
@@ -116,10 +86,8 @@ export component DangerButton inherits Rectangle {
     // Let a screen-reader activation gesture fire the same callback as a click.
     accessible-action-default => { root.clicked(); }
 
-    // ── Interaction ───────────────────────────────────────────────────────────
-    // TouchArea is non-focusable in Slint — it does NOT steal keyboard focus
-    // from any FocusScope in the parent hierarchy (established pattern, see
-    // docs/patterns.md "TouchArea click focus recovery").
+    // TouchArea is non-focusable in Slint — it does NOT steal keyboard focus from
+    // any parent FocusScope (docs/patterns.md "TouchArea click focus recovery").
     touch := TouchArea {
         clicked => { root.clicked(); }
     }

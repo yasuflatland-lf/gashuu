@@ -1,9 +1,5 @@
-// DisplaySettings — the "Display" settings section as a standalone unit.
-//
-// Extracted verbatim from SettingsDialog.slint's inline Display block (Cover +
-// Fit rows). Renders its own eyebrow (suppressible via `show-title`) so it can
-// be reused flat, in a drill-in sub-screen, or in the per-book dialog. Public
-// surface mirrors SettingsDialog's Display props exactly. Theme.* only.
+// DisplaySettings — the "Display" section (Cover + Fit rows) as a standalone unit. Renders its
+// own eyebrow (suppressible via `show-title`) so it reuses flat, in a drill-in, or per-book.
 import { Theme } from "../Theme.slint";
 import { Strings } from "../Strings.slint";
 import { SettingRow } from "../components/SettingRow.slint";

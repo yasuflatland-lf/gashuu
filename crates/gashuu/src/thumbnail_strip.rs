@@ -110,8 +110,7 @@ fn thumbnail_item(page: usize, cell: ThumbCell) -> ThumbnailItem {
         ThumbCell::Failed => (Default::default(), false, true),
     };
     // The (loaded, failed) pair is mutually exclusive by construction above; this
-    // guards a future hand-edit to the match arms (mirrors the codebase's
-    // load-bearing-invariant `debug_assert` philosophy — see `seq_index`).
+    // debug_assert guards a future hand-edit to the match arms (see `seq_index`).
     debug_assert!(
         !(loaded && failed),
         "thumbnail cell cannot be both loaded and failed"
@@ -305,9 +304,8 @@ impl ThumbnailController {
             current: RefCell::new(None),
         });
 
-        // Backfill on scroll/resize: each event carries the strip's pixel geometry
-        // (first visible content pixel, viewport width, per-cell stride); we
-        // translate it to a page window (+margin) and request only the new pages.
+        // Backfill on scroll/resize: translate each event's pixel geometry (first pixel,
+        // viewport width, cell stride) to a page window (+margin) and request new pages.
         let cb_inner = Rc::clone(&inner);
         let weak = ui.as_weak();
         ui.on_thumbnail_strip_visible_range_changed(move |first_px, viewport_w, cell_stride| {

@@ -126,9 +126,8 @@ mod natural_cmp_tests {
 
     #[test]
     fn digit_prefix_sorts_before_letter_prefix() {
-        // ASCII digits (0x30-0x39) are below ASCII letters (0x41+), so a
-        // string starting with a digit compares less than one starting with a
-        // letter via the case-insensitive char comparison in `natural_cmp`.
+        // ASCII digits (0x30-0x39) sort below letters (0x41+), so a digit-prefixed
+        // string compares less via natural_cmp's case-insensitive char comparison.
         assert_eq!(natural_cmp("1vol", "vol1"), Ordering::Less);
         assert_eq!(natural_cmp("vol1", "1vol"), Ordering::Greater);
     }

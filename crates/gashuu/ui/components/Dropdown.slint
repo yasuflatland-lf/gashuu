@@ -1,34 +1,5 @@
-// Dropdown — an Apple-HIG-style pull-down button (HIG "pull-down buttons") for
-// the settings dialog: a fixed-width capsule showing the current value plus a
-// trailing chevron; clicking (or Space/Enter) opens a menu below the button
-// listing every option, with a check mark on the selected one.
-//
-// Exposes the SAME `model` / `current-index` (two-way) + `selected(int)` shape
-// as `Segmented`, so the dialog wiring is identical. Use Dropdown over
-// Segmented when the option list may grow (e.g. languages) or the labels are
-// too wide for equal segments.
-//
-// The menu is this codebase's FIRST `PopupWindow`: the settings dialog's body
-// is a clipping Flickable, and a popup is lowered to the window root by the
-// Slint compiler, so the open menu can never be clipped by the scroll viewport.
-// The default close policy (close-on-click) dismisses on item click, outside
-// click, AND Esc — none of that is hand-rolled here. NOTE the documented
-// PopupWindow restriction: elements INSIDE the popup may read/call the
-// component root, but the root cannot reach into the popup; everything below
-// respects that direction.
-//
-// Keyboard (when the button is focused): Space/Enter open the menu;
-// Up/Down cycle the selection inline WITHOUT opening it (clamped, fires
-// `selected`) — the popup itself never needs keyboard focus, sidestepping
-// Slint's popup-focus limitations while keeping the control fully
-// keyboard-operable (mirrors Segmented's arrow keys). Esc is rejected so it
-// bubbles to the dialog's ancestor FocusScope (Esc-to-close).
-//
-// Gotchas honored (docs/patterns.md): NO `opacity` (HiDPI blur) — hover and
-// selected looks animate color only; state-dependent CHILD props are DIRECT bindings
-// (states[] cannot touch a child); ONE drop-shadow per Rectangle (the menu
-// panel's shadow needs the popup surface padded by `shadow-pad`, or the popup
-// bounds would clip the blur); colors/lengths are `Theme.*` only.
+// Dropdown — HIG pull-down button; same model/current-index/selected shape as Segmented.
+// FIRST PopupWindow: lowered to the window root so the menu escapes the clipping Flickable.
 import { Theme } from "../Theme.slint";
 
 export component Dropdown inherits Rectangle {
@@ -88,12 +59,8 @@ export component Dropdown inherits Rectangle {
         x: Theme.space-sm;
         width: parent.width - Theme.space-sm * 2 - Theme.settings-dropdown-chevron - Theme.space-xs;
         height: parent.height;
-        // Optical centering: Slint's vertical-alignment centers the font's FULL
-        // line box (ascent + descent), but these labels have no descenders, so
-        // the glyph mass sits ~1px high of the pill's visual center. Nudge down
-        // half the 12px font's descent so the GLYPHS — not the em box — read
-        // centered (Apple optically centers control labels the same way; mirrors
-        // Segmented's label nudge).
+        // Optical centering: Slint centers the full line box, but descender-less labels
+        // sit ~1px high, so nudge down (y:1px) to center the GLYPHS (mirrors Segmented).
         y: 1px;
         text: root.model[root.current-index];
         color: Theme.text-high;
@@ -120,10 +87,8 @@ export component Dropdown inherits Rectangle {
         }
     }
 
-    // ── Menu (PopupWindow, lowered to the window root — escapes the Flickable) ──
-    // The popup surface is padded by `shadow-pad` on every side so the menu
-    // panel's drop shadow blurs inside the popup bounds instead of being
-    // clipped at its edge; the visible panel is the inner Rectangle.
+    // Menu (PopupWindow, lowered to window root — escapes the Flickable). Padded by
+    // `shadow-pad` so the panel's drop shadow blurs inside the popup bounds, not clipped.
     property <length> shadow-pad: Theme.space-xl;
     property <length> menu-h: root.model.length * Theme.settings-control-h + 2 * Theme.space-xxs;
 
@@ -171,11 +136,8 @@ export component Dropdown inherits Rectangle {
                         padding-right: Theme.space-sm;
                         spacing: Theme.space-xs;
 
-                        // Check-mark column: fixed width so labels align whether
-                        // or not the row is the selected one. Same 1px optical
-                        // nudge as the button face so the row reads centered in
-                        // the 30px row (metric centering sits descender-less
-                        // glyphs high).
+                        // Check-mark column: fixed width so labels align whether or not
+                        // the row is selected. Same 1px optical nudge as the button face.
                         Text {
                             width: Theme.font-label;
                             y: 1px;

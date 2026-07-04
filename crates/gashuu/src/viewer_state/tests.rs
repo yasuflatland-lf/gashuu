@@ -356,9 +356,8 @@ fn status_text_reflects_rtl_label() {
 
 #[test]
 fn current_spread_degrades_to_leading_on_trailing_decode_error() {
-    // 3 pages, Double / Standalone: {0}{1,2}. Advancing once lands on the
-    // {1,2} spread, whose trailing index is page 2. Make page 2 fail to
-    // decode and confirm the spread degrades to leading-only with a marker.
+    // 3 pages, Double / Standalone: {0}{1,2}. Page 2 (trailing of {1,2}) is made to
+    // fail decode; the spread must degrade to leading-only with a marker.
     let mut state = ViewerState::from_settings(&Settings {
         spread_mode: SpreadMode::Double,
         ..Default::default()
@@ -422,9 +421,8 @@ fn double_paired_navigation_steps_by_two_and_clamps() {
 
 #[test]
 fn toggle_spread_from_double_paired_keeps_index() {
-    // 6 pages, Paired cover. Advance to the {2,3} spread (index 2), then
-    // toggle to Auto: default viewport aspect 1.0 resolves Auto to Single, so
-    // index 2 is still a valid leading and stays unchanged.
+    // 6 pages, Paired cover, advanced to {2,3} (index 2). Toggle to Auto: default
+    // viewport aspect 1.0 resolves Auto to Single, so index 2 stays a valid leading.
     let mut state = ViewerState::from_settings(&Settings {
         spread_mode: SpreadMode::Double,
         cover_mode: CoverMode::Paired,
@@ -493,11 +491,8 @@ fn auto_landscape_navigates_single() {
 
 #[test]
 fn set_viewport_size_reports_flip_and_renormalizes() {
-    // Auto. Advance to the {1,2} spread once Double. Default aspect 1.0
-    // resolves Auto to Single; widening to landscape stays Single, then going
-    // portrait flips to Double, and going back landscape flips to Single. Each
-    // flip keeps the visible page on screen (index 1 is a valid leading in both
-    // Single and Standalone-Double layouts).
+    // Auto, index 1. Default aspect 1.0 => Single; landscape stays Single, portrait
+    // flips to Double, back to landscape flips Single — each flip keeps index 1 visible.
     let mut state = auto_state();
     // Default aspect 1.0 already resolves Auto to Single; widening to
     // landscape stays Single, so this reports no flip.
@@ -596,10 +591,8 @@ fn status_text_auto_label() {
 
 #[test]
 fn set_viewport_size_flip_moves_index_via_normalize() {
-    // Auto + Paired cover. Landscape resolves Auto to Single, where index 1 is a
-    // valid leading; flipping to portrait (Double/Paired) makes pairs start
-    // even, so normalize_leading(.., Double, Paired, 1) rounds 1 down to 0 — the
-    // renormalize on flip must MOVE the index, not no-op.
+    // Auto + Paired. Landscape => Single (index 1 valid); portrait => Double/Paired
+    // makes pairs start even, so normalize rounds index 1 down to 0 (flip must MOVE).
     let mut state = ViewerState::from_settings(&Settings {
         spread_mode: SpreadMode::Auto,
         cover_mode: CoverMode::Paired,
@@ -619,10 +612,8 @@ fn set_viewport_size_flip_moves_index_via_normalize() {
 
 #[test]
 fn toggle_spread_renormalize_moves_index() {
-    // Standalone, Single mode, navigated to index 2. Toggling to Double makes
-    // index 2 (even > 0) an invalid Standalone leading, so normalize_leading
-    // re-anchors it down to the pair start 1 ({1,2}) — the renormalize must
-    // MOVE the index.
+    // Standalone Single at index 2. Toggle to Double: index 2 (even > 0) is an
+    // invalid Standalone leading, so normalize re-anchors to pair start 1 (must MOVE).
     let mut state = ViewerState::new();
     state.set_source(mock_with(6));
     state.apply(NavAction::Next);
@@ -679,11 +670,8 @@ fn set_viewport_size_degenerate_inputs_do_not_panic() {
 
 #[test]
 fn open_path_nonexistent_returns_err() {
-    // ArchiveLoader::open must propagate an Err for a path that does not
-    // exist. This exercises the dispatch pathway and error propagation
-    // without requiring tempfile or zip dev-dependencies in this crate.
-    // CBZ/ZipSource correctness is covered by gashuu-core's archive_loader
-    // and zip source tests.
+    // open must return Err for a missing path (dispatch + error propagation). No
+    // tempfile/zip dev-deps here; ZipSource correctness lives in gashuu-core tests.
     let mut state = ViewerState::new();
     let result = state.open_path(std::path::Path::new("/nonexistent_path_pr6_test"));
     assert!(
@@ -698,9 +686,8 @@ fn open_path_nonexistent_returns_err() {
 
 #[test]
 fn open_folder_delegates_to_open_path() {
-    // open_folder is a thin delegation wrapper; it must behave identically
-    // to open_path on the same input. A nonexistent path should return Err
-    // from both, leaving the state unchanged.
+    // open_folder is a thin delegation to open_path; both must return Err for a
+    // nonexistent path and leave the state unchanged.
     let mut state_a = ViewerState::new();
     let mut state_b = ViewerState::new();
     let bad = std::path::Path::new("/nonexistent_path_pr6_delegation");
@@ -738,13 +725,8 @@ fn last_open_skipped_stays_zero_on_open_error() {
 
 #[test]
 fn open_path_nonexistent_cbr_returns_err_and_leaves_clean_state() {
-    // A .cbr path that does not exist must propagate an error through
-    // ArchiveLoader::open and leave ViewerState in its default (no-source)
-    // state — no panic, no partial initialization. This locks in that the
-    // .cbr extension routes through the same graceful error-handling path as
-    // .cbz/.zip (tested above). Real CBR/RarSource extraction correctness is
-    // owned by gashuu-core's rar.rs/archive_loader.rs tests; this crate
-    // deliberately carries no tempfile/zip/rar dev-dependency.
+    // A missing .cbr must error and leave a clean no-source state, proving .cbr
+    // routes like .cbz/.zip. RarSource correctness lives in gashuu-core (no dev-dep).
     let mut state = ViewerState::new();
     let result = state.open_path(std::path::Path::new("/nonexistent_path_pr7_cbr_test.cbr"));
     assert!(
@@ -821,9 +803,8 @@ fn open_file_is_none_after_failed_open_path() {
 
 #[test]
 fn open_file_stays_none_after_direct_set_source() {
-    // set_source itself does not have a path; open_file tracks the path given
-    // to open_path. After set_source directly, open_file stays None (no path
-    // was supplied).
+    // set_source has no path; open_file tracks the path given to open_path, so
+    // after a direct set_source it stays None.
     let mut state = ViewerState::new();
     state.set_source(mock_with(3));
     assert!(
@@ -834,9 +815,8 @@ fn open_file_stays_none_after_direct_set_source() {
 
 #[test]
 fn open_file_is_some_canonical_after_successful_open_path() {
-    // The linchpin invariant of the whole write-back chain: a SUCCESSFUL
-    // open_path sets open_file to Some(canonical). Exercised here with a
-    // real on-disk directory (a valid FolderSource), no archive fixture.
+    // Linchpin of the write-back chain: a SUCCESSFUL open_path sets open_file to
+    // Some(canonical). Exercised via a real on-disk directory (FolderSource).
     let dir = std::env::temp_dir().join(format!("gashuu_prR_openfile_{}", std::process::id()));
     std::fs::create_dir_all(&dir).expect("create temp dir");
     // An empty directory opens successfully as a FolderSource (confirmed by
@@ -1017,27 +997,16 @@ fn jump_to_stored_trailing_normalizes_to_leading_on_resume() {
 
 #[test]
 fn open_read_leave_sequence_state_invariants() {
-    // Simulates the open → read → leave sequence that write_back_position
-    // depends on. After a real open the source is set (mocked here via
-    // set_source, which leaves open_file as None since no path is passed;
-    // the happy path that sets open_file is covered by
-    // open_file_is_some_canonical_after_successful_open_path), navigating
-    // pages and then calling index() returns the correct page. This pins the
-    // invariants that write_back_position(state, library) relies on:
-    //   - state.open_file() is Some after a successful open
-    //   - state.index() reflects navigation after set_source
-    //   - these two can be read in separate statements without conflict
+    // Pins the borrow-regression invariants write_back_position relies on: open_file()
+    // Some after open, index() tracks nav, and both read without a borrow conflict.
 
     let mut state = ViewerState::new();
 
-    // Simulate open_path success: set_source sets the cache; open_path
-    // also sets open_file (tested separately). We use set_source + manual
-    // assertion on the fields we control in tests.
+    // set_source sets the cache but not open_file (open_path does that, tested
+    // separately); here we assert only the fields we control in tests.
     state.set_source(mock_with(10));
-    // After set_source directly, open_file is None (no path was given). The
-    // happy path that sets open_file is covered by
-    // open_file_is_some_canonical_after_successful_open_path; here we verify
-    // index tracking and the read-shape.
+    // After a direct set_source, open_file is None (no path); the happy path is
+    // covered elsewhere. Here we verify index tracking and the read-shape.
     assert_eq!(state.index(), 0, "fresh after set_source: index is 0");
 
     // Read two pages (two spreads in Single mode).
@@ -1049,10 +1018,8 @@ fn open_read_leave_sequence_state_invariants() {
     assert!(state.jump_to(7));
     assert_eq!(state.index(), 7, "after jump_to(7): index is 7");
 
-    // The position that write_back_position reads — these two calls must
-    // not conflict when called in sequence (distinct immutable borrows
-    // on the same value, which is trivially safe; this test pins the
-    // shape of the reads).
+    // The reads write_back_position performs must not conflict in sequence
+    // (distinct immutable borrows); this test pins the shape of those reads.
     let _page = state.index(); // what write_back_position calls
                                // open_file() is None here (set_source path), but the call must not panic.
     let _path = state.open_file(); // what write_back_position calls
@@ -1080,9 +1047,8 @@ fn scrub_fraction_zero_count_is_zero_guard() {
 
 #[test]
 fn scrub_fraction_ltr_maps_ends_and_midpoint() {
-    // 10 pages, LTR: f=0 -> first page (0), f=1 -> last page (9),
-    // f=0.5 -> the middle page. Mapping uses the last index (count-1) as the
-    // span so both ends are reachable.
+    // 10 pages, LTR: f=0 -> page 0, f=1 -> page 9, f=0.5 -> middle. Span is the last
+    // index (count-1) so both ends are reachable.
     assert_eq!(scrub_fraction_to_page(0.0, 10, false), 0);
     assert_eq!(scrub_fraction_to_page(1.0, 10, false), 9);
     // round(0.5 * 9) = round(4.5) = 5 (round-half-up via +0.5 floor).
@@ -1111,12 +1077,8 @@ fn scrub_fraction_clamps_out_of_range_input() {
 
 #[test]
 fn scrub_fraction_rounds_half_up_at_exact_half_step() {
-    // Pin the round-half-up rule at a fraction that lands EXACTLY on a half-page
-    // boundary (not the midpoint), so a round-half-down or round-half-to-even
-    // implementation would diverge here. 5 pages => last index 4 (the span).
-    //
-    // LTR: the boundary between page 0 and 1 sits at fraction 0.5/4 = 0.125.
-    //   0.125 * 4 + 0.5 = 1.0 -> floor -> page 1 (rounds UP at exactly .5).
+    // Pin round-half-up at an EXACT half-page boundary (not the midpoint), where a
+    // round-half-down/to-even impl would diverge. 5 pages => span 4; 0.125*4+0.5=1.0.
     assert_eq!(scrub_fraction_to_page(0.125, 5, false), 1);
     //   The boundary between page 1 and 2 sits at 1.5/4 = 0.375.
     //   0.375 * 4 + 0.5 = 2.0 -> page 2.
@@ -1124,9 +1086,8 @@ fn scrub_fraction_rounds_half_up_at_exact_half_step() {
     //   Just below a half-step rounds DOWN: 0.124 * 4 + 0.5 = 0.996 -> page 0.
     assert_eq!(scrub_fraction_to_page(0.124, 5, false), 0);
 
-    // RTL inverts the fraction BEFORE rounding, so the same +0.5 half-up rule
-    // applies to (1 - frac). frac = 1 - 0.125 = 0.875 maps to the page-0/1
-    // boundary from the screen-right side: (1 - 0.875) * 4 + 0.5 = 1.0 -> page 1.
+    // RTL inverts the fraction BEFORE rounding, so +0.5 half-up applies to (1-frac):
+    // frac 0.875 => (1-0.875)*4+0.5 = 1.0 -> page 1 (page-0/1 boundary from the right).
     assert_eq!(scrub_fraction_to_page(0.875, 5, true), 1);
     //   frac = 1 - 0.375 = 0.625 -> (1 - 0.625) * 4 + 0.5 = 2.0 -> page 2.
     assert_eq!(scrub_fraction_to_page(0.625, 5, true), 2);
@@ -1134,31 +1095,16 @@ fn scrub_fraction_rounds_half_up_at_exact_half_step() {
 
 #[test]
 fn scrub_fraction_non_finite_single_page_is_zero() {
-    // Non-finite fraction AND a single-page book — the two zero-guards stack:
-    // a single page has span (count-1) == 0, AND a non-finite fraction is
-    // coerced to 0.0. Either alone forces page 0; together they must still be 0
-    // (and never panic), regardless of direction.
+    // Two zero-guards stack: a single page has span 0 AND a non-finite fraction is
+    // coerced to 0.0. Either alone forces page 0; together must still be 0, never panic.
     assert_eq!(scrub_fraction_to_page(f32::NAN, 1, true), 0);
     assert_eq!(scrub_fraction_to_page(f32::INFINITY, 1, false), 0);
 }
 
 #[test]
 fn scrub_fraction_odd_span_rtl_half_step_rounds_half_up() {
-    // Odd span (4 pages => last index 3) at an exact RTL half-step boundary,
-    // proving round-half-up holds on an odd span too (the existing
-    // `scrub_fraction_rounds_half_up_at_exact_half_step` uses an even span 4).
-    //
-    // RTL inverts the fraction BEFORE rounding, so the mapping is
-    //   floor((1 - frac) * 3 + 0.5).
-    // frac = 0.5 inverts to (1 - 0.5) = 0.5; 0.5 * 3 = 1.5, which is EXACTLY a
-    // half-step (k + 0.5 with k = 1); floor(1.5 + 0.5) = floor(2.0) = 2 — it
-    // rounds UP at exactly .5 (a round-half-down impl would give 1).
-    //
-    // f32-exactness: 0.5, (1 - 0.5) = 0.5, and 0.5 * 3 = 1.5 are all exactly
-    // representable in f32, so this assertion is not flaky. (The OTHER odd-span
-    // half-steps — (1 - frac) in {1/6, 5/6} — are NOT f32-exact, so the only
-    // exact half-step for span 3 is this midpoint; it coincides with the LTR
-    // midpoint but still exercises the half-up rule on an odd span.)
+    // Odd span (4 pages, index 3) at an exact RTL half-step: (1-0.5)*3=1.5 rounds UP
+    // to 2 (half-down gives 1). 0.5 and 1.5 are f32-exact so this is not flaky.
     assert_eq!(scrub_fraction_to_page(0.5, 4, true), 2);
 }
 
@@ -1173,11 +1119,8 @@ fn scrub_fraction_single_page_is_always_zero() {
 
 #[test]
 fn scrub_fraction_is_total_function_no_nan_panic() {
-    // A non-finite fraction (defensive: a degenerate Slint length ratio) must
-    // not panic and must produce the exact page mandated by the spec:
-    //   NaN  (LTR, 8 pages): non-finite → f=0.0 → floor(0.0*7+0.5)=0  → page 0.
-    //   +Inf (RTL, 8 pages): non-finite → f=0.0 → RTL inverts to 1.0
-    //                        → floor(1.0*7+0.5)=7 (truncate 7.5)        → page 7.
+    // A non-finite fraction (degenerate Slint length ratio) must not panic and is
+    // coerced to f=0.0: NaN/LTR -> page 0; +Inf/RTL inverts to 1.0 -> page 7.
     let p = scrub_fraction_to_page(f32::NAN, 8, false);
     assert_eq!(p, 0);
     let p2 = scrub_fraction_to_page(f32::INFINITY, 8, true);
@@ -1186,9 +1129,8 @@ fn scrub_fraction_is_total_function_no_nan_panic() {
 
 #[test]
 fn preview_is_double_matches_spread_layout() {
-    // Double / Standalone on 6 pages: {0}{1,2}{3,4}{5}. Cover (0) and last
-    // odd (5) are single; the inner pairs are double. preview_is_double must
-    // report this WITHOUT moving the index.
+    // Double / Standalone, 6 pages: {0}{1,2}{3,4}{5}. Cover (0) and last odd (5) are
+    // single, inner pairs double — preview_is_double must report this WITHOUT moving.
     let mut state = double_state();
     state.set_source(mock_with(6));
     assert!(!state.preview_is_double(0)); // cover stands alone
@@ -1241,11 +1183,8 @@ fn preview_is_double_paired_cover_is_double() {
 
 #[test]
 fn scrub_commit_path_jumps_via_jump_to() {
-    // The commit seam (on_scrub_commit in main.rs) receives the RAW release
-    // fraction from Slint, resolves it through scrub_fraction_to_page (the single
-    // source of rounding, including RTL inversion), then calls jump_to. Verify the
-    // end-to-end map: a screen-right release in LTR (fraction 1.0) -> last page ->
-    // jump_to lands on the last single leading.
+    // The commit seam (on_scrub_commit) resolves the RAW Slint release fraction via
+    // scrub_fraction_to_page (single source of rounding incl. RTL), then jump_to.
     let mut state = ViewerState::new();
     state.set_source(mock_with(8));
     let page = scrub_fraction_to_page(1.0, state.page_count(), false);
@@ -1270,9 +1209,8 @@ fn scrub_commit_path_jumps_via_jump_to() {
 
 #[test]
 fn set_spread_mode_to_double_renormalizes_index() {
-    // Single mode at index 2 of 6. Switching to Double / Standalone makes
-    // index 2 (even > 0) an invalid Standalone leading, so renormalize_index
-    // re-anchors it to the pair start 1 ({1,2}). set_spread_mode returns true.
+    // Single at index 2 of 6. Switching to Double/Standalone makes index 2 (even>0)
+    // an invalid leading, so renormalize re-anchors to pair start 1; returns true.
     let mut state = ViewerState::new();
     state.set_source(mock_with(6));
     state.apply(NavAction::Next);
@@ -1384,11 +1322,8 @@ fn set_reading_direction_same_value_is_noop() {
 
 #[test]
 fn set_spread_mode_to_auto_portrait_renormalizes_like_double() {
-    // Single mode at index 2 of 6. Portrait viewport (aspect < 1) means
-    // Auto resolves to Double. Switching from Single to Auto triggers
-    // renormalize_index under Double/Standalone semantics: index 2 (even > 0)
-    // is NOT a valid Standalone Double leading, so it re-anchors to the pair
-    // start 1 ({1,2}). set_spread_mode returns true (Single != Auto).
+    // Single at index 2 of 6, portrait viewport => Auto resolves to Double. index 2
+    // (even>0) isn't a valid Standalone Double leading, so it re-anchors to 1; true.
     let mut state = ViewerState::new();
     state.set_source(mock_with(6));
     state.apply(NavAction::Next);
@@ -1407,11 +1342,8 @@ fn set_spread_mode_to_auto_portrait_renormalizes_like_double() {
 
 #[test]
 fn set_spread_mode_to_auto_landscape_preserves_index() {
-    // Single mode at index 2 of 6. Landscape viewport (aspect > 1) means
-    // Auto resolves to Single, where every page is its own valid leading.
-    // Switching from Single to Auto still returns true (different enum
-    // values), triggers renormalize_index, but index 2 is already a valid
-    // Single leading so it stays unchanged.
+    // Single at index 2 of 6, landscape viewport => Auto resolves to Single (every
+    // page its own leading). Switch returns true, but index 2 stays a valid leading.
     let mut state = ViewerState::new();
     state.set_source(mock_with(6));
     state.apply(NavAction::Next);
@@ -1430,12 +1362,8 @@ fn set_spread_mode_to_auto_landscape_preserves_index() {
 
 #[test]
 fn set_cover_mode_preserves_valid_leading() {
-    // Double / Standalone at index 0 (the cover). Switching to Paired: in
-    // Paired, pairs are {0,1}{2,3}{4,5}, so index 0 is already a valid
-    // Paired leading. set_cover_mode returns true (mode changed) but index
-    // stays 0 (renormalize is idempotent on an already-valid leading).
-    // This complements the existing cover test that shows index DOES move
-    // when the old index is not a valid leading under the new mode.
+    // Double/Standalone at index 0 (cover). Switching to Paired ({0,1}{2,3}{4,5}), 0
+    // is already valid: returns true but index stays 0 (renormalize idempotent).
     let mut state = double_state();
     state.set_source(mock_with(6));
     assert_eq!(state.index(), 0);
@@ -1449,10 +1377,8 @@ fn set_cover_mode_preserves_valid_leading() {
 
 #[test]
 fn set_cache_config_updates_fields() {
-    // Calling set_cache_config must update the fields that set_source reads
-    // on the next open. This pins that a settings dialog can store new
-    // cache/preload values in the ViewerState so a subsequently opened book
-    // picks them up without requiring an app relaunch.
+    // set_cache_config updates the fields set_source reads on the next open, so a
+    // settings dialog's new cache/preload values apply to the next book, no relaunch.
     let mut state = ViewerState::new();
     // radius 7 exceeds MAX_PREFETCH_RADIUS (5) and is clamped by CacheConfig::new.
     state.set_cache_config(CacheConfig::new(99, 7));
@@ -1462,9 +1388,8 @@ fn set_cache_config_updates_fields() {
 
 #[test]
 fn apply_resolved_view_sets_direction_spread_cover() {
-    // Defaults are Single / Standalone / Ltr; the resolved view differs on all
-    // three so the assertions cannot pass vacuously. fit_mode is ignored here
-    // (ViewportState owns it); the caller applies it via ViewportState::set_fit.
+    // Defaults are Single/Standalone/Ltr; the resolved view differs on all three so
+    // asserts aren't vacuous. fit_mode is ignored here (ViewportState owns it).
     let mut s = ViewerState::new();
     s.apply_resolved_view(ResolvedView {
         reading_direction: ReadingDirection::Rtl,
@@ -1479,9 +1404,8 @@ fn apply_resolved_view_sets_direction_spread_cover() {
 
 #[test]
 fn close_returns_to_no_book_open_state() {
-    // After opening a source, close() must drop it and report the boot/no-folder
-    // shape: no source, zero pages/index, open_file None, status NoFolder. This
-    // is what the bulk-removal path uses when the open book is deleted.
+    // close() drops the source and reports the boot/no-folder shape (no source, zero
+    // pages/index, open_file None, status NoFolder). Used by bulk-removal of the open book.
     let mut state = ViewerState::new();
     state.set_source(mock_with(5));
     assert_eq!(state.page_count(), 5);
