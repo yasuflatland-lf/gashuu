@@ -107,6 +107,13 @@ pub(crate) fn wire_open_handlers(
                     )
                     .into(),
                 );
+                // Show the bottom progress hairline and advance its determinate
+                // fill. Epoch-guarded upstream, so only live-generation ticks reach here.
+                ui.set_add_active(true);
+                ui.set_add_progress_ratio(crate::add_loader::add_progress_ratio(
+                    done.max(0) as usize,
+                    total.max(0) as usize,
+                ));
             })
         });
     }
@@ -140,6 +147,10 @@ pub(crate) fn wire_open_handlers(
                     op,
                     localizer.loader(),
                 );
+                // This generation's add is complete — hide the progress hairline.
+                // (Superseded finalizes returned early above, so a newer in-flight
+                // add's bar is left running for its own finalize to retire.)
+                ui.set_add_active(false);
             })
         });
     }
