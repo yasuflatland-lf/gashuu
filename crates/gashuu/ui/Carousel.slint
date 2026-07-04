@@ -224,7 +224,8 @@ component CoverCard inherits Rectangle {
             Image {
                 source: @image-url("assets/no-image.svg");
                 colorize: Theme.text-faint;
-                width: Math.min(parent.width, parent.height) * 40%;
+                // 23.6% ≈ 1/φ³ on the repo's golden-ratio ladder (a quieter mark).
+                width: Math.min(parent.width, parent.height) * 23.6%;
                 height: self.width;
                 x: (parent.width - self.width) / 2;
                 y: (parent.height - self.height) / 2;

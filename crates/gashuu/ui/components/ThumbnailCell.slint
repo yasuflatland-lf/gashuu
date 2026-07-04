@@ -119,7 +119,9 @@ export component ThumbnailCell inherits Rectangle {
             Image {
                 source: @image-url("../assets/no-image.svg");
                 colorize: Theme.error;
-                width: Math.min(root.inner-w, root.inner-h) * 40%;
+                // 23.6% ≈ 1/φ³ on the repo's golden-ratio ladder — a quieter
+                // "no image" mark, one φ step below the 40% loading spinner.
+                width: Math.min(root.inner-w, root.inner-h) * 23.6%;
                 height: self.width;
                 horizontal-alignment: center;
             }
