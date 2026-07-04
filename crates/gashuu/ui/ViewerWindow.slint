@@ -22,35 +22,24 @@ export component ViewerWindow inherits Window {
     icon: @image-url("assets/app-icon.png");
     preferred-width: 900px;
     preferred-height: 1200px;
-    // Floor that keeps a two-page spread legible with the chrome: the floating
-    // ViewerPill and the bottom scrubber both need horizontal room, and a double
-    // spread is two half-width pages — below ~480px each half collapses to an
-    // unreadable sliver. The height floor keeps a portrait-ish page tall enough
-    // to read once the scrubber's bottom inset is subtracted. Tune the FLOOR
-    // only; the preferred-* boot size above is unchanged.
+    // Floor keeps a two-page spread legible: below ~480px each half collapses to a
+    // sliver. Tune the FLOOR only; the preferred-* boot size above is unchanged.
     min-width: 480px;
     min-height: 600px;
 
     // Top-level screen: 0 = Library (Carousel), 1 = Viewer. Pushed by main.rs
     // from NavState; app boots to Library (0).
     in property <int> screen: 0;
-    // True while an OS file/folder drag hovers the window (set by
-    // handlers/drag_drop.rs from raw winit hover events). Gates the drop-zone
-    // overlay below; only meaningful on the Library screen.
+    // True while an OS file/folder drag hovers the window (set by handlers/drag_drop.rs).
+    // Gates the drop-zone overlay below; only meaningful on the Library screen.
     in property <bool> drag-active: false;
     // Carousel model + focus index (filled by PR-C; empty shell for now).
     in property <[CarouselItem]> carousel-items;
     in-out property <int> carousel-focused-index;
 
-    // ── Library search seams (issue #88) — re-exposed for Rust ────────────────
-    // `library-search-query` mirrors the NavBar field text; `library-book-count`
-    // is the TOTAL book count (filter-independent) so the carousel can tell the
-    // empty-library CTA apart from the search no-results state.
-    // `library-search-changed` carries the debounced query to handlers/library.rs;
-    // `focus-library-search` lets Rust move focus into the field. The nav's
-    // `settings` click is routed straight to the existing `open-settings` flow
-    // below (no dedicated root callback), so the glass-pill Settings button opens
-    // the same SettingsDialog as the Viewer's ViewerPill Settings button.
+    // ── Library search seams (issue 88), re-exposed for Rust ──────────────────
+    // `library-book-count` is filter-INDEPENDENT so the carousel tells the
+    // empty-library CTA from the no-results state.
     in-out property <string> library-search-query;
     in property <int> library-book-count;
     callback library-search-changed(string);
@@ -61,18 +50,15 @@ export component ViewerWindow inherits Window {
     in property <bool> show-thumbnails: false;
 
     // ── Scrubber + auto-hide chrome (PR-S) ────────────────────────────────────
-    // Auto-hide state shared by the scrubber, ViewerPill, and floating title label. Revealed
-    // on mouse-move / arrow / drag; cleared by the idle Timer.
+    // Auto-hide state shared by the scrubber, ViewerPill, and title label; revealed
+    // on mouse-move / arrow / drag, cleared by the idle Timer.
     in-out property <bool> chrome-shown: false;
-    // Guards the phantom-reveal flip-flop after an idle-hide. When the chrome
-    // hides out from under a STATIONARY cursor, the vacated pill/title lets
-    // PageView's TouchArea re-acquire the cursor and emit a `changed mouse-x` —
-    // a phantom "move" that would re-reveal the chrome and flip-flop it every
-    // idle interval. See `reveal-chrome-from-pointer`.
+    // Guards the phantom-reveal flip-flop after an idle-hide: when the chrome hides
+    // under a STATIONARY cursor, the vacated pill lets PageView re-acquire it and emit
+    // a phantom `changed mouse-x` that would re-reveal every idle interval.
     property <bool> suppress-pointer-reveal: false;
-    // True while the pointer rests on the pill or the title capsule. The chrome
-    // must NOT auto-hide under the cursor there, so this pauses the idle timer
-    // (same role `field-focused` plays while typing a page number).
+    // True while the pointer rests on the pill/title: pauses the idle timer so the
+    // chrome doesn't auto-hide under the cursor (like `field-focused` while typing).
     property <bool> chrome-hovered: viewer-pill.hovered || title-touch.has-hover;
     // Scrubber data (1-based current page + total; direction + layout; preview thumbs).
     in property <int> scrubber-current-page;
@@ -95,11 +81,8 @@ export component ViewerWindow inherits Window {
     // the page body must NOT change) and with the page to commit on release.
     callback scrub-preview(float);
     callback scrub-commit(float);
-    // Fired whenever the user shows intent (mouse-move over the page / scrubber
-    // drag). Rust's `on_reveal_chrome` handler delegates straight back to the
-    // Slint `reveal-chrome-now()` function, which sets chrome-shown and restarts
-    // the idle timer. (Arrow / page-turn keys call `invoke_reveal_chrome_now()`
-    // directly in the `nav` handler, bypassing this callback.)
+    // Fired when the user shows intent (mouse-move / scrubber drag); Rust delegates
+    // back to reveal-chrome-now(). Arrow/page-turn keys call it directly instead.
     callback reveal-chrome();
     callback spread-anchored(float, float, bool, int, int, int);
     callback page-decode-error(int);
@@ -113,14 +96,11 @@ export component ViewerWindow inherits Window {
     in property <string> status-text: "No folder opened";
     // Idle value of the bottom strip — total library size, composed/pushed from Rust.
     in property <string> library-count-text;
-    // Attention-grabbing add notice — skips / failures only. Rust sets this (and
-    // clears `status-text` so the quiet strip falls back to the idle count, no
-    // duplicate text); the toast below shows it and auto-dismisses. In-out so the
-    // auto-dismiss Timer can clear it back to "" from Slint.
+    // Add notice — skips/failures only. Rust sets this (and clears `status-text`);
+    // the toast auto-dismisses. In-out so the auto-dismiss Timer can clear it to "".
     in-out property <string> add-toast-text;
-    // Book display name (set by handlers/library.rs on a successful open, cleared to "" when
-    // nothing is open). Declared on the root because Rust binds only to the root
-    // surface; consumed by the floating title label Rectangle in the viewer stage.
+    // Book display name (set by handlers/library.rs on open, "" otherwise). Declared on
+    // the root because Rust binds only to the root surface; consumed by the title label.
     in property <string> current-book-name;
     // Rust-computed content rectangle forwarded to PageView.
     in property <length> content-x: 0px;
@@ -131,10 +111,8 @@ export component ViewerWindow inherits Window {
     // Settings dialog / overlay visibility and state.
     in property <bool> show-settings: false;
     in property <bool> show-shortcuts: false;
-    // Private epoch: Rust bumps this (via focus-settings()) after closing the
-    // shortcuts overlay so SettingsDialog can re-focus its FocusScope. The
-    // if-gated dialog cannot be referenced by id from here, so the epoch is
-    // observed via a `changed` handler inside the dialog.
+    // Private epoch: Rust bumps this (via focus-settings()) so SettingsDialog re-focuses.
+    // The if-gated dialog has no id here, so it observes the epoch via a `changed` handler.
     property <int> settings-focus-epoch: 0;
     in-out property <int> reading-direction-index;
     in-out property <int> spread-mode-index;
@@ -158,23 +136,18 @@ export component ViewerWindow inherits Window {
     changed height => { root.resized(self.width, self.height); }
 
     callback thumbnail-clicked(int);
-    // Forwarded from the thumbnail strip so the Rust controller can lazily decode
-    // only the pages near the visible viewport. Args mirror ThumbnailStrip's
-    // callback: first on-screen content pixel, viewport width, per-cell stride.
+    // Forwarded from the thumbnail strip so Rust lazily decodes only near-viewport
+    // pages. Args: first on-screen content pixel, viewport width, per-cell stride.
     callback thumbnail-strip-visible-range-changed(length, length, length);
     callback toggle-thumbnails();
 
     public function focus-pages() { fs.focus(); }
-    // Rust calls this after closing the shortcuts overlay to return focus to
-    // SettingsDialog. The if-gated dialog cannot be referenced by id, so this
-    // bumps an epoch that the dialog's `changed` handler observes to re-focus
-    // its inner FocusScope.
+    // Rust calls this after closing the shortcuts overlay to refocus SettingsDialog.
+    // The if-gated dialog has no id, so it bumps an epoch the dialog observes.
     public function focus-settings() { root.settings-focus-epoch += 1; }
 
-    // Re-arm the idle-fade countdown: show the chrome, then stop+restart the timer
-    // so a full interval elapses from THIS reveal (not from whenever it last
-    // started). Called via invoke_reveal_chrome_now() from Rust on every reveal
-    // (mouse-move, arrow / page-turn key, or scrubber drag).
+    // Re-arm the idle-fade: show the chrome, then stop+restart the timer so a full
+    // interval elapses from THIS reveal. Called from Rust on every reveal.
     public function reveal-chrome-now() {
         root.chrome-shown = true;
         idle-timer.running = true;
@@ -182,11 +155,9 @@ export component ViewerWindow inherits Window {
         idle-timer.start();
     }
 
-    // Pointer-driven reveals (PageView hover) honor a brief suppression window
-    // after an idle-hide so the chrome does not flip-flop when it hides out from
-    // under a stationary cursor (see `suppress-pointer-reveal`). A genuine
-    // pointer move after the window reveals the chrome normally; arrow keys and
-    // scrubber drags bypass this guard via `reveal-chrome-now` directly.
+    // Pointer-driven reveals honor a brief suppression window after an idle-hide so
+    // the chrome doesn't flip-flop under a stationary cursor (see suppress-pointer-reveal).
+    // Arrow keys / scrubber drags bypass this guard via reveal-chrome-now directly.
     function reveal-chrome-from-pointer() {
         if (root.suppress-pointer-reveal) {
             return;
@@ -194,12 +165,9 @@ export component ViewerWindow inherits Window {
         root.reveal-chrome-now();
     }
 
-    // Arms the same brief pointer-reveal suppression window the idle-hide uses,
-    // single-sourcing the guard. Called from Rust whenever the LoadingSlot
-    // mounts/unmounts under a stationary cursor (cache-MISS page turn → loading
-    // flags true, then decode finish → loading flags false). Either toggle
-    // perturbs PageView's TouchArea hit-testing and emits a phantom
-    // `changed mouse-x` that would otherwise re-reveal the chrome.
+    // Arms the same pointer-reveal suppression window the idle-hide uses. Called from
+    // Rust when the LoadingSlot mounts/unmounts under a stationary cursor: either
+    // toggle perturbs PageView hit-testing and emits a phantom `changed mouse-x`.
     public function arm-pointer-reveal-suppression() {
         root.suppress-pointer-reveal = true;
         reveal-guard.start();
@@ -209,59 +177,37 @@ export component ViewerWindow inherits Window {
     callback carousel-open(int);
     callback carousel-move(int);
     callback carousel-back();
-    // The NavBar bookmark capsule: jump to the continue-reading book, or surface
-    // a no-bookmark notice. Same root-twin reason as the seams below — Slint
-    // exposes only the root window surface to Rust, so the carousel's
-    // `continue-reading` needs a forwarded root twin for handlers/library.rs to handle.
+    // NavBar bookmark capsule: jump to the continue-reading book, or a no-bookmark
+    // notice. Root twin because Slint exposes only the root surface to Rust.
     callback carousel-continue-reading();
-    // Bulk-selection seams (bulk-delete epic, PR-2). `carousel-selection-mode` is
-    // the root twin of the Carousel's `selection-mode`. The toggle/cover-clicked
-    // callbacks forward the focused/clicked VISIBLE carousel index to handlers/library.rs;
-    // `carousel-exit-selection` is the Esc clear. (Slint exposes only the root
-    // window surface to Rust — see docs/patterns.md — so each child seam needs a
-    // forwarded root twin.)
+    // Bulk-selection seams (PR-2). Root twins of the Carousel's seams; toggle/cover-
+    // clicked forward the VISIBLE index. (Slint exposes only the root surface to Rust.)
     in-out property <bool> carousel-selection-mode;
     callback carousel-toggle-selection(int);
     callback carousel-cover-clicked(int);
     callback carousel-exit-selection();
-    // SelectionToolbar root twins (bulk-delete epic, PR-4). `carousel-selection-
-    // count-text` is the pre-composed count label; `carousel-select-all-label`
-    // flips "Select all"/"Deselect all". `carousel-select-all()` fires from both
-    // the toolbar button and the carousel's Cmd/Ctrl+A arm. Same root-twin reason
-    // as above: Slint exposes only the root window surface to Rust.
+    // SelectionToolbar root twins (PR-4). Pre-composed count + select-all label;
+    // `carousel-select-all()` fires from the toolbar button AND the Cmd/Ctrl+A arm.
     in property <string> carousel-selection-count-text;
     in property <string> carousel-select-all-label;
     callback carousel-select-all();
-    // Delete root twins (bulk-delete epic, PR-5). `carousel-delete-label` is the
-    // pre-composed destructive label; `carousel-has-selection` gates the toolbar
-    // DangerButton. `carousel-request-delete()` fires from BOTH the toolbar
-    // button and the carousel's Delete/Backspace key arm; Rust composes the
-    // ConfirmDialog body and flips `show-confirm-delete` true. Same root-twin
-    // reason as above: Slint exposes only the root window surface to Rust.
+    // Delete root twins (PR-5). Pre-composed label + has-selection gate; request-delete()
+    // fires from the toolbar AND Delete/Backspace; Rust flips `show-confirm-delete`.
     in property <string> carousel-delete-label;
     in property <bool> carousel-has-selection;
     callback carousel-request-delete();
-    // ── Confirm-delete modal (bulk-delete epic, PR-5) ─────────────────────────
-    // `show-confirm-delete` gates the modal mount below; it is `in-out` so Rust
-    // opens it (on request-delete, after composing the body) and the dialog's
-    // own `cancel` path can close it WITHOUT a Rust round-trip (decision D4 —
-    // selection is preserved on cancel). The four text properties are
-    // pre-composed in Rust (title / itemized body lines / neutral info / danger
-    // warning); the confirm/cancel labels come from Strings. Rust closes the
-    // dialog itself on confirm (after the delete completes).
+    // ── Confirm-delete modal (PR-5) ───────────────────────────────────────────
+    // `show-confirm-delete` is `in-out` so `cancel` closes it WITHOUT a Rust round-trip
+    // (D4: selection preserved); the four text props are pre-composed in Rust.
     in-out property <bool> show-confirm-delete: false;
     in property <string> confirm-delete-title;
     in property <[string]> confirm-delete-body-lines;
     in property <string> confirm-delete-info;
     in property <string> confirm-delete-warning;
     callback confirm-delete-accepted();
-    // ── Update-available modal (auto-update epic, Task 9) ─────────────────────
-    // `show-update-available` gates the modal mount below; it is `in-out` so
-    // Rust opens it (after a background release check finds a newer version)
-    // and the dialog's own `later`/`skip` paths can close it WITHOUT a Rust
-    // round-trip, mirroring `show-confirm-delete`. The five content properties
-    // are pushed by Rust; `update-notes-available` and `update-in-progress`
-    // gate optional dialog content (the release-notes link / status line).
+    // ── Update-available modal (Task 9) ───────────────────────────────────────
+    // `show-update-available` is `in-out` so `later`/`skip` close it WITHOUT a Rust round-trip.
+    // `update-notes-available`/`update-in-progress` gate optional dialog content.
     in-out property <bool> show-update-available: false;
     in property <string> update-current-version;
     in property <string> update-latest-version;
@@ -272,31 +218,18 @@ export component ViewerWindow inherits Window {
     callback update-later();
     callback update-skip();
     callback update-notes();
-    // Add-picker triggers forwarded from the Carousel toolbar and CTA. Rust
-    // decides the dialog flavor behind add-books (files+folders on macOS,
-    // files-only elsewhere — see `combined-add-picker`).
+    // Add-picker triggers forwarded from the Carousel toolbar/CTA. Rust decides the
+    // add-books dialog flavor (files+folders on macOS, files-only elsewhere).
     callback add-books();
     callback add-folder();
     // True when one native dialog picks files AND folders (macOS): the Library
     // NavBar collapses its two add capsules into one. Pushed once at boot.
     in property <bool> combined-add-picker;
-    // Fired by Rust (cover loader) when a background worker opens a book's source
-    // CLEANLY but finds ZERO pages: the empty book must be removed, its cover
-    // cache purged, the carousel rebuilt, and a notice shown. The argument is the
-    // book's canonical filesystem path. Distinct from an open ERROR (unreadable),
-    // which keeps the placeholder + log behavior and fires NO event. handlers/library.rs binds
-    // the handler (on_empty_book_detected); the loader invokes it via
-    // invoke_empty_book_detected.
+    // Fired by the cover loader when a worker opens a book CLEANLY but finds ZERO pages
+    // (remove + purge + rebuild + notice). Distinct from an open ERROR, which fires nothing.
     callback empty-book-detected(/* canonical path */ string);
-    // Bulk-add async probe bridge (issue 206). The AddController probes each
-    // picked source on rayon workers (so the UI never freezes on large/cloud-
-    // synced archives) and marshals these two callbacks back to the UI thread,
-    // mirroring empty-book-detected. add-progress is fired on every probe
-    // completion with (done, total) so handlers/library.rs can show the transient
-    // "Adding… (k/N)" status; add-finalize is fired ONCE when the last probe
-    // completes, carrying the generation epoch so a superseded add is dropped —
-    // the handler drains the probed outcomes and runs the add (mutate library,
-    // save, rebuild carousel, notice) on the UI thread.
+    // Bulk-add async probe bridge (issue 206): AddController probes each source on rayon
+    // workers (UI never freezes). add-finalize fires ONCE with the epoch to drop a stale add.
     callback add-progress(/* done */ int, /* total */ int);
     callback add-finalize(/* epoch */ int);
     public function focus-carousel() { carousel.focus-self(); }
@@ -332,25 +265,21 @@ export component ViewerWindow inherits Window {
     callback clear-reading-history();
     callback clear-cover-cache();
     callback set-language(int);
-    // ── SettingsDialog: About / auto-update (auto-update epic, Task 10) ───────
-    // Root twins forwarded straight through to SettingsDialog's `app-version` /
-    // `auto-update-check` / `check-for-updates()` / `set-auto-update-check(bool)`
-    // — same reason as every other root twin in this file: Slint exposes only
-    // the root window surface to Rust.
+    // ── SettingsDialog About / auto-update (Task 10) ──────────────────────────
+    // Root twins forwarded to the dialog's app-version / auto-update-check /
+    // check-for-updates / set-auto-update-check.
     in property <string> settings-app-version;
     in-out property <bool> settings-auto-update-check: true;
-    // Transient feedback for the manual "Check for updates now" button; forwarded
-    // straight to SettingsDialog's `update-status` (same one-way in-prop shape as
-    // `data-action-status`/`settings-app-version`).
+    // Transient feedback for the manual "Check for updates now" button; forwarded to
+    // SettingsDialog's `update-status` (one-way in-prop, like data-action-status).
     in property <string> settings-update-status;
     callback settings-check-for-updates();
     callback settings-set-auto-update-check(bool);
 
     // ── Library screen ────────────────────────────────────────────────────────
-    // Both screens are always instantiated and toggled with `visible` (rather
-    // than `if`) so their FocusScope ids (`carousel`'s internal scope and `fs`)
-    // stay at root scope and remain reachable from the public focus functions
-    // and `init`. Slint's `if` puts ids in a child scope the parent cannot name.
+    // Both screens are always instantiated and toggled with `visible` (not `if`) so
+    // their FocusScope ids stay reachable from the focus functions: Slint's `if`
+    // puts ids in a child scope the parent cannot name.
     carousel := Carousel {
         visible: root.screen == 0;
         width: root.width;
@@ -364,9 +293,8 @@ export component ViewerWindow inherits Window {
         // Library — same condition the Viewer FocusScope uses (see `fs` below).
         modal-open: root.show-settings || root.show-shortcuts || root.show-confirm-delete || root.show-update-available;
         search-changed(q) => { root.library-search-changed(q); }
-        // The nav's Settings button opens the EXISTING SettingsDialog: route the
-        // click straight to the shared `open-settings` flow (same handler the
-        // Viewer title bar uses) rather than a separate placeholder callback.
+        // The nav's Settings button routes straight to the shared `open-settings` flow
+        // (same handler the Viewer title bar uses), not a separate placeholder callback.
         settings() => { root.open-settings(); }
         open(i) => { root.carousel-open(i); }
         move(delta) => { root.carousel-move(delta); }
@@ -392,13 +320,8 @@ export component ViewerWindow inherits Window {
     }
 
     // ── Library-screen status notice ─────────────────────────────────────────
-    // Shows add/save feedback (e.g. "Added 3 book(s)", "Already in library…")
-    // from the Carousel toolbar and CTA. Shares the same `status-text` property
-    // as the Viewer toolbar; visible only on the Library screen (screen == 0).
-    // Positioned as a bottom strip so it does not overlap the carousel toolbar.
-    // Transient notices always take precedence; the count is the strip's idle state.
-    // Mutually exclusive with the error toast below: while a toast is up the strip
-    // hides, so the bottom-center shows exactly one message at a time.
+    // Add/save feedback. Shares `status-text` with the Viewer; mutually exclusive
+    // with the error toast below (one message at a time).
     Text {
         visible: root.screen == 0 && root.add-toast-text == "";
         x: 0;
@@ -410,12 +333,9 @@ export component ViewerWindow inherits Window {
         horizontal-alignment: center;
     }
 
-    // ── Library add-error toast (severity-scaled notice) ─────────────────────
-    // Raised ONLY for add skips / failures (none-added-all-skipped, added-with-
-    // skips, save-failed); plain success + the idle count stay on the quiet strip
-    // above. While this toast is up the strip hides (mutual exclusion) so the two
-    // never overlap. The bound Timer auto-dismisses it a few seconds after Rust
-    // sets the text — the user is never blocked — and the strip then returns.
+    // ── Library add-error toast ───────────────────────────────────────────────
+    // Raised ONLY for add skips/failures (success + idle count stay on the strip
+    // above). The bound Timer auto-dismisses it a few seconds later.
     Timer {
         interval: 6s;
         running: root.screen == 0 && root.add-toast-text != "";
@@ -470,11 +390,8 @@ export component ViewerWindow inherits Window {
     }
 
     // ── Drag-and-drop drop zone ───────────────────────────────────────────────
-    // Full-window solid-frame affordance shown while an OS file/folder drag
-    // hovers the Library screen (`drag-active` is toggled by handlers/drag_drop.rs
-    // from raw winit hover events). Gated to the Library screen so a drag over the
-    // Viewer shows nothing. The component is purely visual (no TouchArea) — the
-    // actual add happens in Rust when the OS delivers the drop. See DropZone.slint.
+    // Drop-zone affordance shown while an OS drag hovers the Library screen (gated to
+    // it). Purely visual (no TouchArea) — the actual add happens in Rust on drop.
     if root.drag-active && root.screen == 0: DropZone {
         width: root.width;
         height: root.height;
@@ -482,13 +399,11 @@ export component ViewerWindow inherits Window {
 
     // ── Viewer screen (existing content) ───────────────────────────────────────
     // `visible`-gated (not `if`) so the inner `fs` FocusScope id stays reachable
-    // from `focus-pages()` and `init` (see the note on the carousel above).
+    // from `focus-pages()` and `init` (see the carousel note above).
     VerticalBox {
         visible: root.screen == 1;
-        // Viewer stage: the page and the auto-hiding chrome (ViewerPill +
-        // scrubber) stacked on top. PageView's TouchArea reveals the chrome on
-        // pointer movement via its `reveal()` callback. The chrome positions
-        // itself with absolute x/y relative to this Rectangle.
+        // Viewer stage: the page + auto-hiding chrome (ViewerPill + scrubber) on top.
+        // PageView reveals the chrome via `reveal()`; chrome uses absolute x/y here.
         Rectangle {
             // The FocusScope + PageView are unchanged; only wrapped so the chrome
             // can be absolutely positioned over them.
@@ -508,10 +423,8 @@ export component ViewerWindow inherits Window {
                         root.nav("up");
                         return accept;
                     }
-                    // Escape returns to the Library, mirroring Up. The modal guard
-                    // above already rejected this key when an overlay is open, so
-                    // Esc closes the topmost modal first and only leaves the Viewer
-                    // when none is open.
+                    // Escape returns to the Library, mirroring Up. The modal guard above
+                    // rejects it while an overlay is open, so Esc closes the topmost modal first.
                     if (event.text == Key.Escape) {
                         root.nav("escape");
                         return accept;
@@ -555,22 +468,16 @@ export component ViewerWindow inherits Window {
                     scroll-pan(dx, dy) => { root.scroll-pan(dx, dy); }
                     viewport-resized(w, h) => { root.viewport-resized(w, h); }
                     reveal() => { root.reveal-chrome-from-pointer(); }
-                    // Tap-to-turn: a clean tap on the LEFT/RIGHT half routes into
-                    // the SAME nav tokens as the arrow keys, so keymap.rs resolves
-                    // reading direction (RTL: left = next) and core resolves the
-                    // spread — no second page-turn seam. Mirrors the FocusScope
-                    // modal guard above: the modal backdrops already absorb
-                    // pointer input, but a tap must never leak a page turn under
-                    // an overlay if that ever changes (belt-and-braces).
+                    // Tap-to-turn: a tap on the left/right half routes into the SAME nav
+                    // tokens as the arrow keys, so keymap.rs resolves reading direction once.
+                    // Same modal guard as the FocusScope (belt-and-braces under an overlay).
                     tapped(tx) => {
                         if (!root.show-settings && !root.show-shortcuts && !root.show-confirm-delete && !root.show-update-available) {
                             root.nav(tx < self.width / 2 ? "left" : "right");
                         }
                     }
-                    // Two-finger horizontal swipe: routes its physical-direction
-                    // token into the SAME nav() seam as tap-to-turn / arrow keys,
-                    // so keymap.rs resolves reading direction once. Same modal
-                    // guard as tapped (belt-and-braces under an overlay).
+                    // Two-finger horizontal swipe: routes its direction token into the SAME
+                    // nav() seam as tap/arrows. Same modal guard as tapped (belt-and-braces).
                     page-swipe(dir) => {
                         if (!root.show-settings && !root.show-shortcuts && !root.show-confirm-delete && !root.show-update-available) {
                             root.nav(dir);
@@ -579,16 +486,9 @@ export component ViewerWindow inherits Window {
                 }
             }
 
-            // Title label above the pill (auto-hides with chrome). No backing
-            // capsule — the title sits directly over the page; legibility comes
-            // from a faux text-glow: Slint 1.x Text has no text-shadow (and a
-            // Rectangle drop-shadow paints a full-width bar, not a text glow), so
-            // the name is drawn several times in Theme.title-glow, offset ~1.5–2px
-            // around a crisp white copy. The wrapper hugs the name — its width
-            // tracks the text's preferred width (capped to the stage), and because
-            // preferred-width does not depend on this Rectangle's width there is no
-            // binding loop. Pinned to the top edge with a small inset; the pill is
-            // positioned BELOW it (see viewer-pill.y) so neither clips the other.
+            // Title label above the pill (auto-hides). Faux text-glow because Slint 1.x
+            // Text has no text-shadow: drawn several times in Theme.title-glow offset
+            // ~1.5–2px around a crisp copy. Wrapper hugs the name (no binding loop).
             title-label := Rectangle {
                 width: min(front-text.preferred-width + Theme.space-lg * 2, parent.width - Theme.space-xl * 2);
                 height: front-text.preferred-height + Theme.space-xs * 2;
@@ -596,14 +496,11 @@ export component ViewerWindow inherits Window {
                 y: Theme.space-sm;
                 background: transparent;
                 visible: root.chrome-shown && root.current-book-name != "";
-                // Hover sensor: keeps the chrome from auto-hiding while the pointer
-                // rests on the title (see idle-timer). Declared before the text so
-                // it sits behind it; the text is non-interactive anyway.
+                // Hover sensor: keeps the chrome from auto-hiding while the pointer rests
+                // on the title. Declared before the text so it sits behind it.
                 title-touch := TouchArea { }
-                // Glow copies behind the crisp white title (faux text-shadow).
-                // 8 directions (orthogonal + diagonal) at ~2px spread the glow
-                // wider than a 1px outline; the diagonals use ~1.5px so the halo
-                // stays roughly circular.
+                // Glow copies behind the crisp title (faux text-shadow): 8 directions,
+                // diagonals at ~1.5px vs ~2px orthogonal so the halo stays roughly circular.
                 for o in [
                     { dx: -2px, dy: 0px },
                     { dx: 2px, dy: 0px },
@@ -678,11 +575,8 @@ export component ViewerWindow inherits Window {
                 commit(p) => { root.scrub-commit(p); }
             }
 
-            // Idle fade timer. The `running` binding starts it for any reveal that
-            // flips chrome-shown true (via reveal-chrome-now()), which also does an
-            // explicit stop+restart so a full interval elapses from the latest reveal.
-            // When it fires, the chrome hides — but only if the page-jump field does
-            // not have focus (suppressed while the user types a page number).
+            // Idle fade timer. `running` starts it on any reveal (reveal-chrome-now does
+            // a stop+restart). On fire the chrome hides, unless the page-jump field has focus.
             idle-timer := Timer {
                 interval: 2500ms;
                 running: root.chrome-shown && !viewer-pill.field-focused && !root.chrome-hovered;
@@ -696,9 +590,8 @@ export component ViewerWindow inherits Window {
                     idle-timer.stop();
                 }
             }
-            // Clears the post-hide pointer-reveal suppression after a short window
-            // (long enough to absorb the phantom `changed mouse-x`, short enough
-            // that a real pointer move reveals the chrome without a felt delay).
+            // Clears the post-hide pointer-reveal suppression after a short window: long
+            // enough to absorb the phantom `changed mouse-x`, short enough to feel instant.
             reveal-guard := Timer {
                 interval: 250ms;
                 running: false;
@@ -719,17 +612,9 @@ export component ViewerWindow inherits Window {
         }
     }
 
-    // Modal overlays rendered as siblings of the VerticalBox so they stack on
-    // top of all page content. Slint children paint back-to-front in
-    // declaration order: first-declared = behind, last-declared = topmost.
-    // Explicit width/height fill the window surface.
-    // The modal stack, back-to-front (matching the declaration order below), is:
-    //   SettingsDialog → ShortcutsOverlay → ConfirmDialog → UpdateAvailableDialog
-    // Declaration order is load-bearing. show-settings and show-shortcuts are
-    // BOTH true while the shortcuts overlay is open (modal-over-modal), so
-    // ShortcutsOverlay MUST be declared AFTER SettingsDialog to paint above it.
-    // UpdateAvailableDialog is declared last so a background release check can
-    // surface over anything else on screen.
+    // Modal overlays: siblings of the VerticalBox, painting back-to-front in declaration
+    // order. Order is LOAD-BEARING: SettingsDialog → ShortcutsOverlay → ConfirmDialog →
+    // UpdateAvailableDialog (both show-settings & show-shortcuts true = modal-over-modal).
     if root.show-settings : SettingsDialog {
         width: root.width;
         height: root.height;
@@ -757,11 +642,8 @@ export component ViewerWindow inherits Window {
         clear-reading-history() => { root.clear-reading-history(); }
         clear-cover-cache() => { root.clear-cover-cache(); }
         set-language(i) => { root.set-language(i); }
-        // About / auto-update (auto-update epic, Task 10): app-version is a
-        // one-way in-prop (Rust-composed, like data-action-status above);
-        // auto-update-check is two-way bound AND its own callback fires so
-        // Rust can persist the change — same double-wiring as track-recent /
-        // allow-rar-archives above.
+        // About / auto-update (Task 10): app-version is one-way in-prop; auto-update-check
+        // is two-way bound AND fires its callback so Rust persists (like track-recent).
         app-version: root.settings-app-version;
         auto-update-check <=> root.settings-auto-update-check;
         update-status: root.settings-update-status;
@@ -770,29 +652,19 @@ export component ViewerWindow inherits Window {
         close-settings() => { root.close-settings(); }
         reset-to-global() => { root.reset-overrides(); }
     }
-    // ShortcutsOverlay: declared AFTER SettingsDialog so it paints above it —
-    // see the modal-stack note above. ConfirmDialog and UpdateAvailableDialog
-    // are declared later still, so they stack above this overlay when open.
+    // ShortcutsOverlay: declared AFTER SettingsDialog so it paints above it (see the
+    // modal-stack note). ConfirmDialog/UpdateAvailableDialog stack above it in turn.
     if root.show-shortcuts : ShortcutsOverlay {
         width: root.width;
         height: root.height;
         key-bindings-text: root.key-bindings-text;
         close-shortcuts() => { root.close-shortcuts(); }
     }
-    // ── Confirm-delete modal (bulk-delete epic, PR-5) ─────────────────────────
-    // The destructive confirm/cancel dialog, mounted as the LAST modal child so
-    // it paints on top of everything (declaration order == paint order). The
-    // `if` gate is the dialog's USAGE CONTRACT: it re-instantiates the subtree on
-    // every open, so the component's `init` re-focuses Cancel each time — hence
-    // NO focus-epoch is passed (the default 0 is correct; the epoch is only for
-    // re-claiming focus after a STACKED overlay closes, which never happens here).
-    // `cancel` is pure Slint (decision D4): it closes the dialog AND restores
-    // carousel focus WITHOUT a Rust round-trip, so the selection is preserved;
-    // Esc / backdrop / Enter all route to cancel() inside the component. Only
-    // `confirm` crosses to Rust, which performs the delete and closes the dialog
-    // itself. The `!root.modal-open` term that gates the toolbar already excludes
-    // show-confirm-delete, so the toolbar's pointer targets are suppressed behind
-    // this dialog.
+    // ── Confirm-delete modal (PR-5) ───────────────────────────────────────────
+    // Mounted LAST so it paints on top. The `if` gate re-instantiates on every open,
+    // so `init` re-focuses Cancel — NO focus-epoch needed. `cancel` is pure Slint
+    // (D4): closes + restores focus WITHOUT a Rust round-trip (selection preserved);
+    // only `confirm` crosses to Rust.
     if root.show-confirm-delete : ConfirmDialog {
         width: root.width;
         height: root.height;
@@ -806,16 +678,10 @@ export component ViewerWindow inherits Window {
         confirm => { root.confirm-delete-accepted(); }
         cancel => { root.show-confirm-delete = false; carousel.focus-self(); }
     }
-    // ── Update-available modal (auto-update epic, Task 9) ─────────────────────
-    // Mounted LAST (topmost) — a background release check can fire while any
-    // other screen/modal is up, so it must paint over everything, including
-    // the confirm-delete dialog above. The `if` gate is this dialog's USAGE
-    // CONTRACT (same reason as confirm-delete: re-instantiating on every open
-    // re-focuses "Later" via its own `init`, so no focus-epoch is needed).
-    // `later`/`skip` are pure Slint — they close the dialog themselves,
-    // mirroring confirm-delete's `cancel` — while `accept`/`notes` cross to
-    // Rust (download/self-replace, or opening the release page) without
-    // closing the dialog here; Rust owns that lifecycle in a later task.
+    // ── Update-available modal (Task 9) ───────────────────────────────────────
+    // Mounted LAST (topmost) — a background release check can fire over anything.
+    // The `if` gate re-focuses "Later" via `init` (no epoch). `later`/`skip` are
+    // pure Slint; `accept`/`notes` cross to Rust.
     if root.show-update-available : UpdateAvailableDialog {
         width: root.width;
         height: root.height;
@@ -832,9 +698,8 @@ export component ViewerWindow inherits Window {
 
     // Grab keyboard focus on startup so arrow keys work without a click.
     init => {
-        // App boots to Library; focus the carousel so its key seams work
-        // without a click. When Rust switches to the Viewer it calls
-        // focus-pages() to move focus there.
+        // App boots to Library; focus the carousel so its key seams work without a
+        // click. Rust calls focus-pages() when it switches to the Viewer.
         if (root.screen == 0) { carousel.focus-self(); } else { fs.focus(); }
     }
 }

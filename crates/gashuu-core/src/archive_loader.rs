@@ -194,10 +194,6 @@ mod tests {
         buf
     }
 
-    // ------------------------------------------------------------------
-    // ext_kind unit tests
-    // ------------------------------------------------------------------
-
     #[test]
     fn ext_kind_cbr_lowercase_is_rar() {
         assert_eq!(ext_kind(Path::new("x.cbr")), Some(Kind::Rar));
@@ -232,10 +228,6 @@ mod tests {
     fn ext_kind_no_extension_is_none() {
         assert_eq!(ext_kind(Path::new("noext")), None);
     }
-
-    // ------------------------------------------------------------------
-    // magic_kind unit tests
-    // ------------------------------------------------------------------
 
     #[test]
     fn magic_kind_rar_bytes_in_txt_file_resolves_to_rar() {
@@ -291,9 +283,8 @@ mod tests {
 
     #[test]
     fn magic_kind_too_short_file_is_none_not_error() {
-        // A 2-byte file with an unknown extension must produce None (UnsupportedFormat
-        // at the dispatch level), not an I/O error. This preserves the "short file
-        // maps UnexpectedEof → not a match" contract documented in CLAUDE.md.
+        // A 2-byte file must produce None (UnsupportedFormat at dispatch), not an I/O
+        // error — the "short read → not a match" contract documented in CLAUDE.md.
         let mut f = tempfile::Builder::new()
             .suffix(".bin")
             .tempfile()
@@ -306,10 +297,6 @@ mod tests {
             None
         );
     }
-
-    // ------------------------------------------------------------------
-    // FolderSource path
-    // ------------------------------------------------------------------
 
     #[test]
     fn directory_with_image_returns_folder_source() {
@@ -333,10 +320,6 @@ mod tests {
             "empty dir yields empty page list"
         );
     }
-
-    // ------------------------------------------------------------------
-    // ZipSource path — extension-based detection
-    // ------------------------------------------------------------------
 
     #[test]
     fn cbz_extension_opens_zip_source() {
@@ -383,10 +366,6 @@ mod tests {
         assert!(!source.list_pages().is_empty());
     }
 
-    // ------------------------------------------------------------------
-    // ZipSource path — magic-byte fallback (no/wrong extension)
-    // ------------------------------------------------------------------
-
     #[test]
     fn no_extension_zip_magic_opens_zip_source() {
         // Write real ZIP bytes to a file with no extension.
@@ -423,11 +402,8 @@ mod tests {
 
     #[test]
     fn eocd_magic_no_extension_opens_zip_source_with_empty_pages() {
-        // A 22-byte minimal end-of-central-directory record starts with
-        // PK\x05\x06 — the second ZIP_MAGICS entry. Written to a file with no
-        // zip extension, it must be detected via the magic-byte fallback and
-        // opened as a ZipSource (not UnsupportedFormat). The `zip` crate accepts
-        // a bare EOCD as a valid empty archive, so list_pages() must return [].
+        // A bare 22-byte EOCD (starts with PK\x05\x06) with no zip extension must be
+        // detected via magic fallback; `zip` accepts it as a valid empty archive → [].
         let mut f = tempfile::Builder::new()
             .prefix("eocd_only_")
             .tempfile()
@@ -446,10 +422,6 @@ mod tests {
             "empty ZIP (EOCD only) should yield no pages"
         );
     }
-
-    // ------------------------------------------------------------------
-    // RarSource path — extension-based detection
-    // ------------------------------------------------------------------
 
     #[test]
     fn cbr_extension_opens_rar_source() {
@@ -484,10 +456,6 @@ mod tests {
         );
     }
 
-    // ------------------------------------------------------------------
-    // RarSource path — magic-byte fallback (unknown extension)
-    // ------------------------------------------------------------------
-
     #[test]
     fn spoofed_txt_extension_with_rar_magic_opens_rar_source() {
         // A file named *.txt whose first bytes are the RAR magic must be
@@ -500,10 +468,6 @@ mod tests {
             "magic-byte RAR fallback should yield the 4 RarSource pages for .txt with Rar! header"
         );
     }
-
-    // ------------------------------------------------------------------
-    // UnsupportedFormat path
-    // ------------------------------------------------------------------
 
     #[test]
     fn non_zip_txt_returns_unsupported_format() {
@@ -570,9 +534,8 @@ mod tests {
 
     #[test]
     fn too_short_file_unknown_extension_returns_unsupported_format() {
-        // A 2-byte file with an unknown extension must result in UnsupportedFormat,
-        // NOT an I/O error — the short-file guard in magic_kind treats
-        // partial reads as "no match" rather than an error.
+        // A 2-byte file with unknown extension must yield UnsupportedFormat, not an I/O
+        // error — magic_kind's short-file guard treats partial reads as "no match".
         let mut f = tempfile::Builder::new()
             .suffix(".bin")
             .tempfile()
@@ -588,10 +551,6 @@ mod tests {
             "expected UnsupportedFormat, got: {err:?}"
         );
     }
-
-    // ------------------------------------------------------------------
-    // probe_page_count tests
-    // ------------------------------------------------------------------
 
     /// Build a text-only ZIP (no image entries) in memory.
     fn text_only_zip_bytes() -> Vec<u8> {
@@ -732,10 +691,6 @@ mod tests {
         let n = ArchiveLoader::probe_page_count(cbr.path()).expect("probe cbr ok");
         assert_eq!(n.get(), 4);
     }
-
-    // ------------------------------------------------------------------
-    // ArchivePolicy tests
-    // ------------------------------------------------------------------
 
     #[test]
     fn rar_extension_blocked_when_allow_rar_false() {

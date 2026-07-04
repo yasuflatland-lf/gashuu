@@ -239,11 +239,8 @@ impl ThumbnailCache {
         for_each_cache_file(&self.dir, |entry, meta| {
             let name = entry.file_name();
             let lossy = name.to_string_lossy();
-            // A `put` interrupted between temp write and rename strands its
-            // `write_atomic` temp (`.tmpXXXXXX`) forever. Reclaim ones past the
-            // stale threshold; a younger tmp may be an in-flight write on another
-            // thread, so the age guard protects it (an unreadable age counts as
-            // fresh).
+            // A `put` interrupted between temp write and rename strands its `.tmpXXXXXX`
+            // temp; reclaim ones past the stale threshold (a younger tmp may be in-flight).
             if lossy.starts_with(TMP_NAME_PREFIX) {
                 let mtime = meta.modified().unwrap_or(now);
                 let stale = now
@@ -296,9 +293,8 @@ impl ThumbnailCache {
     }
 }
 
-// Names this cache owns and may reclaim: current `.qoi` thumbnails, legacy `.png`
-// thumbnails (reclaim-only — never read after the codec switch), and `.tmpXXXXXX`
-// `write_atomic` temps.
+// Names this cache owns and may reclaim: `.qoi` thumbnails, legacy `.png` (reclaim-only,
+// never read after the codec switch), and `.tmpXXXXXX` `write_atomic` temps.
 fn is_owned_cache_file_name(name: &std::ffi::OsStr) -> bool {
     let lossy = name.to_string_lossy();
     lossy.ends_with(".qoi") || lossy.ends_with(".png") || lossy.starts_with(TMP_NAME_PREFIX)
@@ -544,9 +540,8 @@ mod tests {
 
     #[test]
     fn get_ignores_legacy_png_as_a_clean_miss() {
-        // A `.png` from a prior build is never read under the new `.qoi`
-        // extension: the lookup misses (and the file is later reclaimed by
-        // prune/clear), so the thumbnail is regenerated as `.qoi`.
+        // A `.png` from a prior build is never read under the new `.qoi` extension: the
+        // lookup misses (file later reclaimed by prune/clear), so it regenerates as `.qoi`.
         let dir = tempdir().unwrap();
         let cache = ThumbnailCache::with_dir(dir.path().to_path_buf());
         let key = "1234567890abcdef";
@@ -622,9 +617,8 @@ mod tests {
 
     #[test]
     fn purge_for_drifted_mtime_removes_nothing_and_does_not_error() {
-        // The cover was generated under one mtime; purging with a DRIFTED mtime
-        // derives a different key, so nothing matches: 0 removed, no error, and the
-        // original orphan stays on disk (harmless — reclaimed by `prune` later).
+        // The cover was generated under one mtime; purging with a DRIFTED mtime derives a
+        // different key, so nothing matches: 0 removed, no error, orphan stays (prune later).
         let dir = tempdir().unwrap();
         let cache = ThumbnailCache::with_dir(dir.path().to_path_buf());
         let path = Path::new("/manga/book.cbz");
@@ -684,11 +678,8 @@ mod tests {
 
     #[test]
     fn purge_pages_for_removes_all_strip_thumbnails_for_a_book() {
-        // A book's per-page strip thumbnails live under page_cache_key (the page
-        // index folded in, so each page is a distinct on-disk file). purge_pages_for
-        // reclaims every one across 0..page_count, leaving no orphaned strip .qoi
-        // behind — while the cover (a plain cache_key with no page index) is the
-        // sibling purge_for's job and survives the strip purge.
+        // A book's per-page strip thumbnails live under page_cache_key; purge_pages_for
+        // reclaims all 0..page_count, while the cover (plain cache_key) survives the purge.
         let dir = tempdir().unwrap();
         let cache = ThumbnailCache::with_dir(dir.path().to_path_buf());
         let path = Path::new("/manga/book.cbz");
@@ -735,9 +726,8 @@ mod tests {
 
     #[test]
     fn purge_pages_for_overshooting_page_count_skips_missing_keys() {
-        // A page_count larger than the strips actually on disk is best-effort: the
-        // extra page indices simply derive keys with no file, so only the present
-        // pages are removed and counted — no error, no panic.
+        // A page_count larger than the strips on disk is best-effort: extra indices derive
+        // keys with no file, so only the present pages are removed/counted — no error.
         let dir = tempdir().unwrap();
         let cache = ThumbnailCache::with_dir(dir.path().to_path_buf());
         let path = Path::new("/manga/book.cbz");
@@ -882,9 +872,8 @@ mod tests {
 
     #[test]
     fn prune_equal_mtime_tie_breaks_by_file_name() {
-        // Two entries with the SAME mtime and a cap that fits only one: the
-        // file-name tie-break makes the eviction deterministic (ascending name
-        // order, so "aaaa.qoi" goes first).
+        // Two entries with the SAME mtime and a cap that fits only one: the file-name
+        // tie-break makes eviction deterministic (ascending name, so "aaaa.qoi" first).
         let dir = tempdir().unwrap();
         let cache = ThumbnailCache::with_dir(dir.path().to_path_buf());
         // ONE shared instant: per-file `now()` reads would differ by microseconds
@@ -924,9 +913,8 @@ mod tests {
 
     #[test]
     fn prune_ignores_files_that_are_not_cache_entries() {
-        // Safety pin: the sweep only ever deletes what the cache itself owns
-        // (`*.qoi`, legacy `*.png`, stale tmp). A stray foreign file survives
-        // even a zero cap.
+        // Safety pin: the sweep only deletes what the cache owns (`*.qoi`, legacy `*.png`,
+        // stale tmp). A stray foreign file survives even a zero cap.
         let dir = tempdir().unwrap();
         let cache = ThumbnailCache::with_dir(dir.path().to_path_buf());
         let stray = dir.path().join("README.txt");
@@ -941,9 +929,8 @@ mod tests {
 
     #[test]
     fn prune_removes_stale_tmp_even_under_cap() {
-        // A crash between `put`'s temp write and rename leaves a `.tmpXXXXXX`
-        // temp behind forever. The sweep reclaims tmp files older than the stale
-        // threshold regardless of the cap (they are garbage, not payload).
+        // A crash between `put`'s temp write and rename strands a `.tmpXXXXXX` temp. The
+        // sweep reclaims tmp files past the stale threshold regardless of the cap.
         let dir = tempdir().unwrap();
         let cache = ThumbnailCache::with_dir(dir.path().to_path_buf());
         cache.put("aaaa", &tiny_decoded_image()).expect("seed");
@@ -976,10 +963,8 @@ mod tests {
 
     #[test]
     fn prune_reclaims_legacy_png_outside_the_cap() {
-        // Legacy `.png` entries from a prior build are never read under the new
-        // `.qoi` extension, so prune reclaims every one regardless of the cap —
-        // even one whose mtime is newer than a kept `.qoi`. The `.qoi` payload
-        // alone decides the size cap; the legacy bytes are not counted against it.
+        // Legacy `.png` entries are never read under the `.qoi` extension, so prune reclaims
+        // every one regardless of the cap; only `.qoi` payload counts against the size cap.
         let dir = tempdir().unwrap();
         let cache = ThumbnailCache::with_dir(dir.path().to_path_buf());
         cache.put("live", &tiny_decoded_image()).expect("seed qoi");
@@ -1022,9 +1007,8 @@ mod tests {
 
     #[test]
     fn get_hit_advances_file_mtime() {
-        // The near-LRU contract: a HIT refreshes the file's mtime so `prune`'s
-        // mtime-ascending eviction order approximates least-recently-USED, and a
-        // cover read every launch outlives an orphan written yesterday.
+        // The near-LRU contract: a HIT refreshes the file's mtime so `prune`'s ascending
+        // eviction approximates LRU — a cover read each launch outlives yesterday's orphan.
         let dir = tempdir().unwrap();
         let cache = ThumbnailCache::with_dir(dir.path().to_path_buf());
         cache.put("aaaa", &tiny_decoded_image()).expect("seed");
@@ -1063,10 +1047,8 @@ mod tests {
 
     #[test]
     fn is_owned_recognizes_write_atomic_temp_name() {
-        // `put` writes through `write_atomic`, which creates a `NamedTempFile`
-        // whose default name shape is `.tmpXXXXXX` (a `.tmp` PREFIX, not a `.tmp`
-        // suffix). The ownership matcher MUST recognize that shape so `prune`
-        // reliably reclaims a temp stranded by an interrupted `write_atomic`.
+        // `put` writes through `write_atomic`, whose `NamedTempFile` default name is
+        // `.tmpXXXXXX` (a `.tmp` PREFIX). The matcher must recognize it so `prune` reclaims it.
         let dir = tempdir().unwrap();
         let tmp = tempfile::NamedTempFile::new_in(dir.path()).expect("create temp in cache dir");
         let name = tmp
@@ -1085,9 +1067,8 @@ mod tests {
         let dir = tempdir().unwrap();
         let cache = ThumbnailCache::with_dir(dir.path().to_path_buf());
 
-        // 4x4 image whose pixels all carry distinct RGBA values derived from the
-        // pixel index, so a channel swap or row-stride bug cannot round-trip
-        // unnoticed (a solid-color fixture would hide it).
+        // 4x4 image whose pixels carry distinct RGBA values (from the pixel index), so a
+        // channel-swap or row-stride bug can't round-trip unnoticed (a solid fixture would).
         let mut rgba = Vec::with_capacity(4 * 4 * 4);
         for i in 0..(4u8 * 4) {
             rgba.extend_from_slice(&[i, i.wrapping_add(64), i.wrapping_add(128), 255]);

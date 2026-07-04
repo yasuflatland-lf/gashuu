@@ -282,9 +282,8 @@ mod folder_source_tests {
 
     #[test]
     fn read_file_capped_boundary_is_inclusive() {
-        // A file of exactly `max` bytes must succeed; `max + 1` must return EntryTooLarge.
-        // Uses raw byte content (not a valid PNG) so the size is precisely controlled,
-        // with a `.png` extension so has_image_ext passes at open time.
+        // A file of exactly `max` bytes must succeed; `max + 1` returns EntryTooLarge. Raw
+        // bytes (not a valid PNG) for precise size, with `.png` so has_image_ext passes.
         const MAX: u64 = 32;
         let dir = tempfile::tempdir().unwrap();
 

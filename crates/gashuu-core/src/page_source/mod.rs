@@ -61,10 +61,8 @@ mod tests {
 
     #[test]
     fn page_entry_carries_name_only() {
-        // Exhaustive struct literal: if any non-defaulting field is added to
-        // PageEntry this line stops compiling, making it a compile-time regression
-        // tripwire. It is NOT a runtime/behavioral guarantee — it guards the
-        // struct's shape, not the correctness of index↔name↔bytes pairing.
+        // Exhaustive struct literal: adding any non-defaulting field to PageEntry breaks
+        // this compile — a shape tripwire, not a runtime guarantee about index↔name↔bytes.
         let entry = PageEntry { name: "x".into() };
         assert_eq!(entry.name, "x");
     }

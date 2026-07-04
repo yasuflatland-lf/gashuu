@@ -22,9 +22,8 @@ pub(crate) fn restore_geometry(ui: &ViewerWindow, settings: &Settings) {
     let Some(geom) = settings.window else {
         return;
     };
-    // ~30 immediate re-arms is far more than the 1-2 ticks the window needs in
-    // practice; the bound only prevents an unbounded loop on a hypothetical
-    // non-winit build where the window never appears.
+    // ~30 re-arms far exceeds the 1-2 ticks the window needs; the bound only prevents an
+    // unbounded loop on a hypothetical non-winit build where the window never appears.
     arm_apply(ui.as_weak(), geom, 30);
 }
 

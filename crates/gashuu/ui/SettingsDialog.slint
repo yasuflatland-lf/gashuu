@@ -1,41 +1,5 @@
-// Modal settings overlay for gashuu — a content-hug "liquid glass" panel
-// (issue 103, PR-B; visual polish: spec 2026-06-04 — the fixed φ outline was
-// deliberately dropped; φ now lives in the component proportions instead:
-// toggle track ratio, the 8/14/22 spacing ladder, segment padding).
-//
-// Form factor: 432px wide (clamped to the window so a narrow window keeps a
-// space-md gutter each side), height hugging header + body + footer, radius 21px
-// (shares NavBar's glass corner language), height CLAMPED to
-// min(content, window.height − 2·space-huge) so a short window scrolls the
-// body instead of overflowing (Marcotte). The panel is ONE fake-glass object —
-// NavBar's four-layer fake-glass idiom (fill + 1px rim + 1px top highlight + one
-// drop shadow), with layer 1 promoted from a solid fill to a top-sheen
-// @linear-gradient. No nested glass / no second shadow. The sheen is a FILL
-// gradient, not an opacity layer (opacity blurs text/SVG on HiDPI — patterns.md).
-//
-// Content: four whitespace-delineated sections (Reading / Display / Performance
-// / General) of token-driven atoms (Segmented / Stepper / Toggle / Dropdown),
-// each laid out by a SettingRow between the L1 seam (settings-control-x) and
-// the shared right rail (fill segments span both; compact atoms trail on the
-// rail). Section headers are text-dim sentence-case SEMIBOLD eyebrows (NOT
-// accent — accent marks interactive/selected only). Rhythm: rows 14px apart,
-// sections 22px apart (Fibonacci 8/13/21 ladder ≈ ×φ steps; spec 2026-06-04).
-//
-// Dismiss: Esc (FocusScope) + backdrop-click + Close button, all three. The panel
-// absorbs clicks via a lowest-layer TouchArea so a click inside it does not bubble
-// to the backdrop dismiss. The dialog's FocusScope (`fs`) WRAPS the panel content,
-// so it is a genuine ANCESTOR of every control: when a focused atom's inner
-// FocusScope rejects an unhandled key, Slint walks strictly up the focused item's
-// parent chain (Slint 1.16 window.rs) — which now passes through `fs` — so Esc
-// reaches `fs.key-pressed` even while a child control holds focus. (`fs` must be an
-// ancestor, not a sibling, or that upward walk never visits it.) Verify by hand —
-// the cargo gates don't exercise .slint key handling.
-//
-// Each setting change fires a callback so Rust can react; the Rust setters are
-// idempotent (no-op on equal values) to absorb the atoms' selection self-fire.
-// The Slint↔Rust contract (the *-index / value in-out props + set-* callbacks) is
-// preserved exactly. key-bindings-text (parked in PR-B) is removed in PR-C; the
-// shortcuts overlay (ShortcutsOverlay.slint) now owns that content.
+// Modal settings overlay (issue 103): content-hug "liquid glass" panel. Rust setters
+// are idempotent (no-op on equal values) to absorb the atoms' selection self-fire.
 import { Theme } from "Theme.slint";
 import { Strings } from "Strings.slint";
 import { PrimaryButton } from "components/PrimaryButton.slint";
@@ -49,24 +13,8 @@ import { AboutSettings } from "settings/AboutSettings.slint";
 import { SettingsNavRow } from "components/SettingsNavRow.slint";
 import { ScrollIndicator } from "components/ScrollIndicator.slint";
 
-// Slide wrapper for one drill-in screen (issue 351). Clips a horizontal entrance
-// and hugs the inner content height, so `content.preferred-height` — hence the
-// eased `panel-height` — still content-hugs the active screen. Detail screens
-// enter from the RIGHT (drill-in, `from-left` default false); the top list enters
-// from the LEFT on back-navigation (`from-left: true`). On the initial dialog open
-// (`nav-animate` false) the content mounts in place at x: 0, so opening the dialog
-// never slides. Each call site slots its own screen content via @children and its
-// own focus `init` — the id it focuses is declared in the call site's scope, so
-// the focus call must live there (an id inside an `if` subtree is unreachable from
-// outside it).
-//
-// The entrance-flip is DEFERRED to after the first frame by a 1ms Timer, NOT done
-// in `init`: a fresh if-gated instance that flips `entered` in `init` SNAPS — init
-// runs before the inner `x` is first evaluated, so `x` mounts at 0 with no
-// off-screen start (patterns.md — "a new instance snaps with no transition"). The
-// Timer fires post-mount, so `x` mounts off-screen and then animates in. `running`
-// self-stops once `entered` flips, so it fires exactly once and never on the
-// static initial open (nav-animate false).
+// Slide wrapper for one drill-in screen (issue 351). Entrance-flip is DEFERRED to the
+// first frame via a 1ms Timer, NOT init (init runs before x is evaluated → snaps; patterns.md).
 component SlideScreen inherits Rectangle {
     // Mirrors the dialog's `nav-animate`: false only for the static first open,
     // true for every later screen swap so it slides.
@@ -126,26 +74,19 @@ export component SettingsDialog inherits GlassModal {
     // Index into the language dropdown model (En=0, Ja=1 — enum_adapters.rs
     // owns the authoritative ordering).
     in-out property <int> language-index;
-    // ── About / auto-update (auto-update epic, Task 10) ───────────────────────
-    // The running app's version (e.g. "0.11.0"), pre-composed in Rust from
-    // CARGO_PKG_VERSION — a plain `in` prop, like `data-action-status` below.
+    // About / auto-update (auto-update epic, Task 10). The running app's version
+    // (e.g. "0.11.0"), pre-composed in Rust from CARGO_PKG_VERSION — a plain `in` prop.
     in property <string> app-version;
     // Whether the app checks GitHub Releases for a newer version on startup.
     in-out property <bool> auto-update-check: true;
-    // Transient feedback for the manual "Check for updates now" button (e.g.
-    // "Checking…" / "You're on the latest version." / "Couldn't check for
-    // updates."). Empty string = no message shown, same convention as
-    // `data-action-status` below. Rust clears it once a newer version is found
-    // (the update-available dialog takes over), on the next manual check, and
-    // on the next dialog open (on_open_settings sets it back to "").
+    // Transient feedback for "Check for updates now" (e.g. "Checking…"/"…latest version.").
+    // Empty = no message; Rust clears it once a newer version is found, on next check, and on open.
     in property <string> update-status;
     // True when this dialog edits the CURRENT book's per-book settings (opened
     // from the Viewer): shows the per-book title and the reset-to-global button.
     in property <bool> show-reset-button: false;
-    // Pre-composed feedback for the clear-history / clear-cache actions.
-    // Empty string = no message shown. Rust pushes a transient string; it is
-    // reset to empty the next time the dialog opens (on_open_settings sets it
-    // back to "").
+    // Pre-composed feedback for the clear-history / clear-cache actions. Empty = no
+    // message; Rust pushes a transient string, reset to empty on the next dialog open.
     in property <string> data-action-status;
 
     // ── Callbacks fired when the user changes a setting ───────────────────────
@@ -168,101 +109,60 @@ export component SettingsDialog inherits GlassModal {
     callback check-for-updates();
     // Fired on Esc, backdrop-click, or the Close button.
     callback close-settings();
-    // Fired when the user activates the "Shortcuts" footer link (mouse click,
-    // Return/Space, or accessible-action-default). ViewerWindow opens
+    // Fired when the user activates the "Shortcuts" footer link. ViewerWindow opens
     // ShortcutsOverlay in response and bumps focus-epoch on close.
     callback open-shortcuts();
     // Fired when the user clicks "Reset to global" (viewer context only).
     callback reset-to-global();
 
-    // Bumped by ViewerWindow when the shortcuts overlay closes so this
-    // still-mounted dialog reclaims keyboard focus. An if-gated dialog cannot be
-    // reached by id from outside, so the parent signals through this property.
+    // Bumped by ViewerWindow when the shortcuts overlay closes so this still-mounted
+    // dialog reclaims focus. An if-gated dialog is unreachable by id, so signal via a property.
     in property <int> focus-epoch: 0;
     changed focus-epoch => {
-        // Focuses the dialog's own FocusScope (not a child control like `init`
-        // does) so Esc and Tab are immediately active on return from the overlay.
-        // The first interactive control is intentionally not pre-selected — the
-        // user left mid-task and returns to the same state they left.
+        // Focuses the dialog's own FocusScope (not a child control) so Esc/Tab are active
+        // on return; the first control is intentionally not pre-selected (user returns mid-task).
         fs.focus();
     }
 
-    // ── Drill-in navigation state (issue 348) ─────────────────────────────────
-    // Which screen the GLOBAL (Library) dialog shows: 0 = the grouped top-level
-    // list, 1..5 = a category detail (Reading / Display / Performance /
-    // General+Data / About). The per-book (Viewer) dialog ignores this and stays
-    // flat. `active-row` remembers which top-list row drilled in, so returning to
-    // the list restores focus to it. Internal state — not part of the public
-    // Slint↔Rust surface.
+    // Drill-in navigation state (issue 348). current-screen: 0 = grouped top list,
+    // 1..5 = category detail; per-book ignores it. active-row restores focus on return.
     property <int> current-screen: 0;
     property <int> active-row: 0;
-    // Gates the drill-in slide so the dialog OPENS static (no slide on the first
-    // mount): it flips true on the first navigation and stays true for the life of
-    // the (re-instantiated-per-open) dialog. Each screen reads it to decide whether
-    // to enter from off-screen or mount in place.
+    // Gates the drill-in slide so the dialog OPENS static: flips true on the first
+    // navigation and stays true for the dialog's life; each screen reads it to slide or not.
     property <bool> nav-animate: false;
 
-    // ── Panel geometry + backdrop wiring (glass chrome lives in GlassModal) ────
-    // Responsive width: shows the full 432px on roomy windows, but never
-    // overflows a narrow one — it shrinks to leave a small space-md gutter
-    // on each side (mirrors the height clamp below, which reads the same
-    // `root` — the SettingsDialog root that fills the window).
+    // Panel geometry + backdrop wiring (glass chrome lives in GlassModal). Responsive
+    // width: full 432px on roomy windows, shrinks to a space-md gutter each side on narrow ones.
     panel-width: min(Theme.settings-w, root.width - 2 * Theme.space-md);
-    // Content-hug height inside the Marcotte clamp (spec 2026-06-04): the
-    // panel is exactly header + body content + footer tall — no dead slack
-    // for the Flickable to absorb — but never taller than the window minus a
-    // gutter each side (then the body scrolls). A Flickable does NOT
-    // propagate its content's preferred height (that's why it can scroll),
-    // so the sum is assembled explicitly from the named parts.
+    // Content-hug height (Marcotte clamp): header + body + footer, capped at window
+    // height (then body scrolls). A Flickable doesn't propagate content height, so sum the parts.
     panel-height: min(
         Theme.space-lg + header-row.preferred-height + content.preferred-height + footer-block.height,
         max(0px, root.height - 2 * Theme.space-huge));
-    // Ease the content-hug height so a drill-in that changes the active screen's
-    // height glides instead of jumping. `animate` does NOT fire on the initial
-    // binding, so the dialog still opens at its resting height with no animation;
-    // only later screen swaps ease. (Only x and panel-height are animated — the
-    // glass drop-shadow stays static, since animating drop-shadow-* is version-
-    // fragile — docs/patterns.md.)
+    // Ease the content-hug height so drill-in screen swaps glide. `animate` doesn't fire on
+    // the initial binding (opens static); drop-shadow stays static — animating it is version-fragile.
     animate panel-height {
         duration: Theme.motion-med;
         easing: ease-in-out;
     }
     backdrop-clicked => { root.close-settings(); }
 
-    // ── FocusScope: Esc-to-close + initial focus on the first control ──────
-    // WRAPS the panel content so it is a genuine ANCESTOR of every control:
-    // on appear it hands focus to the first control (Segmented's public
-    // focus-control()) — it does NOT keep focus itself, so arrow-key control
-    // and first-control-focus both work. On Esc, closes; all other keys are
-    // rejected so they reach the focused child control. A focused child atom's
-    // FocusScope rejects unhandled keys; Slint then walks UP the focused item's
-    // parent chain, which passes through this scope, so Esc fires here.
-    // Slotted as GlassModal's @children, after GlassModal's click-absorber —
-    // FocusScope does not intercept pointer events, so empty-panel clicks fall
-    // through to that absorber regardless of declaration order; controls keep
-    // hit-test priority over the absorber's TouchArea because they are declared
-    // after it.
+    // FocusScope WRAPS the panel content as a genuine ANCESTOR of every control: a key rejected
+    // by a focused atom walks UP the parent chain to reach Esc here; it doesn't keep focus so arrows work.
     fs := FocusScope {
         x: 0;
         y: 0;
-        // Size to the glass PANEL, not `parent`. This FocusScope is slotted into
-        // GlassModal's `panel` via @children, but @children only relocates where
-        // the element DRAWS — in property expressions `parent` still resolves to
-        // the lexical parent, i.e. this dialog's root (which fills the window).
-        // `parent.width/height` would therefore stretch the content to the whole
-        // window and overflow the panel; `root.panel-*` is the panel's true size.
+        // Size to the glass PANEL, not `parent`: @children only relocates where an element
+        // DRAWS — `parent` still resolves to the lexical root (fills window), so use root.panel-*.
         width: root.panel-width;
         height: root.panel-height;
-        // Initial focus is set by each content screen's own `init` (which fires on
-        // the initial mount, unlike `changed`): the per-book wrapper focuses its
-        // first control, and the global top list focuses its first row. An id
-        // declared inside an `if` subtree is not reachable from here, so the focus
-        // must live where the id is in scope.
+        // Initial focus is set by each screen's own `init` (fires on mount, unlike `changed`):
+        // an id inside an `if` subtree isn't reachable here, so focus must live where the id is.
         key-pressed(event) => {
             if (event.text == Key.Escape) {
-                // Two-stage Esc for the global drill-in: from a detail screen, Esc
-                // pops back to the top list; from the top list (or the flat
-                // per-book dialog) it closes.
+                // Two-stage Esc (global drill-in): from a detail screen Esc pops to the top
+                // list; from the top list (or the flat per-book dialog) it closes.
                 if (!root.show-reset-button && root.current-screen > 0) {
                     root.nav-animate = true;
                     root.current-screen = 0;
@@ -282,11 +182,8 @@ export component SettingsDialog inherits GlassModal {
             height: parent.height;
             padding-top: Theme.space-lg;
 
-            // ── Sticky header ─────────────────────────────────────────────────
-            // Adaptive: the top-level title on the flat per-book dialog and the
-            // global top list (screen 0); a "‹ Settings" back control + category
-            // name on the global detail screens (1..5). The back control stays in
-            // the sticky header so it is always reachable while the body scrolls.
+            // Sticky header (adaptive): top-level title on the flat/top-list screens; a
+            // "‹ Settings" back control + category on detail screens, kept sticky so it stays reachable.
             header-row := HorizontalLayout {
                 padding-left: Theme.space-xl;
                 padding-right: Theme.space-xl;
@@ -294,9 +191,8 @@ export component SettingsDialog inherits GlassModal {
                 spacing: Theme.space-sm;
                 // Top-level title (per-book always; global only on the top list).
                 if root.show-reset-button || root.current-screen == 0 : Text {
-                    // "Book settings" when editing the current book's per-book
-                    // override (opened from the Viewer); plain "Settings" for the
-                    // global defaults (Library screen).
+                    // "Book settings" when editing the current book's per-book override
+                    // (from the Viewer); plain "Settings" for the global defaults (Library).
                     text: root.show-reset-button ? Strings.settings-book-title : Strings.settings-title;
                     font-size: Theme.font-title;
                     font-weight: Theme.weight-semibold;
@@ -308,9 +204,8 @@ export component SettingsDialog inherits GlassModal {
                 // Sub-screen header (global detail screens): back control + category.
                 if !root.show-reset-button && root.current-screen != 0 : HorizontalLayout {
                     spacing: Theme.space-sm;
-                    // Focusable "‹ Settings" back control: pops to the top list on
-                    // click / Return / Space / AT default. Esc is rejected so it
-                    // propagates to the ancestor `fs` (two-stage Esc).
+                    // Focusable "‹ Settings" back control: pops to the top list on click /
+                    // Return / Space / AT default. Esc is rejected so it reaches ancestor `fs`.
                     back-control := FocusScope {
                         horizontal-stretch: 0;
                         width: back-label.preferred-width;
@@ -362,11 +257,8 @@ export component SettingsDialog inherits GlassModal {
                 }
             }
 
-            // ── Scrollable body ───────────────────────────────────────────────
-            // A Flickable (not std ScrollView — its native scrollbar paints a
-            // light palette that breaks the glass, design §6.3). The viewport
-            // height is the intrinsic content height, so it scrolls ONLY when the
-            // content overflows the visible body (clamped-window case).
+            // Scrollable body — a Flickable, not std ScrollView (its native scrollbar paints a
+            // light palette that breaks the glass, design §6.3). Scrolls only when content overflows.
             body := Flickable {
                 vertical-stretch: 1;
                 viewport-width: self.width;
@@ -375,18 +267,14 @@ export component SettingsDialog inherits GlassModal {
                 content := VerticalLayout {
                     padding-left: Theme.space-xl;
                     padding-right: Theme.space-xl;
-                    // φ ladder (spec 2026-06-04): 22px between sections
-                    // (≈ Fibonacci 21), and the same 22px below the last
-                    // section so the footer hairline reads as the final
-                    // section boundary.
+                    // φ ladder (spec 2026-06-04): 22px (≈ Fibonacci 21) between sections and below
+                    // the last, so the footer hairline reads as the final section boundary.
                     spacing: Theme.space-xxl;
                     padding-bottom: Theme.space-xxl;
                     alignment: start;
 
-                    // ══ Per-book (Viewer): flat — unchanged from the extraction ══
-                    // Reading + Display + Performance with their eyebrows; the
-                    // global-only General/Data/About are omitted, exactly as
-                    // before. The drill-in navigation below is global-only.
+                    // Per-book (Viewer): flat — Reading + Display + Performance with eyebrows;
+                    // the global-only General/Data/About are omitted. Drill-in below is global-only.
                     if root.show-reset-button : VerticalLayout {
                         spacing: Theme.space-xxl;
                         init => {
@@ -432,23 +320,15 @@ export component SettingsDialog inherits GlassModal {
                         }
                     }
 
-                    // ══ Global (Library): HIG drill-in navigation ══
-                    // Screen 0 — the grouped top-level list. Each row drills into a
-                    // category. Value previews are added in a later batch step.
-                    // Sub-screens are gated by `if current-screen == N` so their
-                    // controls stay OUT of the Tab chain when inactive; only the
-                    // active screen's content is instantiated, so
-                    // `content.preferred-height` (hence panel-height) hugs it.
+                    // Global (Library): HIG drill-in. Screen 0 = grouped top list; sub-screens are
+                    // `if`-gated so only the active one joins the Tab chain and drives panel-height.
                     if !root.show-reset-button && root.current-screen == 0 : SlideScreen {
                         // The top list enters from the LEFT on a back-navigation.
                         from-left: true;
                         nav-animate: root.nav-animate;
                         content-spacing: Theme.space-xs;
-                        // On (re)creation focus the originating row: the first row on
-                        // the initial mount (active-row defaults 0) or the row the user
-                        // drilled from when returning. `init` fires exactly when this
-                        // list is mounted, so the row already exists. The row ids are
-                        // declared in THIS if-subtree, so the focus init must live here.
+                        // On (re)creation focus the originating row (first row on initial mount, or the
+                        // drilled-from row on return). Row ids live in this if-subtree, so init must be here.
                         init => {
                             if (root.active-row == 1) {
                                 row-display.focus-row();
@@ -610,11 +490,8 @@ export component SettingsDialog inherits GlassModal {
                         }
                     }
 
-                    // Screen 5 — About detail. AboutSettings has no focusable-first
-                    // seam (its first control is a Toggle), so focus falls to the
-                    // dialog scope: Esc / back / Tab all work and the back control is
-                    // the first Tab stop. About now hosts the Shortcuts row, forwarded
-                    // to the dialog's existing open-shortcuts() callback.
+                    // Screen 5 — About detail. AboutSettings has no focusable-first seam, so focus
+                    // falls to the dialog scope (Esc/back/Tab work). It hosts the Shortcuts row.
                     if !root.show-reset-button && root.current-screen == 5 : SlideScreen {
                         nav-animate: root.nav-animate;
                         init => {
@@ -642,12 +519,8 @@ export component SettingsDialog inherits GlassModal {
             // ── Sticky footer ─────────────────────────────────────────────────
             footer-block := Rectangle {
                 vertical-stretch: 0;
-                // Symmetric space-lg above/below the row — 14px ≈ Fib 13,
-                // the SAME ladder rung as the body's row gap, so the footer
-                // breathes on the row rhythm (bumped from space-md after
-                // visual review: 10px read cramped around the 32px buttons
-                // beside the 21px bottom corner). The panel's bottom inset
-                // is owned HERE (body-col padding-bottom is gone).
+                // Symmetric space-lg above/below the row (14px ≈ Fib 13, the body row-gap rung),
+                // bumped from space-md (10px read cramped). Panel bottom inset is owned HERE.
                 height: footer-row.preferred-height + 2 * Theme.space-lg;
 
                 // 1px hairline top edge honestly marks the scroll boundary.
@@ -659,41 +532,21 @@ export component SettingsDialog inherits GlassModal {
                     background: Theme.hairline;
                 }
 
-                // Footer order: [Shortcuts?] … [Reset to global?] [Close]. The
-                // GLOBAL dialog moved its Shortcuts link into the About sub-screen,
-                // so its footer is Close-only on every screen. The per-book (Viewer)
-                // dialog has no About screen — and the settings dialog is the only
-                // path to the shortcuts overlay — so it keeps the left Shortcuts
-                // link (gated on show-reset-button), giving [Shortcuts] … [Reset]
-                // [Close]. A single stretch spacer owns the slack and pins the
-                // action button(s) hard RIGHT (both-ends, HIG; spec 2026-06-04). A
-                // literal `alignment: start` DISABLES child stretch factors — the
-                // old bug that glued Close to Shortcuts (docs/patterns.md). The Reset
-                // button only appears in the per-book context; its label is shortened
-                // to "Reset to global" (the accessible-label carries the full intent).
+                // Footer order: [Shortcuts?] … [Reset?] [Close]; a stretch spacer pins the actions
+                // hard right. `alignment: start` DISABLES child stretch (old bug gluing Close to Shortcuts).
                 footer-row := HorizontalLayout {
                     x: 0;
                     y: Theme.space-lg;
                     width: parent.width;
-                    // EXPLICIT height: an element placed outside a layout
-                    // defaults to its PARENT's size, so without this the row
-                    // filled the whole footer-block, its y-offset pushed it
-                    // space-md past the panel bottom, and the cross-axis
-                    // stretch inflated the Close button to the full block
-                    // height (docs/patterns.md). Content height restores the
-                    // symmetric space-md insets the block height budgets for.
+                    // EXPLICIT height: an element outside a layout defaults to its PARENT's size, which
+                    // inflated the row and the Close button to the full block (docs/patterns.md).
                     height: self.preferred-height;
                     padding-left: Theme.space-xl;
                     padding-right: Theme.space-xl;
                     spacing: Theme.space-md;
 
-                    // LEFT (per-book only): a focusable "Shortcuts" link. The GLOBAL
-                    // dialog relocated Shortcuts into the About sub-screen, but the
-                    // per-book (Viewer) dialog has no About screen — and the settings
-                    // dialog is the only path to the shortcuts overlay — so the
-                    // per-book footer keeps the link. Activates on mouse click /
-                    // Return / Space / AT default; Esc is rejected so it walks up to
-                    // the ancestor `fs` and closes the dialog.
+                    // LEFT (per-book only): focusable "Shortcuts" link — the per-book dialog has no
+                    // About screen so it keeps it. Esc is rejected so it walks up to ancestor `fs` to close.
                     if root.show-reset-button : FocusScope {
                         horizontal-stretch: 0;
                         width: shortcuts-label.preferred-width;
@@ -726,15 +579,12 @@ export component SettingsDialog inherits GlassModal {
                         accessible-action-default => { root.open-shortcuts(); }
                     }
 
-                    // Stretch spacer: owns the slack and pushes the action button(s)
-                    // hard right. On the global dialog (no Shortcuts link) this is the
-                    // first footer child, so the footer reads as Close-only.
+                    // Stretch spacer: owns the slack and pushes the action button(s) hard right.
+                    // On the global dialog (no Shortcuts link) it's the first child, so footer is Close-only.
                     Rectangle { horizontal-stretch: 1; }
 
-                    // RIGHT (per-book only): reset the current book's overrides
-                    // back to the global defaults. Reuses PrimaryButton (no
-                    // secondary variant exists); Close stays the rightmost,
-                    // last-resort action. Shown only in the viewer context.
+                    // RIGHT (per-book only): reset the current book's overrides to the global
+                    // defaults. Reuses PrimaryButton (no secondary variant); Close stays rightmost.
                     if root.show-reset-button : PrimaryButton {
                         text: Strings.settings-reset-to-global;
                         clicked => {
@@ -754,16 +604,8 @@ export component SettingsDialog inherits GlassModal {
             }
         }
 
-        // ── Self-drawn scroll indicator (shared ScrollIndicator atom) ─────
-        // Only when the body content overflows its visible height. Declared as
-        // a sibling of the content layout inside `fs`, so its y is computed in
-        // THIS scope's space: body-col.y (the content layout’s own offset
-        // within fs) + body.y (the body Flickable’s y within that layout).
-        // Deriving y this way — rather than from a bare `body.y` — keeps the
-        // rail aligned even if the content layout is ever given a non-zero
-        // offset within `fs`. The rail/thumb math, fill and auto-hide live in
-        // ScrollIndicator; placement (x/y/height) stays here in the caller's
-        // scope.
+        // Self-drawn scroll indicator (shared ScrollIndicator atom). Its y is body-col.y + body.y
+        // (this scope's space) so the rail stays aligned even if the content layout gains an offset.
         ScrollIndicator {
             x: parent.width - Theme.settings-scroll-indicator-w - Theme.space-xxs;
             y: body-col.y + body.y;

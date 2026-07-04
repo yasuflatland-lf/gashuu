@@ -249,9 +249,8 @@ mod tests {
 
     #[test]
     fn size_sane_accepts_a_tiny_window() {
-        // Below the legible minimum is still "sane" — `clamped_size` floors it
-        // rather than discarding the geometry; only an absurdly large size is
-        // treated as corrupt.
+        // Below the legible minimum is still "sane" — `clamped_size` floors it rather than
+        // discarding; only an absurdly large size is treated as corrupt.
         assert!(geom(10, 10, 0, 0).is_size_sane());
     }
 

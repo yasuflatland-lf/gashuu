@@ -1,10 +1,5 @@
-// DataSettings — the "Data" settings section as a standalone unit.
-//
-// Extracted verbatim from SettingsDialog.slint's inline Data block: the two
-// full-width, low-prominence SecondaryButtons (clear reading history / clear
-// cover cache) that fire immediately (no confirmation), plus a hidden-when-empty
-// transient status line. Renders its own eyebrow (suppressible via `show-title`).
-// App-global, so the flat dialog gates it to the Library-default context. Theme.* only.
+// DataSettings — the "Data" section as a standalone unit: two full-width, low-prominence
+// SecondaryButtons (clear reading history / clear cover cache), immediate, plus a status line.
 import { Theme } from "../Theme.slint";
 import { Strings } from "../Strings.slint";
 import { SecondaryButton } from "../components/SecondaryButton.slint";
@@ -27,12 +22,8 @@ export component DataSettings inherits VerticalLayout {
         color: Theme.text-dim;
         horizontal-alignment: left;
     }
-    // Clear actions: immediate (no confirmation), status feedback is surfaced via
-    // data-action-status. These are data-clearing utilities, so they use the
-    // LOW-PROMINENCE bordered-neutral SecondaryButton (HIG; NOT the affirmative
-    // accent PrimaryButton, and deliberately NOT red — danger stays scarce).
-    // Full-width is achieved at the call site via horizontal-stretch (overrides
-    // SecondaryButton's own horizontal-stretch: 0); space-sm separates the pair.
+    // Clear actions: immediate (no confirmation); low-prominence SecondaryButton (NOT accent,
+    // NOT red). Full-width via call-site horizontal-stretch (overrides SecondaryButton's own 0).
     VerticalLayout {
         spacing: Theme.space-sm;
         SecondaryButton {

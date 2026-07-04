@@ -1,30 +1,5 @@
-// SelectionBadge — the bulk-selection check badge (atom).
-//
-// A two-state affordance overlaid on a cover in selection mode (bulk-delete
-// epic, PR-2; two-state added in the UI-polish pass §2.3). Selection is ACCENT
-// (Theme.accent, blue); RED stays reserved for the delete button (PR-5), so this
-// badge must never use an error/red token.
-//
-//   checked == true  -> accent-filled disc + centered white check glyph (the
-//                       original rendering; this is the default for back-compat).
-//   checked == false -> a hollow ring: a faint dark glass backing so the ring is
-//                       legible over bright cover art, a 1px text-mid border, and
-//                       NO glyph (the unselected affordance in selection mode).
-//
-// Both states keep an IDENTICAL footprint (the Theme.space-huge disc), so
-// toggling `checked` causes zero size/position jump on the cover. There is one
-// atom with two display states driven by DIRECT TERNARY bindings — Slint 1.16.1
-// `states[]` cannot set child properties (verified repo trap, docs/patterns.md).
-//
-// Sizing comes from Theme.* length tokens only (DESIGN.md rule 2): the circle is
-// Theme.space-huge across, the check glyph Theme.space-lg, leaving an even ring
-// of accent around the mark. The glyph is the single-path check.svg recolored to
-// Theme.text (white) via `colorize` — the SVG's own fill is ignored (see
-// docs/patterns.md "First image assets: @image-url + colorize"). Authored at a
-// generous intrinsic size (96px / viewBox 24) so it stays crisp on HiDPI.
-//
-// Colors / lengths come from Theme.* only — NO inline brand hex (DESIGN.md
-// rule 2; scripts/check-tokens.sh enforces this). Theme lives one directory up.
+// SelectionBadge — two-state bulk-selection check badge. ACCENT, never red (reserved for
+// delete). Two states via DIRECT ternary bindings (states[] can't touch child props).
 import { Theme } from "../Theme.slint";
 
 export component SelectionBadge inherits Rectangle {

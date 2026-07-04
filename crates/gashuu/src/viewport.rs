@@ -358,10 +358,8 @@ mod tests {
 
     #[test]
     fn resize_reclamps_offset_into_range() {
-        // Square content so the fit baseline keeps both axes overflowing after the
-        // viewport shrinks (Whole fit shrinks the baseline with the viewport, so a
-        // non-square page could start fitting on one axis and trip the centering
-        // branch — not what this test means to exercise).
+        // Square content keeps both axes overflowing as the viewport shrinks; a
+        // non-square page could start fitting on one axis and trip the centering branch.
         let mut s = square_state();
         // Zoom in so the content overflows and the offset is meaningful.
         s.zoom_step(true);
@@ -474,9 +472,8 @@ mod tests {
 
     #[test]
     fn pan_to_on_fitting_content_stays_centered_regardless_of_delta() {
-        // 400x300 content in 200x200 (Whole fit) -> scale 0.5, displayed 200x150;
-        // both axes fit (200 <= 200, 150 <= 200) so clamp_offset takes the
-        // centering branch, which overrides any pan delta.
+        // 400x300 in 200x200 (Whole) -> displayed 200x150; both axes fit, so
+        // clamp_offset takes the centering branch and overrides any pan delta.
         let mut s = state_with(FitMode::Whole);
         s.begin_pan();
         s.pan_to(500.0, -500.0);
@@ -566,9 +563,8 @@ mod tests {
         let mut s = square_state();
         s.zoom_step(true);
         s.zoom_step(true);
-        // Overflow range per axis is [vp - disp, 0]; start centered (~-21), step
-        // twice by a small delta that stays inside the range to observe pure
-        // accumulation rather than clamping.
+        // Overflow range per axis is [vp - disp, 0]; step twice by a small delta
+        // that stays inside the range to observe accumulation, not clamping.
         let start = s.offset;
         s.pan_by(-10.0, -10.0);
         let first = s.offset;
@@ -688,10 +684,8 @@ mod tests {
         s.set_fit(FitMode::Actual);
         assert_eq!(s.fit_mode(), FitMode::Actual);
         assert!(approx(s.zoom, vp::ZOOM_MIN));
-        // Actual fit -> scale 1.0, displayed = content 400x300, centered offset
-        // ((200-400)/2, (200-300)/2) = (-100, -50), but clamped: both axes
-        // overflow so the offset clamps into [vp-disp, 0]; centered_offset gives
-        // the high-magnitude middle which clamp keeps since it is in range.
+        // Actual fit -> scale 1.0, displayed 400x300; both axes overflow so the
+        // centered offset ((200-400)/2, (200-300)/2) = (-100, -50) clamps in range.
         let (ox, oy, dw, dh) = s.geometry();
         assert!(approx(dw, 400.0));
         assert!(approx(dh, 300.0));

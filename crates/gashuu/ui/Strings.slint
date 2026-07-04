@@ -1,20 +1,6 @@
-// Fluent-served static-string surface (issue 113, PR-2/4).
-//
-// Property names equal the Fluent message IDs from i18n/en/gashuu.ftl (kebab-case),
-// except the four `stepper-*` labels, which are composed in Rust (see below).
-// Rust gets generated `set_snake_case` setters and pushes values via
-// `Localizer::apply()` on every locale change.
-//
-// English literal defaults here prevent blank labels if a frame paints before
-// the first `Localizer::apply()` call.
-//
-// The four `stepper-*` labels are pre-composed in Rust via Fluent named args
-// (word-order-safe — Japanese is verb-final); they must never be concatenated
-// on the Slint side.
-//
-// NOTE: `shortcuts-help` (the multiline shortcuts body) is deliberately absent
-// here — it continues to flow through the existing `key-bindings-text` channel
-// until PR-3.
+// Fluent-served static-string surface (issue 113). Property names equal the Fluent
+// message IDs in i18n/en/gashuu.ftl; Rust pushes values via `Localizer::apply()` (English
+// defaults prevent blanks). The four `stepper-*` labels are composed in Rust, never concatenated.
 
 export global Strings {
     // ── SettingsDialog ────────────────────────────────────────────────────────
@@ -104,9 +90,8 @@ export global Strings {
     in property <string> update-accept-label: "Update now";
     in property <string> update-later-label: "Later";
     in property <string> update-skip-label: "Skip this version";
-    // Dynamic status messages set from Rust during a manual/startup update
-    // check (see handlers/update.rs); Rust reads these getters rather than
-    // hardcoding English literals so the status line is localized too.
+    // Dynamic status messages set from Rust during an update check (handlers/update.rs);
+    // Rust reads these getters instead of hardcoding literals so the status is localized.
     in property <string> update-status-checking: "Checking for updates…";
     in property <string> update-status-latest: "You're on the latest version.";
     in property <string> update-status-failed: "Couldn't check for updates.";

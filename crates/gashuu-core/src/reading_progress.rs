@@ -56,9 +56,8 @@ mod tests {
 
     #[test]
     fn fraction_total_some_zero_is_zero_not_nan() {
-        // `ReadingProgress::new` accepts `Option<usize>`, so `Some(0)` is
-        // constructible. `fraction()` must collapse it to 0.0 (the `_ => 0.0` arm),
-        // never div-by-zero. Pins the doc's "0.0 when total is unknown or 0" promise.
+        // `Some(0)` is constructible, and `fraction()` must collapse it to 0.0 (the
+        // `_ => 0.0` arm), never div-by-zero. Pins the "0.0 when total is 0" promise.
         let p = ReadingProgress::new(5, Some(0));
         assert_eq!(p.fraction(), 0.0);
         assert!(!p.fraction().is_nan() && p.fraction().is_finite());

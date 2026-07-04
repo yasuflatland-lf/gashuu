@@ -1,32 +1,11 @@
-// SettingRow — the L1 alignment molecule for the settings dialog (issue 103, PR-B).
-//
-// Owns the alignment doctrine the dialog hinges on (spec 2026-06-04): a
-// fixed-width label column (settings-label-col) at the left margin and an
-// `@children` control slot starting at the shared vertical seam
-// (settings-control-x), ending at the shared RIGHT RAIL (the slot's right edge =
-// the body's right padding edge). Rule: every control ENDS at the right rail;
-// fill atoms (Segmented, horizontal-stretch: 1) also START at the seam; compact
-// atoms (Stepper/Toggle, stretch 0) set `trailing: true` so a leading stretch
-// spacer pushes them onto the rail. The slot layout deliberately has NO literal
-// `alignment:` — a literal start/end DISABLES child stretch factors
-// (docs/patterns.md), which is the exact bug that glued the old footer together.
-//
-// The 30px atom (settings-control-h) centers vertically inside the 34px row
-// (settings-row-h) via the centering wrapper around the slot.
-//
-// `stacked` is an L4 escape hatch (Marcotte's i18n insurance): a future German /
-// Finnish / font-zoom / RTL breach can pivot a row to label-above-control without
-// touching any call site. PR-B ships it as a compiling stub that reuses the SAME
-// single `@children` slot (Slint allows `@children` exactly once per component) —
-// `stacked` only repositions the label + slot.
+// SettingRow — L1 alignment molecule (issue 103): a fixed-width label column + an
+// @children control slot from the shared seam to the right rail. `stacked` is an L4 stub.
 import { Theme } from "../Theme.slint";
 
 export component SettingRow inherits Rectangle {
     in property <string> label;
-    // STUB (issue 103): the stacked (L4) geometry is INCOMPLETE — the row height
-    // is not yet adapted for a stacked label+control (fixed 34px splits in half,
-    // so a 30px control overflows its ~17px slot). Do NOT set stacked: true at
-    // any call site until the adaptive-height layout is finished.
+    // STUB (issue 103): stacked (L4) geometry is INCOMPLETE — row height not yet adapted
+    // (a 30px control overflows the ~17px half-slot). Do NOT set stacked: true anywhere yet.
     in property <bool> stacked: false;   // L4 escape hatch (default = L1 horizontal)
     // Right-rail variant: compact atoms (Stepper/Toggle) opt in so their RIGHT
     // edge lands on the shared rail; fill atoms (Segmented) keep the default.
@@ -34,11 +13,8 @@ export component SettingRow inherits Rectangle {
 
     height: Theme.settings-row-h;
 
-    // ── Label ─────────────────────────────────────────────────────────────────────
-    // L1: at the left margin, vertically centered in the row, occupying the fixed
-    // label column. L4 (stacked): at the top-left, above the control. No wrap;
-    // overflow CLIPS (not elide) so the seam width never drifts. text-mid
-    // (not accent — accent is interactive-only).
+    // Label: L1 at the left margin in the fixed label column; L4 (stacked) above the
+    // control. overflow CLIPS (not elide) so the seam never drifts; text-mid, not accent.
     Text {
         x: 0;
         y: 0;
@@ -53,20 +29,16 @@ export component SettingRow inherits Rectangle {
         overflow: clip;
     }
 
-    // ── Control slot ────────────────────────────────────────────────────────────
-    // L1: starts at the shared seam (settings-control-x) and ends at the right
-    // rail, centering its child (a 30px atom) within the 34px row. L4 (stacked):
-    // drops below the label at the left margin. Fill children stretch across the
-    // slot; trailing children are pushed right by the conditional spacer.
+    // Control slot: L1 from the seam to the right rail (centering a 30px atom in the
+    // 34px row); L4 drops below the label. Fill stretches; trailing is pushed by the spacer.
     Rectangle {
         x: root.stacked ? 0px : Theme.settings-control-x;
         y: root.stacked ? root.height / 2 : 0px;
         width: parent.width - self.x;
         height: root.stacked ? root.height / 2 : root.height;
         HorizontalLayout {
-            // No literal `alignment:` — it would disable child stretch factors.
-            // Fill rows: the atom's own stretch 1 spans seam → rail. Trailing
-            // rows: this spacer owns the slack and pushes the compact atom right.
+            // No literal `alignment:` — it would disable child stretch factors. Fill rows
+            // span seam → rail via the atom's stretch 1; trailing rows use this spacer.
             if root.trailing : Rectangle { horizontal-stretch: 1; }
             @children
         }

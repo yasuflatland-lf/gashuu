@@ -127,9 +127,8 @@ pub(crate) fn push_selection_strings(
     library: &Rc<RefCell<Library>>,
 ) {
     let loader = localizer.loader();
-    // One shared-borrow group: `selection`, `search`, and `library` are distinct
-    // `RefCell`s, so holding all three immutable `Ref`s at once is safe, and both
-    // projection reads need the same trio. The group drops at the block's `}`.
+    // One shared-borrow group: `selection`/`search`/`library` are distinct RefCells, so
+    // holding all three immutable Refs at once is safe. The group drops at the block's `}`.
     let (total, visible_selected, all_visible) = {
         let sel = selection.borrow();
         let srch = search.borrow();
@@ -147,8 +146,7 @@ pub(crate) fn push_selection_strings(
         crate::i18n::dynamic::select_all_label(loader, all_visible).into(),
     );
     // The destructive toolbar twins: the pre-composed "Delete (N)…" label and the
-    // `has-selection` gate (the DangerButton is disabled at N=0). Driven by the
-    // TOTAL selection count, like the title, so they track every selection change.
+    // `has-selection` gate (DangerButton disabled at N=0), driven by the TOTAL selection count.
     ui.set_carousel_delete_label(
         crate::i18n::dynamic::selection_delete_label(loader, total).into(),
     );
@@ -216,18 +214,15 @@ pub(crate) fn refresh_library_carousel(
     if reset_focus {
         ui.set_carousel_focused_index(0);
     }
-    // Re-apply the bulk selection over the freshly built (unselected) rows so a
-    // selection survives a query change / add (selection is keyed by path, not
-    // index). Reads `library` + `selection`; both `Ref`s drop before `covers.start`
-    // (which takes a `borrow_mut` to persist prefetched counts).
+    // Re-apply bulk selection over the freshly built (unselected) rows so a selection
+    // survives a query change / add (keyed by path, not index). Refs drop before covers.start.
     {
         let lib = deps.library.borrow();
         let selection = deps.selection.borrow();
         apply_selection_flags(ui, &lib, &indices, |path| selection.contains(path));
     }
-    // Refresh the selection-toolbar strings: the visible projection just changed
-    // (query change, add, boot), so visible_selected_count / all_visible_selected
-    // may have moved. Both `Ref`s drop before `covers.start`.
+    // Refresh the selection-toolbar strings: the visible projection just changed (query,
+    // add, boot), so the visible/all-selected counts may have moved.
     push_selection_strings(
         ui,
         deps.localizer,
@@ -235,12 +230,8 @@ pub(crate) fn refresh_library_carousel(
         deps.search,
         deps.library,
     );
-    // Dispatch covers nearest the focused row first: on a large library the
-    // visible neighbourhood streams in immediately instead of queueing behind
-    // hundreds of off-screen rows. Read the focus AFTER the reset above so a
-    // reset-focus refresh starts from row 0. (The add path moves focus to the
-    // new book only after this refresh; its cover is a fresh miss either way,
-    // so ordering by the pre-add focus is fine there.)
+    // Dispatch covers nearest the focused row first so a large library streams the visible
+    // neighbourhood immediately. Read focus AFTER the reset above so reset-focus starts at row 0.
     let focus_row = ui.get_carousel_focused_index().max(0) as usize;
     deps.covers.start(
         ui.as_weak(),
@@ -300,9 +291,8 @@ pub(crate) fn finalize_remove(ui: &ViewerWindow, deps: &CarouselRefresh, outcome
             if closed_open_book {
                 ui.set_current_book_name("".into());
             }
-            // `run` already recomputed the search projection and cleared the
-            // selection. Rebuild from the fresh visible set (no focus reset — the
-            // focused index is clamped below to a valid row).
+            // `run` already recomputed the projection and cleared the selection. Rebuild from
+            // the fresh visible set (no focus reset — the focused index is clamped below).
             refresh_library_carousel(ui, deps, false);
             // Clamp the focused index into the NEW visible row count BEFORE Slint can
             // read a stale out-of-range value (index-out-of-range is the crash risk).
@@ -393,17 +383,11 @@ pub(crate) fn apply_add_report(
         ui.invoke_focus_carousel();
         return;
     }
-    // Rebuild from the in-memory state even if the save fails, so the newly added
-    // books are visible; the save error is then surfaced (not just traced). Keep
-    // the just-added paths visible under the active filter, then refresh through
-    // the shared chokepoint (which recomputes the filter, rebuilds + binds the
-    // model, and restarts the cover stream). Focus is set explicitly below to the
-    // new book's visible row, so do NOT reset focus to 0 here.
+    // Rebuild from in-memory state even if the save fails, so the added books are visible
+    // (the save error is surfaced below). Focus is set explicitly later, so don't reset to 0.
     let save_result = deps.library.borrow().save();
-    // `search` and `library` are distinct RefCells, so the mut borrow of one and
-    // the shared borrow of the other cannot conflict; the `library.borrow()`
-    // drops at the `;` before refresh. `force_visible` recomputes internally, so
-    // the visible set is consistent before `refresh_library_carousel` reads it.
+    // `search` and `library` are distinct RefCells, so this mut+shared borrow can't conflict.
+    // `force_visible` recomputes internally, so the visible set is consistent before refresh.
     deps.search
         .borrow_mut()
         .force_visible(added_paths.clone(), &deps.library.borrow());
@@ -452,10 +436,8 @@ pub(crate) fn apply_add_report(
         if let Some(index) = index {
             ui.set_carousel_focused_index(index as i32);
         } else {
-            // force_visible(added_paths) + recompute guarantees the just-added book is
-            // a visible row, so this is unreachable in practice. Fail loudly in dev/test;
-            // in release, log and fall through (focus stays on the carousel via the
-            // unconditional invoke_focus_carousel below).
+            // force_visible + recompute guarantees the just-added book is a visible row, so
+            // this is unreachable; fail loudly in dev/test, log and fall through in release.
             debug_assert!(
                 false,
                 "add: forced-visible book {} not found in visible rows",

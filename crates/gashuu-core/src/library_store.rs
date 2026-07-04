@@ -69,15 +69,13 @@ impl Library {
 
     /// Parse JSON, migrating older schema versions to the current shape.
     pub fn from_json(json: &str) -> Result<Self, CoreError> {
-        // The non-object guard + truncating-cast-safe version resolution + migrate
-        // dispatch are single-homed in `persist`. `CoreError::Library` is deliberately
-        // NOT `#[from]` (see error.rs), so every error is mapped explicitly.
+        // Non-object guard + version resolution + migrate dispatch are single-homed in
+        // `persist`. `CoreError::Library` is deliberately not `#[from]` (see error.rs).
         let value = crate::persist::parse_versioned_object(json, LIBRARY_VERSION, migrate)
             .map_err(CoreError::Library)?;
         let mut library: Library = serde_json::from_value(value).map_err(CoreError::Library)?;
-        // Re-canonicalize paths and merge duplicate identities (filesystem I/O)
-        // BEFORE the pure sort/orphan-clear in `normalize`, so every load
-        // self-heals a library written before book identity was the canonical path.
+        // Re-canonicalize + merge duplicate identities (filesystem I/O) BEFORE the pure
+        // sort/orphan-clear in `normalize`, so each load self-heals pre-canonical paths.
         library.recanonicalize_and_merge();
         library.normalize();
         Ok(library)
@@ -141,10 +139,8 @@ mod tests {
 
     #[test]
     fn to_json_emits_positive_page_count_as_bare_integer() {
-        // Pins the `Some(n)` direction of the `Option<NonZeroUsize>` serde shim:
-        // a known count must serialize as the bare integer `n` (not an object or
-        // a tagged enum), keeping the on-disk shape byte-compatible. The `None`
-        // direction (emitted as `0`) is pinned by `to_json_emits_version_and_books`.
+        // Pins the `Some(n)` direction of the serde shim: a known count serializes as the
+        // bare integer `n`, keeping the on-disk shape byte-compatible (`None` emits as `0`).
         let mut lib = Library::new();
         let book = PathBuf::from("/manga/a.cbz");
         assert!(lib.add(book.clone()).is_some());
@@ -372,8 +368,7 @@ mod tests {
         let book = value["books"][0].as_object().unwrap();
 
         // A book with EMPTY overrides serializes to exactly {path,title,last_page,page_count};
-        // the "overrides" key is omitted via skip_serializing_if (see empty_overrides_are_omitted_from_json).
-        // A non-empty override adds an "overrides" key (exercised by non_empty_overrides_round_trip).
+        // the "overrides" key is omitted via skip_serializing_if (a non-empty one adds it).
         assert_eq!(
             book.len(),
             4,
@@ -422,9 +417,8 @@ mod tests {
 
     #[test]
     fn old_json_without_last_opened_omits_key_on_resave() {
-        // A library loaded from old JSON (no last_opened) must not emit the key
-        // on re-save: `skip_serializing_if = "Option::is_none"` on the derived
-        // LibraryDocument path (the single serialization path) omits it.
+        // A library loaded from old JSON (no last_opened) must not emit the key on re-save:
+        // `skip_serializing_if = "Option::is_none"` on the single serialize path omits it.
         let stored = r#"{"version":1,"books":[{"path":"/manga/a.cbz","title":"a","last_page":42,"page_count":100}]}"#;
         let lib = Library::from_json(stored).unwrap();
         let value: serde_json::Value = serde_json::from_str(&lib.to_json().unwrap()).unwrap();
@@ -516,11 +510,8 @@ mod tests {
 
     #[test]
     fn recanonicalize_round_trips_clean_library_byte_identically() {
-        // The byte-oracle: a library whose paths are already canonical and have
-        // no duplicates must survive the load-time re-canonicalization/merge
-        // byte-for-byte (no spurious upgrade or merge). Real temp files so
-        // canonicalize() is an identity on the stored keys. A non-default
-        // override + reading position make the comparison non-vacuous.
+        // Byte-oracle: an already-canonical, duplicate-free library must survive the
+        // load-time re-canonicalize/merge byte-for-byte. Override + position keep it non-vacuous.
         let dir = tempfile::tempdir().unwrap();
         let mut lib = Library::new();
         for name in ["a.cbz", "b.cbz"] {

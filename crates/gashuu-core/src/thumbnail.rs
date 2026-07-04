@@ -167,10 +167,6 @@ mod tests {
     use std::sync::atomic::AtomicBool;
     use std::sync::{Arc, Mutex};
 
-    // ---------------------------------------------------------------------------
-    // Test fixture helpers
-    // ---------------------------------------------------------------------------
-
     /// Encode a tiny solid-color PNG into bytes using the `image` crate.
     fn tiny_png(w: u32, h: u32) -> Vec<u8> {
         let img = image::RgbaImage::from_pixel(w, h, image::Rgba([200, 100, 50, 255]));
@@ -179,10 +175,6 @@ mod tests {
             .unwrap();
         buf
     }
-
-    // ---------------------------------------------------------------------------
-    // A minimal in-process PageSource for tests
-    // ---------------------------------------------------------------------------
 
     /// Holds a fixed list of pre-encoded page byte-vecs. Pages whose bytes are
     /// `None` simulate a read failure (returns `CoreError::IndexOutOfRange`).
@@ -232,10 +224,6 @@ mod tests {
         }
         // skipped_count() default 0 is sufficient.
     }
-
-    // ---------------------------------------------------------------------------
-    // Tests
-    // ---------------------------------------------------------------------------
 
     /// Every page index 0..N is delivered to `on_ready` exactly once.
     #[test]
@@ -365,10 +353,6 @@ mod tests {
         );
     }
 
-    // ---------------------------------------------------------------------------
-    // Post-decode cancel-check guard
-    // ---------------------------------------------------------------------------
-
     /// A single-page source whose `read_bytes` flips `cancelled` as a side effect.
     /// This lets us exercise the SECOND cancel check (line 44, between decode and
     /// `on_ready`) deterministically without any rayon races: the flag is still
@@ -494,10 +478,6 @@ mod tests {
         );
     }
 
-    // ---------------------------------------------------------------------------
-    // On-disk strip caching (PageThumbCache)
-    // ---------------------------------------------------------------------------
-
     use crate::thumbnail_cache::ThumbnailCache;
 
     /// Count the `*.qoi` cache entries written directly in `dir` (non-recursive).
@@ -586,10 +566,6 @@ mod tests {
         );
     }
 
-    // ---------------------------------------------------------------------------
-    // Single-page lazy generation (generate_one_thumbnail)
-    // ---------------------------------------------------------------------------
-
     /// `generate_one_thumbnail` with no cache reads + decodes the requested page
     /// each time, leaving other pages untouched (the lazy O(visible) contract).
     #[test]
@@ -628,9 +604,8 @@ mod tests {
         )
         .expect("miss decodes");
         assert_eq!(src.reads(), 1, "miss reads the page once");
-        // Count cache entries codec-agnostically (the on-disk codec may be PNG
-        // or QOI depending on which sibling changes have landed); the page is
-        // persisted regardless of extension.
+        // Count cache entries codec-agnostically (on-disk codec may be PNG or QOI
+        // depending on which sibling changes landed); the page is persisted regardless.
         let persisted = std::fs::read_dir(dir.path())
             .unwrap()
             .flatten()

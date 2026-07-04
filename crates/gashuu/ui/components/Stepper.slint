@@ -1,20 +1,9 @@
-// Stepper — token-driven integer stepper (issue 102, PR-A/3).
-//
-// Drop-in replacement for the std-widgets `SpinBox` rows in the settings dialog:
-// SAME `value` (two-way) + `minimum`/`maximum` + `edited(int)` shape, painted
-// from `Theme.*` for the dark glass palette. A capsule (surface-sunken, 1px
-// hairline-float, radius-sm) holds [ − ] value [ + ]; the value uses the tabular
-// numeric font; the ± glyphs are `accent` and dim + go inert at the matching
-// bound.
-//
-// Keyboard (when focused): Up / "+" increments, Down / "−" decrements (clamped).
-// Focus shows an `accent` border + a soft `accent-glow` halo. No `opacity` on the
-// glyphs/value (HiDPI blur); all colors/lengths are `Theme.*` (check-tokens.sh).
+// Stepper — token-driven integer stepper (issue 102): a Theme-painted SpinBox
+// replacement. No opacity on glyphs/value (HiDPI blur); all colors/lengths Theme.*.
 import { Theme } from "../Theme.slint";
 
-// File-private ± button: a labelled, AT-activatable glyph that dims + goes inert
-// at its bound. Kept in this file so Stepper stays a single export (NavBar.slint
-// does the same with its file-private SearchField).
+// File-private ± button: a labelled, AT-activatable glyph that dims + goes inert at
+// its bound. Kept here so Stepper stays a single export (NavBar's SearchField idiom).
 component StepButton inherits Rectangle {
     in property <string> glyph;
     in property <string> a11y-label;
@@ -53,29 +42,22 @@ export component Stepper inherits Rectangle {
     in property <int> minimum;
     in property <int> maximum;
     in property <string> a11y-label;
-    // Pre-composed ± accessible labels ("Decrease …" / "Increase …"), pushed
-    // from Rust (Localizer::apply) via Fluent named args so verb and noun
-    // order correctly in every language (Japanese is verb-final) — never
-    // composed by Slint-side string concat.
+    // Pre-composed ± a11y labels, pushed from Rust (Fluent named args) so verb/noun
+    // order correctly in every language (Japanese is verb-final) — never Slint concat.
     in property <string> a11y-decrease-label;
     in property <string> a11y-increase-label;
     callback edited(int);
 
-    // Externally focus this control (same `focus-control` seam as Segmented /
-    // Dropdown): the settings dialog calls this to focus the first control of a
-    // section on open / drill-in. A PARENT component cannot name an id declared
-    // inside this component's body (Slint encapsulation), so the seam is a public
-    // function. Named `focus-control` (not `focus`) because `focus` is a reserved
-    // builtin on the inherited Rectangle and cannot be overridden.
+    // Externally focus this control (same `focus-control` seam as Segmented/Dropdown):
+    // a parent can't name a child id, so expose a public fn; `focus` is a reserved builtin.
     public function focus-control() {
         fs.focus();
     }
 
     // ── Capsule ground ──────────────────────────────────────────────────────────
     height: Theme.settings-control-h;
-    // Compact atom: keeps its preferred width on the right rail (the SettingRow
-    // trailing spacer owns the slack; without this pin a stretch-aligned row
-    // could widen the capsule).
+    // Compact atom: keeps its preferred width on the right rail (SettingRow's trailing
+    // spacer owns the slack; without this pin a stretch row could widen the capsule).
     horizontal-stretch: 0;
     background: Theme.surface-sunken;
     border-radius: Theme.radius-sm;
@@ -121,10 +103,8 @@ export component Stepper inherits Rectangle {
         }
         Text {
             horizontal-stretch: 1;
-            // Floor the value slot at 3 tabular digits so the two settings
-            // steppers (50 / 3) render the SAME width — the right rail reads as
-            // a column, not stairs. A 4-digit cache value may widen its capsule;
-            // accepted in the spec.
+            // Floor the value slot at 3 tabular digits so both steppers (50 / 3) render
+            // the SAME width (rail reads as a column). A 4-digit value may widen; accepted.
             min-width: Theme.space-huge;
             text: "\{root.value}";
             horizontal-alignment: center;

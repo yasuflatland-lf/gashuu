@@ -1,10 +1,5 @@
-// PerformanceSettings — the "Performance" settings section as a standalone unit.
-//
-// Extracted verbatim from SettingsDialog.slint's inline Performance block: cache
-// size + preload steppers, track-recent + allow-rar toggles, and the trailing
-// performance note. Renders its own eyebrow (suppressible via `show-title`).
-// Keeps every existing a11y + stepper label. Public surface mirrors
-// SettingsDialog's Performance props exactly. Theme.* only.
+// PerformanceSettings — the "Performance" section as a standalone unit: cache + preload steppers,
+// track-recent + allow-rar toggles, and the performance note. Eyebrow suppressible via `show-title`.
 import { Theme } from "../Theme.slint";
 import { Strings } from "../Strings.slint";
 import { SettingRow } from "../components/SettingRow.slint";

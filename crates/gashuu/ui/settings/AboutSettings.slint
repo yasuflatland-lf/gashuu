@@ -1,14 +1,5 @@
-// AboutSettings — the "About" settings section as a standalone unit.
-//
-// Extracted verbatim from SettingsDialog.slint's inline About block (auto-update
-// epic, Task 10): the "gashuu <version>" line, the auto-update toggle, the manual
-// "Check for updates now" SecondaryButton, and a hidden-when-empty status line.
-// Renders its own eyebrow (suppressible via `show-title`). App-global, so the
-// flat dialog gates it to the Library-default context. Theme.* only.
-//
-// Also hosts the "Shortcuts" entry (relocated here from the dialog footer): a
-// SettingsNavRow-style row that opens the keyboard-shortcuts overlay, so the
-// footer collapses to a single Close action on every screen.
+// AboutSettings — the "About" section as a standalone unit (auto-update epic, Task 10):
+// version line, auto-update toggle, "Check for updates now", status line, and the Shortcuts row.
 import { Theme } from "../Theme.slint";
 import { Strings } from "../Strings.slint";
 import { SettingRow } from "../components/SettingRow.slint";
@@ -26,9 +17,8 @@ export component AboutSettings inherits VerticalLayout {
     in property <string> update-status;
     callback set-auto-update-check(bool);
     callback check-for-updates();
-    // Fired when the user activates the "Shortcuts" row (mouse / Return / Space /
-    // AT default). The dialog forwards it to its own open-shortcuts() callback,
-    // which ViewerWindow already wires to the ShortcutsOverlay.
+    // Fired when the user activates the "Shortcuts" row. The dialog forwards it to its own
+    // open-shortcuts() callback, which ViewerWindow already wires to the ShortcutsOverlay.
     callback open-shortcuts();
     in property <bool> show-title: true;
 
@@ -59,9 +49,8 @@ export component AboutSettings inherits VerticalLayout {
             }
         }
     }
-    // Manual check: same low-prominence bordered-neutral SecondaryButton as the
-    // Data section's utilities (NOT the affirmative accent PrimaryButton —
-    // checking for updates is a utility action, not a CTA).
+    // Manual check: same low-prominence SecondaryButton as the Data utilities (NOT the accent
+    // PrimaryButton — checking for updates is a utility action, not a CTA).
     SecondaryButton {
         horizontal-stretch: 1;
         text: Strings.settings-check-updates-label;
@@ -79,13 +68,8 @@ export component AboutSettings inherits VerticalLayout {
         wrap: word-wrap;
     }
 
-    // ── Shortcuts ─────────────────────────────────────────────────────────────
-    // Opens the keyboard-shortcuts overlay. Reuses the SettingsNavRow atom (the
-    // same drill-in row anatomy as the four view-settings nav rows): hover/focus
-    // accent-glow fill, chevron, click / Return / Space / AT-default activation,
-    // and Esc rejected so it walks up to the dialog's ancestor FocusScope. The
-    // plain shortcuts title (no glyph) is passed as the label so the accessible
-    // name stays clean and consistent with the other glyph-less nav rows.
+    // Shortcuts: opens the keyboard-shortcuts overlay. Reuses the SettingsNavRow atom (click /
+    // Return / Space / AT-default; Esc rejected so it walks up to the dialog's ancestor FocusScope).
     SettingsNavRow {
         label: Strings.shortcuts-title;
         clicked => {

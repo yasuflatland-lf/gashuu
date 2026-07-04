@@ -278,9 +278,8 @@ mod classify_entry_tests {
 
     #[test]
     fn macos_metadata_is_ignored_even_when_image_named() {
-        // AppleDouble resource forks / `__MACOSX` trees carry image extensions but
-        // are metadata, not pages — Ignored (NOT a counted skip) in both archive
-        // sources via this shared classifier.
+        // AppleDouble forks / `__MACOSX` trees carry image extensions but are metadata,
+        // not pages — Ignored (not a counted skip) via this shared classifier.
         assert_eq!(
             classify_entry(
                 Path::new("__MACOSX/Manga/._001.jpg"),

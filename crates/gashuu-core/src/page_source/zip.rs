@@ -59,9 +59,8 @@ impl ZipSource {
             let entry = match archive.by_index(i) {
                 Ok(e) => e,
                 Err(_) => {
-                    // A corrupt central-directory entry shouldn't doom the whole
-                    // archive; skip it and surface the count (consistent with the
-                    // zip-slip / oversized skip policy). core stays logging-free.
+                    // A corrupt central-directory entry shouldn't doom the whole archive;
+                    // skip it and surface the count (consistent with the skip policy).
                     skipped += 1;
                     continue;
                 }
@@ -76,11 +75,8 @@ impl ZipSource {
                 }
                 continue;
             };
-            // Shared page-membership decision: flatten any image at any depth into
-            // a page (CBZs often wrap pages in a folder, unlike FolderSource's
-            // max_depth(1)); dirs / non-images / macOS metadata are expected noise;
-            // an oversized image is a counted skip. The zip-slip guard above and the
-            // `by_index` iteration stay zip-specific.
+            // Shared page-membership decision: flatten any image at any depth into a page
+            // (CBZs wrap pages in folders); the zip-slip guard + `by_index` stay zip-specific.
             match classify_entry(&safe, entry.is_dir(), entry.size(), max) {
                 EntryClass::Page => entries.push(EntryMeta {
                     zip_index: i,
@@ -111,11 +107,8 @@ impl ZipSource {
         let file = std::fs::File::open(&self.path)?;
         let mut archive = ::zip::ZipArchive::new(BufReader::new(file))?;
         let entry = archive.by_index(meta.zip_index)?;
-        // Pre-size to the smaller of the declared size and the cap purely as a
-        // growth hint (NOT the size defense): `open_with_limit` already skipped any
-        // entry whose declared `size()` exceeds `max`, so the only remaining threat
-        // is a header that lies about its size — caught by `cap_or_reject`'s
-        // `take(max + 1)` + length check, the actual security cap.
+        // Pre-size to min(declared, max) purely as a growth hint, NOT the size defense:
+        // `cap_or_reject`'s `take(max + 1)` + length check is the actual security cap.
         let capacity_hint = entry.size().min(max) as usize;
         cap_or_reject(entry, &meta.name, max, capacity_hint)
     }
@@ -223,10 +216,8 @@ mod tests {
         ]);
         let src = ZipSource::open(cbz.path()).unwrap();
 
-        // Build the expected order by applying the real `natural_cmp` to the
-        // surviving image names, so the test pins "natural order" rather than a
-        // hardcoded guess about how the `sub/` prefix sorts. `notes.txt` is
-        // excluded (not an image); `sub/3.png` is kept (flattening).
+        // Build the expected order by applying real `natural_cmp` to the surviving names,
+        // so the test pins "natural order" not a hardcoded guess about the `sub/` prefix.
         let mut expected = vec!["1.png", "2.png", "10.png", "a.jpg", "sub/3.png"];
         expected.sort_by(|a, b| natural_cmp(a, b));
         let expected: Vec<String> = expected.into_iter().map(String::from).collect();
@@ -241,9 +232,8 @@ mod tests {
 
     #[test]
     fn avif_entries_are_indexed_as_pages() {
-        // Open-time filtering is extension-only (bytes are never decoded at
-        // open), so PNG bytes under an `.avif` name suffice — the same
-        // precedent as the `a.jpg` fixture above.
+        // Open-time filtering is extension-only (bytes are never decoded at open), so PNG
+        // bytes under an `.avif` name suffice (same precedent as the `a.jpg` fixture).
         let cbz = write_cbz(&[("1.avif", tiny_png()), ("notes.txt", b"x".to_vec())]);
         let src = ZipSource::open(cbz.path()).unwrap();
 
@@ -254,9 +244,8 @@ mod tests {
     #[test]
     fn macos_metadata_entries_are_excluded_without_counting() {
         let png = tiny_png();
-        // The AppleDouble carries a `.jpg` name and (via case-insensitive
-        // natural ordering) sorts AHEAD of `Manga/001.jpg`, so before the fix it
-        // would become page 0 and fail to decode.
+        // The AppleDouble carries a `.jpg` name and (via case-insensitive natural order)
+        // sorts AHEAD of `Manga/001.jpg`, so before the fix it became an undecodable page 0.
         let cbz = write_cbz(&[
             ("__MACOSX/Manga/._001.jpg", b"AppleDouble noise".to_vec()),
             ("Manga/001.jpg", png.clone()),
@@ -294,9 +283,8 @@ mod tests {
 
     #[test]
     fn unsafe_non_image_entry_is_not_counted_as_skipped() {
-        // Only image-looking malicious entries inflate `skipped_count()`. A
-        // zip-slip entry that is NOT an image (e.g. a stray text file) is
-        // expected noise: it is silently ignored, not surfaced as a skip.
+        // Only image-looking malicious entries inflate `skipped_count()`. A zip-slip entry
+        // that is NOT an image is expected noise: silently ignored, not surfaced as a skip.
         let png = tiny_png();
         let cbz = write_cbz(&[("1.png", png), ("../secrets.txt", b"top secret".to_vec())]);
         let src = ZipSource::open(cbz.path()).unwrap();
@@ -307,12 +295,8 @@ mod tests {
 
     #[test]
     fn open_size_boundary_is_inclusive() {
-        // Open-time mirror of `read_entry_size_boundary_is_inclusive`: an image
-        // entry of EXACTLY `max` declared bytes is kept (the check is `> max`),
-        // while `max + 1` is skipped. Use `.png`-named Stored entries padded to
-        // a predictable byte length so the entry passes the image filter and the
-        // ONLY reason to skip is the declared-size tier. With Stored compression
-        // the entry's declared `size()` equals the buffer length.
+        // Open-time mirror of read_entry_size_boundary_is_inclusive: an image entry of
+        // EXACTLY `max` declared bytes is kept (check is `> max`), `max + 1` is skipped.
         const MAX: u64 = 64;
 
         // Exactly `max` bytes → kept, not counted as skipped.
@@ -369,9 +353,8 @@ mod tests {
 
     #[test]
     fn read_entry_over_actual_size_limit_errors() {
-        // Open with a generous limit so the entry passes open-time indexing,
-        // then read it through a tiny per-read cap to exercise the read-time
-        // actual-byte tier independently.
+        // Open with a generous limit so the entry passes indexing, then read through a
+        // tiny per-read cap to exercise the read-time actual-byte tier independently.
         let png = tiny_png();
         assert!(png.len() as u64 > 10);
         let cbz = write_cbz(&[("p.png", png)]);
@@ -391,11 +374,8 @@ mod tests {
 
     #[test]
     fn read_entry_size_boundary_is_inclusive() {
-        // An entry of exactly `max` bytes must read OK; `max + 1` must error.
-        // Stored compression keeps the uncompressed size equal to our input
-        // length, so we can pad to an exact byte count. We use non-image `.bin`
-        // entries and index every entry via `open_all_entries` so we can target
-        // both the exact and over-limit fixtures by page index.
+        // An entry of exactly `max` bytes must read OK; `max + 1` must error. Stored keeps
+        // size == input length; non-image `.bin` via `open_all_entries` targets both by index.
         const MAX: u64 = 32;
         let exact = vec![7u8; MAX as usize];
         let over = vec![7u8; MAX as usize + 1];

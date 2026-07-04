@@ -39,9 +39,8 @@ pub(crate) fn wire_open_handlers(
     selection: &Rc<RefCell<LibrarySelectionState>>,
     localizer: &Rc<i18n::Localizer>,
 ) {
-    // Rebind the `&Rc<_>` parameters to owned `Rc` locals so each closure's
-    // `Rc::clone(&handle)` prelude stays byte-identical to its pre-extraction
-    // form in `main` (cloning an owned `Rc`, not a `&Rc`).
+    // Rebind the `&Rc<_>` params to owned `Rc` locals so each closure's `Rc::clone(&handle)`
+    // prelude stays byte-identical to its pre-extraction form in `main`.
     let settings = Rc::clone(settings);
     let library = Rc::clone(library);
     let covers = Rc::clone(covers);
@@ -50,16 +49,8 @@ pub(crate) fn wire_open_handlers(
     let selection = Rc::clone(selection);
     let localizer = Rc::clone(localizer);
 
-    // Add Books button: pick comic sources and add them to the library. On
-    // macOS a single NSOpenPanel picks archives AND folders together
-    // (`pick_files_or_folders` only compiles there); elsewhere this is the
-    // files-only picker paired with the separate Add Folder button below. Rust
-    // is the single authority for the dialog flavor — Slint only fires the
-    // intent. The picked sources are PROBED off the UI thread (issue 206): the
-    // controller dispatches one rayon probe per path, streams "Adding… (k/N)"
-    // progress, and runs the add (dedup, reject image-free/unreadable, persist,
-    // rebuild) in the `add-finalize` handler below once probing finishes — so a
-    // bulk add of large/cloud-synced archives never freezes the event loop.
+    // Add Books: pick comic sources. macOS picks archives AND folders in one panel
+    // (`pick_files_or_folders`); sources are probed off the UI thread (issue 206).
     {
         let ui_weak = ui.as_weak();
         let settings = Rc::clone(&settings);
@@ -81,11 +72,8 @@ pub(crate) fn wire_open_handlers(
         });
     }
 
-    // Add Folder button: pick a single folder and add it as one book to the
-    // library. Wraps the folder in a `vec![]` so the same off-thread probe +
-    // `add-finalize` apply path as `on_add_books` is used (issue 206). Skips
-    // duplicates and rejects image-free or unreadable sources, persists, and
-    // restores carousel focus — all in the finalize handler.
+    // Add Folder: pick one folder, added as one book. Wraps it in a `vec![]` so it reuses
+    // the same off-thread probe + `add-finalize` apply path as `on_add_books` (issue 206).
     {
         let ui_weak = ui.as_weak();
         let settings = Rc::clone(&settings);
@@ -101,10 +89,8 @@ pub(crate) fn wire_open_handlers(
         });
     }
 
-    // Bulk-add progress tick (issue 206): a probe worker completed, so update the
-    // transient bottom-strip status to "Adding… (done/total)". Marshaled
-    // epoch-guarded by the controller, so a tick from a superseded add is already
-    // dropped before reaching here.
+    // Bulk-add progress tick (issue 206): a probe completed; update the status to
+    // "Adding… (done/total)". Epoch-guarded, so superseded ticks are already dropped.
     {
         let ui_weak = ui.as_weak();
         let localizer = Rc::clone(&localizer);
@@ -125,13 +111,8 @@ pub(crate) fn wire_open_handlers(
         });
     }
 
-    // Bulk-add finalize (issue 206): the last probe completed. Drain this
-    // generation's outcomes (epoch-guarded — `None` means a second add superseded
-    // this one, so drop it), mutate the library on the UI thread via
-    // `apply_outcomes`, then run the existing add tail (`apply_add_report`):
-    // persist, rebuild the filtered carousel, surface the "added N / skipped M"
-    // notice, and focus the first added book. This is where every `!Send`
-    // collaborator (library, covers, search, selection, localizer) is re-acquired.
+    // Bulk-add finalize (issue 206): drain this generation's outcomes (epoch-guarded;
+    // `None` = superseded), mutate the library on the UI thread, then run the add tail.
     {
         let ui_weak = ui.as_weak();
         let adder = Rc::clone(&adder);
@@ -178,17 +159,13 @@ fn open_and_enter(
     // Writes back the OLD book first, opens the new path, then resumes its
     // stored page. Empty sources are removed instead of entering the viewer.
     let outcome = open_book.run(ui, path);
-    // Enter the Viewer ONLY on a clean open. An empty source was already removed
-    // (no viewer); a FAILED open must not drop the user into a 0-page Viewer
-    // either — the old `!EmptyBookRemoved` guard let `Error` through, so a book
-    // whose file had moved (or whose volume was unmounted) opened a blank stage.
+    // Enter the Viewer ONLY on a clean open: an empty source was already removed, and a
+    // FAILED open must not drop the user into a 0-page Viewer (moved file / unmounted volume).
     let enter_viewer = matches!(outcome, app::OpenOutcome::Success(..));
     let open_failed = matches!(outcome, app::OpenOutcome::Error(_));
     finalize_open(ui, state, viewport, pages, refresh, outcome);
-    // When the open failed because the file is gone (moved) or its volume isn't
-    // mounted, replace finalize_open's raw I/O status with a plain-language,
-    // book-named message. A failure with the file STILL present (e.g. a corrupt
-    // archive) keeps finalize_open's detailed error instead.
+    // When the open failed because the file is gone/unmounted, replace the raw I/O status
+    // with a book-named message. A failure with the file still present keeps the error.
     if open_failed && !path.exists() {
         let title = app::book_display_title(&refresh.library.borrow(), path);
         ui.set_status_text(
@@ -219,9 +196,8 @@ pub(crate) fn wire_carousel_handlers(
     selection: &Rc<RefCell<LibrarySelectionState>>,
     localizer: &Rc<i18n::Localizer>,
 ) {
-    // Rebind the `&Rc<_>` parameters to owned `Rc` locals so each closure's
-    // `Rc::clone(&handle)` prelude stays byte-identical to its pre-extraction
-    // form in `main` (cloning an owned `Rc`, not a `&Rc`).
+    // Rebind the `&Rc<_>` params to owned `Rc` locals so each closure's `Rc::clone(&handle)`
+    // prelude stays byte-identical to its pre-extraction form in `main`.
     let state = Rc::clone(state);
     let viewport = Rc::clone(viewport);
     let library = Rc::clone(library);
@@ -233,10 +209,8 @@ pub(crate) fn wire_carousel_handlers(
     let selection = Rc::clone(selection);
     let localizer = Rc::clone(localizer);
 
-    // Library search: the debounced query from the NavBar search field. This is
-    // the ONLY query-update path from Slint. Replace the filter (clearing any
-    // forced-visible just-added books), then rebuild the filtered carousel + cover
-    // stream and reset focus to row 0 so the first match is centered.
+    // Library search: the debounced NavBar query (the ONLY query-update path). Replace the
+    // filter, rebuild the filtered carousel + cover stream, reset focus to row 0.
     {
         let ui_weak = ui.as_weak();
         let library = Rc::clone(&library);
@@ -246,15 +220,13 @@ pub(crate) fn wire_carousel_handlers(
         let localizer = Rc::clone(&localizer);
         ui.on_library_search_changed(move |query| {
             with_ui(&ui_weak, |ui| {
-                // `search` and `library` are distinct RefCells; borrowing one
-                // mut while the other is shared cannot conflict. The shared
-                // `library.borrow()` drops at the `;` before refresh.
+                // `search` and `library` are distinct RefCells, so a mut borrow of one and a
+                // shared borrow of the other can't conflict; the shared borrow drops before refresh.
                 search
                     .borrow_mut()
                     .set_query(query.to_string(), &library.borrow());
-                // The selection (keyed by path) is ORTHOGONAL to the query: the
-                // rebuild re-applies the selection over the new visible rows, so a
-                // query change never drops a selected book.
+                // The selection (keyed by path) is ORTHOGONAL to the query: the rebuild
+                // re-applies it over the new visible rows, so a query change never drops a book.
                 refresh_library_carousel(
                     &ui,
                     &CarouselRefresh {
@@ -270,11 +242,8 @@ pub(crate) fn wire_carousel_handlers(
         });
     }
 
-    // Carousel: Return on the focused book — or a double-click on the CENTER
-    // strip cover (the Slint side fires the same `open(int)` with that cover's
-    // index; normal mode only — side clicks are intercepted by the one-step
-    // zones) — opens it, resumes its last-read page (via
-    // OpenBookUseCase::run → jump_to), and transitions to the Viewer.
+    // Carousel open: Return on the focused book (or a double-click on the CENTER cover,
+    // fired as the same `open(int)`); resumes its last-read page and enters the Viewer.
     {
         let ui_weak = ui.as_weak();
         let library = Rc::clone(&library);
@@ -291,11 +260,8 @@ pub(crate) fn wire_carousel_handlers(
         let selection = Rc::clone(&selection);
         ui.on_carousel_open(move |index| {
             with_ui(&ui_weak, |ui| {
-                // Resolve the focused VISIBLE carousel index to a Library book path
-                // through the search state's projection — the SAME hop
-                // `on_carousel_toggle_selection` / `on_carousel_cover_clicked` use,
-                // so the visible→library projection rule stays single-homed in
-                // `visible_index_to_path`.
+                // Resolve the VISIBLE carousel index to a Library path via the search
+                // projection — the same hop others use, single-homed in `visible_index_to_path`.
                 let Some(path) = visible_index_to_path(&library, &search, index) else {
                     // Index out of range (carousel and library out of sync) — no-op.
                     // Desync diagnostics (cold path): re-borrow is safe — the helper's borrows dropped.
@@ -329,13 +295,8 @@ pub(crate) fn wire_carousel_handlers(
         });
     }
 
-    // NavBar bookmark capsule: jump to the continue-reading book. The bookmark IS
-    // the library's `last_opened` book (the same path the continue-reading ribbon
-    // marks). When it names a book still present in the library, open it through
-    // the SAME path a Return-on-cover open uses — open_book.run resumes its stored
-    // page for free — then transition to the Viewer. When there is no bookmark
-    // (None) OR it names a book no longer in the library (a stale path purged from
-    // `books`), there is nothing to jump to: surface the no-bookmark notice instead.
+    // Bookmark capsule: jump to the continue-reading book (`last_opened`). If still on
+    // the shelf, open via the same path as Return; else (None/stale) show the no-bookmark notice.
     {
         let ui_weak = ui.as_weak();
         let library = Rc::clone(&library);
@@ -352,9 +313,8 @@ pub(crate) fn wire_carousel_handlers(
         let selection = Rc::clone(&selection);
         ui.on_carousel_continue_reading(move || {
             with_ui(&ui_weak, |ui| {
-                // `Library::bookmark()` returns `last_opened` only when it is
-                // still on the shelf — books purged from the library yield None,
-                // which counts as no bookmark and triggers the notice below.
+                // `Library::bookmark()` returns `last_opened` only when still on the shelf;
+                // a purged book yields None, counting as no bookmark (notice below).
                 let path = library
                     .borrow()
                     .bookmark()
@@ -387,11 +347,8 @@ pub(crate) fn wire_carousel_handlers(
         });
     }
 
-    // Carousel: Left/Right move the focused cover by `delta` (-1 / +1). Clamp
-    // into the shelf bounds — the row ends are hard stops (no wrap), so Left on
-    // the first book and Right on the last are inert. An empty shelf is a no-op
-    // (no books to move between). focused-index is the single source of truth
-    // for which cover is centered + which book Return opens.
+    // Carousel move: Left/Right shift the focused cover by `delta`, clamped to shelf bounds
+    // (hard stops, no wrap). focused-index is the single source of truth for the centered cover.
     {
         let ui_weak = ui.as_weak();
         let search = Rc::clone(&search);
@@ -409,10 +366,8 @@ pub(crate) fn wire_carousel_handlers(
             })
         });
     }
-    // Carousel: Down returns to the currently-open book (the Viewer). With no
-    // book open there is nothing to return to — the Viewer would render an
-    // all-black stage (it has no empty-state chrome of its own) — so the
-    // navigation is refused and the Library status strip explains why instead.
+    // Carousel back: Down returns to the open book (Viewer). With no book open there is
+    // nothing to return to (Viewer has no empty state), so refuse and explain via the strip.
     {
         let ui_weak = ui.as_weak();
         let nav = Rc::clone(&nav);
@@ -444,9 +399,8 @@ pub(crate) fn wire_selection_handlers(
     selection: &Rc<RefCell<LibrarySelectionState>>,
     localizer: &Rc<i18n::Localizer>,
 ) {
-    // Rebind the `&Rc<_>` parameters to owned `Rc` locals so each closure's
-    // `Rc::clone(&handle)` prelude stays byte-identical to its pre-extraction
-    // form in `main` (cloning an owned `Rc`, not a `&Rc`).
+    // Rebind the `&Rc<_>` params to owned `Rc` locals so each closure's `Rc::clone(&handle)`
+    // prelude stays byte-identical to its pre-extraction form in `main`.
     let state = Rc::clone(state);
     let library = Rc::clone(library);
     let covers = Rc::clone(covers);
@@ -454,12 +408,8 @@ pub(crate) fn wire_selection_handlers(
     let selection = Rc::clone(selection);
     let localizer = Rc::clone(localizer);
 
-    // Carousel: toggle the focused/clicked book's bulk-selection membership
-    // (keyboard `x`/Space, forwarded as a VISIBLE carousel index). Resolves the
-    // visible index → library path through the search projection (the SAME hop as
-    // `on_carousel_open`), toggles the path in the selection set, then flips ONLY
-    // that row's `selected` flag so its accent badge appears/disappears without a
-    // model rebuild. Out-of-range / desync indices are a no-op (warn on desync).
+    // Toggle the focused/clicked book's selection (VISIBLE index → path via the search
+    // projection). Flips ONLY that row's `selected` flag, no model rebuild; desync = no-op.
     {
         let ui_weak = ui.as_weak();
         let library = Rc::clone(&library);
@@ -488,14 +438,8 @@ pub(crate) fn wire_selection_handlers(
         });
     }
 
-    // Carousel: a cover was clicked (the repo's first cover pointer interaction).
-    // In NORMAL mode only the CENTER-strip cover can arrive here — the Slint
-    // left/right step zones intercept every side click and fire `move(∓1)`
-    // instead (one book per click) — and the click only FOCUSES it; opening is
-    // Return or a center-cover DOUBLE-click (both arrive via `on_carousel_open`
-    // — the Slint side fires `open(int)` from its double-clicked arm, so no
-    // second open path exists here). In SELECTION mode the zones are disabled,
-    // so ANY cover click lands here and focuses AND toggles that book.
+    // Cover clicked. NORMAL mode: only the CENTER cover arrives (side clicks fire move(∓1)),
+    // and it only FOCUSES (open = Return/double-click). SELECTION mode: any click focuses + toggles.
     {
         let ui_weak = ui.as_weak();
         let library = Rc::clone(&library);
@@ -530,11 +474,8 @@ pub(crate) fn wire_selection_handlers(
         });
     }
 
-    // Carousel: select-all / deselect-all toggle. Routed here by both the toolbar
-    // button and Cmd/Ctrl+A from the Slint side. If every visible book is already
-    // selected, this deselects them all (via `deselect_visible`); otherwise it
-    // selects them all (via `select_visible`). Re-applies the selection flags over
-    // the visible rows and refreshes the toolbar strings.
+    // Select-all / deselect-all toggle (toolbar button or Cmd/Ctrl+A): if all visible are
+    // selected, deselect all; else select all. Re-applies flags + refreshes toolbar strings.
     {
         let ui_weak = ui.as_weak();
         let library = Rc::clone(&library);
@@ -566,11 +507,8 @@ pub(crate) fn wire_selection_handlers(
         });
     }
 
-    // Carousel: leave selection mode (Esc or toolbar exit button). The Slint
-    // caller (Esc key arm or toolbar exit button) already cleared `selection-mode`;
-    // here we clear the Rust selection set and re-apply the (now empty) flags over
-    // the visible rows so every badge disappears. A fresh re-entry into selection
-    // mode then starts with nothing selected.
+    // Leave selection mode (Esc / toolbar exit). Slint already cleared `selection-mode`;
+    // clear the Rust selection set and re-apply the now-empty flags so every badge disappears.
     {
         let ui_weak = ui.as_weak();
         let library = Rc::clone(&library);
@@ -588,14 +526,8 @@ pub(crate) fn wire_selection_handlers(
         });
     }
 
-    // Carousel: a delete was requested (toolbar DangerButton or the Delete /
-    // Backspace key arm). The Slint side fires this even at N=0 (the key arm is
-    // unconditional by design), so an empty selection is a no-op here — the
-    // confirm dialog is never shown for nothing. Otherwise, build the localized
-    // confirm-dialog content for the current selection and push it into the
-    // ConfirmDialog's in-out properties, then flip `show-confirm-delete` true to
-    // mount the modal. Cancel/Esc/backdrop are handled purely in Slint (selection
-    // PRESERVED); Rust only sees the accept (the handler below).
+    // Delete requested (toolbar or Delete/Backspace). Fired even at N=0, so an empty
+    // selection is a no-op; else build the confirm-dialog content and mount the modal.
     {
         let ui_weak = ui.as_weak();
         let state = Rc::clone(&state);
@@ -609,11 +541,8 @@ pub(crate) fn wire_selection_handlers(
                 if selection.borrow().count() == 0 {
                     return;
                 }
-                // Build the dialog content under one shared-borrow group:
-                // `state`, `selection`, `search`, and `library` are distinct
-                // `RefCell`s, so holding the four immutable `Ref`s together is
-                // safe; the `ConfirmDeleteContent` it returns owns its strings, so
-                // the group drops at the block's `}` before the UI setters run.
+                // Build the dialog content under one shared-borrow group: the four distinct
+                // RefCells hold immutable Refs safely; the owned result drops before UI setters.
                 let content = {
                     let st = state.borrow();
                     app::confirm_delete_content(
@@ -625,9 +554,8 @@ pub(crate) fn wire_selection_handlers(
                     )
                 };
                 ui.set_confirm_delete_title(content.title.into());
-                // `confirm-delete-body-lines` is a Slint `[string]` property, so its
-                // setter takes a `ModelRc<SharedString>`; wrap the owned lines in a
-                // one-shot `VecModel` (mirrors `carousel::model`'s `ModelRc::new`).
+                // `confirm-delete-body-lines` is a Slint `[string]`, so its setter takes a
+                // `ModelRc<SharedString>`; wrap the lines in a one-shot `VecModel`.
                 let body_lines: Vec<slint::SharedString> =
                     content.body_lines.into_iter().map(Into::into).collect();
                 ui.set_confirm_delete_body_lines(slint::ModelRc::new(slint::VecModel::from(
@@ -640,13 +568,8 @@ pub(crate) fn wire_selection_handlers(
         });
     }
 
-    // Carousel: the delete confirmation was accepted (ConfirmDialog primary
-    // action). Run the destructive `RemoveBooksUseCase` transaction (mutate +
-    // save with rollback, cover purge, viewer-close-if-open, search recompute,
-    // selection clear), then finalize the UI from the returned `RemoveOutcome`.
-    // The modal is dismissed in EVERY outcome (its stale content props are
-    // rebuilt on the next open). The use case is constructed once and moved into
-    // the closure (mirrors how `OpenBookUseCase` is held).
+    // Delete confirmed: run the `RemoveBooksUseCase` transaction (mutate + save with
+    // rollback, cover purge, close-if-open), then finalize the UI. Modal dismissed always.
     {
         let ui_weak = ui.as_weak();
         let library = Rc::clone(&library);
@@ -681,14 +604,8 @@ pub(crate) fn wire_selection_handlers(
         });
     }
 
-    // Carousel: a cover-loading worker found a book whose source has zero image
-    // pages (an empty folder, an archive emptied since it was added, …). The
-    // worker invokes this with the book's canonical path (epoch-guarded on its
-    // side so a stale in-flight result is dropped). Auto-remove the now-empty
-    // book from the library, persist, purge its cached cover, rebuild the
-    // carousel (the rebuild's epoch bump drops any sibling covers still
-    // streaming for it), and surface a notice. Idempotent: a second signal for a
-    // book already removed (`Library::remove` returns false) is a silent no-op.
+    // A cover worker found a book with zero image pages: auto-remove it, persist, purge
+    // its cover, rebuild the carousel, and notice. Idempotent (second signal = no-op).
     {
         let ui_weak = ui.as_weak();
         let library = Rc::clone(&library);

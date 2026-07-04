@@ -265,15 +265,8 @@ mod tests {
 
     #[test]
     fn deselect_visible_after_query_pivot_removes_only_new_projection() {
-        // Production sequence: select_visible with broad/empty query (all books
-        // selected), then set_query narrowing the projection to a subset, then
-        // deselect_visible — only the narrowed projection's books must be removed;
-        // books outside the narrowed projection must remain selected.
-        //
-        // Library: alpha, beta, gamma (natural sort order).
-        // Step 1: empty query → all 3 visible → select_visible selects all.
-        // Step 2: narrow to "alpha" → only alpha visible.
-        // Step 3: deselect_visible → only alpha removed; beta and gamma stay.
+        // Production sequence guard: select_visible under a broad query, then narrow,
+        // then deselect_visible must remove ONLY the narrowed projection, keeping the rest.
         let mut lib = Library::new();
         assert!(lib.add(PathBuf::from("/manga/alpha.cbz")).is_some());
         assert!(lib.add(PathBuf::from("/manga/beta.cbz")).is_some());

@@ -22,19 +22,14 @@ pub(crate) fn parse_versioned_object(
 ) -> Result<serde_json::Value, serde_json::Error> {
     let value: serde_json::Value = serde_json::from_str(json)?;
     if !value.is_object() {
-        // Reject non-object roots (e.g. `5`, `[]`, `"x"`, `true`, `null`): `migrate`
-        // indexes the value as a map and would otherwise panic. Surface a typed serde
-        // error instead. We deserialize into a Map (not `from_value::<T>`) because the
-        // caller aggregates carry `#[serde(default)]` on every field, so serde would
-        // happily turn a non-object into an all-defaults value — defeating the guard.
-        // A non-object → Map deserialize is guaranteed to error, hence `unwrap_err`.
+        // Reject non-object roots (`5`, `[]`, `"x"`, …) that would panic `migrate`. Deserialize
+        // into a Map (not `from_value::<T>`, whose `#[serde(default)]` fields would mask it).
         let err = serde_json::from_value::<serde_json::Map<String, serde_json::Value>>(value)
             .unwrap_err();
         return Err(err);
     }
-    // Checked conversion, not a truncating `as u32`: a crafted future-version value
-    // (> u32::MAX) is treated as unknown (0) rather than silently wrapping into a
-    // small number that would trigger an unexpected migration.
+    // Checked conversion, not a truncating `as u32`: a crafted `> u32::MAX` version is
+    // treated as unknown (0) rather than wrapping small and triggering a bad migration.
     let from = value
         .get("version")
         .and_then(|v| v.as_u64())

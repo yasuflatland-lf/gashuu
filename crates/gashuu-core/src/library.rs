@@ -334,9 +334,8 @@ impl Library {
             survivors.push(merge_group(key, members));
         }
         self.books = survivors;
-        // Repoint a `last_opened` spelled as a merged-away / pre-upgrade path to
-        // its survivor's canonical key. A path absent from `remap` (a genuine
-        // orphan) is left as-is for `normalize`'s orphan-clear.
+        // Repoint a `last_opened` spelled as a merged-away / pre-upgrade path to its
+        // survivor's canonical key. A path absent from `remap` is left for normalize.
         if let Some(last_opened) = self.last_opened.take() {
             self.last_opened = Some(remap.get(&last_opened).cloned().unwrap_or(last_opened));
         }
@@ -388,14 +387,11 @@ impl Library {
     /// `last_opened` when it points at one of the removed paths; preserves it
     /// otherwise.
     pub fn remove_many(&mut self, paths: &[PathBuf]) -> RemovalReport {
-        // Collect the requested paths into a set: de-duplication falls out for
-        // free (a repeated input is counted once in the report), and the retain
-        // predicate below becomes an O(log M) membership test instead of an
-        // O(M) linear scan per surviving book.
+        // Collect requested paths into a set: dedup falls out for free (a repeated input
+        // is counted once) and the retain predicate becomes O(log M), not O(M) per book.
         let requested: BTreeSet<&Path> = paths.iter().map(PathBuf::as_path).collect();
-        // Split into present (will be removed) and absent (reported not_found)
-        // BEFORE the retain, while the books are still in the shelf to compare
-        // against. Iterate the set in its sorted order for a deterministic report.
+        // Split into present (removed) and absent (not_found) BEFORE the retain, while the
+        // books are still in the shelf. Iterate the sorted set for a deterministic report.
         let mut report = RemovalReport::default();
         for &path in &requested {
             if self.books.iter().any(|b| b.path() == path) {
@@ -518,16 +514,12 @@ impl Library {
         canonical: &Path,
         page_count: Option<NonZeroUsize>,
     ) -> OpenRegistration {
-        // `add_canonical` returns the shelf's identity for this book — the same
-        // owned `PathBuf` whether the book was newly added or already present —
-        // so the subsequent lookup can never miss. Capturing it as an owned value
-        // also ends the borrow on `self` before the `&mut self` calls below.
+        // `add_canonical` returns the shelf's identity (same owned `PathBuf` whether newly
+        // added or already present), ending the `self` borrow before the `&mut self` calls.
         let (stored, _added) = self.add_canonical(canonical.to_path_buf());
         let count_changed = page_count.is_some_and(|c| self.set_page_count(&stored, c));
-        // Resolve the resume position from the book actually stored under `stored`
-        // (the shelf's canonical identity), so the `last_opened` invariant (it is a
-        // member of `books`) holds by construction. The lookup is total: `stored`
-        // is exactly the key `add_canonical` placed (or found) in `books`.
+        // Resolve the resume position from the book stored under `stored`, so the
+        // `last_opened`-is-a-member invariant holds by construction (the lookup is total).
         let resume = self
             .books
             .iter()
@@ -613,18 +605,15 @@ mod tests {
 
     #[test]
     fn display_title_keeps_leading_dot_name_as_stem() {
-        // A dotfile like `.cbz` is NOT a hidden-extension case to `file_stem`: the
-        // whole `.cbz` is the stem (non-empty), so the empty filter does not fire
-        // and the title is the dotfile name verbatim — never the lossy fallback.
+        // A dotfile like `.cbz` keeps the whole `.cbz` as its (non-empty) stem, so the
+        // empty filter never fires and the title is the dotfile name, not the fallback.
         assert_eq!(display_title(Path::new("/manga/.cbz")), ".cbz");
     }
 
     #[test]
     fn display_title_falls_back_to_lossy_path_when_no_file_component() {
-        // A non-dir path whose `file_stem` is None (a trailing `..` component) hits
-        // the empty/None fallback arm: the lossy full path string is used so the
-        // title is never empty. This is the same fallback the empty filter feeds
-        // into, exercised via the only route `std::path` actually produces.
+        // A non-dir path whose `file_stem` is None (a trailing `..`) hits the fallback
+        // arm: the lossy full path string is used so the title is never empty.
         let title = display_title(Path::new("/manga/.."));
         assert!(!title.is_empty());
         assert_eq!(title, "/manga/..");
@@ -913,9 +902,8 @@ mod tests {
 
     #[test]
     fn restore_preserves_per_book_data_that_add_would_lose() {
-        // The add()-trap: re-adding by path yields a FRESH book (last_page 0,
-        // page_count None, overrides all-None).  restore must re-insert the WHOLE
-        // clone, keeping last_page / page_count / overrides.
+        // The add()-trap: re-adding by path yields a FRESH book (last_page 0, count None,
+        // overrides all-None); restore must re-insert the WHOLE clone, keeping that data.
         let mut lib = Library::new();
         let p = PathBuf::from("/manga/a.cbz");
         assert!(lib.add(p.clone()).is_some());
@@ -972,12 +960,8 @@ mod tests {
 
     #[test]
     fn restore_round_trips_to_byte_identical_json() {
-        // The rollback contract: remove + restore must reproduce the EXACT
-        // pre-removal serialization (the add()-trap would break this).
-        // A non-default ViewOverride on one of the removed books makes the
-        // comparison non-vacuous for the `overrides` field (a default/empty
-        // override is omitted by `skip_serializing_if`, so the byte-identical
-        // check would vacuously pass without this).
+        // The rollback contract: remove + restore must reproduce the EXACT pre-removal
+        // JSON. A non-default override keeps the `overrides` comparison non-vacuous.
         let mut lib = Library::new();
         for name in ["a.cbz", "b.cbz", "c.cbz"] {
             assert!(lib.add(PathBuf::from(format!("/manga/{name}"))).is_some());
@@ -1071,10 +1055,8 @@ mod tests {
 
     #[test]
     fn book_without_page_count_field_deserializes_to_unknown() {
-        // Backward compatibility: an older `Book` JSON object that predates the
-        // `page_count` field must still deserialize, with the missing field
-        // defaulting to the unknown encoding (stored `0`) which surfaces as
-        // `None` through `page_count_opt`.
+        // Backward compat: an older `Book` JSON predating the `page_count` field must
+        // still deserialize, the missing field defaulting to unknown (`None`).
         let value = serde_json::json!({
             "path": "/manga/a.cbz",
             "title": "a",
@@ -1154,9 +1136,8 @@ mod tests {
 
     #[test]
     fn register_opened_skips_back_fill_when_count_unknown() {
-        // `None` means the total is unknown: the `is_some_and` guard skips
-        // set_page_count entirely, so the stored count stays at its unknown
-        // encoding and surfaces as `total() == None`.
+        // `None` means the total is unknown: the `is_some_and` guard skips set_page_count,
+        // so the stored count stays unknown and surfaces as `total() == None`.
         let mut lib = Library::new();
         let path = PathBuf::from("/manga/b.cbz");
         let reg = lib.register_opened(&path, None);
@@ -1207,13 +1188,8 @@ mod tests {
 
     #[test]
     fn register_opened_with_non_canonical_path_keeps_invariant() {
-        // Invariant: after register_opened, last_opened is ALWAYS Some and points
-        // at a stored book — even when the caller passes a non-canonical path that
-        // diverges from the stored canonical key. We exercise this with a real file
-        // reached via a `..` detour. On macOS, /tmp → /private/tmp also exercises
-        // symlink divergence when tempdir lives there. Resolving the resume target
-        // from the stored canonical identity (not the raw argument) is what makes
-        // the lookup total; this previously degraded to None on divergence.
+        // Invariant: register_opened always sets last_opened to a stored book even when the
+        // caller passes a non-canonical path (`..` detour / macOS symlink) that once gave None.
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("Book.cbz");
         std::fs::write(&file, []).unwrap();
@@ -1410,9 +1386,8 @@ mod tests {
 
     #[test]
     fn bookmark_is_none_for_orphan_last_opened() {
-        // last_opened points at a path NOT in books. We construct this via RAW
-        // serde deserialization (NOT from_json, which runs normalize() and would
-        // clear the orphan), so bookmark() must do the membership guard itself.
+        // last_opened points at a path NOT in books, built via RAW serde deserialization
+        // (not from_json, which normalize() would clear), so bookmark() guards membership.
         let json = serde_json::json!({
             "books": [{"path": "/manga/a.cbz", "title": "a", "last_page": 0, "page_count": 0}],
             "last_opened": "/manga/gone.cbz"
@@ -1466,11 +1441,8 @@ mod tests {
         );
     }
 
-    // --- recanonicalize_and_merge tests (re-canonicalize + duplicate merge on load) ---
-    //
-    // Each builds a `library.json` document with path spellings crafted directly
-    // (bypassing add-time canonicalization), so two entries can name the SAME
-    // on-disk file with different strings, then loads via `Library::from_json`.
+    // recanonicalize_and_merge tests: each builds a `library.json` with path spellings
+    // crafted directly (bypassing add-time canonicalization) so two entries name one file.
 
     /// Build a non-canonical spelling of `canonical` by routing through a `..`
     /// detour (`<dir>/sub/../<name>`), creating the `sub` directory so the path
@@ -1497,10 +1469,8 @@ mod tests {
             "the two spellings must differ as strings"
         );
 
-        // Two entries naming the SAME file. Each field is set so the merge policy
-        // is non-vacuous: max last_page comes from member[1]; the first `Some`
-        // page_count is member[1]'s (member[0] is the unknown `0`); the first
-        // non-empty override is member[0]'s; the title is member[0]'s.
+        // Two entries naming the SAME file, fields set so the merge policy is non-vacuous:
+        // max last_page + first Some page_count from member[1]; override + title from member[0].
         let json = serde_json::json!({
             "version": 1,
             "books": [
@@ -1579,9 +1549,8 @@ mod tests {
 
     #[test]
     fn recanonicalize_preserves_missing_path_unchanged() {
-        // A path that does not resolve (canonicalize fails) must be kept verbatim
-        // — neither dropped nor merged. This is the regression guard for the
-        // missing-file case.
+        // A path that does not resolve (canonicalize fails) must be kept verbatim —
+        // neither dropped nor merged. Regression guard for the missing-file case.
         let raw = "/manga/definitely/missing/Book.cbz";
         let json = serde_json::json!({
             "version": 1,
@@ -1604,9 +1573,8 @@ mod tests {
 
     #[test]
     fn recanonicalize_repoints_last_opened_to_survivor() {
-        // last_opened spelled as the non-canonical (merged-away) path must be
-        // repointed to the surviving canonical path. Without the repoint,
-        // normalize's orphan-clear would reset it to None.
+        // last_opened spelled as the merged-away path must be repointed to the surviving
+        // canonical path; without the repoint, normalize's orphan-clear would reset it to None.
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("Book.cbz");
         std::fs::write(&file, []).unwrap();
@@ -1641,9 +1609,8 @@ mod tests {
 
     #[test]
     fn recanonicalize_keeps_books_in_natural_order() {
-        // After re-canonicalization/merge the shelf must still obey book_order.
-        // Missing paths are kept verbatim, so this also confirms the sort runs
-        // over the post-merge survivors.
+        // After re-canonicalization/merge the shelf must still obey book_order. Missing
+        // paths are kept verbatim, so this also confirms the sort runs over survivors.
         let json = serde_json::json!({
             "version": 1,
             "books": [

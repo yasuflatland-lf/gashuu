@@ -39,9 +39,8 @@ pub fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), CoreError> {
     // `io::Error`; extract it so callers see a uniform `CoreError::Io`.
     tmp.persist(path).map_err(|e| CoreError::Io(e.error))?;
 
-    // Best-effort: fsync the directory so the rename is durable across a crash.
-    // A failure here does not invalidate the freshly-renamed target, so it is
-    // intentionally ignored rather than surfaced as an error.
+    // Best-effort fsync of the directory so the rename survives a crash. A failure
+    // here does not invalidate the renamed target, so it is intentionally ignored.
     let _ = std::fs::File::open(parent).and_then(|d| d.sync_all());
 
     Ok(())

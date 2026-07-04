@@ -1,8 +1,5 @@
-// Single source of truth for gashuu's visual tokens, transcribed from
-// /DESIGN.md (Google-Stitch DESIGN.md format). Components reference
-// `Theme.<token>` and NEVER paste raw hex inline (see DESIGN.md "Iteration /
-// Agent Prompt Guide" rule 2). Downstream PRs (Carousel rendering, Scrubber,
-// covers) extend this global with the tokens they need.
+// Single source of truth for gashuu's visual tokens, transcribed from /DESIGN.md
+// (Google-Stitch format). Components reference `Theme.<token>` and NEVER paste raw hex inline.
 export global Theme {
     // ── Colors: accent ──────────────────────────────────────────────────────
     out property <color> accent: #5b8cff;
@@ -37,9 +34,8 @@ export global Theme {
     /// Card elevation shadow (~55% black) for raised cover cards (DESIGN.md elevation.card).
     out property <color> shadow-card: #0000008c;
 
-    // ── Spacing (8px base, denser sub-steps for chrome) ───────────────────────
-    // The sm → lg → xxl rungs (8 / 14 / 22) double as the settings rhythm ladder:
-    // ≈ Fibonacci 8 / 13 / 21, each step ≈ ×φ (in-control gap → row gap → section gap).
+    // Spacing (8px base, denser sub-steps for chrome). The sm → lg → xxl rungs (8/14/22)
+    // double as the settings rhythm ladder ≈ Fibonacci 8/13/21, each step ≈ ×φ.
     out property <length> space-xxs: 4px;
     out property <length> space-xs: 6px;
     out property <length> space-sm: 8px;
@@ -56,9 +52,8 @@ export global Theme {
     out property <length> radius-lg: 10px;
     out property <length> radius-pill: 9999px;
 
-    // ── Proportion primitives ─────────────────────────────────────────────────
-    // The golden ratio — already implicit in the nav Fibonacci sizes below; the
-    // settings polish PR (spec 2026-06-04) consumes it directly for derived lengths.
+    // Proportion primitives. The golden ratio — implicit in the nav Fibonacci sizes below;
+    // the settings polish PR (spec 2026-06-04) consumes it directly for derived lengths.
     out property <float> phi: 1.618;
 
     // ── Component sizes (PR-S scrubber) ───────────────────────────────────────
@@ -66,38 +61,28 @@ export global Theme {
     out property <length> scrubber-knob-size: 16px;
     out property <length> scrubber-knob-size-active: 20px;   // drag-grow target
 
-    // ── Viewer swipe-to-turn affordance ──────────────────────────────────────
-    // Edge glow band that lights on the side the fingers push toward as a two-finger
-    // swipe accumulates toward a page turn (PageView). The band is wide, so the color is
-    // accent at a soft alpha tuned to read over bright pages without dominating;
-    // its opacity still scales with swipe progress.
+    // Viewer swipe-to-turn affordance: edge glow band lighting the side the fingers push
+    // toward as a two-finger swipe accumulates (PageView). Soft accent alpha; opacity scales with progress.
     out property <length> viewer-swipe-glow-width: 280px;
     out property <color> viewer-swipe-glow: #5b8cff4d;   // accent @ ~30% alpha (rgba(91,140,255,0.30))
 
-    // ── Settings control atoms (issue 102) ───────────────────────────────────
-    // Shared visible-capsule height for Segmented / Stepper / Toggle. The DESIGN
-    // ~32px hit area is met by the surrounding row (see PR-B); the capsule is 30.
+    // Settings control atoms (issue 102). Shared visible-capsule height for Segmented /
+    // Stepper / Toggle; the DESIGN ~32px hit area is met by the surrounding row, capsule is 30.
     out property <length> settings-control-h: 30px;
-    // Segmented selected-pill inset — with the derived cell radius below this is a
-    // CONSECUTIVE-FIBONACCI concentric triple: inset 3 → pill radius 5 → capsule
-    // radius-md 8 (inner radius = outer radius − inset; Apple's nested-corner rule).
+    // Segmented selected-pill inset — a consecutive-Fibonacci concentric triple with the cell
+    // radius below: inset 3 → pill radius 5 → capsule 8 (inner = outer − inset; Apple nested-corner).
     out property <length> seg-pill-inset: 3px;
     out property <length> seg-cell-radius: radius-md - seg-pill-inset;
-    // Horizontal label inset inside each segment cell. Extends the segmented
-    // control's existing concentric Fibonacci triple (inset 3 → pill-radius 5 →
-    // capsule-radius 8) to the next rung 13 — the φ-generous label inset so a
-    // label never crowds the cell's rounded ends (mirrors the nav-capsule-pad =
-    // nav-capsule/φ precedent for text capsules).
+    // Horizontal label inset inside each segment cell — extends the Fibonacci triple
+    // (3 → 5 → 8) to rung 13, the φ-generous inset so a label never crowds the rounded ends.
     out property <length> seg-label-pad: 13px;
     // Toggle track: width / height = φ — the same proportion as Apple's 51×31 switch.
     out property <length> toggle-track-w: settings-control-h * phi;
     // Toggle knob inset (Apple's switch keeps a 2px rim around the knob).
     out property <length> toggle-knob-inset: space-xxs / 2;
 
-    // ── Settings dropdown (pull-down) atom ────────────────────────────────────
-    // Fixed button width so the capsule does not resize when the selected label
-    // changes length (e.g. "English" vs "日本語"). Fits the widest label plus
-    // the chevron within the settings control column.
+    // Settings dropdown (pull-down) atom. Fixed button width so the capsule doesn't resize
+    // when the label length changes (e.g. "English" vs "日本語"); fits the widest label + chevron.
     out property <length> settings-dropdown-w: 140px;
     out property <length> settings-dropdown-chevron: 10px;  // chevron glyph square
 
@@ -112,14 +97,8 @@ export global Theme {
     out property <color> glass-sheen-top: #1a2030d1;     // stage-top @ ~82% alpha; top stop of settings panel gradient
     out property <length> settings-scroll-indicator-w: 3px;  // self-drawn scroll indicator width
 
-    // ── Shortcuts overlay panel (issue 104, PR-C) ─────────────────────────────
-    // Reuses settings-w / settings-radius / the glass tokens; only the height
-    // differs. Shorter than the settings panel's content-hug height so the overlay reads as a SMALLER
-    // modal layered over the still-mounted settings panel. Sized to fit the
-    // KEY_BINDINGS_HELP block (17 lines at font-label 12px) + a sticky
-    // header (~30px) + a hairline footer with the Close button (~50px) + the
-    // panel's vertical paddings, with a little air — the body Flickable still
-    // scrolls on a short window (Marcotte clamp).
+    // Shortcuts overlay panel (issue 104, PR-C). Reuses settings-w/radius/glass tokens; only
+    // the height differs — shorter than the settings panel so it reads as a smaller layered modal.
     out property <length> shortcuts-h: 466px;            // fixed; reads smaller than the settings panel's content-hug height
 
     // ── Typography sizes (system font; no custom typeface) ────────────────────
@@ -133,12 +112,8 @@ export global Theme {
     out property <color> scrim: #000000a0;          // standard modal backdrop (~63% black)
     out property <color> scrim-soft: #00000060;     // lighter recede veil (~38% black); scrim is too dense for a NavBar recede
 
-    // ── Drag-and-drop drop zone (full-window solid frame) ─────────────────────
-    // A full-window solid frame shown while an OS file/folder drag hovers the
-    // Library. The library recede uses drop-scrim (~70% black, denser than the
-    // NavBar's scrim-soft veil) so the affordance reads as foreground; the
-    // frame/message are drawn at full strength (NO opacity layer — alpha lives in
-    // the color tokens).
+    // Drag-and-drop drop zone: full-window solid frame while an OS drag hovers the Library.
+    // Recede uses drop-scrim (~70% black); frame/message at full strength (NO opacity layer).
     out property <color> drop-scrim: #000000b3;           // ~70% black recede; library shows at ~30% (drop-zone only; do NOT reuse — scrim-soft stays the NavBar veil)
     out property <length> drop-frame-inset: space-huge;   // 26px gap from each window edge to the frame
     out property <length> drop-frame-width: 2px;          // solid frame stroke thickness
@@ -147,42 +122,27 @@ export global Theme {
     // ── Neutral placeholder fill (thumbnail still-loading) ────────────────────
     out property <color> placeholder: #2a3243;      // neutral loading fill (= track hue)
 
-    // ── STATE semantics: failed-decode / load-failure surface + hue ──────────────
-    // Desaturated red tuned to the dark canvas; deliberately distinct from the
-    // forbidden traffic-light win-close (#ff5f57). `error` is the border + glyph
-    // hue; `error-surface` is the cell ground. These mark a non-interactive STATE
-    // (decode failure, load failure) — they are explicitly NOT for destructive
-    // buttons (white label text fails WCAG AA against `error`: ~3.44:1). Filled
-    // destructive buttons use the deeper `danger` token below instead.
+    // STATE semantics (failed-decode / load-failure): `error` = border/glyph hue, `error-surface`
+    // = cell ground. NOT for destructive buttons — white text fails WCAG AA on `error` (~3.44:1).
     out property <color> error: #d16b7c;
     out property <color> error-surface: #2a1820;
 
-    // ── OPERATION semantics: destructive-button red (bulk-delete epic) ───────────
-    // Red is scarce — destructive BUTTONS only. Selection visuals stay `accent`;
-    // do not reach for these to signal "selected" or a focus state.
-    // `danger` is the filled destructive-button ground — deeper / more saturated
-    // than the `error` STATE hue so white label text passes WCAG AA on the dark
-    // canvas (white-on-#c1455e ≈ 4.91:1, above the 4.5:1 AA floor; #d16b7c would be
-    // only 3.44:1). `danger-glow` is the hover/focus ring at ~25% alpha of `danger`
-    // (alpha byte 40 — symmetric to accent-glow); its OWN value, never an alias of
-    // `error`.
+    // OPERATION semantics: destructive-button red (bulk-delete epic). Red is scarce —
+    // destructive BUTTONS only; selection stays `accent`. `danger` passes WCAG AA where `error` fails.
     out property <color> danger: #c1455e;
     out property <color> danger-glow: #c1455e40;   // danger @ 25% alpha (rgba(193,69,94,0.25))
 
     // ── Motion ────────────────────────────────────────────────────────────────
     out property <duration> motion-fast: 180ms;     // chrome fades (existing value)
-    // Screen-transition tempo (settings drill-in slide + panel-height ease): long
-    // enough to read a horizontal push, short enough to stay snappy — between the
-    // 180ms chrome fade and the 480ms cover-flow travel.
+    // Screen-transition tempo (drill-in slide + panel-height ease): long enough to read a
+    // horizontal push, short enough to stay snappy — between the 180ms fade and 480ms cover-flow.
     out property <duration> motion-med: 260ms;
-    // The easing lives in the animate block — Slint has no <easing> property type,
-    // so cubic-bezier(0.16, 1, 0.3, 1) cannot be stored as a Theme token and must
-    // be repeated at each animate site.
+    // Easing lives in each animate block — Slint has no <easing> property type, so
+    // cubic-bezier(0.16, 1, 0.3, 1) can't be a Theme token and must be repeated at each site.
     out property <duration> motion-cinematic: 480ms;       // Carousel flow-position — the ONE animated scalar the cover-flow row chases; long enough for the eye to follow a full-width translation
 
-    // ── Typography weights (DESIGN typography roles) ──────────────────────────
-    // Line-height is intentionally omitted: Slint 1.x Text has no line-height
-    // property, so DESIGN's per-role lineHeight cannot be expressed and must not be faked.
+    // Typography weights (DESIGN roles). Line-height is intentionally omitted: Slint 1.x
+    // Text has no line-height property, so per-role lineHeight can't be expressed — don't fake it.
     out property <int> weight-regular: 400;
     out property <int> weight-medium: 500;
     out property <int> weight-semibold: 600;
@@ -192,16 +152,12 @@ export global Theme {
     out property <color> glass-fill: #10141fd1;      // surface-float @ ~82% alpha
     out property <color> glass-border: #2f3850b3;    // hairline-float @ ~70% alpha
     out property <color> glass-highlight: #dde5f51f; // text-high @ ~12% — top inner rim
-    // Resting search-field rim — the hairline-float hue at threshold-of-visibility
-    // alpha (~15%), a hair above glass-highlight's ~12% so the cooler hue reads at
-    // the same faint level. Barely visible at rest; the field brightens to accent on
-    // focus. Dedicated so glass-border (shared by 5 components) stays untouched.
+    // Resting search-field rim — hairline-float hue at ~15% alpha (a hair above glass-highlight's
+    // ~12%). Dedicated so glass-border (shared by 5 components) stays untouched; brightens on focus.
     out property <color> search-border-rest: #2f385026; // hairline-float @ ~15% alpha
     out property <color> viewer-pill-fill: #10141fb3;   // surface-float @ ~70% alpha (viewer pill, slightly more transparent than glass-fill)
-    // Glow color for the book-title label. Slint 1.x Text has no text-shadow, so
-    // the title is rendered as 1px-offset duplicates in this color behind a crisp
-    // white copy — a soft outline/glow that keeps the name legible over bright
-    // pages without a backing capsule.
+    // Glow for the book-title label. Slint 1.x Text has no text-shadow, so the title is drawn
+    // as 1px-offset duplicates in this color behind a crisp white copy (legible over bright pages).
     out property <color> title-glow: #3d3d3d;            // text-glow tone behind the white title
 
     // ── Nav bar sizing (golden ratio phi ~= 1.618 via Fibonacci px) ──
@@ -210,39 +166,25 @@ export global Theme {
     out property <length> nav-pill-height: 55px; // 34 x phi
     out property <length> nav-item-gap: 13px;
     out property <length> nav-pill-pad: 11px;
-    // TRUE capsule radius for a text-bearing 34px pill: exactly height/2, so the
-    // sides stay straight and the ends are semicircles (Apple HIG capsule).
-    // `radius-pill` (9999px) must NOT be used on a non-square rectangle: femtovg
-    // clamps the radius PER AXIS (rx=w/2, ry=h/2), rendering a full ELLIPSE
-    // (see docs/patterns.md "radius-pill on a non-square Rectangle").
+    // TRUE capsule radius for a 34px pill: exactly height/2 (straight sides, semicircle ends).
+    // `radius-pill` (9999px) on a non-square rect renders an ELLIPSE (femtovg per-axis clamp; patterns.md).
     out property <length> nav-capsule-radius: nav-capsule / 2;  // 17px
-    // Horizontal label inset inside a text capsule: nav-capsule / phi ~= 21
-    // (Fibonacci) — the HIG-generous padding a capsule button needs so the
-    // label never crowds the rounded ends.
+    // Horizontal label inset inside a text capsule: nav-capsule / phi ≈ 21 (Fibonacci) —
+    // HIG-generous padding so the label never crowds the rounded ends.
     out property <length> nav-capsule-pad: 21px;
     // Leading glyph size inside a text button (DangerButton's trash icon):
     // sized to read with a font-label (12px) line next to it.
     out property <length> button-icon: 16px;
 
-    // ── Push button geometry (Primary / Secondary / DangerButton) ──
-    // Shared hit-area + padding for the three push buttons (a Rectangle sized to
-    // its label). `button-min-h` meets the DESIGN >= 32px hit-area requirement;
-    // `button-pad-x` is the horizontal label inset. The vertical padding is
-    // deliberately ASYMMETRIC (9 top / 7 bottom, 16px total): Slint metric-centers
-    // the full font line box, which sits a descender-less label ~1px high of the
-    // button's visual center, so the extra pixel goes to the top to optically
-    // center the label (docs/patterns.md optical-centering entry). Do NOT tidy to
-    // 8/8 — the split is the correction.
+    // Push button geometry (Primary / Secondary / DangerButton): shared hit-area + padding.
+    // Vertical padding is ASYMMETRIC (9 top / 7 bottom) to optically center the label — do NOT tidy to 8/8.
     out property <length> button-min-h: 32px;
     out property <length> button-pad-x: 16px;
     out property <length> button-pad-top: 9px;
     out property <length> button-pad-bottom: 7px;
 
-    // ── Nav search field sizing (issue #88: live library search) ──
-    // Length-only tokens; the field's colors reuse the surface / text / accent
-    // tokens above (surface-sunken ground, glass-border idle edge, accent focus
-    // edge, text-dim placeholder). The leading magnifier icon is colorized with
-    // the same text-mid tone NavItem uses for its idle icon (see NavBar.slint).
+    // Nav search field sizing (issue 88: live library search). Length-only tokens; colors reuse
+    // the surface/text/accent tokens above; the leading magnifier uses NavItem's idle text-mid tone.
     out property <length> nav-search-width: 220px;  // fixed field width (does not stretch / collapse)
     out property <length> nav-search-pad-x: 13px;   // horizontal inset for placeholder/text/icon
     out property <length> nav-search-cursor: 1px;   // TextInput caret width
@@ -255,22 +197,12 @@ export global Theme {
     // ~= 21px. Below height/2 (27.5px), so the pill is a rounded rectangle that matches the search field corners.
     out property <length> nav-pill-radius: 21px;
 
-    // ── Viewer pill sizing (issue #85: page-jump glass pill) ──
-    // Width of the "<page> / total" jump field — the viewer-pill counterpart of
-    // nav-search-width. Referenced twice (the field's own width AND the pill's
-    // token-summed width) so it lives here to keep the two in lockstep.
+    // Viewer pill sizing (issue 85: page-jump glass pill). Width of the "<page> / total" jump
+    // field; referenced twice (field width AND the pill's token-summed width) so it lives here.
     out property <length> viewer-jump-field-width: 142px; // holds a 4-digit page + "/ total" without clipping
 
-    // ── Layout helper: pixel-snapping ─────────────────────────────────────────
-    // Round a length to whole LOGICAL pixels. Manual `(parent.* - self.*) / 2`
-    // centering can place an element's origin on a fractional pixel; on a 1x
-    // (standard-DPI) display that fractional logical value IS a fractional
-    // PHYSICAL pixel, so the element's text/SVG is sampled off the pixel grid and
-    // looks soft. On a 2x Retina display a whole-logical value lands on a whole
-    // physical pixel either way, so snapping is a no-op there. Apply only at the
-    // STATIC centering of chrome panels/icons — never on an animated position
-    // (snapping would make it jump between integer pixels). Fractional scale
-    // factors (e.g. 1.5x) are not perfectly snapped; the common 1.0/2.0 are.
+    // Layout helper: pixel-snapping. Rounds a length to whole LOGICAL pixels so manual centering
+    // doesn't land text/SVG on a fractional pixel (soft on 1x). Apply only to STATIC chrome, never animated.
     pure public function snap(v: length) -> length {
         return Math.round(v / 1px) * 1px;
     }

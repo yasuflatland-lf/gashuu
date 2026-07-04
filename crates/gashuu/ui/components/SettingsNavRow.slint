@@ -1,13 +1,5 @@
-// SettingsNavRow — one drill-in list row for the HIG settings navigator.
-//
-// A full-width, focusable row: a leading `label`, an optional trailing `value`
-// (dim preview text, hidden when empty), and a trailing chevron. Activates on
-// mouse click, Return, or Space, firing `clicked()`; Esc is REJECTED so it
-// propagates to the dialog's ancestor FocusScope (which owns the two-stage Esc).
-// Hover / focus lift the fill to `accent-glow` and brighten the label — driven by
-// DIRECT bindings reading `touch.has-hover` / `fs.has-focus` (NavItem precedent:
-// a `states[]` block cannot assign a child element's property). Colors / lengths
-// come from Theme.* only (scripts/check-tokens.sh).
+// SettingsNavRow — one drill-in list row (label · value · chevron). Esc is REJECTED so it
+// bubbles to the dialog's ancestor FocusScope; hover/focus use direct bindings (states[] limit).
 import { Theme } from "../Theme.slint";
 
 export component SettingsNavRow inherits Rectangle {
@@ -18,10 +10,8 @@ export component SettingsNavRow inherits Rectangle {
     in property <string> value;
     callback clicked();
 
-    // Externally focus this row: the dialog focuses the originating row when the
-    // user navigates back to the top list. Mirrors the `focus-control` seam idiom
-    // (Segmented / Dropdown / Stepper) — a parent cannot name an id inside a child
-    // component, so the focus is exposed as a public function.
+    // Externally focus this row (dialog re-focuses the originating row on back-nav).
+    // A parent can't name a child id, so expose focus as a public fn (focus-control idiom).
     public function focus-row() {
         fs.focus();
     }
@@ -29,15 +19,13 @@ export component SettingsNavRow inherits Rectangle {
     // ── Row ground ──────────────────────────────────────────────────────────────
     height: Theme.settings-row-h;
     border-radius: Theme.radius-md;
-    // Idle transparent; hover OR keyboard focus lift the fill to accent-glow.
-    // A binding (not states[]) so the same expression can also brighten the label
-    // (a child element) below.
+    // Idle transparent; hover OR focus lift the fill to accent-glow. A binding (not
+    // states[]) so the same expression can also brighten the label (a child) below.
     background: (touch.has-hover || fs.has-focus) ? Theme.accent-glow : transparent;
     animate background { duration: Theme.motion-fast; }
 
-    // ── Keyboard (one Tab stop) ──────────────────────────────────────────────────
-    // Return / Space activate; everything else (Esc in particular) is rejected so
-    // it walks up to the dialog's ancestor FocusScope.
+    // Keyboard (one Tab stop): Return/Space activate; everything else (esp. Esc) is
+    // rejected so it walks up to the dialog's ancestor FocusScope.
     fs := FocusScope {
         key-pressed(event) => {
             if (event.text == Key.Return || event.text == Key.Space) {
@@ -86,9 +74,8 @@ export component SettingsNavRow inherits Rectangle {
         }
     }
 
-    // ── Mouse activation ────────────────────────────────────────────────────────
-    // Declared last so it sits above the (non-interactive) content; TouchArea is
-    // non-focusable, so it never steals the keyboard focus from `fs`.
+    // Mouse activation: declared last so it sits above the content; TouchArea is
+    // non-focusable, so it never steals keyboard focus from `fs`.
     touch := TouchArea {
         clicked => {
             fs.focus();

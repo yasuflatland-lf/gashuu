@@ -1,19 +1,9 @@
-// Two-page spread display with RTL/LTR placement and single-page mode.
-// When `single` is true, only the leading page is shown, centered (contain).
-// When `single` is false, leading and trailing pages are shown side by side,
-// each filling half the area (contain). In LTR mode (rtl=false) the leading
-// page is on the left; in RTL mode (rtl=true) the leading page is on the right.
-//
-// Zoom/pan plumbing: Rust drives content-x/y/w/h to position/size the content
-// rectangle inside the clip area. Input callbacks relay the native pinch gesture
-// (begin-pinch / pinch-to), drag and scroll panning (begin-pan / pan-to /
-// scroll-pan), and viewport size changes (viewport-resized) up to ViewerWindow so
-// handlers/viewer.rs can implement the zoom/pan math.
+// Two-page spread display with RTL/LTR placement and single-page mode. Rust drives
+// content-x/y/w/h to position the content rect; input callbacks relay gestures to viewer.rs.
 import { Theme } from "Theme.slint";
 
-// Loading placeholder that fills its assigned slot while a page is being decoded.
-// slot-x/slot-width/slot-height express the RTL-aware geometry at the call site
-// so the component stays policy-free (matches the ThumbnailCell pattern).
+// Loading placeholder that fills its assigned slot while a page is decoded. slot-x/width/height
+// express the RTL-aware geometry at the call site, so the component stays policy-free.
 component LoadingSlot inherits Rectangle {
     in property <length> slot-x;
     in property <length> slot-width;
@@ -49,72 +39,31 @@ export component PageView inherits Rectangle {
     in property <length> content-y: 0px;
     in property <length> content-w: 0px;
     in property <length> content-h: 0px;
-    // When a modal overlay is open, suppress pinch and scroll input here. Scroll
-    // and gesture events bypass the FocusScope keyboard guard, so PageView must
-    // gate them itself (see docs/patterns.md, scroll-event modal-guard rule).
+    // When a modal overlay is open, suppress pinch/scroll here: they bypass the FocusScope
+    // keyboard guard, so PageView must gate them itself (docs/patterns.md scroll-event modal rule).
     in property <bool> modal-open: false;
 
     // Input callbacks relayed to ViewerWindow / handlers/viewer.rs.
     callback begin-pan();
     callback pan-to(length, length);             // cumulative delta from the press point
-    // Native trackpad pinch (Slint ScaleRotateGestureHandler). begin-pinch
-    // snapshots the base zoom at gesture start; pinch-to applies the cumulative
-    // gesture scale anchored at the focal point. anchor-x/anchor-y are in the same
-    // viewport-origin space as the TouchArea's mouse-x/mouse-y.
+    // Native trackpad pinch (ScaleRotateGestureHandler): begin-pinch snapshots the base zoom;
+    // pinch-to applies the cumulative scale at the focal point (anchor in TouchArea mouse-x/y space).
     callback begin-pinch();
     callback pinch-to(length, length, float);    // anchor-x, anchor-y, cumulative scale
     // Incremental two-finger scroll pan while zoomed in (dx, dy).
     callback scroll-pan(length, length);
     callback viewport-resized(length, length);   // width, height
-    // Fired on ANY pointer movement over the page (pressed or not). The viewer
-    // uses this to reveal its auto-hiding chrome. `changed mouse-x/mouse-y` fire
-    // on unpressed hover (mouse-x/y update before the press check in Slint), so
-    // this works where a `moved` handler — which fires only while pressed — would
-    // not, and without a second TouchArea that would steal the pan press.
+    // Fired on ANY pointer movement (pressed or not) to reveal auto-hiding chrome. `changed
+    // mouse-x/y` fires on unpressed hover where `moved` (pressed-only) wouldn't, and steals no press.
     callback reveal();
-    // Fired on a clean tap (press-release with at most `tap-slop` movement),
-    // with the release mouse-x. ViewerWindow maps it onto the left/right page-
-    // turn halves (the SAME nav("left"/"right") tokens the arrow keys use, so
-    // reading direction and spread stay single-sourced in keymap.rs / core).
-    // PageView stays policy-free: it reports WHERE the tap landed, not what it
-    // means. The slop guard is REQUIRED: the vendored i-slint-core 1.16.1
-    // TouchArea fires `clicked` on any release inside the area regardless of
-    // drag distance (input_items.rs MouseEvent::Released has no movement
-    // threshold), so without it every pan-drag would also turn a page.
+    // Fired on a clean tap (press-release within `tap-slop`), with the release mouse-x; ViewerWindow
+    // maps it to page-turn halves. Slop guard REQUIRED: TouchArea fires `clicked` on ANY release (1.16.1).
     callback tapped(length);
     // Max press-to-release travel still counted as a tap (not a pan).
     property <length> tap-slop: 4px;
 
-    // ── Two-finger horizontal swipe → page turn (with edge affordance) ────────
-    // Horizontal trackpad scroll (delta-x) turns pages while the page fits
-    // HORIZONTALLY (content-w <= width); when the content overflows horizontally
-    // (zoomed in / wider than the viewport) two-finger scroll pans instead, and
-    // vertical scroll no longer zooms (zoom comes from the native pinch gesture and
-    // the keyboard). A tall Width-fit page (fills x, overflows y) still turns on a
-    // horizontal flick — it is at fit, not zoomed. Discrete: accumulate delta-x,
-    // cross `swipe-threshold` → emit ONE physical-direction token, mapped to nav()
-    // in ViewerWindow so keymap.rs owns the RTL/LTR resolution and core owns the
-    // step size (single = 1 page, spread = 1 two-page spread).
-    //
-    // CONSECUTIVE turns, sharp but no double-fire: after a turn the gesture LATCHES.
-    // The macOS momentum tail decays monotonically, so the latch stays on through it
-    // and unlatches only on a clear sign of a NEW swipe — a lull (`|dx|` below
-    // `swipe-release-delta`: the tail dying or the finger lifting) OR a velocity
-    // SPIKE (`|dx|` jumping back up by `swipe-spike-jump` above the decaying
-    // momentum: a deliberate re-flick). The small release-delta means a single
-    // flick's whole tail is swallowed, so it can NEVER turn a 2nd page/spread; the
-    // spike test lets a fast re-flick turn the next page immediately, so consecutive
-    // swipes stay sharp. (A fixed post-turn cooldown does NOT work: macOS momentum
-    // outlasts any fixed window on a fast flick, re-crossing the threshold once the
-    // lock clears — it double-fires in spread mode.)
-    //
-    // AFFORDANCE: `swipe-progress` (0..1 = |accum| / threshold) lights an edge glow
-    // on the side the fingers push toward; it peaks as the swipe reaches the
-    // threshold and — because `swipe-accum` resets to 0 on the turn — eases back out
-    // (animate opacity), reading as a turn-confirmation flash. A partial swipe that
-    // stalls below the threshold is zeroed by `decay-timer`, so its glow fades too.
-    // When the page is zoomed in the turn branch is never taken, so the glow never
-    // lights — its ABSENCE signals "not page-turn mode".
+    // Two-finger horizontal swipe → page turn (discrete), only while the page fits horizontally
+    // (content-w <= width; else pan). A fixed post-turn cooldown double-fires — macOS momentum outlasts it.
     callback page-swipe(string);   // "left" / "right" — physical swipe direction
     property <length> swipe-threshold: 100px;     // higher = heavier / less sensitive; page turns stay deliberate
     property <length> swipe-release-delta: 6px;   // lull travel that unlatches; small so a single flick's whole tail is swallowed (no double-fire)
@@ -182,16 +131,8 @@ export component PageView inherits Rectangle {
         slot-height: root.height;
     }
 
-    // ── Swipe-to-turn edge affordance ────────────────────────────────────────
-    // Two pointer-transparent edge bands (a plain Rectangle never captures input)
-    // that glow on the side the FINGERS PUSH TOWARD as a horizontal swipe
-    // accumulates toward a page turn: a rightward swipe (accum > 0) lights the RIGHT
-    // edge, a leftward swipe (accum < 0) lights the LEFT edge. Opacity tracks
-    // `swipe-progress` scaled by `swipe-glow-gain`; the
-    // `animate opacity` gives BOTH the live ramp AND the ease-out after a turn or a
-    // partial swipe resets the accumulator (the turn-confirmation flash — see the
-    // swipe doc comment above). Painted over the page image, clipped to the
-    // viewport edges by PageView's `clip: true`.
+    // Swipe-to-turn edge affordance: two pointer-transparent bands glowing on the side the
+    // fingers push toward. `animate opacity` gives the live ramp AND the ease-out turn-confirm flash.
     Rectangle {
         x: 0;
         width: Theme.viewer-swipe-glow-width;
@@ -209,31 +150,23 @@ export component PageView inherits Rectangle {
         animate opacity { duration: Theme.motion-fast; easing: ease-out; }
     }
 
-    // TouchArea is non-focusable and will not steal keyboard focus from the
-    // FocusScope in ViewerWindow. The existing fs.focus() convention is unaffected.
-    // Latch-release fallback (re-armable): while latched after a turn, every
-    // swallowed event restarts this; if the stream stops WITHOUT a sub-release-delta
-    // lull (finger lifted with no momentum) it fires after `swipe-idle-gap` and
-    // clears the latch. The common case — a lull below `swipe-release-delta` —
-    // clears the latch directly in scroll-event, sooner than this.
+    // TouchArea is non-focusable, so it won't steal focus from ViewerWindow's FocusScope.
+    // Latch-release fallback (re-armable): if events stop with no lull, unlatch after swipe-idle-gap.
     release-timer := Timer {
         interval: root.swipe-idle-gap;
         running: root.swipe-latched;
         triggered => { root.swipe-latched = false; }
     }
-    // Partial-swipe decay (re-armable): while a sub-threshold accumulation is
-    // pending, every scroll event restarts this countdown; when the gesture pauses
-    // it zeroes `swipe-accum` so the edge glow fades instead of hanging.
+    // Partial-swipe decay (re-armable): each scroll event restarts this; when the gesture
+    // pauses it zeroes `swipe-accum` so the edge glow fades instead of hanging.
     decay-timer := Timer {
         interval: root.swipe-decay-gap;
         running: root.swipe-accum != 0 && !root.swipe-latched;
         triggered => { root.swipe-accum = 0; }
     }
 
-    // Native pinch: macOS/iOS trackpad + touchscreens. `scale` is cumulative
-    // (1.0 at gesture start); `center` is the focal point (cursor on trackpad),
-    // in this element's coordinate space (= PageView's, since it fills the parent).
-    // Rotation is intentionally ignored (no rotate gesture for a manga page).
+    // Native pinch (trackpad + touchscreens): `scale` is cumulative (1.0 at start), `center` is
+    // the focal point in this element's space. Rotation is intentionally ignored (manga page).
     ScaleRotateGestureHandler {
         enabled: !root.modal-open;
         started => { root.begin-pinch(); }
@@ -247,28 +180,12 @@ export component PageView inherits Rectangle {
             if (root.modal-open) {
                 return reject;
             }
-            // A horizontal-dominant swipe (1.2x margin) turns ONE page as long as
-            // the content fits HORIZONTALLY. Keying page-turn on horizontal fit
-            // (content-w <= width) — NOT "neither axis overflows" — is what keeps
-            // swipe-to-turn working under Width fit, where a tall page fills the
-            // viewport on x exactly but overflows on y: that page is at fit, not
-            // zoomed, so a horizontal flick must still turn the page (the vertical
-            // overflow is read by scrolling down, handled by the pan branch below).
-            // Only a genuine horizontal overflow (zoomed in / a page wider than the
-            // viewport) routes a horizontal gesture to panning instead. Discrete +
-            // idle-gap guarded against the macOS momentum tail (one swipe = one
-            // turn).
+            // A horizontal-dominant swipe (1.2x margin) turns ONE page while content fits
+            // HORIZONTALLY (content-w <= width) — NOT "neither axis overflows", so Width fit still turns.
             if (Math.abs(e.delta-x / 1px) > Math.abs(e.delta-y / 1px) * 1.2
                 && root.content-w <= root.width + 2px) {
-                // After a turn the gesture is LATCHED. Unlatch (→ this event begins a
-                // fresh swipe, falling through to accumulate) only on a clear sign of
-                // a NEW swipe, not the tail of the one that just fired:
-                //   • a lull — |dx| < release-delta (the tail died / finger lifted), OR
-                //   • a velocity SPIKE — |dx| jumps back up above the monotonically
-                //     decaying momentum by `swipe-spike-jump` (a deliberate re-flick).
-                // The small release-delta swallows a single flick's whole tail (no
-                // double-fire, even in spread mode); the spike test keeps consecutive
-                // swipes sharp. Otherwise swallow the event and re-arm the idle guard.
+                // After a turn the gesture is LATCHED; unlatch only on a NEW swipe — a lull
+                // (|dx| < release-delta) or a velocity SPIKE (re-flick). Swallows a flick's tail (no double-fire).
                 if (root.swipe-latched) {
                     if (Math.abs(e.delta-x / 1px) < root.swipe-release-delta / 1px
                         || Math.abs(e.delta-x / 1px) > root.swipe-prev-dx + root.swipe-spike-jump / 1px) {
@@ -294,12 +211,8 @@ export component PageView inherits Rectangle {
                 }
                 return accept;
             }
-            // Otherwise two-finger scroll pans whatever overflows: a zoomed-in page
-            // (either axis) or a tall fit page scrolled vertically. core
-            // clamp_offset ignores deltas on an axis that already fits, so passing
-            // both deltas never nudges a fitting axis. Vertical scroll at fit with a
-            // page that fits both axes falls through to a no-op (zoom comes from
-            // pinch / keyboard, not scroll).
+            // Otherwise two-finger scroll pans whatever overflows. core clamp_offset ignores deltas
+            // on an axis that already fits, so passing both deltas never nudges a fitting axis.
             if (root.content-w > root.width + 2px || root.content-h > root.height + 2px) {
                 root.scroll-pan(e.delta-x, e.delta-y);
                 return accept;
@@ -316,11 +229,8 @@ export component PageView inherits Rectangle {
                 root.pan-to(self.mouse-x - self.pressed-x, self.mouse-y - self.pressed-y);
             }
         }
-        // Tap-vs-pan split: `pressed-x/y` hold the press point through the
-        // release (vendored input_items.rs sets them on Pressed and never
-        // clears them), so comparing against the release mouse-x/y inside
-        // `clicked` cleanly separates a stationary tap from a pan ending
-        // under the cursor.
+        // Tap-vs-pan split: `pressed-x/y` hold the press point through release (vendored input_items.rs
+        // sets them on Pressed, never clears), so comparing to release mouse-x/y separates a tap from a pan.
         clicked => {
             if (Math.abs(self.mouse-x / 1px - self.pressed-x / 1px) <= root.tap-slop / 1px
                 && Math.abs(self.mouse-y / 1px - self.pressed-y / 1px) <= root.tap-slop / 1px) {

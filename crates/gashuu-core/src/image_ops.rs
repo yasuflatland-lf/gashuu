@@ -81,12 +81,8 @@ impl DecodedImage {
 /// `clippy::field_reassign_with_default`. The allow is scoped to this function only.
 #[allow(clippy::field_reassign_with_default)]
 fn decode_dynamic(bytes: &[u8]) -> Result<image::DynamicImage, CoreError> {
-    // Pre-read: parse header only (cheap) to check dimensions before allocating.
-    // AVIF is the exception: `AvifDecoder::new` runs the full dav1d decode in its
-    // constructor, so a dimension pre-read would decode the whole image and the
-    // real decode below would do it AGAIN. Skip the pre-read for AVIF — its
-    // pixel guard is the post-decode check at the bottom (post-allocation; see
-    // ADR-0010 for the accepted residual risk).
+    // Pre-read header to check dimensions before allocating. AVIF excepted: its decoder
+    // fully decodes in the ctor, so its pixel guard runs post-decode instead (ADR-0010).
     let header_reader =
         image::ImageReader::new(std::io::Cursor::new(bytes)).with_guessed_format()?;
     if header_reader.format() != Some(image::ImageFormat::Avif) {
@@ -143,9 +139,8 @@ pub fn decode(bytes: &[u8]) -> Result<DecodedImage, CoreError> {
 /// full-decode path for JPEG too until the pinned backend regains scaled decode.
 pub fn decode_thumbnail(bytes: &[u8], max_side: u32) -> Result<DecodedImage, CoreError> {
     let img = decode_dynamic(bytes)?;
-    // Only downscale: if the image already fits within max_side × max_side, return
-    // it as-is. `DynamicImage::thumbnail` scales to fill the given bounds (which
-    // means it upscales small images), so we guard explicitly here.
+    // Downscale only: `DynamicImage::thumbnail` upscales small images to fill the
+    // bounds, so guard explicitly and return already-fitting images unchanged.
     let rgba = if img.width() > max_side || img.height() > max_side {
         img.thumbnail(max_side, max_side).to_rgba8()
     } else {
@@ -306,9 +301,8 @@ mod tests {
 
     #[test]
     fn decode_rejects_oversized_header_with_image_too_large() {
-        // Guards the `check_pixel_limit(w, h)?` wiring inside `decode()`: the pure
-        // unit test does NOT — deleting that line would still pass it. The forged
-        // header declares 1 x (MAX_PIXELS + 1) pixels.
+        // Guards the `check_pixel_limit` wiring inside `decode()` that the pure unit
+        // test misses. The forged header declares 1 x (MAX_PIXELS + 1) pixels.
         let bytes = forge_oversized_ihdr(1, (MAX_PIXELS + 1) as u32);
 
         let err = decode(&bytes).unwrap_err();
@@ -383,9 +377,8 @@ mod tests {
 
     #[test]
     fn decode_thumbnail_does_not_upscale() {
-        // Source 20x10 already fits within max_side=64, so decode_thumbnail's explicit
-        // downscale-only guard returns it unchanged. (DynamicImage::thumbnail would
-        // otherwise upscale small images to fill the bounds, hence the guard.)
+        // Source 20x10 fits within max_side=64, so the downscale-only guard returns it
+        // unchanged (`DynamicImage::thumbnail` would otherwise upscale to fill).
         let bytes = png_bytes(20, 10);
         let thumb = decode_thumbnail(&bytes, 64).unwrap();
         assert_eq!(
@@ -406,9 +399,8 @@ mod tests {
 
     #[test]
     fn decode_thumbnail_jpeg_wide_image_fits_max_side() {
-        // 200x100 JPEG: longer edge is width=200. With max_side=64, the longer edge
-        // must be bounded by 64 and the 2:1 aspect preserved within tolerance.
-        // (JPEG is lossy and decodes in 8/16-px MCU blocks, so allow ±2px.)
+        // 200x100 JPEG: with max_side=64 the longer edge is bounded by 64 and the 2:1
+        // aspect preserved. JPEG is lossy (8/16-px MCU blocks), so allow ±2px.
         let bytes = jpeg_bytes(200, 100);
         let thumb = decode_thumbnail(&bytes, 64).unwrap();
         assert!(thumb.width() <= 64, "width {} > max_side 64", thumb.width());
@@ -479,9 +471,8 @@ mod tests {
 
     #[test]
     fn decode_thumbnail_rejects_oversized_ihdr_with_image_too_large() {
-        // Verifies that decode_thumbnail routes through decode_dynamic and therefore
-        // hits the same check_pixel_limit early guard as decode(). Uses the shared
-        // forge_oversized_ihdr harness (same IHDR-forge + CRC-32 recompute).
+        // Verifies decode_thumbnail routes through decode_dynamic and hits the same
+        // check_pixel_limit guard as decode(), via the shared forge_oversized_ihdr harness.
         let bytes = forge_oversized_ihdr(1, (MAX_PIXELS + 1) as u32);
 
         let err = decode_thumbnail(&bytes, 64).unwrap_err();

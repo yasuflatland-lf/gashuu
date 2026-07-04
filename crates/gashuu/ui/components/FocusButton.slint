@@ -1,14 +1,5 @@
-// FocusButton — a focus wrapper that makes a non-focusable, TouchArea-based
-// button atom (DangerButton / PrimaryButton / SecondaryButton) a Tab stop and
-// Space-activatable WITHOUT editing the atom (issue 127; extracted for reuse in
-// issue 362). Shared by ConfirmDialog and UpdateAvailableDialog, which both need
-// keyboard-reachable buttons inside a modal-key-trap (same idiom as NavBar's
-// SearchField and Stepper's StepButton). Inherits FocusScope so the parent reads
-// `has-focus` and calls `focus()` directly (used by each dialog's ancestor `fs`
-// to rotate focus between the button stops on Tab). Sizes to its slotted button
-// via the `@children` layout. Space fires `pressed`; Tab/Backtab/Enter/Esc are
-// rejected so they bubble to the ancestor `fs` (which owns the key model in ONE
-// place).
+// FocusButton — wraps a non-focusable button atom to make it a Tab stop + Space-activatable
+// without editing it (issue 127/362); Tab/Enter/Esc are rejected so the ancestor `fs` owns keys.
 import { Theme } from "../Theme.slint";
 
 export component FocusButton inherits FocusScope {

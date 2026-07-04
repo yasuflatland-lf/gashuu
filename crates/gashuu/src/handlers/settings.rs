@@ -46,12 +46,8 @@ pub(crate) fn wire_settings_handlers(
     let selection = Rc::clone(selection);
     let localizer = Rc::clone(localizer);
 
-    // Open the settings dialog: push the current values into the dialog's in-out
-    // properties, then show it. Display modes are read from the RUNTIME source of
-    // truth (`ViewerState` for direction/spread/cover, `ViewportState` for fit) so
-    // the dialog can never show a stale value; cache/preload/track come from
-    // `Settings`. `state`, `settings`, and `viewport` are distinct RefCells, so the
-    // named borrows `s`/`st` and the temporary `viewport.borrow()` cannot conflict.
+    // Open the settings dialog. Display modes are read from the RUNTIME source of truth
+    // (state/viewport) so it never shows a stale value; cache/preload/track from Settings.
     {
         let ui_weak = ui.as_weak();
         let state = Rc::clone(&state);
@@ -62,10 +58,8 @@ pub(crate) fn wire_settings_handlers(
             with_ui(&ui_weak, |ui| {
                 // screen 1 = Viewer (per-book), screen 0 = Library (global defaults).
                 let per_book = ui.get_screen() == 1;
-                // On the Library screen the dialog edits the GLOBAL defaults, so
-                // mirror them into the runtime first (the dialog seeds from the
-                // runtime). The viewer isn't shown on the Library screen, so this
-                // has no visible effect; a book re-applies its own override on open.
+                // On the Library screen the dialog edits GLOBAL defaults, so mirror them
+                // into the runtime first (it seeds from there); a book re-applies its override.
                 if !per_book {
                     apply_global_view_to_runtime(&settings, &state, &viewport);
                 }
@@ -83,9 +77,8 @@ pub(crate) fn wire_settings_handlers(
                 // Clear any stale data-clearing status from a prior open so the
                 // feedback line starts hidden each time the dialog opens.
                 ui.set_data_action_status("".into());
-                // Same for the manual "Check for updates now" feedback line —
-                // otherwise a stale "You're on the latest version." from a prior
-                // open would persist across close/reopen.
+                // Clear the manual "Check for updates now" feedback line too, else a stale
+                // "You're on the latest version." would persist across close/reopen.
                 ui.set_settings_update_status(Default::default());
                 ui.set_language_index(language_to_index(s.language));
                 ui.set_key_bindings_text(
@@ -97,16 +90,8 @@ pub(crate) fn wire_settings_handlers(
         });
     }
 
-    // Close the settings dialog: hide it, reconcile runtime modes into Settings,
-    // persist, then restore keyboard focus to whichever screen is underneath.
-    // The dialog can be opened from EITHER the Viewer title bar (screen 1) or the
-    // Library glass-pill nav (screen 0), so focus must return to the matching
-    // FocusScope: the page area on the Viewer, the carousel on the Library.
-    // Restoring `focus-pages()` unconditionally would focus the hidden Viewer
-    // scope when closing over the Library, leaving the carousel keys dead.
-    // `persist_view_modes` takes `&Rc` handles and confines every `borrow()` /
-    // `borrow_mut()` inside the call, so no borrow outlives it — the following
-    // `settings.borrow().save()` always gets a fresh, unconflicted borrow.
+    // Close the settings dialog: hide, reconcile modes into Settings, persist, then
+    // restore focus to the matching FocusScope (screen 0 Library, 1 Viewer) or keys die.
     {
         let ui_weak = ui.as_weak();
         let state = Rc::clone(&state);
@@ -117,9 +102,8 @@ pub(crate) fn wire_settings_handlers(
         ui.on_close_settings(move || {
             with_ui(&ui_weak, |ui| {
                 ui.set_show_settings(false);
-                // screen 0 = Library (edits GLOBAL defaults), 1 = Viewer (edits the
-                // CURRENT book's per-book override). Routing lives in
-                // `persist_view_modes` (ADR-0007 clobber-trap).
+                // screen 0 = Library (GLOBAL defaults), 1 = Viewer (per-book override).
+                // Routing lives in `persist_view_modes` (ADR-0007 clobber-trap).
                 if ui.get_screen() == 0 {
                     persist_view_modes(
                         ViewModeRoute::DialogClosedOnLibrary,
@@ -138,10 +122,8 @@ pub(crate) fn wire_settings_handlers(
                     }
                     ui.invoke_focus_carousel();
                 } else {
-                    // Persist the four view modes to this book's override. The
-                    // cache/preload/track fields are global; save Settings too so a
-                    // change to them in the viewer dialog is not lost (the view-mode
-                    // fields in Settings are untouched because we did NOT reconcile).
+                    // Persist the four view modes to this book's override. cache/preload/track
+                    // are global, so save Settings too (its view-mode fields stay untouched).
                     persist_view_modes(
                         ViewModeRoute::DialogClosedOnViewer,
                         &state,
@@ -163,13 +145,8 @@ pub(crate) fn wire_settings_handlers(
         });
     }
 
-    // Show the shortcuts overlay: the overlay opens on top of the still-open settings
-    // dialog. Load-bearing assumption: this handler is only reachable via the settings
-    // footer link, so on_open_settings has always run first and populated
-    // key_bindings_text. A future entry point that bypasses settings MUST set
-    // key_bindings_text itself before opening the overlay.
-    // Focus management is intentionally omitted: ShortcutsOverlay's `init` grabs
-    // focus itself on appear, so no explicit focus call is needed here.
+    // Load-bearing assumption: reachable only via the settings footer link, so
+    // on_open_settings already populated key_bindings_text. A bypassing entry point MUST set it.
     {
         let ui_weak = ui.as_weak();
         ui.on_open_shortcuts(move || {
@@ -179,21 +156,15 @@ pub(crate) fn wire_settings_handlers(
         });
     }
 
-    // Close the shortcuts overlay: hide it and return focus to the still-mounted
-    // SettingsDialog.  Focus must not go to the screen behind — the dialog remains
-    // open.  invoke_focus_settings drives a focus epoch on the dialog because
-    // if-gated child elements cannot be targeted directly.
-    // Closing the overlay must NOT close settings: do not touch show_settings and
-    // do not run reconcile/save here.
+    // Close the shortcuts overlay: return focus to the still-mounted SettingsDialog via a
+    // focus epoch (if-gated elements can't be targeted directly). Must NOT close settings.
     {
         let ui_weak = ui.as_weak();
         ui.on_close_shortcuts(move || {
             with_ui(&ui_weak, |ui| {
                 ui.set_show_shortcuts(false);
-                // Today the overlay is only reachable while the settings dialog is
-                // mounted, so this branch is always taken.  The guard keeps focus
-                // restoration from silently no-oping if a future entry point opens
-                // the overlay without settings.
+                // The overlay is only reachable while settings is mounted (branch always
+                // taken); the guard keeps focus restore from no-oping if that changes.
                 if ui.get_show_settings() {
                     ui.invoke_focus_settings();
                 }
@@ -201,9 +172,8 @@ pub(crate) fn wire_settings_handlers(
         });
     }
 
-    // Reset-to-global (viewer settings only): clear THIS book's override so it
-    // inherits the global defaults again, apply them to the live view, and re-seed
-    // the open dialog's combos to the now-global values.
+    // Reset-to-global (viewer only): clear THIS book's override to inherit global
+    // defaults, apply to the live view, and re-seed the dialog's combos.
     {
         let ui_weak = ui.as_weak();
         let state = Rc::clone(&state);
@@ -242,12 +212,8 @@ pub(crate) fn wire_settings_handlers(
         });
     }
 
-    // Clear reading history (issue #178): immediate, no confirmation. Empties the
-    // library (books + last_opened) and the recent-files list, persists both, then
-    // rebuilds the library carousel IN PLACE. The viewer / current screen is NOT
-    // touched: a book open in this session stays open — only the persisted history
-    // and the library carousel are cleared. Localized status feedback is pushed to
-    // `data-action-status`.
+    // Clear reading history (issue #178): immediate, no confirmation. Empties library +
+    // recent-files, persists, rebuilds the carousel IN PLACE; the open viewer is untouched.
     {
         let ui_weak = ui.as_weak();
         let settings = Rc::clone(&settings);
@@ -262,10 +228,8 @@ pub(crate) fn wire_settings_handlers(
                 // refresh below (which re-borrows library/search/selection/settings).
                 library.borrow_mut().clear();
                 settings.borrow_mut().recent_files.clear();
-                // Save library and settings INDEPENDENTLY so each failure is
-                // reported distinctly and a partial success is correctly diagnosed
-                // (library cleared and persisted even if settings save fails, or
-                // vice-versa). Both borrows drop before the carousel rebuild below.
+                // Save library and settings INDEPENDENTLY so each failure is diagnosed
+                // distinctly (a partial success is correctly reported).
                 let lib_err = library.borrow().save().err();
                 let set_err = settings.borrow().save().err();
                 if let Some(ref e) = lib_err {
@@ -274,11 +238,8 @@ pub(crate) fn wire_settings_handlers(
                 if let Some(ref e) = set_err {
                     tracing::error!(error = %e, "failed to persist settings while clearing reading history");
                 }
-                // Recompute the (now empty) search projection and drop the bulk
-                // selection, then project into the carousel. In-memory state is
-                // already cleared regardless of save outcome, so the UI MUST
-                // reflect it — no early-return here. `set_query` recomputes
-                // internally; its temporary `library.borrow()` drops at the `;`.
+                // Recompute the (now empty) search projection, drop the selection, and
+                // project into the carousel. In-memory state is cleared regardless of save.
                 search
                     .borrow_mut()
                     .set_query(String::new(), &library.borrow());
@@ -306,10 +267,8 @@ pub(crate) fn wire_settings_handlers(
         });
     }
 
-    // Clear cover cache (issue #178): immediate, no confirmation. Deletes the
-    // on-disk thumbnail cache files; in-session covers already rendered are left
-    // alone (no carousel rebuild). A best-effort report drives the localized
-    // status; a failure to open the cache directory surfaces a failure status.
+    // Clear cover cache (issue #178): immediate. Deletes on-disk thumbnail files;
+    // in-session covers are left alone (no rebuild). Best-effort, with status feedback.
     {
         let ui_weak = ui.as_weak();
         let localizer = Rc::clone(&localizer);
@@ -361,11 +320,8 @@ pub(crate) fn wire_view_mode_handlers(
     let selection = Rc::clone(selection);
     let localizer = Rc::clone(localizer);
 
-    // Settings setters (one per dialog control). Mode/cover/direction are made
-    // idempotent by their `ViewerState` value setters returning a "changed" bool;
-    // fit uses an explicit equality guard. The borrow discipline mirrors the
-    // `ToggleSpread` handler: the temporary `borrow_mut()` in the `if` condition
-    // drops before the block runs, so `refresh(&ui, &state.borrow(), ..)` is safe.
+    // Settings setters (one per control). Mode/cover/direction are idempotent via their
+    // "changed" bool; fit uses an equality guard. borrow_mut in the `if` drops before refresh.
     {
         let ui_weak = ui.as_weak();
         let state = Rc::clone(&state);
@@ -375,10 +331,8 @@ pub(crate) fn wire_view_mode_handlers(
         ui.on_set_reading_direction(move |i| {
             with_ui(&ui_weak, |ui| {
                 let dir = index_to_reading_direction(i);
-                // Mutates the runtime view mode only; while a book is open this change
-                // is persisted to the current book's per-book override via
-                // `write_back_view_override` at the next viewer leave point, not into
-                // the global `Settings`.
+                // Mutates the runtime view mode only; while a book is open it persists to
+                // the book's per-book override via `write_back_view_override`, not Settings.
                 if state.borrow_mut().set_reading_direction(dir) {
                     refresh(
                         &ui,
@@ -401,10 +355,8 @@ pub(crate) fn wire_view_mode_handlers(
         ui.on_set_spread_mode(move |i| {
             with_ui(&ui_weak, |ui| {
                 let mode = index_to_spread_mode(i);
-                // Mutates the runtime view mode only; while a book is open this change
-                // is persisted to the current book's per-book override via
-                // `write_back_view_override` at the next viewer leave point, not into
-                // the global `Settings`.
+                // Mutates the runtime view mode only; while a book is open it persists to
+                // the book's per-book override via `write_back_view_override`, not Settings.
                 if state.borrow_mut().set_spread_mode(mode) {
                     refresh(
                         &ui,
@@ -427,10 +379,8 @@ pub(crate) fn wire_view_mode_handlers(
         ui.on_set_cover_mode(move |i| {
             with_ui(&ui_weak, |ui| {
                 let mode = index_to_cover_mode(i);
-                // Mutates the runtime view mode only; while a book is open this change
-                // is persisted to the current book's per-book override via
-                // `write_back_view_override` at the next viewer leave point, not into
-                // the global `Settings`.
+                // Mutates the runtime view mode only; while a book is open it persists to
+                // the book's per-book override via `write_back_view_override`, not Settings.
                 if state.borrow_mut().set_cover_mode(mode) {
                     refresh(
                         &ui,
@@ -453,13 +403,8 @@ pub(crate) fn wire_view_mode_handlers(
         ui.on_set_fit_mode(move |i| {
             with_ui(&ui_weak, |ui| {
                 let mode = index_to_fit_mode(i);
-                // Equality guard (the viewport setter is not idempotent-by-return).
-                // Compare in one borrow, mutate in a separate `borrow_mut()` that
-                // drops at the `;`, then `refresh` (which borrows viewport internally).
-                // The viewport owns `fit_mode` at runtime; while a book is open this
-                // change is persisted to the current book's per-book override via
-                // `write_back_view_override` at the next viewer leave point, not into
-                // the global `Settings`.
+                // Equality guard (viewport setter isn't idempotent-by-return); the viewport
+                // owns fit_mode, persisted to the book's per-book override, not Settings.
                 if viewport.borrow().fit_mode() != mode {
                     viewport.borrow_mut().set_fit(mode);
                     refresh(
@@ -479,11 +424,8 @@ pub(crate) fn wire_view_mode_handlers(
         let settings = Rc::clone(&settings);
         // Cache size applies to newly opened books; no refresh of the current view.
         ui.on_set_cache_size(move |v| {
-            // Read the current preload while writing cache_size, then mirror both
-            // into ViewerState so the next opened book picks up the change this
-            // session. `max(1)` guards the i32->usize cast against a negative
-            // stepper value; `CacheConfig::new` owns the upper clamp, and reading
-            // `capacity()` back keeps the persisted field equal to the value used.
+            // Mirror cache_size + preload into ViewerState for newly opened books. `max(1)`
+            // guards the cast; reading `capacity()` back keeps the persisted field exact.
             let preload = settings.borrow().preload_pages;
             let cfg = CacheConfig::new(v.max(1) as usize, preload);
             settings.borrow_mut().cache_size = cfg.capacity();
@@ -493,10 +435,8 @@ pub(crate) fn wire_view_mode_handlers(
     {
         let state = Rc::clone(&state);
         let settings = Rc::clone(&settings);
-        // Preload radius applies to newly opened books; no refresh. 0 is a valid
-        // "prefetch disabled" radius. `max(0)` guards the i32->usize cast; the
-        // upper clamp and the floor live in `CacheConfig::new`, and reading
-        // `radius()` back keeps the persisted field equal to the value used.
+        // Preload radius for newly opened books; 0 = prefetch disabled. `max(0)` guards
+        // the cast; reading `radius()` back keeps the persisted field exact.
         ui.on_set_preload_pages(move |v| {
             let cache_size = settings.borrow().cache_size;
             let cfg = CacheConfig::new(cache_size, v.max(0) as usize);
@@ -529,22 +469,17 @@ pub(crate) fn wire_view_mode_handlers(
         ui.on_set_language(move |i| {
             with_ui(&ui_weak, |ui| {
                 let lang = index_to_language(i);
-                // Mirror into the runtime state (the same dual-write the
-                // cache-size handler does); the idempotent setter absorbs the
-                // dropdown's selection self-fire. Persisting happens at the
-                // dialog's close path, like every other global field.
+                // Mirror into the runtime state; the idempotent setter absorbs the dropdown's
+                // self-fire. Persisting happens at the dialog's close path, like other globals.
                 if !state.borrow_mut().set_language(lang) {
                     return;
                 }
                 settings.borrow_mut().language = lang;
-                // Reload the Fluent catalog for the new language.
-                // Deliberate loud-panic policy: compile-time-embedded catalogs
-                // and exhaustive langid_for make a load failure theoretically
-                // unreachable; a panic surfaces programmer error immediately.
+                // Reload the Fluent catalog. Loud-panic policy: embedded catalogs +
+                // exhaustive langid_for make load failure unreachable; a panic surfaces bugs.
                 localizer.switch(lang);
-                // Push the newly loaded catalog into the Strings global so
-                // every Fluent-sourced label flips to the new language atomically
-                // before the next paint.
+                // Push the loaded catalog into the Strings global so every Fluent label
+                // flips to the new language before the next paint.
                 localizer.apply(&ui);
                 ui.set_key_bindings_text(
                     crate::i18n::dynamic::shortcuts_help(localizer.loader()).into(),
@@ -559,9 +494,8 @@ pub(crate) fn wire_view_mode_handlers(
                 );
                 // Recompose the selection-toolbar strings in the new language.
                 push_selection_strings(&ui, &localizer, &selection, &search, &library);
-                // Recompose the library-count idle strip label too: the language
-                // switch does not run `refresh_library_carousel`, so the count
-                // string must be re-pushed here from the current book count.
+                // Recompose the library-count label too: the language switch skips
+                // `refresh_library_carousel`, so re-push it from the current book count.
                 ui.set_library_count_text(
                     crate::i18n::dynamic::library_count_text(
                         localizer.loader(),

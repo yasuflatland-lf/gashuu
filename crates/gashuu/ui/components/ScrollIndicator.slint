@@ -1,25 +1,5 @@
-// ScrollIndicator — self-drawn scroll thumb shared by SettingsDialog and
-// ShortcutsOverlay (issue 367).
-//
-// A thin accent thumb inside a track-prog rail, sized and offset from a
-// Flickable's viewport geometry. Both dialogs previously hand-drew a
-// byte-identical copy of this block; this extracts JUST that atom. The larger
-// glass header/body/footer panel is intentionally NOT unified (out of scope).
-//
-// PLACEMENT is the caller's job: the caller sets `x`, `y`, and `height` from
-// its own Flickable scope. The rail `height` is the visible body height
-// (`body.height`); the caller also feeds `content-height`
-// (= body.viewport-height) and `viewport-y` (= body.viewport-y, <= 0 when
-// scrolled down, briefly > 0 during elastic overscroll). The rail auto-hides
-// via `visible:` ONLY (no opacity — HiDPI blur rule, patterns.md) when the
-// content does not overflow. `clip: true` keeps the thumb inside the rail
-// during elastic overscroll.
-//
-// The thumb math is verbatim from the two former copies, where the rail height
-// (self.height) equals the caller's visible body.height:
-//   thumb height = rail-height * (rail-height / content-height)
-//   thumb y      = -viewport-y  * (rail-height / content-height)
-// All colors/lengths route through Theme — no raw hex inline.
+// ScrollIndicator — self-drawn scroll thumb shared by two dialogs (issue 367). PLACEMENT
+// is the caller's job (x/y/height); auto-hides via `visible:`, not opacity (HiDPI blur).
 
 import { Theme } from "../Theme.slint";
 

@@ -563,9 +563,8 @@ mod tests {
 
     #[test]
     fn selection_count_text_zero_returns_mode_label() {
-        // Boundary: total == 0 ⇒ "Selection mode" label (the zero branch), not
-        // "0 selected". Verified by checking that the result does NOT contain '0'
-        // as a count digit and that it is distinct from the (3,3) plain-count form.
+        // Boundary: total == 0 ⇒ "Selection mode" label, not "0 selected". Verified by the
+        // result lacking a '0' digit and differing from the (3,3) plain-count form.
         for loc in [en(), ja()] {
             let l = loc.loader();
             let result = selection_count_text(l, 0, 0);
