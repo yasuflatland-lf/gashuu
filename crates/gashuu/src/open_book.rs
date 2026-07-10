@@ -1,28 +1,23 @@
 //! The "open a book" application use case, extracted out of `main.rs`.
 //!
-//! [`OpenBookUseCase`] bundles the seven shared collaborators the open path
-//! coordinates (state, settings, viewport, library, thumbs, covers, search) as
-//! fields, so the open sites call [`OpenBookUseCase::run`] with just the per-call
-//! `ui` and `path` (`skipped_detail` is derived internally) instead of threading
-//! a nine-argument free fn under `#[allow(clippy::too_many_arguments)]`. It
-//! touches Slint (status
-//! text, carousel rebuild, thumbnail launch), so it lives in the UI crate.
+//! [`OpenBookUseCase`] bundles the four headless collaborators the open path
+//! coordinates (state, settings, viewport, library) as fields, so the open sites
+//! call [`OpenBookUseCase::run`] with just the per-call `path` (`skipped_detail`
+//! is derived internally). `run` is fully headless — it returns an
+//! [`OpenOutcome`] and `main.rs`'s `finalize_open` applies every UI effect
+//! (status text, viewer refresh, carousel rebuild, thumbnail launch), the same
+//! headless-use-case + UI-finalize split as `RemoveBooksUseCase` / `finalize_remove`.
 
 use std::cell::RefCell;
 use std::path::Path;
 use std::rc::Rc;
 
 use gashuu_core::{CoreError, Library, Settings, ThumbnailCache};
-use slint::ComponentHandle;
 
-use crate::carousel_refresh::{refresh_library_carousel, CarouselRefresh};
-use crate::cover_loader::{purge_cover, CoverController};
-use crate::i18n;
-use crate::library_model::{LibrarySearchState, LibrarySelectionState};
-use crate::thumbnail_strip::ThumbnailController;
+use crate::cover_loader::purge_cover;
 use crate::viewer_state::ViewerState;
 use crate::viewport::ViewportState;
-use crate::{route_view_modes_to_sink, write_back_position, ViewModeRoute, ViewerWindow};
+use crate::{route_view_modes_to_sink, write_back_position, ViewModeRoute};
 
 /// Neutral content description of notices to append to the status line after
 /// an open. No i18n; all string formatting happens in `i18n::dynamic`.
@@ -46,9 +41,14 @@ pub(crate) enum OpenOutcome {
     /// The open failed with this pre-captured error detail (untranslated).
     /// `main.rs` wraps it in `i18n::dynamic::open_error_str(loader, &e_str)`.
     Error(String),
-    /// The open succeeded. `main.rs` should call `refresh()` and then
-    /// `i18n::dynamic::format_notices(loader, &notices)` to finalize status.
-    Success(NoticesContent),
+    /// The open succeeded. `main.rs`'s `finalize_open` refreshes the viewer,
+    /// launches thumbnails, formats `notices` via `i18n::dynamic::format_notices`,
+    /// and — when `count_changed` (the open back-filled a page count) — rebuilds
+    /// the library carousel so the shelf reflects the new count.
+    Success {
+        notices: NoticesContent,
+        count_changed: bool,
+    },
     /// The source opened cleanly but has zero pages, so the book must NOT be
     /// entered in the viewer. The book has been removed from the library (if it
     /// was present) and the library re-saved. `main.rs` stays on the Library
@@ -78,76 +78,51 @@ pub(crate) enum SkippedDetail {
     Archive,
 }
 
-/// Coordinates the "open a book" use case. The collaborators it threads are
-/// fields, so the open sites call [`OpenBookUseCase::run`] instead of passing
-/// nine arguments through a free fn.
+/// Coordinates the "open a book" use case. The four headless collaborators it
+/// threads are fields, so the open sites call [`OpenBookUseCase::run`] with just
+/// a `path`; `main.rs`'s `finalize_open` applies the UI effects (symmetry with
+/// `RemoveBooksUseCase`).
 pub(crate) struct OpenBookUseCase {
     state: Rc<RefCell<ViewerState>>,
     settings: Rc<RefCell<Settings>>,
     viewport: Rc<RefCell<ViewportState>>,
     library: Rc<RefCell<Library>>,
-    thumbs: Rc<ThumbnailController>,
-    covers: Rc<CoverController>,
-    /// Shared library-search filter, so the open-time page-count rebuild below
-    /// preserves the active filter instead of rebuilding the full library.
-    search: Rc<RefCell<LibrarySearchState>>,
-    /// Bulk-selection state, re-applied over the rebuilt rows by the shared
-    /// carousel-refresh chokepoint after an open-time page-count backfill.
-    selection: Rc<RefCell<LibrarySelectionState>>,
-    /// Localizer for the library-count / selection-toolbar strings the chokepoint
-    /// pushes after the projection changes.
-    localizer: Rc<i18n::Localizer>,
 }
 
 impl OpenBookUseCase {
-    // Nine explicit collaborators (#151 explicit-handle policy: named params, not an
-    // AppState bundle), which is why too_many_arguments is allowed below.
-    #[allow(clippy::too_many_arguments)]
+    // Four explicit collaborators (#151 explicit-handle policy: named params, not an AppState bundle).
     pub(crate) fn new(
         state: Rc<RefCell<ViewerState>>,
         settings: Rc<RefCell<Settings>>,
         viewport: Rc<RefCell<ViewportState>>,
         library: Rc<RefCell<Library>>,
-        thumbs: Rc<ThumbnailController>,
-        covers: Rc<CoverController>,
-        search: Rc<RefCell<LibrarySearchState>>,
-        selection: Rc<RefCell<LibrarySelectionState>>,
-        localizer: Rc<i18n::Localizer>,
     ) -> Self {
         Self {
             state,
             settings,
             viewport,
             library,
-            thumbs,
-            covers,
-            search,
-            selection,
-            localizer,
         }
     }
 
-    /// Open `path` and present it: write back the previous position, open the
-    /// source, reconcile + save settings (when recent-files tracking is on),
-    /// register + save the library, rebuild the carousel, and launch thumbnails.
+    /// Open `path` and mutate the shared state: write back the previous position,
+    /// open the source, reconcile + save settings (when recent-files tracking is
+    /// on), register + save the library, and resolve the per-book view modes.
     ///
     /// Returns [`OpenOutcome::Error`] with a pre-captured error string on failure,
-    /// or [`OpenOutcome::Success`] with neutral [`NoticesContent`] on success.
-    /// The caller (`main.rs`) is responsible for calling `refresh()` and
-    /// formatting notices via `i18n::dynamic`.
+    /// or [`OpenOutcome::Success`] with neutral [`NoticesContent`] and the
+    /// `count_changed` flag on success. `main.rs`'s `finalize_open` applies every
+    /// UI effect (viewer refresh, carousel rebuild, thumbnail launch, status notices).
     ///
     /// The `skipped_detail` suffix is DERIVED internally from `path`
     /// ([`SkippedDetail::None`] for folders, [`SkippedDetail::Archive`] for
     /// archives), not passed by the caller.
-    pub(crate) fn run(&self, ui: &ViewerWindow, path: &Path) -> OpenOutcome {
-        // Alias the fields so the moved body reads identically. These are now
-        // `&Rc<…>` not `&…`; `.start()` resolves through the extra `Rc` `Deref`.
+    pub(crate) fn run(&self, path: &Path) -> OpenOutcome {
+        // Alias the fields so the body reads identically to its pre-extraction form.
         let state = &self.state;
         let settings = &self.settings;
         let viewport = &self.viewport;
         let library = &self.library;
-        let thumbs = &self.thumbs;
-        let covers = &self.covers;
 
         // Write back the current book's position before we replace the source.
         // `open_file()` is None when no book is open, so this is a no-op then.
@@ -244,36 +219,6 @@ impl OpenBookUseCase {
         if let Err(e) = library.borrow().save() {
             tracing::error!(error = %e, "failed to save library on open");
         }
-        // On a page-count back-fill, rebuild the carousel preserving the ACTIVE filter (from
-        // visible indices, no resurrecting filtered-out books); focused index NOT reset here.
-        if count_changed {
-            // Route through the SAME carousel chokepoint as boot/query/add so it can't drift.
-            // It reads `visible_indices()` but doesn't recompute, so recompute the filter first.
-            {
-                let lib = library.borrow();
-                self.search.borrow_mut().recompute(&lib);
-            }
-            refresh_library_carousel(
-                ui,
-                &CarouselRefresh {
-                    library,
-                    covers,
-                    search: &self.search,
-                    selection: &self.selection,
-                    localizer: &self.localizer,
-                },
-                // Page-count refresh, NOT a filter change: never reset the
-                // carousel's focused index (matches the old open-coded path).
-                false,
-            );
-        }
-        // Kick off parallel thumbnail generation for the newly opened source.
-        thumbs.start(
-            ui.as_weak(),
-            state.borrow().current_source(),
-            state.borrow().page_count(),
-            canonical.clone(),
-        );
         let skipped = state.borrow().last_open_skipped();
         let skipped_detail = if path.is_dir() {
             SkippedDetail::None
@@ -282,12 +227,12 @@ impl OpenBookUseCase {
         };
         // The on-open library save is best-effort (logged, re-saved at the next leave
         // point), so pass `Ok` for the library-save slot; the settings save is surfaced.
-        OpenOutcome::Success(notices_content(
-            skipped,
-            skipped_detail,
-            settings_save.as_ref(),
-            &Ok(()),
-        ))
+        // On a `count_changed` back-fill the carousel rebuild + thumbnail launch are
+        // applied by `finalize_open` (success path only), keeping this use case headless.
+        OpenOutcome::Success {
+            notices: notices_content(skipped, skipped_detail, settings_save.as_ref(), &Ok(())),
+            count_changed,
+        }
     }
 }
 
@@ -618,5 +563,79 @@ mod tests {
             }
             other => panic!("expected EmptyBookRejected, got {other:?}"),
         }
+    }
+
+    // ---- OpenBookUseCase::run headless branches (unlocked by the headless refactor) ----
+    //
+    // These drive `run` with no UI window — the win of headless-ization. Only the
+    // branches that reach no real `save()` are covered: `run`'s success path calls the real
+    // `library.borrow().save()` (a `data_path()` write), so it is deliberately NOT driven
+    // end-to-end here (it would clobber the developer's real `library.json`, and the codebase
+    // convention is to never call the real `save()` in tests). The synchronous open-time save
+    // invariant (#360) stays covered hermetically above via `save_to`.
+    //
+    // Keep these fixtures NEVER-ADDED: opening an empty source for a book already in the
+    // library would remove it and reach the real `library.save()` — clobbering real data.
+
+    /// Build a use case over fresh in-memory collaborators; `library` is passed in so
+    /// the test can inspect it after `run`. `Settings::default()` has
+    /// `track_recent_sources = false`, so no settings save is attempted either.
+    fn use_case_over(library: Rc<RefCell<Library>>) -> OpenBookUseCase {
+        let settings = Settings::default();
+        let state = Rc::new(RefCell::new(ViewerState::from_settings(&settings)));
+        let viewport = Rc::new(RefCell::new(ViewportState::from_settings(&settings)));
+        OpenBookUseCase::new(state, Rc::new(RefCell::new(settings)), viewport, library)
+    }
+
+    #[test]
+    fn run_returns_error_for_unopenable_path() {
+        // A non-existent path can never be opened; `run` bails at the open error BEFORE any
+        // register/save, so the failure path is fully hermetic (no disk I/O) and registers nothing.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let missing = dir.path().join("does-not-exist");
+        let library = Rc::new(RefCell::new(Library::new()));
+        let use_case = use_case_over(Rc::clone(&library));
+
+        let outcome = use_case.run(&missing);
+
+        assert!(
+            matches!(outcome, OpenOutcome::Error(_)),
+            "an unopenable path must yield Error, got {outcome:?}"
+        );
+        assert!(
+            library.borrow().books().is_empty(),
+            "a failed open registers nothing"
+        );
+    }
+
+    #[test]
+    fn run_rejects_empty_source_and_does_not_enter_viewer() {
+        // An empty folder opens cleanly with zero pages: `run` returns `EmptyBookRejected`.
+        // The book was never in the library, so the removal is a no-op and NO save is
+        // attempted — fully hermetic (no disk I/O).
+        let dir = tempfile::tempdir().expect("tempdir");
+        let library = Rc::new(RefCell::new(Library::new()));
+        let use_case = use_case_over(Rc::clone(&library));
+
+        let outcome = use_case.run(dir.path());
+
+        match outcome {
+            OpenOutcome::EmptyBookRejected {
+                removed,
+                save_error,
+                ..
+            } => {
+                assert!(!removed, "a never-added empty source is not removed");
+                assert!(
+                    save_error.is_none(),
+                    "no save is attempted when nothing was removed"
+                );
+            }
+            other => panic!("expected EmptyBookRejected, got {other:?}"),
+        }
+        assert!(
+            library.borrow().books().is_empty(),
+            "an empty source is never registered in the library"
+        );
     }
 }

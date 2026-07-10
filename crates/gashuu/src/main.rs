@@ -172,17 +172,12 @@ fn main() -> color_eyre::Result<()> {
     let selection = Rc::new(RefCell::new(LibrarySelectionState::default()));
 
     // The "open a book" use-case, shared via `Rc` so the open flow lives in one place
-    // (`use_cases::OpenBookUseCase`); the search state preserves the active filter on rebuild.
+    // (`use_cases::OpenBookUseCase`); `run` is headless and `finalize_open` applies the UI effects.
     let open_book = Rc::new(use_cases::OpenBookUseCase::new(
         Rc::clone(&state),
         Rc::clone(&settings),
         Rc::clone(&viewport),
         Rc::clone(&library),
-        Rc::clone(&thumbs),
-        Rc::clone(&covers),
-        Rc::clone(&search),
-        Rc::clone(&selection),
-        Rc::clone(&localizer),
     ));
 
     // Seed the carousel from the persisted library so boot shows saved books. This is
@@ -241,8 +236,8 @@ fn main() -> color_eyre::Result<()> {
         &selection, &localizer,
     );
     handlers::wire_carousel_handlers(
-        &ui, &state, &viewport, &library, &nav, &open_book, &covers, &pages, &search, &selection,
-        &localizer,
+        &ui, &state, &viewport, &library, &nav, &open_book, &covers, &pages, &thumbs, &search,
+        &selection, &localizer,
     );
     handlers::wire_selection_handlers(
         &ui, &state, &library, &covers, &search, &selection, &localizer,
@@ -521,17 +516,18 @@ pub(crate) fn empty_book_removed_status(
     }
 }
 
-/// Finalize an `open_book.run(...)` outcome on the UI. On failure, set the
-/// localized error status; on success, `refresh()` the view and append each
-/// localized notice to the status line. The single place the four open sites
-/// (Open Folder, Open Archive, carousel-open, bookmark-jump) share this UI
-/// wiring, so the `OpenOutcome` match + notice-append loop lives in exactly one
-/// spot.
+/// Finalize an `open_book.run(path)` outcome on the UI — the headless use case
+/// returns data and this applies every Slint effect. On failure, set the localized
+/// error status; on success, `refresh()` the viewer, rebuild the carousel when the
+/// open back-filled a page count (`count_changed`), launch thumbnails, and append
+/// each localized notice. The single place the carousel-open and bookmark-jump sites
+/// share this UI wiring, so the `OpenOutcome` match lives in exactly one spot.
 fn finalize_open(
     ui: &ViewerWindow,
     state: &Rc<RefCell<ViewerState>>,
     viewport: &Rc<RefCell<ViewportState>>,
     pages: &PageController,
+    thumbs: &Rc<ThumbnailController>,
     deps: &CarouselRefresh,
     outcome: use_cases::OpenOutcome,
 ) {
@@ -540,9 +536,32 @@ fn finalize_open(
         use_cases::OpenOutcome::Error(e_str) => {
             ui.set_status_text(crate::i18n::dynamic::open_error_str(loader, &e_str).into());
         }
-        use_cases::OpenOutcome::Success(notices) => {
+        use_cases::OpenOutcome::Success {
+            notices,
+            count_changed,
+        } => {
             pages.reset_for_source();
             refresh(ui, &state.borrow(), viewport, loader, pages, ui.as_weak());
+            // On a page-count back-fill, rebuild the carousel preserving the ACTIVE filter
+            // (moved out of the now-headless `OpenBookUseCase::run`). The chokepoint only
+            // READS `visible_indices()`, so recompute the filter first.
+            if count_changed {
+                {
+                    let lib = deps.library.borrow();
+                    deps.search.borrow_mut().recompute(&lib);
+                }
+                // Page-count refresh, NOT a filter change: never reset the carousel's
+                // focused index (matches the old open-coded path).
+                refresh_library_carousel(ui, deps, false);
+            }
+            // Kick off parallel thumbnail generation for the newly opened source (success
+            // path only; empty books early-return, failures are `Error`).
+            thumbs.start(
+                ui.as_weak(),
+                state.borrow().current_source(),
+                state.borrow().page_count(),
+                state.borrow().open_file().map(std::path::Path::to_path_buf),
+            );
             for detail in crate::i18n::dynamic::format_notices(loader, &notices) {
                 let base = ui.get_status_text().to_string();
                 ui.set_status_text(format!("{base} \u{2014} {detail}").into());
