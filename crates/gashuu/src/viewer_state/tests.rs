@@ -666,7 +666,7 @@ fn set_viewport_size_degenerate_inputs_do_not_panic() {
     assert!(state.current_spread().unwrap().unwrap().trailing.is_none());
 }
 
-// ---- open_path / open_folder dispatch (PR6) -----------------------------
+// ---- open_path dispatch (PR6) -------------------------------------------
 
 #[test]
 fn open_path_nonexistent_returns_err() {
@@ -682,20 +682,6 @@ fn open_path_nonexistent_returns_err() {
     assert_eq!(state.page_count(), 0);
     assert_eq!(state.index(), 0);
     assert!(state.current_spread().is_none());
-}
-
-#[test]
-fn open_folder_delegates_to_open_path() {
-    // open_folder is a thin delegation to open_path; both must return Err for a
-    // nonexistent path and leave the state unchanged.
-    let mut state_a = ViewerState::new();
-    let mut state_b = ViewerState::new();
-    let bad = std::path::Path::new("/nonexistent_path_pr6_delegation");
-    let r_a = state_a.open_path(bad);
-    let r_b = state_b.open_folder(bad);
-    assert!(r_a.is_err());
-    assert!(r_b.is_err());
-    assert_eq!(state_a.page_count(), state_b.page_count());
 }
 
 #[test]

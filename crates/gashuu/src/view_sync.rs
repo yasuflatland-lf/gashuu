@@ -293,11 +293,11 @@ mod tests {
         let state = Rc::new(RefCell::new(ViewerState::new()));
         // Sanity: blank before any open.
         assert_eq!(current_book_name(&state), "");
-        // A nonexistent path makes `open_folder` return Err before `set_source`,
+        // A nonexistent path makes `open_path` return Err before `set_source`,
         // so `open_file()` stays None and the derived name stays empty.
         let _ = state
             .borrow_mut()
-            .open_folder(Path::new("/nonexistent_gashuu_title_guard"));
+            .open_path(Path::new("/nonexistent_gashuu_title_guard"));
         assert_eq!(
             current_book_name(&state),
             "",
@@ -320,8 +320,8 @@ mod tests {
         let state = Rc::new(RefCell::new(ViewerState::new()));
         state
             .borrow_mut()
-            .open_folder(&dir)
-            .expect("open_folder on a real directory must succeed");
+            .open_path(&dir)
+            .expect("open_path on a real directory must succeed");
         assert_eq!(
             current_book_name(&state),
             leaf,
