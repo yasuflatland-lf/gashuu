@@ -263,8 +263,8 @@ mod tests {
         // NON-mirrored fields set to NON-default via struct-update (dodges
         // clippy::field_reassign_with_default) to prove reconcile touches only the four.
         let mut settings = Settings {
-            cache_size: 99,
-            preload_pages: 7,
+            cache_capacity: 99,
+            prefetch_radius: 7,
             track_recent_files: true,
             allow_rar_archives: false,
             ..Settings::default()
@@ -278,8 +278,8 @@ mod tests {
         assert_eq!(settings.cover_mode, CoverMode::Paired);
         assert_eq!(settings.fit_mode, FitMode::Actual);
         // ...and the unrelated persisted fields are left untouched.
-        assert_eq!(settings.cache_size, 99);
-        assert_eq!(settings.preload_pages, 7);
+        assert_eq!(settings.cache_capacity, 99);
+        assert_eq!(settings.prefetch_radius, 7);
         assert!(settings.track_recent_files);
         assert!(!settings.allow_rar_archives);
     }

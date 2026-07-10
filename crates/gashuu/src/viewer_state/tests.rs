@@ -157,8 +157,8 @@ fn with_cache_config_defaults_to_single_standalone_ltr() {
 #[test]
 fn from_settings_copies_all_modes_and_cache_config() {
     let state = ViewerState::from_settings(&Settings {
-        cache_size: 11,
-        preload_pages: 2,
+        cache_capacity: 11,
+        prefetch_radius: 2,
         spread_mode: SpreadMode::Double,
         cover_mode: CoverMode::Paired,
         reading_direction: ReadingDirection::Rtl,
