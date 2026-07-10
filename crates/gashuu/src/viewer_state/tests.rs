@@ -967,7 +967,7 @@ fn jump_to_zero_is_noop_from_fresh_open() {
 
 #[test]
 fn jump_to_stored_page_resumes_correctly() {
-    // Simulates opening a book where last_page = 3. Single mode: every page
+    // Simulates opening a book where resume_page = 3. Single mode: every page
     // is its own leading. jump_to(3) must move and land at index 3.
     let mut state = ViewerState::new();
     state.set_source(mock_with(10));
@@ -981,7 +981,7 @@ fn jump_to_stored_page_resumes_correctly() {
 
 #[test]
 fn jump_to_stored_trailing_normalizes_to_leading_on_resume() {
-    // Double / Standalone: {0}{1,2}{3,4}{5}. If last_page stored was 2
+    // Double / Standalone: {0}{1,2}{3,4}{5}. If resume_page stored was 2
     // (trailing of {1,2}), jump_to(2) normalizes to leading 1.
     let mut state = double_state();
     state.set_source(mock_with(6));

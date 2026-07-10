@@ -143,7 +143,7 @@ pub(crate) fn current_book_name(state: &Rc<RefCell<ViewerState>>) -> String {
 /// Returns `Some((canonical_path, page_index))` when a write-back should be
 /// performed (a book is open), `None` otherwise. Extracted for table-testing
 /// so the predicate can be verified independently of the effectful
-/// `write_back_position` that actually calls `library.set_last_page`.
+/// `write_back_position` that actually calls `library.set_resume_page`.
 fn position_to_write_back(open_file: Option<&Path>, page: usize) -> Option<(PathBuf, usize)> {
     open_file.map(|p| (p.to_path_buf(), page))
 }
@@ -151,7 +151,7 @@ fn position_to_write_back(open_file: Option<&Path>, page: usize) -> Option<(Path
 /// Write the current reading position back to the Library and persist.
 ///
 /// Called at every leave point: ↑ to Library, opening a different book,
-/// and app exit. `set_last_page` returns `false` when the path is absent or
+/// and app exit. `set_resume_page` returns `false` when the path is absent or
 /// the value is unchanged (idempotent). We do not guard `save()` on that
 /// return value — we always persist for simplicity (one short JSON write at
 /// most, and the result is idempotent on disk).
@@ -174,9 +174,9 @@ pub(crate) fn write_back_position(
     }) else {
         return; // no book open — nothing to write back
     };
-    // `set_last_page` returns false when absent or unchanged; we persist
+    // `set_resume_page` returns false when absent or unchanged; we persist
     // unconditionally for simplicity (short JSON write, idempotent on disk).
-    library.borrow_mut().set_last_page(&path, page);
+    library.borrow_mut().set_resume_page(&path, page);
     if let Err(e) = library.borrow().save() {
         tracing::error!(error = %e, "failed to save library on position write-back");
     }
