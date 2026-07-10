@@ -4,7 +4,7 @@ use crate::{
     cover_loader, i18n,
 };
 use crate::{
-    apply_add_report, apply_outcomes, current_book_name, finalize_empty_book_removed,
+    apply_add_report, apply_outcomes, current_book_name, finalize_empty_book_rejected,
     finalize_open, finalize_remove, go_to_viewer, push_selection_strings, refresh_library_carousel,
     visible_index_to_path, with_ui, CarouselRefresh, ViewerWindow,
 };
@@ -624,7 +624,7 @@ pub(crate) fn wire_selection_handlers(
                 // The shared transaction (single home in open_book): title capture
                 // BEFORE removal -> Library::remove -> save -> best-effort cover purge.
                 let removal = app::remove_empty_book(&library, &path);
-                finalize_empty_book_removed(
+                finalize_empty_book_rejected(
                     &ui,
                     &CarouselRefresh {
                         library: &library,

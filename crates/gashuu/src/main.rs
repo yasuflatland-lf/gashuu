@@ -32,7 +32,7 @@ mod window_state;
 
 pub(crate) use add_books::apply_outcomes;
 pub(crate) use carousel_refresh::{
-    apply_add_report, finalize_empty_book_removed, finalize_remove, push_selection_strings,
+    apply_add_report, finalize_empty_book_rejected, finalize_remove, push_selection_strings,
     refresh_library_carousel, snap_carousel_focus_to_last_opened, visible_index_to_path,
     CarouselRefresh,
 };
@@ -548,7 +548,7 @@ fn finalize_open(
                 ui.set_status_text(format!("{base} \u{2014} {detail}").into());
             }
         }
-        app::OpenOutcome::EmptyBookRemoved {
+        app::OpenOutcome::EmptyBookRejected {
             title,
             removed,
             save_error,
@@ -556,10 +556,10 @@ fn finalize_open(
             pages.set_source();
             // Source opened cleanly but has zero pages: already removed + re-saved. This
             // arm does NOT switch screens (see the `enter_viewer` guard at the open sites).
-            finalize_empty_book_removed(
+            finalize_empty_book_rejected(
                 ui,
                 deps,
-                &crate::open_book::EmptyBookRemoval {
+                &crate::open_book::EmptyBookOutcome {
                     title,
                     removed,
                     save_error,
