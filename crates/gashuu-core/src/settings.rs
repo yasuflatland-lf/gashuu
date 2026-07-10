@@ -191,7 +191,7 @@ impl Settings {
         // Normalize a stored window geometry: a corrupt (inflated) size is discarded (boot
         // at default, not off-screen); an otherwise-sane size is floored to the minimum.
         match self.window {
-            Some(g) if !g.is_size_sane() => self.window = None,
+            Some(g) if !g.is_size_within_max() => self.window = None,
             Some(ref mut g) => {
                 let (w, h) = g.clamped_size();
                 g.width = w;
