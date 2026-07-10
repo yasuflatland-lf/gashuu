@@ -21,7 +21,7 @@ pub const DEFAULT_THUMB_MAX_SIDE: u32 = 160;
 /// `&ThumbnailCache` and `&Path` are `Send`/`Sync`, so one context is shared
 /// across the rayon `par_iter` without per-page cloning.
 #[derive(Clone, Copy)]
-pub struct PageThumbCache<'a> {
+pub struct PageThumbContext<'a> {
     /// On-disk cache the page thumbnails are read from and written to.
     pub cache: &'a ThumbnailCache,
     /// Canonical book path that anchors each page's cache key.
@@ -50,7 +50,7 @@ fn mtime_secs(path: &Path) -> i64 {
 fn page_thumbnail(
     source: &Arc<dyn PageSource>,
     max_side: u32,
-    cache: Option<(PageThumbCache<'_>, i64)>,
+    cache: Option<(PageThumbContext<'_>, i64)>,
     i: usize,
 ) -> Result<DecodedImage, CoreError> {
     let Some((ctx, mtime)) = cache else {
@@ -88,7 +88,7 @@ pub fn generate_thumbnails<F>(
     source: Arc<dyn PageSource>,
     max_side: u32,
     cancelled: Arc<AtomicBool>,
-    cache_ctx: Option<PageThumbCache<'_>>,
+    cache_ctx: Option<PageThumbContext<'_>>,
     on_ready: F,
 ) where
     F: Fn(usize, Result<DecodedImage, CoreError>) + Send + Sync,
@@ -129,7 +129,7 @@ pub fn generate_one_thumbnail(
     source: &Arc<dyn PageSource>,
     max_side: u32,
     page_index: usize,
-    cache_ctx: Option<PageThumbCache<'_>>,
+    cache_ctx: Option<PageThumbContext<'_>>,
 ) -> Result<DecodedImage, CoreError> {
     // Mirror the all-pages generator's key convention: stat once, here for a single
     // page, and feed the mtime into the same per-page cache key.
@@ -503,7 +503,7 @@ mod tests {
             source,
             DEFAULT_THUMB_MAX_SIDE,
             cancelled,
-            Some(PageThumbCache { cache, path }),
+            Some(PageThumbContext { cache, path }),
             |i, res| assert!(res.is_ok(), "page {i} should decode successfully"),
         );
         src
@@ -597,7 +597,7 @@ mod tests {
             &source,
             DEFAULT_THUMB_MAX_SIDE,
             1,
-            Some(PageThumbCache {
+            Some(PageThumbContext {
                 cache: &cache,
                 path,
             }),
@@ -621,7 +621,7 @@ mod tests {
             &source,
             DEFAULT_THUMB_MAX_SIDE,
             1,
-            Some(PageThumbCache {
+            Some(PageThumbContext {
                 cache: &cache,
                 path,
             }),

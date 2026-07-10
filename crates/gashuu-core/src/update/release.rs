@@ -17,9 +17,9 @@ pub struct ReleaseInfo {
     /// Tag with a leading `v` stripped, e.g. "0.11.0" (compared against CARGO_PKG_VERSION).
     pub version: String,
     /// Human-facing release page URL.
-    pub html_url: String,
+    pub release_page_url: String,
     /// Release notes (markdown).
-    pub body: String,
+    pub notes: String,
     pub assets: Vec<Asset>,
 }
 
@@ -47,8 +47,8 @@ pub fn parse_latest_release(json: &str) -> Result<ReleaseInfo, serde_json::Error
     Ok(ReleaseInfo {
         tag: raw.tag_name,
         version,
-        html_url: raw.html_url,
-        body: raw.body,
+        release_page_url: raw.html_url,
+        notes: raw.body,
         assets: raw
             .assets
             .into_iter()
@@ -79,8 +79,8 @@ mod tests {
         let info = parse_latest_release(SAMPLE).unwrap();
         assert_eq!(info.tag, "v0.11.0");
         assert_eq!(info.version, "0.11.0");
-        assert!(info.html_url.ends_with("v0.11.0"));
-        assert_eq!(info.body, "release notes here");
+        assert!(info.release_page_url.ends_with("v0.11.0"));
+        assert_eq!(info.notes, "release notes here");
         assert_eq!(info.assets.len(), 2);
         assert_eq!(info.assets[0].name, "gashuu-v0.11.0-x86_64.AppImage");
         assert_eq!(info.assets[0].download_url, "https://example/app");
@@ -90,7 +90,7 @@ mod tests {
     fn missing_body_and_assets_default_to_empty() {
         let json = r#"{"tag_name":"v1.0.0","html_url":"https://x"}"#;
         let info = parse_latest_release(json).unwrap();
-        assert_eq!(info.body, "");
+        assert_eq!(info.notes, "");
         assert!(info.assets.is_empty());
     }
 

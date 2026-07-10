@@ -5,9 +5,9 @@
 //!
 //! The UI-finalize half — persisting, rebuilding the carousel, and surfacing the
 //! notice on the status line — lives in `crate::carousel_refresh::apply_add_report`.
-//! The off-UI-thread PROBE half lives in `crate::add_loader`.
+//! The off-UI-thread PROBE half lives in `crate::add_controller`.
 
-use crate::add_loader;
+use crate::add_controller;
 use gashuu_core::Library;
 
 /// Outcome of an add batch: the canonical paths actually inserted (new books
@@ -22,9 +22,9 @@ pub(crate) struct AddReport {
 }
 
 /// Apply already-probed sources to `lib`, the UI-thread APPLY half of the bulk
-/// add (issue 206). The probe half runs off the UI thread (`add_loader::probe_path`
+/// add (issue 206). The probe half runs off the UI thread (`add_controller::probe_path`
 /// on rayon workers) so opening each archive never freezes the event loop; this
-/// half takes the resulting [`add_loader::ProbeOutcome`]s — which the controller
+/// half takes the resulting [`add_controller::ProbeOutcome`]s — which the controller
 /// has already re-sorted to INPUT order — and mutates the `!Send` `Library` here:
 ///
 /// - `ProbeKind::Empty` — opened but zero image pages: skip and count in
@@ -43,12 +43,12 @@ pub(crate) struct AddReport {
 /// probe was moved off-thread.
 pub(crate) fn apply_outcomes(
     lib: &mut Library,
-    outcomes: Vec<add_loader::ProbeOutcome>,
+    outcomes: Vec<add_controller::ProbeOutcome>,
 ) -> AddReport {
-    use add_loader::ProbeKind;
+    use add_controller::ProbeKind;
     let mut added = Vec::new();
     let mut skipped = 0usize;
-    for add_loader::ProbeOutcome { path, kind, .. } in outcomes {
+    for add_controller::ProbeOutcome { path, kind, .. } in outcomes {
         match kind {
             ProbeKind::Empty => {
                 skipped += 1;
@@ -98,8 +98,9 @@ pub(crate) enum AddNotice {
     Added { added: usize },
 }
 
-/// Pure decision function: maps the `(added, skipped)` counts from `add_paths`
-/// to the appropriate [`AddNotice`] variant.  No I/O, no side-effects.
+/// Pure decision function: maps the `(added, skipped)` counts produced by
+/// [`apply_outcomes`] (carried in [`AddReport`]) to the appropriate
+/// [`AddNotice`] variant.  No I/O, no side-effects.
 pub(crate) fn select_add_notice(added: usize, skipped: usize) -> AddNotice {
     match (added, skipped) {
         (0, 0) => AddNotice::AlreadyInLibrary,
@@ -121,7 +122,7 @@ mod tests {
     /// input order, then apply the outcomes. This is the pre-206 `add_paths`
     /// behaviour, retained so the apply-half tests below exercise the real
     /// `apply_outcomes` mutation path through one call. Production no longer has a
-    /// synchronous `add_paths` — the probe runs off the UI thread (`add_loader`)
+    /// synchronous `add_paths` — the probe runs off the UI thread (`add_controller`)
     /// and the apply runs in the `add-finalize` handler — but the probe + apply
     /// halves are unchanged in behaviour, so testing them composed is faithful.
     fn add_paths(
@@ -132,7 +133,7 @@ mod tests {
         let outcomes = paths
             .into_iter()
             .enumerate()
-            .map(|(index, path)| add_loader::probe_path(index, path, policy))
+            .map(|(index, path)| add_controller::probe_path(index, path, policy))
             .collect();
         apply_outcomes(lib, outcomes)
     }

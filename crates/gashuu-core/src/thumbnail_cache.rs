@@ -71,7 +71,7 @@ impl ThumbnailCache {
     pub fn new() -> Result<ThumbnailCache, CoreError> {
         let dirs = ProjectDirs::from("", "", "gashuu").ok_or(CoreError::NoDataDir)?;
         Ok(Self {
-            dir: dirs.cache_dir().join("covers"),
+            dir: dirs.cache_dir().join("thumbnails"),
         })
     }
 
@@ -80,7 +80,8 @@ impl ThumbnailCache {
         Self { dir }
     }
 
-    /// Look up a thumbnail in the cache.
+    /// Look up a thumbnail in the cache, WRITING a hit's file mtime as a side
+    /// effect (touch-on-get; detailed below).
     ///
     /// Reads `<dir>/<key>.qoi` and decodes it into a `DecodedImage`. Returns
     /// `None` if the file is missing, unreadable, or not a valid image; it
@@ -133,7 +134,7 @@ impl ThumbnailCache {
     /// eviction order). This is best-effort by design: a missing file (cache
     /// miss) and any I/O error are SILENTLY skipped — callers may warn, never
     /// error — so the count is only the files actually unlinked.
-    pub fn purge_for(&self, path: &Path, mtime_secs: i64, max_sides: &[u32]) -> usize {
+    pub fn purge_cover_for(&self, path: &Path, mtime_secs: i64, max_sides: &[u32]) -> usize {
         max_sides
             .iter()
             .filter(|&&max_side| {
@@ -148,7 +149,7 @@ impl ThumbnailCache {
     /// `max_side` in `max_sides` crossed with every page index in `0..page_count`
     /// — and return how many files were removed.
     ///
-    /// The strip sibling of [`purge_for`](Self::purge_for): where that reclaims a
+    /// The strip sibling of [`purge_cover_for`](Self::purge_cover_for): where that reclaims a
     /// book's single COVER key `(path, mtime, max_side)` via [`cache_key`], this
     /// reclaims the per-page keys `(path, mtime, max_side, i)` via
     /// [`page_cache_key`] — the exact derivation the strip generator wrote them
@@ -161,7 +162,7 @@ impl ThumbnailCache {
     /// generated under). If the file's mtime has since drifted, the recomputed keys
     /// no longer match the stored files; those become undeletable-but-harmless
     /// orphans ([`prune`](Self::prune) reclaims them later). Best-effort by design,
-    /// exactly like [`purge_for`](Self::purge_for): a missing file (cache miss) and
+    /// exactly like [`purge_cover_for`](Self::purge_cover_for): a missing file (cache miss) and
     /// any I/O error are SILENTLY skipped — callers may warn, never error — so the
     /// count is only the files actually unlinked.
     pub fn purge_pages_for(
@@ -217,7 +218,7 @@ impl ThumbnailCache {
     /// as a one-time migration reclaim — counted in the removed totals but not in
     /// the `.qoi` size cap.
     ///
-    /// Best-effort like [`purge_for`](Self::purge_for): a missing directory is a
+    /// Best-effort like [`purge_cover_for`](Self::purge_cover_for): a missing directory is a
     /// zero report (first launch), unreadable entries are skipped, a failed
     /// unlink is skipped (not counted) and the sweep continues. Files the cache
     /// does not own (neither `*.qoi`/legacy `*.png` nor its tmp shape) are NEVER
@@ -599,8 +600,8 @@ mod tests {
     }
 
     #[test]
-    fn purge_for_removes_the_cover_cached_under_the_current_mtime() {
-        // Seed a cover under the exact key purge_for derives, then purge: the file
+    fn purge_cover_for_removes_the_cover_cached_under_the_current_mtime() {
+        // Seed a cover under the exact key purge_cover_for derives, then purge: the file
         // is unlinked and counted, and a follow-up get misses.
         let dir = tempdir().unwrap();
         let cache = ThumbnailCache::with_dir(dir.path().to_path_buf());
@@ -610,13 +611,13 @@ mod tests {
         let key = cache_key(path, mtime, max_side);
         cache.put(&key, &tiny_decoded_image()).expect("seed cover");
 
-        let removed = cache.purge_for(path, mtime, &[max_side]);
+        let removed = cache.purge_cover_for(path, mtime, &[max_side]);
         assert_eq!(removed, 1, "the matching cover is removed and counted");
         assert!(cache.get(&key).is_none(), "the cover is gone after purge");
     }
 
     #[test]
-    fn purge_for_drifted_mtime_removes_nothing_and_does_not_error() {
+    fn purge_cover_for_drifted_mtime_removes_nothing_and_does_not_error() {
         // The cover was generated under one mtime; purging with a DRIFTED mtime derives a
         // different key, so nothing matches: 0 removed, no error, orphan stays (prune later).
         let dir = tempdir().unwrap();
@@ -628,7 +629,7 @@ mod tests {
             .put(&stored_key, &tiny_decoded_image())
             .expect("seed cover");
 
-        let removed = cache.purge_for(path, 9999, &[max_side]);
+        let removed = cache.purge_cover_for(path, 9999, &[max_side]);
         assert_eq!(removed, 0, "a drifted mtime matches no cover");
         assert!(
             cache.get(&stored_key).is_some(),
@@ -637,8 +638,8 @@ mod tests {
     }
 
     #[test]
-    fn purge_for_removes_across_multiple_sides() {
-        // A book can have covers at several max_side variants; purge_for removes
+    fn purge_cover_for_removes_across_multiple_sides() {
+        // A book can have covers at several max_side variants; purge_cover_for removes
         // every present variant and counts only the ones that existed.
         let dir = tempdir().unwrap();
         let cache = ThumbnailCache::with_dir(dir.path().to_path_buf());
@@ -650,14 +651,14 @@ mod tests {
             cache.put(&key, &tiny_decoded_image()).expect("seed cover");
         }
 
-        let removed = cache.purge_for(path, mtime, &[160, 320, 480]);
+        let removed = cache.purge_cover_for(path, mtime, &[160, 320, 480]);
         assert_eq!(removed, 2, "only the two present sides are removed/counted");
         assert!(cache.get(&cache_key(path, mtime, 160)).is_none());
         assert!(cache.get(&cache_key(path, mtime, 320)).is_none());
     }
 
     #[test]
-    fn purge_for_empty_sides_removes_nothing() {
+    fn purge_cover_for_empty_sides_removes_nothing() {
         // An empty `max_sides` derives no keys, so there is nothing to purge: 0
         // removed, and the seeded cover stays on disk untouched.
         let dir = tempdir().unwrap();
@@ -668,7 +669,7 @@ mod tests {
         let key = cache_key(path, mtime, max_side);
         cache.put(&key, &tiny_decoded_image()).expect("seed cover");
 
-        let removed = cache.purge_for(path, mtime, &[]);
+        let removed = cache.purge_cover_for(path, mtime, &[]);
         assert_eq!(removed, 0, "no sides requested removes no cover");
         assert!(
             cache.get(&key).is_some(),
@@ -712,15 +713,18 @@ mod tests {
         }
         assert!(
             cache.get(&cover_key).is_some(),
-            "the cover survives the strip purge (it is purge_for's job)"
+            "the cover survives the strip purge (it is purge_cover_for's job)"
         );
 
-        // The sibling purge_for then reclaims the cover.
-        let removed_cover = cache.purge_for(path, mtime, &[max_side]);
-        assert_eq!(removed_cover, 1, "the cover is reclaimed by purge_for");
+        // The sibling purge_cover_for then reclaims the cover.
+        let removed_cover = cache.purge_cover_for(path, mtime, &[max_side]);
+        assert_eq!(
+            removed_cover, 1,
+            "the cover is reclaimed by purge_cover_for"
+        );
         assert!(
             cache.get(&cover_key).is_none(),
-            "the cover is gone after purge_for"
+            "the cover is gone after purge_cover_for"
         );
     }
 

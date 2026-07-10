@@ -5,8 +5,7 @@
 slint::include_modules!();
 
 mod add_books;
-mod add_loader;
-mod app;
+mod add_controller;
 mod carousel;
 mod carousel_refresh;
 mod cover_loader;
@@ -25,6 +24,7 @@ mod selection_projection;
 mod thumbnail_strip;
 mod ui_marshal;
 mod update;
+mod use_cases;
 mod view_sync;
 mod viewer_state;
 mod viewport;
@@ -32,7 +32,7 @@ mod window_state;
 
 pub(crate) use add_books::apply_outcomes;
 pub(crate) use carousel_refresh::{
-    apply_add_report, finalize_empty_book_removed, finalize_remove, push_selection_strings,
+    apply_add_report, finalize_empty_book_rejected, finalize_remove, push_selection_toolbar_state,
     refresh_library_carousel, snap_carousel_focus_to_last_opened, visible_index_to_path,
     CarouselRefresh,
 };
@@ -46,11 +46,11 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use thumbnail_strip::ThumbnailController;
 pub(crate) use view_sync::{
-    apply_global_view_to_runtime, current_book_name, persist_view_modes, write_back_position,
+    apply_global_view_to_runtime, current_book_name, route_view_modes_to_sink, write_back_position,
     ViewModeRoute,
 };
 #[cfg(not(test))]
-use viewer_state::SpreadSlots;
+use viewer_state::SpreadCacheState;
 use viewer_state::{StatusContent, ViewerState};
 use viewport::ViewportState;
 
@@ -129,7 +129,7 @@ fn main() -> color_eyre::Result<()> {
     // Boot the Fluent localizer with the persisted language; `apply()` pushes
     // every static string into the Strings global before the first paint.
     let localizer = Rc::new(i18n::Localizer::new(settings.language));
-    localizer.apply(&ui);
+    localizer.push_strings_to_ui(&ui);
     // macOS' NSOpenPanel picks files AND folders in one panel, so the NavBar collapses
     // its two add capsules into one combined capsule. Compile-time constant.
     ui.set_combined_add_picker(cfg!(target_os = "macos"));
@@ -155,7 +155,7 @@ fn main() -> color_eyre::Result<()> {
 
     // Bulk-add controller (issue 206): probes each source off the UI thread so a bulk
     // add never freezes the event loop. `start` dispatches; `add-finalize` applies.
-    let adder = Rc::new(add_loader::AddController::new());
+    let adder = Rc::new(add_controller::AddController::new());
 
     // Shared library-search filter state, so every path (search, add/open backfill,
     // open-time rebuild) projects the SAME visible-index set. Starts on the empty query.
@@ -172,8 +172,8 @@ fn main() -> color_eyre::Result<()> {
     let selection = Rc::new(RefCell::new(LibrarySelectionState::default()));
 
     // The "open a book" use-case, shared via `Rc` so the open flow lives in one place
-    // (`app::OpenBookUseCase`); `run` is headless and `finalize_open` applies the UI effects.
-    let open_book = Rc::new(app::OpenBookUseCase::new(
+    // (`use_cases::OpenBookUseCase`); `run` is headless and `finalize_open` applies the UI effects.
+    let open_book = Rc::new(use_cases::OpenBookUseCase::new(
         Rc::clone(&state),
         Rc::clone(&settings),
         Rc::clone(&viewport),
@@ -275,8 +275,8 @@ fn main() -> color_eyre::Result<()> {
     // event loop has exited, so `state`/`library` are unborrowed.
     write_back_position(&state, &library);
     // Persist the open book's view modes to its override, mirroring into GLOBAL Settings
-    // only when no book is open (ADR-0007 clobber guard lives in `persist_view_modes`).
-    persist_view_modes(
+    // only when no book is open (ADR-0007 clobber guard lives in `route_view_modes_to_sink`).
+    route_view_modes_to_sink(
         ViewModeRoute::AppExit,
         &state,
         &viewport,
@@ -352,12 +352,12 @@ pub(crate) fn apply_spread_geometry(
     content_w: f32,
     content_h: f32,
     single: bool,
-    trailing_failed: Option<usize>,
+    failed_trailing_page: Option<usize>,
     status: &StatusContent,
 ) {
     ui.set_single(single);
     let base_status = crate::i18n::dynamic::format_status(loader, status);
-    match trailing_failed {
+    match failed_trailing_page {
         Some(failed) => ui.set_status_text(
             format!(
                 "{base_status}  {}",
@@ -390,7 +390,7 @@ fn page_slot(index: usize, decoded: Option<std::sync::Arc<DecodedImage>>) -> Pag
 }
 
 #[cfg(not(test))]
-fn spread_request(slots: SpreadSlots) -> SpreadDecodeRequest {
+fn spread_request(slots: SpreadCacheState) -> SpreadDecodeRequest {
     let leading = page_slot(slots.leading.0, slots.leading.1);
     match slots.trailing {
         Some((index, decoded)) => SpreadDecodeRequest::double(leading, page_slot(index, decoded)),
@@ -410,7 +410,7 @@ pub(crate) fn refresh(
 ) {
     let content = state.status_content();
     ui.set_rtl(matches!(state.reading_direction(), ReadingDirection::Rtl));
-    match state.spread_slots() {
+    match state.classify_spread() {
         Some(slots) => {
             let leading_idx = slots.leading.0;
             let trailing_idx = slots.trailing.as_ref().map(|(index, _)| *index);
@@ -529,18 +529,18 @@ fn finalize_open(
     pages: &PageController,
     thumbs: &Rc<ThumbnailController>,
     deps: &CarouselRefresh,
-    outcome: app::OpenOutcome,
+    outcome: use_cases::OpenOutcome,
 ) {
     let loader = deps.localizer.loader();
     match outcome {
-        app::OpenOutcome::Error(e_str) => {
+        use_cases::OpenOutcome::Error(e_str) => {
             ui.set_status_text(crate::i18n::dynamic::open_error_str(loader, &e_str).into());
         }
-        app::OpenOutcome::Success {
+        use_cases::OpenOutcome::Success {
             notices,
             count_changed,
         } => {
-            pages.set_source();
+            pages.reset_for_source();
             refresh(ui, &state.borrow(), viewport, loader, pages, ui.as_weak());
             // On a page-count back-fill, rebuild the carousel preserving the ACTIVE filter
             // (moved out of the now-headless `OpenBookUseCase::run`). The chokepoint only
@@ -567,18 +567,18 @@ fn finalize_open(
                 ui.set_status_text(format!("{base} \u{2014} {detail}").into());
             }
         }
-        app::OpenOutcome::EmptyBookRemoved {
+        use_cases::OpenOutcome::EmptyBookRejected {
             title,
             removed,
             save_error,
         } => {
-            pages.set_source();
+            pages.reset_for_source();
             // Source opened cleanly but has zero pages: already removed + re-saved. This
             // arm does NOT switch screens (see the `enter_viewer` guard at the open sites).
-            finalize_empty_book_removed(
+            finalize_empty_book_rejected(
                 ui,
                 deps,
-                &crate::open_book::EmptyBookRemoval {
+                &crate::open_book::EmptyBookOutcome {
                     title,
                     removed,
                     save_error,

@@ -60,20 +60,22 @@ impl Rect {
 }
 
 impl WindowGeometry {
-    /// Size to apply, floored to the legible minimum.
-    pub fn clamped_size(&self) -> (u32, u32) {
+    /// Size to apply, floored to the legible minimum. Only a lower floor is
+    /// applied — there is no upper clamp (an over-large size is rejected wholesale
+    /// by `is_size_sane`, not clamped here).
+    pub fn floored_size(&self) -> (u32, u32) {
         (
             self.width.max(MIN_WINDOW_WIDTH),
             self.height.max(MIN_WINDOW_HEIGHT),
         )
     }
 
-    /// True when the stored size is within the sane maximum. A larger value means
+    /// True when the stored size is within the maximum bound. A larger value means
     /// the persisted geometry is corrupt (e.g. inflated by a HiDPI scale-factor
     /// round-trip) and should be discarded for the default boot size. The lower
     /// bound is intentionally NOT a sanity failure: a too-small size is floored by
-    /// `clamped_size` rather than thrown away.
-    pub fn is_size_sane(&self) -> bool {
+    /// `floored_size` rather than thrown away.
+    pub fn is_size_within_max(&self) -> bool {
         self.width <= MAX_WINDOW_WIDTH && self.height <= MAX_WINDOW_HEIGHT
     }
 
@@ -121,15 +123,15 @@ mod tests {
     }
 
     #[test]
-    fn clamped_size_floors_below_minimum() {
+    fn floored_size_floors_below_minimum() {
         let g = geom(100, 200, 0, 0);
-        assert_eq!(g.clamped_size(), (MIN_WINDOW_WIDTH, MIN_WINDOW_HEIGHT));
+        assert_eq!(g.floored_size(), (MIN_WINDOW_WIDTH, MIN_WINDOW_HEIGHT));
     }
 
     #[test]
-    fn clamped_size_passes_through_above_minimum() {
+    fn floored_size_passes_through_above_minimum() {
         let g = geom(1024, 768, 0, 0);
-        assert_eq!(g.clamped_size(), (1024, 768));
+        assert_eq!(g.floored_size(), (1024, 768));
     }
 
     #[test]
@@ -224,9 +226,9 @@ mod tests {
     }
 
     #[test]
-    fn clamped_size_passes_through_at_minimum() {
+    fn floored_size_passes_through_at_minimum() {
         let g = geom(MIN_WINDOW_WIDTH, MIN_WINDOW_HEIGHT, 0, 0);
-        assert_eq!(g.clamped_size(), (MIN_WINDOW_WIDTH, MIN_WINDOW_HEIGHT));
+        assert_eq!(g.floored_size(), (MIN_WINDOW_WIDTH, MIN_WINDOW_HEIGHT));
     }
 
     #[test]
@@ -243,32 +245,32 @@ mod tests {
     }
 
     #[test]
-    fn size_sane_accepts_a_normal_window() {
-        assert!(geom(1400, 900, 100, 100).is_size_sane());
+    fn size_within_max_accepts_a_normal_window() {
+        assert!(geom(1400, 900, 100, 100).is_size_within_max());
     }
 
     #[test]
-    fn size_sane_accepts_a_tiny_window() {
-        // Below the legible minimum is still "sane" — `clamped_size` floors it rather than
+    fn size_within_max_accepts_a_tiny_window() {
+        // Below the legible minimum is still "sane" — `floored_size` floors it rather than
         // discarding; only an absurdly large size is treated as corrupt.
-        assert!(geom(10, 10, 0, 0).is_size_sane());
+        assert!(geom(10, 10, 0, 0).is_size_within_max());
     }
 
     #[test]
-    fn size_sane_rejects_a_scale_factor_inflated_width() {
+    fn size_within_max_rejects_a_scale_factor_inflated_width() {
         // The real corruption that blanked the window: a HiDPI round-trip inflated
         // the width across launches until it reached 110592 (= 1728 * 2^6).
         let g = geom(110592, 1982, 0, 66);
-        assert!(!g.is_size_sane());
+        assert!(!g.is_size_within_max());
     }
 
     #[test]
-    fn size_sane_rejects_a_height_above_the_maximum() {
-        assert!(!geom(1400, MAX_WINDOW_HEIGHT + 1, 0, 0).is_size_sane());
+    fn size_within_max_rejects_a_height_above_the_maximum() {
+        assert!(!geom(1400, MAX_WINDOW_HEIGHT + 1, 0, 0).is_size_within_max());
     }
 
     #[test]
-    fn size_sane_accepts_exactly_the_maximum() {
-        assert!(geom(MAX_WINDOW_WIDTH, MAX_WINDOW_HEIGHT, 0, 0).is_size_sane());
+    fn size_within_max_accepts_exactly_the_maximum() {
+        assert!(geom(MAX_WINDOW_WIDTH, MAX_WINDOW_HEIGHT, 0, 0).is_size_within_max());
     }
 }

@@ -20,8 +20,9 @@ use crate::update::net::{download_bytes, fetch_latest_release_json};
 use crate::update::{UpdateError, CURRENT_VERSION, RELEASES_PAGE_URL};
 use crate::{Strings, ViewerWindow};
 use gashuu_core::{
-    detect_packaging, parse_latest_release, parse_sha256sums, select_asset, should_check,
-    should_notify, verify, Packaging, ReleaseInfo, Settings, UpdateStrategy, CHECK_INTERVAL_SECS,
+    detect_packaging, is_verified, parse_latest_release, parse_sha256sums, select_asset,
+    should_check, should_notify, Packaging, ReleaseInfo, Settings, UpdateStrategy,
+    CHECK_INTERVAL_SECS,
 };
 use slint::ComponentHandle;
 use std::cell::RefCell;
@@ -117,7 +118,7 @@ pub(crate) fn start_update_check(ui: &ViewerWindow, settings: &Rc<RefCell<Settin
                 {
                     ui.set_update_current_version(CURRENT_VERSION.into());
                     ui.set_update_latest_version(info.version.clone().into());
-                    ui.set_update_notes_available(!info.html_url.is_empty());
+                    ui.set_update_notes_available(!info.release_page_url.is_empty());
                     ui.set_update_in_progress(false);
                     ui.set_update_status_text(Default::default());
                     if force {
@@ -206,16 +207,16 @@ pub(crate) fn wire_update_handlers(ui: &ViewerWindow, settings: &Rc<RefCell<Sett
             let appimage = std::env::var_os("APPIMAGE");
             let pkg = detect_packaging(&exe, appimage.as_deref());
             match pkg.strategy() {
-                UpdateStrategy::OpenReleasePage => {
+                UpdateStrategy::ExternalInstall => {
                     if let Err(e) = opener::open(RELEASES_PAGE_URL) {
                         tracing::warn!(error = %e, "failed to open release page");
                     }
-                    // This branch dismisses the dialog (RevealDownload/SelfReplace keep it
+                    // This branch dismisses the dialog (ManualInstall/SelfReplace keep it
                     // open), so restore focus to the screen underneath (issue #359).
                     ui.set_show_update_available(false);
                     restore_focus_after_dialog(&ui);
                 }
-                UpdateStrategy::RevealDownload => {
+                UpdateStrategy::ManualInstall => {
                     reveal_download(&ui, pkg, info);
                 }
                 UpdateStrategy::SelfReplace => {
@@ -252,8 +253,10 @@ pub(crate) fn wire_update_handlers(ui: &ViewerWindow, settings: &Rc<RefCell<Sett
 
 /// Shared setup for a download-driven update action (macOS reveal, self-replace):
 /// mark the dialog busy with a localized "downloading" status and hand back a
-/// weak handle for the background closure to marshal UI updates through.
-fn begin_update_download(ui: &ViewerWindow) -> slint::Weak<ViewerWindow> {
+/// weak handle for the background closure to marshal UI updates through. This does
+/// NOT start the download — the caller spawns that; here it only flips the UI into
+/// the in-progress state.
+fn mark_download_in_progress(ui: &ViewerWindow) -> slint::Weak<ViewerWindow> {
     ui.set_update_in_progress(true);
     ui.set_update_status_text(ui.global::<Strings>().get_update_status_downloading());
     ui.as_weak()
@@ -263,7 +266,7 @@ fn begin_update_download(ui: &ViewerWindow) -> slint::Weak<ViewerWindow> {
 /// flag, log `context`, surface the localized "download failed" status, and fall
 /// back to opening the release page so the user is never stranded on a broken
 /// update. Runs on the UI thread.
-fn report_update_failure(ui: &ViewerWindow, context: &str, error: &UpdateError) {
+fn report_failure_and_open_release(ui: &ViewerWindow, context: &str, error: &UpdateError) {
     ui.set_update_in_progress(false);
     tracing::warn!(error = %error, "{context}");
     ui.set_update_status_text(ui.global::<Strings>().get_update_status_download_failed());
@@ -278,7 +281,7 @@ fn report_update_failure(ui: &ViewerWindow, context: &str, error: &UpdateError) 
 /// (`Packaging`, `ReleaseInfo`) cross the thread boundary — the settings cell
 /// is never captured here.
 fn reveal_download(ui: &ViewerWindow, pkg: Packaging, info: ReleaseInfo) {
-    let weak = begin_update_download(ui);
+    let weak = mark_download_in_progress(ui);
     rayon::spawn(move || {
         let outcome = download_and_verify(pkg, &info);
         let _ = slint::invoke_from_event_loop(move || {
@@ -293,7 +296,7 @@ fn reveal_download(ui: &ViewerWindow, pkg: Packaging, info: ReleaseInfo) {
                     }
                     ui.set_show_update_available(false);
                 }
-                Err(e) => report_update_failure(&ui, "update download failed", &e),
+                Err(e) => report_failure_and_open_release(&ui, "update download failed", &e),
             }
         });
     });
@@ -306,7 +309,7 @@ fn reveal_download(ui: &ViewerWindow, pkg: Packaging, info: ReleaseInfo) {
 /// cell is never captured here. On any failure the dialog surfaces the error
 /// and falls back to opening the release page for a manual download.
 fn self_replace_update(ui: &ViewerWindow, pkg: Packaging, info: ReleaseInfo) {
-    let weak = begin_update_download(ui);
+    let weak = mark_download_in_progress(ui);
     rayon::spawn(move || {
         let outcome = prepare_self_replace(pkg, &info);
         let _ = slint::invoke_from_event_loop(move || match outcome {
@@ -323,7 +326,7 @@ fn self_replace_update(ui: &ViewerWindow, pkg: Packaging, info: ReleaseInfo) {
             }
             Err(e) => {
                 if let Some(ui) = weak.upgrade() {
-                    report_update_failure(&ui, "self-update failed", &e);
+                    report_failure_and_open_release(&ui, "self-update failed", &e);
                 }
             }
         });
@@ -368,7 +371,7 @@ fn download_and_verify(pkg: Packaging, info: &ReleaseInfo) -> Result<PathBuf, Up
     let expected = map
         .get(&asset.name)
         .ok_or_else(|| UpdateError::Verify(format!("{} missing from SHA256SUMS", asset.name)))?;
-    if !verify(&bytes, expected) {
+    if !is_verified(&bytes, expected) {
         return Err(UpdateError::Verify(format!(
             "checksum mismatch for {}",
             asset.name
@@ -380,7 +383,7 @@ fn download_and_verify(pkg: Packaging, info: &ReleaseInfo) -> Result<PathBuf, Up
     let file_name = std::path::Path::new(&asset.name)
         .file_name()
         .unwrap_or_else(|| std::ffi::OsStr::new(&asset.name));
-    let dir = directories_download_dir();
+    let dir = downloads_dir();
     let dest = dir.join(file_name);
     std::fs::write(&dest, &bytes).map_err(|e| UpdateError::Io(e.to_string()))?;
     Ok(dest)
@@ -388,7 +391,7 @@ fn download_and_verify(pkg: Packaging, info: &ReleaseInfo) -> Result<PathBuf, Up
 
 /// The platform Downloads directory, falling back to the temp dir when it
 /// cannot be resolved (e.g. a headless/minimal environment).
-fn directories_download_dir() -> PathBuf {
+fn downloads_dir() -> PathBuf {
     directories::UserDirs::new()
         .and_then(|d| d.download_dir().map(|p| p.to_path_buf()))
         .unwrap_or_else(std::env::temp_dir)

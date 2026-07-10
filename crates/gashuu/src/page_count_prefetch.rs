@@ -34,7 +34,7 @@ pub(crate) struct ResolvedCount {
 }
 
 /// Set the displayed `total` of carousel row `row`, on the UI thread. The cover
-/// counterpart of `set_cover`: same `!Send`-`VecModel`-via-`ui` re-fetch and same
+/// counterpart of `apply_loaded_cover`: same `!Send`-`VecModel`-via-`ui` re-fetch and same
 /// row-bounds check (tolerating a model that shrank since the request was built),
 /// swapping only the row's `total` so the focused-book counter reads "1 / N"
 /// instead of "1 / 0" the moment the background count resolves. `progress` is left

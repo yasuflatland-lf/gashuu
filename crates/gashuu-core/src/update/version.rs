@@ -2,10 +2,11 @@
 
 use semver::Version;
 
-/// Parse a release tag or version string as semver, tolerating a leading `v`/`V`
-/// and surrounding whitespace. Unparseable input yields `None`.
-fn parse(tag: &str) -> Option<Version> {
-    let trimmed = tag.trim().trim_start_matches(['v', 'V']);
+/// Parse a release tag or a bare version string as semver, tolerating a leading
+/// `v`/`V` and surrounding whitespace. Unparseable input yields `None`. The
+/// parameter is `input` (not `tag`) because callers pass either form.
+fn parse(input: &str) -> Option<Version> {
+    let trimmed = input.trim().trim_start_matches(['v', 'V']);
     Version::parse(trimmed).ok()
 }
 

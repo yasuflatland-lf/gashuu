@@ -22,10 +22,10 @@ pub enum UpdateStrategy {
     SelfReplace,
     /// Download + verify, then reveal the file in the OS file manager for a
     /// manual drag-install (macOS `.app`).
-    RevealDownload,
-    /// Just open the GitHub release page in the browser (package-manager-owned
-    /// or unknown installs).
-    OpenReleasePage,
+    ManualInstall,
+    /// Just open the GitHub release page in the browser so the user installs it
+    /// through an external channel (package-manager-owned or unknown installs).
+    ExternalInstall,
 }
 
 /// Detect packaging from `exe_path` (typically `std::env::current_exe()`) and
@@ -54,8 +54,8 @@ impl Packaging {
     pub fn strategy(self) -> UpdateStrategy {
         match self {
             Packaging::LinuxAppImage | Packaging::WindowsPortable => UpdateStrategy::SelfReplace,
-            Packaging::MacOsApp => UpdateStrategy::RevealDownload,
-            Packaging::LinuxDeb | Packaging::Unknown => UpdateStrategy::OpenReleasePage,
+            Packaging::MacOsApp => UpdateStrategy::ManualInstall,
+            Packaging::LinuxDeb | Packaging::Unknown => UpdateStrategy::ExternalInstall,
         }
     }
 }
@@ -129,15 +129,15 @@ mod tests {
         );
         assert_eq!(
             Packaging::MacOsApp.strategy(),
-            UpdateStrategy::RevealDownload
+            UpdateStrategy::ManualInstall
         );
         assert_eq!(
             Packaging::LinuxDeb.strategy(),
-            UpdateStrategy::OpenReleasePage
+            UpdateStrategy::ExternalInstall
         );
         assert_eq!(
             Packaging::Unknown.strategy(),
-            UpdateStrategy::OpenReleasePage
+            UpdateStrategy::ExternalInstall
         );
     }
 }

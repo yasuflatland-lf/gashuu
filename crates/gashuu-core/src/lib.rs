@@ -31,7 +31,7 @@ pub mod window_geometry;
 pub use archive_loader::{ArchiveLoader, ArchivePolicy};
 pub use atomic_write::write_atomic;
 pub use cache::{ImageCache, DEFAULT_CAPACITY, DEFAULT_PREFETCH_RADIUS};
-pub use cache_config::{CacheConfig, MAX_CACHE_SIZE, MAX_PREFETCH_RADIUS};
+pub use cache_config::{CacheConfig, MAX_CACHE_CAPACITY, MAX_PREFETCH_RADIUS};
 pub use error::CoreError;
 pub use image_ops::{check_pixel_limit, decode, decode_thumbnail, DecodedImage, MAX_PIXELS};
 pub use library::{
@@ -41,10 +41,10 @@ pub use library_store::LIBRARY_VERSION;
 pub use page_source::{FolderSource, PageEntry, PageSource, RarSource, ZipSource};
 pub use reading_progress::ReadingProgress;
 pub use search::book_matches;
-pub use settings::{Settings, MAX_RECENT_FILES, SETTINGS_VERSION};
+pub use settings::{Settings, MAX_RECENT_SOURCES, SETTINGS_VERSION};
 pub use spread::{next_leading, normalize_leading, prev_leading, spread_at, Spread, SpreadContext};
 pub use thumbnail::{
-    generate_cover, generate_one_thumbnail, generate_thumbnails, PageThumbCache,
+    generate_cover, generate_one_thumbnail, generate_thumbnails, PageThumbContext,
     DEFAULT_THUMB_MAX_SIDE,
 };
 pub use thumbnail_cache::{
@@ -54,7 +54,7 @@ pub use update::asset::select_asset;
 pub use update::check::{should_check, CHECK_INTERVAL_SECS};
 pub use update::packaging::{detect_packaging, Packaging, UpdateStrategy};
 pub use update::release::{parse_latest_release, Asset, ReleaseInfo};
-pub use update::verify::{parse_sha256sums, sha256_hex, verify};
+pub use update::verify::{is_verified, parse_sha256sums, sha256_hex};
 pub use update::version::{is_update_available, should_notify};
 pub use view_modes::{
     CoverMode, FitMode, KeyBindings, Language, ReadingDirection, SpreadLayout, SpreadMode,

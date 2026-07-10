@@ -1,9 +1,12 @@
-//! Helpers for image-extension recognition and archive path/entry validation.
+//! Page-membership policy and safety limits for archive/directory entries.
 //!
-//! Provides image-extension detection (`IMAGE_EXTS`, `has_image_ext`) and
-//! archive entry path safety checks (`enclosed_name`), used by `FolderSource`
-//! (directory walk) and `ZipSource` (ZIP/CBZ archive entries). Filename ordering
-//! is provided by `crate::ordering::natural_cmp`.
+//! Owns the rules that decide whether an entry becomes a page and how it may be
+//! read safely: image-extension admission (`IMAGE_EXTS`, `has_image_ext`),
+//! entry classification (`EntryClass`, `classify_entry`), zip-slip path
+//! containment (`enclosed_name`), and the shared per-entry byte ceiling
+//! (`MAX_ENTRY_BYTES`, `cap_or_reject`) that guards streaming reads. Used by
+//! `FolderSource` (directory walk) and `ZipSource`/`RarSource` (archive
+//! entries). Filename ordering is provided by `crate::ordering::natural_cmp`.
 
 use crate::error::CoreError;
 use std::io::Read;

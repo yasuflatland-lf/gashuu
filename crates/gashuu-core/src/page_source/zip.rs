@@ -11,7 +11,9 @@
 //! local module is also named `zip`; an unqualified `zip::` would resolve to
 //! this module, not the crate.
 
-use super::naming::{cap_or_reject, classify_entry, has_image_ext, EntryClass, MAX_ENTRY_BYTES};
+use super::entry_policy::{
+    cap_or_reject, classify_entry, has_image_ext, EntryClass, MAX_ENTRY_BYTES,
+};
 use super::{PageEntry, PageSource};
 use crate::error::CoreError;
 use crate::ordering::natural_cmp;

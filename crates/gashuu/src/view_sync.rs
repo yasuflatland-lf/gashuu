@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 /// The leave/close point at which runtime view modes are persisted, naming WHERE
-/// the runtime came from so [`persist_view_modes`] can route to the right sink.
+/// the runtime came from so [`route_view_modes_to_sink`] can route to the right sink.
 /// One variant per production call site of the old write helpers.
 pub(crate) enum ViewModeRoute {
     /// Settings dialog closed on the Library screen (screen 0): the dialog edits
@@ -25,13 +25,13 @@ pub(crate) enum ViewModeRoute {
 }
 
 /// THE single chokepoint that routes runtime view modes (direction/spread/cover/
-/// fit) to their persistence sink. It is the ONLY caller of `reconcile_settings`
+/// fit) to their persistence sink. It is the ONLY caller of `apply_runtime_view_to_settings`
 /// (runtime → GLOBAL `Settings`) and the only view_sync caller of
 /// `write_back_view_override` (runtime → PER-BOOK override).
 ///
 /// ADR-0007 clobber-trap, made structural here (it once shipped as a real bug):
 /// once view modes became per-book with a global fallback, EVERY "copy runtime →
-/// global" op (`reconcile_settings`) became a potential CLOBBER — the runtime may
+/// global" op (`apply_runtime_view_to_settings`) became a potential CLOBBER — the runtime may
 /// hold a per-book value, so reconciling it would overwrite the GLOBAL default
 /// with one book's preference. The routing match below is the invariant: the
 /// GLOBAL sink is written ONLY by (a) the Library-screen settings dialog close and
@@ -44,7 +44,7 @@ pub(crate) enum ViewModeRoute {
 /// blanket-guarded on `open_file().is_none()`, or Library-dialog edits would be
 /// dropped. The exit path keeps the per-book write FIRST, then the open-state
 /// guard on the global reconcile.
-pub(crate) fn persist_view_modes(
+pub(crate) fn route_view_modes_to_sink(
     route: ViewModeRoute,
     state: &Rc<RefCell<ViewerState>>,
     viewport: &Rc<RefCell<ViewportState>>,
@@ -53,7 +53,7 @@ pub(crate) fn persist_view_modes(
 ) {
     match route {
         ViewModeRoute::DialogClosedOnLibrary => {
-            reconcile_settings(
+            apply_runtime_view_to_settings(
                 &state.borrow(),
                 &viewport.borrow(),
                 &mut settings.borrow_mut(),
@@ -69,7 +69,7 @@ pub(crate) fn persist_view_modes(
             // book's modes are saved before the open-state-guarded global reconcile.
             write_back_view_override(state, viewport, library);
             if state.borrow().open_file().is_none() {
-                reconcile_settings(
+                apply_runtime_view_to_settings(
                     &state.borrow(),
                     &viewport.borrow(),
                     &mut settings.borrow_mut(),
@@ -84,8 +84,12 @@ pub(crate) fn persist_view_modes(
 /// `cover_mode`, and `fit_mode` are written back to `Settings`, so a new
 /// mode-mutation site can never "forget to mirror" — it only changes runtime
 /// state, and the next save reconciles automatically. Reached only via
-/// [`persist_view_modes`] (the routing chokepoint).
-fn reconcile_settings(state: &ViewerState, viewport: &ViewportState, settings: &mut Settings) {
+/// [`route_view_modes_to_sink`] (the routing chokepoint).
+fn apply_runtime_view_to_settings(
+    state: &ViewerState,
+    viewport: &ViewportState,
+    settings: &mut Settings,
+) {
     settings.reading_direction = state.reading_direction();
     settings.spread_mode = state.spread_mode();
     settings.cover_mode = state.cover_mode();
@@ -94,7 +98,7 @@ fn reconcile_settings(state: &ViewerState, viewport: &ViewportState, settings: &
 
 /// Mirror the GLOBAL `Settings` view modes into the runtime (`ViewerState` for
 /// direction/spread/cover, `ViewportState` for fit) — the inverse of
-/// `reconcile_settings`. Used when the dialog edits the global defaults
+/// `apply_runtime_view_to_settings`. Used when the dialog edits the global defaults
 /// (opening Library settings) and when resetting an open book to global.
 ///
 /// Borrow discipline: the shared `settings.borrow()` (`s`) is held while each
@@ -143,7 +147,7 @@ pub(crate) fn current_book_name(state: &Rc<RefCell<ViewerState>>) -> String {
 /// Returns `Some((canonical_path, page_index))` when a write-back should be
 /// performed (a book is open), `None` otherwise. Extracted for table-testing
 /// so the predicate can be verified independently of the effectful
-/// `write_back_position` that actually calls `library.set_last_page`.
+/// `write_back_position` that actually calls `library.set_resume_page`.
 fn position_to_write_back(open_file: Option<&Path>, page: usize) -> Option<(PathBuf, usize)> {
     open_file.map(|p| (p.to_path_buf(), page))
 }
@@ -151,7 +155,7 @@ fn position_to_write_back(open_file: Option<&Path>, page: usize) -> Option<(Path
 /// Write the current reading position back to the Library and persist.
 ///
 /// Called at every leave point: ↑ to Library, opening a different book,
-/// and app exit. `set_last_page` returns `false` when the path is absent or
+/// and app exit. `set_resume_page` returns `false` when the path is absent or
 /// the value is unchanged (idempotent). We do not guard `save()` on that
 /// return value — we always persist for simplicity (one short JSON write at
 /// most, and the result is idempotent on disk).
@@ -174,9 +178,9 @@ pub(crate) fn write_back_position(
     }) else {
         return; // no book open — nothing to write back
     };
-    // `set_last_page` returns false when absent or unchanged; we persist
+    // `set_resume_page` returns false when absent or unchanged; we persist
     // unconditionally for simplicity (short JSON write, idempotent on disk).
-    library.borrow_mut().set_last_page(&path, page);
+    library.borrow_mut().set_resume_page(&path, page);
     if let Err(e) = library.borrow().save() {
         tracing::error!(error = %e, "failed to save library on position write-back");
     }
@@ -211,7 +215,7 @@ fn view_override_to_write_back(
 }
 
 /// Write the current runtime view modes back to the OPEN book's override and
-/// persist. Reached ONLY via [`persist_view_modes`] (the routing chokepoint) for
+/// persist. Reached ONLY via [`route_view_modes_to_sink`] (the routing chokepoint) for
 /// the viewer leave/close, open-a-different-book, and exit paths, so a bare
 /// keyboard toggle (D/R/C/fit) persists per-book without opening the dialog.
 /// No-op when no book is open.
@@ -263,13 +267,13 @@ mod tests {
         // NON-mirrored fields set to NON-default via struct-update (dodges
         // clippy::field_reassign_with_default) to prove reconcile touches only the four.
         let mut settings = Settings {
-            cache_size: 99,
-            preload_pages: 7,
-            track_recent_files: true,
+            cache_capacity: 99,
+            prefetch_radius: 7,
+            track_recent_sources: true,
             allow_rar_archives: false,
             ..Settings::default()
         };
-        reconcile_settings(&state, &viewport, &mut settings);
+        apply_runtime_view_to_settings(&state, &viewport, &mut settings);
 
         // The four mirrored fields now match the runtime; defaults (Rtl/Auto/Standalone/
         // Width) all differ from the values set above, so this can't pass vacuously.
@@ -278,9 +282,9 @@ mod tests {
         assert_eq!(settings.cover_mode, CoverMode::Paired);
         assert_eq!(settings.fit_mode, FitMode::Actual);
         // ...and the unrelated persisted fields are left untouched.
-        assert_eq!(settings.cache_size, 99);
-        assert_eq!(settings.preload_pages, 7);
-        assert!(settings.track_recent_files);
+        assert_eq!(settings.cache_capacity, 99);
+        assert_eq!(settings.prefetch_radius, 7);
+        assert!(settings.track_recent_sources);
         assert!(!settings.allow_rar_archives);
     }
 
@@ -293,11 +297,11 @@ mod tests {
         let state = Rc::new(RefCell::new(ViewerState::new()));
         // Sanity: blank before any open.
         assert_eq!(current_book_name(&state), "");
-        // A nonexistent path makes `open_folder` return Err before `set_source`,
+        // A nonexistent path makes `open_path` return Err before `set_source`,
         // so `open_file()` stays None and the derived name stays empty.
         let _ = state
             .borrow_mut()
-            .open_folder(Path::new("/nonexistent_gashuu_title_guard"));
+            .open_path(Path::new("/nonexistent_gashuu_title_guard"));
         assert_eq!(
             current_book_name(&state),
             "",
@@ -320,8 +324,8 @@ mod tests {
         let state = Rc::new(RefCell::new(ViewerState::new()));
         state
             .borrow_mut()
-            .open_folder(&dir)
-            .expect("open_folder on a real directory must succeed");
+            .open_path(&dir)
+            .expect("open_path on a real directory must succeed");
         assert_eq!(
             current_book_name(&state),
             leaf,

@@ -3,7 +3,7 @@
 //! Slint exposes no stable file-drop API, so this bridges the winit backend's raw
 //! `WindowEvent`s (behind the `unstable-winit-030` feature; see Cargo.toml) into
 //! the EXISTING bulk-add pipeline: dropped paths are handed straight to
-//! [`AddController::start`](add_loader::AddController::start), reusing dedup, the
+//! [`AddController::start`](add_controller::AddController::start), reusing dedup, the
 //! empty/unreadable/format-disabled reject rules, the archive policy, the
 //! "Adding… (k/N)" progress, and the "added N / skipped M" toast. `gashuu-core`
 //! is untouched — drag-drop is just a new presentation-layer SOURCE of the same
@@ -21,11 +21,11 @@
 //! `screen == 0` in Slint and the add is gated to `screen == 0` here, so a drop
 //! over the Viewer is ignored — it is not an "add to library" surface.
 //!
-//! Threading: unlike `add_loader`'s probe workers, nothing here crosses a thread
+//! Threading: unlike `add_controller`'s probe workers, nothing here crosses a thread
 //! boundary. The winit event filter, the debounce tick, and `start` all run on
 //! the UI thread, so plain `Rc<RefCell<_>>` sharing is enough.
 
-use crate::{add_loader, ViewerWindow};
+use crate::{add_controller, ViewerWindow};
 use gashuu_core::Settings;
 use slint::winit_030::{winit, EventResult, WinitWindowAccessor};
 use slint::ComponentHandle;
@@ -78,7 +78,7 @@ pub(crate) fn drop_action_for(event: &WindowEvent) -> DropAction {
 pub(crate) fn wire_drag_drop_handlers(
     ui: &ViewerWindow,
     settings: &Rc<RefCell<Settings>>,
-    adder: &Rc<add_loader::AddController>,
+    adder: &Rc<add_controller::AddController>,
 ) {
     let settings = Rc::clone(settings);
     let adder = Rc::clone(adder);
@@ -118,7 +118,7 @@ pub(crate) fn wire_drag_drop_handlers(
 }
 
 /// (Re)arm the debounce timer: a single-shot that, on fire, drains the whole
-/// buffered batch into ONE [`AddController::start`](add_loader::AddController::start).
+/// buffered batch into ONE [`AddController::start`](add_controller::AddController::start).
 /// Re-arming on each drop collapses a multi-file drop's event burst into a single
 /// add generation (one supersede epoch, one progress run, one notice).
 fn arm_flush(
@@ -126,7 +126,7 @@ fn arm_flush(
     buffer: &Rc<RefCell<Vec<PathBuf>>>,
     ui_weak: &slint::Weak<ViewerWindow>,
     settings: &Rc<RefCell<Settings>>,
-    adder: &Rc<add_loader::AddController>,
+    adder: &Rc<add_controller::AddController>,
 ) {
     let buffer = Rc::clone(buffer);
     let ui_weak = ui_weak.clone();

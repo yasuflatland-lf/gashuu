@@ -11,7 +11,7 @@
 //! row" discipline of the private `thumbnail_item` fn in `thumbnail_strip.rs`).
 //!
 //! Progress is derived from `Book::progress()` which returns a `ReadingProgress`
-//! value object. `ReadingProgress::current()` is 1-based (`reached + 1`,
+//! value object. `ReadingProgress::current()` is 1-based (`last_viewed + 1`,
 //! saturating, >= 1); `ReadingProgress::fraction()` guards `total == 0` to
 //! `0.0` (no NaN/inf); `ReadingProgress::total()` is the persisted page count.
 
@@ -24,8 +24,8 @@ use gashuu_core::{book_is_available, book_matches, Book, Library};
 pub struct CarouselData {
     /// Book display title (file stem / directory name; from `Book::title`).
     pub title: String,
-    /// 1-based current page for display = `ReadingProgress::current()` (`reached + 1`,
-    /// saturating). A fresh book (`reached == 0`) shows `1`.
+    /// 1-based current page for display = `ReadingProgress::current()` (`last_viewed + 1`,
+    /// saturating). A fresh book (`last_viewed == 0`) shows `1`.
     pub current: i32,
     /// Total page count for display = `ReadingProgress::total() -> Option<usize>` mapped
     /// through `Book::page_count_opt()`. `None` (unknown) is displayed as `0` until the
@@ -300,7 +300,7 @@ mod tests {
     #[test]
     fn book_row_derives_title_current_total_progress() {
         // Freshly-added book: `add` derives a title, the path resolves (available), and
-        // `last_page` defaults to 0 — the "unread, total unknown" case (current=1, total=0).
+        // `resume_page` defaults to 0 — the "unread, total unknown" case (current=1, total=0).
         let dir = tempfile::tempdir().expect("tempdir");
         let mut lib = Library::new();
         assert!(lib.add(dir.path().to_path_buf()).is_some());
@@ -316,7 +316,7 @@ mod tests {
             .to_string_lossy()
             .to_string();
         assert_eq!(row.title, expected_title);
-        assert_eq!(row.current, 1); // last_page 0 -> 1-based 1
+        assert_eq!(row.current, 1); // resume_page 0 -> 1-based 1
         assert_eq!(row.total, 0); // total unknown until opened
         assert_eq!(row.progress, 0.0); // total == 0 guard
         assert!(row.available); // the temp dir exists
@@ -383,30 +383,30 @@ mod tests {
     }
 
     #[test]
-    fn carousel_data_current_reflects_last_page() {
+    fn carousel_data_current_reflects_resume_page() {
         let dir = tempfile::tempdir().expect("tempdir");
         let mut lib = Library::new();
         assert!(lib.add(dir.path().to_path_buf()).is_some());
         let path = lib.books()[0].path().to_path_buf();
-        assert!(lib.set_last_page(&path, 4));
+        assert!(lib.set_resume_page(&path, 4));
         let rows = carousel_data(&lib);
-        assert_eq!(rows[0].current, 5); // 1-based: last_page 4 -> display 5
+        assert_eq!(rows[0].current, 5); // 1-based: resume_page 4 -> display 5
     }
 
     #[test]
     fn carousel_data_total_and_progress_from_page_count() {
         // An opened book has a persisted page count: the row surfaces it as the real
-        // `total` and computes `progress = fraction()` (reached=4, total=10 → 0.4).
+        // `total` and computes `progress = fraction()` (last_viewed=4, total=10 → 0.4).
         let dir = tempfile::tempdir().expect("tempdir");
         let mut lib = Library::new();
         assert!(lib.add(dir.path().to_path_buf()).is_some());
         let path = lib.books()[0].path().to_path_buf();
-        assert!(lib.set_last_page(&path, 4));
+        assert!(lib.set_resume_page(&path, 4));
         assert!(lib.set_page_count(&path, NonZeroUsize::new(10).unwrap()));
         let rows = carousel_data(&lib);
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].total, 10); // real persisted count
-        assert_eq!(rows[0].current, 5); // 1-based: last_page 4 -> display 5
+        assert_eq!(rows[0].current, 5); // 1-based: resume_page 4 -> display 5
         assert_eq!(rows[0].progress, 0.4); // 4 / 10
     }
 

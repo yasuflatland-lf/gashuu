@@ -19,8 +19,8 @@ use std::path::{Path, PathBuf};
 
 /// On-disk schema version. Bump when the shape changes and add a `migrate` step.
 pub const SETTINGS_VERSION: u32 = 1;
-/// Maximum number of recently opened folders retained.
-pub const MAX_RECENT_FILES: usize = 10;
+/// Maximum number of recently opened sources (files or folders) retained.
+pub const MAX_RECENT_SOURCES: usize = 10;
 
 /// Persistent user settings. Fields are `#[serde(default)]` so older/partial
 /// documents load without error (forward/backward field-add resilience).
@@ -36,19 +36,22 @@ pub struct Settings {
     pub cover_mode: CoverMode,
     #[serde(default)]
     pub fit_mode: FitMode,
-    #[serde(default = "default_cache_size")]
-    pub cache_size: usize,
-    #[serde(default = "default_preload_pages")]
-    pub preload_pages: usize,
+    #[serde(default = "default_cache_capacity", rename = "cache_size")]
+    pub cache_capacity: usize,
+    #[serde(default = "default_prefetch_radius", rename = "preload_pages")]
+    pub prefetch_radius: usize,
     #[serde(default)]
     pub key_bindings: KeyBindings,
-    /// Record recently opened folders. Off by default (privacy); recent_files is
-    /// only updated when this is true.
-    #[serde(default)]
-    pub track_recent_files: bool,
-    /// Recently opened folders, most-recent first. Capped at `MAX_RECENT_FILES`.
-    #[serde(default)]
-    pub recent_files: Vec<PathBuf>,
+    /// Record recently opened sources (files or folders). Off by default
+    /// (privacy); `recent_sources` is only updated when this is true. The on-disk
+    /// key stays `track_recent_files` for byte-compatibility (`serde(rename)`).
+    #[serde(default, rename = "track_recent_files")]
+    pub track_recent_sources: bool,
+    /// Recently opened sources (files or folders), most-recent first. Capped at
+    /// `MAX_RECENT_SOURCES`. The on-disk key stays `recent_files` for
+    /// byte-compatibility (`serde(rename)`).
+    #[serde(default, rename = "recent_files")]
+    pub recent_sources: Vec<PathBuf>,
     /// UI display language. `#[serde(default)]` so settings.json files written
     /// before this field existed load as `Language::En` (English).
     #[serde(default)]
@@ -80,10 +83,10 @@ pub struct Settings {
 fn default_version() -> u32 {
     SETTINGS_VERSION
 }
-fn default_cache_size() -> usize {
+fn default_cache_capacity() -> usize {
     DEFAULT_CAPACITY
 }
-fn default_preload_pages() -> usize {
+fn default_prefetch_radius() -> usize {
     DEFAULT_PREFETCH_RADIUS
 }
 fn default_allow_rar() -> bool {
@@ -101,11 +104,11 @@ impl Default for Settings {
             spread_mode: SpreadMode::default(),
             cover_mode: CoverMode::default(),
             fit_mode: FitMode::default(),
-            cache_size: DEFAULT_CAPACITY,
-            preload_pages: DEFAULT_PREFETCH_RADIUS,
+            cache_capacity: DEFAULT_CAPACITY,
+            prefetch_radius: DEFAULT_PREFETCH_RADIUS,
             key_bindings: KeyBindings::default(),
-            track_recent_files: false,
-            recent_files: Vec::new(),
+            track_recent_sources: false,
+            recent_sources: Vec::new(),
             language: Language::default(),
             allow_rar_archives: true,
             window: None,
@@ -176,24 +179,24 @@ impl Settings {
     /// the same bounds. Mirrors `Library::normalize`. Idempotent.
     ///
     /// Route the cache fields through `CacheConfig::new` (via `cache_config()`),
-    /// which owns the `[1, MAX_CACHE_SIZE]` / `[0, MAX_PREFETCH_RADIUS]` clamps.
+    /// which owns the `[1, MAX_CACHE_CAPACITY]` / `[0, MAX_PREFETCH_RADIUS]` clamps.
     /// This keeps the persisted values equal to the values actually used and
-    /// keeps the bounds defined in exactly one place. (`preload_pages = 0`
+    /// keeps the bounds defined in exactly one place. (`prefetch_radius = 0`
     /// remains valid as a "prefetch disabled" sentinel; values above
     /// `MAX_PREFETCH_RADIUS` are clamped.)
     pub fn normalize(&mut self) {
         let cfg = self.cache_config();
-        self.cache_size = cfg.capacity();
-        self.preload_pages = cfg.radius();
-        // push_recent caps recent_files on write, but a hand-edited file could exceed
-        // MAX_RECENT_FILES and persist forever (exit-save writes in-memory state); cap here.
-        self.recent_files.truncate(MAX_RECENT_FILES);
+        self.cache_capacity = cfg.capacity();
+        self.prefetch_radius = cfg.radius();
+        // push_recent caps recent_sources on write, but a hand-edited file could exceed
+        // MAX_RECENT_SOURCES and persist forever (exit-save writes in-memory state); cap here.
+        self.recent_sources.truncate(MAX_RECENT_SOURCES);
         // Normalize a stored window geometry: a corrupt (inflated) size is discarded (boot
         // at default, not off-screen); an otherwise-sane size is floored to the minimum.
         match self.window {
-            Some(g) if !g.is_size_sane() => self.window = None,
+            Some(g) if !g.is_size_within_max() => self.window = None,
             Some(ref mut g) => {
-                let (w, h) = g.clamped_size();
+                let (w, h) = g.floored_size();
                 g.width = w;
                 g.height = h;
             }
@@ -202,25 +205,25 @@ impl Settings {
     }
 
     /// Record `path` as most-recently-opened when tracking is enabled. Dedups
-    /// (moves an existing entry to the front), caps at `MAX_RECENT_FILES`. No-op
-    /// when `track_recent_files` is false.
+    /// (moves an existing entry to the front), caps at `MAX_RECENT_SOURCES`. No-op
+    /// when `track_recent_sources` is false.
     pub fn push_recent(&mut self, path: PathBuf) {
-        if !self.track_recent_files {
+        if !self.track_recent_sources {
             return;
         }
-        self.recent_files.retain(|p| p != &path);
-        self.recent_files.insert(0, path);
-        self.recent_files.truncate(MAX_RECENT_FILES);
+        self.recent_sources.retain(|p| p != &path);
+        self.recent_sources.insert(0, path);
+        self.recent_sources.truncate(MAX_RECENT_SOURCES);
     }
 
-    /// Validated cache configuration derived from the persisted `cache_size` /
-    /// `preload_pages` fields. This is the canonical way to obtain a `CacheConfig`
+    /// Validated cache configuration derived from the persisted `cache_capacity` /
+    /// `prefetch_radius` fields. This is the canonical way to obtain a `CacheConfig`
     /// from a loaded `Settings`; the `capacity >= 1` floor is guaranteed by
     /// `CacheConfig::new` regardless of the construction site. (The settings-dialog
     /// the settings handlers in the UI crate edit the raw fields live and rebuild
     /// a `CacheConfig` directly for the in-session update.)
     pub fn cache_config(&self) -> CacheConfig {
-        CacheConfig::new(self.cache_size, self.preload_pages)
+        CacheConfig::new(self.cache_capacity, self.prefetch_radius)
     }
 }
 
@@ -255,12 +258,12 @@ mod tests {
         assert_eq!(s.spread_mode, SpreadMode::Auto);
         assert_eq!(s.cover_mode, CoverMode::Standalone);
         assert_eq!(s.fit_mode, FitMode::Whole);
-        assert_eq!(s.cache_size, 50);
-        assert_eq!(s.preload_pages, 3);
+        assert_eq!(s.cache_capacity, 50);
+        assert_eq!(s.prefetch_radius, 3);
         assert_eq!(s.key_bindings.next, vec!["right", "space"]);
         assert_eq!(s.key_bindings.prev, vec!["left", "backspace"]);
-        assert!(!s.track_recent_files);
-        assert!(s.recent_files.is_empty());
+        assert!(!s.track_recent_sources);
+        assert!(s.recent_sources.is_empty());
         assert!(
             s.allow_rar_archives,
             "allow_rar_archives must default to true"
@@ -283,14 +286,14 @@ mod tests {
             spread_mode: SpreadMode::Double,
             cover_mode: CoverMode::Paired,
             fit_mode: FitMode::Whole,
-            cache_size: 99,
-            preload_pages: 4,
+            cache_capacity: 99,
+            prefetch_radius: 4,
             key_bindings: KeyBindings {
                 next: vec!["down".into()],
                 prev: vec!["up".into()],
             },
-            track_recent_files: true,
-            recent_files: vec![PathBuf::from("/a"), PathBuf::from("/b")],
+            track_recent_sources: true,
+            recent_sources: vec![PathBuf::from("/a"), PathBuf::from("/b")],
             language: Language::Ja,
             // Differs from the new default (`true`) so the round-trip tests below
             // would catch save/load dropping this field.
@@ -404,7 +407,7 @@ mod tests {
     #[test]
     fn from_json_empty_document_uses_serde_defaults() {
         // A `{}` document exercises the `default_*` serde helpers (version absent
-        // triggers migration to v1, while cache_size falls back to its default).
+        // triggers migration to v1, while cache_capacity falls back to its default).
         let s = Settings::from_json("{}").unwrap();
         assert_eq!(s, Settings::default());
     }
@@ -477,32 +480,32 @@ mod tests {
     #[test]
     fn push_recent_disabled_is_noop() {
         let mut s = Settings::default();
-        assert!(!s.track_recent_files);
+        assert!(!s.track_recent_sources);
         s.push_recent(PathBuf::from("/some/path"));
-        assert!(s.recent_files.is_empty());
+        assert!(s.recent_sources.is_empty());
     }
 
     #[test]
     fn push_recent_dedups_moves_to_front_and_caps() {
         let mut s = Settings {
-            track_recent_files: true,
+            track_recent_sources: true,
             ..Default::default()
         };
 
         // Pushing the same path twice dedups to a single entry.
         s.push_recent(PathBuf::from("/dup"));
         s.push_recent(PathBuf::from("/dup"));
-        assert_eq!(s.recent_files.len(), 1);
+        assert_eq!(s.recent_sources.len(), 1);
 
-        // Push more than MAX_RECENT_FILES distinct paths; cap is enforced and
+        // Push more than MAX_RECENT_SOURCES distinct paths; cap is enforced and
         // the most-recent push is at the front.
-        s.recent_files.clear();
-        for i in 0..(MAX_RECENT_FILES + 5) {
+        s.recent_sources.clear();
+        for i in 0..(MAX_RECENT_SOURCES + 5) {
             s.push_recent(PathBuf::from(format!("/path/{i}")));
         }
-        assert_eq!(s.recent_files.len(), MAX_RECENT_FILES);
-        let last = MAX_RECENT_FILES + 5 - 1;
-        assert_eq!(s.recent_files[0], PathBuf::from(format!("/path/{last}")));
+        assert_eq!(s.recent_sources.len(), MAX_RECENT_SOURCES);
+        let last = MAX_RECENT_SOURCES + 5 - 1;
+        assert_eq!(s.recent_sources[0], PathBuf::from(format!("/path/{last}")));
     }
 
     #[test]
@@ -532,20 +535,22 @@ mod tests {
         }
     }
 
-    // ── FIX 3 regression: recent_files capped on load ──
+    // ── FIX 3 regression: recent sources capped on load ──
 
     #[test]
-    fn from_json_caps_recent_files_on_load() {
-        let entries: Vec<String> = (0..(MAX_RECENT_FILES + 5))
+    fn from_json_caps_recent_sources_on_load() {
+        let entries: Vec<String> = (0..(MAX_RECENT_SOURCES + 5))
             .map(|i| format!("/path/{i}"))
             .collect();
+        // The on-disk key stays `recent_files` (serde rename); the in-memory field
+        // it deserializes into is `recent_sources`.
         let json = serde_json::json!({
             "version": SETTINGS_VERSION,
             "recent_files": entries,
         })
         .to_string();
         let s = Settings::from_json(&json).unwrap();
-        assert_eq!(s.recent_files.len(), MAX_RECENT_FILES);
+        assert_eq!(s.recent_sources.len(), MAX_RECENT_SOURCES);
     }
 
     // ── FIX 3 regression: cache_size=0 normalized to 1; preload_pages=0 kept ──
@@ -559,8 +564,8 @@ mod tests {
         })
         .to_string();
         let s = Settings::from_json(&json).unwrap();
-        assert_eq!(s.cache_size, 1, "cache_size=0 must be normalized to 1");
-        assert_eq!(s.preload_pages, 0, "preload_pages=0 must NOT be clamped");
+        assert_eq!(s.cache_capacity, 1, "cache_size=0 must be normalized to 1");
+        assert_eq!(s.prefetch_radius, 0, "preload_pages=0 must NOT be clamped");
     }
 
     // ── push_recent ordering: promote an existing middle entry ──
@@ -568,8 +573,8 @@ mod tests {
     #[test]
     fn push_recent_promotes_existing_middle_entry() {
         let mut s = Settings {
-            track_recent_files: true,
-            recent_files: vec![
+            track_recent_sources: true,
+            recent_sources: vec![
                 PathBuf::from("/a"),
                 PathBuf::from("/b"),
                 PathBuf::from("/c"),
@@ -578,7 +583,7 @@ mod tests {
         };
         s.push_recent(PathBuf::from("/b"));
         assert_eq!(
-            s.recent_files,
+            s.recent_sources,
             vec![
                 PathBuf::from("/b"),
                 PathBuf::from("/a"),
@@ -668,8 +673,8 @@ mod tests {
     #[test]
     fn cache_config_reflects_fields() {
         let s = Settings {
-            cache_size: 30,
-            preload_pages: 5,
+            cache_capacity: 30,
+            prefetch_radius: 5,
             ..Default::default()
         };
         let cfg = s.cache_config();
@@ -681,11 +686,11 @@ mod tests {
     fn cache_config_capacity_is_at_least_one() {
         // The value object clamps capacity even if the raw field somehow held 0.
         let s = Settings {
-            cache_size: 0,
+            cache_capacity: 0,
             ..Default::default()
         };
         assert_eq!(s.cache_config().capacity(), 1);
-        assert_eq!(s.cache_config().radius(), s.preload_pages);
+        assert_eq!(s.cache_config().radius(), s.prefetch_radius);
     }
 
     #[test]
@@ -705,14 +710,14 @@ mod tests {
 
     #[test]
     fn from_json_clamps_cache_size_above_max() {
-        use crate::cache_config::MAX_CACHE_SIZE;
+        use crate::cache_config::MAX_CACHE_CAPACITY;
         let json = serde_json::json!({
             "version": SETTINGS_VERSION,
-            "cache_size": MAX_CACHE_SIZE + 50,
+            "cache_size": MAX_CACHE_CAPACITY + 50,
         })
         .to_string();
         let s = Settings::from_json(&json).unwrap();
-        assert_eq!(s.cache_size, MAX_CACHE_SIZE);
+        assert_eq!(s.cache_capacity, MAX_CACHE_CAPACITY);
     }
 
     #[test]
@@ -724,7 +729,7 @@ mod tests {
         })
         .to_string();
         let s = Settings::from_json(&json).unwrap();
-        assert_eq!(s.preload_pages, MAX_PREFETCH_RADIUS);
+        assert_eq!(s.prefetch_radius, MAX_PREFETCH_RADIUS);
     }
 
     // ── window geometry tests ──
@@ -768,7 +773,7 @@ mod tests {
     #[test]
     fn normalize_floors_window_size() {
         // A hand-edited / undersized stored geometry is floored to the minimum,
-        // mirroring how cache_size is normalized. Position is untouched.
+        // mirroring how cache_capacity is normalized. Position is untouched.
         let mut s = Settings {
             window: Some(WindowGeometry {
                 width: 100,
@@ -831,26 +836,26 @@ mod tests {
         })
         .to_string();
         let s = Settings::from_json(&json).unwrap();
-        assert_eq!(s.preload_pages, 0, "preload_pages=0 must remain valid");
+        assert_eq!(s.prefetch_radius, 0, "preload_pages=0 must remain valid");
     }
 
     #[test]
     fn normalize_clamps_out_of_range_fields() {
-        use crate::cache_config::{MAX_CACHE_SIZE, MAX_PREFETCH_RADIUS};
+        use crate::cache_config::{MAX_CACHE_CAPACITY, MAX_PREFETCH_RADIUS};
         // A `Settings` built any way other than `from_json` (e.g. hand-built in memory)
         // must still be brought inside its domain invariants by `normalize`.
         let mut s = Settings {
-            cache_size: MAX_CACHE_SIZE + 50,
-            preload_pages: MAX_PREFETCH_RADIUS + 10,
-            recent_files: (0..MAX_RECENT_FILES + 5)
+            cache_capacity: MAX_CACHE_CAPACITY + 50,
+            prefetch_radius: MAX_PREFETCH_RADIUS + 10,
+            recent_sources: (0..MAX_RECENT_SOURCES + 5)
                 .map(|i| PathBuf::from(format!("/p{i}")))
                 .collect(),
             ..Settings::default()
         };
         s.normalize();
-        assert_eq!(s.cache_size, MAX_CACHE_SIZE);
-        assert_eq!(s.preload_pages, MAX_PREFETCH_RADIUS);
-        assert_eq!(s.recent_files.len(), MAX_RECENT_FILES);
+        assert_eq!(s.cache_capacity, MAX_CACHE_CAPACITY);
+        assert_eq!(s.prefetch_radius, MAX_PREFETCH_RADIUS);
+        assert_eq!(s.recent_sources.len(), MAX_RECENT_SOURCES);
     }
 
     #[test]

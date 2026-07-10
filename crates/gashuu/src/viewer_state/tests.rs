@@ -34,7 +34,7 @@ fn empty_state_shows_nothing() {
     let state = ViewerState::new();
     assert_eq!(state.page_count(), 0);
     assert_eq!(state.index(), 0);
-    assert!(state.current_spread().is_none());
+    assert!(state.decode_current_spread().is_none());
     assert_eq!(state.status_content().kind, StatusKind::NoFolder);
 }
 
@@ -43,7 +43,7 @@ fn empty_folder_status_distinguishes_from_no_folder() {
     let mut state = ViewerState::new();
     state.set_source(mock_with(0));
     assert_eq!(state.status_content().kind, StatusKind::NoImages);
-    assert!(state.current_spread().is_none());
+    assert!(state.decode_current_spread().is_none());
 }
 
 #[test]
@@ -92,10 +92,10 @@ fn set_source_resets_index_to_zero() {
 }
 
 #[test]
-fn current_spread_decodes_current_page() {
+fn decode_current_spread_returns_current_page() {
     let mut state = ViewerState::new();
     state.set_source(mock_with(2));
-    let spread = state.current_spread().unwrap().unwrap();
+    let spread = state.decode_current_spread().unwrap().unwrap();
     let leading = spread.leading;
     assert_eq!((leading.width(), leading.height()), (2, 3));
     assert_eq!(leading.rgba().len(), 2 * 3 * 4);
@@ -104,7 +104,7 @@ fn current_spread_decodes_current_page() {
 }
 
 #[test]
-fn current_spread_propagates_source_error() {
+fn decode_current_spread_propagates_source_error() {
     let mut state = ViewerState::new();
     let mut mock = MockPageSource::new();
     mock.expect_list_pages()
@@ -112,7 +112,7 @@ fn current_spread_propagates_source_error() {
     mock.expect_read_bytes()
         .returning(|_| Err(CoreError::IndexOutOfRange { index: 0, len: 0 }));
     state.set_source(Arc::new(mock));
-    assert!(matches!(state.current_spread(), Some(Err(_))));
+    assert!(matches!(state.decode_current_spread(), Some(Err(_))));
 }
 
 #[test]
@@ -157,8 +157,8 @@ fn with_cache_config_defaults_to_single_standalone_ltr() {
 #[test]
 fn from_settings_copies_all_modes_and_cache_config() {
     let state = ViewerState::from_settings(&Settings {
-        cache_size: 11,
-        preload_pages: 2,
+        cache_capacity: 11,
+        prefetch_radius: 2,
         spread_mode: SpreadMode::Double,
         cover_mode: CoverMode::Paired,
         reading_direction: ReadingDirection::Rtl,
@@ -208,23 +208,38 @@ fn double_standalone_spread_has_trailing_for_pairs_only() {
     state.set_source(mock_with(6));
 
     // Cover page 0: no trailing.
-    let cover = state.current_spread().unwrap().unwrap();
+    let cover = state.decode_current_spread().unwrap().unwrap();
     assert!(cover.trailing.is_none());
 
     // {1,2}: trailing present.
     state.apply(NavAction::Next);
     assert_eq!(state.index(), 1);
-    assert!(state.current_spread().unwrap().unwrap().trailing.is_some());
+    assert!(state
+        .decode_current_spread()
+        .unwrap()
+        .unwrap()
+        .trailing
+        .is_some());
 
     // {3,4}: trailing present.
     state.apply(NavAction::Next);
     assert_eq!(state.index(), 3);
-    assert!(state.current_spread().unwrap().unwrap().trailing.is_some());
+    assert!(state
+        .decode_current_spread()
+        .unwrap()
+        .unwrap()
+        .trailing
+        .is_some());
 
     // {5}: last odd page stands alone, no trailing.
     state.apply(NavAction::Next);
     assert_eq!(state.index(), 5);
-    assert!(state.current_spread().unwrap().unwrap().trailing.is_none());
+    assert!(state
+        .decode_current_spread()
+        .unwrap()
+        .unwrap()
+        .trailing
+        .is_none());
 }
 
 // ---- Toggles -----------------------------------------------------------
@@ -355,7 +370,7 @@ fn status_text_reflects_rtl_label() {
 // ---- Trailing-page decode failure fallback (FIX 4/5) --------------------
 
 #[test]
-fn current_spread_degrades_to_leading_on_trailing_decode_error() {
+fn decode_current_spread_degrades_to_leading_on_trailing_decode_error() {
     // 3 pages, Double / Standalone: {0}{1,2}. Page 2 (trailing of {1,2}) is made to
     // fail decode; the spread must degrade to leading-only with a marker.
     let mut state = ViewerState::from_settings(&Settings {
@@ -378,9 +393,9 @@ fn current_spread_degrades_to_leading_on_trailing_decode_error() {
     assert!(state.apply(NavAction::Next));
     assert_eq!(state.index(), 1);
 
-    let images = state.current_spread().unwrap().unwrap();
+    let images = state.decode_current_spread().unwrap().unwrap();
     assert!(images.trailing.is_none(), "trailing should drop on error");
-    assert_eq!(images.trailing_failed, Some(2));
+    assert_eq!(images.failed_trailing_page, Some(2));
     assert_eq!(
         (images.leading.width(), images.leading.height()),
         (2, 3),
@@ -458,17 +473,37 @@ fn auto_portrait_navigates_double() {
     state.set_source(mock_with(6));
 
     // Cover (page 0) stands alone.
-    assert!(state.current_spread().unwrap().unwrap().trailing.is_none());
+    assert!(state
+        .decode_current_spread()
+        .unwrap()
+        .unwrap()
+        .trailing
+        .is_none());
 
     assert!(state.apply(NavAction::Next));
     assert_eq!(state.index(), 1);
-    assert!(state.current_spread().unwrap().unwrap().trailing.is_some());
+    assert!(state
+        .decode_current_spread()
+        .unwrap()
+        .unwrap()
+        .trailing
+        .is_some());
     assert!(state.apply(NavAction::Next));
     assert_eq!(state.index(), 3);
-    assert!(state.current_spread().unwrap().unwrap().trailing.is_some());
+    assert!(state
+        .decode_current_spread()
+        .unwrap()
+        .unwrap()
+        .trailing
+        .is_some());
     assert!(state.apply(NavAction::Next));
     assert_eq!(state.index(), 5);
-    assert!(state.current_spread().unwrap().unwrap().trailing.is_none());
+    assert!(state
+        .decode_current_spread()
+        .unwrap()
+        .unwrap()
+        .trailing
+        .is_none());
 }
 
 #[test]
@@ -479,14 +514,29 @@ fn auto_landscape_navigates_single() {
     state.set_viewport_size(1600.0, 900.0);
     state.set_source(mock_with(5));
 
-    assert!(state.current_spread().unwrap().unwrap().trailing.is_none());
+    assert!(state
+        .decode_current_spread()
+        .unwrap()
+        .unwrap()
+        .trailing
+        .is_none());
 
     assert!(state.apply(NavAction::Next));
     assert_eq!(state.index(), 1);
-    assert!(state.current_spread().unwrap().unwrap().trailing.is_none());
+    assert!(state
+        .decode_current_spread()
+        .unwrap()
+        .unwrap()
+        .trailing
+        .is_none());
     assert!(state.apply(NavAction::Next));
     assert_eq!(state.index(), 2);
-    assert!(state.current_spread().unwrap().unwrap().trailing.is_none());
+    assert!(state
+        .decode_current_spread()
+        .unwrap()
+        .unwrap()
+        .trailing
+        .is_none());
 }
 
 #[test]
@@ -555,7 +605,12 @@ fn toggle_into_auto_resolves_with_current_viewport() {
     state.toggle_spread(); // Single -> Double
     state.toggle_spread(); // Double -> Auto
     assert_eq!(state.spread_mode(), SpreadMode::Auto);
-    assert!(state.current_spread().unwrap().unwrap().trailing.is_some());
+    assert!(state
+        .decode_current_spread()
+        .unwrap()
+        .unwrap()
+        .trailing
+        .is_some());
 
     // Landscape viewport then cycle into Auto: spread resolves to Single.
     let mut state = ViewerState::new();
@@ -565,7 +620,12 @@ fn toggle_into_auto_resolves_with_current_viewport() {
     state.toggle_spread(); // Single -> Double
     state.toggle_spread(); // Double -> Auto
     assert_eq!(state.spread_mode(), SpreadMode::Auto);
-    assert!(state.current_spread().unwrap().unwrap().trailing.is_none());
+    assert!(state
+        .decode_current_spread()
+        .unwrap()
+        .unwrap()
+        .trailing
+        .is_none());
 }
 
 #[test]
@@ -639,15 +699,30 @@ fn auto_portrait_with_paired_cover_navigates_double() {
     state.set_source(mock_with(5));
 
     // Cover paired with page 1: trailing present.
-    assert!(state.current_spread().unwrap().unwrap().trailing.is_some());
+    assert!(state
+        .decode_current_spread()
+        .unwrap()
+        .unwrap()
+        .trailing
+        .is_some());
 
     assert!(state.apply(NavAction::Next));
     assert_eq!(state.index(), 2);
-    assert!(state.current_spread().unwrap().unwrap().trailing.is_some());
+    assert!(state
+        .decode_current_spread()
+        .unwrap()
+        .unwrap()
+        .trailing
+        .is_some());
     assert!(state.apply(NavAction::Next));
     assert_eq!(state.index(), 4);
     // Last page (4) stands alone.
-    assert!(state.current_spread().unwrap().unwrap().trailing.is_none());
+    assert!(state
+        .decode_current_spread()
+        .unwrap()
+        .unwrap()
+        .trailing
+        .is_none());
     assert!(!state.apply(NavAction::Next)); // clamp at last
     assert_eq!(state.index(), 4);
 }
@@ -663,10 +738,15 @@ fn set_viewport_size_degenerate_inputs_do_not_panic() {
     assert!(!state.set_viewport_size(f32::NAN, f32::NAN));
     // Still resolves to Single (aspect stayed 1.0): every page stands alone.
     state.apply(NavAction::Next);
-    assert!(state.current_spread().unwrap().unwrap().trailing.is_none());
+    assert!(state
+        .decode_current_spread()
+        .unwrap()
+        .unwrap()
+        .trailing
+        .is_none());
 }
 
-// ---- open_path / open_folder dispatch (PR6) -----------------------------
+// ---- open_path dispatch (PR6) -------------------------------------------
 
 #[test]
 fn open_path_nonexistent_returns_err() {
@@ -681,21 +761,7 @@ fn open_path_nonexistent_returns_err() {
     // State must stay clean (no source installed) when open_path errors.
     assert_eq!(state.page_count(), 0);
     assert_eq!(state.index(), 0);
-    assert!(state.current_spread().is_none());
-}
-
-#[test]
-fn open_folder_delegates_to_open_path() {
-    // open_folder is a thin delegation to open_path; both must return Err for a
-    // nonexistent path and leave the state unchanged.
-    let mut state_a = ViewerState::new();
-    let mut state_b = ViewerState::new();
-    let bad = std::path::Path::new("/nonexistent_path_pr6_delegation");
-    let r_a = state_a.open_path(bad);
-    let r_b = state_b.open_folder(bad);
-    assert!(r_a.is_err());
-    assert!(r_b.is_err());
-    assert_eq!(state_a.page_count(), state_b.page_count());
+    assert!(state.decode_current_spread().is_none());
 }
 
 #[test]
@@ -736,8 +802,8 @@ fn open_path_nonexistent_cbr_returns_err_and_leaves_clean_state() {
     assert_eq!(state.page_count(), 0, "page_count must stay 0 after error");
     assert_eq!(state.index(), 0, "index must stay 0 after error");
     assert!(
-        state.current_spread().is_none(),
-        "current_spread must be None after error"
+        state.decode_current_spread().is_none(),
+        "decode_current_spread must be None after error"
     );
     assert_eq!(
         state.last_open_skipped(),
@@ -967,7 +1033,7 @@ fn jump_to_zero_is_noop_from_fresh_open() {
 
 #[test]
 fn jump_to_stored_page_resumes_correctly() {
-    // Simulates opening a book where last_page = 3. Single mode: every page
+    // Simulates opening a book where resume_page = 3. Single mode: every page
     // is its own leading. jump_to(3) must move and land at index 3.
     let mut state = ViewerState::new();
     state.set_source(mock_with(10));
@@ -981,7 +1047,7 @@ fn jump_to_stored_page_resumes_correctly() {
 
 #[test]
 fn jump_to_stored_trailing_normalizes_to_leading_on_resume() {
-    // Double / Standalone: {0}{1,2}{3,4}{5}. If last_page stored was 2
+    // Double / Standalone: {0}{1,2}{3,4}{5}. If resume_page stored was 2
     // (trailing of {1,2}), jump_to(2) normalizes to leading 1.
     let mut state = double_state();
     state.set_source(mock_with(6));
@@ -1416,7 +1482,10 @@ fn close_returns_to_no_book_open_state() {
     assert_eq!(state.index(), 0, "index reset on close");
     assert!(state.current_source().is_none(), "source dropped on close");
     assert!(state.open_file().is_none(), "open_file cleared on close");
-    assert!(state.current_spread().is_none(), "no spread after close");
+    assert!(
+        state.decode_current_spread().is_none(),
+        "no spread after close"
+    );
     assert_eq!(
         state.status_content().kind,
         StatusKind::NoFolder,

@@ -27,7 +27,7 @@ use crate::to_slint_image;
 use crate::ui_marshal::marshal_to_ui;
 use crate::{ThumbnailItem, ViewerWindow};
 use gashuu_core::{
-    generate_one_thumbnail, CoreError, DecodedImage, PageSource, PageThumbCache, ThumbnailCache,
+    generate_one_thumbnail, CoreError, DecodedImage, PageSource, PageThumbContext, ThumbnailCache,
     DEFAULT_THUMB_MAX_SIDE,
 };
 use rayon::prelude::*;
@@ -110,7 +110,7 @@ fn thumbnail_item(page: usize, cell: ThumbCell) -> ThumbnailItem {
         ThumbCell::Failed => (Default::default(), false, true),
     };
     // The (loaded, failed) pair is mutually exclusive by construction above; this
-    // debug_assert guards a future hand-edit to the match arms (see `seq_index`).
+    // debug_assert guards a future hand-edit to the match arms in `thumbnail_item`.
     debug_assert!(
         !(loaded && failed),
         "thumbnail cell cannot be both loaded and failed"
@@ -246,7 +246,7 @@ fn spawn_decode(
             None => None,
         };
         let cache_ctx = match (cache.as_ref(), path.as_deref()) {
-            (Some(cache), Some(path)) => Some(PageThumbCache { cache, path }),
+            (Some(cache), Some(path)) => Some(PageThumbContext { cache, path }),
             _ => None,
         };
         pages.par_iter().for_each(|&i| {
