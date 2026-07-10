@@ -70,12 +70,12 @@ impl WindowGeometry {
         )
     }
 
-    /// True when the stored size is within the sane maximum. A larger value means
+    /// True when the stored size is within the maximum bound. A larger value means
     /// the persisted geometry is corrupt (e.g. inflated by a HiDPI scale-factor
     /// round-trip) and should be discarded for the default boot size. The lower
     /// bound is intentionally NOT a sanity failure: a too-small size is floored by
     /// `floored_size` rather than thrown away.
-    pub fn is_size_sane(&self) -> bool {
+    pub fn is_size_within_max(&self) -> bool {
         self.width <= MAX_WINDOW_WIDTH && self.height <= MAX_WINDOW_HEIGHT
     }
 
@@ -245,32 +245,32 @@ mod tests {
     }
 
     #[test]
-    fn size_sane_accepts_a_normal_window() {
-        assert!(geom(1400, 900, 100, 100).is_size_sane());
+    fn size_within_max_accepts_a_normal_window() {
+        assert!(geom(1400, 900, 100, 100).is_size_within_max());
     }
 
     #[test]
-    fn size_sane_accepts_a_tiny_window() {
+    fn size_within_max_accepts_a_tiny_window() {
         // Below the legible minimum is still "sane" — `floored_size` floors it rather than
         // discarding; only an absurdly large size is treated as corrupt.
-        assert!(geom(10, 10, 0, 0).is_size_sane());
+        assert!(geom(10, 10, 0, 0).is_size_within_max());
     }
 
     #[test]
-    fn size_sane_rejects_a_scale_factor_inflated_width() {
+    fn size_within_max_rejects_a_scale_factor_inflated_width() {
         // The real corruption that blanked the window: a HiDPI round-trip inflated
         // the width across launches until it reached 110592 (= 1728 * 2^6).
         let g = geom(110592, 1982, 0, 66);
-        assert!(!g.is_size_sane());
+        assert!(!g.is_size_within_max());
     }
 
     #[test]
-    fn size_sane_rejects_a_height_above_the_maximum() {
-        assert!(!geom(1400, MAX_WINDOW_HEIGHT + 1, 0, 0).is_size_sane());
+    fn size_within_max_rejects_a_height_above_the_maximum() {
+        assert!(!geom(1400, MAX_WINDOW_HEIGHT + 1, 0, 0).is_size_within_max());
     }
 
     #[test]
-    fn size_sane_accepts_exactly_the_maximum() {
-        assert!(geom(MAX_WINDOW_WIDTH, MAX_WINDOW_HEIGHT, 0, 0).is_size_sane());
+    fn size_within_max_accepts_exactly_the_maximum() {
+        assert!(geom(MAX_WINDOW_WIDTH, MAX_WINDOW_HEIGHT, 0, 0).is_size_within_max());
     }
 }

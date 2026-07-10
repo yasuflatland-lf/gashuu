@@ -32,7 +32,7 @@ mod window_state;
 
 pub(crate) use add_books::apply_outcomes;
 pub(crate) use carousel_refresh::{
-    apply_add_report, finalize_empty_book_removed, finalize_remove, push_selection_toolbar_state,
+    apply_add_report, finalize_empty_book_rejected, finalize_remove, push_selection_toolbar_state,
     refresh_library_carousel, snap_carousel_focus_to_last_opened, visible_index_to_path,
     CarouselRefresh,
 };
@@ -50,7 +50,7 @@ pub(crate) use view_sync::{
     ViewModeRoute,
 };
 #[cfg(not(test))]
-use viewer_state::SpreadSlots;
+use viewer_state::SpreadCacheState;
 use viewer_state::{StatusContent, ViewerState};
 use viewport::ViewportState;
 
@@ -357,12 +357,12 @@ pub(crate) fn apply_spread_geometry(
     content_w: f32,
     content_h: f32,
     single: bool,
-    trailing_failed: Option<usize>,
+    failed_trailing_page: Option<usize>,
     status: &StatusContent,
 ) {
     ui.set_single(single);
     let base_status = crate::i18n::dynamic::format_status(loader, status);
-    match trailing_failed {
+    match failed_trailing_page {
         Some(failed) => ui.set_status_text(
             format!(
                 "{base_status}  {}",
@@ -395,7 +395,7 @@ fn page_slot(index: usize, decoded: Option<std::sync::Arc<DecodedImage>>) -> Pag
 }
 
 #[cfg(not(test))]
-fn spread_request(slots: SpreadSlots) -> SpreadDecodeRequest {
+fn spread_request(slots: SpreadCacheState) -> SpreadDecodeRequest {
     let leading = page_slot(slots.leading.0, slots.leading.1);
     match slots.trailing {
         Some((index, decoded)) => SpreadDecodeRequest::double(leading, page_slot(index, decoded)),
@@ -415,7 +415,7 @@ pub(crate) fn refresh(
 ) {
     let content = state.status_content();
     ui.set_rtl(matches!(state.reading_direction(), ReadingDirection::Rtl));
-    match state.spread_slots() {
+    match state.classify_spread() {
         Some(slots) => {
             let leading_idx = slots.leading.0;
             let trailing_idx = slots.trailing.as_ref().map(|(index, _)| *index);
@@ -541,25 +541,25 @@ fn finalize_open(
             ui.set_status_text(crate::i18n::dynamic::open_error_str(loader, &e_str).into());
         }
         use_cases::OpenOutcome::Success(notices) => {
-            pages.set_source();
+            pages.reset_for_source();
             refresh(ui, &state.borrow(), viewport, loader, pages, ui.as_weak());
             for detail in crate::i18n::dynamic::format_notices(loader, &notices) {
                 let base = ui.get_status_text().to_string();
                 ui.set_status_text(format!("{base} \u{2014} {detail}").into());
             }
         }
-        use_cases::OpenOutcome::EmptyBookRemoved {
+        use_cases::OpenOutcome::EmptyBookRejected {
             title,
             removed,
             save_error,
         } => {
-            pages.set_source();
+            pages.reset_for_source();
             // Source opened cleanly but has zero pages: already removed + re-saved. This
             // arm does NOT switch screens (see the `enter_viewer` guard at the open sites).
-            finalize_empty_book_removed(
+            finalize_empty_book_rejected(
                 ui,
                 deps,
-                &crate::open_book::EmptyBookRemoval {
+                &crate::open_book::EmptyBookOutcome {
                     title,
                     removed,
                     save_error,

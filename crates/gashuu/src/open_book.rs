@@ -60,7 +60,7 @@ pub(crate) enum OpenOutcome {
     /// (false when opening a never-added empty source). `save_error` carries the
     /// pre-captured (untranslated) library-save error, `None` when the save
     /// succeeded or no save was attempted (nothing removed).
-    EmptyBookRemoved {
+    EmptyBookRejected {
         title: String,
         removed: bool,
         save_error: Option<String>,
@@ -164,7 +164,7 @@ impl OpenBookUseCase {
         // Bind the result first so the `borrow_mut()` temporary drops before the match;
         // a borrow held across the match would double-borrow-panic at the read below.
         let policy = settings.borrow().archive_policy();
-        let opened = state.borrow_mut().open_folder_with_policy(path, policy);
+        let opened = state.borrow_mut().open_path_with_policy(path, policy);
         // Discriminate the open result only — recents push + settings save are DEFERRED
         // past the empty-book check so a zero-page source bypasses them (spec-pinned).
         match opened {
@@ -177,7 +177,7 @@ impl OpenBookUseCase {
             }
         }
         // The CANONICAL key the source was opened under (from `open_file`), not the raw
-        // dialog `path` — the same key `last_page`/`set_page_count`/write-back use.
+        // dialog `path` — the same key `resume_page`/`set_page_count`/write-back use.
         let canonical = state.borrow().open_file().map(Path::to_path_buf);
         // `page_count_opt()` returns a `Copy` `Option<NonZeroUsize>`; the `state.borrow()` drops at the
         // `;` so it cannot conflict with the `library.borrow_mut()` below.
@@ -189,7 +189,7 @@ impl OpenBookUseCase {
                 // Shared transaction: title capture → remove → save → cover purge. #150
                 // added the purge here; the old cover-load-only asymmetry orphaned cached covers.
                 let removal = remove_empty_book(library, c);
-                return OpenOutcome::EmptyBookRemoved {
+                return OpenOutcome::EmptyBookRejected {
                     title: removal.title,
                     removed: removal.removed,
                     save_error: removal.save_error,
@@ -215,9 +215,9 @@ impl OpenBookUseCase {
         // is confined to the `let reg` line and released before `jump_to`, avoiding a clash.
         let count_changed = if let Some(c) = canonical.as_deref() {
             let reg = library.borrow_mut().register_opened(c, page_count);
-            // Resume at the recorded position; for a never-read book `reached` is 0
+            // Resume at the recorded position; for a never-read book `last_viewed` is 0
             // and `jump_to(0)` is a no-op when the index is already 0.
-            state.borrow_mut().jump_to(reg.resume.reached());
+            state.borrow_mut().jump_to(reg.resume.last_viewed());
             reg.count_changed
         } else {
             // Unreachable in practice: a successful open always sets `open_file`. Log if
@@ -314,7 +314,7 @@ pub(crate) fn notices_content(
 /// BEFORE removal), whether the book was actually present (and thus removed),
 /// and the pre-captured (untranslated) library-save error — `None` when nothing
 /// was removed (no save attempted) or the save succeeded.
-pub(crate) struct EmptyBookRemoval {
+pub(crate) struct EmptyBookOutcome {
     pub(crate) title: String,
     pub(crate) removed: bool,
     pub(crate) save_error: Option<String>,
@@ -338,7 +338,7 @@ pub(crate) fn book_display_title(lib: &Library, path: &Path) -> String {
 /// when something was removed) → best-effort cover purge. Both the open-time
 /// bail-out and the cover-load signal handler call this; callers compose
 /// notices / rebuild the carousel from the returned data.
-pub(crate) fn remove_empty_book(library: &RefCell<Library>, path: &Path) -> EmptyBookRemoval {
+pub(crate) fn remove_empty_book(library: &RefCell<Library>, path: &Path) -> EmptyBookOutcome {
     // The `borrow_mut` is confined to this statement and drops at the `;`.
     let removal = remove_empty_book_with(&mut library.borrow_mut(), path, |l| l.save());
     // Best-effort purge OUTSIDE the seam so the transaction stays headless-testable.
@@ -365,7 +365,7 @@ fn remove_empty_book_with(
     lib: &mut Library,
     path: &Path,
     save: impl FnOnce(&Library) -> Result<(), CoreError>,
-) -> EmptyBookRemoval {
+) -> EmptyBookOutcome {
     // Prefer the stored Book's title; fall back to the core path-derivation
     // when the book was never added. Captured BEFORE removal.
     let title = book_display_title(lib, path);
@@ -385,7 +385,7 @@ fn remove_empty_book_with(
     } else {
         None
     };
-    EmptyBookRemoval {
+    EmptyBookOutcome {
         title,
         removed,
         save_error,
@@ -572,19 +572,19 @@ mod tests {
         assert!(!detail.is_empty());
     }
 
-    // ---- OpenOutcome::EmptyBookRemoved (shape the formatter consumes) ------
+    // ---- OpenOutcome::EmptyBookRejected (shape the formatter consumes) ------
 
     #[test]
-    fn empty_book_removed_outcome_constructs_and_matches() {
+    fn empty_book_rejected_outcome_constructs_and_matches() {
         // Pin the variant shape `main.rs`'s finalize_open formats against: the
         // three named fields (title, removed, save_error) destructure as expected.
-        let outcome = OpenOutcome::EmptyBookRemoved {
+        let outcome = OpenOutcome::EmptyBookRejected {
             title: "Empty Book".to_string(),
             removed: true,
             save_error: Some("disk full".to_string()),
         };
         match outcome {
-            OpenOutcome::EmptyBookRemoved {
+            OpenOutcome::EmptyBookRejected {
                 title,
                 removed,
                 save_error,
@@ -593,21 +593,21 @@ mod tests {
                 assert!(removed);
                 assert_eq!(save_error.as_deref(), Some("disk full"));
             }
-            other => panic!("expected EmptyBookRemoved, got {other:?}"),
+            other => panic!("expected EmptyBookRejected, got {other:?}"),
         }
     }
 
     #[test]
-    fn empty_book_removed_outcome_carries_not_removed_no_error() {
+    fn empty_book_rejected_outcome_carries_not_removed_no_error() {
         // The "never added" case: nothing removed, so no save was attempted and
         // save_error stays None.
-        let outcome = OpenOutcome::EmptyBookRemoved {
+        let outcome = OpenOutcome::EmptyBookRejected {
             title: "Ghost".to_string(),
             removed: false,
             save_error: None,
         };
         match outcome {
-            OpenOutcome::EmptyBookRemoved {
+            OpenOutcome::EmptyBookRejected {
                 title,
                 removed,
                 save_error,
@@ -616,7 +616,7 @@ mod tests {
                 assert!(!removed);
                 assert!(save_error.is_none());
             }
-            other => panic!("expected EmptyBookRemoved, got {other:?}"),
+            other => panic!("expected EmptyBookRejected, got {other:?}"),
         }
     }
 }

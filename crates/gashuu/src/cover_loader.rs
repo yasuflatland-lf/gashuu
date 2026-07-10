@@ -55,7 +55,7 @@ use std::sync::{Arc, Mutex};
 /// (`spawn_cache_prune`, `spawn_load`, `purge_cover`) read its fields rather
 /// than free-standing constants.
 ///
-/// `max_side` is also a `cache_key` / `purge_for` ingredient, so its value must
+/// `max_side` is also a `cache_key` / `purge_cover_for` ingredient, so its value must
 /// stay 512 to keep compatibility with the existing on-disk cache — raising it
 /// would transparently invalidate and regenerate every stale cover on the next
 /// run.
@@ -65,7 +65,7 @@ pub(crate) struct CoverCachePolicy {
     /// down to this. 256 MiB holds roughly 650-1700 covers at `max_side` 512
     /// (PNG covers run ~150-400 KB each), far beyond a typical library, so
     /// eviction only ever bites on key-orphaned covers (source mtime drifted,
-    /// see core `purge_for`) and very large collections. The cap POLICY lives
+    /// see core `purge_cover_for`) and very large collections. The cap POLICY lives
     /// here in the app layer; core's `ThumbnailCache::prune` is only the
     /// mechanism (issue 143's ownership split).
     max_bytes: u64,
@@ -82,7 +82,7 @@ pub(crate) struct CoverCachePolicy {
 
 impl CoverCachePolicy {
     /// The single canonical cover-cache policy. The values are load-bearing:
-    /// `max_side` (512) is a `cache_key`/`purge_for` ingredient, so changing it
+    /// `max_side` (512) is a `cache_key`/`purge_cover_for` ingredient, so changing it
     /// invalidates the existing on-disk cache; `max_bytes` (256 MiB) is the
     /// prune target.
     pub(crate) const DEFAULT: Self = Self {
@@ -268,13 +268,13 @@ fn mtime_secs(path: &std::path::Path) -> i64 {
 }
 
 /// Best-effort removal of `path`'s persistent cover — the single home of the
-/// cover-key purge recipe (`purge_for(path, mtime_secs(path),
+/// cover-key purge recipe (`purge_cover_for(path, mtime_secs(path),
 /// &[CoverCachePolicy::DEFAULT.max_side])`), so the key ingredients never leak to
 /// callers. A zero purge count is EXPECTED (missing file, mtime drift,
 /// unwritable cache entry) and only warned: the orphan is harmless and the
 /// startup prune sweep reclaims it later (issue 143).
 pub(crate) fn purge_cover(cache: &ThumbnailCache, path: &std::path::Path) {
-    let removed = cache.purge_for(
+    let removed = cache.purge_cover_for(
         path,
         mtime_secs(path),
         &[CoverCachePolicy::DEFAULT.max_side],
@@ -766,7 +766,7 @@ mod tests {
     }
 
     /// The cover-cache policy values are load-bearing for on-disk compatibility:
-    /// `max_side` (512) is a `cache_key` / `purge_for` ingredient, so the
+    /// `max_side` (512) is a `cache_key` / `purge_cover_for` ingredient, so the
     /// refactor must NOT change it (a different value silently invalidates every
     /// existing cached cover). `max_bytes` (256 MiB) is the prune target. Pin
     /// both so a future edit that drifts them fails loudly here.

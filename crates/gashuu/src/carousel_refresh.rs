@@ -13,7 +13,7 @@ use crate::carousel::{
     apply_selection_flags, bind_carousel_model, build_carousel_model, cover_requests,
 };
 use crate::library_model::{LibrarySearchState, LibrarySelectionState};
-use crate::open_book::EmptyBookRemoval;
+use crate::open_book::EmptyBookOutcome;
 use crate::remove_books::RemoveOutcome;
 use crate::{cover_loader, i18n, ViewerWindow};
 use gashuu_core::Library;
@@ -251,10 +251,10 @@ pub(crate) fn refresh_library_carousel(
 /// (with the library-save-failure detail appended). The `removed`-idempotency
 /// guard is single-sourced here: a `removed == false` (race, or a never-added
 /// empty source) rebuilds but stays silent.
-pub(crate) fn finalize_empty_book_removed(
+pub(crate) fn finalize_empty_book_rejected(
     ui: &ViewerWindow,
     deps: &CarouselRefresh,
-    removal: &EmptyBookRemoval,
+    removal: &EmptyBookOutcome,
 ) {
     refresh_library_carousel(ui, deps, false);
     if removal.removed {

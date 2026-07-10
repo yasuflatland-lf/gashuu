@@ -157,8 +157,8 @@ fn with_cache_config_defaults_to_single_standalone_ltr() {
 #[test]
 fn from_settings_copies_all_modes_and_cache_config() {
     let state = ViewerState::from_settings(&Settings {
-        cache_size: 11,
-        preload_pages: 2,
+        cache_capacity: 11,
+        prefetch_radius: 2,
         spread_mode: SpreadMode::Double,
         cover_mode: CoverMode::Paired,
         reading_direction: ReadingDirection::Rtl,
@@ -395,7 +395,7 @@ fn decode_current_spread_degrades_to_leading_on_trailing_decode_error() {
 
     let images = state.decode_current_spread().unwrap().unwrap();
     assert!(images.trailing.is_none(), "trailing should drop on error");
-    assert_eq!(images.trailing_failed, Some(2));
+    assert_eq!(images.failed_trailing_page, Some(2));
     assert_eq!(
         (images.leading.width(), images.leading.height()),
         (2, 3),
@@ -746,7 +746,7 @@ fn set_viewport_size_degenerate_inputs_do_not_panic() {
         .is_none());
 }
 
-// ---- open_path / open_folder dispatch (PR6) -----------------------------
+// ---- open_path dispatch (PR6) -------------------------------------------
 
 #[test]
 fn open_path_nonexistent_returns_err() {
@@ -762,20 +762,6 @@ fn open_path_nonexistent_returns_err() {
     assert_eq!(state.page_count(), 0);
     assert_eq!(state.index(), 0);
     assert!(state.decode_current_spread().is_none());
-}
-
-#[test]
-fn open_folder_delegates_to_open_path() {
-    // open_folder is a thin delegation to open_path; both must return Err for a
-    // nonexistent path and leave the state unchanged.
-    let mut state_a = ViewerState::new();
-    let mut state_b = ViewerState::new();
-    let bad = std::path::Path::new("/nonexistent_path_pr6_delegation");
-    let r_a = state_a.open_path(bad);
-    let r_b = state_b.open_folder(bad);
-    assert!(r_a.is_err());
-    assert!(r_b.is_err());
-    assert_eq!(state_a.page_count(), state_b.page_count());
 }
 
 #[test]
@@ -1047,7 +1033,7 @@ fn jump_to_zero_is_noop_from_fresh_open() {
 
 #[test]
 fn jump_to_stored_page_resumes_correctly() {
-    // Simulates opening a book where last_page = 3. Single mode: every page
+    // Simulates opening a book where resume_page = 3. Single mode: every page
     // is its own leading. jump_to(3) must move and land at index 3.
     let mut state = ViewerState::new();
     state.set_source(mock_with(10));
@@ -1061,7 +1047,7 @@ fn jump_to_stored_page_resumes_correctly() {
 
 #[test]
 fn jump_to_stored_trailing_normalizes_to_leading_on_resume() {
-    // Double / Standalone: {0}{1,2}{3,4}{5}. If last_page stored was 2
+    // Double / Standalone: {0}{1,2}{3,4}{5}. If resume_page stored was 2
     // (trailing of {1,2}), jump_to(2) normalizes to leading 1.
     let mut state = double_state();
     state.set_source(mock_with(6));

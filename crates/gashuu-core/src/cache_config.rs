@@ -1,6 +1,6 @@
 //! Validated cache configuration value object.
 //!
-//! `CacheConfig` wraps the LRU `capacity` (always >= 1 and <= MAX_CACHE_SIZE)
+//! `CacheConfig` wraps the LRU `capacity` (always >= 1 and <= MAX_CACHE_CAPACITY)
 //! and the prefetch `radius` (0 means prefetch is disabled, a valid setting;
 //! clamped to MAX_PREFETCH_RADIUS). `CacheConfig::new` is the single place both
 //! bounds are enforced, so an invalid configuration cannot exist downstream.
@@ -9,7 +9,7 @@
 use crate::cache::{DEFAULT_CAPACITY, DEFAULT_PREFETCH_RADIUS};
 
 /// Hard upper bound for LRU cache capacity accepted by `CacheConfig::new`.
-pub const MAX_CACHE_SIZE: usize = 100;
+pub const MAX_CACHE_CAPACITY: usize = 100;
 
 /// Hard upper bound for prefetch radius accepted by `CacheConfig::new`.
 /// `0` remains a valid "prefetch disabled" value.
@@ -26,7 +26,7 @@ pub const MIN_MAX_BYTES: u64 = 64 * 1024 * 1024;
 
 /// Validated, immutable cache configuration.
 ///
-/// Holds the LRU `capacity` (clamped to `[1, MAX_CACHE_SIZE]` at construction)
+/// Holds the LRU `capacity` (clamped to `[1, MAX_CACHE_CAPACITY]` at construction)
 /// and the prefetch `radius` (clamped to `[0, MAX_PREFETCH_RADIUS]`; `0`
 /// disables prefetch). Constructing a `CacheConfig` is the only way to obtain
 /// these values, so downstream consumers can rely on the bounds being upheld.
@@ -47,12 +47,12 @@ pub struct CacheConfig {
 }
 
 impl CacheConfig {
-    /// Build a config. `capacity` is clamped to `[1, MAX_CACHE_SIZE]`.
+    /// Build a config. `capacity` is clamped to `[1, MAX_CACHE_CAPACITY]`.
     /// `radius` is clamped to `[0, MAX_PREFETCH_RADIUS]` (`0` disables prefetch).
     /// `max_bytes` defaults to `DEFAULT_MAX_BYTES`; use `with_max_bytes` to change it.
     pub fn new(capacity: usize, radius: usize) -> Self {
         Self {
-            capacity: capacity.clamp(1, MAX_CACHE_SIZE),
+            capacity: capacity.clamp(1, MAX_CACHE_CAPACITY),
             radius: radius.min(MAX_PREFETCH_RADIUS),
             max_bytes: DEFAULT_MAX_BYTES,
         }
@@ -108,8 +108,8 @@ mod tests {
 
     #[test]
     fn new_clamps_capacity_above_max() {
-        let cfg = CacheConfig::new(MAX_CACHE_SIZE + 1, 0);
-        assert_eq!(cfg.capacity(), MAX_CACHE_SIZE);
+        let cfg = CacheConfig::new(MAX_CACHE_CAPACITY + 1, 0);
+        assert_eq!(cfg.capacity(), MAX_CACHE_CAPACITY);
     }
 
     #[test]
@@ -129,8 +129,8 @@ mod tests {
 
     #[test]
     fn new_clamps_both_to_max_simultaneously() {
-        let cfg = CacheConfig::new(MAX_CACHE_SIZE + 99, MAX_PREFETCH_RADIUS + 99);
-        assert_eq!(cfg.capacity(), MAX_CACHE_SIZE);
+        let cfg = CacheConfig::new(MAX_CACHE_CAPACITY + 99, MAX_PREFETCH_RADIUS + 99);
+        assert_eq!(cfg.capacity(), MAX_CACHE_CAPACITY);
         assert_eq!(cfg.radius(), MAX_PREFETCH_RADIUS);
     }
 

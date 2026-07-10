@@ -31,7 +31,7 @@ pub mod window_geometry;
 pub use archive_loader::{ArchiveLoader, ArchivePolicy};
 pub use atomic_write::write_atomic;
 pub use cache::{ImageCache, DEFAULT_CAPACITY, DEFAULT_PREFETCH_RADIUS};
-pub use cache_config::{CacheConfig, MAX_CACHE_SIZE, MAX_PREFETCH_RADIUS};
+pub use cache_config::{CacheConfig, MAX_CACHE_CAPACITY, MAX_PREFETCH_RADIUS};
 pub use error::CoreError;
 pub use image_ops::{check_pixel_limit, decode, decode_thumbnail, DecodedImage, MAX_PIXELS};
 pub use library::{
@@ -44,7 +44,7 @@ pub use search::book_matches;
 pub use settings::{Settings, MAX_RECENT_SOURCES, SETTINGS_VERSION};
 pub use spread::{next_leading, normalize_leading, prev_leading, spread_at, Spread, SpreadContext};
 pub use thumbnail::{
-    generate_cover, generate_one_thumbnail, generate_thumbnails, PageThumbCache,
+    generate_cover, generate_one_thumbnail, generate_thumbnails, PageThumbContext,
     DEFAULT_THUMB_MAX_SIDE,
 };
 pub use thumbnail_cache::{

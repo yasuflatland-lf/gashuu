@@ -51,7 +51,7 @@ pub(crate) enum RemoveOutcome {
 /// The transaction (issue §4):
 /// 1. Capture FULL clones of the books about to be removed (so a rollback can
 ///    re-insert them WITHOUT the `add()`-trap that would reset
-///    `last_page`/`page_count`/`overrides` — see [`Library::restore`]).
+///    `resume_page`/`page_count`/`overrides` — see [`Library::restore`]).
 /// 2. `remove_many(paths)` drops them in one retain pass and reports the outcome.
 /// 3. `save(library)`; on `Err`, `restore` the captured clones (which re-sorts
 ///    into natural order) and return the error. Caches are NOT touched on
@@ -358,14 +358,14 @@ mod tests {
     // ---- remove_books_with_rollback ---------------------------------------
 
     /// Build a library with three books, the middle one carrying a non-default
-    /// reading position so the `add()`-trap (which resets last_page to 0) would
+    /// reading position so the `add()`-trap (which resets resume_page to 0) would
     /// surface in a byte-comparison rollback test.
     fn lib_with_three() -> Library {
         let mut lib = Library::new();
         for name in ["a.cbz", "b.cbz", "c.cbz"] {
             assert!(lib.add(PathBuf::from(format!("/manga/{name}"))).is_some());
         }
-        assert!(lib.set_last_page(Path::new("/manga/b.cbz"), 17));
+        assert!(lib.set_resume_page(Path::new("/manga/b.cbz"), 17));
         assert!(lib.set_page_count(Path::new("/manga/b.cbz"), NonZeroUsize::new(80).unwrap()));
         lib
     }
@@ -373,7 +373,7 @@ mod tests {
     #[test]
     fn rollback_restores_library_byte_identically_on_save_failure() {
         // The rollback path's whole point: a failed save must leave the shelf byte-
-        // identical, even for non-default last_page/page_count the add()-trap would reset.
+        // identical, even for non-default resume_page/page_count the add()-trap would reset.
         let mut lib = lib_with_three();
         let before = lib.to_json().unwrap();
 
@@ -391,9 +391,9 @@ mod tests {
         );
         assert_eq!(lib.books().len(), 3, "all books restored");
         assert_eq!(
-            lib.last_page(Path::new("/manga/b.cbz")),
+            lib.resume_page(Path::new("/manga/b.cbz")),
             17,
-            "restored book keeps its last_page (add() would reset it to 0)"
+            "restored book keeps its resume_page (add() would reset it to 0)"
         );
     }
 

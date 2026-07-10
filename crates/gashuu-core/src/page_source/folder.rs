@@ -1,4 +1,4 @@
-use super::naming::{cap_or_reject, has_image_ext, is_macos_metadata, MAX_ENTRY_BYTES};
+use super::entry_policy::{cap_or_reject, has_image_ext, is_macos_metadata, MAX_ENTRY_BYTES};
 use super::{PageEntry, PageSource};
 use crate::error::CoreError;
 use crate::ordering::natural_cmp;

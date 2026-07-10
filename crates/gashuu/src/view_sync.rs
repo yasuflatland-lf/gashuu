@@ -147,7 +147,7 @@ pub(crate) fn current_book_name(state: &Rc<RefCell<ViewerState>>) -> String {
 /// Returns `Some((canonical_path, page_index))` when a write-back should be
 /// performed (a book is open), `None` otherwise. Extracted for table-testing
 /// so the predicate can be verified independently of the effectful
-/// `write_back_position` that actually calls `library.set_last_page`.
+/// `write_back_position` that actually calls `library.set_resume_page`.
 fn position_to_write_back(open_file: Option<&Path>, page: usize) -> Option<(PathBuf, usize)> {
     open_file.map(|p| (p.to_path_buf(), page))
 }
@@ -155,7 +155,7 @@ fn position_to_write_back(open_file: Option<&Path>, page: usize) -> Option<(Path
 /// Write the current reading position back to the Library and persist.
 ///
 /// Called at every leave point: ↑ to Library, opening a different book,
-/// and app exit. `set_last_page` returns `false` when the path is absent or
+/// and app exit. `set_resume_page` returns `false` when the path is absent or
 /// the value is unchanged (idempotent). We do not guard `save()` on that
 /// return value — we always persist for simplicity (one short JSON write at
 /// most, and the result is idempotent on disk).
@@ -178,9 +178,9 @@ pub(crate) fn write_back_position(
     }) else {
         return; // no book open — nothing to write back
     };
-    // `set_last_page` returns false when absent or unchanged; we persist
+    // `set_resume_page` returns false when absent or unchanged; we persist
     // unconditionally for simplicity (short JSON write, idempotent on disk).
-    library.borrow_mut().set_last_page(&path, page);
+    library.borrow_mut().set_resume_page(&path, page);
     if let Err(e) = library.borrow().save() {
         tracing::error!(error = %e, "failed to save library on position write-back");
     }
@@ -267,8 +267,8 @@ mod tests {
         // NON-mirrored fields set to NON-default via struct-update (dodges
         // clippy::field_reassign_with_default) to prove reconcile touches only the four.
         let mut settings = Settings {
-            cache_size: 99,
-            preload_pages: 7,
+            cache_capacity: 99,
+            prefetch_radius: 7,
             track_recent_sources: true,
             allow_rar_archives: false,
             ..Settings::default()
@@ -282,8 +282,8 @@ mod tests {
         assert_eq!(settings.cover_mode, CoverMode::Paired);
         assert_eq!(settings.fit_mode, FitMode::Actual);
         // ...and the unrelated persisted fields are left untouched.
-        assert_eq!(settings.cache_size, 99);
-        assert_eq!(settings.preload_pages, 7);
+        assert_eq!(settings.cache_capacity, 99);
+        assert_eq!(settings.prefetch_radius, 7);
         assert!(settings.track_recent_sources);
         assert!(!settings.allow_rar_archives);
     }
@@ -297,11 +297,11 @@ mod tests {
         let state = Rc::new(RefCell::new(ViewerState::new()));
         // Sanity: blank before any open.
         assert_eq!(current_book_name(&state), "");
-        // A nonexistent path makes `open_folder` return Err before `set_source`,
+        // A nonexistent path makes `open_path` return Err before `set_source`,
         // so `open_file()` stays None and the derived name stays empty.
         let _ = state
             .borrow_mut()
-            .open_folder(Path::new("/nonexistent_gashuu_title_guard"));
+            .open_path(Path::new("/nonexistent_gashuu_title_guard"));
         assert_eq!(
             current_book_name(&state),
             "",
@@ -324,8 +324,8 @@ mod tests {
         let state = Rc::new(RefCell::new(ViewerState::new()));
         state
             .borrow_mut()
-            .open_folder(&dir)
-            .expect("open_folder on a real directory must succeed");
+            .open_path(&dir)
+            .expect("open_path on a real directory must succeed");
         assert_eq!(
             current_book_name(&state),
             leaf,

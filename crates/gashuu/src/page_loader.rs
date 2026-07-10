@@ -80,7 +80,7 @@ impl PageController {
     ///
     /// Opening a new source must both clear dispatch dedup state and advance the
     /// epoch so any late marshals from the previous book are dropped.
-    pub fn set_source(&self) -> usize {
+    pub fn reset_for_source(&self) -> usize {
         *self.target.borrow_mut() = None;
         self.begin_generation()
     }
@@ -366,7 +366,7 @@ fn finish_decode_spread(
         }
     };
 
-    let (trailing_idx, trailing, trailing_failed) = match trailing {
+    let (trailing_idx, trailing, failed_trailing_page) = match trailing {
         Some((trailing_idx, Ok(trailing))) => (Some(trailing_idx), Some(trailing), None),
         Some((trailing_idx, Err(e))) => {
             tracing::error!(index = trailing_idx, error = %e, "failed to decode trailing page");
@@ -385,7 +385,7 @@ fn finish_decode_spread(
         leading,
         trailing,
         final_single,
-        trailing_failed,
+        failed_trailing_page,
     );
 }
 
@@ -400,7 +400,7 @@ fn marshal_spread(
     leading: Arc<DecodedImage>,
     trailing: Option<Arc<DecodedImage>>,
     single: bool,
-    trailing_failed: Option<usize>,
+    failed_trailing_page: Option<usize>,
 ) {
     marshal_to_ui(weak, epoch, my_epoch, "page-decode", move |ui| {
         let (content_w, content_h) = content_size(&leading, trailing.as_deref());
@@ -411,7 +411,7 @@ fn marshal_spread(
             content_w,
             content_h,
             single,
-            optional_page_i32(trailing_failed),
+            optional_page_i32(failed_trailing_page),
             page_i32(leading_idx),
             optional_page_i32(trailing_idx),
         );
@@ -468,7 +468,7 @@ mod tests {
         assert!(controller.reserve_dispatch(4));
 
         let epoch = controller.current_epoch();
-        let next_epoch = controller.set_source();
+        let next_epoch = controller.reset_for_source();
 
         assert!(next_epoch > epoch);
         assert!(!controller.is_dispatched(4));

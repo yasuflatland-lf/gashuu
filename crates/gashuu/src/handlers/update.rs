@@ -118,7 +118,7 @@ pub(crate) fn start_update_check(ui: &ViewerWindow, settings: &Rc<RefCell<Settin
                 {
                     ui.set_update_current_version(CURRENT_VERSION.into());
                     ui.set_update_latest_version(info.version.clone().into());
-                    ui.set_update_notes_available(!info.html_url.is_empty());
+                    ui.set_update_notes_available(!info.release_page_url.is_empty());
                     ui.set_update_in_progress(false);
                     ui.set_update_status_text(Default::default());
                     if force {

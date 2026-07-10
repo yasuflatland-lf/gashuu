@@ -21,8 +21,8 @@ use std::path::{Path, PathBuf};
 pub struct Book {
     path: PathBuf,
     title: String,
-    #[serde(default)]
-    last_page: usize,
+    #[serde(default, rename = "last_page")]
+    resume_page: usize,
     /// Total page count, cached at open time. The unknown state is expressed in
     /// the type as `None` (rather than a magic `0`): the domain only ever holds a
     /// positive count, so an absent measurement is `None`, never `Some(0)`. The
@@ -92,7 +92,7 @@ impl Book {
         Self {
             path,
             title,
-            last_page: 0,
+            resume_page: 0,
             page_count: None,
             overrides: ViewOverride::none(),
         }
@@ -109,8 +109,8 @@ impl Book {
     }
 
     /// Leading page index of the last-viewed spread (0 when never opened).
-    pub fn last_page(&self) -> usize {
-        self.last_page
+    pub fn resume_page(&self) -> usize {
+        self.resume_page
     }
 
     /// Total page count cached at open time, or `None` when unknown. The field is
@@ -125,7 +125,7 @@ impl Book {
     /// total is unknown). The `current` / `fraction` derivation lives on
     /// `ReadingProgress`, not at the call sites.
     pub fn progress(&self) -> ReadingProgress {
-        ReadingProgress::new(self.last_page, self.page_count_opt())
+        ReadingProgress::new(self.resume_page, self.page_count_opt())
     }
 
     /// This book's view preference overrides (all-None when it inherits global).
@@ -141,7 +141,7 @@ fn book_order(a: &Book, b: &Book) -> std::cmp::Ordering {
 
 /// Collapse one resolution group (books resolving to the same `key`) into a single
 /// survivor. The first member is the base — it keeps its `title` (the earliest-added
-/// identity) — and the rest fold in under the deterministic merge policy: `last_page`
+/// identity) — and the rest fold in under the deterministic merge policy: `resume_page`
 /// takes the max, `page_count` the first `Some` in vec order, `overrides` the first
 /// non-empty in vec order. The survivor's `path` is finally set to `key`, which
 /// re-canonicalizes a now-resolvable raw path even for a group of one. `members`
@@ -152,7 +152,7 @@ fn merge_group(key: PathBuf, members: Vec<Book>) -> Book {
         .next()
         .expect("a resolution group has at least one member");
     for member in iter {
-        survivor.last_page = survivor.last_page.max(member.last_page);
+        survivor.resume_page = survivor.resume_page.max(member.resume_page);
         if survivor.page_count.is_none() {
             survivor.page_count = member.page_count;
         }
@@ -306,7 +306,7 @@ impl Library {
     /// grouped by key in first-seen (vec) order; each group collapses to one
     /// survivor whose `path` is set to the canonical key (upgrading a now-resolvable
     /// raw path even for a group of one). Cross-member field merge is deterministic:
-    /// `last_page` = max, `page_count` = first `Some` in vec order, `overrides` =
+    /// `resume_page` = max, `page_count` = first `Some` in vec order, `overrides` =
     /// first non-empty in vec order, `title` = the first member's title.
     /// `last_opened` is repointed from a merged-away / pre-upgrade spelling to the
     /// survivor's canonical key (a genuine orphan is left for `normalize` to clear).
@@ -417,7 +417,7 @@ impl Library {
     /// Re-insert previously removed `Book` entries and restore natural order.
     ///
     /// Unlike [`add`](Library::add), which derives a FRESH `Book` from a path
-    /// (losing `last_page` / `page_count` / `overrides`), this re-inserts WHOLE
+    /// (losing `resume_page` / `page_count` / `overrides`), this re-inserts WHOLE
     /// `Book` values, so it can undo a [`remove_many`](Library::remove_many) with
     /// no data loss. It is the rollback primitive: a caller that removed a set of
     /// books, kept clones, and then failed to persist can hand the clones back to
@@ -437,21 +437,21 @@ impl Library {
     }
 
     /// The last-viewed leading page index for `path` (0 when unknown).
-    pub fn last_page(&self, path: &Path) -> usize {
+    pub fn resume_page(&self, path: &Path) -> usize {
         self.books
             .iter()
             .find(|b| b.path() == path)
-            .map(Book::last_page)
+            .map(Book::resume_page)
             .unwrap_or(0)
     }
 
     /// Record `page` as the last-viewed leading page index for `path`. Returns
     /// `false` when the path is absent OR the value is unchanged (mirrors the
     /// `jump_to` "did it actually move" convention, so callers can skip a save).
-    pub fn set_last_page(&mut self, path: &Path, page: usize) -> bool {
+    pub fn set_resume_page(&mut self, path: &Path, page: usize) -> bool {
         match self.books.iter_mut().find(|b| b.path() == path) {
-            Some(book) if book.last_page != page => {
-                book.last_page = page;
+            Some(book) if book.resume_page != page => {
+                book.resume_page = page;
                 true
             }
             _ => false,
@@ -459,7 +459,7 @@ impl Library {
     }
 
     /// Record the total `count` of pages for `path`. Returns `false` when the
-    /// path is absent OR the value is unchanged (mirrors `set_last_page`, so
+    /// path is absent OR the value is unchanged (mirrors `set_resume_page`, so
     /// callers can skip a save). `count` is a `NonZeroUsize`: the "must be
     /// positive" invariant (a measured count is never `0`, the unknown encoding)
     /// is now a type fact carried by the parameter, so no runtime guard is needed.
@@ -474,7 +474,7 @@ impl Library {
     }
 
     /// Record the view overrides for `path`. Returns `false` when the path is
-    /// absent OR the value is unchanged (mirrors `set_last_page`/`set_page_count`
+    /// absent OR the value is unchanged (mirrors `set_resume_page`/`set_page_count`
     /// so callers can skip a save). The aggregate owns this mutation; `Book` has
     /// no setter.
     pub fn set_overrides(&mut self, path: &Path, overrides: ViewOverride) -> bool {
@@ -509,7 +509,7 @@ impl Library {
     /// (idempotent when it is already canonical — the result is unchanged, though
     /// the syscall still runs; as it is when read from `open_file`). `open_path` is
     /// the just-opened source path, NOT assumed canonical; the shelf identity is
-    /// the key `last_page`/`set_page_count` use.
+    /// the key `resume_page`/`set_page_count` use.
     pub fn register_opened(
         &mut self,
         open_path: &Path,
@@ -555,7 +555,7 @@ mod tests {
         let book = Book::from_path(PathBuf::from("/manga/Cool Title.cbz"));
         assert_eq!(book.title(), "Cool Title");
         assert_eq!(book.path(), Path::new("/manga/Cool Title.cbz"));
-        assert_eq!(book.last_page(), 0);
+        assert_eq!(book.resume_page(), 0);
     }
 
     #[test]
@@ -860,13 +860,13 @@ mod tests {
     #[test]
     fn restore_reinserts_full_books_and_restores_natural_order() {
         // remove_many returns only paths; the rollback primitive must put back
-        // WHOLE books (carrying last_page/page_count/overrides) and re-sort.
+        // WHOLE books (carrying resume_page/page_count/overrides) and re-sort.
         let mut lib = Library::new();
         for name in ["vol 1.cbz", "vol 2.cbz", "vol 10.cbz"] {
             assert!(lib.add(PathBuf::from(format!("/manga/{name}"))).is_some());
         }
         // Give the middle volume a non-default reading position before removal.
-        assert!(lib.set_last_page(Path::new("/manga/vol 2.cbz"), 7));
+        assert!(lib.set_resume_page(Path::new("/manga/vol 2.cbz"), 7));
         assert!(lib.set_page_count(
             Path::new("/manga/vol 2.cbz"),
             NonZeroUsize::new(20).unwrap()
@@ -898,17 +898,17 @@ mod tests {
             "restore re-inserts and restores natural order"
         );
         // The untouched middle volume kept its position; the restored ones are intact.
-        assert_eq!(lib.last_page(Path::new("/manga/vol 2.cbz")), 7);
+        assert_eq!(lib.resume_page(Path::new("/manga/vol 2.cbz")), 7);
     }
 
     #[test]
     fn restore_preserves_per_book_data_that_add_would_lose() {
-        // The add()-trap: re-adding by path yields a FRESH book (last_page 0, count None,
+        // The add()-trap: re-adding by path yields a FRESH book (resume_page 0, count None,
         // overrides all-None); restore must re-insert the WHOLE clone, keeping that data.
         let mut lib = Library::new();
         let p = PathBuf::from("/manga/a.cbz");
         assert!(lib.add(p.clone()).is_some());
-        assert!(lib.set_last_page(&p, 42));
+        assert!(lib.set_resume_page(&p, 42));
         assert!(lib.set_page_count(&p, NonZeroUsize::new(100).unwrap()));
         let ov = crate::view_override::ViewOverride {
             reading_direction: Some(crate::view_modes::ReadingDirection::Rtl),
@@ -923,9 +923,9 @@ mod tests {
         lib.restore(clone);
         assert_eq!(lib.books().len(), 1);
         assert_eq!(
-            lib.last_page(&p),
+            lib.resume_page(&p),
             42,
-            "restore keeps last_page (add would reset to 0)"
+            "restore keeps resume_page (add would reset to 0)"
         );
         assert_eq!(lib.books()[0].page_count_opt(), Some(100));
         assert_eq!(
@@ -967,7 +967,7 @@ mod tests {
         for name in ["a.cbz", "b.cbz", "c.cbz"] {
             assert!(lib.add(PathBuf::from(format!("/manga/{name}"))).is_some());
         }
-        assert!(lib.set_last_page(Path::new("/manga/b.cbz"), 9));
+        assert!(lib.set_resume_page(Path::new("/manga/b.cbz"), 9));
         assert!(lib.set_page_count(Path::new("/manga/b.cbz"), NonZeroUsize::new(50).unwrap()));
         let ov = crate::view_override::ViewOverride {
             reading_direction: Some(crate::view_modes::ReadingDirection::Rtl),
@@ -994,31 +994,31 @@ mod tests {
     #[test]
     fn last_page_is_zero_for_unknown_path() {
         let lib = Library::new();
-        assert_eq!(lib.last_page(Path::new("/manga/missing.cbz")), 0);
+        assert_eq!(lib.resume_page(Path::new("/manga/missing.cbz")), 0);
     }
 
     #[test]
-    fn set_last_page_updates_and_round_trips() {
+    fn set_resume_page_updates_and_round_trips() {
         let mut lib = Library::new();
         let path = PathBuf::from("/manga/a.cbz");
         assert!(lib.add(path.clone()).is_some());
-        assert!(lib.set_last_page(&path, 42));
-        assert_eq!(lib.last_page(&path), 42);
+        assert!(lib.set_resume_page(&path, 42));
+        assert_eq!(lib.resume_page(&path), 42);
     }
 
     #[test]
-    fn set_last_page_false_when_absent() {
+    fn set_resume_page_false_when_absent() {
         let mut lib = Library::new();
-        assert!(!lib.set_last_page(Path::new("/manga/missing.cbz"), 12));
+        assert!(!lib.set_resume_page(Path::new("/manga/missing.cbz"), 12));
     }
 
     #[test]
-    fn set_last_page_false_when_unchanged() {
+    fn set_resume_page_false_when_unchanged() {
         let mut lib = Library::new();
         let path = PathBuf::from("/manga/a.cbz");
         assert!(lib.add(path.clone()).is_some());
-        assert!(lib.set_last_page(&path, 3));
-        assert!(!lib.set_last_page(&path, 3));
+        assert!(lib.set_resume_page(&path, 3));
+        assert!(!lib.set_resume_page(&path, 3));
     }
 
     #[test]
@@ -1065,7 +1065,7 @@ mod tests {
         });
         let book: Book = serde_json::from_value(value).unwrap();
         assert_eq!(book.path(), Path::new("/manga/a.cbz"));
-        assert_eq!(book.last_page(), 5);
+        assert_eq!(book.resume_page(), 5);
         assert_eq!(book.page_count_opt(), None);
     }
 
@@ -1076,7 +1076,7 @@ mod tests {
         assert!(lib.add(path.clone()).is_some());
         let p = lib.books()[0].progress();
         assert!(p.is_at_start(), "freshly added book must be at the start");
-        assert_eq!(p.reached(), 0);
+        assert_eq!(p.last_viewed(), 0);
         assert_eq!(p.total(), None);
     }
 
@@ -1085,10 +1085,10 @@ mod tests {
         let mut lib = Library::new();
         let path = PathBuf::from("/manga/a.cbz");
         assert!(lib.add(path.clone()).is_some());
-        assert!(lib.set_last_page(&path, 3));
+        assert!(lib.set_resume_page(&path, 3));
         assert!(lib.set_page_count(&path, NonZeroUsize::new(10).unwrap()));
         let p = lib.books()[0].progress();
-        assert_eq!(p.reached(), 3);
+        assert_eq!(p.last_viewed(), 3);
         assert_eq!(p.total(), Some(10));
         assert_eq!(p.current(), 4);
         let expected: f32 = 3.0 / 10.0;
@@ -1118,7 +1118,7 @@ mod tests {
         assert_eq!(lib.books().len(), 1, "fresh open must add the book");
         assert!(reg.count_changed, "0 -> 10 must report a count change");
         assert!(reg.resume.is_at_start(), "fresh book resumes at the start");
-        assert_eq!(reg.resume.reached(), 0);
+        assert_eq!(reg.resume.last_viewed(), 0);
         assert_eq!(reg.resume.total(), Some(10));
     }
 
@@ -1155,23 +1155,31 @@ mod tests {
         let mut lib = Library::new();
         let path = PathBuf::from("/manga/a.cbz");
         assert!(lib.add(path.clone()).is_some());
-        assert!(lib.set_last_page(&path, 5));
+        assert!(lib.set_resume_page(&path, 5));
         let reg = lib.register_opened(&path, NonZeroUsize::new(10));
-        assert_eq!(reg.resume.reached(), 5, "resume reflects the recorded page");
-        assert_eq!(reg.resume.current(), 6, "current is reached + 1");
+        assert_eq!(
+            reg.resume.last_viewed(),
+            5,
+            "resume reflects the recorded page"
+        );
+        assert_eq!(reg.resume.current(), 6, "current is last_viewed + 1");
     }
 
     #[test]
-    fn register_opened_twice_preserves_recorded_last_page() {
+    fn register_opened_twice_preserves_recorded_resume_page() {
         // Re-opening a book must NOT reset its resume position: the idempotent
-        // add inside register_opened keeps the existing entry (and its last_page).
+        // add inside register_opened keeps the existing entry (and its resume_page).
         let mut lib = Library::new();
         let p = PathBuf::from("/manga/a.cbz");
         lib.register_opened(&p, NonZeroUsize::new(10));
-        assert!(lib.set_last_page(&p, 42));
+        assert!(lib.set_resume_page(&p, 42));
         let reg = lib.register_opened(&p, NonZeroUsize::new(10));
         assert_eq!(lib.books().len(), 1, "re-open must not duplicate the book");
-        assert_eq!(reg.resume.reached(), 42, "re-open must preserve last_page");
+        assert_eq!(
+            reg.resume.last_viewed(),
+            42,
+            "re-open must preserve resume_page"
+        );
         assert!(!reg.count_changed, "same count on re-open is no change");
     }
 
@@ -1241,7 +1249,7 @@ mod tests {
         // First set changes the value -> true.
         assert!(lib.set_overrides(&p, ov));
         assert_eq!(lib.overrides_for(&p), ov);
-        // Setting the same value again is a no-op -> false (mirrors set_last_page).
+        // Setting the same value again is a no-op -> false (mirrors set_resume_page).
         assert!(!lib.set_overrides(&p, ov));
     }
 
@@ -1471,7 +1479,7 @@ mod tests {
         );
 
         // Two entries naming the SAME file, fields set so the merge policy is non-vacuous:
-        // max last_page + first Some page_count from member[1]; override + title from member[0].
+        // max resume_page + first Some page_count from member[1]; override + title from member[0].
         let json = serde_json::json!({
             "version": 1,
             "books": [
@@ -1496,7 +1504,11 @@ mod tests {
             canonical.as_path(),
             "survivor path is the canonical key"
         );
-        assert_eq!(book.last_page(), 7, "last_page is the max across members");
+        assert_eq!(
+            book.resume_page(),
+            7,
+            "resume_page is the max across members"
+        );
         assert_eq!(
             book.page_count_opt(),
             Some(20),
@@ -1542,7 +1554,7 @@ mod tests {
             "a resolvable non-canonical path is upgraded to canonical on load"
         );
         assert_eq!(
-            lib.books()[0].last_page(),
+            lib.books()[0].resume_page(),
             5,
             "the book's data survives the upgrade"
         );
@@ -1569,7 +1581,7 @@ mod tests {
             Path::new(raw),
             "the raw path is preserved unchanged"
         );
-        assert_eq!(lib.books()[0].last_page(), 9);
+        assert_eq!(lib.books()[0].resume_page(), 9);
     }
 
     #[test]
