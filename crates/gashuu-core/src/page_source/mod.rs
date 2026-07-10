@@ -1,5 +1,5 @@
+mod entry_policy;
 mod folder;
-mod naming;
 mod rar;
 mod zip;
 pub use folder::FolderSource;
