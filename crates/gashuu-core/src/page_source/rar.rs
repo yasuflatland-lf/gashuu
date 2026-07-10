@@ -17,7 +17,9 @@
 //! The external `unrar` crate is referenced as `::unrar::` throughout for
 //! clarity even though the local module name (`rar`) does not collide with it.
 
-use super::naming::{classify_entry, enclosed_name, has_image_ext, EntryClass, MAX_ENTRY_BYTES};
+use super::entry_policy::{
+    classify_entry, enclosed_name, has_image_ext, EntryClass, MAX_ENTRY_BYTES,
+};
 use super::{PageEntry, PageSource};
 use crate::error::CoreError;
 use crate::ordering::natural_cmp;
