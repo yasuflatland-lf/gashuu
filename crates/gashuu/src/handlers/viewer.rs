@@ -8,8 +8,8 @@ use crate::viewer_state::{scrub_fraction_to_page, ViewerState};
 use crate::viewport::ViewportState;
 use crate::{
     apply_spread_geometry, apply_viewport, clear_page_view, current_page_1based, go_to_library,
-    persist_view_modes, refresh, with_ui, write_back_position, CarouselRefresh, ViewModeRoute,
-    ViewerWindow,
+    refresh, route_view_modes_to_sink, with_ui, write_back_position, CarouselRefresh,
+    ViewModeRoute, ViewerWindow,
 };
 use crate::{cover_loader, i18n};
 use gashuu_core::{FitMode, Library, ReadingDirection, Settings};
@@ -374,7 +374,7 @@ pub(crate) fn wire_nav_handlers(
         let library = Rc::clone(&library);
         let pages = Rc::clone(&pages);
         let localizer = Rc::clone(&localizer);
-        // `settings` is captured only to satisfy `persist_view_modes`'s signature
+        // `settings` is captured only to satisfy `route_view_modes_to_sink`'s signature
         // on the GoToLibrary leave point; the LeaveViewer route never reads it.
         let settings = Rc::clone(&settings);
         // The carousel-refresh collaborators are captured because the GoToLibrary arm
@@ -413,7 +413,7 @@ pub(crate) fn wire_nav_handlers(
                         // menu/scrubber don't flash on every turn (pointer move + drag still reveal).
                     }
                     // Runtime state is the single source of truth for these modes;
-                    // `persist_view_modes` routes them to Settings/override at the next leave.
+                    // `route_view_modes_to_sink` routes them to Settings/override at the next leave.
                     KeyCommand::ToggleSpread => {
                         if state.borrow_mut().toggle_spread() {
                             refresh(
@@ -485,7 +485,7 @@ pub(crate) fn wire_nav_handlers(
                         // Write position AND view modes back before leaving, so a D/R/C/fit
                         // toggle while reading persists without opening settings (ADR-0007 routing).
                         write_back_position(&state, &library);
-                        persist_view_modes(
+                        route_view_modes_to_sink(
                             ViewModeRoute::LeaveViewer,
                             &state,
                             &viewport,

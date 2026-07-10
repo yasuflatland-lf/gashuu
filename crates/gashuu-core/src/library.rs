@@ -505,18 +505,19 @@ impl Library {
     /// position (the book's `ReadingProgress`) and whether the stored count
     /// changed, so the caller can decide to rebuild the carousel.
     /// No persistence I/O; the only filesystem touch is the best-effort
-    /// `canonicalize` inside `add_canonical`, which is idempotent when `canonical`
-    /// is already canonical (the result is unchanged, though the syscall still
-    /// runs; as it is when read from `open_file`). `canonical` is the
-    /// canonicalized open key (the same key `resume_page`/`set_page_count` use).
+    /// `canonicalize` inside `add_canonical`, which re-canonicalizes `open_path`
+    /// (idempotent when it is already canonical — the result is unchanged, though
+    /// the syscall still runs; as it is when read from `open_file`). `open_path` is
+    /// the just-opened source path, NOT assumed canonical; the shelf identity is
+    /// the key `resume_page`/`set_page_count` use.
     pub fn register_opened(
         &mut self,
-        canonical: &Path,
+        open_path: &Path,
         page_count: Option<NonZeroUsize>,
     ) -> OpenRegistration {
         // `add_canonical` returns the shelf's identity (same owned `PathBuf` whether newly
         // added or already present), ending the `self` borrow before the `&mut self` calls.
-        let (stored, _added) = self.add_canonical(canonical.to_path_buf());
+        let (stored, _added) = self.add_canonical(open_path.to_path_buf());
         let count_changed = page_count.is_some_and(|c| self.set_page_count(&stored, c));
         // Resolve the resume position from the book stored under `stored`, so the
         // `last_opened`-is-a-member invariant holds by construction (the lookup is total).
@@ -1069,12 +1070,12 @@ mod tests {
     }
 
     #[test]
-    fn progress_is_unread_for_freshly_added_book() {
+    fn progress_is_at_start_for_freshly_added_book() {
         let mut lib = Library::new();
         let path = PathBuf::from("/manga/a.cbz");
         assert!(lib.add(path.clone()).is_some());
         let p = lib.books()[0].progress();
-        assert!(p.is_unread(), "freshly added book must be unread");
+        assert!(p.is_at_start(), "freshly added book must be at the start");
         assert_eq!(p.last_viewed(), 0);
         assert_eq!(p.total(), None);
     }
@@ -1116,7 +1117,7 @@ mod tests {
         let reg = lib.register_opened(&path, NonZeroUsize::new(10));
         assert_eq!(lib.books().len(), 1, "fresh open must add the book");
         assert!(reg.count_changed, "0 -> 10 must report a count change");
-        assert!(reg.resume.is_unread(), "fresh book resumes as unread");
+        assert!(reg.resume.is_at_start(), "fresh book resumes at the start");
         assert_eq!(reg.resume.last_viewed(), 0);
         assert_eq!(reg.resume.total(), Some(10));
     }

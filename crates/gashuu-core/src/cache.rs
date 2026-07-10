@@ -243,11 +243,13 @@ impl ImageCache {
         self.inner.len == 0
     }
 
-    /// Return the decoded page at `index` if it is already cached.
+    /// Return the decoded page at `index` if it is already cached, without ever
+    /// reading or decoding on a miss.
     ///
-    /// This is a pure cache-hit probe: it never reads or decodes on a miss.
-    /// Hits are promoted in the LRU and still spawn neighbour prefetch just like
-    /// `get`.
+    /// Not side-effect-free despite the read-only name: a HIT promotes the entry
+    /// in the LRU (touch-on-get) AND spawns background neighbour prefetch, exactly
+    /// as `get` does — only the synchronous miss decode is skipped. A miss is
+    /// fully inert (no I/O, no prefetch).
     pub fn get_cached(&self, index: usize) -> Option<Arc<DecodedImage>> {
         let img = self.inner.cached(index);
         if img.is_some() {

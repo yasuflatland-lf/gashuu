@@ -35,7 +35,7 @@ fn to_carousel_item(data: &CarouselData) -> CarouselItem {
         // loading placeholder until CoverController streams a cover or marks it failed (issue 144).
         cover_failed: false,
         // Starts false so the neutral loading placeholder shows (not the black default image)
-        // while the async worker is in flight; set_cover() flips it true once a real image arrives.
+        // while the async worker is in flight; apply_loaded_cover() flips it true once a real image arrives.
         cover_loaded: false,
     }
 }
@@ -77,7 +77,7 @@ pub(crate) fn bind_carousel_model(
 /// request was built — e.g. a book removed between scheduling and delivery),
 /// clone the row, apply `f` to mutate exactly one field, and write it back.
 /// Single-homes the fetch + downcast + bounds-check + read-modify-write that the
-/// per-field carousel writers (`set_cover`, `set_carousel_total`,
+/// per-field carousel writers (`apply_loaded_cover`, `set_carousel_total`,
 /// `set_carousel_selected`) each repeated. A model whose downcast fails or whose
 /// `row` is out of range is a silent no-op, matching the previous per-site guards.
 pub(crate) fn update_carousel_row(
@@ -98,7 +98,7 @@ pub(crate) fn update_carousel_row(
 }
 
 /// Set the `selected` flag of carousel row `row`, on the UI thread. The
-/// bulk-selection counterpart of `cover_loader::set_cover` — same `!Send`
+/// bulk-selection counterpart of `cover_loader::apply_loaded_cover` — same `!Send`
 /// `VecModel`-via-`ui` re-fetch and row-bounds check (tolerating a model that
 /// shrank since the click was scheduled), swapping ONLY the row's `selected` so
 /// the accent check badge appears/disappears without rebuilding the model or

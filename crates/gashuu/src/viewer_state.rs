@@ -205,8 +205,8 @@ impl ViewerState {
     /// `cache_config` / `viewport_aspect` are deliberately preserved — closing a
     /// book is not a settings reset; the next open reuses the same configuration.
     ///
-    /// Called by `app::RemoveBooksUseCase::run` when the open book is among the
-    /// deleted ones (PR-5 #129).
+    /// Called by `use_cases::RemoveBooksUseCase::run` when the open book is among
+    /// the deleted ones (PR-5 #129).
     pub fn close(&mut self) {
         self.cache = None;
         self.source = None;
@@ -385,13 +385,14 @@ impl ViewerState {
         self.cache.as_ref().map(ImageCache::dispatch_handle)
     }
 
-    /// Return the current spread from the cache, decoding on a miss.
+    /// Return the current spread from the cache, decoding on a miss (a cache miss
+    /// here performs synchronous I/O — hence "decode" in the name).
     ///
     /// Kept for the existing spread/navigation tests only; production uses
     /// [`ViewerState::classify_spread`] so cache misses never decode on the UI
     /// thread.
     #[cfg(test)]
-    pub fn current_spread(&self) -> Option<Result<SpreadImages, CoreError>> {
+    pub fn decode_current_spread(&self) -> Option<Result<SpreadImages, CoreError>> {
         let cache = self.cache.as_ref()?;
         if self.page_count == 0 {
             return None;
