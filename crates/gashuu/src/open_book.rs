@@ -177,7 +177,7 @@ impl OpenBookUseCase {
             }
         }
         // The CANONICAL key the source was opened under (from `open_file`), not the raw
-        // dialog `path` — the same key `last_page`/`set_page_count`/write-back use.
+        // dialog `path` — the same key `resume_page`/`set_page_count`/write-back use.
         let canonical = state.borrow().open_file().map(Path::to_path_buf);
         // `page_count_opt()` returns a `Copy` `Option<NonZeroUsize>`; the `state.borrow()` drops at the
         // `;` so it cannot conflict with the `library.borrow_mut()` below.
@@ -215,9 +215,9 @@ impl OpenBookUseCase {
         // is confined to the `let reg` line and released before `jump_to`, avoiding a clash.
         let count_changed = if let Some(c) = canonical.as_deref() {
             let reg = library.borrow_mut().register_opened(c, page_count);
-            // Resume at the recorded position; for a never-read book `reached` is 0
+            // Resume at the recorded position; for a never-read book `last_viewed` is 0
             // and `jump_to(0)` is a no-op when the index is already 0.
-            state.borrow_mut().jump_to(reg.resume.reached());
+            state.borrow_mut().jump_to(reg.resume.last_viewed());
             reg.count_changed
         } else {
             // Unreachable in practice: a successful open always sets `open_file`. Log if

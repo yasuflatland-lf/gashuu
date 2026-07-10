@@ -108,7 +108,7 @@ mod tests {
         let second = PathBuf::from("/manga/b.cbz");
         assert!(lib.add(first.clone()).is_some());
         assert!(lib.add(second.clone()).is_some());
-        assert!(lib.set_last_page(&second, 42));
+        assert!(lib.set_resume_page(&second, 42));
 
         let json = lib.to_json().unwrap();
         let parsed = Library::from_json(&json).unwrap();
@@ -116,10 +116,10 @@ mod tests {
         assert_eq!(parsed.books().len(), 2);
         assert_eq!(parsed.books()[0].path(), Path::new("/manga/a.cbz"));
         assert_eq!(parsed.books()[0].title(), "a");
-        assert_eq!(parsed.books()[0].last_page(), 0);
+        assert_eq!(parsed.books()[0].resume_page(), 0);
         assert_eq!(parsed.books()[1].path(), Path::new("/manga/b.cbz"));
         assert_eq!(parsed.books()[1].title(), "b");
-        assert_eq!(parsed.books()[1].last_page(), 42);
+        assert_eq!(parsed.books()[1].resume_page(), 42);
     }
 
     #[test]
@@ -223,14 +223,14 @@ mod tests {
         let book = PathBuf::from("/manga/a.cbz");
         let mut original = Library::new();
         assert!(original.add(book.clone()).is_some());
-        assert!(original.set_last_page(&book, 7));
+        assert!(original.set_resume_page(&book, 7));
 
         original.save_to(&path).unwrap();
         let loaded = Library::load_from(&path).unwrap();
 
         assert_eq!(loaded.books().len(), 1);
         assert_eq!(loaded.books()[0].path(), Path::new("/manga/a.cbz"));
-        assert_eq!(loaded.books()[0].last_page(), 7);
+        assert_eq!(loaded.books()[0].resume_page(), 7);
     }
 
     #[test]
@@ -353,7 +353,7 @@ mod tests {
     }
 
     /// Proves that `ReadingProgress` is transient: after serializing a library
-    /// whose book has last_page and page_count set, the JSON object for that
+    /// whose book has resume_page and page_count set, the JSON object for that
     /// book contains EXACTLY the four documented keys and none of the
     /// progress-related keys that a future refactor might accidentally expose.
     #[test]
@@ -361,7 +361,7 @@ mod tests {
         let mut lib = Library::new();
         let p = PathBuf::from("/manga/a.cbz");
         assert!(lib.add(p.clone()).is_some());
-        assert!(lib.set_last_page(&p, 3));
+        assert!(lib.set_resume_page(&p, 3));
         assert!(lib.set_page_count(&p, NonZeroUsize::new(10).unwrap()));
 
         let value: serde_json::Value = serde_json::from_str(&lib.to_json().unwrap()).unwrap();
@@ -380,7 +380,7 @@ mod tests {
         for k in [
             "progress",
             "reading_progress",
-            "reached",
+            "last_viewed",
             "fraction",
             "current",
         ] {
@@ -520,7 +520,7 @@ mod tests {
             assert!(lib.add(f).is_some());
         }
         let canonical_b = dir.path().join("b.cbz").canonicalize().unwrap();
-        assert!(lib.set_last_page(&canonical_b, 4));
+        assert!(lib.set_resume_page(&canonical_b, 4));
         assert!(lib.set_page_count(&canonical_b, NonZeroUsize::new(12).unwrap()));
         let ov = crate::view_override::ViewOverride {
             reading_direction: Some(crate::view_modes::ReadingDirection::Rtl),
