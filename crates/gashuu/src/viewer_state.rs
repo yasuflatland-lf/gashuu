@@ -180,7 +180,7 @@ impl ViewerState {
         }
     }
 
-    /// Replace the active source (used by `open_folder` and by tests). Wraps the
+    /// Replace the active source (used by `open_path` and by tests). Wraps the
     /// source in a fresh `ImageCache`, discarding any previously cached pages and
     /// resetting to the first page. Stores a clone of the source so
     /// `current_source()` can return it without going through `ImageCache`.
@@ -281,7 +281,7 @@ impl ViewerState {
     }
 
     /// Number of entries skipped during the most recent successful `open_path`
-    /// (or `open_folder`) call. Zero until a path has been successfully opened
+    /// call. Zero until a path has been successfully opened
     /// or when the last open skipped nothing. Only meaningful after `Ok(())`;
     /// an error return leaves the value from the previous successful open.
     pub fn last_open_skipped(&self) -> usize {
@@ -302,22 +302,6 @@ impl ViewerState {
     #[allow(dead_code)]
     pub fn open_path(&mut self, path: &Path) -> Result<(), CoreError> {
         self.open_path_with_policy(path, ArchivePolicy::default())
-    }
-
-    /// Open a folder as the active source, respecting `policy`.
-    pub fn open_folder_with_policy(
-        &mut self,
-        path: &Path,
-        policy: ArchivePolicy,
-    ) -> Result<(), CoreError> {
-        self.open_path_with_policy(path, policy)
-    }
-
-    /// Open a folder as the active source with the default policy.
-    /// Kept for test compatibility; production callers use `open_folder_with_policy`.
-    #[allow(dead_code)]
-    pub fn open_folder(&mut self, path: &Path) -> Result<(), CoreError> {
-        self.open_path(path)
     }
 
     /// Total page count of the current source (0 when none is open). Used by the

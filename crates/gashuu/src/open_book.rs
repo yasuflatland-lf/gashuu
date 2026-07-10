@@ -164,7 +164,7 @@ impl OpenBookUseCase {
         // Bind the result first so the `borrow_mut()` temporary drops before the match;
         // a borrow held across the match would double-borrow-panic at the read below.
         let policy = settings.borrow().archive_policy();
-        let opened = state.borrow_mut().open_folder_with_policy(path, policy);
+        let opened = state.borrow_mut().open_path_with_policy(path, policy);
         // Discriminate the open result only — recents push + settings save are DEFERRED
         // past the empty-book check so a zero-page source bypasses them (spec-pinned).
         match opened {
