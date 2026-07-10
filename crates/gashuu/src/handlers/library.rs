@@ -13,6 +13,7 @@ use crate::{
     navigation::NavState,
     page_loader::PageController,
     selection_projection,
+    thumbnail_strip::ThumbnailController,
 };
 use crate::{viewer_state::ViewerState, viewport::ViewportState};
 use gashuu_core::{Library, Settings};
@@ -158,17 +159,18 @@ fn open_and_enter(
     state: &Rc<RefCell<ViewerState>>,
     viewport: &Rc<RefCell<ViewportState>>,
     pages: &Rc<PageController>,
+    thumbs: &Rc<ThumbnailController>,
     refresh: &CarouselRefresh<'_>,
     path: &std::path::Path,
 ) {
     // Writes back the OLD book first, opens the new path, then resumes its
     // stored page. Empty sources are removed instead of entering the viewer.
-    let outcome = open_book.run(ui, path);
+    let outcome = open_book.run(path);
     // Enter the Viewer ONLY on a clean open: an empty source was already removed, and a
     // FAILED open must not drop the user into a 0-page Viewer (moved file / unmounted volume).
-    let enter_viewer = matches!(outcome, app::OpenOutcome::Success(..));
+    let enter_viewer = matches!(outcome, app::OpenOutcome::Success { .. });
     let open_failed = matches!(outcome, app::OpenOutcome::Error(_));
-    finalize_open(ui, state, viewport, pages, refresh, outcome);
+    finalize_open(ui, state, viewport, pages, thumbs, refresh, outcome);
     // When the open failed because the file is gone/unmounted, replace the raw I/O status
     // with a book-named message. A failure with the file still present keeps the error.
     if open_failed && !path.exists() {
@@ -197,6 +199,7 @@ pub(crate) fn wire_carousel_handlers(
     open_book: &Rc<app::OpenBookUseCase>,
     covers: &Rc<cover_loader::CoverController>,
     pages: &Rc<PageController>,
+    thumbs: &Rc<ThumbnailController>,
     search: &Rc<RefCell<LibrarySearchState>>,
     selection: &Rc<RefCell<LibrarySelectionState>>,
     localizer: &Rc<i18n::Localizer>,
@@ -210,6 +213,7 @@ pub(crate) fn wire_carousel_handlers(
     let open_book = Rc::clone(open_book);
     let covers = Rc::clone(covers);
     let pages = Rc::clone(pages);
+    let thumbs = Rc::clone(thumbs);
     let search = Rc::clone(search);
     let selection = Rc::clone(selection);
     let localizer = Rc::clone(localizer);
@@ -256,6 +260,7 @@ pub(crate) fn wire_carousel_handlers(
         let open_book = Rc::clone(&open_book);
         let state = Rc::clone(&state);
         let pages = Rc::clone(&pages);
+        let thumbs = Rc::clone(&thumbs);
         let search = Rc::clone(&search);
         let viewport = Rc::clone(&viewport);
         let localizer = Rc::clone(&localizer);
@@ -287,6 +292,7 @@ pub(crate) fn wire_carousel_handlers(
                     &state,
                     &viewport,
                     &pages,
+                    &thumbs,
                     &CarouselRefresh {
                         library: &library,
                         covers: &covers,
@@ -310,6 +316,7 @@ pub(crate) fn wire_carousel_handlers(
         let state = Rc::clone(&state);
         let viewport = Rc::clone(&viewport);
         let pages = Rc::clone(&pages);
+        let thumbs = Rc::clone(&thumbs);
         let localizer = Rc::clone(&localizer);
         // `finalize_open` may rebuild the carousel (empty-book auto-removal), so it
         // needs the full carousel-refresh deps.
@@ -339,6 +346,7 @@ pub(crate) fn wire_carousel_handlers(
                     &state,
                     &viewport,
                     &pages,
+                    &thumbs,
                     &CarouselRefresh {
                         library: &library,
                         covers: &covers,
