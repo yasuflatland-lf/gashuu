@@ -49,14 +49,14 @@ pub struct SpreadImages {
     pub trailing: Option<Arc<DecodedImage>>,
     /// `Some(page_index)` when the trailing page failed to decode and the view
     /// degraded to leading-only; `None` for a normal single- or two-page spread.
-    pub trailing_failed: Option<usize>,
+    pub failed_trailing_page: Option<usize>,
 }
 
 /// Non-blocking cache classification for the current spread.
 ///
 /// Each slot carries its page index plus `Some(decoded)` on a cache HIT or
 /// `None` on a cache MISS. MISS never reads or decodes.
-pub(crate) struct SpreadSlots {
+pub(crate) struct SpreadCacheState {
     pub(crate) leading: (usize, Option<Arc<DecodedImage>>),
     pub(crate) trailing: Option<(usize, Option<Arc<DecodedImage>>)>,
     pub(crate) single: bool,
@@ -381,7 +381,7 @@ impl ViewerState {
     ///
     /// `None` means no source or an empty source. `Some` never decodes on cache
     /// MISS; callers must dispatch missing slots separately.
-    pub(crate) fn spread_slots(&self) -> Option<SpreadSlots> {
+    pub(crate) fn classify_spread(&self) -> Option<SpreadCacheState> {
         let cache = self.cache.as_ref()?;
         if self.page_count == 0 {
             return None;
@@ -389,7 +389,7 @@ impl ViewerState {
         let s = self.spread_ctx().spread_at(self.index);
         let leading = (s.leading, cache.get_cached(s.leading));
         let trailing = s.trailing.map(|t| (t, cache.get_cached(t)));
-        Some(SpreadSlots {
+        Some(SpreadCacheState {
             leading,
             trailing,
             single: s.trailing.is_none(),
@@ -404,7 +404,7 @@ impl ViewerState {
     /// Return the current spread from the cache, decoding on a miss.
     ///
     /// Kept for the existing spread/navigation tests only; production uses
-    /// [`ViewerState::spread_slots`] so cache misses never decode on the UI
+    /// [`ViewerState::classify_spread`] so cache misses never decode on the UI
     /// thread.
     #[cfg(test)]
     pub fn current_spread(&self) -> Option<Result<SpreadImages, CoreError>> {
@@ -417,7 +417,7 @@ impl ViewerState {
             Ok(img) => img,
             Err(e) => return Some(Err(e)),
         };
-        let (trailing, trailing_failed) = match s.trailing {
+        let (trailing, failed_trailing_page) = match s.trailing {
             Some(t) => match cache.get(t) {
                 Ok(img) => (Some(img), None),
                 Err(e) => {
@@ -430,7 +430,7 @@ impl ViewerState {
         Some(Ok(SpreadImages {
             leading,
             trailing,
-            trailing_failed,
+            failed_trailing_page,
         }))
     }
 
@@ -677,22 +677,22 @@ mod async_slot_tests {
     }
 
     #[test]
-    fn spread_slots_returns_none_without_displayable_pages() {
+    fn classify_spread_returns_none_without_displayable_pages() {
         let mut state = ViewerState::new();
-        assert!(state.spread_slots().is_none());
+        assert!(state.classify_spread().is_none());
 
         let (empty, _) = counted_source(0);
         state.set_source(empty);
-        assert!(state.spread_slots().is_none());
+        assert!(state.classify_spread().is_none());
     }
 
     #[test]
-    fn spread_slots_reports_miss_without_reading_or_decoding() {
+    fn classify_spread_reports_miss_without_reading_or_decoding() {
         let (source, reads) = counted_source(1);
         let mut state = ViewerState::with_cache_config(CacheConfig::new(4, 0));
         state.set_source(source);
 
-        let slots = state.spread_slots().expect("one page yields a slot");
+        let slots = state.classify_spread().expect("one page yields a slot");
 
         assert_eq!(slots.leading.0, 0);
         assert!(slots.leading.1.is_none());
@@ -706,7 +706,7 @@ mod async_slot_tests {
     }
 
     #[test]
-    fn spread_slots_reports_cache_hits_after_dispatch_decode() {
+    fn classify_spread_reports_cache_hits_after_dispatch_decode() {
         let (source, reads) = counted_source(1);
         let mut state = ViewerState::with_cache_config(CacheConfig::new(4, 0));
         state.set_source(source);
@@ -716,7 +716,7 @@ mod async_slot_tests {
             .decode_and_cache(0)
             .expect("tiny png decodes");
 
-        let slots = state.spread_slots().expect("one page yields a slot");
+        let slots = state.classify_spread().expect("one page yields a slot");
 
         assert!(Arc::ptr_eq(slots.leading.1.as_ref().unwrap(), &decoded));
         assert_eq!(reads.load(Ordering::SeqCst), 1);

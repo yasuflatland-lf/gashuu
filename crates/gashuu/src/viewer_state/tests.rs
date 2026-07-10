@@ -380,7 +380,7 @@ fn current_spread_degrades_to_leading_on_trailing_decode_error() {
 
     let images = state.current_spread().unwrap().unwrap();
     assert!(images.trailing.is_none(), "trailing should drop on error");
-    assert_eq!(images.trailing_failed, Some(2));
+    assert_eq!(images.failed_trailing_page, Some(2));
     assert_eq!(
         (images.leading.width(), images.leading.height()),
         (2, 3),
