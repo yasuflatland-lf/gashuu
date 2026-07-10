@@ -110,7 +110,7 @@ fn thumbnail_item(page: usize, cell: ThumbCell) -> ThumbnailItem {
         ThumbCell::Failed => (Default::default(), false, true),
     };
     // The (loaded, failed) pair is mutually exclusive by construction above; this
-    // debug_assert guards a future hand-edit to the match arms (see `seq_index`).
+    // debug_assert guards a future hand-edit to the match arms in `thumbnail_item`.
     debug_assert!(
         !(loaded && failed),
         "thumbnail cell cannot be both loaded and failed"

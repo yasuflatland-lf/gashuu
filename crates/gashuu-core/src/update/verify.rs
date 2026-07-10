@@ -33,7 +33,7 @@ pub fn sha256_hex(bytes: &[u8]) -> String {
 }
 
 /// True iff `bytes` hashes to `expected_hex` (case-insensitive).
-pub fn verify(bytes: &[u8], expected_hex: &str) -> bool {
+pub fn is_verified(bytes: &[u8], expected_hex: &str) -> bool {
     sha256_hex(bytes).eq_ignore_ascii_case(expected_hex.trim())
 }
 
@@ -50,10 +50,10 @@ mod tests {
     }
 
     #[test]
-    fn verify_matches_and_rejects() {
-        assert!(verify(b"abc", ABC_HASH));
-        assert!(verify(b"abc", &ABC_HASH.to_uppercase()));
-        assert!(!verify(b"abcd", ABC_HASH));
+    fn is_verified_matches_and_rejects() {
+        assert!(is_verified(b"abc", ABC_HASH));
+        assert!(is_verified(b"abc", &ABC_HASH.to_uppercase()));
+        assert!(!is_verified(b"abcd", ABC_HASH));
     }
 
     #[test]

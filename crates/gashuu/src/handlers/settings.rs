@@ -8,9 +8,9 @@ use crate::page_loader::PageController;
 use crate::viewer_state::ViewerState;
 use crate::viewport::ViewportState;
 use crate::{
-    apply_global_view_to_runtime, cover_loader, i18n, persist_view_modes, push_selection_strings,
-    refresh, refresh_library_carousel, report_save_error, with_ui, CarouselRefresh, ViewModeRoute,
-    ViewerWindow,
+    apply_global_view_to_runtime, cover_loader, i18n, push_selection_toolbar_state, refresh,
+    refresh_library_carousel, report_save_error, route_view_modes_to_sink, with_ui,
+    CarouselRefresh, ViewModeRoute, ViewerWindow,
 };
 use gashuu_core::{CacheConfig, Library, Settings, ThumbnailCache, ViewOverride};
 use slint::ComponentHandle;
@@ -72,7 +72,7 @@ pub(crate) fn wire_settings_handlers(
                 ui.set_fit_mode_index(fit_mode_to_index(viewport.borrow().fit_mode()));
                 ui.set_cache_size(s.cache_size as i32);
                 ui.set_preload_pages(s.preload_pages as i32);
-                ui.set_track_recent(s.track_recent_files);
+                ui.set_track_recent(s.track_recent_sources);
                 ui.set_allow_rar_archives(s.allow_rar_archives);
                 // Clear any stale data-clearing status from a prior open so the
                 // feedback line starts hidden each time the dialog opens.
@@ -103,9 +103,9 @@ pub(crate) fn wire_settings_handlers(
             with_ui(&ui_weak, |ui| {
                 ui.set_show_settings(false);
                 // screen 0 = Library (GLOBAL defaults), 1 = Viewer (per-book override).
-                // Routing lives in `persist_view_modes` (ADR-0007 clobber-trap).
+                // Routing lives in `route_view_modes_to_sink` (ADR-0007 clobber-trap).
                 if ui.get_screen() == 0 {
-                    persist_view_modes(
+                    route_view_modes_to_sink(
                         ViewModeRoute::DialogClosedOnLibrary,
                         &state,
                         &viewport,
@@ -124,7 +124,7 @@ pub(crate) fn wire_settings_handlers(
                 } else {
                     // Persist the four view modes to this book's override. cache/preload/track
                     // are global, so save Settings too (its view-mode fields stay untouched).
-                    persist_view_modes(
+                    route_view_modes_to_sink(
                         ViewModeRoute::DialogClosedOnViewer,
                         &state,
                         &viewport,
@@ -227,7 +227,7 @@ pub(crate) fn wire_settings_handlers(
                 // Mutate then save under tight borrow scopes that drop before the
                 // refresh below (which re-borrows library/search/selection/settings).
                 library.borrow_mut().clear();
-                settings.borrow_mut().recent_files.clear();
+                settings.borrow_mut().recent_sources.clear();
                 // Save library and settings INDEPENDENTLY so each failure is diagnosed
                 // distinctly (a partial success is correctly reported).
                 let lib_err = library.borrow().save().err();
@@ -447,7 +447,7 @@ pub(crate) fn wire_view_mode_handlers(
     {
         let settings = Rc::clone(&settings);
         ui.on_set_track_recent(move |b| {
-            settings.borrow_mut().track_recent_files = b;
+            settings.borrow_mut().track_recent_sources = b;
         });
     }
     {
@@ -480,7 +480,7 @@ pub(crate) fn wire_view_mode_handlers(
                 localizer.switch(lang);
                 // Push the loaded catalog into the Strings global so every Fluent label
                 // flips to the new language before the next paint.
-                localizer.apply(&ui);
+                localizer.push_strings_to_ui(&ui);
                 ui.set_key_bindings_text(
                     crate::i18n::dynamic::shortcuts_help(localizer.loader()).into(),
                 );
@@ -493,7 +493,7 @@ pub(crate) fn wire_view_mode_handlers(
                     ui.as_weak(),
                 );
                 // Recompose the selection-toolbar strings in the new language.
-                push_selection_strings(&ui, &localizer, &selection, &search, &library);
+                push_selection_toolbar_state(&ui, &localizer, &selection, &search, &library);
                 // Recompose the library-count label too: the language switch skips
                 // `refresh_library_carousel`, so re-push it from the current book count.
                 ui.set_library_count_text(

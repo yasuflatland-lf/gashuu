@@ -22,7 +22,7 @@ use crate::library_model::{LibrarySearchState, LibrarySelectionState};
 use crate::thumbnail_strip::ThumbnailController;
 use crate::viewer_state::ViewerState;
 use crate::viewport::ViewportState;
-use crate::{persist_view_modes, write_back_position, ViewModeRoute, ViewerWindow};
+use crate::{route_view_modes_to_sink, write_back_position, ViewModeRoute, ViewerWindow};
 
 /// Neutral content description of notices to append to the status line after
 /// an open. No i18n; all string formatting happens in `i18n::dynamic`.
@@ -154,7 +154,7 @@ impl OpenBookUseCase {
         write_back_position(state, library);
         // Capture the OUTGOING book's view modes before the source is replaced, so a
         // bare D/R/C/fit toggle persists without the settings dialog (ADR-0007 clobber-trap).
-        persist_view_modes(
+        route_view_modes_to_sink(
             ViewModeRoute::OpenDifferentBook,
             state,
             viewport,
@@ -200,7 +200,7 @@ impl OpenBookUseCase {
         // zero-page). Does NOT reconcile runtime view modes into Settings (per-book, not global).
         let settings_save: Option<Result<(), CoreError>> = {
             let mut s = settings.borrow_mut();
-            if s.track_recent_files {
+            if s.track_recent_sources {
                 s.push_recent(path.to_path_buf());
                 let result = s.save();
                 if let Err(e) = &result {

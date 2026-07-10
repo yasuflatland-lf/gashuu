@@ -46,8 +46,8 @@ pub(crate) fn visible_index_to_path(
 /// if `path` is not among the currently visible rows. `visible_indices` is the
 /// search state's projection (library rows in natural order that pass the filter
 /// or are forced visible); the returned position is the index INTO that slice,
-/// i.e. the carousel row to focus. `path` must be a canonical path as returned by
-/// `add_paths`.
+/// i.e. the carousel row to focus. `path` must be a canonical path as carried by
+/// `AddReport::added` (produced by `apply_outcomes`).
 pub(crate) fn visible_focus_index_for_path(
     lib: &Library,
     visible_indices: &[usize],
@@ -109,17 +109,19 @@ pub(crate) fn clamp_focused_index(old: i32, visible_count: usize) -> i32 {
     old.clamp(0, last)
 }
 
-/// Push the selection-toolbar count text and select-all label into the UI.
+/// Push the full selection-toolbar state into the UI: the count text, the
+/// select-all label, the pre-composed delete label, AND the `has-selection`
+/// boolean gate (not just the strings, hence the name).
 ///
 /// Called from every point where the selection set or the visible projection
 /// changes (toggle, select-all, exit, carousel rebuild, language switch, boot)
-/// so the toolbar strings are always current without a full refresh.
+/// so the toolbar state is always current without a full refresh.
 ///
 /// Borrow discipline: `selection`, `search`, and `library` are distinct
 /// `RefCell`s, so the three shared `Ref`s are taken together in one block scope
 /// (both projection reads need the same trio) and drop at the block's `}` before
 /// the UI setters run.
-pub(crate) fn push_selection_strings(
+pub(crate) fn push_selection_toolbar_state(
     ui: &ViewerWindow,
     localizer: &i18n::Localizer,
     selection: &Rc<RefCell<LibrarySelectionState>>,
@@ -221,9 +223,9 @@ pub(crate) fn refresh_library_carousel(
         let selection = deps.selection.borrow();
         apply_selection_flags(ui, &lib, &indices, |path| selection.contains(path));
     }
-    // Refresh the selection-toolbar strings: the visible projection just changed (query,
+    // Refresh the selection-toolbar state: the visible projection just changed (query,
     // add, boot), so the visible/all-selected counts may have moved.
-    push_selection_strings(
+    push_selection_toolbar_state(
         ui,
         deps.localizer,
         deps.selection,
@@ -307,7 +309,7 @@ pub(crate) fn finalize_remove(ui: &ViewerWindow, deps: &CarouselRefresh, outcome
                 let indices = deps.search.borrow().visible_indices().to_vec();
                 apply_selection_flags(ui, &lib, &indices, |_| false);
             }
-            push_selection_strings(
+            push_selection_toolbar_state(
                 ui,
                 deps.localizer,
                 deps.selection,

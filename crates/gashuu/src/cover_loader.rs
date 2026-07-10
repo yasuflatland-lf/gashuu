@@ -287,12 +287,13 @@ pub(crate) fn purge_cover(cache: &ThumbnailCache, path: &std::path::Path) {
     }
 }
 
-/// Set the `cover` image of carousel row `row` to `img`, on the UI thread.
+/// Apply a freshly loaded `cover` image to carousel row `row`, on the UI thread.
 /// Re-fetches the `!Send` `VecModel` through `ui` (never moved across threads),
-/// reads the existing row, swaps only its `cover`, and writes it back. A
-/// row-count bound check tolerates a model that shrank since the request was
-/// built (e.g. a book removed between scheduling and delivery).
-fn set_cover(ui: &ViewerWindow, row: usize, img: slint::Image) {
+/// reads the existing row, sets its `cover` AND flips `cover_loaded` to `true`
+/// (hence "loaded", not just a cover swap), and writes it back. A row-count bound
+/// check tolerates a model that shrank since the request was built (e.g. a book
+/// removed between scheduling and delivery).
+fn apply_loaded_cover(ui: &ViewerWindow, row: usize, img: slint::Image) {
     update_carousel_row(ui, row, |item| {
         item.cover = img;
         item.cover_loaded = true;
@@ -305,8 +306,8 @@ fn set_cover(ui: &ViewerWindow, row: usize, img: slint::Image) {
 /// headless model core of [`set_cover_failed`] (split out so the bounds
 /// tolerance and the single-field swap are unit-testable without a window —
 /// see docs/quality-gates.md "A function returning ModelRc<T>"); the same
-/// row-bounds check as `set_cover` tolerates a model that shrank since the
-/// request was dispatched.
+/// row-bounds check as `apply_loaded_cover` tolerates a model that shrank since
+/// the request was dispatched.
 fn mark_cover_failed(vm: &VecModel<CarouselItem>, row: usize) {
     if row < vm.row_count() {
         let mut item = vm.row_data(row).expect("row < row_count checked above");
@@ -316,7 +317,7 @@ fn mark_cover_failed(vm: &VecModel<CarouselItem>, row: usize) {
 }
 
 /// Set the `cover_failed` flag of carousel row `row`, on the UI thread. The
-/// failed-state counterpart of `set_cover`: same `!Send`-`VecModel`-via-`ui`
+/// failed-state counterpart of `apply_loaded_cover`: same `!Send`-`VecModel`-via-`ui`
 /// re-fetch (never moved across threads), then the headless
 /// [`mark_cover_failed`] does the bounds-checked single-field swap.
 fn set_cover_failed(ui: &ViewerWindow, row: usize) {
@@ -329,10 +330,10 @@ fn set_cover_failed(ui: &ViewerWindow, row: usize) {
 
 /// Marshal one cover image onto the UI thread for carousel row `row`: the
 /// event-loop closure applies the epoch-guard + upgrade preamble, then writes
-/// the row via `set_cover`. The `slint::Image` is built INSIDE this closure
-/// (it is `!Send`); the captured `img` is the Send `Arc<DecodedImage>` (an `Arc`
-/// so a memory-cached cover is shared, not buffer-copied, into the closure —
-/// `to_slint_image` reads it through the `Arc`'s `Deref`).
+/// the row via `apply_loaded_cover`. The `slint::Image` is built INSIDE this
+/// closure (it is `!Send`); the captured `img` is the Send `Arc<DecodedImage>`
+/// (an `Arc` so a memory-cached cover is shared, not buffer-copied, into the
+/// closure — `to_slint_image` reads it through the `Arc`'s `Deref`).
 fn marshal_cover(
     weak: slint::Weak<ViewerWindow>,
     epoch: Arc<AtomicUsize>,
@@ -342,7 +343,7 @@ fn marshal_cover(
 ) {
     marshal_to_ui(weak, epoch, my_epoch, "cover", move |ui| {
         // Build the `!Send` slint::Image here, on the UI thread, then write the row.
-        set_cover(ui, row, to_slint_image(&img));
+        apply_loaded_cover(ui, row, to_slint_image(&img));
     });
 }
 
@@ -832,7 +833,7 @@ mod tests {
 
     /// A row beyond the model (shrunk since the request was scheduled, e.g. a
     /// book removed between dispatch and delivery) is a no-op — the same
-    /// tolerance as `set_cover`'s bounds check; no panic, no write.
+    /// tolerance as `apply_loaded_cover`'s bounds check; no panic, no write.
     #[test]
     fn mark_cover_failed_out_of_range_is_noop() {
         let vm = VecModel::from(vec![carousel_item("alpha")]);

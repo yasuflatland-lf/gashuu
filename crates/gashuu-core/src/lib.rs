@@ -41,7 +41,7 @@ pub use library_store::LIBRARY_VERSION;
 pub use page_source::{FolderSource, PageEntry, PageSource, RarSource, ZipSource};
 pub use reading_progress::ReadingProgress;
 pub use search::book_matches;
-pub use settings::{Settings, MAX_RECENT_FILES, SETTINGS_VERSION};
+pub use settings::{Settings, MAX_RECENT_SOURCES, SETTINGS_VERSION};
 pub use spread::{next_leading, normalize_leading, prev_leading, spread_at, Spread, SpreadContext};
 pub use thumbnail::{
     generate_cover, generate_one_thumbnail, generate_thumbnails, PageThumbCache,
@@ -54,7 +54,7 @@ pub use update::asset::select_asset;
 pub use update::check::{should_check, CHECK_INTERVAL_SECS};
 pub use update::packaging::{detect_packaging, Packaging, UpdateStrategy};
 pub use update::release::{parse_latest_release, Asset, ReleaseInfo};
-pub use update::verify::{parse_sha256sums, sha256_hex, verify};
+pub use update::verify::{is_verified, parse_sha256sums, sha256_hex};
 pub use update::version::{is_update_available, should_notify};
 pub use view_modes::{
     CoverMode, FitMode, KeyBindings, Language, ReadingDirection, SpreadLayout, SpreadMode,

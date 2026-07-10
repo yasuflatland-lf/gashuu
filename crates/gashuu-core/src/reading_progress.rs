@@ -42,8 +42,11 @@ impl ReadingProgress {
             _ => 0.0,
         }
     }
-    /// Never opened / no recorded position.
-    pub fn is_unread(&self) -> bool {
+    /// At the start of the book: the last-viewed leading page index is `0`. True
+    /// for a never-opened book AND for a read book left on its first page/cover
+    /// (both record `reached == 0`), so this is a start-position predicate, not a
+    /// "never read" flag.
+    pub fn is_at_start(&self) -> bool {
         self.reached == 0
     }
 }
@@ -118,18 +121,18 @@ mod tests {
         assert_eq!(p.current(), usize::MAX);
     }
 
-    // --- is_unread ---
+    // --- is_at_start ---
 
     #[test]
-    fn is_unread_true_when_reached_zero() {
+    fn is_at_start_true_when_reached_zero() {
         let p = ReadingProgress::new(0, Some(10));
-        assert!(p.is_unread());
+        assert!(p.is_at_start());
     }
 
     #[test]
-    fn is_unread_false_when_reached_nonzero() {
+    fn is_at_start_false_when_reached_nonzero() {
         let p = ReadingProgress::new(1, Some(10));
-        assert!(!p.is_unread());
+        assert!(!p.is_at_start());
     }
 
     // --- getters ---

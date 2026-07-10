@@ -1,9 +1,9 @@
 //! Fluent localizer — the sole i18n system for the crate.
 //!
 //! Owns the [`FluentLanguageLoader`] lifecycle behind [`Localizer`]: `new`
-//! loads a locale, `switch` swaps it atomically, `apply` pushes every static
-//! UI string into the Slint [`Strings`] global, and `loader` exposes the raw
-//! loader for dynamic strings resolved in [`dynamic`].
+//! loads a locale, `switch` swaps it atomically, `push_strings_to_ui` pushes
+//! every static UI string into the Slint [`Strings`] global, and `loader`
+//! exposes the raw loader for dynamic strings resolved in [`dynamic`].
 //!
 //! [`FluentLanguageLoader`] uses interior mutability for its language state,
 //! so `&self` receivers on [`Localizer`] are sufficient; wrapping the whole
@@ -98,10 +98,11 @@ impl Localizer {
     ///
     /// Callers in [`dynamic`] borrow this to call `fl!()` directly, keeping
     /// the loader private to this module while still allowing the dynamic
-    /// message functions to resolve strings without going through [`apply`].
+    /// message functions to resolve strings without going through
+    /// [`push_strings_to_ui`].
     ///
     /// [`dynamic`]: super::dynamic
-    /// [`apply`]: Localizer::apply
+    /// [`push_strings_to_ui`]: Localizer::push_strings_to_ui
     pub(crate) fn loader(&self) -> &FluentLanguageLoader {
         &self.loader
     }
@@ -123,7 +124,7 @@ impl Localizer {
     ///
     /// [`new`]: Localizer::new
     /// [`switch`]: Localizer::switch
-    pub(crate) fn apply(&self, ui: &ViewerWindow) {
+    pub(crate) fn push_strings_to_ui(&self, ui: &ViewerWindow) {
         let strings = ui.global::<Strings>();
 
         // ---- Plain pushes (id == property name, no arguments) ----------
@@ -691,14 +692,14 @@ Selection:
         );
     }
 
-    // ---- test 6e: composed stepper labels reproduce apply()'s two-step -------
+    // ---- test 6e: composed stepper labels reproduce push_strings_to_ui()'s two-step -------
 
-    /// Reproduces `apply()`'s exact two-step Stepper a11y composition end-to-end
+    /// Reproduces `push_strings_to_ui()`'s exact two-step Stepper a11y composition end-to-end
     /// so that a label cross-wire or a word-order regression fails loudly.
     ///
     /// Why this test exists:
     ///
-    /// (a) `apply()` resolves `settings-cache-a11y` / `settings-preload-a11y`
+    /// (a) `push_strings_to_ui()` resolves `settings-cache-a11y` / `settings-preload-a11y`
     ///     from the live catalog, then passes that string as the `label` named arg
     ///     into `stepper-decrease` / `stepper-increase`.  A cross-wire — e.g.
     ///     feeding `settings-cache-label` ("Cache size (pages)") instead of
@@ -722,11 +723,11 @@ Selection:
         // ---- English -------------------------------------------------------
         let en = Localizer::new(Language::En);
 
-        // Step 1: resolve the label from the catalog (mirrors apply()'s first fl!).
+        // Step 1: resolve the label from the catalog (mirrors push_strings_to_ui()'s first fl!).
         let en_cache = get(&en, "settings-cache-a11y");
         let en_preload = get(&en, "settings-preload-a11y");
 
-        // Step 2: compose via named arg (mirrors apply()'s second fl!).
+        // Step 2: compose via named arg (mirrors push_strings_to_ui()'s second fl!).
         let mut args = HashMap::new();
         args.insert("label", en_cache.clone());
         assert_eq!(
@@ -813,11 +814,11 @@ Selection:
 
     // ---- test 7: japanese notices render in japanese ---------------------
 
-    /// Successor to the deleted `app::tests::japanese_notices_render_in_japanese`.
+    /// Successor to the deleted `use_cases::tests::japanese_notices_render_in_japanese`.
     /// Exercises `dynamic::format_notices` with a ja-switched loader.
     #[test]
     fn japanese_notices_render_in_japanese() {
-        use crate::app::{NoticesContent, SkippedDetail};
+        use crate::use_cases::{NoticesContent, SkippedDetail};
         let loc = Localizer::new(Language::Ja);
         let content = NoticesContent {
             skipped: 3,
@@ -845,7 +846,7 @@ Selection:
     /// Pins exact English output of `dynamic::` fns against the historical strings.
     #[test]
     fn english_dynamic_fns_preserve_historical_strings() {
-        use crate::app::{NoticesContent, SkippedDetail};
+        use crate::use_cases::{NoticesContent, SkippedDetail};
         use crate::viewer_state::{StatusContent, StatusKind};
         use gashuu_core::{ReadingDirection, SpreadMode};
 
@@ -930,12 +931,12 @@ Selection:
 
     // ---- test 8b: format_notices ordering -----------------------------------
 
-    /// Successor to app::tests::all_three_failures_emit_in_skipped_settings_library_order.
+    /// Successor to use_cases::tests::all_three_failures_emit_in_skipped_settings_library_order.
     /// Asserts that format_notices produces notices in the canonical order:
     /// skipped entries FIRST, then settings-save failure, then library-save failure.
     #[test]
     fn format_notices_preserves_skipped_settings_library_order() {
-        use crate::app::{NoticesContent, SkippedDetail};
+        use crate::use_cases::{NoticesContent, SkippedDetail};
         let loc = Localizer::new(Language::En);
         let l = loc.loader();
         let all_three = NoticesContent {

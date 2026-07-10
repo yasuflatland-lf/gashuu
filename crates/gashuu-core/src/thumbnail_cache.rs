@@ -80,7 +80,8 @@ impl ThumbnailCache {
         Self { dir }
     }
 
-    /// Look up a thumbnail in the cache.
+    /// Look up a thumbnail in the cache, WRITING a hit's file mtime as a side
+    /// effect (touch-on-get; detailed below).
     ///
     /// Reads `<dir>/<key>.qoi` and decodes it into a `DecodedImage`. Returns
     /// `None` if the file is missing, unreadable, or not a valid image; it

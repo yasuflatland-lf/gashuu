@@ -47,7 +47,7 @@ fn arm_apply(weak: slint::Weak<ViewerWindow>, geom: WindowGeometry, attempts: u8
 /// monitor, otherwise the window is centered on the primary monitor. No monitors
 /// discoverable (non-winit build) → leave placement to the OS.
 fn apply_geometry(ui: &ViewerWindow, geom: WindowGeometry) {
-    let (w, h) = geom.clamped_size();
+    let (w, h) = geom.floored_size();
     ui.window().set_size(slint::PhysicalSize::new(w, h));
 
     let monitors = monitor_rects(ui);

@@ -1,12 +1,12 @@
 use crate::{
-    add_loader, app,
+    add_controller,
     carousel::{apply_selection_flags, set_carousel_selected},
-    cover_loader, i18n,
+    cover_loader, i18n, use_cases,
 };
 use crate::{
     apply_add_report, apply_outcomes, current_book_name, finalize_empty_book_removed,
-    finalize_open, finalize_remove, go_to_viewer, push_selection_strings, refresh_library_carousel,
-    visible_index_to_path, with_ui, CarouselRefresh, ViewerWindow,
+    finalize_open, finalize_remove, go_to_viewer, push_selection_toolbar_state,
+    refresh_library_carousel, visible_index_to_path, with_ui, CarouselRefresh, ViewerWindow,
 };
 use crate::{
     library_model::{LibrarySearchState, LibrarySelectionState},
@@ -31,10 +31,10 @@ pub(crate) fn wire_open_handlers(
     _viewport: &Rc<RefCell<ViewportState>>,
     settings: &Rc<RefCell<Settings>>,
     library: &Rc<RefCell<Library>>,
-    _open_book: &Rc<app::OpenBookUseCase>,
+    _open_book: &Rc<use_cases::OpenBookUseCase>,
     covers: &Rc<cover_loader::CoverController>,
     _pages: &Rc<PageController>,
-    adder: &Rc<add_loader::AddController>,
+    adder: &Rc<add_controller::AddController>,
     search: &Rc<RefCell<LibrarySearchState>>,
     selection: &Rc<RefCell<LibrarySelectionState>>,
     localizer: &Rc<i18n::Localizer>,
@@ -107,7 +107,7 @@ pub(crate) fn wire_open_handlers(
                 // Show the bottom progress hairline and advance its determinate
                 // fill. Epoch-guarded upstream, so only live-generation ticks reach here.
                 ui.set_add_active(true);
-                ui.set_add_progress_ratio(crate::add_loader::add_progress_ratio(done, total));
+                ui.set_add_progress_ratio(crate::add_controller::add_progress_ratio(done, total));
             })
         });
     }
@@ -154,7 +154,7 @@ pub(crate) fn wire_open_handlers(
 fn open_and_enter(
     ui: &ViewerWindow,
     nav: &Rc<RefCell<NavState>>,
-    open_book: &Rc<app::OpenBookUseCase>,
+    open_book: &Rc<use_cases::OpenBookUseCase>,
     state: &Rc<RefCell<ViewerState>>,
     viewport: &Rc<RefCell<ViewportState>>,
     pages: &Rc<PageController>,
@@ -166,13 +166,13 @@ fn open_and_enter(
     let outcome = open_book.run(ui, path);
     // Enter the Viewer ONLY on a clean open: an empty source was already removed, and a
     // FAILED open must not drop the user into a 0-page Viewer (moved file / unmounted volume).
-    let enter_viewer = matches!(outcome, app::OpenOutcome::Success(..));
-    let open_failed = matches!(outcome, app::OpenOutcome::Error(_));
+    let enter_viewer = matches!(outcome, use_cases::OpenOutcome::Success(..));
+    let open_failed = matches!(outcome, use_cases::OpenOutcome::Error(_));
     finalize_open(ui, state, viewport, pages, refresh, outcome);
     // When the open failed because the file is gone/unmounted, replace the raw I/O status
     // with a book-named message. A failure with the file still present keeps the error.
     if open_failed && !path.exists() {
-        let title = app::book_display_title(&refresh.library.borrow(), path);
+        let title = use_cases::book_display_title(&refresh.library.borrow(), path);
         ui.set_status_text(
             crate::i18n::dynamic::open_inaccessible(refresh.localizer.loader(), &title).into(),
         );
@@ -194,7 +194,7 @@ pub(crate) fn wire_carousel_handlers(
     viewport: &Rc<RefCell<ViewportState>>,
     library: &Rc<RefCell<Library>>,
     nav: &Rc<RefCell<NavState>>,
-    open_book: &Rc<app::OpenBookUseCase>,
+    open_book: &Rc<use_cases::OpenBookUseCase>,
     covers: &Rc<cover_loader::CoverController>,
     pages: &Rc<PageController>,
     search: &Rc<RefCell<LibrarySearchState>>,
@@ -438,7 +438,7 @@ pub(crate) fn wire_selection_handlers(
                 selection.borrow_mut().toggle(path.clone());
                 let selected = selection.borrow().contains(&path);
                 set_carousel_selected(&ui, index as usize, selected);
-                push_selection_strings(&ui, &localizer, &selection, &search, &library);
+                push_selection_toolbar_state(&ui, &localizer, &selection, &search, &library);
             })
         });
     }
@@ -474,7 +474,7 @@ pub(crate) fn wire_selection_handlers(
                 selection.borrow_mut().toggle(path.clone());
                 let selected = selection.borrow().contains(&path);
                 set_carousel_selected(&ui, index as usize, selected);
-                push_selection_strings(&ui, &localizer, &selection, &search, &library);
+                push_selection_toolbar_state(&ui, &localizer, &selection, &search, &library);
             })
         });
     }
@@ -507,7 +507,7 @@ pub(crate) fn wire_selection_handlers(
                     let sel = selection.borrow();
                     apply_selection_flags(&ui, &lib, &indices, |path| sel.contains(path));
                 }
-                push_selection_strings(&ui, &localizer, &selection, &search, &library);
+                push_selection_toolbar_state(&ui, &localizer, &selection, &search, &library);
             })
         });
     }
@@ -526,7 +526,7 @@ pub(crate) fn wire_selection_handlers(
                 let lib = library.borrow();
                 let indices = search.borrow().visible_indices().to_vec();
                 apply_selection_flags(&ui, &lib, &indices, |_| false);
-                push_selection_strings(&ui, &localizer, &selection, &search, &library);
+                push_selection_toolbar_state(&ui, &localizer, &selection, &search, &library);
             })
         });
     }
@@ -550,7 +550,7 @@ pub(crate) fn wire_selection_handlers(
                 // RefCells hold immutable Refs safely; the owned result drops before UI setters.
                 let content = {
                     let st = state.borrow();
-                    app::confirm_delete_content(
+                    use_cases::confirm_delete_content(
                         localizer.loader(),
                         &selection.borrow(),
                         &search.borrow(),
@@ -582,7 +582,7 @@ pub(crate) fn wire_selection_handlers(
         let selection = Rc::clone(&selection);
         let localizer = Rc::clone(&localizer);
         let covers = Rc::clone(&covers);
-        let remove_books = app::RemoveBooksUseCase::new(
+        let remove_books = use_cases::RemoveBooksUseCase::new(
             Rc::clone(&state),
             Rc::clone(&library),
             Rc::clone(&search),
@@ -623,7 +623,7 @@ pub(crate) fn wire_selection_handlers(
                 let path = std::path::PathBuf::from(path_str.as_str());
                 // The shared transaction (single home in open_book): title capture
                 // BEFORE removal -> Library::remove -> save -> best-effort cover purge.
-                let removal = app::remove_empty_book(&library, &path);
+                let removal = use_cases::remove_empty_book(&library, &path);
                 finalize_empty_book_removed(
                     &ui,
                     &CarouselRefresh {
