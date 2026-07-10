@@ -70,8 +70,8 @@ pub(crate) fn wire_settings_handlers(
                 ui.set_cover_mode_index(cover_mode_to_index(st.cover_mode()));
                 // Fit mode is owned by the viewport at runtime.
                 ui.set_fit_mode_index(fit_mode_to_index(viewport.borrow().fit_mode()));
-                ui.set_cache_size(s.cache_size as i32);
-                ui.set_preload_pages(s.preload_pages as i32);
+                ui.set_cache_size(s.cache_capacity as i32);
+                ui.set_preload_pages(s.prefetch_radius as i32);
                 ui.set_track_recent(s.track_recent_files);
                 ui.set_allow_rar_archives(s.allow_rar_archives);
                 // Clear any stale data-clearing status from a prior open so the
@@ -424,23 +424,23 @@ pub(crate) fn wire_view_mode_handlers(
         let settings = Rc::clone(&settings);
         // Cache size applies to newly opened books; no refresh of the current view.
         ui.on_set_cache_size(move |v| {
-            // Mirror cache_size + preload into ViewerState for newly opened books. `max(1)`
-            // guards the cast; reading `capacity()` back keeps the persisted field exact.
-            let preload = settings.borrow().preload_pages;
-            let cfg = CacheConfig::new(v.max(1) as usize, preload);
-            settings.borrow_mut().cache_size = cfg.capacity();
+            // Mirror cache_capacity + prefetch radius into ViewerState for newly opened books.
+            // `max(1)` guards the cast; reading `capacity()` back keeps the persisted field exact.
+            let radius = settings.borrow().prefetch_radius;
+            let cfg = CacheConfig::new(v.max(1) as usize, radius);
+            settings.borrow_mut().cache_capacity = cfg.capacity();
             state.borrow_mut().set_cache_config(cfg);
         });
     }
     {
         let state = Rc::clone(&state);
         let settings = Rc::clone(&settings);
-        // Preload radius for newly opened books; 0 = prefetch disabled. `max(0)` guards
+        // Prefetch radius for newly opened books; 0 = prefetch disabled. `max(0)` guards
         // the cast; reading `radius()` back keeps the persisted field exact.
         ui.on_set_preload_pages(move |v| {
-            let cache_size = settings.borrow().cache_size;
-            let cfg = CacheConfig::new(cache_size, v.max(0) as usize);
-            settings.borrow_mut().preload_pages = cfg.radius();
+            let cache_capacity = settings.borrow().cache_capacity;
+            let cfg = CacheConfig::new(cache_capacity, v.max(0) as usize);
+            settings.borrow_mut().prefetch_radius = cfg.radius();
             state.borrow_mut().set_cache_config(cfg);
         });
     }
