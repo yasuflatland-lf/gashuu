@@ -73,15 +73,21 @@ pub(crate) fn remove_books_with_rollback(
         .filter(|b| paths.iter().any(|p| p.as_path() == b.path()))
         .cloned()
         .collect();
+    // 1b. Snapshot the pre-removal `last_opened` bookmark too: `remove_many` clears
+    //     it when the deletion set contains it, so a rollback must hand it back to
+    //     recover the truly byte-identical pre-delete state (the "continue reading"
+    //     bookmark would otherwise be silently lost on a failed save).
+    let prior_last_opened = library.last_opened().map(|p| p.to_path_buf());
     // 2. Drop them and report what actually matched (vs. stale not_found inputs).
     let report = library.remove_many(paths);
     // 3. Persist; roll back the in-memory shelf byte-identically on failure.
     match save(library) {
         Ok(()) => Ok(report),
         Err(e) => {
-            // `restore` re-inserts the whole clones and re-establishes natural
-            // order via the aggregate's own `book_order` — the caller never sorts.
-            library.restore(removed_books);
+            // `restore` re-inserts the whole clones, re-establishes natural order
+            // via the aggregate's own `book_order`, and restores the bookmark —
+            // the caller never sorts.
+            library.restore(removed_books, prior_last_opened);
             Err(e)
         }
     }
@@ -394,6 +400,30 @@ mod tests {
             lib.resume_page(Path::new("/manga/b.cbz")),
             17,
             "restored book keeps its resume_page (add() would reset it to 0)"
+        );
+    }
+
+    #[test]
+    fn rollback_restores_last_opened_bookmark_on_save_failure() {
+        // The Alloy counterexample end-to-end: the open book is deleted (so remove_many
+        // clears last_opened), the save fails, and the rollback must restore the bookmark
+        // alongside the books — otherwise "continue reading" is silently lost.
+        let mut lib = Library::new();
+        for name in ["a.cbz", "b.cbz"] {
+            assert!(lib.add(PathBuf::from(format!("/manga/{name}"))).is_some());
+        }
+        let b = PathBuf::from("/manga/b.cbz");
+        lib.register_opened(&b, None);
+        assert_eq!(lib.last_opened(), Some(b.as_path()), "B is the bookmark");
+
+        let result = remove_books_with_rollback(&mut lib, std::slice::from_ref(&b), |_| Err(err()));
+
+        assert!(result.is_err(), "a failing save must return Err");
+        assert_eq!(lib.books().len(), 2, "both books restored");
+        assert_eq!(
+            lib.last_opened(),
+            Some(b.as_path()),
+            "rollback must restore the last_opened bookmark, not just the books"
         );
     }
 
