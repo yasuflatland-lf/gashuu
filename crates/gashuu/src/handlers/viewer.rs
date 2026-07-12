@@ -468,10 +468,16 @@ pub(crate) fn wire_nav_handlers(
                     // persisted at the next leave (zoom/pan are session-only).
                     KeyCommand::FitActual => {
                         viewport.borrow_mut().set_fit(FitMode::Actual);
+                        // Fit is viewport-owned, so clear the inherit-pending guard
+                        // here (#415) — a fit change after a reset re-enables pinning.
+                        state.borrow_mut().clear_inherit_pending();
                         apply_viewport(&ui, &viewport.borrow());
                     }
                     KeyCommand::CycleFit => {
                         viewport.borrow_mut().cycle_fit();
+                        // Fit is viewport-owned, so clear the inherit-pending guard
+                        // here (#415) — a fit change after a reset re-enables pinning.
+                        state.borrow_mut().clear_inherit_pending();
                         apply_viewport(&ui, &viewport.borrow());
                     }
                     // Toggle the thumbnail strip. No refresh needed: it changes PageView's
