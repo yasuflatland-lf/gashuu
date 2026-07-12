@@ -112,7 +112,13 @@ pub fn next_leading(total: usize, layout: SpreadLayout, cover: CoverMode, leadin
     match layout {
         SpreadLayout::Single => lead.saturating_add(1).min(total.saturating_sub(1)),
         SpreadLayout::Double => match cover {
-            CoverMode::Paired => lead.saturating_add(2).min(last_even(total)),
+            CoverMode::Paired => {
+                // Even (>0) pair starts are the valid convention; be defensive
+                // against an odd (invalid) leading — normalize onto the even
+                // start first, then advance (symmetric with Standalone below).
+                let start = normalize_leading(total, layout, cover, lead);
+                start.saturating_add(2).min(last_even(total))
+            }
             CoverMode::Standalone => {
                 let last = last_start_standalone(total);
                 if lead == 0 {
@@ -144,7 +150,12 @@ pub fn prev_leading(total: usize, layout: SpreadLayout, cover: CoverMode, leadin
     match layout {
         SpreadLayout::Single => lead.saturating_sub(1),
         SpreadLayout::Double => match cover {
-            CoverMode::Paired => lead.saturating_sub(2),
+            CoverMode::Paired => {
+                // Defend against an odd (invalid) leading: normalize onto the
+                // even start first, then step back (symmetric with Standalone).
+                let start = normalize_leading(total, layout, cover, lead);
+                start.saturating_sub(2)
+            }
             CoverMode::Standalone => {
                 if lead <= 1 {
                     // From the first pair (1) or the cover (0), back to the cover.
@@ -385,6 +396,53 @@ mod tests {
         assert_eq!(prev_leading(5, m, c, 0), 0); // clamp
                                                  // odd leading (defensive) saturates down by two.
         assert_eq!(prev_leading(5, m, c, 1), 0);
+    }
+
+    #[test]
+    fn double_paired_next_defensive_odd_leading() {
+        let m = SpreadLayout::Double;
+        let c = CoverMode::Paired;
+        // Odd (invalid) leading normalizes to the even start, then advances.
+        // total 5: normalize(1) -> 0, next -> min(0+2, last_even(5)=4) = 2.
+        assert_eq!(next_leading(5, m, c, 1), 2);
+        // total 5: normalize(3) -> 2, next -> min(2+2, 4) = 4.
+        assert_eq!(next_leading(5, m, c, 3), 4);
+        // total 4: normalize(3) -> min(2, last_even(4)=2) = 2, next -> min(4, 2) = 2 (clamp).
+        assert_eq!(next_leading(4, m, c, 3), 2);
+        // In-range even inputs are unchanged (no regression).
+        assert_eq!(next_leading(5, m, c, 0), 2);
+        assert_eq!(next_leading(5, m, c, 2), 4);
+    }
+
+    #[test]
+    fn double_paired_prev_defensive_odd_leading() {
+        let m = SpreadLayout::Double;
+        let c = CoverMode::Paired;
+        // total 4: normalize(3) -> 2, prev -> 2-2 = 0 (an even, valid start).
+        assert_eq!(prev_leading(4, m, c, 3), 0);
+        // total 5: normalize(3) -> 2, prev -> 0.
+        assert_eq!(prev_leading(5, m, c, 3), 0);
+        // total 6: normalize(5) -> min(4, last_even(6)=4) = 4, prev -> 2.
+        assert_eq!(prev_leading(6, m, c, 5), 2);
+        // In-range even inputs are unchanged (no regression).
+        assert_eq!(prev_leading(4, m, c, 2), 0);
+        assert_eq!(prev_leading(5, m, c, 4), 2);
+    }
+
+    #[test]
+    fn double_paired_next_prev_always_even_for_any_leading() {
+        // For any leading (including odd, invalid inputs), the Paired start
+        // returned by next/prev is always even (a valid pair start).
+        let m = SpreadLayout::Double;
+        let c = CoverMode::Paired;
+        for total in 1..=12usize {
+            for leading in 0..total + 3 {
+                let n = next_leading(total, m, c, leading);
+                let p = prev_leading(total, m, c, leading);
+                assert_eq!(n % 2, 0, "next {n} odd (total={total}, leading={leading})");
+                assert_eq!(p % 2, 0, "prev {p} odd (total={total}, leading={leading})");
+            }
+        }
     }
 
     #[test]
