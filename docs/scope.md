@@ -76,7 +76,7 @@ RAR requires a C++ compiler on every OS (see [docs/toolchain.md](toolchain.md)).
 
 ### Thumbnail disk cache
 
-`ThumbnailCache` (gashuu-core) persists thumbnails/covers as PNG files under the OS cache directory, keyed by a version-stable FNV-1a hash of (path, mtime, max-side). `put` writes atomically (temp-file-then-rename); `get` returns `None` on miss/corrupt. This is the storage primitive; the cover carousel that consumes it is "Library carousel covers" (below). Concurrent same-key write safety is deferred (see docs/patterns.md) and is not exercised by the carousel (one distinct key per book).
+`ThumbnailCache` (gashuu-core) persists thumbnails/covers as QOI files under the OS cache directory, keyed by a version-stable FNV-1a hash of (path, mtime, max-side). `put` writes atomically (temp-file-then-rename); `get` returns `None` on miss/corrupt. This is the storage primitive; the cover carousel that consumes it is "Library carousel covers" (below). Concurrent same-key write safety is deferred (see docs/patterns.md) and is not exercised by the carousel (one distinct key per book).
 
 ### Library carousel covers
 
@@ -155,7 +155,7 @@ RAR requires a C++ compiler on every OS (see [docs/toolchain.md](toolchain.md)).
 
 ### Async cover loading — dispatch-only `start` + focus-first ordering (perf/async-cover-loading)
 
-- **The cover-cache HIT path moved off the UI thread.** `CoverController::start` previously served warm-cache covers synchronously inside its request loop — per book: `fs::metadata` (mtime) + cached-PNG `fs::read` + decode + `to_slint_image`, ~2–8 ms each, so a ~500-book warm start blocked the event loop for seconds. `start` is now DISPATCH-ONLY: every request becomes one rayon job (`spawn_load`), and the worker derives the cache key (mtime read included), serves the hit or generates on miss, and marshals the cover back via the existing epoch-guarded `marshal_cover`. Hit and miss share one worker path — the same shape as the thumbnail strip, ending the controllers' execution-model asymmetry.
+- **The cover-cache HIT path moved off the UI thread.** `CoverController::start` previously served warm-cache covers synchronously inside its request loop — per book: `fs::metadata` (mtime) + cached-QOI `fs::read` + decode + `to_slint_image`, ~2–8 ms each, so a ~500-book warm start blocked the event loop for seconds. `start` is now DISPATCH-ONLY: every request becomes one rayon job (`spawn_load`), and the worker derives the cache key (mtime read included), serves the hit or generates on miss, and marshals the cover back via the existing epoch-guarded `marshal_cover`. Hit and miss share one worker path — the same shape as the thumbnail strip, ending the controllers' execution-model asymmetry.
 - **`spawn_count_only` was folded into the unified worker**: a HIT row that still `needs_count` resolves it on the same worker (one archive open, after the cover marshal so the count never delays the visible cover).
 - **Focus-first dispatch.** `prioritize_by_focus(requests, focus_row)` (pure, unit-tested) reorders requests by `abs_diff` from the carousel's focused row before dispatch, so the covers the user is looking at stream in first on a large library; `refresh_library_carousel` reads `carousel_focused_index` after its reset-focus step.
 - **`pending_counts` element is the named `ResolvedCount { path, count }`** (was a bare `(PathBuf, NonZeroUsize)` tuple).
@@ -223,7 +223,7 @@ field / UI for the cap.
   — saves library and settings independently, and rebuilds the carousel; a book open in the current
   session stays open. **Clear cover cache** deletes the on-disk thumbnail/cover files via
   `ThumbnailCache::clear` (best-effort, like `prune`: non-recursive, no symlink-follow, owned
-  `*.png` / `.*.tmp` only, missing dir → zero report) and reports the file count + reclaimed bytes.
+  `*.qoi` (current) + legacy `*.png` (reclaim only) + `.*.tmp`, missing dir → zero report) and reports the file count + reclaimed bytes.
   Both surface localized feedback through a transient in-dialog status line (`data-action-status`),
   reset on dialog open, no timer. See [docs/patterns.md](patterns.md).
 - **Private Mode was explored and fully prototyped, then DROPPED by user decision.** A book add in

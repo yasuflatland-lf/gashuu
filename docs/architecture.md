@@ -114,17 +114,17 @@ downscaled thumbnail of page index 0, the book's cover; `Err(IndexOutOfRange{ind
 
 ### thumbnail_cache
 
-`thumbnail_cache.rs`. On-disk PNG cache for page/cover thumbnails under the OS cache dir
+`thumbnail_cache.rs`. On-disk QOI cache for page/cover thumbnails under the OS cache dir
 (`ProjectDirs("", "", "gashuu").cache_dir()/covers`); `with_dir(PathBuf)` is the tempfile-testable
-seam. `put(key, &DecodedImage)` PNG-encodes the RGBA at exact dimensions and writes atomically
-(temp-file-then-rename); `get(key) -> Option<DecodedImage>` reads `<dir>/<key>.png` and decodes,
+seam. `put(key, &DecodedImage)` QOI-encodes the RGBA at exact dimensions and writes atomically
+(temp-file-then-rename); `get(key) -> Option<DecodedImage>` reads `<dir>/<key>.qoi` and decodes,
 returning `None` on any missing/unreadable/corrupt file (a cache miss, never panics). `cache_key(path,
 mtime_secs, max_side)` derives a stable 16-hex-char filename via FNV-1a (NOT `DefaultHasher`; see
 docs/patterns.md). Headless (no slint/tracing). The cover carousel consumes it via the UI's
 `cover_loader.rs`.
 
 Issue 143 adds the GC half: `prune(max_bytes) -> PruneReport` sweeps the directory down to
-`max_bytes` of `*.png` payload in ascending `(mtime, file name)` order, and reclaims stale
+`max_bytes` of `*.qoi` payload in ascending `(mtime, file name)` order, and reclaims stale
 `.{key}.tmp` crash leftovers (older than an hour) regardless of the cap. `get` refreshes a hit's
 mtime (touch-on-get, only after a successful decode), which makes the eviction order near-LRU —
 key-orphaned covers (source mtime drifted past `purge_for`) are never read again, age to the
@@ -860,9 +860,9 @@ TWIN of `ThumbnailController` for the Library carousel. Streams each book's real
 `VecModel<CarouselItem>`. `start` is DISPATCH-ONLY on the UI thread: every `CoverRequest` becomes one
 `rayon::spawn` worker (`spawn_load`), and the worker does ALL the per-book I/O — derive
 `cache_key(path, mtime, max_side)` (the mtime `fs::metadata` happens on the worker), try
-`ThumbnailCache::get` (a HIT reads + decodes the cached PNG on the worker), or on a MISS open via
+`ThumbnailCache::get` (a HIT reads + decodes the cached QOI on the worker), or on a MISS open via
 `ArchiveLoader`, call core `generate_cover`, `ThumbnailCache::put` — then `invoke_from_event_loop` to
-set the row. Hit and miss share this one worker path (a warm 500-book start used to decode 500 PNGs
+set the row. Hit and miss share this one worker path (a warm 500-book start used to decode 500 QOIs
 inline on the event loop), under the SAME epoch + cancel double-guard and Send/!Send discipline as the
 thumbnail strip (see [patterns.md](patterns.md)). The cancel-rotation lives in a shared-shape private
 `rotate_cancel(&self) -> Arc<AtomicBool>` helper kept IDENTICAL in both controllers. Requests are
