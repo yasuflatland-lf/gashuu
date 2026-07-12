@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="crates/gashuu/ui/assets/app-icon.png" alt="gashuu app icon" width="72" height="72" />
+<img src="crates/gashuu/ui/assets/app-icon.svg" alt="gashuu app icon" width="72" height="72" />
 
 # gashuu
 

@@ -93,5 +93,5 @@ cover-flow library, and persistent per-book settings, in an English / 日本語 
 assets = [
     ["target/release/gashuu", "usr/bin/", "755"],
     ["packaging/linux/gashuu.desktop", "usr/share/applications/", "644"],
-    ["ui/assets/app-icon.png", "usr/share/pixmaps/gashuu.png", "644"],
+    ["ui/assets/app-icon.svg", "usr/share/icons/hicolor/scalable/apps/gashuu.svg", "644"],
 ]
