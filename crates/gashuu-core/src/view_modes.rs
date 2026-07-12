@@ -99,8 +99,9 @@ pub enum Language {
 }
 
 /// Key tokens (matching the `.slint` FocusScope tokens) bound to each navigation
-/// direction. Persisted in PR3, but `keymap::map_key` hard-codes these same tokens
-/// rather than reading this struct; user-remappable keys are deferred to a later PR.
+/// direction. Persisted for forward-compatibility but currently unconsumed:
+/// `keymap::map_key` hard-codes these same tokens rather than reading this struct,
+/// and user-remappable keys are not planned.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct KeyBindings {
     pub next: Vec<String>,
