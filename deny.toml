@@ -6,6 +6,7 @@ ignore = [
   { id = "RUSTSEC-2026-0192", reason = "ttf-parser is unmaintained, pulled in transitively via Slint (usvg -> resvg -> fontdb) and winit (sctk-adwaita -> ab_glyph -> owned_ttf_parser); no safe upgrade is available. Remove once Slint and winit migrate off ttf-parser (e.g. to skrifa)." },
   { id = "RUSTSEC-2026-0194", reason = "quick-xml 0.39 is a Linux-only, build-time transitive dependency of wayland-scanner (via winit -> Slint) that parses trusted, crate-bundled Wayland protocol XML, not attacker-controlled input. Pinned to 0.39 by wayland-scanner; no reachable patched version. Remove once winit/wayland-scanner upgrade quick-xml." },
   { id = "RUSTSEC-2026-0195", reason = "See RUSTSEC-2026-0194: same quick-xml 0.39 build-time pin via wayland-scanner (Linux-only, trusted Wayland protocol XML, not attacker-controlled). No reachable patched version." },
+  { id = "RUSTSEC-2026-0206", reason = "rustybuzz is unmaintained, pulled in transitively via Slint (usvg -> resvg -> rustybuzz) for text shaping at render/build time; no safe upgrade is available (upstream alternative is harfrust). Same subtree as RUSTSEC-2026-0192. Remove once Slint/resvg migrate off rustybuzz." },
 ]
 
 [sources]
