@@ -414,26 +414,39 @@ impl Library {
         report
     }
 
-    /// Re-insert previously removed `Book` entries and restore natural order.
+    /// Re-insert previously removed `Book` entries AND restore `last_opened`,
+    /// returning to a truly byte-identical pre-removal state.
     ///
     /// Unlike [`add`](Library::add), which derives a FRESH `Book` from a path
     /// (losing `resume_page` / `page_count` / `overrides`), this re-inserts WHOLE
     /// `Book` values, so it can undo a [`remove_many`](Library::remove_many) with
     /// no data loss. It is the rollback primitive: a caller that removed a set of
-    /// books, kept clones, and then failed to persist can hand the clones back to
-    /// recover the exact pre-removal shelf (byte-identical re-serialization).
+    /// books, kept clones AND the pre-removal `last_opened`, and then failed to
+    /// persist can hand both back to recover the exact pre-removal shelf
+    /// (byte-identical re-serialization).
     ///
     /// De-duplicates by canonical path against the books already present (an entry
     /// whose path is already on the shelf is skipped, never duplicated), then
     /// re-sorts via the same `book_order` invariant `add` uses — the aggregate
     /// owns its ordering, callers never re-sort. Empty input is a no-op.
-    pub fn restore(&mut self, books: Vec<Book>) {
+    ///
+    /// `last_opened` is restored only when the passed path is present on the
+    /// re-inserted shelf, preserving the invariant that `last_opened`, when
+    /// `Some`, always points at a shelved book (a stale bookmark is dropped).
+    pub fn restore(&mut self, books: Vec<Book>, last_opened: Option<PathBuf>) {
         for book in books {
             if !self.books.iter().any(|b| b.path() == book.path()) {
                 self.books.push(book);
             }
         }
         self.books.sort_by(book_order);
+        // Restore the bookmark, but only if it points at a book now on the shelf,
+        // upholding the `last_opened`-is-a-member invariant.
+        if let Some(p) = last_opened {
+            if self.books.iter().any(|b| b.path() == p) {
+                self.last_opened = Some(p);
+            }
+        }
     }
 
     /// The last-viewed leading page index for `path` (0 when unknown).
@@ -890,7 +903,7 @@ mod tests {
         let titles: Vec<&str> = lib.books().iter().map(|b| b.title()).collect();
         assert_eq!(titles, vec!["vol 2"], "only the unremoved book survives");
 
-        lib.restore(removed);
+        lib.restore(removed, None);
         let titles: Vec<&str> = lib.books().iter().map(|b| b.title()).collect();
         assert_eq!(
             titles,
@@ -920,7 +933,7 @@ mod tests {
         assert_eq!(lib.remove_many(std::slice::from_ref(&p)).removed.len(), 1);
         assert!(lib.books().is_empty());
 
-        lib.restore(clone);
+        lib.restore(clone, None);
         assert_eq!(lib.books().len(), 1);
         assert_eq!(
             lib.resume_page(&p),
@@ -943,7 +956,7 @@ mod tests {
         assert!(lib.add(p.clone()).is_some());
         let clone: Vec<Book> = lib.books().to_vec();
         // The book is still present; restoring its clone is a no-op (dedup by path).
-        lib.restore(clone);
+        lib.restore(clone, None);
         assert_eq!(
             lib.books().len(),
             1,
@@ -955,7 +968,7 @@ mod tests {
     fn restore_empty_input_is_noop() {
         let mut lib = Library::new();
         assert!(lib.add(PathBuf::from("/manga/a.cbz")).is_some());
-        lib.restore(Vec::new());
+        lib.restore(Vec::new(), None);
         assert_eq!(lib.books().len(), 1, "empty restore changes nothing");
     }
 
@@ -983,11 +996,62 @@ mod tests {
             .cloned()
             .collect();
         lib.remove_many(&[PathBuf::from("/manga/b.cbz"), PathBuf::from("/manga/c.cbz")]);
-        lib.restore(removed);
+        lib.restore(removed, None);
         assert_eq!(
             lib.to_json().unwrap(),
             before,
             "remove + restore must be byte-identical"
+        );
+    }
+
+    #[test]
+    fn restore_recovers_last_opened_bookmark() {
+        // The Alloy counterexample: read B (last_opened = B), remove B (remove_many
+        // clears the bookmark), then a failed save rolls back via restore — which must
+        // hand the bookmark back so the "continue reading" target is not silently lost.
+        let mut lib = Library::new();
+        for name in ["a.cbz", "b.cbz"] {
+            assert!(lib.add(PathBuf::from(format!("/manga/{name}"))).is_some());
+        }
+        let b = PathBuf::from("/manga/b.cbz");
+        lib.register_opened(&b, None);
+        assert_eq!(lib.last_opened(), Some(b.as_path()), "B is the bookmark");
+
+        let removed: Vec<Book> = lib
+            .books()
+            .iter()
+            .filter(|book| book.path() == b.as_path())
+            .cloned()
+            .collect();
+        assert_eq!(lib.remove_many(std::slice::from_ref(&b)).removed.len(), 1);
+        assert_eq!(lib.last_opened(), None, "remove_many clears the bookmark");
+
+        lib.restore(removed, Some(b.clone()));
+        assert_eq!(lib.books().len(), 2, "both books restored");
+        assert_eq!(
+            lib.last_opened(),
+            Some(b.as_path()),
+            "restore recovers the last_opened bookmark"
+        );
+    }
+
+    #[test]
+    fn restore_drops_a_stale_bookmark_not_on_the_shelf() {
+        // The membership guard (invariant S69): a last_opened that points at no
+        // shelved book must be dropped, never re-installed as a dangling bookmark.
+        let mut lib = Library::new();
+        let a = PathBuf::from("/manga/a.cbz");
+        assert!(lib.add(a.clone()).is_some());
+        let removed: Vec<Book> = lib.books().to_vec();
+        assert_eq!(lib.remove_many(std::slice::from_ref(&a)).removed.len(), 1);
+
+        // Restore the book but point the bookmark at a book that was never re-inserted.
+        lib.restore(removed, Some(PathBuf::from("/manga/ghost.cbz")));
+        assert_eq!(lib.books().len(), 1, "the removed book is back");
+        assert_eq!(
+            lib.last_opened(),
+            None,
+            "a bookmark absent from the shelf must not be installed"
         );
     }
 
