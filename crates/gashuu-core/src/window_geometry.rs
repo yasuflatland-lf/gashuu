@@ -62,7 +62,7 @@ impl Rect {
 impl WindowGeometry {
     /// Size to apply, floored to the legible minimum. Only a lower floor is
     /// applied — there is no upper clamp (an over-large size is rejected wholesale
-    /// by `is_size_sane`, not clamped here).
+    /// by `is_size_within_max`, not clamped here).
     pub fn floored_size(&self) -> (u32, u32) {
         (
             self.width.max(MIN_WINDOW_WIDTH),
