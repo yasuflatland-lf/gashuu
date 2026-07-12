@@ -73,21 +73,21 @@ To encode raw RGBA into an in-memory PNG (`thumbnail_cache::put`), wrap the buff
 
 ### App icon / bundling
 
-**Icon asset pipeline** — `app-icon.png` (1024×1024 master) and `app-icon.icns` are generated from the source logo using `sips` and `iconutil` (both ship with macOS; no extra install needed):
+**Icon asset pipeline** — `app-icon.svg` is the single committed source of truth for the app icon; no raster PNG master is committed. macOS bundling requires an `.icns`, so `app-icon.icns` is generated from the SVG and committed alongside it. Regenerate it whenever the SVG changes (`rsvg-convert` comes from `brew install librsvg`; `iconutil` ships with macOS):
 
 ```sh
-# Center-crop 2816×1536 logo to 1536×1536 square, then resize to 1024 master
-sips -c 1536 1536 ~/Downloads/gashuu_logo.png --out /tmp/icon-sq.png
-sips -z 1024 1024 /tmp/icon-sq.png --out crates/gashuu/ui/assets/app-icon.png
-
-# Build .iconset (all required macOS sizes) and compile to .icns
+# Render each required macOS iconset size straight from the SVG, then compile to .icns.
+# The list is spelled out (not a variable) so it splits under both bash and zsh.
 ICONSET=/tmp/gashuu.iconset; mkdir -p "$ICONSET"
-for s in 16 32 128 256 512; do
-  sips -z $s $s         crates/gashuu/ui/assets/app-icon.png --out "$ICONSET/icon_${s}x${s}.png"
-  sips -z $((s*2)) $((s*2)) crates/gashuu/ui/assets/app-icon.png --out "$ICONSET/icon_${s}x${s}@2x.png"
+for spec in 16:16x16 32:16x16@2x 32:32x32 64:32x32@2x 128:128x128 256:128x128@2x \
+            256:256x256 512:256x256@2x 512:512x512 1024:512x512@2x; do
+  px=${spec%%:*}; name=${spec#*:}
+  rsvg-convert -w "$px" -h "$px" crates/gashuu/ui/assets/app-icon.svg -o "$ICONSET/icon_${name}.png"
 done
 iconutil -c icns -o crates/gashuu/ui/assets/app-icon.icns "$ICONSET"
 ```
+
+Windows (`.ico`) and the AppImage (`.png`) icons are raster too, but those are generated on demand from the SVG during the release build (`magick` / `rsvg-convert`) and never committed — see the release-build notes below.
 
 **Producing the macOS .app bundle** — install `cargo-bundle` once (compiles under pinned toolchain; binary lands in `~/.cargo/bin`), then build from the crate root:
 
@@ -103,7 +103,7 @@ cd crates/gashuu && mise exec -- cargo bundle --release   # emits target/release
 `.github/workflows/release.yml` builds the distributable executables and attaches them to the GitHub Release for a tag. Trigger: push a `v*` tag, or `workflow_dispatch` with a `tag` input (to re-attach to an existing tag). A `preflight` job asserts the tag matches `crates/gashuu/Cargo.toml` `version` before any build runs, so a mistyped tag fails fast. The GitHub Release must already exist — the workflow only uploads assets to it (`gh release upload --clobber`), it does not create it.
 
 - **macOS (universal)**: builds `aarch64-apple-darwin` + `x86_64-apple-darwin`, `lipo`-merges them into a fat binary, runs `cargo bundle --release` for the `.app` scaffold (cargo-bundle has no `--target universal` support, so the scaffold is built once and the fat binary is spliced into `Contents/MacOS/`), and zips with `ditto -c -k --keepParent` (preserves symlinks/permissions). cargo-bundle is `cargo install`ed on the runner — deliberately NOT added to `mise.toml`, so the CI `app` matrix stays lean. Asset: `gashuu-<tag>-macos-universal.zip`.
-- **Windows (x86_64)**: generates `app-icon.ico` from `app-icon.png` with the runner's preinstalled `magick`, builds `--release` (`build.rs` embeds the icon via `winresource`), and zips the `.exe`. Asset: `gashuu-<tag>-windows-x64.zip`.
+- **Windows (x86_64)**: generates `app-icon.ico` from `app-icon.svg` with the runner's preinstalled `magick`, builds `--release` (`build.rs` embeds the icon via `winresource`), and zips the `.exe`. Asset: `gashuu-<tag>-windows-x64.zip`.
 - **Signing**: macOS `.app` is ad-hoc (self-signed) in CI; Developer ID signing + notarization are deferred. Windows `signtool` insertion point remains marked as a `SIGNING SEAM` comment in `release.yml`.
 
 **Windows `.ico` embedding** is now wired (was deferred): `winresource` is a `[target.'cfg(windows)'.build-dependencies]` so it is never fetched on macOS/Linux; `build.rs` gates the embed on `cfg(windows)` AND `CARGO_CFG_TARGET_OS == "windows"` AND the `.ico` existing, so a dev `cargo build` without the (CI-generated, uncommitted) `.ico` is a no-op and never a build blocker. **Still deferred**: Linux release artifacts and a `.desktop` entry — Slint's Linux system-library deps make Linux distribution heavier (see "Linux system libraries" above).

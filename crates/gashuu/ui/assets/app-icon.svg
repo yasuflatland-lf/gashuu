@@ -1,0 +1,9 @@
+<svg viewBox="0 0 256 256" xmlns="http://www.w3.org/2000/svg">
+  <title>gashuu</title>
+  <g fill="#E0281E">
+    <rect x="66" y="66" width="124" height="124" rx="12" opacity="0.30" transform="rotate(32 128 128)"/>
+    <rect x="66" y="66" width="124" height="124" rx="12" opacity="0.50" transform="rotate(-16 128 128)"/>
+    <rect x="66" y="66" width="124" height="124" rx="12" opacity="0.95" transform="rotate(6 128 128)"/>
+  </g>
+  <polygon points="128,84 172,160 84,160" fill="#FFFFFF"/>
+</svg>

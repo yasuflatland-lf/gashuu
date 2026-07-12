@@ -9,7 +9,7 @@ export function Header() {
         {/* biome-ignore lint/a11y/useValidAnchor: logo link scrolls to the top of the page, no dedicated route exists */}
         <a href="#" className="flex items-center gap-3 justify-self-start">
           <img
-            src={asset('assets/logo.png')}
+            src={asset('assets/logo.svg')}
             alt="gashuu app icon"
             className="h-8 w-8 object-contain"
           />

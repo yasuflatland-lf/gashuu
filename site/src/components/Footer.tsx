@@ -7,7 +7,7 @@ export function Footer() {
       <div className="mx-auto flex max-w-[1000px] flex-col justify-between gap-5 px-6 py-12 md:flex-row md:items-center md:px-10">
         <div className="flex items-center gap-3">
           <img
-            src={asset('assets/logo.png')}
+            src={asset('assets/logo.svg')}
             alt="gashuu app icon"
             className="h-7 w-7 object-contain"
           />
