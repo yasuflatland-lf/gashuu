@@ -42,7 +42,7 @@ remove + notify".
    `add_loader::probe_path`, then `apply_outcomes` → `AddReport { added, skipped }`, issue 206):
    reject empty OR unreadable before insert, and persist the probed count on a genuine
    insert so a fresh add shows "1 / N" immediately. Open (`OpenBookUseCase::run` →
-   `OpenOutcome::EmptyBookRemoved { title, removed, save_error }`): on a clean zero-page open, bail out
+   `OpenOutcome::EmptyBookRejected { title, removed, save_error }`): on a clean zero-page open, bail out
    BEFORE the recents push / settings save / `register_opened`, remove the book if present, re-save,
    and stay on the Library. Cover-load (`marshal_empty_book` → the `empty-book-detected(string)` Slint
    callback): the worker signals; the UI-thread handler removes, purges the cover cache, rebuilds the

@@ -250,7 +250,7 @@ boundary, so there is no `debug_assert` in core and no `page_count > 0` guard at
 (stored `0 → None`), the accessor that `progress()` and `carousel_data` consume. `main.rs` now
 just calls `register_opened` and `jump_to(reg.resume.reached())`, converting at the boundary with
 `NonZeroUsize::new(page_count)` (a zero-page open → `None` → back-fill skipped — though since the
-reject-empty-books feature the open path bails out at `EmptyBookRemoved` BEFORE `register_opened` for
+reject-empty-books feature the open path bails out at `EmptyBookRejected` BEFORE `register_opened` for
 a zero-page source, so this `None` arm is now a defensive type-honesty wrapper rather than a live
 path; see ADR-0009), keeping the
 domain rule out of the presentation layer (aligns with the core↔UI boundary, ADR-0002).
@@ -428,7 +428,7 @@ export:
 - `OpenOutcome` / `SkippedDetail` / `NoticesContent` are in scope for `main.rs` via
   `use crate::app::{NoticesContent, OpenOutcome, SkippedDetail}`.
 
-The reject-empty-books feature added a third `OpenOutcome` variant: `EmptyBookRemoved { title,
+The reject-empty-books feature added a third `OpenOutcome` variant: `EmptyBookRejected { title,
 removed, save_error }`, returned when the source opens CLEANLY but counts zero pages. `run` bails out
 HERE — before `register_opened`, with the recents push / settings save / per-book view resolve /
 carousel rebuild / thumbnail start all bypassed (so an empty book never re-enters via
@@ -449,10 +449,10 @@ notice-plus-save-failure compose.
 `on_carousel_open` and `on_carousel_continue_reading`. Both call
 `finalize_open(&ui, &state, &viewport, &CarouselRefresh { … }, outcome)` after `run` returns — the
 signature gained the full `CarouselRefresh` deps (was just `&localizer`) because the
-`EmptyBookRemoved` arm may rebuild the carousel. The carousel-open / bookmark-jump open path
+`EmptyBookRejected` arm may rebuild the carousel. The carousel-open / bookmark-jump open path
 (`handlers/library.rs::open_and_enter`) also calls `go_to_viewer`, but gates it on the POSITIVE
 outcome — `enter_viewer = matches!(outcome, OpenOutcome::Success(..))` (PR #334; was
-`!matches!(outcome, EmptyBookRemoved { .. })`, which ALSO entered the Viewer on a FAILED open and
+`!matches!(outcome, EmptyBookRejected { .. })`, which ALSO entered the Viewer on a FAILED open and
 dropped the user into a blank 0-page stage). On `Error` it stays on the Library; when the file is
 missing or its volume is unmounted (`!path.exists()`) it replaces the raw I/O error with the
 book-named `viewer-open-inaccessible` message (title via `app::book_display_title`).
@@ -731,7 +731,7 @@ Everything is in physical pixels (matching `gashuu_core::WindowGeometry`). `rest
 settings)` is a no-op when nothing was saved; otherwise it arms a zero-delay single-shot timer
 (`arm_apply`) that defers the apply until the lazily-created winit window exists (winit 0.30 creates
 it only after `run()` spins), re-arming up to ~30 ticks. `apply_geometry` always applies the clamped
-size (`WindowGeometry::clamped_size`) and applies the saved position only when it still lands on a
+size (`WindowGeometry::floored_size`) and applies the saved position only when it still lands on a
 monitor (`is_position_visible`), else centers on the primary monitor (`center_in`).
 `capture_geometry(ui, &mut settings)` snapshots the live `size()`/`position()` into `settings.window`
 after `run()` returns. `monitor_rects` enumerates monitor bounds (primary first) via
