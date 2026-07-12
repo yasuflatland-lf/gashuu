@@ -1,5 +1,5 @@
 use crate::{viewer_state::ViewerState, viewport::ViewportState};
-use gashuu_core::{FitMode, Library, ReadingDirection, Settings, ViewOverride};
+use gashuu_core::{FitMode, Library, ReadingDirection, ResolvedView, Settings, ViewOverride};
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -94,6 +94,31 @@ fn apply_runtime_view_to_settings(
     settings.spread_mode = state.spread_mode();
     settings.cover_mode = state.cover_mode();
     settings.fit_mode = viewport.fit_mode();
+}
+
+/// Snapshot the current runtime view modes as a `ResolvedView`.
+///
+/// Reads the three `ViewerState`-owned modes (direction/spread/cover) plus the
+/// `ViewportState`-owned fit mode. Used by the Library-screen settings dialog
+/// (issue #414): the dialog seeds the SHARED runtime with global defaults on
+/// open (`apply_global_view_to_runtime`), which would clobber a still-open
+/// book's runtime; snapshotting it here lets `on_close_settings` restore the
+/// book's own runtime, so the later leave/exit write-back pins the BOOK's value
+/// rather than the transiently-global one.
+///
+/// Borrow discipline: `state` and `viewport` are distinct `RefCell`s, so the
+/// two shared borrows never conflict; both drop on return.
+pub(crate) fn current_runtime_view(
+    state: &Rc<RefCell<ViewerState>>,
+    viewport: &Rc<RefCell<ViewportState>>,
+) -> ResolvedView {
+    let s = state.borrow();
+    ResolvedView {
+        reading_direction: s.reading_direction(),
+        spread_mode: s.spread_mode(),
+        cover_mode: s.cover_mode(),
+        fit_mode: viewport.borrow().fit_mode(),
+    }
 }
 
 /// Mirror the GLOBAL `Settings` view modes into the runtime (`ViewerState` for
@@ -411,6 +436,82 @@ mod tests {
         assert_eq!(ov.spread_mode, Some(gashuu_core::SpreadMode::Double));
         assert_eq!(ov.cover_mode, Some(gashuu_core::CoverMode::Paired));
         assert_eq!(ov.fit_mode, Some(FitMode::Actual));
+    }
+
+    // ---- Library-dialog snapshot/restore (#414: dialog clobbers per-book) --
+
+    #[test]
+    fn library_dialog_snapshot_restore_preserves_open_books_override() {
+        // TLC counterexample repro (issue #414), at the view_sync/state level:
+        // global default is Rtl; the OPEN book's runtime is the user's Ltr choice.
+        // Opening the Library-screen settings dialog seeds the shared runtime with
+        // the global value (clobber); the snapshot taken on open and restored on
+        // close must return the runtime to the book's Ltr, so the later leave/exit
+        // write-back pins Ltr — NOT the transiently-global Rtl.
+        let global = Settings::default();
+        assert_eq!(
+            global.reading_direction,
+            ReadingDirection::Rtl,
+            "precondition: the global default is Rtl"
+        );
+        let settings = Rc::new(RefCell::new(global));
+
+        // A book is open (real temp folder) and the user chose Ltr for it.
+        let dir = std::env::temp_dir().join(format!("gashuu_cx414_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+        let state = Rc::new(RefCell::new(ViewerState::new()));
+        state
+            .borrow_mut()
+            .open_path(&dir)
+            .expect("open_path on a real directory must succeed");
+        assert!(
+            state.borrow().open_file().is_some(),
+            "precondition: a book must be open"
+        );
+        let _ = state
+            .borrow_mut()
+            .set_reading_direction(ReadingDirection::Ltr);
+        let viewport = Rc::new(RefCell::new(ViewportState::from_settings(
+            &settings.borrow(),
+        )));
+
+        // on_open_settings (Library branch): snapshot the book's runtime, THEN seed
+        // the shared runtime with the global default (the clobber).
+        let snapshot = current_runtime_view(&state, &viewport);
+        assert_eq!(snapshot.reading_direction, ReadingDirection::Ltr);
+        apply_global_view_to_runtime(&settings, &state, &viewport);
+        assert_eq!(
+            state.borrow().reading_direction(),
+            ReadingDirection::Rtl,
+            "the dialog open seeds the runtime with the global Rtl (the clobber)"
+        );
+
+        // on_close_settings (Library branch): restore the snapshot.
+        state.borrow_mut().apply_resolved_view(snapshot);
+        viewport.borrow_mut().set_fit(snapshot.fit_mode);
+        assert_eq!(
+            state.borrow().reading_direction(),
+            ReadingDirection::Ltr,
+            "closing the Library dialog must restore the book's Ltr runtime"
+        );
+
+        // The later write-back therefore pins the BOOK's own value (Ltr), not Rtl.
+        let (_, ov) = view_override_to_write_back(
+            state.borrow().open_file(),
+            state.borrow().reading_direction(),
+            state.borrow().spread_mode(),
+            state.borrow().cover_mode(),
+            viewport.borrow().fit_mode(),
+            state.borrow().is_inherit_pending(),
+        )
+        .expect("a book is open => write-back tuple");
+        assert_eq!(
+            ov.reading_direction,
+            Some(ReadingDirection::Ltr),
+            "the write-back after a Library dialog open/close must preserve the book's Ltr"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     // ---- inherit-pending guard (#415: reset-to-global undone on close) -----

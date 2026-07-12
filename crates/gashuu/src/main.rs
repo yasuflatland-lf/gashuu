@@ -46,8 +46,8 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use thumbnail_strip::ThumbnailController;
 pub(crate) use view_sync::{
-    apply_global_view_to_runtime, current_book_name, route_view_modes_to_sink, write_back_position,
-    ViewModeRoute,
+    apply_global_view_to_runtime, current_book_name, current_runtime_view,
+    route_view_modes_to_sink, write_back_position, ViewModeRoute,
 };
 #[cfg(not(test))]
 use viewer_state::SpreadCacheState;
