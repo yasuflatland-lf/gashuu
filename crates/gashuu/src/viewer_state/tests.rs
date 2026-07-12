@@ -1544,3 +1544,73 @@ fn page_count_opt_is_some_with_real_count() {
     assert_eq!(state.page_count(), 5);
     assert_eq!(state.page_count_opt().map(NonZeroUsize::get), Some(5));
 }
+
+// ---- inherit-pending guard (#415: reset-to-global undone on close) ------
+
+#[test]
+fn inherit_pending_defaults_false() {
+    // A freshly constructed state pins normally (no reset performed).
+    assert!(!ViewerState::new().is_inherit_pending());
+}
+
+#[test]
+fn mark_inherit_pending_sets_and_setters_clear_it() {
+    // A "Reset to global" marks the book inherit-pending...
+    let mut state = double_state();
+    state.mark_inherit_pending();
+    assert!(state.is_inherit_pending());
+
+    // ...and a subsequent REAL reading-direction change clears it, so the next
+    // write-back pins the runtime again (the guard must not block re-selection).
+    assert!(state.set_reading_direction(ReadingDirection::Rtl));
+    assert!(!state.is_inherit_pending());
+}
+
+#[test]
+fn mark_inherit_pending_cleared_by_spread_and_cover_setters() {
+    // Each mode setter that actually changes a value re-enables pinning.
+    let mut state = double_state();
+    state.mark_inherit_pending();
+    assert!(state.set_spread_mode(SpreadMode::Single));
+    assert!(!state.is_inherit_pending());
+
+    state.mark_inherit_pending();
+    assert!(state.set_cover_mode(CoverMode::Paired));
+    assert!(!state.is_inherit_pending());
+}
+
+#[test]
+fn mark_inherit_pending_cleared_by_keyboard_toggles() {
+    // Keyboard D/R/C toggles are real mode changes too, so they clear the flag.
+    let mut state = double_state();
+    state.mark_inherit_pending();
+    assert!(state.toggle_spread());
+    assert!(!state.is_inherit_pending());
+
+    state.mark_inherit_pending();
+    assert!(state.toggle_cover());
+    assert!(!state.is_inherit_pending());
+
+    state.mark_inherit_pending();
+    assert!(state.toggle_reading_direction());
+    assert!(!state.is_inherit_pending());
+}
+
+#[test]
+fn idempotent_setter_keeps_inherit_pending() {
+    // Selecting the SAME value is a no-op change: the book keeps inheriting, so
+    // the flag must survive (only a real deviation re-pins).
+    let mut state = double_state(); // Rtl-default settings? built with Ltr direction.
+    state.mark_inherit_pending();
+    assert!(!state.set_reading_direction(ReadingDirection::Ltr)); // already Ltr
+    assert!(state.is_inherit_pending());
+}
+
+#[test]
+fn set_source_clears_inherit_pending() {
+    // Opening (or replacing) a book drops the previous book's inherit intent.
+    let mut state = double_state();
+    state.mark_inherit_pending();
+    state.set_source(mock_with(3));
+    assert!(!state.is_inherit_pending());
+}

@@ -194,6 +194,12 @@ pub(crate) fn wire_settings_handlers(
                 }
                 // Apply the global defaults to the runtime + view.
                 apply_global_view_to_runtime(&settings, &state, &viewport);
+                // Guard the on-close write-back (#415): keep this book's override
+                // EMPTY (inherit) until the user changes a view mode again. Without
+                // this, `write_back_view_override` would re-pin the four runtime
+                // fields on dialog close and instantly undo the reset. Marked AFTER
+                // `apply_global_view_to_runtime`, whose setters would otherwise clear it.
+                state.borrow_mut().mark_inherit_pending();
                 refresh(
                     &ui,
                     &state.borrow(),
@@ -407,6 +413,10 @@ pub(crate) fn wire_view_mode_handlers(
                 // owns fit_mode, persisted to the book's per-book override, not Settings.
                 if viewport.borrow().fit_mode() != mode {
                     viewport.borrow_mut().set_fit(mode);
+                    // Fit lives on ViewportState, so its change can't clear the
+                    // inherit-pending guard the way the ViewerState setters do (#415);
+                    // clear it here so a fit change after a reset re-enables pinning.
+                    state.borrow_mut().clear_inherit_pending();
                     refresh(
                         &ui,
                         &state.borrow(),

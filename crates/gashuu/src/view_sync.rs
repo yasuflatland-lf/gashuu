@@ -192,6 +192,13 @@ pub(crate) fn write_back_position(
 /// caller persists it), `None` otherwise. The override carries all four current
 /// runtime modes as `Some(_)`: while a book is open, ITS modes are authoritative,
 /// so a write-back fully pins them (a later "reset to global" clears them again).
+///
+/// `inherit_pending` is the "Reset to global" guard: when the open book was just
+/// reset and no mode has changed since, the write-back must keep the override
+/// EMPTY (`ViewOverride::none()`) rather than re-pin the runtime — otherwise
+/// closing the dialog would instantly undo the reset. Cleared by any real mode
+/// change (see `ViewerState`), so a re-selection after reset still pins normally.
+///
 /// Extracted (mirrors `position_to_write_back`) so the predicate is unit-tested
 /// without the effectful `set_overrides` + `save`.
 fn view_override_to_write_back(
@@ -200,17 +207,21 @@ fn view_override_to_write_back(
     spread_mode: gashuu_core::SpreadMode,
     cover_mode: gashuu_core::CoverMode,
     fit_mode: FitMode,
+    inherit_pending: bool,
 ) -> Option<(PathBuf, ViewOverride)> {
     open_file.map(|p| {
-        (
-            p.to_path_buf(),
+        let overrides = if inherit_pending {
+            // Keep inheriting: an empty override falls back to every global default.
+            ViewOverride::none()
+        } else {
             ViewOverride {
                 reading_direction: Some(reading_direction),
                 spread_mode: Some(spread_mode),
                 cover_mode: Some(cover_mode),
                 fit_mode: Some(fit_mode),
-            },
-        )
+            }
+        };
+        (p.to_path_buf(), overrides)
     })
 }
 
@@ -237,6 +248,7 @@ fn write_back_view_override(
             s.spread_mode(),
             s.cover_mode(),
             viewport.borrow().fit_mode(),
+            s.is_inherit_pending(),
         )
     }) else {
         return; // no book open — nothing to write back
@@ -375,6 +387,7 @@ mod tests {
                 gashuu_core::SpreadMode::Single,
                 gashuu_core::CoverMode::Standalone,
                 FitMode::Whole,
+                false,
             )
             .is_none(),
             "no open file => no write-back"
@@ -390,6 +403,7 @@ mod tests {
             gashuu_core::SpreadMode::Double,
             gashuu_core::CoverMode::Paired,
             FitMode::Actual,
+            false,
         );
         let (p, ov) = result.expect("open file => write-back tuple");
         assert_eq!(p, path);
@@ -397,5 +411,52 @@ mod tests {
         assert_eq!(ov.spread_mode, Some(gashuu_core::SpreadMode::Double));
         assert_eq!(ov.cover_mode, Some(gashuu_core::CoverMode::Paired));
         assert_eq!(ov.fit_mode, Some(FitMode::Actual));
+    }
+
+    // ---- inherit-pending guard (#415: reset-to-global undone on close) -----
+
+    #[test]
+    fn view_override_to_write_back_inherit_pending_keeps_override_empty() {
+        // CX repro: a book is open AND was just "reset to global" (inherit_pending),
+        // so the write-back on dialog close must keep the override EMPTY (inherit),
+        // NOT re-pin the four current runtime modes.
+        let path = PathBuf::from("/manga/book.cbz");
+        let result = view_override_to_write_back(
+            Some(path.as_path()),
+            ReadingDirection::Rtl,
+            gashuu_core::SpreadMode::Double,
+            gashuu_core::CoverMode::Paired,
+            FitMode::Actual,
+            true,
+        );
+        let (p, ov) = result.expect("open file => write-back tuple");
+        assert_eq!(p, path);
+        assert!(
+            ov.is_empty(),
+            "an inherit-pending book must persist an EMPTY override (all None), \
+             so the reset is not undone on close"
+        );
+    }
+
+    #[test]
+    fn view_override_to_write_back_pins_when_flag_cleared_after_reset() {
+        // Regression case: after reset the user changes a mode again, which clears
+        // inherit_pending; the write-back must then re-create the override with the
+        // four current runtime modes (the guard does not block re-selection).
+        let path = PathBuf::from("/manga/book.cbz");
+        let (_, ov) = view_override_to_write_back(
+            Some(path.as_path()),
+            ReadingDirection::Ltr,
+            gashuu_core::SpreadMode::Single,
+            gashuu_core::CoverMode::Standalone,
+            FitMode::Whole,
+            false,
+        )
+        .expect("open file => write-back tuple");
+        assert!(!ov.is_empty(), "a cleared flag must pin the runtime modes");
+        assert_eq!(ov.reading_direction, Some(ReadingDirection::Ltr));
+        assert_eq!(ov.spread_mode, Some(gashuu_core::SpreadMode::Single));
+        assert_eq!(ov.cover_mode, Some(gashuu_core::CoverMode::Standalone));
+        assert_eq!(ov.fit_mode, Some(FitMode::Whole));
     }
 }
