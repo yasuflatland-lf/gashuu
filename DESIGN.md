@@ -541,8 +541,8 @@ thumbnail surfaces.
 **Spinner.** A `loading.svg` image, colorized `{colors.text-faint}` (`Theme.text-faint`), centered
 in the slot, with a continuous CSS-style rotation (`animation-tick() / 2s` → 360°). Size: 21% of
 `Math.min(slot-width, slot-height)` — a Fibonacci-adjacent ratio applied to the smaller slot
-dimension so the spinner scales naturally for both portrait-dominant single-page and
-landscape-dominant double-spread slots.
+dimension so the spinner scales naturally for both portrait-dominant double-spread and
+landscape-dominant single-page slots.
 
 **Overlay discipline.** The placeholder is declared AFTER the page image in `PageView.slint`, so it
 layers over the image area rather than beneath it. When the decode arrives, `leading-loading` /
@@ -846,7 +846,7 @@ adapting to the live window size.
 
 ### Window-size adaptation
 - **Spread auto-layout**: the existing `Auto` spread mode resolves single vs double from the
-  window aspect ratio (landscape/square → double, portrait → single) and follows live resizes.
+  window aspect ratio (landscape/square → single, portrait → double) and follows live resizes.
   This is the primary responsive behavior and the visual system must compose with it.
 - **Carousel**: every loaded cover renders at every window width; the focused cover stays
   centered and covers past the window edge simply clip. (An earlier neighbor-drop — centered
