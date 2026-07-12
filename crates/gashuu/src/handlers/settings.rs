@@ -8,9 +8,9 @@ use crate::page_loader::PageController;
 use crate::viewer_state::ViewerState;
 use crate::viewport::ViewportState;
 use crate::{
-    apply_global_view_to_runtime, cover_loader, i18n, push_selection_toolbar_state, refresh,
-    refresh_library_carousel, report_save_error, route_view_modes_to_sink, with_ui,
-    CarouselRefresh, ViewModeRoute, ViewerWindow,
+    apply_global_view_to_runtime, cover_loader, current_runtime_view, i18n,
+    push_selection_toolbar_state, refresh, refresh_library_carousel, report_save_error,
+    route_view_modes_to_sink, with_ui, CarouselRefresh, ViewModeRoute, ViewerWindow,
 };
 use gashuu_core::{CacheConfig, Library, Settings, ThumbnailCache, ViewOverride};
 use slint::ComponentHandle;
@@ -46,6 +46,14 @@ pub(crate) fn wire_settings_handlers(
     let selection = Rc::clone(selection);
     let localizer = Rc::clone(localizer);
 
+    // Snapshot of the open book's runtime view, taken by `on_open_settings` just
+    // before the Library-screen dialog seeds the SHARED runtime with global
+    // defaults, and consumed by `on_close_settings` to restore it (issue #414).
+    // Some only while a book was open at Library-dialog-open time; None otherwise,
+    // so a pure-Library dialog (no book open) and the Viewer branch both no-op.
+    let pre_dialog_view: Rc<RefCell<Option<gashuu_core::ResolvedView>>> =
+        Rc::new(RefCell::new(None));
+
     // Open the settings dialog. Display modes are read from the RUNTIME source of truth
     // (state/viewport) so it never shows a stale value; cache/preload/track from Settings.
     {
@@ -54,6 +62,7 @@ pub(crate) fn wire_settings_handlers(
         let settings = Rc::clone(&settings);
         let viewport = Rc::clone(&viewport);
         let localizer = Rc::clone(&localizer);
+        let pre_dialog_view = Rc::clone(&pre_dialog_view);
         ui.on_open_settings(move || {
             with_ui(&ui_weak, |ui| {
                 // screen 1 = Viewer (per-book), screen 0 = Library (global defaults).
@@ -61,6 +70,14 @@ pub(crate) fn wire_settings_handlers(
                 // On the Library screen the dialog edits GLOBAL defaults, so mirror them
                 // into the runtime first (it seeds from there); a book re-applies its override.
                 if !per_book {
+                    // Before seeding the SHARED runtime with global defaults, snapshot the
+                    // open book's runtime so `on_close_settings` can restore it (issue #414);
+                    // otherwise this seed clobbers the book's runtime and the later leave/exit
+                    // write-back would persist the global values as the book's override.
+                    // None when no book is open, so a pure-Library dialog has nothing to restore.
+                    let has_book = state.borrow().open_file().is_some();
+                    *pre_dialog_view.borrow_mut() =
+                        has_book.then(|| current_runtime_view(&state, &viewport));
                     apply_global_view_to_runtime(&settings, &state, &viewport);
                 }
                 let s = settings.borrow();
@@ -99,6 +116,7 @@ pub(crate) fn wire_settings_handlers(
         let viewport = Rc::clone(&viewport);
         let library = Rc::clone(&library);
         let localizer = Rc::clone(&localizer);
+        let pre_dialog_view = Rc::clone(&pre_dialog_view);
         ui.on_close_settings(move || {
             with_ui(&ui_weak, |ui| {
                 ui.set_show_settings(false);
@@ -119,6 +137,15 @@ pub(crate) fn wire_settings_handlers(
                             &e,
                             "failed to save settings from dialog",
                         );
+                    }
+                    // Restore the open book's runtime that the dialog overwrote with global
+                    // defaults on open (issue #414). The global reconcile+save above already
+                    // captured any Library-screen edits, so putting the book's own runtime
+                    // back makes the later leave/exit write-back pin the BOOK's value instead
+                    // of the transiently-global one. No-op when no book was open at open time.
+                    if let Some(v) = pre_dialog_view.borrow_mut().take() {
+                        state.borrow_mut().apply_resolved_view(v);
+                        viewport.borrow_mut().set_fit(v.fit_mode);
                     }
                     ui.invoke_focus_carousel();
                 } else {
