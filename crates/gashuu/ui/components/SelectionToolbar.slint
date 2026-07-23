@@ -56,8 +56,8 @@ export component SelectionToolbar inherits Rectangle {
     // Gating the color to `transparent` makes draw_box_shadow early-return (alpha 0).
     // Direct ternary, not states[] (root's own prop). NO opacity (HiDPI child-blur).
     drop-shadow-color: root.active ? Theme.shadow-popover : transparent;
-    drop-shadow-blur: 22px;
-    drop-shadow-offset-y: 8px;
+    drop-shadow-blur: Theme.shadow-blur-float;
+    drop-shadow-offset-y: Theme.shadow-offset-float;
 
     // Glass layer 3: top highlight rim, inset horizontally by half the pill height
     // so it stays inside the rounded corners (same as NavBar).
@@ -139,7 +139,7 @@ export component SelectionToolbar inherits Rectangle {
                     select-all-capsule.background: Theme.accent-glow;
                     select-all-capsule.border-color: Theme.accent;
                     select-all-capsule.drop-shadow-color: Theme.accent-glow;
-                    select-all-capsule.drop-shadow-blur: 12px;
+                    select-all-capsule.drop-shadow-blur: Theme.glow-blur;
                 }
             ]
 

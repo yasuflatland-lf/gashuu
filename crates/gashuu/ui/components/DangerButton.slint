@@ -36,12 +36,12 @@ export component DangerButton inherits Rectangle {
         pressed when touch.pressed : {
             root.background: Theme.danger.darker(0.20);
             root.drop-shadow-color: Theme.danger-glow;
-            root.drop-shadow-blur: 12px;
+            root.drop-shadow-blur: Theme.glow-blur;
         }
         hover when touch.has-hover : {
             root.background: Theme.danger.darker(0.08);
             root.drop-shadow-color: Theme.danger-glow;
-            root.drop-shadow-blur: 12px;
+            root.drop-shadow-blur: Theme.glow-blur;
         }
     ]
 
