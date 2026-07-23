@@ -4,12 +4,12 @@
 # falls back to `cargo install` and compiles them from source (~8 min on a cold
 # Windows runner). The aqua backend fetches a prebuilt binstall, and mise sequences
 # it before the cargo: tools so binstall is ready when they install.
-"aqua:cargo-bins/cargo-binstall" = "1.20.1"
+"aqua:cargo-bins/cargo-binstall" = "1.21.0"
 # rustfmt/clippy must be requested explicitly or rustup uses the minimal profile.
 # llvm-tools-preview (needed only by cargo-llvm-cov) is intentionally omitted here so
 # the per-OS `app` jobs don't pull it; the coverage-only `core` CI job adds it via
 # `rustup component add` — see mise.coverage.toml.
-rust = { version = "1.96.1", components = "rustfmt,clippy" }
+rust = { version = "1.97.0", components = "rustfmt,clippy" }
 "cargo:cargo-nextest" = "0.9.137"
 
 [settings]
