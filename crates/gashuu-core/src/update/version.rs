@@ -22,7 +22,17 @@ pub fn is_update_available(current: &str, latest: &str) -> bool {
 /// True iff an update should be surfaced to the user: newer than `current` AND
 /// not the version the user chose to skip.
 pub fn should_notify(current: &str, latest_version: &str, skipped: Option<&str>) -> bool {
-    is_update_available(current, latest_version) && skipped != Some(latest_version)
+    if !is_update_available(current, latest_version) {
+        return false;
+    }
+    let Some(skipped) = skipped else {
+        return true;
+    };
+    match (parse(skipped), parse(latest_version)) {
+        (Some(s), Some(l)) => s != l,
+        // Unparseable input: fall back to the raw comparison.
+        _ => skipped != latest_version,
+    }
 }
 
 #[cfg(test)]
@@ -61,6 +71,21 @@ mod tests {
         assert!(should_notify("0.10.0", "0.11.0", None));
         assert!(should_notify("0.10.0", "0.11.0", Some("0.10.5")));
         assert!(!should_notify("0.10.0", "0.11.0", Some("0.11.0")));
+    }
+
+    #[test]
+    fn should_notify_compares_skipped_version_using_semver() {
+        assert!(!should_notify("0.10.0", "v0.11.0", Some("0.11.0")));
+    }
+
+    #[test]
+    fn should_notify_tolerates_uppercase_v_on_skipped_version() {
+        assert!(!should_notify("0.10.0", "0.11.0", Some("V0.11.0")));
+    }
+
+    #[test]
+    fn should_notify_falls_back_to_raw_comparison_for_unparseable_skip() {
+        assert!(should_notify("0.10.0", "0.11.0", Some("not-a-version")));
     }
 
     #[test]
