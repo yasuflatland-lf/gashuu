@@ -208,6 +208,20 @@ pub struct OpenRegistration {
 }
 
 impl Library {
+    /// The book stored under `path` (canonical-path identity), if any.
+    fn find_book(&self, path: &Path) -> Option<&Book> {
+        self.books.iter().find(|book| book.path() == path)
+    }
+
+    fn find_book_mut(&mut self, path: &Path) -> Option<&mut Book> {
+        self.books.iter_mut().find(|book| book.path() == path)
+    }
+
+    /// Membership form of `find_book` for the `.any()` call sites.
+    fn contains_path(&self, path: &Path) -> bool {
+        self.books.iter().any(|book| book.path() == path)
+    }
+
     /// An empty library.
     pub fn new() -> Self {
         Self::default()
@@ -245,10 +259,7 @@ impl Library {
     /// rather than a dangling bookmark.
     pub fn bookmark(&self) -> Option<&Path> {
         let last_opened = self.last_opened()?;
-        self.books
-            .iter()
-            .any(|b| b.path() == last_opened)
-            .then_some(last_opened)
+        self.contains_path(last_opened).then_some(last_opened)
     }
 
     /// Add `path` to the shelf. Canonicalizes best-effort (falling back to the
@@ -261,9 +272,7 @@ impl Library {
         // Preserve the public contract: `Some` only for a newly stored book,
         // `None` for an already-present duplicate.
         added.then(|| {
-            self.books
-                .iter()
-                .find(|b| b.path() == canonical)
+            self.find_book(&canonical)
                 .map(Book::path)
                 .expect("just-added book must be present")
         })
@@ -278,7 +287,7 @@ impl Library {
     /// `add`; not part of the public surface.
     fn add_canonical(&mut self, path: PathBuf) -> (PathBuf, bool) {
         let canonical = path.canonicalize().unwrap_or(path);
-        if self.books.iter().any(|b| b.path() == canonical) {
+        if self.contains_path(&canonical) {
             return (canonical, false);
         }
         self.books.push(Book::from_path(canonical.clone()));
@@ -353,7 +362,7 @@ impl Library {
         // Clear a `last_opened` whose path is no longer in the shelf (e.g.
         // after an external edit removed a book without going through `remove`).
         if let Some(ref p) = self.last_opened {
-            if !self.books.iter().any(|b| b.path() == p.as_path()) {
+            if !self.contains_path(p) {
                 self.last_opened = None;
             }
         }
@@ -394,7 +403,7 @@ impl Library {
         // books are still in the shelf. Iterate the sorted set for a deterministic report.
         let mut report = RemovalReport::default();
         for &path in &requested {
-            if self.books.iter().any(|b| b.path() == path) {
+            if self.contains_path(path) {
                 report.removed.push(path.to_path_buf());
             } else {
                 report.not_found.push(path.to_path_buf());
@@ -435,7 +444,7 @@ impl Library {
     /// `Some`, always points at a shelved book (a stale bookmark is dropped).
     pub fn restore(&mut self, books: Vec<Book>, last_opened: Option<PathBuf>) {
         for book in books {
-            if !self.books.iter().any(|b| b.path() == book.path()) {
+            if !self.contains_path(book.path()) {
                 self.books.push(book);
             }
         }
@@ -443,7 +452,7 @@ impl Library {
         // Restore the bookmark, but only if it points at a book now on the shelf,
         // upholding the `last_opened`-is-a-member invariant.
         if let Some(p) = last_opened {
-            if self.books.iter().any(|b| b.path() == p) {
+            if self.contains_path(&p) {
                 self.last_opened = Some(p);
             }
         }
@@ -451,18 +460,14 @@ impl Library {
 
     /// The last-viewed leading page index for `path` (0 when unknown).
     pub fn resume_page(&self, path: &Path) -> usize {
-        self.books
-            .iter()
-            .find(|b| b.path() == path)
-            .map(Book::resume_page)
-            .unwrap_or(0)
+        self.find_book(path).map(Book::resume_page).unwrap_or(0)
     }
 
     /// Record `page` as the last-viewed leading page index for `path`. Returns
     /// `false` when the path is absent OR the value is unchanged (mirrors the
     /// `jump_to` "did it actually move" convention, so callers can skip a save).
     pub fn set_resume_page(&mut self, path: &Path, page: usize) -> bool {
-        match self.books.iter_mut().find(|b| b.path() == path) {
+        match self.find_book_mut(path) {
             Some(book) if book.resume_page != page => {
                 book.resume_page = page;
                 true
@@ -477,7 +482,7 @@ impl Library {
     /// positive" invariant (a measured count is never `0`, the unknown encoding)
     /// is now a type fact carried by the parameter, so no runtime guard is needed.
     pub fn set_page_count(&mut self, path: &Path, count: NonZeroUsize) -> bool {
-        match self.books.iter_mut().find(|b| b.path() == path) {
+        match self.find_book_mut(path) {
             Some(book) if book.page_count != Some(count) => {
                 book.page_count = Some(count);
                 true
@@ -491,7 +496,7 @@ impl Library {
     /// so callers can skip a save). The aggregate owns this mutation; `Book` has
     /// no setter.
     pub fn set_overrides(&mut self, path: &Path, overrides: ViewOverride) -> bool {
-        match self.books.iter_mut().find(|b| b.path() == path) {
+        match self.find_book_mut(path) {
             Some(book) if book.overrides != overrides => {
                 book.overrides = overrides;
                 true
@@ -503,9 +508,7 @@ impl Library {
     /// The view overrides for `path`, or an all-None override when `path` is
     /// absent (so callers always get a value to `resolve`).
     pub fn overrides_for(&self, path: &Path) -> ViewOverride {
-        self.books
-            .iter()
-            .find(|b| b.path() == path)
+        self.find_book(path)
             .map(Book::overrides)
             .unwrap_or_default()
     }
@@ -535,9 +538,7 @@ impl Library {
         // Resolve the resume position from the book stored under `stored`, so the
         // `last_opened`-is-a-member invariant holds by construction (the lookup is total).
         let resume = self
-            .books
-            .iter()
-            .find(|b| b.path() == stored)
+            .find_book(&stored)
             .map(Book::progress)
             .expect("registered book must be present");
         self.last_opened = Some(stored);
