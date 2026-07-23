@@ -34,8 +34,8 @@ export component GlassModal inherits Rectangle {
         border-width: 1px;
         border-color: Theme.glass-border;
         drop-shadow-color: Theme.shadow-popover;
-        drop-shadow-blur: 22px;
-        drop-shadow-offset-y: 8px;
+        drop-shadow-blur: Theme.shadow-blur-float;
+        drop-shadow-offset-y: Theme.shadow-offset-float;
 
         // Layer 3: 1px top inner highlight, inset horizontally by ~half the radius
         // so it stays inside the rounded corners (NavBar idiom).

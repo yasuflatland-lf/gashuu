@@ -25,7 +25,7 @@ export component Dropdown inherits Rectangle {
     // Soft accent-glow focus halo (one drop-shadow, no spread; discrete change —
     // animating drop-shadow is version-fragile, so only the border-color fades).
     drop-shadow-color: fs.has-focus ? Theme.accent-glow : transparent;
-    drop-shadow-blur: fs.has-focus ? Theme.space-sm : 0px;
+    drop-shadow-blur: fs.has-focus ? Theme.focus-glow-blur : 0px;
     animate border-color { duration: Theme.motion-fast; }
 
     // Sole mutator: update the selection and notify Rust. The Rust setter is
@@ -108,7 +108,7 @@ export component Dropdown inherits Rectangle {
             border-width: 1px;
             border-color: Theme.glass-border;
             drop-shadow-color: Theme.shadow-popover;
-            drop-shadow-blur: 12px;
+            drop-shadow-blur: Theme.glow-blur;
             drop-shadow-offset-y: 4px;
 
             VerticalLayout {

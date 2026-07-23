@@ -25,7 +25,7 @@ export component FocusButton inherits FocusScope {
         border-width: parent.has-focus ? 1px : 0px;
         border-color: parent.has-focus ? Theme.accent : transparent;
         drop-shadow-color: parent.has-focus ? Theme.accent-glow : transparent;
-        drop-shadow-blur: parent.has-focus ? Theme.space-sm : 0px;
+        drop-shadow-blur: parent.has-focus ? Theme.focus-glow-blur : 0px;
         animate border-color { duration: Theme.motion-fast; }
     }
     slot := HorizontalLayout {

@@ -21,7 +21,7 @@ export component Toggle inherits Rectangle {
     border-width: 1px;
     border-color: fs.has-focus ? Theme.accent : Theme.hairline-float;
     drop-shadow-color: fs.has-focus ? Theme.accent-glow : transparent;
-    drop-shadow-blur: fs.has-focus ? Theme.space-sm : 0px;
+    drop-shadow-blur: fs.has-focus ? Theme.focus-glow-blur : 0px;
     animate background, border-color { duration: Theme.motion-fast; }
 
     function flip() {
