@@ -9,6 +9,7 @@
 //! `reading_direction`; this state only exposes the leading/trailing images.
 
 use crate::keymap::NavAction;
+use crate::viewport::ViewportState;
 use gashuu_core::{
     cache::CacheDispatch, ArchiveLoader, ArchivePolicy, CacheConfig, CoreError, CoverMode,
     DecodedImage, ImageCache, Language, PageSource, ReadingDirection, ResolvedView, Settings,
@@ -607,19 +608,14 @@ impl ViewerState {
         self.language
     }
 
-    /// Apply a fully resolved per-book view to the runtime modes. Delegates to the
-    /// idempotent `set_*` setters (each re-anchors the index for pairing changes
-    /// at most once), so applying a resolved view after `jump_to` keeps the resumed
-    /// page on a valid spread leading. `fit_mode` is intentionally NOT applied here:
-    /// it is owned by `ViewportState`, which the caller updates via `set_fit`.
-    ///
-    /// Callers applying a full `ResolvedView` MUST also call
-    /// `ViewportState::set_fit(view.fit_mode)` separately — this method applies only
-    /// the three `ViewerState`-owned modes (direction/spread/cover).
-    pub fn apply_resolved_view(&mut self, view: ResolvedView) {
+    /// Apply a fully resolved per-book view to the runtime: the three
+    /// ViewerState-owned modes AND the viewport-owned fit. Fit stays owned by
+    /// ViewportState; this method is the one place the pairing happens.
+    pub fn apply_resolved_view(&mut self, view: ResolvedView, viewport: &mut ViewportState) {
         self.set_reading_direction(view.reading_direction);
         self.set_spread_mode(view.spread_mode);
         self.set_cover_mode(view.cover_mode);
+        viewport.set_fit(view.fit_mode);
     }
 
     /// Re-anchor `index` onto a valid leading for the current modes after a
