@@ -55,9 +55,7 @@ use viewer_state::{StatusContent, ViewerState};
 use viewport::ViewportState;
 
 /// Load a persisted value, falling back to its `Default` on a RECOVERABLE
-/// failure. The single home of the corrupt-file recovery policy — default on
-/// error, collect a surfaceable notice, log a warning — which was hand-written
-/// once per source before. `label` names the source for both the `errs` notice
+/// failure. `label` names the source for both the `errs` notice
 /// (`"<label> (<e>)"`, surfaced on the home screen) and the log. A missing file
 /// returns `Ok(default)` from the loader, so this fallback fires only on a
 /// GENUINE failure (corrupt data, I/O error, `NoDataDir`). Stays UI-side (it
@@ -116,14 +114,51 @@ fn main() -> color_eyre::Result<()> {
     );
     tracing_subscriber::fmt().with_env_filter(env_filter).init();
 
-    // Load settings/library via `load_or_default` (default-on-error + collect a notice).
-    // Surface the notices AFTER the initial refresh, which overwrites status-text.
+    // Load persisted state, collecting notices to surface AFTER the initial refresh,
+    // which overwrites status-text.
     let mut load_errs: Vec<String> = Vec::new();
     let settings = load_or_default("settings", Settings::load, &mut load_errs);
     // Self-heal an invalid settings file: in-memory values are already sane, but the
     // bad bytes persist. Rewrite at startup so a crash before clean exit can't lose it.
     repair_settings_file_if_needed(&settings, &mut load_errs);
-    let library = load_or_default("library", Library::load, &mut load_errs);
+    let library = match Library::load() {
+        Ok(library) => library,
+        Err(e) => {
+            tracing::warn!(error = %e, "failed to load library; using defaults");
+            let notice = match Library::data_path() {
+                Ok(path) if path.exists() => {
+                    let unix_now_secs = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_secs();
+                    match Library::quarantine_corrupt_file(&path, unix_now_secs) {
+                        Ok(destination) => {
+                            tracing::warn!(
+                                path = %destination.display(),
+                                "corrupt library file kept aside"
+                            );
+                            let destination_name = destination
+                                .file_name()
+                                .unwrap_or_default()
+                                .to_string_lossy();
+                            format!("library ({e}); corrupt file kept as {destination_name}")
+                        }
+                        Err(quarantine_error) => {
+                            tracing::warn!(
+                                error = %quarantine_error,
+                                path = %path.display(),
+                                "failed to keep corrupt library file aside"
+                            );
+                            format!("library ({e})")
+                        }
+                    }
+                }
+                _ => format!("library ({e})"),
+            };
+            load_errs.push(notice);
+            Library::new()
+        }
+    };
 
     let ui = ViewerWindow::new()?;
     // Boot the Fluent localizer with the persisted language; `apply()` pushes
