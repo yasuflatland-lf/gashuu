@@ -12,7 +12,7 @@ use crate::keymap::NavAction;
 use gashuu_core::{
     cache::CacheDispatch, ArchiveLoader, ArchivePolicy, CacheConfig, CoreError, CoverMode,
     DecodedImage, ImageCache, Language, PageSource, ReadingDirection, ResolvedView, Settings,
-    SpreadContext, SpreadLayout, SpreadMode,
+    Spread, SpreadContext, SpreadLayout, SpreadMode,
 };
 use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
@@ -270,18 +270,22 @@ impl ViewerState {
         moved
     }
 
-    /// Whether a hypothetical jump to `page` would land on a double-page spread
-    /// (used by the scrubber preview to show 1 vs 2 thumbnails WITHOUT changing
-    /// the current index). Normalizes `page` to its spread leading for the
-    /// current modes, then asks the pure `spread_at` whether that spread has a
-    /// trailing page. Returns `false` when no source is loaded.
-    pub fn preview_is_double(&self, page: usize) -> bool {
-        let Some(count) = self.page_count_opt() else {
-            return false;
-        };
+    /// The spread the scrubber preview/commit would land on for `page`: clamps,
+    /// normalizes to the containing spread for the CURRENT modes, and returns it.
+    /// `None` when no source is loaded. Does NOT move the index.
+    pub fn preview_spread(&self, page: usize) -> Option<Spread> {
+        let count = self.page_count_opt()?;
         let ctx = self.spread_ctx();
         let lead = ctx.normalize(page.min(count.get() - 1));
-        ctx.spread_at(lead).trailing.is_some()
+        Some(ctx.spread_at(lead))
+    }
+
+    /// Whether a hypothetical jump to `page` would land on a double-page spread
+    /// (used by the scrubber preview to show 1 vs 2 thumbnails WITHOUT changing
+    /// the current index). Returns `false` when no source is loaded.
+    pub fn preview_is_double(&self, page: usize) -> bool {
+        self.preview_spread(page)
+            .is_some_and(|s| s.trailing.is_some())
     }
 
     // Test-only accessors: in a binary crate `pub` is not a public API surface, so

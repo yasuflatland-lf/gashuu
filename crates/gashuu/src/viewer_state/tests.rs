@@ -1,5 +1,5 @@
 use super::*;
-use gashuu_core::{MockPageSource, PageEntry};
+use gashuu_core::{spread_at, MockPageSource, PageEntry};
 use std::io::Cursor;
 
 fn tiny_png() -> Vec<u8> {
@@ -1191,6 +1191,76 @@ fn scrub_fraction_is_total_function_no_nan_panic() {
     assert_eq!(p, 0);
     let p2 = scrub_fraction_to_page(f32::INFINITY, 8, true);
     assert_eq!(p2, 7);
+}
+
+#[test]
+fn preview_spread_normalizes_double_paired_raw_page() {
+    let mut state = ViewerState::from_settings(&Settings {
+        spread_mode: SpreadMode::Double,
+        cover_mode: CoverMode::Paired,
+        ..Default::default()
+    });
+    state.set_source(mock_with(10));
+
+    assert_eq!(
+        state.preview_spread(3),
+        Some(spread_at(10, SpreadLayout::Double, CoverMode::Paired, 2))
+    );
+}
+
+#[test]
+fn preview_spread_double_paired_tail_uses_distinct_pages() {
+    let mut state = ViewerState::from_settings(&Settings {
+        spread_mode: SpreadMode::Double,
+        cover_mode: CoverMode::Paired,
+        ..Default::default()
+    });
+    state.set_source(mock_with(2));
+
+    assert_eq!(
+        state.preview_spread(1),
+        Some(spread_at(2, SpreadLayout::Double, CoverMode::Paired, 0))
+    );
+}
+
+#[test]
+fn preview_spread_double_standalone_cover_is_single() {
+    let mut state = double_state();
+    state.set_source(mock_with(10));
+
+    assert_eq!(
+        state.preview_spread(0),
+        Some(spread_at(
+            10,
+            SpreadLayout::Double,
+            CoverMode::Standalone,
+            0
+        ))
+    );
+}
+
+#[test]
+fn preview_spread_single_mode_keeps_requested_page() {
+    let mut state = ViewerState::new();
+    state.set_source(mock_with(10));
+    let page = 3;
+
+    assert_eq!(
+        state.preview_spread(page),
+        Some(spread_at(
+            10,
+            SpreadLayout::Single,
+            CoverMode::Standalone,
+            page
+        ))
+    );
+}
+
+#[test]
+fn preview_spread_is_none_with_no_source() {
+    let state = ViewerState::new();
+
+    assert_eq!(state.preview_spread(3), None);
 }
 
 #[test]
