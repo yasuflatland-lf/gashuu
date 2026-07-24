@@ -212,6 +212,8 @@ fn main() -> color_eyre::Result<()> {
         Rc::clone(&settings),
         Rc::clone(&viewport),
         Rc::clone(&library),
+        Box::new(|library| library.save()),
+        Box::new(|settings| settings.save()),
     ));
 
     // Seed the carousel from the persisted library so boot shows saved books. This is

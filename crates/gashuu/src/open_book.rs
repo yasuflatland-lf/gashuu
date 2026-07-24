@@ -19,6 +19,9 @@ use crate::viewer_state::ViewerState;
 use crate::viewport::ViewportState;
 use crate::{persist_leave_point, ViewModeRoute};
 
+type SaveLibrary = Box<dyn Fn(&Library) -> Result<(), CoreError>>;
+type SaveSettings = Box<dyn Fn(&Settings) -> Result<(), CoreError>>;
+
 /// Neutral content description of notices to append to the status line after
 /// an open. No i18n; all string formatting happens in `i18n::dynamic`.
 ///
@@ -87,21 +90,28 @@ pub(crate) struct OpenBookUseCase {
     settings: Rc<RefCell<Settings>>,
     viewport: Rc<RefCell<ViewportState>>,
     library: Rc<RefCell<Library>>,
+    save_library: SaveLibrary,
+    save_settings: SaveSettings,
 }
 
 impl OpenBookUseCase {
-    // Four explicit collaborators (#151 explicit-handle policy: named params, not an AppState bundle).
+    // Explicit collaborators and persistence effects (#151 explicit-handle policy:
+    // named params, not an AppState bundle).
     pub(crate) fn new(
         state: Rc<RefCell<ViewerState>>,
         settings: Rc<RefCell<Settings>>,
         viewport: Rc<RefCell<ViewportState>>,
         library: Rc<RefCell<Library>>,
+        save_library: SaveLibrary,
+        save_settings: SaveSettings,
     ) -> Self {
         Self {
             state,
             settings,
             viewport,
             library,
+            save_library,
+            save_settings,
         }
     }
 
@@ -175,7 +185,7 @@ impl OpenBookUseCase {
             let mut s = settings.borrow_mut();
             if s.track_recent_sources {
                 s.push_recent(path.to_path_buf());
-                let result = s.save();
+                let result = (self.save_settings)(&s);
                 if let Err(e) = &result {
                     tracing::error!(error = %e, "failed to save settings on open");
                 }
@@ -217,7 +227,7 @@ impl OpenBookUseCase {
         // save, else a detached write could land after a later save and revert position/drop book.
         // Opening a different book is now exactly two library writes: one outgoing
         // leave-point write above, then this immediate register_opened write (formerly three).
-        let library_save = library.borrow().save();
+        let library_save = (self.save_library)(&library.borrow());
         if let Err(e) = &library_save {
             tracing::error!(error = %e, "failed to save library on open");
         }
@@ -570,26 +580,51 @@ mod tests {
         }
     }
 
-    // ---- OpenBookUseCase::run headless branches (unlocked by the headless refactor) ----
-    //
-    // These drive `run` with no UI window — the win of headless-ization. Only the
-    // branches that reach no real `save()` are covered: `run`'s success path calls the real
-    // `library.borrow().save()` (a `data_path()` write), so it is deliberately NOT driven
-    // end-to-end here (it would clobber the developer's real `library.json`, and the codebase
-    // convention is to never call the real `save()` in tests). The synchronous open-time save
-    // invariant (#360) stays covered hermetically above via `save_to`.
-    //
-    // Keep these fixtures NEVER-ADDED: opening an empty source for a book already in the
-    // library would remove it and reach the real `library.save()` — clobbering real data.
+    // ---- OpenBookUseCase::run headless branches -----------------------------
 
     /// Build a use case over fresh in-memory collaborators; `library` is passed in so
     /// the test can inspect it after `run`. `Settings::default()` has
     /// `track_recent_sources = false`, so no settings save is attempted either.
     fn use_case_over(library: Rc<RefCell<Library>>) -> OpenBookUseCase {
         let settings = Settings::default();
+        use_case_with_saves(
+            settings,
+            library,
+            |_| panic!("library save must not be attempted"),
+            |_| panic!("settings save must not be attempted"),
+        )
+        .0
+    }
+
+    fn use_case_with_saves(
+        settings: Settings,
+        library: Rc<RefCell<Library>>,
+        save_library: impl Fn(&Library) -> Result<(), CoreError> + 'static,
+        save_settings: impl Fn(&Settings) -> Result<(), CoreError> + 'static,
+    ) -> (OpenBookUseCase, Rc<RefCell<ViewerState>>) {
         let state = Rc::new(RefCell::new(ViewerState::from_settings(&settings)));
         let viewport = Rc::new(RefCell::new(ViewportState::from_settings(&settings)));
-        OpenBookUseCase::new(state, Rc::new(RefCell::new(settings)), viewport, library)
+        let use_case = OpenBookUseCase::new(
+            Rc::clone(&state),
+            Rc::new(RefCell::new(settings)),
+            viewport,
+            library,
+            Box::new(save_library),
+            Box::new(save_settings),
+        );
+        (use_case, state)
+    }
+
+    /// Create a real folder source using the same zero-byte image fixtures as
+    /// the add and leave-point tests. Probing counts the entries without decoding them.
+    fn make_book_dir(parent: &Path, pages: usize) -> PathBuf {
+        let source = parent.join("fixture-book");
+        std::fs::create_dir(&source).expect("create fixture book");
+        for page in 0..pages {
+            std::fs::write(source.join(format!("page{page:03}.png")), [])
+                .expect("write fixture page");
+        }
+        source
     }
 
     #[test]
@@ -641,6 +676,148 @@ mod tests {
         assert!(
             library.borrow().books().is_empty(),
             "an empty source is never registered in the library"
+        );
+    }
+
+    #[test]
+    fn run_success_registers_probed_count_persists_and_resumes() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let source = make_book_dir(root.path(), 4);
+        let canonical = source.canonicalize().expect("canonical fixture path");
+        let library_store = root.path().join("saved-library.json");
+        let settings_store = root.path().join("saved-settings.json");
+
+        let mut seeded = Library::new();
+        assert!(seeded.add(canonical.clone()).is_some());
+        assert!(seeded.set_resume_page(&canonical, 2));
+        let library = Rc::new(RefCell::new(seeded));
+
+        let save_library_to = library_store.clone();
+        let (use_case, state) = use_case_with_saves(
+            Settings::default(),
+            Rc::clone(&library),
+            move |value| value.save_to(&save_library_to),
+            move |value| value.save_to(&settings_store),
+        );
+
+        let outcome = use_case.run(&source);
+
+        match outcome {
+            OpenOutcome::Success {
+                notices,
+                count_changed,
+            } => {
+                assert!(count_changed, "probing must back-fill the page count");
+                assert!(notices.library_save_err.is_none());
+            }
+            other => panic!("expected Success, got {other:?}"),
+        }
+        assert_eq!(
+            state.borrow().index(),
+            2,
+            "the viewer must resume at the pre-seeded page"
+        );
+
+        let saved = Library::load_from(&library_store).expect("reload injected library save");
+        let stored = saved
+            .books()
+            .iter()
+            .find(|book| book.path() == canonical)
+            .expect("registered fixture must reach the injected save");
+        assert_eq!(
+            stored.page_count_opt(),
+            Some(4),
+            "the injected save must receive the probed page count"
+        );
+        assert_eq!(stored.resume_page(), 2);
+    }
+
+    #[test]
+    fn run_library_save_failure_is_reported_on_success() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let source = make_book_dir(root.path(), 1);
+        let settings_store = root.path().join("saved-settings.json");
+        let library = Rc::new(RefCell::new(Library::new()));
+        let (use_case, _) = use_case_with_saves(
+            Settings::default(),
+            Rc::clone(&library),
+            |_| Err(err()),
+            move |value| value.save_to(&settings_store),
+        );
+
+        let outcome = use_case.run(&source);
+
+        match outcome {
+            OpenOutcome::Success { notices, .. } => {
+                let detail = notices
+                    .library_save_err
+                    .expect("the injected library failure must be surfaced");
+                assert!(detail.contains('x'));
+            }
+            other => panic!("expected Success with a save notice, got {other:?}"),
+        }
+        assert_eq!(library.borrow().books().len(), 1);
+    }
+
+    #[test]
+    fn run_with_recent_tracking_saves_settings_once() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let source = make_book_dir(root.path(), 1);
+        let library_store = root.path().join("saved-library.json");
+        let settings_store = root.path().join("saved-settings.json");
+        let settings_saves = Rc::new(std::cell::Cell::new(0));
+        let observed_saves = Rc::clone(&settings_saves);
+        let save_library_to = library_store.clone();
+        let save_settings_to = settings_store.clone();
+        let settings = Settings {
+            track_recent_sources: true,
+            ..Settings::default()
+        };
+        let (use_case, _) = use_case_with_saves(
+            settings,
+            Rc::new(RefCell::new(Library::new())),
+            move |value| value.save_to(&save_library_to),
+            move |value| {
+                observed_saves.set(observed_saves.get() + 1);
+                value.save_to(&save_settings_to)
+            },
+        );
+
+        let outcome = use_case.run(&source);
+
+        assert!(matches!(outcome, OpenOutcome::Success { .. }));
+        assert_eq!(settings_saves.get(), 1);
+        let saved = Settings::load_from(&settings_store).expect("reload injected settings save");
+        assert_eq!(saved.recent_sources.first(), Some(&source));
+    }
+
+    #[test]
+    fn run_without_recent_tracking_never_saves_settings() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let source = make_book_dir(root.path(), 1);
+        let library_store = root.path().join("saved-library.json");
+        let settings_store = root.path().join("saved-settings.json");
+        let settings_saves = Rc::new(std::cell::Cell::new(0));
+        let observed_saves = Rc::clone(&settings_saves);
+        let save_library_to = library_store.clone();
+        let save_settings_to = settings_store.clone();
+        let (use_case, _) = use_case_with_saves(
+            Settings::default(),
+            Rc::new(RefCell::new(Library::new())),
+            move |value| value.save_to(&save_library_to),
+            move |value| {
+                observed_saves.set(observed_saves.get() + 1);
+                value.save_to(&save_settings_to)
+            },
+        );
+
+        let outcome = use_case.run(&source);
+
+        assert!(matches!(outcome, OpenOutcome::Success { .. }));
+        assert_eq!(settings_saves.get(), 0);
+        assert!(
+            !settings_store.exists(),
+            "tracking off must not write settings"
         );
     }
 }
