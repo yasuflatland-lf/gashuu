@@ -119,8 +119,8 @@ export component ViewerPill inherits Rectangle {
     border-width: 1px;
     border-color: Theme.glass-border;
     drop-shadow-color: Theme.shadow-popover;
-    drop-shadow-blur: 22px;
-    drop-shadow-offset-y: 8px;
+    drop-shadow-blur: Theme.shadow-blur-float;
+    drop-shadow-offset-y: Theme.shadow-offset-float;
 
     // Background hover sensor for the gaps between items. Declared first so the
     // interactive children sit in front; this only catches spaces they don't cover.

@@ -107,7 +107,7 @@ component CoverCard inherits Rectangle {
         background: Theme.surface-raised;             // placeholder backing
         // Card shadow on the CENTERED cover only (DESIGN.md elevation.card); gated on
         // `elevated` so only the pass-2 top copy paints it (else it composites twice).
-        drop-shadow-blur: (root.centered && root.elevated) ? 22px : 0px;
+        drop-shadow-blur: (root.centered && root.elevated) ? Theme.shadow-blur-float : 0px;
         drop-shadow-color: Theme.shadow-card;
         // Focus ring: 3px accent on the centered cover; in selection mode only, a
         // hovered non-centered cover gets a 1px ring (single-source via pass-1 `cover-touch`).
