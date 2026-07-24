@@ -1525,17 +1525,51 @@ fn set_cache_config_updates_fields() {
 #[test]
 fn apply_resolved_view_sets_direction_spread_cover() {
     // Defaults are Single/Standalone/Ltr; the resolved view differs on all three so
-    // asserts aren't vacuous. fit_mode is ignored here (ViewportState owns it).
+    // asserts aren't vacuous.
     let mut s = ViewerState::new();
-    s.apply_resolved_view(ResolvedView {
-        reading_direction: ReadingDirection::Rtl,
-        spread_mode: SpreadMode::Double,
-        cover_mode: CoverMode::Paired,
-        fit_mode: gashuu_core::FitMode::Actual,
-    });
+    let mut viewport = ViewportState::from_settings(&Settings::default());
+    s.apply_resolved_view(
+        ResolvedView {
+            reading_direction: ReadingDirection::Rtl,
+            spread_mode: SpreadMode::Double,
+            cover_mode: CoverMode::Paired,
+            fit_mode: gashuu_core::FitMode::Actual,
+        },
+        &mut viewport,
+    );
     assert_eq!(s.reading_direction(), ReadingDirection::Rtl);
     assert_eq!(s.spread_mode(), SpreadMode::Double);
     assert_eq!(s.cover_mode(), CoverMode::Paired);
+}
+
+#[test]
+fn apply_resolved_view_sets_fit_and_resets_zoom() {
+    let mut state = ViewerState::new();
+    let mut viewport = ViewportState::from_settings(&Settings::default());
+    viewport.resize(200.0, 200.0);
+    viewport.set_content(200.0, 200.0);
+    viewport.zoom_step(true);
+    assert!(
+        viewport.geometry().2 > 200.0 * gashuu_core::ZOOM_MIN,
+        "test setup must start zoomed above ZOOM_MIN"
+    );
+
+    state.apply_resolved_view(
+        ResolvedView {
+            reading_direction: ReadingDirection::Ltr,
+            spread_mode: SpreadMode::Single,
+            cover_mode: CoverMode::Standalone,
+            fit_mode: gashuu_core::FitMode::Actual,
+        },
+        &mut viewport,
+    );
+
+    assert_eq!(viewport.fit_mode(), gashuu_core::FitMode::Actual);
+    assert_eq!(
+        viewport.geometry().2,
+        200.0 * gashuu_core::ZOOM_MIN,
+        "applying the resolved fit must reset zoom to ZOOM_MIN"
+    );
 }
 
 #[test]

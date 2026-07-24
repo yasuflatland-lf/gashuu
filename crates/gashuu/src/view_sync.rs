@@ -125,6 +125,8 @@ pub(crate) fn current_runtime_view(
 /// direction/spread/cover, `ViewportState` for fit) — the inverse of
 /// `apply_runtime_view_to_settings`. Used when the dialog edits the global defaults
 /// (opening Library settings) and when resetting an open book to global.
+/// This starts from `Settings`, not a `ResolvedView`, so the individual setters
+/// remain intentional rather than routing through `apply_resolved_view`.
 ///
 /// Borrow discipline: the shared `settings.borrow()` (`s`) is held while each
 /// `borrow_mut()` runs, which is safe because `settings`, `state`, and
@@ -487,8 +489,9 @@ mod tests {
         );
 
         // on_close_settings (Library branch): restore the snapshot.
-        state.borrow_mut().apply_resolved_view(snapshot);
-        viewport.borrow_mut().set_fit(snapshot.fit_mode);
+        state
+            .borrow_mut()
+            .apply_resolved_view(snapshot, &mut viewport.borrow_mut());
         assert_eq!(
             state.borrow().reading_direction(),
             ReadingDirection::Ltr,

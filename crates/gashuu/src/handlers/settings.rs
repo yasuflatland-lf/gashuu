@@ -168,8 +168,9 @@ pub(crate) fn wire_settings_handlers(
                     // back makes the later leave/exit write-back pin the BOOK's value instead
                     // of the transiently-global one. No-op when no book was open at open time.
                     if let Some(v) = pre_dialog_view.borrow_mut().take() {
-                        state.borrow_mut().apply_resolved_view(v);
-                        viewport.borrow_mut().set_fit(v.fit_mode);
+                        state
+                            .borrow_mut()
+                            .apply_resolved_view(v, &mut viewport.borrow_mut());
                     }
                     ui.invoke_focus_carousel();
                 } else {

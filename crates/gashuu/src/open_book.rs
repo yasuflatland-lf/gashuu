@@ -212,8 +212,9 @@ impl OpenBookUseCase {
                 .unwrap_or_default();
             overrides.resolve(&settings.borrow())
         };
-        state.borrow_mut().apply_resolved_view(resolved);
-        viewport.borrow_mut().set_fit(resolved.fit_mode);
+        state
+            .borrow_mut()
+            .apply_resolved_view(resolved, &mut viewport.borrow_mut());
         // Persist the registered book + back-filled page count; this MUST stay a SYNCHRONOUS
         // save, else a detached write could land after a later save and revert position/drop book.
         if let Err(e) = library.borrow().save() {
