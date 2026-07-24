@@ -9,6 +9,7 @@ mod add_controller;
 mod carousel;
 mod carousel_refresh;
 mod cover_loader;
+mod dialog_session;
 mod enum_adapters;
 mod handlers;
 mod i18n;
@@ -36,6 +37,7 @@ pub(crate) use carousel_refresh::{
     refresh_library_carousel, snap_carousel_focus_to_last_opened, visible_index_to_path,
     CarouselRefresh,
 };
+use dialog_session::DialogSession;
 use gashuu_core::{CoreError, DecodedImage, Library, ReadingDirection, Settings};
 use library_model::{LibrarySearchState, LibrarySelectionState};
 use navigation::{screen_to_index, NavState};
@@ -46,8 +48,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use thumbnail_strip::ThumbnailController;
 pub(crate) use view_sync::{
-    apply_global_view_to_runtime, current_book_name, current_runtime_view,
-    route_view_modes_to_sink, write_back_position, ViewModeRoute,
+    current_book_name, route_view_modes_to_sink, write_back_position, ViewModeRoute,
 };
 #[cfg(not(test))]
 use viewer_state::SpreadCacheState;
@@ -171,6 +172,7 @@ fn main() -> color_eyre::Result<()> {
     let state = Rc::new(RefCell::new(ViewerState::from_settings(&settings)));
     let viewport = Rc::new(RefCell::new(ViewportState::from_settings(&settings)));
     let settings = Rc::new(RefCell::new(settings));
+    let dialog_session = Rc::new(RefCell::new(DialogSession::new()));
 
     // The persisted shelf, shared so the carousel model build, the focused-index
     // clamp, and later PR-L's add / PR-R's position write-back can all reach it.
@@ -279,7 +281,16 @@ fn main() -> color_eyre::Result<()> {
     );
     handlers::wire_viewer_input_handlers(&ui, &state, &viewport, &pages, &localizer);
     handlers::wire_settings_handlers(
-        &ui, &state, &viewport, &settings, &library, &covers, &pages, &search, &selection,
+        &ui,
+        &state,
+        &viewport,
+        &settings,
+        &dialog_session,
+        &library,
+        &covers,
+        &pages,
+        &search,
+        &selection,
         &localizer,
     );
     handlers::wire_view_mode_handlers(
