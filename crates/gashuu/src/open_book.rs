@@ -17,7 +17,7 @@ use gashuu_core::{CoreError, Library, Settings, ThumbnailCache};
 use crate::cover_loader::purge_cover;
 use crate::viewer_state::ViewerState;
 use crate::viewport::ViewportState;
-use crate::{route_view_modes_to_sink, write_back_position, ViewModeRoute};
+use crate::{persist_leave_point, ViewModeRoute};
 
 /// Neutral content description of notices to append to the status line after
 /// an open. No i18n; all string formatting happens in `i18n::dynamic`.
@@ -124,13 +124,10 @@ impl OpenBookUseCase {
         let viewport = &self.viewport;
         let library = &self.library;
 
-        // Write back the current book's position before we replace the source.
-        // `open_file()` is None when no book is open, so this is a no-op then.
-        // This headless use case has no live UI for the outgoing book; failures stay logged.
-        let _ = write_back_position(state, library);
-        // Capture the OUTGOING book's view modes before the source is replaced, so a
-        // bare D/R/C/fit toggle persists without the settings dialog (ADR-0007 clobber-trap).
-        let _ = route_view_modes_to_sink(
+        // Capture the OUTGOING book's position and view modes before replacing
+        // the source, then save them together. This headless use case has no
+        // live UI for the outgoing book, so failures stay logged.
+        let _ = persist_leave_point(
             ViewModeRoute::OpenDifferentBook,
             state,
             viewport,
@@ -218,6 +215,8 @@ impl OpenBookUseCase {
             .apply_resolved_view(resolved, &mut viewport.borrow_mut());
         // Persist the registered book + back-filled page count; this MUST stay a SYNCHRONOUS
         // save, else a detached write could land after a later save and revert position/drop book.
+        // Opening a different book is now exactly two library writes: one outgoing
+        // leave-point write above, then this immediate register_opened write (formerly three).
         let library_save = library.borrow().save();
         if let Err(e) = &library_save {
             tracing::error!(error = %e, "failed to save library on open");

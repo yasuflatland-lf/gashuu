@@ -4,9 +4,9 @@ use crate::{
     cover_loader, i18n, use_cases,
 };
 use crate::{
-    apply_add_report, apply_outcomes, current_book_name, finalize_empty_book_rejected,
-    finalize_open, finalize_remove, go_to_viewer, push_selection_toolbar_state,
-    refresh_library_carousel, visible_index_to_path, with_ui, CarouselRefresh, ViewerWindow,
+    apply_add_report, current_book_name, finalize_empty_book_rejected, finalize_open,
+    finalize_remove, go_to_viewer, push_selection_toolbar_state, refresh_library_carousel,
+    visible_index_to_path, with_ui, CarouselRefresh, ViewerWindow,
 };
 use crate::{
     library_model::{LibrarySearchState, LibrarySelectionState},
@@ -114,7 +114,8 @@ pub(crate) fn wire_open_handlers(
     }
 
     // Bulk-add finalize (issue 206): drain this generation's outcomes (epoch-guarded;
-    // `None` = superseded), mutate the library on the UI thread, then run the add tail.
+    // `None` = superseded), then mutate + save the library together on the UI thread
+    // before running the rest of the add tail.
     {
         let ui_weak = ui.as_weak();
         let adder = Rc::clone(&adder);
@@ -128,7 +129,6 @@ pub(crate) fn wire_open_handlers(
                 let Some((outcomes, op)) = adder.take_outcomes(epoch.max(0) as usize) else {
                     return;
                 };
-                let report = apply_outcomes(&mut library.borrow_mut(), outcomes);
                 apply_add_report(
                     &ui,
                     &CarouselRefresh {
@@ -138,7 +138,7 @@ pub(crate) fn wire_open_handlers(
                         selection: &selection,
                         localizer: &localizer,
                     },
-                    report,
+                    outcomes,
                     op,
                     localizer.loader(),
                 );

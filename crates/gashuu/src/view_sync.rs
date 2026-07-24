@@ -7,8 +7,9 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 /// The leave/close point at which runtime view modes are persisted, naming WHERE
-/// the runtime came from so [`route_view_modes_to_sink`] can route to the right sink.
+/// the runtime came from so [`persist_leave_point`] can route to the right sink.
 /// One variant per production call site of the old write helpers.
+#[derive(Clone, Copy, Debug)]
 pub(crate) enum ViewModeRoute {
     /// Settings dialog closed on the Library screen (screen 0): the dialog edits
     /// the GLOBAL defaults, so the runtime is reconciled into `Settings`.
@@ -26,10 +27,12 @@ pub(crate) enum ViewModeRoute {
     AppExit,
 }
 
-/// THE single chokepoint that routes runtime view modes (direction/spread/cover/
-/// fit) to their persistence sink. It is the ONLY caller of `apply_runtime_view_to_settings`
-/// (runtime → GLOBAL `Settings`) and the only view_sync caller of
-/// `write_back_view_override` (runtime → PER-BOOK override).
+/// The ONE place a leave point persists the library: stages the position
+/// write-back (viewer-leaving routes) and the view-mode routing for `route`,
+/// then saves the library at most ONCE. Returns the save result for surfacing.
+/// Settings saves deliberately stay at their call sites (already <= 1 per
+/// event; consolidation evaluated and declined — geometry capture must precede
+/// the exit-time settings save).
 ///
 /// ADR-0007 clobber-trap, made structural here (it once shipped as a real bug):
 /// once view modes became per-book with a global fallback, EVERY "copy runtime →
@@ -46,13 +49,49 @@ pub(crate) enum ViewModeRoute {
 /// blanket-guarded on `open_file().is_none()`, or Library-dialog edits would be
 /// dropped. The exit path keeps the per-book write FIRST, then the open-state
 /// guard on the global reconcile.
-pub(crate) fn route_view_modes_to_sink(
+pub(crate) fn persist_leave_point(
     route: ViewModeRoute,
     state: &Rc<RefCell<ViewerState>>,
     viewport: &Rc<RefCell<ViewportState>>,
     settings: &Rc<RefCell<Settings>>,
     library: &Rc<RefCell<Library>>,
 ) -> Result<(), CoreError> {
+    persist_leave_point_with(route, state, viewport, settings, library, Library::save)
+}
+
+/// Save-injection seam for proving the one-save boundary without touching the
+/// process data directory. Production passes [`Library::save`].
+fn persist_leave_point_with(
+    route: ViewModeRoute,
+    state: &Rc<RefCell<ViewerState>>,
+    viewport: &Rc<RefCell<ViewportState>>,
+    settings: &Rc<RefCell<Settings>>,
+    library: &Rc<RefCell<Library>>,
+    save: impl FnOnce(&Library) -> Result<(), CoreError>,
+) -> Result<(), CoreError> {
+    if matches!(
+        route,
+        ViewModeRoute::LeaveViewer | ViewModeRoute::OpenDifferentBook | ViewModeRoute::AppExit
+    ) {
+        stage_position_write_back(state, library);
+    }
+    stage_view_modes_to_sink(route, state, viewport, settings, library);
+
+    let result = save(&library.borrow());
+    if let Err(e) = &result {
+        tracing::error!(error = %e, "failed to save library at leave point");
+    }
+    result
+}
+
+/// Stage the ADR-0007 view-mode sink mutation without performing I/O.
+fn stage_view_modes_to_sink(
+    route: ViewModeRoute,
+    state: &Rc<RefCell<ViewerState>>,
+    viewport: &Rc<RefCell<ViewportState>>,
+    settings: &Rc<RefCell<Settings>>,
+    library: &Rc<RefCell<Library>>,
+) {
     match route {
         ViewModeRoute::DialogClosedOnLibrary => {
             apply_runtime_view_to_settings(
@@ -60,15 +99,16 @@ pub(crate) fn route_view_modes_to_sink(
                 &viewport.borrow(),
                 &mut settings.borrow_mut(),
             );
-            Ok(())
         }
         ViewModeRoute::DialogClosedOnViewer
         | ViewModeRoute::LeaveViewer
-        | ViewModeRoute::OpenDifferentBook => write_back_view_override(state, viewport, library),
+        | ViewModeRoute::OpenDifferentBook => {
+            stage_view_override_write_back(state, viewport, library);
+        }
         ViewModeRoute::AppExit => {
             // Per-book override FIRST (no-op if no book is open), so the open
             // book's modes are saved before the open-state-guarded global reconcile.
-            let result = write_back_view_override(state, viewport, library);
+            stage_view_override_write_back(state, viewport, library);
             if state.borrow().open_file().is_none() {
                 apply_runtime_view_to_settings(
                     &state.borrow(),
@@ -76,7 +116,6 @@ pub(crate) fn route_view_modes_to_sink(
                     &mut settings.borrow_mut(),
                 );
             }
-            result
         }
     }
 }
@@ -86,7 +125,7 @@ pub(crate) fn route_view_modes_to_sink(
 /// `cover_mode`, and `fit_mode` are written back to `Settings`, so a new
 /// mode-mutation site can never "forget to mirror" — it only changes runtime
 /// state, and the next save reconciles automatically. Reached only via
-/// [`route_view_modes_to_sink`] (the routing chokepoint).
+/// [`persist_leave_point`] (the routing chokepoint).
 fn apply_runtime_view_to_settings(
     state: &ViewerState,
     viewport: &ViewportState,
@@ -176,18 +215,17 @@ pub(crate) fn current_book_name(state: &Rc<RefCell<ViewerState>>) -> String {
 /// Returns `Some((canonical_path, page_index))` when a write-back should be
 /// performed (a book is open), `None` otherwise. Extracted for table-testing
 /// so the predicate can be verified independently of the effectful
-/// `write_back_position` that actually calls `library.set_resume_page`.
+/// `stage_position_write_back` that actually calls `library.set_resume_page`.
 fn position_to_write_back(open_file: Option<&Path>, page: usize) -> Option<(PathBuf, usize)> {
     open_file.map(|p| (p.to_path_buf(), page))
 }
 
-/// Write the current reading position back to the Library and persist.
+/// Stage the current reading position in the Library without persisting.
 ///
 /// Called at every leave point: ↑ to Library, opening a different book,
 /// and app exit. `set_resume_page` returns `false` when the path is absent or
-/// the value is unchanged (idempotent). We do not guard `save()` on that
-/// return value — we always persist for simplicity (one short JSON write at
-/// most, and the result is idempotent on disk).
+/// the value is unchanged (idempotent). [`persist_leave_point`] performs the
+/// single save after every applicable mutation has been staged.
 ///
 /// Borrow discipline: `state` and `library` are distinct `RefCell`s, so
 /// borrowing one never affects the other. The opening `let` takes a single
@@ -195,26 +233,16 @@ fn position_to_write_back(open_file: Option<&Path>, page: usize) -> Option<(Path
 /// the end of the statement, before `library` is borrowed. Each statement's
 /// borrows drop before the next statement acquires a different borrow,
 /// following the one-statement rule in `docs/patterns.md`.
-pub(crate) fn write_back_position(
-    state: &Rc<RefCell<ViewerState>>,
-    library: &Rc<RefCell<Library>>,
-) -> Result<(), CoreError> {
+fn stage_position_write_back(state: &Rc<RefCell<ViewerState>>, library: &Rc<RefCell<Library>>) {
     // Extract the (path, page) tuple from the viewer state under one shared
     // borrow; the `Ref` drops at the `;` before `library` is borrowed.
     let Some((path, page)) = ({
         let s = state.borrow();
         position_to_write_back(s.open_file(), s.index())
     }) else {
-        return Ok(()); // no book open — nothing to write back
+        return; // no book open — nothing to write back
     };
-    // `set_resume_page` returns false when absent or unchanged; we persist
-    // unconditionally for simplicity (short JSON write, idempotent on disk).
     library.borrow_mut().set_resume_page(&path, page);
-    let result = library.borrow().save();
-    if let Err(e) = &result {
-        tracing::error!(error = %e, "failed to save library on position write-back");
-    }
-    result
 }
 
 /// Pure helper: decide what view override to write back for the open book.
@@ -257,20 +285,20 @@ fn view_override_to_write_back(
 }
 
 /// Write the current runtime view modes back to the OPEN book's override and
-/// persist. Reached ONLY via [`route_view_modes_to_sink`] (the routing chokepoint) for
-/// the viewer leave/close, open-a-different-book, and exit paths, so a bare
+/// stage it without persisting. Reached ONLY via [`persist_leave_point`] (the
+/// routing chokepoint) for the viewer leave/close, open-a-different-book, and exit paths, so a bare
 /// keyboard toggle (D/R/C/fit) persists per-book without opening the dialog.
 /// No-op when no book is open.
 ///
-/// Borrow discipline (mirrors `write_back_position`): the `state`/`viewport`
+/// Borrow discipline (mirrors `stage_position_write_back`): the `state`/`viewport`
 /// shared borrows are confined to the leading block expression and drop before
 /// `library.borrow_mut()`. `state` and `viewport` are distinct `RefCell`s, so
 /// holding shared borrows of both at once is fine.
-fn write_back_view_override(
+fn stage_view_override_write_back(
     state: &Rc<RefCell<ViewerState>>,
     viewport: &Rc<RefCell<ViewportState>>,
     library: &Rc<RefCell<Library>>,
-) -> Result<(), CoreError> {
+) {
     let Some((path, overrides)) = ({
         let s = state.borrow();
         view_override_to_write_back(
@@ -282,14 +310,9 @@ fn write_back_view_override(
             s.is_inherit_pending(),
         )
     }) else {
-        return Ok(()); // no book open — nothing to write back
+        return; // no book open — nothing to write back
     };
     library.borrow_mut().set_overrides(&path, overrides);
-    let result = library.borrow().save();
-    if let Err(e) = &result {
-        tracing::error!(error = %e, "failed to save library on view-override write-back");
-    }
-    result
 }
 
 #[cfg(test)]
@@ -409,14 +432,6 @@ mod tests {
         assert_eq!(pg, 0, "page 0 is a valid write-back (start of book)");
     }
 
-    #[test]
-    fn write_back_position_without_open_book_returns_ok() {
-        let state = Rc::new(RefCell::new(ViewerState::new()));
-        let library = Rc::new(RefCell::new(Library::new()));
-
-        assert!(write_back_position(&state, &library).is_ok());
-    }
-
     // ---- view_override_to_write_back (per-book overrides) ------------------
 
     #[test]
@@ -502,29 +517,150 @@ mod tests {
     }
 
     #[test]
-    fn route_view_modes_without_open_book_returns_ok() {
-        let state = Rc::new(RefCell::new(ViewerState::new()));
-        let settings = Rc::new(RefCell::new(Settings::default()));
-        let viewport = Rc::new(RefCell::new(ViewportState::from_settings(
-            &settings.borrow(),
-        )));
-        let library = Rc::new(RefCell::new(Library::new()));
-
-        assert!(route_view_modes_to_sink(
-            ViewModeRoute::DialogClosedOnViewer,
-            &state,
-            &viewport,
-            &settings,
-            &library,
-        )
-        .is_ok());
-        assert!(route_view_modes_to_sink(
+    fn persist_leave_point_saves_once_and_preserves_route_matrix() {
+        let routes = [
             ViewModeRoute::DialogClosedOnLibrary,
-            &state,
-            &viewport,
-            &settings,
-            &library,
-        )
-        .is_ok());
+            ViewModeRoute::DialogClosedOnViewer,
+            ViewModeRoute::LeaveViewer,
+            ViewModeRoute::OpenDifferentBook,
+            ViewModeRoute::AppExit,
+        ];
+
+        for route in routes {
+            for book_open in [false, true] {
+                let root = tempfile::tempdir().expect("tempdir");
+                let book = root.path().join("book");
+                std::fs::create_dir(&book).expect("create book");
+                for page in 0..3 {
+                    std::fs::write(book.join(format!("{page}.png")), []).expect("write page");
+                }
+
+                let mut runtime = ViewerState::new();
+                let mut library_value = Library::new();
+                let canonical = if book_open {
+                    runtime.open_path(&book).expect("open test book");
+                    runtime.jump_to(2);
+                    let canonical = runtime
+                        .open_file()
+                        .expect("open file after successful open")
+                        .to_path_buf();
+                    assert!(library_value.add(canonical.clone()).is_some());
+                    Some(canonical)
+                } else {
+                    None
+                };
+                runtime.set_reading_direction(ReadingDirection::Ltr);
+                runtime.set_spread_mode(SpreadMode::Single);
+                runtime.set_cover_mode(CoverMode::Standalone);
+
+                let initial_settings = Settings {
+                    reading_direction: ReadingDirection::Rtl,
+                    spread_mode: SpreadMode::Double,
+                    cover_mode: CoverMode::Paired,
+                    fit_mode: FitMode::Actual,
+                    ..Settings::default()
+                };
+                let state = Rc::new(RefCell::new(runtime));
+                let settings = Rc::new(RefCell::new(initial_settings));
+                let viewport = Rc::new(RefCell::new(ViewportState::from_settings(
+                    &settings.borrow(),
+                )));
+                viewport.borrow_mut().set_fit(FitMode::Whole);
+                let library = Rc::new(RefCell::new(library_value));
+                let save_count = std::cell::Cell::new(0);
+
+                let result =
+                    persist_leave_point_with(route, &state, &viewport, &settings, &library, |_| {
+                        save_count.set(save_count.get() + 1);
+                        Ok(())
+                    });
+
+                assert!(result.is_ok());
+                assert_eq!(
+                    save_count.get(),
+                    1,
+                    "{route:?}, book_open={book_open}: exactly one save"
+                );
+
+                let writes_global = matches!(route, ViewModeRoute::DialogClosedOnLibrary)
+                    || matches!(route, ViewModeRoute::AppExit) && !book_open;
+                let settings = settings.borrow();
+                assert_eq!(
+                    settings.reading_direction,
+                    if writes_global {
+                        ReadingDirection::Ltr
+                    } else {
+                        ReadingDirection::Rtl
+                    },
+                    "{route:?}, book_open={book_open}: global direction"
+                );
+                assert_eq!(
+                    settings.spread_mode,
+                    if writes_global {
+                        SpreadMode::Single
+                    } else {
+                        SpreadMode::Double
+                    },
+                    "{route:?}, book_open={book_open}: global spread"
+                );
+                assert_eq!(
+                    settings.cover_mode,
+                    if writes_global {
+                        CoverMode::Standalone
+                    } else {
+                        CoverMode::Paired
+                    },
+                    "{route:?}, book_open={book_open}: global cover"
+                );
+                assert_eq!(
+                    settings.fit_mode,
+                    if writes_global {
+                        FitMode::Whole
+                    } else {
+                        FitMode::Actual
+                    },
+                    "{route:?}, book_open={book_open}: global fit"
+                );
+                drop(settings);
+
+                if let Some(canonical) = canonical {
+                    let library = library.borrow();
+                    let writes_position = matches!(
+                        route,
+                        ViewModeRoute::LeaveViewer
+                            | ViewModeRoute::OpenDifferentBook
+                            | ViewModeRoute::AppExit
+                    );
+                    assert_eq!(
+                        library.resume_page(&canonical),
+                        if writes_position { 2 } else { 0 },
+                        "{route:?}: position sink"
+                    );
+
+                    let writes_override = !matches!(route, ViewModeRoute::DialogClosedOnLibrary);
+                    let overrides = library.overrides_for(&canonical);
+                    assert_eq!(
+                        overrides.reading_direction,
+                        writes_override.then_some(ReadingDirection::Ltr),
+                        "{route:?}: per-book direction"
+                    );
+                    assert_eq!(
+                        overrides.spread_mode,
+                        writes_override.then_some(SpreadMode::Single),
+                        "{route:?}: per-book spread"
+                    );
+                    assert_eq!(
+                        overrides.cover_mode,
+                        writes_override.then_some(CoverMode::Standalone),
+                        "{route:?}: per-book cover"
+                    );
+                    assert_eq!(
+                        overrides.fit_mode,
+                        writes_override.then_some(FitMode::Whole),
+                        "{route:?}: per-book fit"
+                    );
+                }
+            }
+        }
     }
 }
