@@ -10,8 +10,8 @@ use crate::page_loader::PageController;
 use crate::viewer_state::ViewerState;
 use crate::viewport::ViewportState;
 use crate::{
-    cover_loader, i18n, push_selection_toolbar_state, refresh, refresh_library_carousel,
-    route_view_modes_to_sink, with_ui, CarouselRefresh, ViewModeRoute, ViewerWindow,
+    cover_loader, i18n, persist_leave_point, push_selection_toolbar_state, refresh,
+    refresh_library_carousel, with_ui, CarouselRefresh, ViewModeRoute, ViewerWindow,
 };
 use gashuu_core::{CacheConfig, Library, Settings, ThumbnailCache, ViewOverride};
 use slint::ComponentHandle;
@@ -134,9 +134,9 @@ pub(crate) fn wire_settings_handlers(
             with_ui(&ui_weak, |ui| {
                 ui.set_show_settings(false);
                 // screen 0 = Library (GLOBAL defaults), 1 = Viewer (per-book override).
-                // Routing lives in `route_view_modes_to_sink` (ADR-0007 clobber-trap).
+                // Routing lives in `persist_leave_point` (ADR-0007 clobber-trap).
                 if ui.get_screen() == 0 {
-                    if let Err(e) = route_view_modes_to_sink(
+                    if let Err(e) = persist_leave_point(
                         ViewModeRoute::DialogClosedOnLibrary,
                         &state,
                         &viewport,
@@ -165,7 +165,7 @@ pub(crate) fn wire_settings_handlers(
                 } else {
                     // Persist the four view modes to this book's override. cache/preload/track
                     // are global, so save Settings too (its view-mode fields stay untouched).
-                    if let Err(e) = route_view_modes_to_sink(
+                    if let Err(e) = persist_leave_point(
                         ViewModeRoute::DialogClosedOnViewer,
                         &state,
                         &viewport,
@@ -382,7 +382,7 @@ pub(crate) fn wire_view_mode_handlers(
             with_ui(&ui_weak, |ui| {
                 let dir = index_to_reading_direction(i);
                 // Mutates the runtime view mode only; while a book is open it persists to
-                // the book's per-book override via `write_back_view_override`, not Settings.
+                // the book's per-book override via `persist_leave_point`, not Settings.
                 if state.borrow_mut().set_reading_direction(dir) {
                     refresh(
                         &ui,
@@ -406,7 +406,7 @@ pub(crate) fn wire_view_mode_handlers(
             with_ui(&ui_weak, |ui| {
                 let mode = index_to_spread_mode(i);
                 // Mutates the runtime view mode only; while a book is open it persists to
-                // the book's per-book override via `write_back_view_override`, not Settings.
+                // the book's per-book override via `persist_leave_point`, not Settings.
                 if state.borrow_mut().set_spread_mode(mode) {
                     refresh(
                         &ui,
@@ -430,7 +430,7 @@ pub(crate) fn wire_view_mode_handlers(
             with_ui(&ui_weak, |ui| {
                 let mode = index_to_cover_mode(i);
                 // Mutates the runtime view mode only; while a book is open it persists to
-                // the book's per-book override via `write_back_view_override`, not Settings.
+                // the book's per-book override via `persist_leave_point`, not Settings.
                 if state.borrow_mut().set_cover_mode(mode) {
                     refresh(
                         &ui,

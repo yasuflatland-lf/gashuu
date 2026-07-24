@@ -31,7 +31,6 @@ mod viewer_state;
 mod viewport;
 mod window_state;
 
-pub(crate) use add_books::apply_outcomes;
 pub(crate) use carousel_refresh::{
     apply_add_report, finalize_empty_book_rejected, finalize_remove, push_selection_toolbar_state,
     refresh_library_carousel, snap_carousel_focus_to_last_opened, visible_index_to_path,
@@ -47,9 +46,7 @@ use page_loader::{PageSlot, SpreadDecodeRequest};
 use std::cell::RefCell;
 use std::rc::Rc;
 use thumbnail_strip::ThumbnailController;
-pub(crate) use view_sync::{
-    current_book_name, route_view_modes_to_sink, write_back_position, ViewModeRoute,
-};
+pub(crate) use view_sync::{current_book_name, persist_leave_point, ViewModeRoute};
 #[cfg(not(test))]
 use viewer_state::SpreadCacheState;
 use viewer_state::{StatusContent, ViewerState};
@@ -317,13 +314,10 @@ fn main() -> color_eyre::Result<()> {
     // Persist page counts the cover prefetch resolved after the last refresh, so a book
     // counted this session isn't re-counted next launch. Safe: event loop exited.
     covers.flush_counts(&library);
-    // Write the current reading position back to the library before exit. Safe: the
-    // event loop has exited, so `state`/`library` are unborrowed.
-    // No live UI remains at exit, so write-back failures stay log-only.
-    let _ = write_back_position(&state, &library);
-    // Persist the open book's view modes to its override, mirroring into GLOBAL Settings
-    // only when no book is open (ADR-0007 clobber guard lives in `route_view_modes_to_sink`).
-    let _ = route_view_modes_to_sink(
+    // Stage position + view-mode routing, then persist the library exactly once.
+    // The event loop has exited, so all cells are unborrowed; with no live UI,
+    // failures stay log-only. Exit is now exactly one library write (formerly two).
+    let _ = persist_leave_point(
         ViewModeRoute::AppExit,
         &state,
         &viewport,

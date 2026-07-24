@@ -8,7 +8,8 @@
 //! and `handlers::settings`. `go_to_library` / `go_to_viewer` stay in `main.rs`
 //! and route their carousel work through here. UI-thread only.
 
-use crate::add_books::{select_add_notice, AddNotice, AddReport};
+use crate::add_books::{apply_outcomes_and_save, select_add_notice, AddNotice, AddReport};
+use crate::add_controller;
 use crate::carousel::{
     apply_selection_flags, bind_carousel_model, build_carousel_model, cover_requests,
 };
@@ -338,11 +339,10 @@ fn set_add_toast(ui: &ViewerWindow, text: String) {
     ui.set_add_toast_text(text.into());
 }
 
-/// Apply an already-computed add `report` to the library: persist, rebuild the
+/// Apply already-probed add `outcomes` to the library, persist, rebuild the
 /// filtered carousel, and surface the outcome on the status line, restoring
 /// carousel focus in every case. The UI-thread tail of the bulk add (issue 206),
-/// run from the `add-finalize` handler once the off-thread probe completes (and
-/// the `apply_outcomes` mutation has produced the `report`).
+/// run from the `add-finalize` handler once the off-thread probe completes.
 ///
 /// Shared by the Add Books and Add Folder paths; `op` distinguishes the two only
 /// in the save-failure trace message. When nothing new was added there is nothing
@@ -360,10 +360,12 @@ fn set_add_toast(ui: &ViewerWindow, text: String) {
 pub(crate) fn apply_add_report(
     ui: &ViewerWindow,
     deps: &CarouselRefresh,
-    report: AddReport,
+    outcomes: Vec<add_controller::ProbeOutcome>,
     op: &'static str,
     loader: &i18n_embed::fluent::FluentLanguageLoader,
 ) {
+    let (report, save_result) =
+        apply_outcomes_and_save(&mut deps.library.borrow_mut(), outcomes, Library::save);
     let AddReport {
         added: added_paths,
         skipped,
@@ -387,7 +389,6 @@ pub(crate) fn apply_add_report(
     }
     // Rebuild from in-memory state even if the save fails, so the added books are visible
     // (the save error is surfaced below). Focus is set explicitly later, so don't reset to 0.
-    let save_result = deps.library.borrow().save();
     // `search` and `library` are distinct RefCells, so this mut+shared borrow can't conflict.
     // `force_visible` recomputes internally, so the visible set is consistent before refresh.
     deps.search

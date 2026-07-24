@@ -9,8 +9,7 @@ use crate::viewer_state::{scrub_fraction_to_page, ViewerState};
 use crate::viewport::ViewportState;
 use crate::{
     apply_spread_geometry, apply_viewport, clear_page_view, current_page_1based, go_to_library,
-    refresh, route_view_modes_to_sink, with_ui, write_back_position, CarouselRefresh,
-    ViewModeRoute, ViewerWindow,
+    persist_leave_point, refresh, with_ui, CarouselRefresh, ViewModeRoute, ViewerWindow,
 };
 use crate::{cover_loader, i18n};
 use gashuu_core::{FitMode, Library, ReadingDirection, Settings};
@@ -370,7 +369,7 @@ pub(crate) fn wire_nav_handlers(
         let library = Rc::clone(&library);
         let pages = Rc::clone(&pages);
         let localizer = Rc::clone(&localizer);
-        // `settings` is captured only to satisfy `route_view_modes_to_sink`'s signature
+        // `settings` is captured only to satisfy `persist_leave_point`'s signature
         // on the GoToLibrary leave point; the LeaveViewer route never reads it.
         let settings = Rc::clone(&settings);
         // The carousel-refresh collaborators are captured because the GoToLibrary arm
@@ -409,7 +408,7 @@ pub(crate) fn wire_nav_handlers(
                         // menu/scrubber don't flash on every turn (pointer move + drag still reveal).
                     }
                     // Runtime state is the single source of truth for these modes;
-                    // `route_view_modes_to_sink` routes them to Settings/override at the next leave.
+                    // `persist_leave_point` routes them to Settings/override at the next leave.
                     KeyCommand::ToggleSpread => {
                         if state.borrow_mut().toggle_spread() {
                             refresh(
@@ -484,10 +483,9 @@ pub(crate) fn wire_nav_handlers(
                     // Up arrow returns to the Library carousel. Direction-independent
                     // (decoded in keymap); the seam flips NavState + syncs `screen`.
                     KeyCommand::GoToLibrary => {
-                        // Write position AND view modes back before leaving, so a D/R/C/fit
-                        // toggle while reading persists without opening settings (ADR-0007 routing).
-                        let position_save = write_back_position(&state, &library);
-                        let view_override_save = route_view_modes_to_sink(
+                        // Stage position AND view modes, then save exactly once before
+                        // leaving. A D/R/C/fit toggle persists without opening settings.
+                        let leave_save = persist_leave_point(
                             ViewModeRoute::LeaveViewer,
                             &state,
                             &viewport,
@@ -507,20 +505,12 @@ pub(crate) fn wire_nav_handlers(
                                 localizer: &localizer,
                             },
                         );
-                        if let Err(e) = position_save {
+                        if let Err(e) = leave_save {
                             report_save_error(
                                 &ui,
                                 localizer.loader(),
                                 &e,
-                                "failed to save library on position write-back",
-                            );
-                        }
-                        if let Err(e) = view_override_save {
-                            report_save_error(
-                                &ui,
-                                localizer.loader(),
-                                &e,
-                                "failed to save library on view-override write-back",
+                                "failed to save library on viewer leave",
                             );
                         }
                     }

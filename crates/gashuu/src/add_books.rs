@@ -3,12 +3,13 @@
 //! `Library` mutation that applies already-probed sources ([`apply_outcomes`]),
 //! and the pure status-routing decision ([`AddNotice`] / [`select_add_notice`]).
 //!
-//! The UI-finalize half — persisting, rebuilding the carousel, and surfacing the
-//! notice on the status line — lives in `crate::carousel_refresh::apply_add_report`.
+//! The UI-finalize half — applying + persisting through
+//! [`apply_outcomes_and_save`], rebuilding the carousel, and surfacing the notice
+//! on the status line — lives in `crate::carousel_refresh::apply_add_report`.
 //! The off-UI-thread PROBE half lives in `crate::add_controller`.
 
 use crate::add_controller;
-use gashuu_core::Library;
+use gashuu_core::{CoreError, Library};
 
 /// Outcome of an add batch: the canonical paths actually inserted (new books
 /// only, in INPUT order) and the count of paths REJECTED because they could not
@@ -79,6 +80,24 @@ pub(crate) fn apply_outcomes(
         }
     }
     AddReport { added, skipped }
+}
+
+/// Apply a probed batch and persist the resulting library mutation as one
+/// UI-thread operation. The injected `save` keeps the mutation/save boundary
+/// headless and testable. A batch that adds no books performs no save, preserving
+/// the add tail's existing duplicate/rejection short-circuit.
+pub(crate) fn apply_outcomes_and_save(
+    lib: &mut Library,
+    outcomes: Vec<add_controller::ProbeOutcome>,
+    save: impl Fn(&Library) -> Result<(), CoreError>,
+) -> (AddReport, Result<(), CoreError>) {
+    let report = apply_outcomes(lib, outcomes);
+    let save_result = if report.added.is_empty() {
+        Ok(())
+    } else {
+        save(lib)
+    };
+    (report, save_result)
 }
 
 /// Which status notice to surface after `apply_outcomes` applies a probed batch.
@@ -352,6 +371,33 @@ mod tests {
             book.page_count_opt(),
             Some(3),
             "the probed page count is recorded on add"
+        );
+    }
+
+    #[test]
+    fn apply_outcomes_and_save_returns_report_when_save_fails() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let book = make_book_dir(root.path(), "book", 2);
+        let outcomes = vec![add_controller::probe_path(
+            0,
+            book.clone(),
+            ArchivePolicy::default(),
+        )];
+        let mut lib = Library::new();
+
+        let (report, save_result) = apply_outcomes_and_save(&mut lib, outcomes, |_| {
+            Err(gashuu_core::CoreError::Io(std::io::Error::other(
+                "injected save failure",
+            )))
+        });
+
+        assert_eq!(report.added, vec![canon(&book)]);
+        assert_eq!(report.skipped, 0);
+        assert_eq!(lib.books().len(), 1, "the in-memory add is retained");
+        let error = save_result.expect_err("injected save must fail");
+        assert!(
+            error.to_string().contains("injected save failure"),
+            "the save error is returned alongside the report"
         );
     }
 
