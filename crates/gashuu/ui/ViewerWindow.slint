@@ -216,6 +216,9 @@ export component ViewerWindow inherits Window {
     // `show-update-available` is `in-out` so `later`/`skip` close it WITHOUT a Rust round-trip.
     // `update-notes-available`/`update-in-progress` gate optional dialog content.
     in-out property <bool> show-update-available: false;
+    // Single home of the "any modal is up" predicate. EVERY input guard (keys,
+    // tap, swipe, scroll, carousel modal-open) binds this — never re-spell the OR.
+    property <bool> any-modal-open: root.show-settings || root.show-shortcuts || root.show-confirm-delete || root.show-update-available;
     in property <string> update-current-version;
     in property <string> update-latest-version;
     in property <bool> update-notes-available: true;
@@ -298,7 +301,7 @@ export component ViewerWindow inherits Window {
         combined-add-picker: root.combined-add-picker;
         // Suppress the carousel's keyboard seams while a modal overlays the
         // Library — same condition the Viewer FocusScope uses (see `fs` below).
-        modal-open: root.show-settings || root.show-shortcuts || root.show-confirm-delete || root.show-update-available;
+        modal-open: root.any-modal-open;
         search-changed(q) => { root.library-search-changed(q); }
         // The nav's Settings button routes straight to the shared `open-settings` flow
         // (same handler the Viewer title bar uses), not a separate placeholder callback.
@@ -452,7 +455,7 @@ export component ViewerWindow inherits Window {
             fs := FocusScope {
                 key-pressed(event) => {
                     // Suppress background navigation while a modal overlay is open.
-                    if (root.show-settings || root.show-shortcuts || root.show-confirm-delete || root.show-update-available) { return reject; }
+                    if (root.any-modal-open) { return reject; }
                     if (event.text == Key.LeftArrow) {
                         root.nav("left");
                         return accept;
@@ -502,7 +505,7 @@ export component ViewerWindow inherits Window {
                     content-y: root.content-y;
                     content-w: root.content-w;
                     content-h: root.content-h;
-                    modal-open: root.show-settings || root.show-shortcuts || root.show-confirm-delete || root.show-update-available;
+                    modal-open: root.any-modal-open;
                     begin-pan() => { root.begin-pan(); }
                     pan-to(dx, dy) => { root.pan-to(dx, dy); }
                     begin-pinch() => { root.begin-pinch(); }
@@ -514,14 +517,14 @@ export component ViewerWindow inherits Window {
                     // tokens as the arrow keys, so keymap.rs resolves reading direction once.
                     // Same modal guard as the FocusScope (belt-and-braces under an overlay).
                     tapped(tx) => {
-                        if (!root.show-settings && !root.show-shortcuts && !root.show-confirm-delete && !root.show-update-available) {
+                        if (!root.any-modal-open) {
                             root.nav(tx < self.width / 2 ? "left" : "right");
                         }
                     }
                     // Two-finger horizontal swipe: routes its direction token into the SAME
                     // nav() seam as tap/arrows. Same modal guard as tapped (belt-and-braces).
                     page-swipe(dir) => {
-                        if (!root.show-settings && !root.show-shortcuts && !root.show-confirm-delete && !root.show-update-available) {
+                        if (!root.any-modal-open) {
                             root.nav(dir);
                         }
                     }

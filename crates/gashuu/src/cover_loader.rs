@@ -35,7 +35,8 @@ use crate::to_slint_image;
 use crate::ui_marshal::marshal_to_ui;
 use crate::{CarouselItem, ViewerWindow};
 use gashuu_core::{
-    cache_key, generate_cover, ArchiveLoader, DecodedImage, Library, ThumbnailCache,
+    cache_key, generate_cover, thumbnail_cache::source_mtime_secs, ArchiveLoader, DecodedImage,
+    Library, ThumbnailCache,
 };
 use lru::LruCache;
 use slint::{Model, VecModel};
@@ -254,31 +255,14 @@ impl Default for CoverController {
     }
 }
 
-/// Filesystem mtime of `path` as whole seconds since the Unix epoch, or `0` when
-/// the file is missing / has no readable mtime (an unavailable book still gets a
-/// stable, if degenerate, cache key). This is one of the three `cache_key` inputs
-/// so a modified file regenerates its cover automatically (the cache owns hashing).
-fn mtime_secs(path: &std::path::Path) -> i64 {
-    std::fs::metadata(path)
-        .and_then(|m| m.modified())
-        .ok()
-        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0)
-}
-
 /// Best-effort removal of `path`'s persistent cover — the single home of the
-/// cover-key purge recipe (`purge_cover_for(path, mtime_secs(path),
-/// &[CoverCachePolicy::DEFAULT.max_side])`), so the key ingredients never leak to
-/// callers. A zero purge count is EXPECTED (missing file, mtime drift,
-/// unwritable cache entry) and only warned: the orphan is harmless and the
-/// startup prune sweep reclaims it later (issue 143).
+/// app's cover purge policy (`purge_cover_for(path,
+/// &[CoverCachePolicy::DEFAULT.max_side])`). Core owns the mtime recipe, so the key
+/// ingredients never leak to callers. A zero purge count is EXPECTED (missing
+/// file, mtime drift, unwritable cache entry) and only warned: the orphan is
+/// harmless and the startup prune sweep reclaims it later (issue 143).
 pub(crate) fn purge_cover(cache: &ThumbnailCache, path: &std::path::Path) {
-    let removed = cache.purge_cover_for(
-        path,
-        mtime_secs(path),
-        &[CoverCachePolicy::DEFAULT.max_side],
-    );
+    let removed = cache.purge_cover_for(path, &[CoverCachePolicy::DEFAULT.max_side]);
     if removed == 0 {
         tracing::warn!(
             path = %path.display(),
@@ -519,7 +503,7 @@ impl CoverController {
             };
             let key = cache_key(
                 &req.path,
-                mtime_secs(&req.path),
+                source_mtime_secs(&req.path),
                 CoverCachePolicy::DEFAULT.max_side,
             );
             // MEM HIT: cover decoded earlier this session — serve the shared Arc straight to the

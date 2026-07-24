@@ -17,6 +17,30 @@ use slint::ComponentHandle;
 use std::cell::RefCell;
 use std::rc::Rc;
 
+fn clear_thumbnail_cache_after_library_save(
+    library_save_succeeded: bool,
+    open_cache: impl FnOnce() -> Result<ThumbnailCache, gashuu_core::CoreError>,
+) {
+    if !library_save_succeeded {
+        return;
+    }
+
+    match open_cache() {
+        Ok(cache) => {
+            let report = cache.clear();
+            tracing::info!(
+                files = report.removed_files,
+                bytes = report.removed_bytes,
+                "cleared thumbnail cache with reading history"
+            );
+        }
+        Err(e) => tracing::warn!(
+            error = %e,
+            "thumbnail cache unavailable; skipping purge on clear-history"
+        ),
+    }
+}
+
 /// Registers the settings/shortcuts dialog lifecycle callbacks (open, close,
 /// shortcuts overlay open/close, reset overrides,
 /// and the immediate data-clearing actions) onto `ui`.
@@ -271,6 +295,9 @@ pub(crate) fn wire_settings_handlers(
                 if let Some(ref e) = set_err {
                     tracing::error!(error = %e, "failed to persist settings while clearing reading history");
                 }
+                clear_thumbnail_cache_after_library_save(lib_err.is_none(), ThumbnailCache::new);
+                // CoverMemCache is intentionally left alone: the carousel is rebuilt
+                // empty below, and stale decoded entries are harmless and LRU-evicted.
                 // Recompute the (now empty) search projection, drop the selection, and
                 // project into the carousel. In-memory state is cleared regardless of save.
                 search
@@ -542,5 +569,49 @@ pub(crate) fn wire_view_mode_handlers(
                 );
             })
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::cell::Cell;
+
+    #[test]
+    fn successful_library_save_clears_thumbnail_cache() {
+        let dir = tempfile::tempdir().expect("create thumbnail cache fixture");
+        let cover = dir.path().join("cover.qoi");
+        let strip = dir.path().join("strip.qoi");
+        let stale_tmp = dir.path().join(".tmp-stale");
+        let unrelated = dir.path().join("keep.txt");
+        std::fs::write(&cover, b"cover").expect("write cover fixture");
+        std::fs::write(&strip, b"strip").expect("write strip fixture");
+        std::fs::write(&stale_tmp, b"temp").expect("write temp fixture");
+        std::fs::write(&unrelated, b"keep").expect("write unrelated fixture");
+
+        clear_thumbnail_cache_after_library_save(true, || {
+            Ok(ThumbnailCache::with_dir(dir.path().to_path_buf()))
+        });
+
+        assert!(!cover.exists(), "cover must be purged");
+        assert!(!strip.exists(), "strip thumbnail must be purged");
+        assert!(!stale_tmp.exists(), "stale cache temp must be purged");
+        assert!(unrelated.exists(), "unowned files must remain");
+    }
+
+    #[test]
+    fn failed_library_save_does_not_open_or_clear_thumbnail_cache() {
+        let dir = tempfile::tempdir().expect("create thumbnail cache fixture");
+        let cover = dir.path().join("cover.qoi");
+        std::fs::write(&cover, b"cover").expect("write cover fixture");
+        let cache_opened = Cell::new(false);
+
+        clear_thumbnail_cache_after_library_save(false, || {
+            cache_opened.set(true);
+            Ok(ThumbnailCache::with_dir(dir.path().to_path_buf()))
+        });
+
+        assert!(!cache_opened.get(), "failed save must skip cache creation");
+        assert!(cover.exists(), "failed save must preserve cached covers");
     }
 }

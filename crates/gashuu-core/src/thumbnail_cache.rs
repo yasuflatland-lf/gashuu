@@ -5,6 +5,18 @@ use crate::image_ops::DecodedImage;
 use directories::ProjectDirs;
 use std::path::{Path, PathBuf};
 
+/// Filesystem mtime of `path` as whole seconds since the Unix epoch, or `0`
+/// when the file is missing / has no readable mtime. The ONLY implementation
+/// of the key-ingredient recipe — generation and purge must both use it.
+pub fn source_mtime_secs(path: &Path) -> i64 {
+    std::fs::metadata(path)
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
 /// Build a stable cache key from the source path and thumbnail parameters.
 ///
 /// Uses FNV-1a (a fixed algorithm) instead of `std::hash::DefaultHasher`, whose
@@ -125,16 +137,16 @@ impl ThumbnailCache {
     /// Best-effort delete the cover QOI files cached for `path`, across each of the
     /// given `max_sides` variants, and return how many files were removed.
     ///
-    /// The cover for a book is keyed on `(path, mtime, max_side)` via the private
-    /// [`cache_key`] derivation reused here, so the caller passes the CURRENT
-    /// `mtime_secs` (the same value the cover was generated under). If the file's
-    /// mtime has since drifted, the recomputed key no longer matches the stored
-    /// file; that file is then an undeletable-but-harmless orphan ([`prune`](Self::prune)
-    /// reclaims it later — never `get`-touched, it ages to the front of the
-    /// eviction order). This is best-effort by design: a missing file (cache
-    /// miss) and any I/O error are SILENTLY skipped — callers may warn, never
-    /// error — so the count is only the files actually unlinked.
-    pub fn purge_cover_for(&self, path: &Path, mtime_secs: i64, max_sides: &[u32]) -> usize {
+    /// The cover for a book is keyed on `(path, mtime, max_side)` via [`cache_key`];
+    /// this method derives the current mtime with [`source_mtime_secs`]. If the
+    /// file's mtime drifted between generation and purge, the recomputed key no
+    /// longer matches the stored file; that file is then an undeletable-but-harmless
+    /// orphan ([`prune`](Self::prune) reclaims it later — never `get`-touched, it
+    /// ages to the front of the eviction order). This is best-effort by design: a
+    /// missing file (cache miss) and any I/O error are SILENTLY skipped — callers
+    /// may warn, never error — so the count is only the files actually unlinked.
+    pub fn purge_cover_for(&self, path: &Path, max_sides: &[u32]) -> usize {
+        let mtime_secs = source_mtime_secs(path);
         max_sides
             .iter()
             .filter(|&&max_side| {
@@ -158,20 +170,15 @@ impl ThumbnailCache {
     /// folds the page index even at 0 (eight zero bytes), so page 0's strip has its
     /// own on-disk file distinct from the cover.
     ///
-    /// The caller passes the CURRENT `mtime_secs` (the value the strips were
-    /// generated under). If the file's mtime has since drifted, the recomputed keys
-    /// no longer match the stored files; those become undeletable-but-harmless
-    /// orphans ([`prune`](Self::prune) reclaims them later). Best-effort by design,
-    /// exactly like [`purge_cover_for`](Self::purge_cover_for): a missing file (cache miss) and
-    /// any I/O error are SILENTLY skipped — callers may warn, never error — so the
-    /// count is only the files actually unlinked.
-    pub fn purge_pages_for(
-        &self,
-        path: &Path,
-        mtime_secs: i64,
-        max_sides: &[u32],
-        page_count: usize,
-    ) -> usize {
+    /// This method derives the current mtime with [`source_mtime_secs`]. If the
+    /// file's mtime drifted between generation and purge, the recomputed keys no
+    /// longer match the stored files; those become undeletable-but-harmless orphans
+    /// ([`prune`](Self::prune) reclaims them later). Best-effort by design, exactly
+    /// like [`purge_cover_for`](Self::purge_cover_for): a missing file (cache miss)
+    /// and any I/O error are SILENTLY skipped — callers may warn, never error — so
+    /// the count is only the files actually unlinked.
+    pub fn purge_pages_for(&self, path: &Path, max_sides: &[u32], page_count: usize) -> usize {
+        let mtime_secs = source_mtime_secs(path);
         let mut removed = 0;
         for &max_side in max_sides {
             for i in 0..page_count {
@@ -244,10 +251,11 @@ impl ThumbnailCache {
             // temp; reclaim ones past the stale threshold (a younger tmp may be in-flight).
             if lossy.starts_with(TMP_NAME_PREFIX) {
                 let mtime = meta.modified().unwrap_or(now);
-                let stale = now
-                    .duration_since(mtime)
-                    .map(|age| age.as_secs() >= TMP_STALE_SECS)
-                    .unwrap_or(false);
+                let stale = match now.duration_since(mtime) {
+                    Ok(age) => age.as_secs() >= TMP_STALE_SECS,
+                    // mtime ahead of the clock: reclaim only when implausibly far ahead.
+                    Err(ahead) => ahead.duration().as_secs() >= TMP_STALE_SECS,
+                };
                 if stale && std::fs::remove_file(entry.path()).is_ok() {
                     report.removed_files += 1;
                     report.removed_bytes += meta.len();
@@ -371,7 +379,9 @@ pub struct PruneReport {
 
 #[cfg(test)]
 mod tests {
-    use super::{cache_key, page_cache_key, ClearCacheReport, PruneReport, ThumbnailCache};
+    use super::{
+        cache_key, page_cache_key, source_mtime_secs, ClearCacheReport, PruneReport, ThumbnailCache,
+    };
     use crate::image_ops::DecodedImage;
     use std::path::Path;
     use tempfile::tempdir;
@@ -436,6 +446,25 @@ mod tests {
         let key2 = cache_key(Path::new("/tmp/book/page-002.png"), 1234, 160);
 
         assert_ne!(key1, key2);
+    }
+
+    #[test]
+    fn source_mtime_secs_reads_real_file_mtime() {
+        let file = tempfile::NamedTempFile::new().expect("create source file");
+
+        assert_ne!(
+            source_mtime_secs(file.path()),
+            0,
+            "a real temp file has a readable post-epoch mtime"
+        );
+    }
+
+    #[test]
+    fn source_mtime_secs_returns_zero_for_missing_path() {
+        let dir = tempdir().unwrap();
+        let missing = dir.path().join("missing.cbz");
+
+        assert_eq!(source_mtime_secs(&missing), 0);
     }
 
     #[test]
@@ -604,14 +633,15 @@ mod tests {
         // Seed a cover under the exact key purge_cover_for derives, then purge: the file
         // is unlinked and counted, and a follow-up get misses.
         let dir = tempdir().unwrap();
-        let cache = ThumbnailCache::with_dir(dir.path().to_path_buf());
-        let path = Path::new("/manga/book.cbz");
-        let mtime = 1234;
+        let cache = ThumbnailCache::with_dir(dir.path().join("cache"));
+        let path = dir.path().join("book.cbz");
+        std::fs::write(&path, b"source book").expect("create source book");
+        let mtime = source_mtime_secs(&path);
         let max_side = 320;
-        let key = cache_key(path, mtime, max_side);
+        let key = cache_key(&path, mtime, max_side);
         cache.put(&key, &tiny_decoded_image()).expect("seed cover");
 
-        let removed = cache.purge_cover_for(path, mtime, &[max_side]);
+        let removed = cache.purge_cover_for(&path, &[max_side]);
         assert_eq!(removed, 1, "the matching cover is removed and counted");
         assert!(cache.get(&key).is_none(), "the cover is gone after purge");
     }
@@ -621,15 +651,21 @@ mod tests {
         // The cover was generated under one mtime; purging with a DRIFTED mtime derives a
         // different key, so nothing matches: 0 removed, no error, orphan stays (prune later).
         let dir = tempdir().unwrap();
-        let cache = ThumbnailCache::with_dir(dir.path().to_path_buf());
-        let path = Path::new("/manga/book.cbz");
+        let cache = ThumbnailCache::with_dir(dir.path().join("cache"));
+        let path = dir.path().join("book.cbz");
+        std::fs::write(&path, b"source book").expect("create source book");
         let max_side = 320;
-        let stored_key = cache_key(path, 1234, max_side);
+        let generated_mtime = source_mtime_secs(&path);
+        let stored_key = cache_key(&path, generated_mtime, max_side);
         cache
             .put(&stored_key, &tiny_decoded_image())
             .expect("seed cover");
+        set_mtime(
+            &path,
+            std::time::UNIX_EPOCH + std::time::Duration::from_secs(generated_mtime as u64 + 10),
+        );
 
-        let removed = cache.purge_cover_for(path, 9999, &[max_side]);
+        let removed = cache.purge_cover_for(&path, &[max_side]);
         assert_eq!(removed, 0, "a drifted mtime matches no cover");
         assert!(
             cache.get(&stored_key).is_some(),
@@ -642,19 +678,20 @@ mod tests {
         // A book can have covers at several max_side variants; purge_cover_for removes
         // every present variant and counts only the ones that existed.
         let dir = tempdir().unwrap();
-        let cache = ThumbnailCache::with_dir(dir.path().to_path_buf());
-        let path = Path::new("/manga/book.cbz");
-        let mtime = 42;
+        let cache = ThumbnailCache::with_dir(dir.path().join("cache"));
+        let path = dir.path().join("book.cbz");
+        std::fs::write(&path, b"source book").expect("create source book");
+        let mtime = source_mtime_secs(&path);
         // Seed two of the three requested sides; the third (480) is absent.
         for side in [160, 320] {
-            let key = cache_key(path, mtime, side);
+            let key = cache_key(&path, mtime, side);
             cache.put(&key, &tiny_decoded_image()).expect("seed cover");
         }
 
-        let removed = cache.purge_cover_for(path, mtime, &[160, 320, 480]);
+        let removed = cache.purge_cover_for(&path, &[160, 320, 480]);
         assert_eq!(removed, 2, "only the two present sides are removed/counted");
-        assert!(cache.get(&cache_key(path, mtime, 160)).is_none());
-        assert!(cache.get(&cache_key(path, mtime, 320)).is_none());
+        assert!(cache.get(&cache_key(&path, mtime, 160)).is_none());
+        assert!(cache.get(&cache_key(&path, mtime, 320)).is_none());
     }
 
     #[test]
@@ -662,14 +699,15 @@ mod tests {
         // An empty `max_sides` derives no keys, so there is nothing to purge: 0
         // removed, and the seeded cover stays on disk untouched.
         let dir = tempdir().unwrap();
-        let cache = ThumbnailCache::with_dir(dir.path().to_path_buf());
-        let path = Path::new("/manga/book.cbz");
-        let mtime = 1234;
+        let cache = ThumbnailCache::with_dir(dir.path().join("cache"));
+        let path = dir.path().join("book.cbz");
+        std::fs::write(&path, b"source book").expect("create source book");
+        let mtime = source_mtime_secs(&path);
         let max_side = 320;
-        let key = cache_key(path, mtime, max_side);
+        let key = cache_key(&path, mtime, max_side);
         cache.put(&key, &tiny_decoded_image()).expect("seed cover");
 
-        let removed = cache.purge_cover_for(path, mtime, &[]);
+        let removed = cache.purge_cover_for(&path, &[]);
         assert_eq!(removed, 0, "no sides requested removes no cover");
         assert!(
             cache.get(&key).is_some(),
@@ -682,30 +720,31 @@ mod tests {
         // A book's per-page strip thumbnails live under page_cache_key; purge_pages_for
         // reclaims all 0..page_count, while the cover (plain cache_key) survives the purge.
         let dir = tempdir().unwrap();
-        let cache = ThumbnailCache::with_dir(dir.path().to_path_buf());
-        let path = Path::new("/manga/book.cbz");
-        let mtime = 1234;
+        let cache = ThumbnailCache::with_dir(dir.path().join("cache"));
+        let path = dir.path().join("book.cbz");
+        std::fs::write(&path, b"source book").expect("create source book");
+        let mtime = source_mtime_secs(&path);
         let max_side = 160;
         let page_count = 5;
 
         // Seed one strip thumbnail per page under the exact key purge_pages_for derives.
         for i in 0..page_count {
-            let key = page_cache_key(path, mtime, max_side, i);
+            let key = page_cache_key(&path, mtime, max_side, i);
             cache.put(&key, &tiny_decoded_image()).expect("seed strip");
         }
         // Seed the cover too (disjoint key — it must NOT be swept by the strip purge).
-        let cover_key = cache_key(path, mtime, max_side);
+        let cover_key = cache_key(&path, mtime, max_side);
         cache
             .put(&cover_key, &tiny_decoded_image())
             .expect("seed cover");
 
-        let removed = cache.purge_pages_for(path, mtime, &[max_side], page_count);
+        let removed = cache.purge_pages_for(&path, &[max_side], page_count);
         assert_eq!(
             removed, page_count,
             "every strip page is removed and counted"
         );
         for i in 0..page_count {
-            let key = page_cache_key(path, mtime, max_side, i);
+            let key = page_cache_key(&path, mtime, max_side, i);
             assert!(
                 cache.get(&key).is_none(),
                 "strip page {i} is gone after the strip purge"
@@ -717,7 +756,7 @@ mod tests {
         );
 
         // The sibling purge_cover_for then reclaims the cover.
-        let removed_cover = cache.purge_cover_for(path, mtime, &[max_side]);
+        let removed_cover = cache.purge_cover_for(&path, &[max_side]);
         assert_eq!(
             removed_cover, 1,
             "the cover is reclaimed by purge_cover_for"
@@ -733,25 +772,26 @@ mod tests {
         // A page_count larger than the strips on disk is best-effort: extra indices derive
         // keys with no file, so only the present pages are removed/counted — no error.
         let dir = tempdir().unwrap();
-        let cache = ThumbnailCache::with_dir(dir.path().to_path_buf());
-        let path = Path::new("/manga/book.cbz");
-        let mtime = 42;
+        let cache = ThumbnailCache::with_dir(dir.path().join("cache"));
+        let path = dir.path().join("book.cbz");
+        std::fs::write(&path, b"source book").expect("create source book");
+        let mtime = source_mtime_secs(&path);
         let max_side = 160;
         let present = 3;
 
         for i in 0..present {
-            let key = page_cache_key(path, mtime, max_side, i);
+            let key = page_cache_key(&path, mtime, max_side, i);
             cache.put(&key, &tiny_decoded_image()).expect("seed strip");
         }
 
         // Overshoot: ask for 10 pages though only 3 strips exist on disk.
-        let removed = cache.purge_pages_for(path, mtime, &[max_side], 10);
+        let removed = cache.purge_pages_for(&path, &[max_side], 10);
         assert_eq!(
             removed, present,
             "only the present strips are removed/counted; the missing keys are skipped"
         );
         for i in 0..present {
-            let key = page_cache_key(path, mtime, max_side, i);
+            let key = page_cache_key(&path, mtime, max_side, i);
             assert!(
                 cache.get(&key).is_none(),
                 "present strip {i} was removed by the overshooting purge"
@@ -963,6 +1003,40 @@ mod tests {
 
         assert_eq!(report.removed_files, 0, "an in-flight tmp is protected");
         assert!(fresh_tmp.exists(), "the fresh tmp survives the sweep");
+    }
+
+    #[test]
+    fn prune_reclaims_tmp_with_mtime_far_in_the_future() {
+        let dir = tempdir().unwrap();
+        let cache = ThumbnailCache::with_dir(dir.path().to_path_buf());
+        let future_tmp = dir.path().join(".tmpfuture");
+        std::fs::write(&future_tmp, b"clock-skewed crash leftover").unwrap();
+        set_mtime(
+            &future_tmp,
+            std::time::SystemTime::now() + std::time::Duration::from_secs(2 * 60 * 60),
+        );
+
+        let report = cache.prune(u64::MAX);
+
+        assert_eq!(report.removed_files, 1, "the far-future tmp is reclaimed");
+        assert!(!future_tmp.exists(), "the far-future tmp is gone");
+    }
+
+    #[test]
+    fn prune_keeps_tmp_with_mtime_slightly_in_the_future() {
+        let dir = tempdir().unwrap();
+        let cache = ThumbnailCache::with_dir(dir.path().to_path_buf());
+        let future_tmp = dir.path().join(".tmpnear-future");
+        std::fs::write(&future_tmp, b"write with minor clock skew").unwrap();
+        set_mtime(
+            &future_tmp,
+            std::time::SystemTime::now() + std::time::Duration::from_secs(10),
+        );
+
+        let report = cache.prune(0);
+
+        assert_eq!(report.removed_files, 0, "minor clock skew is protected");
+        assert!(future_tmp.exists(), "the near-future tmp survives");
     }
 
     #[test]

@@ -93,21 +93,6 @@ pub(crate) fn remove_books_with_rollback(
     }
 }
 
-/// Filesystem mtime of `path` as whole seconds since the Unix epoch, or `0` when
-/// the file is missing / has no readable mtime. Mirrors the cover cache's key
-/// convention (and `cover_loader`'s private `mtime_secs`) so a removed book's strip
-/// thumbnails are purged under the SAME key the strip generator wrote them under.
-/// Computed inline here rather than imported from `cover_loader` so this strip
-/// purge does not force a change to that module's private surface.
-fn removed_book_mtime_secs(path: &Path) -> i64 {
-    std::fs::metadata(path)
-        .and_then(|m| m.modified())
-        .ok()
-        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0)
-}
-
 /// Decide whether the currently open file is among the removed paths (so the
 /// viewer must be cleared). Pure and testable in isolation from the live
 /// `ViewerWindow`, so `RemoveBooksUseCase::run` can stay a thin orchestration
@@ -216,16 +201,10 @@ impl RemoveBooksUseCase {
                     purge_cover(&cache, path);
                 }
                 // Strips are keyed PER PAGE, so `purge_cover` (cover key only) orphans
-                // them (issue #361); reclaim under the same mtime+max-side the generator used.
+                // them (issue #361); core derives the shared mtime recipe internally.
                 for path in &report.removed {
                     if let Some(&n) = page_counts.get(path) {
-                        let mtime = removed_book_mtime_secs(path);
-                        cache.purge_pages_for(
-                            path,
-                            mtime,
-                            &[gashuu_core::DEFAULT_THUMB_MAX_SIDE],
-                            n,
-                        );
+                        cache.purge_pages_for(path, &[gashuu_core::DEFAULT_THUMB_MAX_SIDE], n);
                     }
                 }
             }

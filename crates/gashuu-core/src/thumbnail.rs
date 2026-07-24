@@ -5,7 +5,7 @@
 use crate::error::CoreError;
 use crate::image_ops::{decode_thumbnail, DecodedImage};
 use crate::page_source::PageSource;
-use crate::thumbnail_cache::{page_cache_key, ThumbnailCache};
+use crate::thumbnail_cache::{page_cache_key, source_mtime_secs, ThumbnailCache};
 use rayon::prelude::*;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -26,19 +26,6 @@ pub struct PageThumbContext<'a> {
     pub cache: &'a ThumbnailCache,
     /// Canonical book path that anchors each page's cache key.
     pub path: &'a Path,
-}
-
-/// Filesystem mtime of `path` as whole seconds since the Unix epoch, or `0` when
-/// the file is missing / has no readable mtime. Mirrors the cover cache's key
-/// convention so a modified book regenerates its strip thumbnails automatically
-/// (the recomputed key no longer matches the stale on-disk entry).
-fn mtime_secs(path: &Path) -> i64 {
-    std::fs::metadata(path)
-        .and_then(|m| m.modified())
-        .ok()
-        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0)
 }
 
 /// Produce page `i`'s thumbnail, consulting the on-disk cache when `cache` is set.
@@ -96,7 +83,7 @@ pub fn generate_thumbnails<F>(
     let n = source.list_pages().len();
     // One stat for the whole strip: derive the mtime once when caching is active
     // and reuse it as a per-page key input (the cover cache's convention).
-    let cache = cache_ctx.map(|ctx| (ctx, mtime_secs(ctx.path)));
+    let cache = cache_ctx.map(|ctx| (ctx, source_mtime_secs(ctx.path)));
     (0..n).into_par_iter().for_each(|i| {
         if cancelled.load(Ordering::Relaxed) {
             return;
@@ -133,7 +120,7 @@ pub fn generate_one_thumbnail(
 ) -> Result<DecodedImage, CoreError> {
     // Mirror the all-pages generator's key convention: stat once, here for a single
     // page, and feed the mtime into the same per-page cache key.
-    let cache = cache_ctx.map(|ctx| (ctx, mtime_secs(ctx.path)));
+    let cache = cache_ctx.map(|ctx| (ctx, source_mtime_secs(ctx.path)));
     page_thumbnail(source, max_side, cache, page_index)
 }
 

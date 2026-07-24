@@ -133,7 +133,7 @@ pub(crate) fn cap_or_reject(
     capacity_hint: usize,
 ) -> Result<Vec<u8>, CoreError> {
     let mut buf = Vec::with_capacity(capacity_hint);
-    src.take(max + 1).read_to_end(&mut buf)?;
+    src.take(max.saturating_add(1)).read_to_end(&mut buf)?;
     if buf.len() as u64 > max {
         return Err(CoreError::EntryTooLarge {
             name: name.to_string(),
@@ -326,6 +326,13 @@ mod cap_or_reject_tests {
         let data = vec![0u8; 10];
         let out = cap_or_reject(data.as_slice(), "x.png", 10, 0).expect("at cap");
         assert_eq!(out.len(), 10);
+    }
+
+    #[test]
+    fn maximum_cap_returns_all_bytes() {
+        let data = b"abc".to_vec();
+        let out = cap_or_reject(data.as_slice(), "n", u64::MAX, 0).expect("maximum cap is valid");
+        assert_eq!(out, data);
     }
 
     #[test]

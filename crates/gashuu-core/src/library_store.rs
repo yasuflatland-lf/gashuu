@@ -42,6 +42,18 @@ impl Library {
         }
     }
 
+    /// Rename a corrupt library file aside as `library.json.corrupt-<now_secs>`
+    /// (same directory — the rename is atomic on one filesystem) so the next save
+    /// cannot destroy recoverable data. Never reads or parses the file. The caller
+    /// injects `now_secs` (core takes no clock).
+    pub fn quarantine_corrupt_file(path: &Path, now_secs: u64) -> Result<PathBuf, CoreError> {
+        let mut destination_name = path.file_name().unwrap_or_default().to_os_string();
+        destination_name.push(format!(".corrupt-{now_secs}"));
+        let destination = path.with_file_name(destination_name);
+        std::fs::rename(path, &destination).map_err(CoreError::from)?;
+        Ok(destination)
+    }
+
     /// Save to the OS data path (creating parent dirs as needed).
     pub fn save(&self) -> Result<(), CoreError> {
         self.save_to(&Self::data_path()?)
@@ -307,6 +319,30 @@ mod tests {
         let err = Library::load_from(&path).unwrap_err();
 
         assert!(matches!(err, CoreError::Library(_)));
+    }
+
+    #[test]
+    fn quarantine_corrupt_file_preserves_original_bytes_under_timestamped_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("library.json");
+        std::fs::write(&path, "not json").unwrap();
+        let expected = dir.path().join("library.json.corrupt-1700000000");
+
+        let destination = Library::quarantine_corrupt_file(&path, 1_700_000_000).unwrap();
+
+        assert_eq!(destination, expected);
+        assert!(!path.exists());
+        assert_eq!(std::fs::read(&destination).unwrap(), b"not json");
+    }
+
+    #[test]
+    fn quarantine_corrupt_file_errors_for_missing_source_without_creating_destination() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("library.json");
+        let destination = dir.path().join("library.json.corrupt-1700000000");
+
+        assert!(Library::quarantine_corrupt_file(&path, 1_700_000_000).is_err());
+        assert!(!destination.exists());
     }
 
     #[test]

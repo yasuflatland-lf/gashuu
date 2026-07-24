@@ -196,25 +196,20 @@ pub(crate) fn wire_viewer_input_handlers(
                 // `scrub_fraction_to_page` (clamp, RTL inversion, round-half-up).
                 let rtl = matches!(state.borrow().reading_direction(), ReadingDirection::Rtl);
                 let lead = scrub_fraction_to_page(frac, total, rtl);
-                // Decide if this previewed spread is double using the SAME layout the body
-                // uses, so the popover shows 1 vs 2 thumbs correctly (ViewerState owns layout).
-                let is_double = state.borrow().preview_is_double(lead);
-                ui.set_scrubber_double(is_double);
-                // Trailing page of the previewed spread (clamped to the last page),
-                // present only for a double spread.
-                let trail = if is_double {
-                    Some((lead + 1).min(total - 1))
-                } else {
-                    None
+                // Resolve the exact spread the commit path would land on through the same
+                // pairing authority used by the page body.
+                let Some(spread) = state.borrow().preview_spread(lead) else {
+                    return;
                 };
+                ui.set_scrubber_double(spread.trailing.is_some());
                 // Pull thumbnail state (image + loaded/failed flags) from the existing model
                 // (no decode) so the popover renders the loading/failed placeholder, not blank.
                 let model = ui.get_thumbnails();
-                let a = thumb_state_at(&model, lead);
+                let a = thumb_state_at(&model, spread.leading);
                 ui.set_scrubber_preview_a(a.image);
                 ui.set_scrubber_preview_a_loaded(a.loaded);
                 ui.set_scrubber_preview_a_failed(a.failed);
-                let b = match trail {
+                let b = match spread.trailing {
                     Some(trail) => thumb_state_at(&model, trail),
                     None => ThumbState::loading(),
                 };

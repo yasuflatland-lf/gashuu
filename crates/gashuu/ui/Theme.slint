@@ -37,6 +37,10 @@ export global Theme {
     out property <color> shadow-popover: #00000080;   // 50%-black drop shadow for floating popovers (PR-S)
     /// Card elevation shadow (~55% black) for raised cover cards (DESIGN.md elevation.card).
     out property <color> shadow-card: #0000008c;
+    out property <length> shadow-blur-float: 22px;    // floating chrome: pills, modals, elevated cards
+    out property <length> shadow-offset-float: 8px;   // its vertical offset
+    out property <length> glow-blur: 12px;            // hover/danger glow radius
+    out property <length> focus-glow-blur: 8px;       // keyboard-focus glow (NOT a spacing token)
 
     // Spacing (8px base, denser sub-steps for chrome). The sm → lg → xxl rungs (8/14/22)
     // double as the settings rhythm ladder ≈ Fibonacci 8/13/21, each step ≈ ×φ.

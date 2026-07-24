@@ -52,10 +52,11 @@ impl Rect {
     /// True when `(px, py)` lies inside this rectangle (left/top inclusive,
     /// right/bottom exclusive).
     fn contains(&self, px: i32, py: i32) -> bool {
-        px >= self.x
-            && py >= self.y
-            && px < self.x + self.width as i32
-            && py < self.y + self.height as i32
+        let (px, py) = (i64::from(px), i64::from(py));
+        px >= i64::from(self.x)
+            && py >= i64::from(self.y)
+            && px < i64::from(self.x) + i64::from(self.width)
+            && py < i64::from(self.y) + i64::from(self.height)
     }
 }
 
@@ -242,6 +243,28 @@ mod tests {
             height: 100,
         }];
         assert!(!g.is_position_visible(&monitors));
+    }
+
+    #[test]
+    fn rect_contains_point_across_overflowing_right_edge() {
+        let rect = Rect {
+            x: 943_717_885,
+            y: 0,
+            width: 1_745_879_555,
+            height: 100,
+        };
+        assert!(rect.contains(2_147_483_132, 50));
+    }
+
+    #[test]
+    fn rect_contains_does_not_overflow_on_extreme_values() {
+        let rect = Rect {
+            x: i32::MAX,
+            y: i32::MAX,
+            width: u32::MAX,
+            height: u32::MAX,
+        };
+        assert!(rect.contains(i32::MAX, i32::MAX));
     }
 
     #[test]
