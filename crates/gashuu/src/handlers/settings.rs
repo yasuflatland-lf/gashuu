@@ -1,3 +1,4 @@
+use crate::dialog_session::DialogSession;
 use crate::enum_adapters::{
     cover_mode_to_index, fit_mode_to_index, index_to_cover_mode, index_to_fit_mode,
     index_to_language, index_to_reading_direction, index_to_spread_mode, language_to_index,
@@ -8,9 +9,9 @@ use crate::page_loader::PageController;
 use crate::viewer_state::ViewerState;
 use crate::viewport::ViewportState;
 use crate::{
-    apply_global_view_to_runtime, cover_loader, current_runtime_view, i18n,
-    push_selection_toolbar_state, refresh, refresh_library_carousel, report_save_error,
-    route_view_modes_to_sink, with_ui, CarouselRefresh, ViewModeRoute, ViewerWindow,
+    cover_loader, i18n, push_selection_toolbar_state, refresh, refresh_library_carousel,
+    report_save_error, route_view_modes_to_sink, with_ui, CarouselRefresh, ViewModeRoute,
+    ViewerWindow,
 };
 use gashuu_core::{CacheConfig, Library, Settings, ThumbnailCache, ViewOverride};
 use slint::ComponentHandle;
@@ -53,6 +54,7 @@ pub(crate) fn wire_settings_handlers(
     state: &Rc<RefCell<ViewerState>>,
     viewport: &Rc<RefCell<ViewportState>>,
     settings: &Rc<RefCell<Settings>>,
+    dialog_session: &Rc<RefCell<DialogSession>>,
     library: &Rc<RefCell<Library>>,
     covers: &Rc<cover_loader::CoverController>,
     pages: &Rc<PageController>,
@@ -63,20 +65,13 @@ pub(crate) fn wire_settings_handlers(
     let state = Rc::clone(state);
     let viewport = Rc::clone(viewport);
     let settings = Rc::clone(settings);
+    let dialog_session = Rc::clone(dialog_session);
     let library = Rc::clone(library);
     let covers = Rc::clone(covers);
     let pages = Rc::clone(pages);
     let search = Rc::clone(search);
     let selection = Rc::clone(selection);
     let localizer = Rc::clone(localizer);
-
-    // Snapshot of the open book's runtime view, taken by `on_open_settings` just
-    // before the Library-screen dialog seeds the SHARED runtime with global
-    // defaults, and consumed by `on_close_settings` to restore it (issue #414).
-    // Some only while a book was open at Library-dialog-open time; None otherwise,
-    // so a pure-Library dialog (no book open) and the Viewer branch both no-op.
-    let pre_dialog_view: Rc<RefCell<Option<gashuu_core::ResolvedView>>> =
-        Rc::new(RefCell::new(None));
 
     // Open the settings dialog. Display modes are read from the RUNTIME source of truth
     // (state/viewport) so it never shows a stale value; cache/preload/track from Settings.
@@ -86,7 +81,7 @@ pub(crate) fn wire_settings_handlers(
         let settings = Rc::clone(&settings);
         let viewport = Rc::clone(&viewport);
         let localizer = Rc::clone(&localizer);
-        let pre_dialog_view = Rc::clone(&pre_dialog_view);
+        let dialog_session = Rc::clone(&dialog_session);
         ui.on_open_settings(move || {
             with_ui(&ui_weak, |ui| {
                 // screen 1 = Viewer (per-book), screen 0 = Library (global defaults).
@@ -94,15 +89,9 @@ pub(crate) fn wire_settings_handlers(
                 // On the Library screen the dialog edits GLOBAL defaults, so mirror them
                 // into the runtime first (it seeds from there); a book re-applies its override.
                 if !per_book {
-                    // Before seeding the SHARED runtime with global defaults, snapshot the
-                    // open book's runtime so `on_close_settings` can restore it (issue #414);
-                    // otherwise this seed clobbers the book's runtime and the later leave/exit
-                    // write-back would persist the global values as the book's override.
-                    // None when no book is open, so a pure-Library dialog has nothing to restore.
-                    let has_book = state.borrow().open_file().is_some();
-                    *pre_dialog_view.borrow_mut() =
-                        has_book.then(|| current_runtime_view(&state, &viewport));
-                    apply_global_view_to_runtime(&settings, &state, &viewport);
+                    dialog_session
+                        .borrow_mut()
+                        .open_on_library(&state, &viewport, &settings);
                 }
                 let s = settings.borrow();
                 let st = state.borrow();
@@ -140,7 +129,7 @@ pub(crate) fn wire_settings_handlers(
         let viewport = Rc::clone(&viewport);
         let library = Rc::clone(&library);
         let localizer = Rc::clone(&localizer);
-        let pre_dialog_view = Rc::clone(&pre_dialog_view);
+        let dialog_session = Rc::clone(&dialog_session);
         ui.on_close_settings(move || {
             with_ui(&ui_weak, |ui| {
                 ui.set_show_settings(false);
@@ -162,16 +151,9 @@ pub(crate) fn wire_settings_handlers(
                             "failed to save settings from dialog",
                         );
                     }
-                    // Restore the open book's runtime that the dialog overwrote with global
-                    // defaults on open (issue #414). The global reconcile+save above already
-                    // captured any Library-screen edits, so putting the book's own runtime
-                    // back makes the later leave/exit write-back pin the BOOK's value instead
-                    // of the transiently-global one. No-op when no book was open at open time.
-                    if let Some(v) = pre_dialog_view.borrow_mut().take() {
-                        state
-                            .borrow_mut()
-                            .apply_resolved_view(v, &mut viewport.borrow_mut());
-                    }
+                    dialog_session
+                        .borrow_mut()
+                        .close_on_library(&state, &viewport);
                     ui.invoke_focus_carousel();
                 } else {
                     // Persist the four view modes to this book's override. cache/preload/track
@@ -244,14 +226,7 @@ pub(crate) fn wire_settings_handlers(
                         report_save_error(&ui, localizer.loader(), &e, "failed to save library on override reset");
                     }
                 }
-                // Apply the global defaults to the runtime + view.
-                apply_global_view_to_runtime(&settings, &state, &viewport);
-                // Guard the on-close write-back (#415): keep this book's override
-                // EMPTY (inherit) until the user changes a view mode again. Without
-                // this, `write_back_view_override` would re-pin the four runtime
-                // fields on dialog close and instantly undo the reset. Marked AFTER
-                // `apply_global_view_to_runtime`, whose setters would otherwise clear it.
-                state.borrow_mut().mark_inherit_pending();
+                DialogSession::reset_to_global(&state, &viewport, &settings);
                 refresh(
                     &ui,
                     &state.borrow(),
