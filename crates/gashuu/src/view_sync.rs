@@ -238,7 +238,7 @@ fn stage_position_write_back(state: &Rc<RefCell<ViewerState>>, library: &Rc<RefC
     // borrow; the `Ref` drops at the `;` before `library` is borrowed.
     let Some((path, page)) = ({
         let s = state.borrow();
-        position_to_write_back(s.open_file(), s.index())
+        position_to_write_back(s.open_file(), s.resume_index_to_persist())
     }) else {
         return; // no book open — nothing to write back
     };
@@ -430,6 +430,39 @@ mod tests {
         assert!(result.is_some());
         let (_, pg) = result.unwrap();
         assert_eq!(pg, 0, "page 0 is a valid write-back (start of book)");
+    }
+
+    #[test]
+    fn staged_write_back_persists_finished_index_for_final_double_paired_spread() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let book = root.path().join("book");
+        std::fs::create_dir(&book).expect("create book");
+        for page in 0..10 {
+            std::fs::write(book.join(format!("{page}.png")), []).expect("write page");
+        }
+
+        let settings = Settings {
+            spread_mode: SpreadMode::Double,
+            cover_mode: CoverMode::Paired,
+            ..Settings::default()
+        };
+        let mut runtime = ViewerState::from_settings(&settings);
+        runtime.open_path(&book).expect("open test book");
+        assert!(runtime.jump_to(8));
+        assert_eq!(runtime.index(), 8);
+        let canonical = runtime
+            .open_file()
+            .expect("open file after successful open")
+            .to_path_buf();
+
+        let mut library_value = Library::new();
+        assert!(library_value.add(canonical.clone()).is_some());
+        let state = Rc::new(RefCell::new(runtime));
+        let library = Rc::new(RefCell::new(library_value));
+
+        stage_position_write_back(&state, &library);
+
+        assert_eq!(library.borrow().resume_page(&canonical), 9);
     }
 
     // ---- view_override_to_write_back (per-book overrides) ------------------

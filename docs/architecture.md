@@ -211,17 +211,27 @@ paths (`gashuu_core::ReadingDirection`, …) are unchanged — `lib.rs` re-expor
 
 ### reading_progress
 
-`reading_progress.rs` (`total` lifted to `Option<usize>` in #65). Transient, immutable core
-value object `ReadingProgress { last_viewed, total: Option<usize> }` (`Copy`) that NAMES the one durable
-fact — how far a reader got — and centralises its derivation in ONE place: `current()` (1-based,
-`last_viewed + 1` saturating, always ≥ 1), `fraction()` (`0.0..=1.0`; an unknown total `None` AND a
-defensive `Some(0)` both → `0.0` — no NaN/inf; stale `last_viewed` past `total` clamps to `1.0`),
-`is_at_start()` (`last_viewed == 0`). It is the single home of the unknown/zero-total guard and
-the 1-based offset that BOTH the carousel (`library_model::carousel_data_for_indices` via
-`Book::progress()`)
-and the open-time resume (`Library::register_opened`) consume. Derived / transient — never
-serialised; `library.json` stores only the bare `last_page` + `page_count` fields on `Book`.
-Headless (no slint/tracing).
+`reading_progress.rs`. Transient, immutable core value object
+`ReadingProgress { last_viewed, total: Option<NonZeroUsize> }` (`Copy`) that NAMES the one durable
+fact — how far a reader got — and centralises its derivation in ONE place. `last_viewed` is the
+resume page index: normally the displayed spread's leading, but the final page INDEX when the
+displayed spread contains the final page. Both values reopen onto the same spread because
+`ViewerState::jump_to` normalizes them.
+
+Its derivations are `current()` (1-based, `last_viewed + 1` saturating, always ≥ 1),
+`fraction()` (position-normalized `last_viewed / (total - 1)`, clamped to `0.0..=1.0`), and
+`is_finished()` (`last_viewed >= total - 1`). An unknown total and a one-page total both yield
+`fraction() == 0.0` and `is_finished() == false`: a one-page book has no meaningful progress bar.
+The non-zero total type makes `Some(0)` unrepresentable. A stale resume past the final index still
+clamps to `1.0`. `is_at_start()` remains `last_viewed == 0`.
+
+This is the single home of the fraction guard and 1-based offset that BOTH the carousel
+(`library_model::carousel_data_for_indices` via `Book::progress()`) and the open-time resume
+(`Library::register_opened`) consume. Derived / transient — never serialised; `library.json`
+stores only the bare `last_page` + `page_count` fields on `Book`. The persisted resume remains a
+bare page index, so there is no library version bump or eager migration: resumes saved before the
+finished-aware write-back reach `100%` after the user revisits the final spread. Headless (no
+slint/tracing).
 
 ### view_override
 
@@ -248,8 +258,8 @@ previously lived in `main.rs`'s open flow: idempotent add by canonical path
 resume lookup via `Book::progress()`. The positivity that was once enforced with a runtime guard is
 now a type fact — `set_page_count(_, count: NonZeroUsize)` makes `0` unrepresentable at the write
 boundary, so there is no `debug_assert` in core and no `page_count > 0` guard at the call site
-(#65). The reader side maps stored counts through `Book::page_count_opt() -> Option<usize>`
-(stored `0 → None`), the accessor that `progress()` and `carousel_data_for_indices` consume.
+(#65). `Book::page_count_opt() -> Option<usize>` exposes the typed stored count to callers that
+need a plain value, while `Book::progress()` passes the `Option<NonZeroUsize>` field directly.
 `ViewerState::page_count_opt() -> Option<NonZeroUsize>` supplies the already-typed count;
 `OpenBookUseCase::run` passes it to `register_opened` and calls
 `jump_to(reg.resume.last_viewed())`. The reject-empty-books path bails out at
@@ -303,6 +313,9 @@ and `open_folder` delegates to it. `jump_to(page) -> bool` — routes through
 `SpreadContext::normalize` (via `spread_ctx()`) so `index` stays a valid spread leading, clamps
 out-of-range, guards `page_count==0` to avoid underflow, and returns whether it moved, mirroring
 `set_viewport_size`'s "did it change → caller refreshes" convention — and
+`resume_index_to_persist()` returns the final page index when the current spread contains the final
+page, otherwise the current leading (or `index()` when no source), so finished write-back reaches
+`100%` without changing which spread reopens — and
 `current_source() -> Option<Arc<dyn PageSource>>`
 retaining the opened `Arc` because `ImageCache` does not expose its source; `index()`/`page_count()`
 lost their `#[allow(dead_code)]`, now used by the thumbnail-strip wiring.
@@ -536,8 +549,9 @@ natural-order `Library::books()` projection — no independent sort here; see `L
 in the core section. The carousel counterpart of `thumbnail_strip`'s row mapping —
 keeps the derivation table-testable without a display backend. Each row is built from
 `Book::progress()`: 1-based `current = ReadingProgress::current()` (`last_viewed + 1`, saturating);
-`progress = ReadingProgress::fraction()` (guarded so an unknown/zero total → `0.0`, overshoot clamps
-to `1.0`); `total = ReadingProgress::total()` (now `Option<usize>`, #65). The free derivation no longer lives in `library_model`
+`progress = ReadingProgress::fraction()` (position-normalized over `total - 1`; an unknown or
+one-page total → `0.0`, final page and overshoot clamp to `1.0`);
+`total = ReadingProgress::total() -> Option<usize>`. The free derivation no longer lives in `library_model`
 — it is centralised in `ReadingProgress` (see core entry below). `available` via
 the free core function `book_is_available(&Book)`, deliberately not a `Library` method so the
 aggregate stays I/O-free. `bookmarked: bool` is a pure derivation computed in

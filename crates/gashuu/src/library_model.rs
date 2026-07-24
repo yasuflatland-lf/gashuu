@@ -396,7 +396,7 @@ mod tests {
     #[test]
     fn carousel_data_total_and_progress_from_page_count() {
         // An opened book has a persisted page count: the row surfaces it as the real
-        // `total` and computes `progress = fraction()` (last_viewed=4, total=10 → 0.4).
+        // `total` and computes `progress = fraction()` (last_viewed=4, total=10 → 4/9).
         let dir = tempfile::tempdir().expect("tempdir");
         let mut lib = Library::new();
         assert!(lib.add(dir.path().to_path_buf()).is_some());
@@ -407,7 +407,7 @@ mod tests {
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].total, 10); // real persisted count
         assert_eq!(rows[0].current, 5); // 1-based: resume_page 4 -> display 5
-        assert_eq!(rows[0].progress, 0.4); // 4 / 10
+        assert_eq!(rows[0].progress, 4.0 / 9.0);
     }
 
     #[test]
