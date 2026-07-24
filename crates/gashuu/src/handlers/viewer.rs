@@ -1,3 +1,4 @@
+use super::report_save_error;
 use crate::carousel::{thumb_state_at, ThumbState};
 use crate::keymap::{map_key, KeyCommand};
 use crate::library_model::{LibrarySearchState, LibrarySelectionState};
@@ -485,8 +486,8 @@ pub(crate) fn wire_nav_handlers(
                     KeyCommand::GoToLibrary => {
                         // Write position AND view modes back before leaving, so a D/R/C/fit
                         // toggle while reading persists without opening settings (ADR-0007 routing).
-                        write_back_position(&state, &library);
-                        route_view_modes_to_sink(
+                        let position_save = write_back_position(&state, &library);
+                        let view_override_save = route_view_modes_to_sink(
                             ViewModeRoute::LeaveViewer,
                             &state,
                             &viewport,
@@ -506,6 +507,22 @@ pub(crate) fn wire_nav_handlers(
                                 localizer: &localizer,
                             },
                         );
+                        if let Err(e) = position_save {
+                            report_save_error(
+                                &ui,
+                                localizer.loader(),
+                                &e,
+                                "failed to save library on position write-back",
+                            );
+                        }
+                        if let Err(e) = view_override_save {
+                            report_save_error(
+                                &ui,
+                                localizer.loader(),
+                                &e,
+                                "failed to save library on view-override write-back",
+                            );
+                        }
                     }
                 }
             })

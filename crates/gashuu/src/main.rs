@@ -319,10 +319,11 @@ fn main() -> color_eyre::Result<()> {
     covers.flush_counts(&library);
     // Write the current reading position back to the library before exit. Safe: the
     // event loop has exited, so `state`/`library` are unborrowed.
-    write_back_position(&state, &library);
+    // No live UI remains at exit, so write-back failures stay log-only.
+    let _ = write_back_position(&state, &library);
     // Persist the open book's view modes to its override, mirroring into GLOBAL Settings
     // only when no book is open (ADR-0007 clobber guard lives in `route_view_modes_to_sink`).
-    route_view_modes_to_sink(
+    let _ = route_view_modes_to_sink(
         ViewModeRoute::AppExit,
         &state,
         &viewport,
@@ -346,23 +347,6 @@ fn with_ui(weak: &slint::Weak<ViewerWindow>, f: impl FnOnce(ViewerWindow)) {
     if let Some(ui) = weak.upgrade() {
         f(ui);
     }
-}
-
-/// Log a failed persistence save and surface it on the status line — the single
-/// home of the direct log+status save-failure shape. The aggregation paths keep
-/// their own composition and do NOT route through this: `NoticesContent`
-/// (app.rs, pre-captured `Option<String>` composed in `finalize_open`), the
-/// add-batch report (`apply_add_report`), the bulk-delete rollback
-/// (`RemoveOutcome::SaveFailed`), and the log-only sites where no status line
-/// is wanted (guide dismiss, exit, write-backs).
-fn report_save_error(
-    ui: &ViewerWindow,
-    loader: &i18n_embed::fluent::FluentLanguageLoader,
-    e: &CoreError,
-    context: &'static str,
-) {
-    tracing::error!(error = %e, "{context}");
-    ui.set_status_text(crate::i18n::dynamic::could_not_save_settings(loader, e).into());
 }
 
 pub(crate) fn clear_page_view(ui: &ViewerWindow, viewport: &Rc<RefCell<ViewportState>>) {

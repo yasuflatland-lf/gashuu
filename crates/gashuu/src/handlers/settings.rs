@@ -1,3 +1,4 @@
+use super::report_save_error;
 use crate::dialog_session::DialogSession;
 use crate::enum_adapters::{
     cover_mode_to_index, fit_mode_to_index, index_to_cover_mode, index_to_fit_mode,
@@ -10,8 +11,7 @@ use crate::viewer_state::ViewerState;
 use crate::viewport::ViewportState;
 use crate::{
     cover_loader, i18n, push_selection_toolbar_state, refresh, refresh_library_carousel,
-    report_save_error, route_view_modes_to_sink, with_ui, CarouselRefresh, ViewModeRoute,
-    ViewerWindow,
+    route_view_modes_to_sink, with_ui, CarouselRefresh, ViewModeRoute, ViewerWindow,
 };
 use gashuu_core::{CacheConfig, Library, Settings, ThumbnailCache, ViewOverride};
 use slint::ComponentHandle;
@@ -136,13 +136,20 @@ pub(crate) fn wire_settings_handlers(
                 // screen 0 = Library (GLOBAL defaults), 1 = Viewer (per-book override).
                 // Routing lives in `route_view_modes_to_sink` (ADR-0007 clobber-trap).
                 if ui.get_screen() == 0 {
-                    route_view_modes_to_sink(
+                    if let Err(e) = route_view_modes_to_sink(
                         ViewModeRoute::DialogClosedOnLibrary,
                         &state,
                         &viewport,
                         &settings,
                         &library,
-                    );
+                    ) {
+                        report_save_error(
+                            &ui,
+                            localizer.loader(),
+                            &e,
+                            "failed to save library from dialog",
+                        );
+                    }
                     if let Err(e) = settings.borrow().save() {
                         report_save_error(
                             &ui,
@@ -158,13 +165,20 @@ pub(crate) fn wire_settings_handlers(
                 } else {
                     // Persist the four view modes to this book's override. cache/preload/track
                     // are global, so save Settings too (its view-mode fields stay untouched).
-                    route_view_modes_to_sink(
+                    if let Err(e) = route_view_modes_to_sink(
                         ViewModeRoute::DialogClosedOnViewer,
                         &state,
                         &viewport,
                         &settings,
                         &library,
-                    );
+                    ) {
+                        report_save_error(
+                            &ui,
+                            localizer.loader(),
+                            &e,
+                            "failed to save library from dialog",
+                        );
+                    }
                     if let Err(e) = settings.borrow().save() {
                         report_save_error(
                             &ui,
