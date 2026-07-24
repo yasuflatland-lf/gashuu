@@ -131,9 +131,8 @@ pub struct ViewerState {
     /// subsequent `set_source` call (including the one the next successful
     /// `open_path` makes before re-setting it). A failed `open_path` returns
     /// early via `?` before `set_source`, so it leaves this field unchanged.
-    /// Used by `main.rs` to form the write-back tuple `(path, state.index())`
-    /// at every leave point without holding a concurrent borrow on both
-    /// `state` and `library`.
+    /// Used by `view_sync` to identify the book when staging its resume position
+    /// at every leave point.
     open_file: Option<PathBuf>,
     /// True while the open book is "inherit-pending": the user just pressed
     /// "Reset to global", so its per-book override should stay EMPTY (inherit all
@@ -363,6 +362,22 @@ impl ViewerState {
     /// tests below.
     pub fn index(&self) -> usize {
         self.index
+    }
+
+    /// The page index to persist as the resume position: the last page index when
+    /// the CURRENT spread contains the final page (so a finished book reads 100%),
+    /// else the spread leading. `index()` when no source.
+    pub fn resume_index_to_persist(&self) -> usize {
+        let Some(count) = self.page_count_opt().map(NonZeroUsize::get) else {
+            return self.index();
+        };
+        let final_index = count - 1;
+        let spread = self.spread_ctx().spread_at(self.index);
+        if spread.trailing == Some(final_index) || spread.leading == final_index {
+            final_index
+        } else {
+            self.index()
+        }
     }
 
     /// Resolve the configured `spread_mode` against the current viewport aspect

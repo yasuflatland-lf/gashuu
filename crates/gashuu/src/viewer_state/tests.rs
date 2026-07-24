@@ -29,6 +29,59 @@ fn double_state() -> ViewerState {
     })
 }
 
+fn double_paired_state() -> ViewerState {
+    ViewerState::from_settings(&Settings {
+        spread_mode: SpreadMode::Double,
+        cover_mode: CoverMode::Paired,
+        ..Default::default()
+    })
+}
+
+// ---- resume_index_to_persist -------------------------------------------
+
+#[test]
+fn resume_index_to_persist_is_zero_without_source() {
+    assert_eq!(ViewerState::new().resume_index_to_persist(), 0);
+}
+
+#[test]
+fn resume_index_to_persist_uses_single_mid_book_index() {
+    let mut state = ViewerState::new();
+    state.set_source(mock_with(10));
+    assert!(state.jump_to(5));
+
+    assert_eq!(state.resume_index_to_persist(), 5);
+}
+
+#[test]
+fn resume_index_to_persist_uses_last_index_on_single_final_page() {
+    let mut state = ViewerState::new();
+    state.set_source(mock_with(10));
+    assert!(state.jump_to(9));
+
+    assert_eq!(state.resume_index_to_persist(), 9);
+}
+
+#[test]
+fn resume_index_to_persist_uses_last_index_on_double_paired_final_spread() {
+    let mut state = double_paired_state();
+    state.set_source(mock_with(10));
+    assert!(state.jump_to(8));
+    assert_eq!(state.index(), 8);
+
+    assert_eq!(state.resume_index_to_persist(), 9);
+}
+
+#[test]
+fn resume_index_to_persist_keeps_double_paired_mid_spread_leading() {
+    let mut state = double_paired_state();
+    state.set_source(mock_with(10));
+    assert!(state.jump_to(2));
+    assert_eq!(state.index(), 2);
+
+    assert_eq!(state.resume_index_to_persist(), 2);
+}
+
 #[test]
 fn empty_state_shows_nothing() {
     let state = ViewerState::new();
@@ -1086,8 +1139,8 @@ fn open_read_leave_sequence_state_invariants() {
 
     // The reads write_back_position performs must not conflict in sequence
     // (distinct immutable borrows); this test pins the shape of those reads.
-    let _page = state.index(); // what write_back_position calls
-                               // open_file() is None here (set_source path), but the call must not panic.
+    let _page = state.resume_index_to_persist(); // what write-back calls
+                                                 // open_file() is None here (set_source path), but the call must not panic.
     let _path = state.open_file(); // what write_back_position calls
                                    // No panic reached: the sequence is safe.
 

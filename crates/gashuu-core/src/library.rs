@@ -13,10 +13,11 @@ use std::path::{Path, PathBuf};
 /// One book in the shelf. Identity is the canonical filesystem path.
 ///
 /// Carries display data only: the path, a derived `title` (file stem for a file,
-/// directory name for a folder), and the leading page index of the last-viewed
-/// spread. The book kind (folder / archive) is resolved at open time by
-/// `ArchiveLoader` and is deliberately NOT persisted. Availability (whether the
-/// path still resolves) is derived at render time, never stored.
+/// directory name for a folder), and the resume page index (normally the
+/// last-viewed spread leading, or the final page index for a finished book). The
+/// book kind (folder / archive) is resolved at open time by `ArchiveLoader` and
+/// is deliberately NOT persisted. Availability (whether the path still
+/// resolves) is derived at render time, never stored.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Book {
     path: PathBuf,
@@ -108,7 +109,7 @@ impl Book {
         &self.title
     }
 
-    /// Leading page index of the last-viewed spread (0 when never opened).
+    /// Resume page index (0 when never opened).
     pub fn resume_page(&self) -> usize {
         self.resume_page
     }
@@ -120,12 +121,12 @@ impl Book {
         self.page_count.map(NonZeroUsize::get)
     }
 
-    /// This book's reading progress as a value object: the last-viewed leading
-    /// page index together with the cached total page count (`None` when the
-    /// total is unknown). The `current` / `fraction` derivation lives on
+    /// This book's reading progress as a value object: the resume page index
+    /// together with the cached total page count (`None` when the total is
+    /// unknown). The `current` / `fraction` derivation lives on
     /// `ReadingProgress`, not at the call sites.
     pub fn progress(&self) -> ReadingProgress {
-        ReadingProgress::new(self.resume_page, self.page_count_opt())
+        ReadingProgress::new(self.resume_page, self.page_count)
     }
 
     /// This book's view preference overrides (all-None when it inherits global).
@@ -458,14 +459,14 @@ impl Library {
         }
     }
 
-    /// The last-viewed leading page index for `path` (0 when unknown).
+    /// The resume page index for `path` (0 when unknown).
     pub fn resume_page(&self, path: &Path) -> usize {
         self.find_book(path).map(Book::resume_page).unwrap_or(0)
     }
 
-    /// Record `page` as the last-viewed leading page index for `path`. Returns
-    /// `false` when the path is absent OR the value is unchanged (mirrors the
-    /// `jump_to` "did it actually move" convention, so callers can skip a save).
+    /// Record `page` as the resume page index for `path`. Returns `false` when
+    /// the path is absent OR the value is unchanged (mirrors the `jump_to` "did
+    /// it actually move" convention, so callers can skip a save).
     pub fn set_resume_page(&mut self, path: &Path, page: usize) -> bool {
         match self.find_book_mut(path) {
             Some(book) if book.resume_page != page => {
@@ -1156,10 +1157,10 @@ mod tests {
         assert_eq!(p.last_viewed(), 3);
         assert_eq!(p.total(), Some(10));
         assert_eq!(p.current(), 4);
-        let expected: f32 = 3.0 / 10.0;
+        let expected: f32 = 3.0 / 9.0;
         assert!(
             (p.fraction() - expected).abs() < 1e-6,
-            "fraction should be ~0.3, got {}",
+            "fraction should be 3/9, got {}",
             p.fraction()
         );
     }
