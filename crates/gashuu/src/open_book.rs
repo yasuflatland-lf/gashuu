@@ -126,10 +126,11 @@ impl OpenBookUseCase {
 
         // Write back the current book's position before we replace the source.
         // `open_file()` is None when no book is open, so this is a no-op then.
-        write_back_position(state, library);
+        // This headless use case has no live UI for the outgoing book; failures stay logged.
+        let _ = write_back_position(state, library);
         // Capture the OUTGOING book's view modes before the source is replaced, so a
         // bare D/R/C/fit toggle persists without the settings dialog (ADR-0007 clobber-trap).
-        route_view_modes_to_sink(
+        let _ = route_view_modes_to_sink(
             ViewModeRoute::OpenDifferentBook,
             state,
             viewport,
@@ -217,7 +218,8 @@ impl OpenBookUseCase {
             .apply_resolved_view(resolved, &mut viewport.borrow_mut());
         // Persist the registered book + back-filled page count; this MUST stay a SYNCHRONOUS
         // save, else a detached write could land after a later save and revert position/drop book.
-        if let Err(e) = library.borrow().save() {
+        let library_save = library.borrow().save();
+        if let Err(e) = &library_save {
             tracing::error!(error = %e, "failed to save library on open");
         }
         let skipped = state.borrow().last_open_skipped();
@@ -226,12 +228,15 @@ impl OpenBookUseCase {
         } else {
             SkippedDetail::Archive
         };
-        // The on-open library save is best-effort (logged, re-saved at the next leave
-        // point), so pass `Ok` for the library-save slot; the settings save is surfaced.
         // On a `count_changed` back-fill the carousel rebuild + thumbnail launch are
         // applied by `finalize_open` (success path only), keeping this use case headless.
         OpenOutcome::Success {
-            notices: notices_content(skipped, skipped_detail, settings_save.as_ref(), &Ok(())),
+            notices: notices_content(
+                skipped,
+                skipped_detail,
+                settings_save.as_ref(),
+                &library_save,
+            ),
             count_changed,
         }
     }

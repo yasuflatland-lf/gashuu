@@ -1,5 +1,7 @@
 use crate::{viewer_state::ViewerState, viewport::ViewportState};
-use gashuu_core::{FitMode, Library, ReadingDirection, ResolvedView, Settings, ViewOverride};
+use gashuu_core::{
+    CoreError, FitMode, Library, ReadingDirection, ResolvedView, Settings, ViewOverride,
+};
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -50,7 +52,7 @@ pub(crate) fn route_view_modes_to_sink(
     viewport: &Rc<RefCell<ViewportState>>,
     settings: &Rc<RefCell<Settings>>,
     library: &Rc<RefCell<Library>>,
-) {
+) -> Result<(), CoreError> {
     match route {
         ViewModeRoute::DialogClosedOnLibrary => {
             apply_runtime_view_to_settings(
@@ -58,16 +60,15 @@ pub(crate) fn route_view_modes_to_sink(
                 &viewport.borrow(),
                 &mut settings.borrow_mut(),
             );
+            Ok(())
         }
         ViewModeRoute::DialogClosedOnViewer
         | ViewModeRoute::LeaveViewer
-        | ViewModeRoute::OpenDifferentBook => {
-            write_back_view_override(state, viewport, library);
-        }
+        | ViewModeRoute::OpenDifferentBook => write_back_view_override(state, viewport, library),
         ViewModeRoute::AppExit => {
             // Per-book override FIRST (no-op if no book is open), so the open
             // book's modes are saved before the open-state-guarded global reconcile.
-            write_back_view_override(state, viewport, library);
+            let result = write_back_view_override(state, viewport, library);
             if state.borrow().open_file().is_none() {
                 apply_runtime_view_to_settings(
                     &state.borrow(),
@@ -75,6 +76,7 @@ pub(crate) fn route_view_modes_to_sink(
                     &mut settings.borrow_mut(),
                 );
             }
+            result
         }
     }
 }
@@ -196,21 +198,23 @@ fn position_to_write_back(open_file: Option<&Path>, page: usize) -> Option<(Path
 pub(crate) fn write_back_position(
     state: &Rc<RefCell<ViewerState>>,
     library: &Rc<RefCell<Library>>,
-) {
+) -> Result<(), CoreError> {
     // Extract the (path, page) tuple from the viewer state under one shared
     // borrow; the `Ref` drops at the `;` before `library` is borrowed.
     let Some((path, page)) = ({
         let s = state.borrow();
         position_to_write_back(s.open_file(), s.index())
     }) else {
-        return; // no book open — nothing to write back
+        return Ok(()); // no book open — nothing to write back
     };
     // `set_resume_page` returns false when absent or unchanged; we persist
     // unconditionally for simplicity (short JSON write, idempotent on disk).
     library.borrow_mut().set_resume_page(&path, page);
-    if let Err(e) = library.borrow().save() {
+    let result = library.borrow().save();
+    if let Err(e) = &result {
         tracing::error!(error = %e, "failed to save library on position write-back");
     }
+    result
 }
 
 /// Pure helper: decide what view override to write back for the open book.
@@ -266,7 +270,7 @@ fn write_back_view_override(
     state: &Rc<RefCell<ViewerState>>,
     viewport: &Rc<RefCell<ViewportState>>,
     library: &Rc<RefCell<Library>>,
-) {
+) -> Result<(), CoreError> {
     let Some((path, overrides)) = ({
         let s = state.borrow();
         view_override_to_write_back(
@@ -278,12 +282,14 @@ fn write_back_view_override(
             s.is_inherit_pending(),
         )
     }) else {
-        return; // no book open — nothing to write back
+        return Ok(()); // no book open — nothing to write back
     };
     library.borrow_mut().set_overrides(&path, overrides);
-    if let Err(e) = library.borrow().save() {
+    let result = library.borrow().save();
+    if let Err(e) = &result {
         tracing::error!(error = %e, "failed to save library on view-override write-back");
     }
+    result
 }
 
 #[cfg(test)]
@@ -403,6 +409,14 @@ mod tests {
         assert_eq!(pg, 0, "page 0 is a valid write-back (start of book)");
     }
 
+    #[test]
+    fn write_back_position_without_open_book_returns_ok() {
+        let state = Rc::new(RefCell::new(ViewerState::new()));
+        let library = Rc::new(RefCell::new(Library::new()));
+
+        assert!(write_back_position(&state, &library).is_ok());
+    }
+
     // ---- view_override_to_write_back (per-book overrides) ------------------
 
     #[test]
@@ -485,5 +499,32 @@ mod tests {
         assert_eq!(ov.spread_mode, Some(gashuu_core::SpreadMode::Single));
         assert_eq!(ov.cover_mode, Some(gashuu_core::CoverMode::Standalone));
         assert_eq!(ov.fit_mode, Some(FitMode::Whole));
+    }
+
+    #[test]
+    fn route_view_modes_without_open_book_returns_ok() {
+        let state = Rc::new(RefCell::new(ViewerState::new()));
+        let settings = Rc::new(RefCell::new(Settings::default()));
+        let viewport = Rc::new(RefCell::new(ViewportState::from_settings(
+            &settings.borrow(),
+        )));
+        let library = Rc::new(RefCell::new(Library::new()));
+
+        assert!(route_view_modes_to_sink(
+            ViewModeRoute::DialogClosedOnViewer,
+            &state,
+            &viewport,
+            &settings,
+            &library,
+        )
+        .is_ok());
+        assert!(route_view_modes_to_sink(
+            ViewModeRoute::DialogClosedOnLibrary,
+            &state,
+            &viewport,
+            &settings,
+            &library,
+        )
+        .is_ok());
     }
 }

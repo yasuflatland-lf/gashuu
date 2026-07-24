@@ -136,6 +136,7 @@ impl PageCountPrefetch {
             }
         }
         if changed {
+            // Losing a page-count back-fill is harmless (re-persisted at the next leave point).
             if let Err(e) = library.borrow().save() {
                 tracing::error!(error = %e, "cover: failed to save library after page-count prefetch");
             }
