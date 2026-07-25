@@ -104,6 +104,55 @@ cd crates/gashuu && mise exec -- cargo bundle --release   # emits target/release
 
 - **macOS (universal)**: builds `aarch64-apple-darwin` + `x86_64-apple-darwin`, `lipo`-merges them into a fat binary, runs `cargo bundle --release` for the `.app` scaffold (cargo-bundle has no `--target universal` support, so the scaffold is built once and the fat binary is spliced into `Contents/MacOS/`), and zips with `ditto -c -k --keepParent` (preserves symlinks/permissions). cargo-bundle is `cargo install`ed on the runner — deliberately NOT added to `mise.toml`, so the CI `app` matrix stays lean. Asset: `gashuu-<tag>-macos-universal.zip`.
 - **Windows (x86_64)**: generates `app-icon.ico` from `app-icon.svg` with the runner's preinstalled `magick`, builds `--release` (`build.rs` embeds the icon via `winresource`), and zips the `.exe`. Asset: `gashuu-<tag>-windows-x64.zip`.
+- **Linux (x86_64)**: builds on the oldest supported Ubuntu runner for wider glibc compatibility, packages a `.deb` with cargo-deb, and builds an AppImage with linuxdeploy. Assets: `gashuu-<tag>-amd64.deb` and `gashuu-<tag>-x86_64.AppImage`.
 - **Signing**: macOS `.app` is ad-hoc (self-signed) in CI; Developer ID signing + notarization are deferred. Windows `signtool` insertion point remains marked as a `SIGNING SEAM` comment in `release.yml`.
 
-**Windows `.ico` embedding** is now wired (was deferred): `winresource` is a `[target.'cfg(windows)'.build-dependencies]` so it is never fetched on macOS/Linux; `build.rs` gates the embed on `cfg(windows)` AND `CARGO_CFG_TARGET_OS == "windows"` AND the `.ico` existing, so a dev `cargo build` without the (CI-generated, uncommitted) `.ico` is a no-op and never a build blocker. **Still deferred**: Linux release artifacts and a `.desktop` entry — Slint's Linux system-library deps make Linux distribution heavier (see "Linux system libraries" above).
+**Windows `.ico` embedding** is now wired (was deferred): `winresource` is a `[target.'cfg(windows)'.build-dependencies]` so it is never fetched on macOS/Linux; `build.rs` gates the embed on `cfg(windows)` AND `CARGO_CFG_TARGET_OS == "windows"` AND the `.ico` existing, so a dev `cargo build` without the (CI-generated, uncommitted) `.ico` is a no-op and never a build blocker. **Linux packaging** ships a cargo-deb `.deb` and a linuxdeploy AppImage, built on the oldest supported Ubuntu for wider glibc compatibility; both include the `.desktop` entry and app icon.
+
+### Post-release hands-on checklist: self-update + relaunch (NOT CI-verifiable)
+
+`UpdateStrategy::SelfReplace` replaces the running binary and restarts the app. Neither the three
+gates nor `release.yml` can exercise it — no runner accepts a GUI dialog or inspects the relaunched
+process — so ADR-0013's "verified hands-on per-OS" obligation is discharged by running this
+checklist ONCE per release, on a real Windows host (and, where available, a real Linux host).
+
+Preconditions: the new release exists on GitHub with all five assets attached (macOS zip, Windows
+zip, `.deb`, `.AppImage`, `SHA256SUMS`), and you have the PREVIOUS release's artifact to update FROM.
+
+**Windows portable (the `current_exe()` relaunch-target question)**
+
+1. Download the PREVIOUS release's `gashuu-<old-tag>-windows-x64.zip` and extract it into a clean,
+   empty directory. Do not reuse a directory that has been updated before, and do not use a
+   `cargo build` output — the checklist exercises the shipped artifact.
+2. Launch that `gashuu.exe` and note its PID.
+3. Set up observable session state so the relaunch's persistence can be checked: open a book, read
+   to a distinctive page, toggle a per-book view mode (e.g. `d`), then MOVE and RESIZE the window.
+4. Settings -> About -> "Check for updates now" (the manual check bypasses both the 24h throttle and
+   any skipped version), then "Update now" in the dialog.
+5. **Relaunch happened**: the app restarts on its own after the "Restarting…" note. No manual launch.
+6. **The NEW version is running** — Settings -> About shows the new version number IMMEDIATELY after
+   the automatic relaunch, without a manual restart. If it shows the OLD version and only a manual
+   relaunch reveals the new one, `current_exe()` resolved to the renamed-away old executable: FILE A
+   BUG against the Windows arm of `apply_self_replace` (this is the assumption this checklist
+   exists to test).
+7. **Session state survived** the relaunch (all four): the book reopens on the page from step 3, the
+   per-book view mode from step 3 is in effect, the window has the size AND position from step 3,
+   and the library shows page counts without a re-count pause.
+8. **No zombie process**: `tasklist /FI "IMAGENAME eq gashuu.exe"` lists exactly ONE gashuu.exe, and
+   its PID differs from step 2's.
+9. **Leftovers, recorded not fixed**: note whether `%TEMP%\gashuu.exe` (the extraction target) and
+   any `self_replace` rename artifact remain, and that the verified zip is in the Downloads folder.
+   These are known, tracked gaps — record what you observe, do not fix them during a release.
+10. Re-run the check (Settings -> About -> "Check for updates now") on the relaunched app: it must
+    now report that you are on the latest version.
+
+**Linux AppImage (same obligation, second artifact)**
+
+Same shape, with the AppImage specifics: run the PREVIOUS release's `.AppImage` (so `$APPIMAGE` is
+set), update, and verify (a) the app relaunched, (b) Settings -> About shows the new version (the
+app parses no CLI arguments, so there is no `--version` flag to check), (c) the session state from
+step 3 survived, (d) NO `<name>.AppImage.new` sibling is left behind, (e) the replaced file is still
+executable (`ls -l` shows mode 0755), and (f) exactly one process remains (`pgrep -c gashuu`).
+
+**Record the result in the release's notes or tracking issue** — "self-update verified on
+Windows <version> / Ubuntu <version>" — so a release with no such note is visibly unverified.
