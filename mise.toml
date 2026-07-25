@@ -27,3 +27,46 @@ run = "bash scripts/check-tokens.sh"
 [tasks.check-release-macos-dist]
 description = "Verify the unsigned macOS release helper and distribution zip packaging guard"
 run = "bash scripts/check-release-macos-dist.sh"
+
+# ---------------------------------------------------------------------------
+# Blocking quality gates — see docs/quality-gates.md.
+#
+# The five gates are mutually independent, so `mise run gates` fans them out
+# concurrently through `depends` (mise runs a task's dependencies in parallel).
+# Each gate stays a task in its own right so it can be run alone, and a single
+# failing dependency fails the aggregate with that gate's exit code while the
+# aggregate's own body never runs — which is what makes it usable pre-commit.
+#
+# Fan-out width is bounded by mise's `jobs` setting, which is 8 by default here
+# (`mise run --help` still advertises 4; `mise settings get jobs` is the truth).
+# Anything >= 5 gives full fan-out; a lower value only costs wall time, never
+# correctness, so `jobs` is deliberately NOT pinned here — that knob also caps
+# tool-install concurrency and is a contributor's machine-local call.
+#
+# No `mise exec --` prefix inside these bodies: mise runs task bodies in the
+# activated tool environment (it exports RUSTUP_TOOLCHAIN=1.97.1 and prepends
+# the cargo-nextest install dir to PATH), so a bare `cargo` here IS the pinned
+# toolchain. Commands typed by hand still need the prefix — see CLAUDE.md.
+# ---------------------------------------------------------------------------
+[tasks.check-fmt]
+description = "Blocking gate: rustfmt formatting is already applied (cargo fmt --check)"
+run = "cargo fmt --check"
+
+# `--target-dir target/clippy` is load-bearing, not hygiene: cargo takes an
+# exclusive build lock on a target directory, so sharing the default one with
+# check-tests makes these two serialize and throws away most of the win. The
+# separate directory is purely about that lock — clippy and test artifacts do
+# NOT invalidate each other's fingerprints. Cost: an extra check-only artifact
+# tree under the already-gitignored /target/ (see docs/quality-gates.md).
+[tasks.check-clippy]
+description = "Blocking gate: clippy -D warnings, in its own target dir to dodge cargo's build lock"
+run = "cargo clippy --workspace --all-targets --target-dir target/clippy -- -D warnings"
+
+[tasks.check-tests]
+description = "Blocking gate: the whole workspace test suite via nextest, ci profile"
+run = "cargo nextest run --workspace --profile ci"
+
+[tasks.gates]
+description = "Run all five blocking gates in parallel (fmt, clippy, nextest, check-tokens, check-docs)"
+depends = ["check-fmt", "check-clippy", "check-tests", "check-tokens", "check-docs"]
+run = "echo 'All five blocking gates passed.'"
