@@ -719,11 +719,13 @@ no AppState bundle, explicit handle lists only). The four feature files are:
   testable core). See the dedicated `### handlers/drag_drop` entry below.
 
 `fn main` = boot (tracing, settings/library load, Slint window, localizer, Rc construction, seed
-carousel, prune) + 9 wire calls + `ui.run()` + exit flush (count persistence, write-back,
-view-mode persistence, settings save). All callback closures live in `handlers/`; `main.rs` retains
-`refresh`, `finalize_open`, `go_to_library`/`go_to_viewer`, and the add-batch helpers, plus the
-crate-root re-exports for the `view_sync.rs` and `carousel_refresh.rs` seams (the carousel-refresh
-/projection cluster itself now lives in `carousel_refresh.rs`).
+carousel, prune) + 9 wire calls + `ui.run()` + `run_exit_persistence` (count persistence,
+write-back, view-mode persistence, geometry snapshot, settings save) — the SAME callable the
+self-update relaunch invokes via the `persist-before-relaunch` bridge before `relaunch_and_exit`.
+All callback closures live in `handlers/`; `main.rs` retains `refresh`, `finalize_open`,
+`go_to_library`/`go_to_viewer`, and the add-batch helpers, plus the crate-root re-exports for the
+`view_sync.rs` and `carousel_refresh.rs` seams (the carousel-refresh/projection cluster itself now
+lives in `carousel_refresh.rs`).
 
 ### handlers/drag_drop
 
@@ -754,9 +756,10 @@ settings)` is a no-op when nothing was saved; otherwise it arms a zero-delay sin
 it only after `run()` spins), re-arming up to ~30 ticks. `apply_geometry` always applies the clamped
 size (`WindowGeometry::floored_size`) and applies the saved position only when it still lands on a
 monitor (`is_position_visible`), else centers on the primary monitor (`center_in`).
-`capture_geometry(ui, &mut settings)` snapshots the live `size()`/`position()` into `settings.window`
-after `run()` returns. `monitor_rects` enumerates monitor bounds (primary first) via
-`with_winit_window`, returning empty on a non-winit build so placement falls back to the OS.
+`capture_geometry(ui, &mut settings)` snapshots the live `size()`/`position()` into
+`settings.window` after `run()` returns, or from the relaunch bridge just before the self-update
+`exit(0)`. `monitor_rects` enumerates monitor bounds (primary first) via `with_winit_window`,
+returning empty on a non-winit build so placement falls back to the OS.
 
 ### Slint UI files
 

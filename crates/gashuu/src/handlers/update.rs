@@ -330,9 +330,16 @@ fn self_replace_update(ui: &ViewerWindow, pkg: Packaging, info: ReleaseInfo) {
                         ui.global::<Strings>().get_update_status_restarting(),
                     );
                 }
-                // Let the "restarting" note paint, then relaunch + exit.
+                // Let the "restarting" note paint, then persist the session
+                // (position, per-book override, geometry, settings) exactly as a
+                // normal quit would, and only THEN relaunch + exit.
                 slint::Timer::single_shot(std::time::Duration::from_millis(900), move || {
-                    relaunch_and_exit(&exe);
+                    let ui = weak.upgrade();
+                    relaunch_and_exit(&exe, move || {
+                        if let Some(ui) = ui {
+                            ui.invoke_persist_before_relaunch();
+                        }
+                    });
                 });
             }
             Err(e) => {
