@@ -15,9 +15,11 @@ use std::rc::Rc;
 use gashuu_core::{CoreError, Library, Settings, ThumbnailCache};
 
 use crate::cover_loader::purge_cover;
+use crate::open_controller::{probe_open, OpenProbeOutcome};
+use crate::view_sync::persist_leave_point_with;
 use crate::viewer_state::ViewerState;
 use crate::viewport::ViewportState;
-use crate::{persist_leave_point, ViewModeRoute};
+use crate::ViewModeRoute;
 
 type SaveLibrary = Box<dyn Fn(&Library) -> Result<(), CoreError>>;
 type SaveSettings = Box<dyn Fn(&Settings) -> Result<(), CoreError>>;
@@ -127,7 +129,23 @@ impl OpenBookUseCase {
     /// The `skipped_detail` suffix is DERIVED internally from `path`
     /// ([`SkippedDetail::None`] for folders, [`SkippedDetail::Archive`] for
     /// archives), not passed by the caller.
+    ///
+    /// The retained SYNCHRONOUS composition of [`probe_open`] +
+    /// [`OpenBookUseCase::apply_probed`]: it blocks on the probe, so the Slint
+    /// open sites dispatch through `OpenController` instead and only
+    /// `cfg(test)` callers remain (hence `#[allow(dead_code)]`, the same
+    /// convention as `ViewerState::open_path`). It stays the single entry point
+    /// for any future non-UI caller and pins that the split composes back to
+    /// the pre-split behaviour.
+    #[allow(dead_code)]
     pub(crate) fn run(&self, path: &Path) -> OpenOutcome {
+        let policy = self.settings.borrow().archive_policy();
+        self.apply_probed(path, probe_open(path, policy))
+    }
+
+    /// Apply a completed read-only probe on the UI thread. All shared-state
+    /// mutation and persistence remain in this half.
+    pub(crate) fn apply_probed(&self, path: &Path, probe: OpenProbeOutcome) -> OpenOutcome {
         // Alias the fields so the body reads identically to its pre-extraction form.
         let state = &self.state;
         let settings = &self.settings;
@@ -137,28 +155,30 @@ impl OpenBookUseCase {
         // Capture the OUTGOING book's position and view modes before replacing
         // the source, then save them together. This headless use case has no
         // live UI for the outgoing book, so failures stay logged.
-        let _ = persist_leave_point(
+        let _ = persist_leave_point_with(
             ViewModeRoute::OpenDifferentBook,
             state,
             viewport,
             settings,
             library,
+            |library| (self.save_library)(library),
         );
-        // Bind the result first so the `borrow_mut()` temporary drops before the match;
-        // a borrow held across the match would double-borrow-panic at the read below.
-        let policy = settings.borrow().archive_policy();
-        let opened = state.borrow_mut().open_path_with_policy(path, policy);
         // Discriminate the open result only — recents push + settings save are DEFERRED
         // past the empty-book check so a zero-page source bypasses them (spec-pinned).
-        match opened {
-            Ok(()) => {
+        let is_dir = match probe {
+            OpenProbeOutcome::Opened(probe) => {
+                let is_dir = probe.is_dir;
+                state
+                    .borrow_mut()
+                    .install_opened(probe.source, probe.skipped, probe.canonical);
                 tracing::info!(path = %path.display(), "opened source");
+                is_dir
             }
-            Err(e) => {
-                tracing::error!(error = %e, "failed to open source");
-                return OpenOutcome::Error(format!("{e}"));
+            OpenProbeOutcome::Failed { error, .. } => {
+                tracing::error!(error = %error, "failed to open source");
+                return OpenOutcome::Error(error);
             }
-        }
+        };
         // The CANONICAL key the source was opened under (from `open_file`), not the raw
         // dialog `path` — the same key `resume_page`/`set_page_count`/write-back use.
         let canonical = state.borrow().open_file().map(Path::to_path_buf);
@@ -237,7 +257,7 @@ impl OpenBookUseCase {
             tracing::error!(error = %e, "failed to save library on open");
         }
         let skipped = state.borrow().last_open_skipped();
-        let skipped_detail = if path.is_dir() {
+        let skipped_detail = if is_dir {
             SkippedDetail::None
         } else {
             SkippedDetail::Archive
@@ -360,6 +380,8 @@ fn remove_empty_book_with(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use gashuu_core::ArchivePolicy;
+    use std::cell::Cell;
     use std::path::PathBuf;
 
     /// Build a real failing `CoreError` for the save-result arguments. Uses the
@@ -590,15 +612,26 @@ mod tests {
     /// Build a use case over fresh in-memory collaborators; `library` is passed in so
     /// the test can inspect it after `run`. `Settings::default()` has
     /// `track_recent_sources = false`, so no settings save is attempted either.
-    fn use_case_over(library: Rc<RefCell<Library>>) -> OpenBookUseCase {
+    ///
+    /// The library save is injected as a counting no-op (fully hermetic — no disk
+    /// I/O) and the counter is returned, so a caller can pin exactly how many
+    /// library saves the branch under test performed. Every `run` starts with the
+    /// leave-point save, so an unregistering branch must end at exactly ONE.
+    fn use_case_over(library: Rc<RefCell<Library>>) -> (OpenBookUseCase, Rc<Cell<usize>>) {
         let settings = Settings::default();
-        use_case_with_saves(
+        let saves = Rc::new(Cell::new(0));
+        let counted = Rc::clone(&saves);
+        let use_case = use_case_with_saves(
             settings,
             library,
-            |_| panic!("library save must not be attempted"),
+            move |_| {
+                counted.set(counted.get() + 1);
+                Ok(())
+            },
             |_| panic!("settings save must not be attempted"),
         )
-        .0
+        .0;
+        (use_case, saves)
     }
 
     fn use_case_with_saves(
@@ -633,13 +666,119 @@ mod tests {
     }
 
     #[test]
+    fn apply_probed_failed_maps_to_error_and_leaves_state() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let source = make_book_dir(root.path(), 2);
+        let canonical = source.canonicalize().expect("canonical fixture path");
+        let library = Rc::new(RefCell::new(Library::new()));
+        let (use_case, state) = use_case_with_saves(
+            Settings::default(),
+            Rc::clone(&library),
+            |_| Ok(()),
+            |_| panic!("settings save must not be attempted"),
+        );
+        let crate::open_controller::OpenProbeOutcome::Opened(probe) =
+            crate::open_controller::probe_open(&source, ArchivePolicy::default())
+        else {
+            panic!("fixture must probe");
+        };
+        state
+            .borrow_mut()
+            .install_opened(probe.source, probe.skipped, probe.canonical);
+
+        let outcome = use_case.apply_probed(
+            Path::new("/missing"),
+            crate::open_controller::OpenProbeOutcome::Failed {
+                error: "unavailable".into(),
+                path_exists: false,
+            },
+        );
+
+        assert!(matches!(outcome, OpenOutcome::Error(ref e) if e == "unavailable"));
+        assert!(library.borrow().books().is_empty());
+        assert_eq!(state.borrow().open_file(), Some(canonical.as_path()));
+    }
+
+    #[test]
+    fn apply_probed_empty_probe_rejects_and_closes() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let library = Rc::new(RefCell::new(Library::new()));
+        let (use_case, state) = use_case_with_saves(
+            Settings::default(),
+            Rc::clone(&library),
+            |_| Ok(()),
+            |_| panic!("settings save must not be attempted"),
+        );
+        let probe = crate::open_controller::probe_open(root.path(), ArchivePolicy::default());
+
+        let outcome = use_case.apply_probed(root.path(), probe);
+
+        assert!(matches!(
+            outcome,
+            OpenOutcome::EmptyBookRejected { removed: false, .. }
+        ));
+        assert!(state.borrow().open_file().is_none());
+        assert!(state.borrow().current_source().is_none());
+        assert!(library.borrow().books().is_empty());
+    }
+
+    #[test]
+    fn apply_probed_saves_leave_point_before_registering_new_book() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let book_a_parent = root.path().join("book-a-parent");
+        let book_b_parent = root.path().join("book-b-parent");
+        std::fs::create_dir(&book_a_parent).expect("create book A parent");
+        std::fs::create_dir(&book_b_parent).expect("create book B parent");
+        let book_a = make_book_dir(&book_a_parent, 3);
+        let book_b = make_book_dir(&book_b_parent, 2);
+        let canonical_a = book_a.canonicalize().expect("canonical book A");
+        let canonical_b = book_b.canonicalize().expect("canonical book B");
+
+        let mut seeded = Library::new();
+        assert!(seeded.add(canonical_a.clone()).is_some());
+        let library = Rc::new(RefCell::new(seeded));
+        let saves = Rc::new(RefCell::new(Vec::new()));
+        let observed = Rc::clone(&saves);
+        let observed_a = canonical_a.clone();
+        let observed_b = canonical_b.clone();
+        let (use_case, state) = use_case_with_saves(
+            Settings::default(),
+            Rc::clone(&library),
+            move |value| {
+                observed.borrow_mut().push((
+                    value.resume_page(&observed_a),
+                    value.books().iter().any(|book| book.path() == observed_b),
+                ));
+                Ok(())
+            },
+            |_| Ok(()),
+        );
+
+        assert!(matches!(use_case.run(&book_a), OpenOutcome::Success { .. }));
+        saves.borrow_mut().clear();
+        assert!(state.borrow_mut().jump_to(2));
+        let probe = crate::open_controller::probe_open(&book_b, ArchivePolicy::default());
+
+        assert!(matches!(
+            use_case.apply_probed(&book_b, probe),
+            OpenOutcome::Success { .. }
+        ));
+
+        assert_eq!(
+            saves.borrow().as_slice(),
+            &[(2, false), (2, true)],
+            "call 1 persists A before B exists; call 2 persists registered B"
+        );
+    }
+
+    #[test]
     fn run_returns_error_for_unopenable_path() {
-        // A non-existent path can never be opened; `run` bails at the open error BEFORE any
-        // register/save, so the failure path is fully hermetic (no disk I/O) and registers nothing.
+        // A non-existent path can never be opened; `run` bails at the open error before
+        // registration, so the failure path registers nothing.
         let dir = tempfile::tempdir().expect("tempdir");
         let missing = dir.path().join("does-not-exist");
         let library = Rc::new(RefCell::new(Library::new()));
-        let use_case = use_case_over(Rc::clone(&library));
+        let (use_case, saves) = use_case_over(Rc::clone(&library));
 
         let outcome = use_case.run(&missing);
 
@@ -651,16 +790,21 @@ mod tests {
             library.borrow().books().is_empty(),
             "a failed open registers nothing"
         );
+        assert_eq!(
+            saves.get(),
+            1,
+            "only the leave-point save runs; the failure path never saves again"
+        );
     }
 
     #[test]
     fn run_rejects_empty_source_and_does_not_enter_viewer() {
         // An empty folder opens cleanly with zero pages: `run` returns `EmptyBookRejected`.
-        // The book was never in the library, so the removal is a no-op and NO save is
-        // attempted — fully hermetic (no disk I/O).
+        // The book was never in the library, so the removal is a no-op and no
+        // removal save is attempted.
         let dir = tempfile::tempdir().expect("tempdir");
         let library = Rc::new(RefCell::new(Library::new()));
-        let use_case = use_case_over(Rc::clone(&library));
+        let (use_case, saves) = use_case_over(Rc::clone(&library));
 
         let outcome = use_case.run(dir.path());
 
@@ -681,6 +825,11 @@ mod tests {
         assert!(
             library.borrow().books().is_empty(),
             "an empty source is never registered in the library"
+        );
+        assert_eq!(
+            saves.get(),
+            1,
+            "only the leave-point save runs; the no-op removal never saves again"
         );
     }
 

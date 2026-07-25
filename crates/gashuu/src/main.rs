@@ -17,6 +17,7 @@ mod keymap;
 mod library_model;
 mod navigation;
 mod open_book;
+mod open_controller;
 mod page_count_prefetch;
 mod page_jump;
 mod page_loader;
@@ -191,6 +192,10 @@ fn main() -> color_eyre::Result<()> {
     // add never freezes the event loop. `start` dispatches; `add-finalize` applies.
     let adder = Rc::new(add_controller::AddController::new());
 
+    // Single-open controller: opens and inspects one source off the UI thread;
+    // `open-finalize` applies only the current epoch on the event loop.
+    let open_ctrl = Rc::new(open_controller::OpenController::new());
+
     // Shared library-search filter state, so every path (search, add/open backfill,
     // open-time rebuild) projects the SAME visible-index set. Starts on the empty query.
     let search = Rc::new(RefCell::new(LibrarySearchState::default()));
@@ -272,8 +277,8 @@ fn main() -> color_eyre::Result<()> {
         &selection, &localizer,
     );
     handlers::wire_carousel_handlers(
-        &ui, &state, &viewport, &library, &nav, &open_book, &covers, &pages, &thumbs, &search,
-        &selection, &localizer,
+        &ui, &state, &viewport, &library, &nav, &settings, &open_book, &open_ctrl, &covers, &pages,
+        &thumbs, &search, &selection, &localizer,
     );
     handlers::wire_selection_handlers(
         &ui, &state, &library, &covers, &search, &selection, &localizer,

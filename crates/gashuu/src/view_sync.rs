@@ -61,7 +61,7 @@ pub(crate) fn persist_leave_point(
 
 /// Save-injection seam for proving the one-save boundary without touching the
 /// process data directory. Production passes [`Library::save`].
-fn persist_leave_point_with(
+pub(crate) fn persist_leave_point_with(
     route: ViewModeRoute,
     state: &Rc<RefCell<ViewerState>>,
     viewport: &Rc<RefCell<ViewportState>>,

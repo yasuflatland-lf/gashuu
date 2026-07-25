@@ -9,11 +9,12 @@
 //! `reading_direction`; this state only exposes the leading/trailing images.
 
 use crate::keymap::NavAction;
+use crate::open_controller::{probe_open, OpenProbeOutcome};
 use crate::viewport::ViewportState;
 use gashuu_core::{
-    cache::CacheDispatch, ArchiveLoader, ArchivePolicy, CacheConfig, CoreError, CoverMode,
-    DecodedImage, ImageCache, Language, PageSource, ReadingDirection, ResolvedView, Settings,
-    Spread, SpreadContext, SpreadLayout, SpreadMode,
+    cache::CacheDispatch, ArchivePolicy, CacheConfig, CoreError, CoverMode, DecodedImage,
+    ImageCache, Language, PageSource, ReadingDirection, ResolvedView, Settings, Spread,
+    SpreadContext, SpreadLayout, SpreadMode,
 };
 use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
@@ -298,22 +299,39 @@ impl ViewerState {
 
     /// Open any supported path (directory or archive) as the active source,
     /// using the given `policy` to control which formats are permitted.
+    ///
+    /// The synchronous composition of [`probe_open`] + [`Self::install_opened`],
+    /// so the blocking work is defined in ONE place and the async open path
+    /// (`OpenController`) cannot drift from it. Because the probe outcome is
+    /// `Send` it carries the failure as a pre-captured message, so an error is
+    /// re-wrapped here rather than forwarding the original `CoreError` variant;
+    /// no caller discriminates it, and the state-on-error contract is unchanged
+    /// (nothing is installed unless the probe opened).
     pub fn open_path_with_policy(
         &mut self,
         path: &Path,
         policy: ArchivePolicy,
     ) -> Result<(), CoreError> {
-        let source = ArchiveLoader::open_with_policy(path, policy)?;
-        let skipped = source.skipped_count();
-        if skipped > 0 {
-            tracing::warn!(skipped, path = %path.display(), "entries skipped while opening path");
+        match probe_open(path, policy) {
+            OpenProbeOutcome::Opened(probe) => {
+                self.install_opened(probe.source, probe.skipped, probe.canonical);
+                Ok(())
+            }
+            OpenProbeOutcome::Failed { error, .. } => Err(std::io::Error::other(error).into()),
         }
+    }
+
+    /// Install a source already opened by [`probe_open`]. This is the
+    /// mutation-only tail of [`ViewerState::open_path_with_policy`].
+    pub fn install_opened(
+        &mut self,
+        source: Arc<dyn PageSource>,
+        skipped: usize,
+        canonical: PathBuf,
+    ) {
         self.last_open_skipped = skipped;
         self.set_source(source);
-        // Canonicalize best-effort, falling back to the verbatim path on error (same
-        // policy as Library::add: canonical form when available, verbatim otherwise).
-        self.open_file = Some(path.canonicalize().unwrap_or_else(|_| path.to_path_buf()));
-        Ok(())
+        self.open_file = Some(canonical);
     }
 
     /// Number of entries skipped during the most recent successful `open_path`

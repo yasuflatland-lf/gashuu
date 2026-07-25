@@ -429,13 +429,18 @@ So `use_cases::OpenBookUseCase`, `use_cases::remove_empty_book`,
 (#67). Holds four headless collaborators as `Rc<RefCell<…>>` fields: `ViewerState`, `Settings`,
 `ViewportState`, and `Library`. The return value (#114) is built from two types and a single export:
 
-- `run(&self, path: &Path) -> OpenOutcome` — writes back the previous book's position and view modes;
-  opens the source; updates and saves recent sources when tracking is enabled; registers and saves
-  the book in `Library`; jumps to the resume page; and applies the resolved per-book view. On
-  failure it returns `OpenOutcome::Error(String)` (pre-captured `format!("{e}")`); on success it
-  returns `OpenOutcome::Success { notices, count_changed }`. **`run` does NOT transition screens,
-  rebuild the carousel, launch thumbnails, or import `crate::i18n`** — those UI effects and all
-  formatting are deferred to `main.rs::finalize_open`.
+- `apply_probed(&self, path: &Path, probe: OpenProbeOutcome) -> OpenOutcome` — writes back the
+  previous book's position and view modes; installs the ALREADY-opened source from the probe;
+  updates and saves recent sources when tracking is enabled; registers and saves the book in
+  `Library`; jumps to the resume page; and applies the resolved per-book view. On a `Failed` probe
+  it returns `OpenOutcome::Error(String)` (the worker's pre-captured message); on success it
+  returns `OpenOutcome::Success { notices, count_changed }`. **`apply_probed` does NOT transition
+  screens, rebuild the carousel, launch thumbnails, or import `crate::i18n`** — those UI effects and
+  all formatting are deferred to `main.rs::finalize_open`.
+- `run(&self, path: &Path) -> OpenOutcome` = `apply_probed(path, probe_open(path, policy))` — the
+  retained SYNCHRONOUS composition. It blocks on the archive open, so the Slint open sites dispatch
+  through `open_controller` instead (issue #487) and only tests call it; it stays the single entry
+  point for a future non-UI caller and pins that the split composes back to the pre-split behaviour.
 - `NoticesContent` — neutral data struct (skipped count, `SkippedDetail`, optional save-error
   strings) passed to `i18n::dynamic::format_notices` in `finalize_open`. No locale logic inside.
 - `OpenOutcome` / `SkippedDetail` / `NoticesContent` are re-exported through `crate::use_cases`.
@@ -458,16 +463,18 @@ open-time and cover-time removal paths share `main.rs::empty_book_removed_status
 notice-plus-save-failure compose.
 
 `main.rs` constructs one instance and shares it (`Rc`) into the open-handler closures:
-`on_carousel_open` and `on_carousel_continue_reading`. Both call
-`finalize_open(&ui, &state, &viewport, &CarouselRefresh { … }, outcome)` after `run` returns — the
-signature gained the full `CarouselRefresh` deps (was just `&localizer`) because the
-`EmptyBookRejected` arm may rebuild the carousel. The carousel-open / bookmark-jump open path
-(`handlers/library.rs::open_and_enter`) also calls `go_to_viewer`, but gates it on the POSITIVE
-outcome — `enter_viewer = matches!(outcome, OpenOutcome::Success(..))` (PR #334; was
+`on_carousel_open` and `on_carousel_continue_reading` only DISPATCH
+(`handlers/library.rs::open_and_enter` → `OpenController::start`); the whole tail below runs in the
+`on_open_finalize` handler. It calls
+`finalize_open(&ui, &state, &viewport, &CarouselRefresh { … }, outcome)` after `apply_probed`
+returns — the signature gained the full `CarouselRefresh` deps (was just `&localizer`) because the
+`EmptyBookRejected` arm may rebuild the carousel. That handler also calls `go_to_viewer`, but gates
+it on the POSITIVE outcome — `enter_viewer = matches!(outcome, OpenOutcome::Success(..))` (was
 `!matches!(outcome, EmptyBookRejected { .. })`, which ALSO entered the Viewer on a FAILED open and
 dropped the user into a blank 0-page stage). On `Error` it stays on the Library; when the file is
-missing or its volume is unmounted (`!path.exists()`) it replaces the raw I/O error with the
-book-named `viewer-open-inaccessible` message (title via `use_cases::book_display_title`).
+missing or its volume is unmounted (the probe's `path_exists == false`, stat'd off-thread rather
+than by a live `path.exists()` call) it replaces the raw I/O error with the book-named
+`viewer-open-inaccessible` message (title via `use_cases::book_display_title`).
 See [patterns.md](patterns.md), "OpenOutcome pattern", "finalize_open helper", and "Gate a screen
 transition on the POSITIVE outcome".
 
@@ -926,6 +933,22 @@ thread: `main.rs::apply_outcomes` (the old synchronous `add_paths` body, byte-id
 here so the probe stays pure) + `apply_add_report` (save → rebuild → notice → focus). Same Send/!Send discipline as
 the cover loader: only `Send` values cross into the workers and the marshaled closures; every `Library` mutation
 runs on the UI thread. See [patterns.md](patterns.md), "Worker → UI ACTION via a Slint callback".
+
+**`open_controller.rs`** (`OpenController`, issue #487): the SAME async harness applied to the
+SINGLE open, so a cold cloud-synced or network book no longer freezes the event loop for the whole
+hydration (`ArchiveLoader::open_with_policy` lists every entry; `File::open` can block). Only the
+read-only PROBE crosses the thread boundary: the pure, `Send` `probe_open(path, policy)` performs
+the archive/folder open, the skipped count, `path.canonicalize()`, and the `is_dir` / `exists` stats,
+returning `OpenProbeOutcome::{Opened(OpenProbe), Failed { error, path_exists }}` — touching no
+`ViewerState`, `Library`, or `Settings` (`PageSource` is `Send + Sync`, so the opened source itself
+crosses). `start(ui_weak, path, policy)` bumps an `AtomicUsize` epoch on the UI thread, installs a
+fresh `Arc<Mutex<Option<…>>>` slot, `rayon::spawn`s the probe, and marshals `open-finalize(epoch)`;
+`take_outcome(epoch)` drains it once and returns `None` when superseded, so double-clicking a second
+book mid-probe opens ONLY the second. Every state mutation and BOTH library saves (plus the optional
+settings save) stay on the UI thread in `OpenBookUseCase::apply_probed` — the synchronous-save
+rationale (the detached-write revert hazard) is untouched, and `persist_leave_point` still runs
+first, before the source is replaced. See [patterns.md](patterns.md), "Worker → UI ACTION via a
+Slint callback".
 
 **`page_loader.rs`** (`PageController`, issue #207): the viewer's async-decode arm. Keeps the same
 mental model as `cover_loader.rs` — UI-thread bookkeeping in the controller, heavy decode on rayon
