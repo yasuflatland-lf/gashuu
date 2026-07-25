@@ -3,10 +3,12 @@
 // ConfirmDialog's FocusScope/key-trap structure (see that file's header for the
 // full i-slint-core rationale), with THREE actions: Update now / Later / Skip.
 //
-// KEY MODEL: backdrop click, Esc, and Enter/Return ALL map to later(). Update now
-// is NEVER bound to Enter (reachable only by click or Tab→Space, even while it holds
-// focus); every OTHER key is swallowed. `fs` WRAPS the panel so it's a genuine
-// ANCESTOR of the buttons (upward key walk).
+// KEY MODEL: while idle, backdrop click, Esc, and Enter/Return ALL map to later().
+// While an update is in progress those dismissal gestures and all three decisions
+// are blocked; only release notes stays live. Update now is NEVER bound to Enter
+// (reachable only by click or Tab→Space, even while it holds focus); every OTHER
+// key is swallowed. `fs` WRAPS the panel so it's a genuine ANCESTOR of the buttons
+// (upward key walk).
 //
 // DEFAULT FOCUS: Later (safe, non-committing). Set on `fs.init`; re-instantiated on
 // every `if` mount (ViewerWindow usage contract), so no focus-epoch needed (never
@@ -31,7 +33,7 @@ export component UpdateAvailableDialog inherits GlassModal {
     in property <string> latest-version;
     // Whether the release has notes to show (gates the "Release notes" link).
     in property <bool> notes-available: true;
-    // True while a download/self-replace is running (shows `status-text`).
+    // True while a download/self-replace is running (gates actions and shows `status-text`).
     in property <bool> in-progress: false;
     // Pre-composed transient status (e.g. "Downloading…", "Verifying…").
     in property <string> status-text;
@@ -45,11 +47,20 @@ export component UpdateAvailableDialog inherits GlassModal {
     // Fired on the "Release notes" link.
     callback notes();
 
+    // BLOCK semantics (in-progress guard): while a download/install is in flight the
+    // dialog is committed — Accept must not re-enter the pipeline and Later/Skip must
+    // not dismiss a dialog whose background job would then finish invisibly and
+    // force-restart the app. `notes()` is NOT gated (browser only). There is no
+    // cancellation: dismissal is blocked, not aborted.
+    function try-accept() { if (root.in-progress) { return; } root.accept(); }
+    function try-later()  { if (root.in-progress) { return; } root.later(); }
+    function try-skip()   { if (root.in-progress) { return; } root.skip(); }
+
     // Panel geometry + backdrop (glass chrome in GlassModal). Same fluid-width
     // clamp as ConfirmDialog (settings-w token); height hugs the content.
     panel-width: min(Theme.settings-w, root.width - 2 * Theme.space-xl);
     panel-height: body-col.preferred-height;
-    backdrop-clicked => { root.later(); }
+    backdrop-clicked => { root.try-later(); }
 
     // FocusScope: Esc/Enter → later, Tab/Backtab rotate 3 stops. WRAPS the panel as
     // a genuine ANCESTOR of the button scopes (see the header for the rationale).
@@ -68,7 +79,7 @@ export component UpdateAvailableDialog inherits GlassModal {
             // reflexive press never fires accept(), even when Update now holds focus
             // (its scope rejects all but Space, so Return bubbles up here).
             if (event.text == Key.Escape || event.text == Key.Return) {
-                root.later();
+                root.try-later();
                 return EventResult.accept;
             }
             // Forward Tab: Update now → Later → Skip this version → (wrap).
@@ -171,11 +182,13 @@ export component UpdateAvailableDialog inherits GlassModal {
                 // Update now — the affirmative action, the single accent CTA (never
                 // destructive, so PrimaryButton not DangerButton).
                 accept-scope := FocusButton {
-                    pressed => { root.accept(); }
+                    enabled: !root.in-progress;
+                    pressed => { root.try-accept(); }
                     PrimaryButton {
                         text: Strings.update-accept-label;
+                        enabled: !root.in-progress;
                         clicked => {
-                            root.accept();
+                            root.try-accept();
                         }
                     }
                 }
@@ -183,11 +196,13 @@ export component UpdateAvailableDialog inherits GlassModal {
                 // Later — holds the default focus on open; the safe,
                 // non-committing choice (same role as ConfirmDialog's Cancel).
                 later-scope := FocusButton {
-                    pressed => { root.later(); }
+                    enabled: !root.in-progress;
+                    pressed => { root.try-later(); }
                     SecondaryButton {
                         text: Strings.update-later-label;
+                        enabled: !root.in-progress;
                         clicked => {
-                            root.later();
+                            root.try-later();
                         }
                     }
                 }
@@ -195,11 +210,13 @@ export component UpdateAvailableDialog inherits GlassModal {
                 // Skip this version — a low-prominence utility action (bordered
                 // neutral, like the Settings dialog's utility actions).
                 skip-scope := FocusButton {
-                    pressed => { root.skip(); }
+                    enabled: !root.in-progress;
+                    pressed => { root.try-skip(); }
                     SecondaryButton {
                         text: Strings.update-skip-label;
+                        enabled: !root.in-progress;
                         clicked => {
-                            root.skip();
+                            root.try-skip();
                         }
                     }
                 }

@@ -6,6 +6,7 @@ import { Theme } from "../Theme.slint";
 export component PrimaryButton inherits Rectangle {
     // ── Public API ────────────────────────────────────────────────────────────
     in property <string> text;
+    in property <bool> enabled: true;
     callback clicked;
 
     // Sizing: root sizes to content (layout min-size drives width; padding drives
@@ -15,7 +16,7 @@ export component PrimaryButton inherits Rectangle {
     vertical-stretch: 0;
 
     // ── Default appearance ────────────────────────────────────────────────────
-    background: Theme.accent;
+    background: root.enabled ? Theme.accent : Theme.accent.darker(0.45);
     border-radius: Theme.radius-md;
 
     animate background { duration: Theme.motion-fast; }
@@ -23,10 +24,10 @@ export component PrimaryButton inherits Rectangle {
     // States: pressed > hover — Slint's first matching state wins, so list pressed
     // before hover (same ordering as the Slint fluent Button).
     states [
-        pressed when touch.pressed : {
+        pressed when touch.pressed && root.enabled : {
             root.background: Theme.accent.darker(0.20);
         }
-        hover when touch.has-hover : {
+        hover when touch.has-hover && root.enabled : {
             root.background: Theme.accent.darker(0.08);
         }
     ]
@@ -43,7 +44,7 @@ export component PrimaryButton inherits Rectangle {
 
         Text {
             text: root.text;
-            color: Theme.text;
+            color: root.enabled ? Theme.text : Theme.text-dim;
             font-size: Theme.font-label;
             font-weight: Theme.weight-medium;
             horizontal-alignment: center;
@@ -54,12 +55,13 @@ export component PrimaryButton inherits Rectangle {
     // ── Accessibility ─────────────────────────────────────────────────────────
     accessible-role: button;
     accessible-label: root.text;
+    accessible-enabled: root.enabled;
     // Let a screen-reader activation gesture fire the same callback as a click.
-    accessible-action-default => { root.clicked(); }
+    accessible-action-default => { if (root.enabled) { root.clicked(); } }
 
     // TouchArea is non-focusable — it never steals keyboard focus from a parent
     // FocusScope (docs/patterns.md "TouchArea click focus recovery").
     touch := TouchArea {
-        clicked => { root.clicked(); }
+        clicked => { if (root.enabled) { root.clicked(); } }
     }
 }

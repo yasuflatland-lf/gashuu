@@ -253,6 +253,10 @@ first, then in-place self-replace for AppImage/Windows.
 
 ## Deferred (intentionally out of scope)
 
+- Cancelling an in-flight update download/install. While a download or self-replace is running the
+  update dialog BLOCKS its actions (Update now disabled; Later/Skip/Esc/backdrop do not dismiss)
+  rather than aborting the job — there is no cancellation token in `download_bytes` or the install
+  steps.
 - A genuinely-RAR-compressed test fixture (issue #22 — only a store-format fixture ships, which does not exercise real RAR decompression).
 - Progressive per-slot double-spread display (rejected — per-slot geometry would fracture the unified zoom/pan content rectangle; the spread applies atomically).
 - Thumbnail-strip follow-ups:

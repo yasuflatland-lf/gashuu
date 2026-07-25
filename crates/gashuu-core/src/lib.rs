@@ -54,6 +54,7 @@ pub use thumbnail_cache::{
 };
 pub use update::asset::select_asset;
 pub use update::check::{should_check, CHECK_INTERVAL_SECS};
+pub use update::dialog::{is_action_allowed, UpdateDialogAction};
 pub use update::packaging::{detect_packaging, Packaging, UpdateStrategy};
 pub use update::release::{parse_latest_release, Asset, ReleaseInfo};
 pub use update::verify::{is_verified, parse_sha256sums, sha256_hex};
