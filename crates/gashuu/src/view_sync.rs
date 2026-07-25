@@ -19,7 +19,7 @@ pub(crate) enum ViewModeRoute {
     DialogClosedOnViewer,
     /// Leaving the viewer for the Library (↑): persist the open book's override.
     LeaveViewer,
-    /// Opening a different book while one is open (`OpenBookUseCase::run`):
+    /// Opening a different book while one is open (`OpenBookUseCase::apply_probed`):
     /// persist the OUTGOING book's override before the source is replaced.
     OpenDifferentBook,
     /// App exit: persist the open book's override, then reconcile into the GLOBAL

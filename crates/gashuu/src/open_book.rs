@@ -2,8 +2,10 @@
 //!
 //! [`OpenBookUseCase`] bundles the four headless collaborators the open path
 //! coordinates (state, settings, viewport, library) as fields, so the open sites
-//! call [`OpenBookUseCase::run`] with just the per-call `path` (`skipped_detail`
-//! is derived internally). `run` is fully headless — it returns an
+//! call [`OpenBookUseCase::apply_probed`] with the per-call `path` plus the
+//! already-completed probe (`skipped_detail` is derived internally);
+//! [`OpenBookUseCase::run`] is the synchronous `probe_open` + `apply_probed`
+//! composition. Both are fully headless — they return an
 //! [`OpenOutcome`] and `main.rs`'s `finalize_open` applies every UI effect
 //! (status text, viewer refresh, carousel rebuild, thumbnail launch), the same
 //! headless-use-case + UI-finalize split as `RemoveBooksUseCase` / `finalize_remove`.
@@ -39,7 +41,7 @@ pub(crate) struct NoticesContent {
     pub(crate) library_save_err: Option<String>,
 }
 
-/// Result of [`OpenBookUseCase::run`]. Carries enough information for
+/// Result of [`OpenBookUseCase::apply_probed`]. Carries enough information for
 /// `main.rs` to finalize the UI without any i18n logic in this module.
 #[derive(Debug)]
 pub(crate) enum OpenOutcome {
@@ -84,9 +86,9 @@ pub(crate) enum SkippedDetail {
 }
 
 /// Coordinates the "open a book" use case. The four headless collaborators it
-/// threads are fields, so the open sites call [`OpenBookUseCase::run`] with just
-/// a `path`; `main.rs`'s `finalize_open` applies the UI effects (symmetry with
-/// `RemoveBooksUseCase`).
+/// threads are fields, so the open sites call [`OpenBookUseCase::apply_probed`]
+/// with just a `path` and its probe; `main.rs`'s `finalize_open` applies the UI
+/// effects (symmetry with `RemoveBooksUseCase`).
 pub(crate) struct OpenBookUseCase {
     state: Rc<RefCell<ViewerState>>,
     settings: Rc<RefCell<Settings>>,

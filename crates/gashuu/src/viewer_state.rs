@@ -352,7 +352,8 @@ impl ViewerState {
     }
 
     /// Open any supported path with the default (allow-all) policy.
-    /// Kept for test compatibility; production callers use `open_path_with_policy`.
+    /// Kept for test compatibility; the production open path dispatches through
+    /// `OpenController` (`probe_open` + `install_opened`).
     #[allow(dead_code)]
     pub fn open_path(&mut self, path: &Path) -> Result<(), CoreError> {
         self.open_path_with_policy(path, ArchivePolicy::default())

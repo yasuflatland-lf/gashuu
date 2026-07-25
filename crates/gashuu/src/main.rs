@@ -211,7 +211,8 @@ fn main() -> color_eyre::Result<()> {
     let selection = Rc::new(RefCell::new(LibrarySelectionState::default()));
 
     // The "open a book" use-case, shared via `Rc` so the open flow lives in one place
-    // (`use_cases::OpenBookUseCase`); `run` is headless and `finalize_open` applies the UI effects.
+    // (`use_cases::OpenBookUseCase`); the use case is headless and `finalize_open` applies
+    // the UI effects.
     let open_book = Rc::new(use_cases::OpenBookUseCase::new(
         Rc::clone(&state),
         Rc::clone(&settings),
@@ -547,7 +548,7 @@ pub(crate) fn empty_book_removed_status(
     }
 }
 
-/// Finalize an `open_book.run(path)` outcome on the UI — the headless use case
+/// Finalize an `open_book.apply_probed(path, probe)` outcome on the UI — the headless use case
 /// returns data and this applies every Slint effect. On failure, set the localized
 /// error status; on success, `refresh()` the viewer, rebuild the carousel when the
 /// open back-filled a page count (`count_changed`), launch thumbnails, and append
