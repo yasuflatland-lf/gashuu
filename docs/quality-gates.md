@@ -3,13 +3,44 @@
 Reference doc migrated from the CLAUDE.md "Quality gates" section.
 A change is not done until ALL gates are green.
 
-### The three gates (run before calling any change done)
+### The three cargo gates (run before calling any change done)
 
 ```bash
 mise exec -- cargo fmt --check
 mise exec -- cargo clippy --workspace --all-targets -- -D warnings
 mise exec -- cargo nextest run --workspace --profile ci
 ```
+
+This is the canonical form and stays canonical: CI runs the gates as separate steps across separate jobs on purpose, so each one reports its own red/green.
+
+### Fast local path: `mise run gates` (all five blocking gates in parallel)
+
+The three cargo gates and the two bash harnesses (`check-tokens`, `check-docs`) are mutually independent, so `mise run gates` fans all five out concurrently via mise's `depends`. Each gate is also a task on its own (`check-fmt`, `check-clippy`, `check-tests`, `check-tokens`, `check-docs`) when you only want one:
+
+```bash
+mise run gates         # all five, concurrently
+mise run check-clippy  # just one
+```
+
+Wall clock, measured in a worktree with warm target directories after `touch crates/gashuu-core/src/lib.rs` (18 cores, median of 6 reps, machine sharing CPU with two other compile jobs):
+
+| mode | wall |
+| --- | --- |
+| serial: the five commands one after another | 9.8 s |
+| all five concurrent, clippy sharing the default target dir | 8.2 s |
+| `mise run gates` — clippy on its own `--target-dir target/clippy` | 5.5 s |
+
+The original measurement on an idle machine recorded 12 s / 10 s / 7 s for the same three modes. Both runs agree on the point: naive concurrency is a marginal win, and giving clippy its own target directory is what turns it into a ~1.8x one. Individual warm-incremental costs here: `fmt --check` 0.2 s, clippy 3.6-4.0 s, `nextest run` 6.0 s (915 tests themselves 1.2 s), `check-tokens` 0.2 s, `check-docs` 0.3 s.
+
+**Why clippy needs its own `--target-dir`.** Cargo takes an exclusive build lock on a target directory, so clippy and nextest sharing the default one serialize on that lock and most of the parallelism evaporates. The separate directory is about the lock only — clippy and test artifacts do **not** invalidate each other's fingerprints (`nextest run --no-run` straight after clippy, and clippy straight after a test build, are both near-instant in a shared directory).
+
+**Disk cost, not a leak.** `target/clippy` is a second check-only artifact tree: measured 1.5 GB here, inside a 5.1 GB `target/`. It is covered by the existing `/target/` line in `.gitignore` (`git check-ignore -v target/clippy` confirms). Seeing it appear is expected — do not go hunting for a stale-artifact bug.
+
+**Fan-out width.** mise bounds concurrent dependencies by its `jobs` setting, which is 8 by default (`mise run --help` still advertises 4; `mise settings get jobs` is authoritative). Anything >= 5 gives full fan-out; a lower value only costs wall time, never correctness, which is why the repo does not pin `jobs` — that same knob also caps tool-install concurrency.
+
+**Usable as a pre-commit gate.** A single failing dependency fails `mise run gates` with a non-zero exit code and the aggregate's own body never runs (verified by rigging `check-docs` to fail via its `CHECK_DOCS_ROOT` fixture seam: aggregate exit 1).
+
+**No `mise exec --` prefix inside a task body.** mise runs task bodies in the activated tool environment — it exports `RUSTUP_TOOLCHAIN=1.97.1` and prepends the `cargo-nextest` install directory to `PATH` — so the bare `cargo` in these tasks *is* the pinned toolchain. Commands you type by hand are a different case and still need `mise exec --` (see CLAUDE.md).
 
 ### Token-drift guard (blocking)
 
