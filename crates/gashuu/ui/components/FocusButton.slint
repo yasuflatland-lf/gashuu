@@ -2,33 +2,41 @@
 // without editing it (issue 127/362); Tab/Enter/Esc are rejected so the ancestor `fs` owns keys.
 import { Theme } from "../Theme.slint";
 
-export component FocusButton inherits FocusScope {
+export component FocusButton inherits Rectangle {
+    in property <bool> enabled: true;
+    out property <bool> has-focus: scope.has-focus;
     callback pressed;
+    forward-focus: scope;
     width: slot.preferred-width;
     height: slot.preferred-height;
-    key-pressed(event) => {
-        if (event.text == Key.Space) {
-            root.pressed();
-            return accept;
+
+    scope := FocusScope {
+        width: parent.width;
+        height: parent.height;
+        key-pressed(event) => {
+            if (event.text == Key.Space) {
+                if (root.enabled) { root.pressed(); }
+                return accept;
+            }
+            return reject;
         }
-        return reject;
-    }
-    // Focus ring: accent border + soft accent-glow halo (the Toggle/Segmented
-    // idiom), drawn just outside the button.
-    Rectangle {
-        x: -Theme.space-xxs;
-        y: -Theme.space-xxs;
-        width: parent.width + 2 * Theme.space-xxs;
-        height: parent.height + 2 * Theme.space-xxs;
-        background: transparent;
-        border-radius: Theme.radius-md + Theme.space-xxs;
-        border-width: parent.has-focus ? 1px : 0px;
-        border-color: parent.has-focus ? Theme.accent : transparent;
-        drop-shadow-color: parent.has-focus ? Theme.accent-glow : transparent;
-        drop-shadow-blur: parent.has-focus ? Theme.focus-glow-blur : 0px;
-        animate border-color { duration: Theme.motion-fast; }
-    }
-    slot := HorizontalLayout {
-        @children
+        // Focus ring: accent border + soft accent-glow halo (the Toggle/Segmented
+        // idiom), drawn just outside the button.
+        Rectangle {
+            x: -Theme.space-xxs;
+            y: -Theme.space-xxs;
+            width: parent.width + 2 * Theme.space-xxs;
+            height: parent.height + 2 * Theme.space-xxs;
+            background: transparent;
+            border-radius: Theme.radius-md + Theme.space-xxs;
+            border-width: parent.has-focus ? 1px : 0px;
+            border-color: parent.has-focus ? Theme.accent : transparent;
+            drop-shadow-color: parent.has-focus ? Theme.accent-glow : transparent;
+            drop-shadow-blur: parent.has-focus ? Theme.focus-glow-blur : 0px;
+            animate border-color { duration: Theme.motion-fast; }
+        }
+        slot := HorizontalLayout {
+            @children
+        }
     }
 }

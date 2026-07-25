@@ -20,9 +20,9 @@ use crate::update::net::{download_bytes, fetch_latest_release_json};
 use crate::update::{UpdateError, CURRENT_VERSION, RELEASES_PAGE_URL};
 use crate::{Strings, ViewerWindow};
 use gashuu_core::{
-    detect_packaging, is_verified, parse_latest_release, parse_sha256sums, select_asset,
-    should_check, should_notify, Packaging, ReleaseInfo, Settings, UpdateStrategy,
-    CHECK_INTERVAL_SECS,
+    detect_packaging, is_action_allowed, is_verified, parse_latest_release, parse_sha256sums,
+    select_asset, should_check, should_notify, Packaging, ReleaseInfo, Settings,
+    UpdateDialogAction, UpdateStrategy, CHECK_INTERVAL_SECS,
 };
 use slint::ComponentHandle;
 use std::cell::RefCell;
@@ -167,9 +167,13 @@ pub(crate) fn wire_update_handlers(ui: &ViewerWindow, settings: &Rc<RefCell<Sett
     {
         let weak = ui.as_weak();
         ui.on_update_later(move || {
-            if let Some(ui) = weak.upgrade() {
-                restore_focus_after_dialog(&ui);
+            let Some(ui) = weak.upgrade() else {
+                return;
+            };
+            if !is_action_allowed(UpdateDialogAction::Later, ui.get_update_in_progress()) {
+                return;
             }
+            restore_focus_after_dialog(&ui);
         });
     }
 
@@ -179,6 +183,12 @@ pub(crate) fn wire_update_handlers(ui: &ViewerWindow, settings: &Rc<RefCell<Sett
         let weak = ui.as_weak();
         let settings = Rc::clone(settings);
         ui.on_update_skip(move || {
+            let Some(ui) = weak.upgrade() else {
+                return;
+            };
+            if !is_action_allowed(UpdateDialogAction::Skip, ui.get_update_in_progress()) {
+                return;
+            }
             if let Some(info) = latest_release() {
                 let mut s = settings.borrow_mut();
                 s.skipped_version = Some(info.version);
@@ -186,9 +196,7 @@ pub(crate) fn wire_update_handlers(ui: &ViewerWindow, settings: &Rc<RefCell<Sett
                     tracing::warn!(error = %e, "failed to persist skipped update version");
                 }
             }
-            if let Some(ui) = weak.upgrade() {
-                restore_focus_after_dialog(&ui);
-            }
+            restore_focus_after_dialog(&ui);
         });
     }
 
@@ -200,6 +208,9 @@ pub(crate) fn wire_update_handlers(ui: &ViewerWindow, settings: &Rc<RefCell<Sett
             let Some(ui) = weak.upgrade() else {
                 return;
             };
+            if !is_action_allowed(UpdateDialogAction::Accept, ui.get_update_in_progress()) {
+                return;
+            }
             let Some(info) = latest_release() else {
                 return;
             };

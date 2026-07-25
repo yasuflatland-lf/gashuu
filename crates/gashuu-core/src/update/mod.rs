@@ -5,6 +5,7 @@
 
 pub mod asset;
 pub mod check;
+pub mod dialog;
 pub mod packaging;
 pub mod release;
 pub mod verify;
