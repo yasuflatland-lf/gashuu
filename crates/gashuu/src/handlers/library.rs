@@ -11,6 +11,7 @@ use crate::{
 use crate::{
     library_model::{LibrarySearchState, LibrarySelectionState},
     navigation::NavState,
+    open_controller::{OpenController, OpenProbeOutcome},
     page_loader::PageController,
     selection_projection,
     thumbnail_strip::ThumbnailController,
@@ -151,40 +152,14 @@ pub(crate) fn wire_open_handlers(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 fn open_and_enter(
     ui: &ViewerWindow,
-    nav: &Rc<RefCell<NavState>>,
-    open_book: &Rc<use_cases::OpenBookUseCase>,
-    state: &Rc<RefCell<ViewerState>>,
-    viewport: &Rc<RefCell<ViewportState>>,
-    pages: &Rc<PageController>,
-    thumbs: &Rc<ThumbnailController>,
-    refresh: &CarouselRefresh<'_>,
-    path: &std::path::Path,
+    open_ctrl: &OpenController,
+    settings: &RefCell<Settings>,
+    path: std::path::PathBuf,
 ) {
-    // Writes back the OLD book first, opens the new path, then resumes its
-    // stored page. Empty sources are removed instead of entering the viewer.
-    let outcome = open_book.run(path);
-    // Enter the Viewer ONLY on a clean open: an empty source was already removed, and a
-    // FAILED open must not drop the user into a 0-page Viewer (moved file / unmounted volume).
-    let enter_viewer = matches!(outcome, use_cases::OpenOutcome::Success { .. });
-    let open_failed = matches!(outcome, use_cases::OpenOutcome::Error(_));
-    finalize_open(ui, state, viewport, pages, thumbs, refresh, outcome);
-    // When the open failed because the file is gone/unmounted, replace the raw I/O status
-    // with a book-named message. A failure with the file still present keeps the error.
-    if open_failed && !path.exists() {
-        let title = use_cases::book_display_title(&refresh.library.borrow(), path);
-        ui.set_status_text(
-            crate::i18n::dynamic::open_inaccessible(refresh.localizer.loader(), &title).into(),
-        );
-    }
-    // Derive the title from authoritative post-open state so failed opens never
-    // display the requested path as the current book.
-    ui.set_current_book_name(current_book_name(state).into());
-    if enter_viewer {
-        go_to_viewer(ui, nav);
-    }
+    let policy = settings.borrow().archive_policy();
+    open_ctrl.start(ui.as_weak(), path, policy);
 }
 
 /// Registers the library-search and carousel navigation/open callbacks onto `ui`.
@@ -196,7 +171,9 @@ pub(crate) fn wire_carousel_handlers(
     viewport: &Rc<RefCell<ViewportState>>,
     library: &Rc<RefCell<Library>>,
     nav: &Rc<RefCell<NavState>>,
+    settings: &Rc<RefCell<Settings>>,
     open_book: &Rc<use_cases::OpenBookUseCase>,
+    open_ctrl: &Rc<OpenController>,
     covers: &Rc<cover_loader::CoverController>,
     pages: &Rc<PageController>,
     thumbs: &Rc<ThumbnailController>,
@@ -210,13 +187,76 @@ pub(crate) fn wire_carousel_handlers(
     let viewport = Rc::clone(viewport);
     let library = Rc::clone(library);
     let nav = Rc::clone(nav);
+    let settings = Rc::clone(settings);
     let open_book = Rc::clone(open_book);
+    let open_ctrl = Rc::clone(open_ctrl);
     let covers = Rc::clone(covers);
     let pages = Rc::clone(pages);
     let thumbs = Rc::clone(thumbs);
     let search = Rc::clone(search);
     let selection = Rc::clone(selection);
     let localizer = Rc::clone(localizer);
+
+    // Single-open finalize: drain only the current epoch, then run the complete
+    // mutation/persistence/UI tail on the event-loop thread.
+    {
+        let ui_weak = ui.as_weak();
+        let open_ctrl = Rc::clone(&open_ctrl);
+        let nav = Rc::clone(&nav);
+        let open_book = Rc::clone(&open_book);
+        let state = Rc::clone(&state);
+        let viewport = Rc::clone(&viewport);
+        let pages = Rc::clone(&pages);
+        let thumbs = Rc::clone(&thumbs);
+        let library = Rc::clone(&library);
+        let covers = Rc::clone(&covers);
+        let search = Rc::clone(&search);
+        let selection = Rc::clone(&selection);
+        let localizer = Rc::clone(&localizer);
+        ui.on_open_finalize(move |epoch| {
+            with_ui(&ui_weak, |ui| {
+                let Some((path, probe)) = open_ctrl.take_outcome(epoch.max(0) as usize) else {
+                    return;
+                };
+                let path_exists = match &probe {
+                    OpenProbeOutcome::Failed { path_exists, .. } => Some(*path_exists),
+                    OpenProbeOutcome::Opened(_) => None,
+                };
+                let outcome = open_book.apply_probed(&path, probe);
+                // Enter the Viewer ONLY on a clean open: an empty source was already
+                // removed, and a failed open must keep the user on the Library screen.
+                let enter_viewer = matches!(outcome, use_cases::OpenOutcome::Success { .. });
+                let open_failed = matches!(outcome, use_cases::OpenOutcome::Error(_));
+                finalize_open(
+                    &ui,
+                    &state,
+                    &viewport,
+                    &pages,
+                    &thumbs,
+                    &CarouselRefresh {
+                        library: &library,
+                        covers: &covers,
+                        search: &search,
+                        selection: &selection,
+                        localizer: &localizer,
+                    },
+                    outcome,
+                );
+                // The worker already performed the existence stat. Missing or
+                // unmounted paths get the same book-named replacement message.
+                if open_failed && path_exists == Some(false) {
+                    let title = use_cases::book_display_title(&library.borrow(), &path);
+                    ui.set_status_text(
+                        crate::i18n::dynamic::open_inaccessible(localizer.loader(), &title).into(),
+                    );
+                }
+                ui.set_current_book_name(current_book_name(&state).into());
+                if enter_viewer {
+                    go_to_viewer(&ui, &nav);
+                }
+            })
+        });
+    }
 
     // Library search: the debounced NavBar query (the ONLY query-update path). Replace the
     // filter, rebuild the filtered carousel + cover stream, reset focus to row 0.
@@ -256,18 +296,9 @@ pub(crate) fn wire_carousel_handlers(
     {
         let ui_weak = ui.as_weak();
         let library = Rc::clone(&library);
-        let nav = Rc::clone(&nav);
-        let open_book = Rc::clone(&open_book);
-        let state = Rc::clone(&state);
-        let pages = Rc::clone(&pages);
-        let thumbs = Rc::clone(&thumbs);
         let search = Rc::clone(&search);
-        let viewport = Rc::clone(&viewport);
-        let localizer = Rc::clone(&localizer);
-        // `finalize_open` may rebuild the carousel (empty-book auto-removal), so it
-        // needs the full carousel-refresh deps.
-        let covers = Rc::clone(&covers);
-        let selection = Rc::clone(&selection);
+        let settings = Rc::clone(&settings);
+        let open_ctrl = Rc::clone(&open_ctrl);
         ui.on_carousel_open(move |index| {
             with_ui(&ui_weak, |ui| {
                 // Resolve the VISIBLE carousel index to a Library path via the search
@@ -285,23 +316,7 @@ pub(crate) fn wire_carousel_handlers(
                     );
                     return;
                 };
-                open_and_enter(
-                    &ui,
-                    &nav,
-                    &open_book,
-                    &state,
-                    &viewport,
-                    &pages,
-                    &thumbs,
-                    &CarouselRefresh {
-                        library: &library,
-                        covers: &covers,
-                        search: &search,
-                        selection: &selection,
-                        localizer: &localizer,
-                    },
-                    &path,
-                );
+                open_and_enter(&ui, &open_ctrl, &settings, path);
             })
         });
     }
@@ -311,18 +326,9 @@ pub(crate) fn wire_carousel_handlers(
     {
         let ui_weak = ui.as_weak();
         let library = Rc::clone(&library);
-        let nav = Rc::clone(&nav);
-        let open_book = Rc::clone(&open_book);
-        let state = Rc::clone(&state);
-        let viewport = Rc::clone(&viewport);
-        let pages = Rc::clone(&pages);
-        let thumbs = Rc::clone(&thumbs);
         let localizer = Rc::clone(&localizer);
-        // `finalize_open` may rebuild the carousel (empty-book auto-removal), so it
-        // needs the full carousel-refresh deps.
-        let covers = Rc::clone(&covers);
-        let search = Rc::clone(&search);
-        let selection = Rc::clone(&selection);
+        let settings = Rc::clone(&settings);
+        let open_ctrl = Rc::clone(&open_ctrl);
         ui.on_carousel_continue_reading(move || {
             with_ui(&ui_weak, |ui| {
                 // `Library::bookmark()` returns `last_opened` only when still on the shelf;
@@ -339,23 +345,7 @@ pub(crate) fn wire_carousel_handlers(
                     );
                     return;
                 };
-                open_and_enter(
-                    &ui,
-                    &nav,
-                    &open_book,
-                    &state,
-                    &viewport,
-                    &pages,
-                    &thumbs,
-                    &CarouselRefresh {
-                        library: &library,
-                        covers: &covers,
-                        search: &search,
-                        selection: &selection,
-                        localizer: &localizer,
-                    },
-                    &path,
-                );
+                open_and_enter(&ui, &open_ctrl, &settings, path);
             })
         });
     }
