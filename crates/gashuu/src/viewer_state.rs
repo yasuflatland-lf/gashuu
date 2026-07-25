@@ -139,7 +139,7 @@ pub struct ViewerState {
     /// defaults) instead of being re-pinned by the next view-override write-back.
     /// Set by the reset handler via [`Self::mark_inherit_pending`]; cleared on any
     /// real mode change (the `set_*`/`toggle_*` methods) and on `set_source`/`close`
-    /// (opening/closing a book). Read by `view_sync::write_back_view_override`.
+    /// (opening/closing a book). Read by `view_sync::stage_view_override_write_back`.
     inherit_pending: bool,
 }
 
@@ -232,7 +232,7 @@ impl ViewerState {
     /// Mark the open book as inherit-pending after a "Reset to global": the next
     /// view-override write-back must keep the override EMPTY (inherit) rather than
     /// re-pin the runtime modes. Cleared by any real mode change or by opening/
-    /// closing a book. See `view_sync::write_back_view_override`.
+    /// closing a book. See `view_sync::stage_view_override_write_back`.
     pub fn mark_inherit_pending(&mut self) {
         self.inherit_pending = true;
     }
