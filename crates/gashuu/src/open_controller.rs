@@ -2,9 +2,9 @@
 //!
 //! Opening an archive or folder can block while a cloud-synced or network path
 //! hydrates. This controller moves only that read-only probe onto a rayon worker:
-//! archive/folder open, page listing, skipped count, canonicalization, and path
-//! metadata. The `open-finalize` callback drains the result and runs every state
-//! mutation and persistence effect on the UI thread.
+//! archive/folder open, page listing, skipped count, listing truncation,
+//! canonicalization, and path metadata. The `open-finalize` callback drains the
+//! result and runs every state mutation and persistence effect on the UI thread.
 //!
 //! Each start bumps an epoch on the UI thread and installs a fresh result slot.
 //! A late worker from an older generation writes only to its orphaned slot, and
@@ -12,7 +12,7 @@
 
 use crate::ui_marshal::marshal_to_ui;
 use crate::ViewerWindow;
-use gashuu_core::{ArchiveLoader, ArchivePolicy, PageSource};
+use gashuu_core::{canonical_identity, ArchiveLoader, ArchivePolicy, PageSource};
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
@@ -23,6 +23,7 @@ use std::sync::{Arc, Mutex};
 pub(crate) struct OpenProbe {
     pub(crate) source: Arc<dyn PageSource>,
     pub(crate) skipped: usize,
+    pub(crate) truncated: bool,
     pub(crate) canonical: PathBuf,
     pub(crate) is_dir: bool,
 }
@@ -39,13 +40,23 @@ pub(crate) fn probe_open(path: &Path, policy: ArchivePolicy) -> OpenProbeOutcome
     match ArchiveLoader::open_with_policy(path, policy) {
         Ok(source) => {
             let skipped = source.skipped_count();
+            let truncated = source.listing_truncated();
             if skipped > 0 {
                 tracing::warn!(skipped, path = %path.display(), "entries skipped while opening path");
+            }
+            if truncated {
+                tracing::warn!(
+                    path = %path.display(),
+                    "archive listing truncated; later pages are missing"
+                );
             }
             OpenProbeOutcome::Opened(OpenProbe {
                 source,
                 skipped,
-                canonical: path.canonicalize().unwrap_or_else(|_| path.to_path_buf()),
+                truncated,
+                // The same persistable identity `Library::add` uses, including its
+                // fallback when canonicalization produces a non-UTF-8 path.
+                canonical: canonical_identity(path),
                 is_dir: path.is_dir(),
             })
         }

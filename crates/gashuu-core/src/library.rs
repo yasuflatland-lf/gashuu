@@ -84,6 +84,23 @@ pub fn display_title(path: &Path) -> String {
     .unwrap_or_else(|| path.to_string_lossy().into_owned())
 }
 
+/// The shelf identity for `path`: its canonical form when that is available AND
+/// valid UTF-8, otherwise `path` verbatim.
+///
+/// The UTF-8 condition is not cosmetic: `Book::path` is serialized as a JSON string,
+/// so a non-UTF-8 identity would make `Library::to_json` — and therefore EVERY save —
+/// fail wholesale (CORE-S-1). A UTF-8 path that canonicalizes into a directory with
+/// non-UTF-8 bytes must therefore keep its own (persistable) spelling; dedup is
+/// marginally weaker for that book, which is strictly better than losing all saves.
+/// This is the single home of the rule: `Library::add_canonical`,
+/// `Library::recanonicalize_and_merge` and the UI's `open_file` capture all use it.
+pub fn canonical_identity(path: &Path) -> PathBuf {
+    path.canonicalize()
+        .ok()
+        .filter(|canonical| canonical.to_str().is_some())
+        .unwrap_or_else(|| path.to_path_buf())
+}
+
 impl Book {
     /// Build a `Book` from a path, deriving the display title via
     /// [`display_title`] (file stem for a file, directory name for a folder,
@@ -264,10 +281,15 @@ impl Library {
     }
 
     /// Add `path` to the shelf. Canonicalizes best-effort (falling back to the
-    /// path verbatim when canonicalization fails - e.g. a missing file), derives
-    /// the title, and de-duplicates by canonical path. Returns `Some` with the
-    /// canonical path of the newly stored book, or `None` if the path was already
-    /// present (duplicate, no-op).
+    /// path verbatim when canonicalization fails or produces a non-UTF-8 path),
+    /// derives the title, and de-duplicates by canonical path. Returns `Some`
+    /// with the canonical path of the newly stored book, or `None` if the path
+    /// was already present (duplicate, no-op).
+    ///
+    /// # Preconditions
+    ///
+    /// `path` must be valid UTF-8. Production callers satisfy this because every
+    /// book path originates from an [`crate::ArchiveLoader`] open or probe.
     pub fn add(&mut self, path: PathBuf) -> Option<&Path> {
         let (canonical, added) = self.add_canonical(path);
         // Preserve the public contract: `Some` only for a newly stored book,
@@ -287,7 +309,14 @@ impl Library {
     /// owned key that always matches a stored entry. Internal seam shared by
     /// `add`; not part of the public surface.
     fn add_canonical(&mut self, path: PathBuf) -> (PathBuf, bool) {
-        let canonical = path.canonicalize().unwrap_or(path);
+        let canonical = canonical_identity(&path);
+        // The serialization oracle deliberately exercises direct invalid input
+        // in unit tests; production debug builds still enforce the public precondition.
+        #[cfg(not(test))]
+        debug_assert!(
+            canonical.to_str().is_some(),
+            "book identities must be UTF-8; non-UTF-8 paths are rejected by ArchiveLoader",
+        );
         if self.contains_path(&canonical) {
             return (canonical, false);
         }
@@ -309,15 +338,16 @@ impl Library {
     /// explicitly from `library_store::from_json` before `normalize`, not folded
     /// into the pure `normalize`.
     ///
-    /// Resolution key: `book.path().canonicalize().unwrap_or_else(|_| raw)` — the
-    /// same rule `add_canonical` uses. A missing file fails `canonicalize`, so its
-    /// key is its raw path: it can never be merged away and its path is preserved
-    /// verbatim (a singleton group whose key equals its own raw path). Books are
-    /// grouped by key in first-seen (vec) order; each group collapses to one
-    /// survivor whose `path` is set to the canonical key (upgrading a now-resolvable
-    /// raw path even for a group of one). Cross-member field merge is deterministic:
-    /// `resume_page` = max, `page_count` = first `Some` in vec order, `overrides` =
-    /// first non-empty in vec order, `title` = the first member's title.
+    /// Resolution key: [`canonical_identity`] — the same rule `add_canonical`
+    /// uses. A missing file or a non-UTF-8 canonical form keeps the raw path as
+    /// its key: it can never be merged away and its path is preserved verbatim
+    /// (a singleton group whose key equals its own raw path). Books are grouped
+    /// by key in first-seen (vec) order; each group collapses to one survivor
+    /// whose `path` is set to the canonical key (upgrading a now-resolvable raw
+    /// path even for a group of one). Cross-member field merge is deterministic:
+    /// `resume_page` = max, `page_count` = first `Some` in vec order,
+    /// `overrides` = first non-empty in vec order, `title` = the first member's
+    /// title.
     /// `last_opened` is repointed from a merged-away / pre-upgrade spelling to the
     /// survivor's canonical key (a genuine orphan is left for `normalize` to clear).
     pub(crate) fn recanonicalize_and_merge(&mut self) {
@@ -328,10 +358,7 @@ impl Library {
         let mut groups: HashMap<PathBuf, Vec<Book>> = HashMap::new();
         let mut remap: HashMap<PathBuf, PathBuf> = HashMap::new();
         for book in books {
-            let key = book
-                .path()
-                .canonicalize()
-                .unwrap_or_else(|_| book.path().to_path_buf());
+            let key = canonical_identity(book.path());
             remap.insert(book.path().to_path_buf(), key.clone());
             if !groups.contains_key(&key) {
                 order.push(key.clone());
@@ -521,6 +548,9 @@ impl Library {
     /// leaves the stored count at its unknown encoding. Returns the resume
     /// position (the book's `ReadingProgress`) and whether the stored count
     /// changed, so the caller can decide to rebuild the carousel.
+    ///
+    /// `open_path` must be valid UTF-8. Production callers satisfy this because
+    /// it is captured only after a successful [`crate::ArchiveLoader`] open.
     /// No persistence I/O; the only filesystem touch is the best-effort
     /// `canonicalize` inside `add_canonical`, which re-canonicalizes `open_path`
     /// (idempotent when it is already canonical — the result is unchanged, though
@@ -642,6 +672,72 @@ mod tests {
         let title = display_title(Path::new("/"));
         assert!(!title.is_empty());
         assert_eq!(title, "/");
+    }
+
+    #[test]
+    fn canonical_identity_returns_the_canonical_path_for_a_real_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("book.cbz");
+        std::fs::write(&path, b"").unwrap();
+
+        assert_eq!(canonical_identity(&path), path.canonicalize().unwrap());
+    }
+
+    #[test]
+    fn canonical_identity_falls_back_for_a_missing_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("missing.cbz");
+
+        assert_eq!(canonical_identity(&path), path);
+    }
+
+    #[cfg(unix)]
+    fn utf8_symlink_to_non_utf8_target() -> (tempfile::TempDir, PathBuf) {
+        // Unix permits arbitrary path bytes and symlinks, which are needed to
+        // reproduce a UTF-8 user selection resolving to a non-UTF-8 identity.
+        use std::ffi::OsStr;
+        use std::os::unix::ffi::OsStrExt;
+        use std::os::unix::fs::symlink;
+
+        let dir = tempfile::tempdir().unwrap();
+        let non_utf8_dir = dir.path().join(OsStr::from_bytes(b"bad\xffdir"));
+        std::fs::create_dir(&non_utf8_dir).unwrap();
+        let target = non_utf8_dir.join("book.cbz");
+        std::fs::write(&target, b"").unwrap();
+        let link = dir.path().join("book-link.cbz");
+        symlink(target, &link).unwrap();
+        (dir, link)
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn canonical_identity_falls_back_when_the_canonical_form_is_not_utf8() {
+        // macOS filesystems reject invalid-UTF-8 names; the defect is exposed on
+        // Unix platforms that permit arbitrary path bytes.
+        if cfg!(target_os = "macos") {
+            return;
+        }
+        let (_dir, link) = utf8_symlink_to_non_utf8_target();
+
+        assert_eq!(canonical_identity(&link), link);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_library_built_through_canonical_identity_always_serializes() {
+        // macOS filesystems reject invalid-UTF-8 names; the defect is exposed on
+        // Unix platforms that permit arbitrary path bytes.
+        if cfg!(target_os = "macos") {
+            return;
+        }
+        let (_dir, link) = utf8_symlink_to_non_utf8_target();
+        let mut lib = Library::new();
+
+        assert!(lib.add(link.clone()).is_some());
+        let value: serde_json::Value =
+            serde_json::from_str(&lib.to_json().expect("UTF-8 identity must serialize")).unwrap();
+
+        assert_eq!(value["books"][0]["path"].as_str(), link.to_str());
     }
 
     #[test]

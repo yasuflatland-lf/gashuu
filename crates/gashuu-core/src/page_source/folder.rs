@@ -146,6 +146,15 @@ mod folder_source_tests {
     }
 
     #[test]
+    fn listing_is_not_truncated_for_a_complete_folder() {
+        let dir = tempfile::tempdir().unwrap();
+        write_png(&dir.path().join("1.png"));
+        let source = FolderSource::open(dir.path()).unwrap();
+
+        assert!(!source.listing_truncated());
+    }
+
+    #[test]
     fn macos_metadata_files_are_excluded() {
         let dir = tempfile::tempdir().unwrap();
         // A real page, an AppleDouble resource fork (`.jpg`-named but metadata),

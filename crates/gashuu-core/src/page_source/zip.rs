@@ -12,7 +12,7 @@
 //! this module, not the crate.
 
 use super::entry_policy::{
-    cap_or_reject, classify_entry, has_image_ext, EntryClass, MAX_ENTRY_BYTES,
+    cap_or_reject, classify_entry, has_image_ext, initial_capacity, EntryClass, MAX_ENTRY_BYTES,
 };
 use super::{PageEntry, PageSource};
 use crate::error::CoreError;
@@ -109,9 +109,12 @@ impl ZipSource {
         let file = std::fs::File::open(&self.path)?;
         let mut archive = ::zip::ZipArchive::new(BufReader::new(file))?;
         let entry = archive.by_index(meta.zip_index)?;
-        // Pre-size to min(declared, max) purely as a growth hint, NOT the size defense:
-        // `cap_or_reject`'s `take(max + 1)` + length check is the actual security cap.
-        let capacity_hint = entry.size().min(max) as usize;
+        // Pre-size from a BOUNDED hint, never from the entry's declared size: a hostile
+        // header can claim MAX_ENTRY_BYTES from a KB-sized file and, under rayon prefetch
+        // (radius <= 5 => up to 11 concurrent reads), turn that into GiBs of transient
+        // allocation. `cap_or_reject`'s `take(max + 1)` + length check is the real cap;
+        // the Vec grows with the bytes actually read.
+        let capacity_hint = initial_capacity(entry.size());
         cap_or_reject(entry, &meta.name, max, capacity_hint)
     }
 }
@@ -140,6 +143,7 @@ impl PageSource for ZipSource {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::page_source::entry_policy::INITIAL_READ_CAPACITY;
     use std::io::{Cursor, Write};
     use tempfile::NamedTempFile;
 
@@ -230,6 +234,14 @@ mod tests {
         assert!(!names(&src).iter().any(|n| n == "notes.txt"));
         // Sanity: the nested image survives flattening.
         assert!(names(&src).iter().any(|n| n == "sub/3.png"));
+    }
+
+    #[test]
+    fn listing_is_not_truncated_for_a_complete_zip() {
+        let cbz = write_cbz(&[("1.png", tiny_png())]);
+        let src = ZipSource::open(cbz.path()).unwrap();
+
+        assert!(!src.listing_truncated());
     }
 
     #[test]
@@ -325,6 +337,17 @@ mod tests {
         // The bytes must remain decodable through the normal decode path.
         let decoded = crate::image_ops::decode(&bytes).unwrap();
         assert_eq!((decoded.width(), decoded.height()), (2, 2));
+    }
+
+    #[test]
+    fn read_entry_grows_past_the_initial_capacity_hint() {
+        let expected = vec![7u8; INITIAL_READ_CAPACITY + 1];
+        let cbz = write_cbz(&[("big.bin", expected.clone())]);
+        let src = open_all_entries(cbz.path());
+
+        let actual = src.read_entry(0, MAX_ENTRY_BYTES).unwrap();
+        assert_eq!(actual.len(), INITIAL_READ_CAPACITY + 1);
+        assert_eq!(actual, expected);
     }
 
     #[test]

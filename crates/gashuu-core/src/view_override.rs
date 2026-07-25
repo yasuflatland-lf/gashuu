@@ -20,7 +20,7 @@ use serde::{Deserialize, Serialize};
 /// each field and on `Book::overrides`), keeping `library.json` byte-compatible
 /// with files written before this feature existed. Immutable `Copy` value object.
 ///
-/// In practice the leave-point write-back (`write_back_view_override`) records
+/// In practice the leave-point write-back (`stage_view_override_write_back`) records
 /// all four fields as `Some`, so a book that has been opened at least once carries
 /// a full override until it is explicitly reset to `none()`; a fresh/never-opened
 /// book (or one just reset) has all-`None` and inherits global.
