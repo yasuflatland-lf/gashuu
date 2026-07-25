@@ -318,6 +318,7 @@ fn stage_view_override_write_back(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::dialog_session::DialogSession;
     use gashuu_core::{CoverMode, SpreadMode};
     use std::path::{Path, PathBuf};
 
@@ -547,6 +548,54 @@ mod tests {
         assert_eq!(ov.spread_mode, Some(gashuu_core::SpreadMode::Single));
         assert_eq!(ov.cover_mode, Some(gashuu_core::CoverMode::Standalone));
         assert_eq!(ov.fit_mode, Some(FitMode::Whole));
+    }
+
+    #[test]
+    fn library_dialog_global_edit_after_reset_keeps_override_empty_on_leave() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let book = root.path().join("book");
+        std::fs::create_dir(&book).expect("create book");
+
+        let settings = Rc::new(RefCell::new(Settings {
+            reading_direction: ReadingDirection::Rtl,
+            spread_mode: SpreadMode::Double,
+            cover_mode: CoverMode::Paired,
+            fit_mode: FitMode::Actual,
+            ..Settings::default()
+        }));
+        let state = Rc::new(RefCell::new(ViewerState::new()));
+        state.borrow_mut().open_path(&book).expect("open test book");
+        let canonical = state
+            .borrow()
+            .open_file()
+            .expect("open file after successful open")
+            .to_path_buf();
+        let viewport = Rc::new(RefCell::new(ViewportState::from_settings(
+            &settings.borrow(),
+        )));
+        let mut library_value = Library::new();
+        assert!(library_value.add(canonical.clone()).is_some());
+        let library = Rc::new(RefCell::new(library_value));
+        let mut session = DialogSession::new();
+
+        DialogSession::reset_to_global(&state, &viewport, &settings);
+        session.open_on_library(&state, &viewport, &settings);
+        state.borrow_mut().set_spread_mode(SpreadMode::Single);
+        session.close_on_library(&state, &viewport);
+        persist_leave_point_with(
+            ViewModeRoute::LeaveViewer,
+            &state,
+            &viewport,
+            &settings,
+            &library,
+            |_| Ok(()),
+        )
+        .expect("persist leave point");
+
+        assert_eq!(
+            library.borrow().overrides_for(&canonical),
+            ViewOverride::none()
+        );
     }
 
     #[test]
