@@ -148,6 +148,16 @@ export component SettingsDialog inherits GlassModal {
     }
     backdrop-clicked => { root.close-settings(); }
 
+    // Backward-Tab containment: Backtab from fs would otherwise walk to the
+    // previous focusable in the WINDOW (a live surface under the scrim).
+    tab-guard-head := FocusScope {
+        width: 0;
+        height: 0;
+        changed has-focus => {
+            if (self.has-focus) { fs.focus(); }
+        }
+    }
+
     // FocusScope WRAPS the panel content as a genuine ANCESTOR of every control: a key rejected
     // by a focused atom walks UP the parent chain to reach Esc here; it doesn't keep focus so arrows work.
     fs := FocusScope {
@@ -612,6 +622,18 @@ export component SettingsDialog inherits GlassModal {
             height: body.height;
             content-height: body.viewport-height;
             viewport-y: body.viewport-y;
+        }
+
+        // Tab-containment sentinel (last focusable in the dialog subtree): window
+        // tab-nav walking forward past the last real stop lands here instead of a
+        // live surface behind the scrim; bounce to the dialog scope so the next Tab
+        // re-enters the first control (fs's first focusable descendant).
+        tab-guard-tail := FocusScope {
+            width: 0;
+            height: 0;
+            changed has-focus => {
+                if (self.has-focus) { fs.focus(); }
+            }
         }
     }
 }

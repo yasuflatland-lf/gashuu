@@ -166,12 +166,17 @@ impl OpenBookUseCase {
         // `;` so it cannot conflict with the `library.borrow_mut()` below.
         let page_count = state.borrow().page_count_opt();
         // Reject an empty book: bail HERE, before `register_opened`, so spec-pinned side
-        // effects bypass (cover purge in `remove_empty_book`, #150); source left inert by design.
+        // effects bypass (cover purge in `remove_empty_book`, #150); close the mounted source.
         if page_count.is_none() {
             if let Some(c) = canonical.as_deref() {
                 // Shared transaction: title capture → remove → save → cover purge. #150
                 // added the purge here; the old cover-load-only asymmetry orphaned cached covers.
                 let removal = remove_empty_book(library, c);
+                // The zero-page source must not stay mounted: close the viewer back to the
+                // boot state so open_file() is None (title clears, carousel-back refuses,
+                // AppExit reconciles global modes). The OUTGOING book's position/override
+                // were already persisted by the leave-point write above.
+                state.borrow_mut().close();
                 return OpenOutcome::EmptyBookRejected {
                     title: removal.title,
                     removed: removal.removed,
@@ -676,6 +681,81 @@ mod tests {
         assert!(
             library.borrow().books().is_empty(),
             "an empty source is never registered in the library"
+        );
+    }
+
+    #[test]
+    fn empty_book_rejection_unmounts_the_source() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let library = Rc::new(RefCell::new(Library::new()));
+        let (use_case, state) = use_case_with_saves(
+            Settings::default(),
+            Rc::clone(&library),
+            |_| Ok(()),
+            |_| Ok(()),
+        );
+
+        let outcome = use_case.run(dir.path());
+
+        assert!(
+            matches!(outcome, OpenOutcome::EmptyBookRejected { .. }),
+            "an empty source must be rejected, got {outcome:?}"
+        );
+        let state = state.borrow();
+        assert!(state.open_file().is_none());
+        assert_eq!(state.page_count(), 0);
+        assert!(state.current_source().is_none());
+    }
+
+    #[test]
+    fn empty_book_rejection_after_open_book_closes_it() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let book_a_parent = root.path().join("book-a-parent");
+        std::fs::create_dir(&book_a_parent).expect("create book A parent");
+        let book_a = make_book_dir(&book_a_parent, 3);
+        let canonical_a = book_a.canonicalize().expect("canonical book A path");
+        let book_b = root.path().join("empty-book-b");
+        std::fs::create_dir(&book_b).expect("create empty book B");
+        let canonical_b = book_b.canonicalize().expect("canonical book B path");
+
+        let mut seeded = Library::new();
+        assert!(seeded.add(canonical_b.clone()).is_some());
+        let library = Rc::new(RefCell::new(seeded));
+        let (use_case, state) = use_case_with_saves(
+            Settings::default(),
+            Rc::clone(&library),
+            |_| Ok(()),
+            |_| Ok(()),
+        );
+
+        let first_outcome = use_case.run(&book_a);
+
+        assert!(
+            matches!(first_outcome, OpenOutcome::Success { .. }),
+            "book A must open successfully, got {first_outcome:?}"
+        );
+        assert_eq!(state.borrow().open_file(), Some(canonical_a.as_path()));
+
+        let second_outcome = use_case.run(&book_b);
+
+        assert!(
+            matches!(
+                second_outcome,
+                OpenOutcome::EmptyBookRejected { removed: true, .. }
+            ),
+            "book B must be rejected and removed, got {second_outcome:?}"
+        );
+        let state = state.borrow();
+        assert!(state.open_file().is_none());
+        assert_eq!(state.page_count(), 0);
+        drop(state);
+        assert!(
+            library
+                .borrow()
+                .books()
+                .iter()
+                .all(|book| book.path() != canonical_b),
+            "empty book B must be removed from the library"
         );
     }
 
