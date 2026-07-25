@@ -110,26 +110,59 @@ jobs:
             echo "SYSTEM_DEPS_DAV1D_SEARCH_NATIVE=$PREFIX/lib"
             echo "SYSTEM_DEPS_DAV1D_INCLUDE=$PREFIX/include"
           } >> "$GITHUB_ENV"
-      # vcpkg compiles dav1d from source on a cold cache (~5-8 min); the archives
-      # cache makes warm runs take seconds. Static lib: no DLL needed at test time.
+      # Windows: vcpkg compiles dav1d from source in ~3.5 min on a cold cache, so
+      # the INSTALLED TREE is cached and `vcpkg install` is skipped outright on a
+      # hit. Two traps are encoded in the three steps below — do not undo either.
+      #
+      # TRAP 1 — why the installed tree and not `~\AppData\Local\vcpkg\archives`:
+      # `actions/cache` NEVER re-saves an entry whose key already hit, and vcpkg
+      # addresses its binary archives by package ABI hash (port version + vcpkg tool
+      # version + compiler hash). So the moment the hosted image moved, the frozen
+      # archive stopped matching — `Restored 0 package(s)`, full source rebuild on
+      # every run, and no way to recover, because the freshly built archive was
+      # never uploaded. The installed tree is content we consume directly, so a hit
+      # is usable regardless of ABI hashes; a stale key at worst pins an older dav1d.
+      #
+      # TRAP 2 — why the path needs its own step: `VCPKG_INSTALLATION_ROOT` is set
+      # by the runner image, NOT by the workflow, so it is invisible to workflow
+      # `${{ env.<NAME> }}` expressions. Used directly in `path:` it silently expands
+      # to a bare relative `\installed\x64-windows-static-md`. It must be re-exported
+      # through GITHUB_ENV first, which is all this step does.
       - if: runner.os == 'Windows'
-        name: Cache vcpkg-built dav1d
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
-        with:
-          path: ~\AppData\Local\vcpkg\archives
-          key: vcpkg-dav1d-x64-windows-static-md
-      - if: runner.os == 'Windows'
-        name: Install dav1d (vcpkg, static)
+        name: Resolve the vcpkg installed-tree path
         shell: pwsh
         run: |
-          vcpkg install dav1d:x64-windows-static-md
-          $root = "$Env:VCPKG_INSTALLATION_ROOT\installed\x64-windows-static-md"
+          "VCPKG_DAV1D_ROOT=$Env:VCPKG_INSTALLATION_ROOT\installed\x64-windows-static-md" |
+            Out-File -FilePath $Env:GITHUB_ENV -Append
+      # The key names the dav1d version and triplet so a vcpkg baseline bump is a NEW
+      # key instead of a stale hit; bump the version by hand when the runner image's
+      # dav1d moves. Deliberately NO `restore-keys`: a prefix match restores the tree
+      # yet reports `cache-hit != 'true'`, so `vcpkg install` would then run against
+      # a directory that already holds those files and abort on a file conflict.
+      - if: runner.os == 'Windows'
+        id: dav1d-cache
+        name: Cache the vcpkg-installed dav1d tree
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: ${{ env.VCPKG_DAV1D_ROOT }}
+          key: vcpkg-installed-dav1d-1.5.3-x64-windows-static-md
+      - if: runner.os == 'Windows' && steps.dav1d-cache.outputs.cache-hit != 'true'
+        name: Build dav1d (vcpkg, static)
+        shell: pwsh
+        run: vcpkg install dav1d:x64-windows-static-md
+      # Split from the build step because it must run on BOTH the hit and the miss
+      # path: it points dav1d-sys at the restored-or-just-built tree. Static lib, so
+      # no DLL is needed at test time.
+      - if: runner.os == 'Windows'
+        name: Point dav1d-sys at the installed tree
+        shell: pwsh
+        run: |
           @(
             "SYSTEM_DEPS_DAV1D_NO_PKG_CONFIG=1",
             "SYSTEM_DEPS_DAV1D_LINK=static",
             "SYSTEM_DEPS_DAV1D_LIB=dav1d",
-            "SYSTEM_DEPS_DAV1D_SEARCH_NATIVE=$root\lib",
-            "SYSTEM_DEPS_DAV1D_INCLUDE=$root\include"
+            "SYSTEM_DEPS_DAV1D_SEARCH_NATIVE=$Env:VCPKG_DAV1D_ROOT\lib",
+            "SYSTEM_DEPS_DAV1D_INCLUDE=$Env:VCPKG_DAV1D_ROOT\include"
           ) | Out-File -FilePath $Env:GITHUB_ENV -Append
       - run: rustup component add clippy
       # UI lint once (Linux leg); add per-OS clippy only when cfg(os) code appears.
