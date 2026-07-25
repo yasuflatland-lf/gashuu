@@ -267,6 +267,7 @@ continue-reading = Continue reading
 # this archive-skip suffix must be wrapped in a string-literal placeable.
 notice-skipped-detail-archive = {" "}(zip-slip or oversized)
 notice-entries-skipped = { $n } entries skipped{ $detail }
+notice-listing-truncated = Archive damaged — later pages could not be listed and are missing.
 notice-failed-save-settings = Failed to save settings: { $error }
 notice-failed-save-library = Failed to save library: { $error }
 notice-could-not-save-settings = Could not save settings: { $error }

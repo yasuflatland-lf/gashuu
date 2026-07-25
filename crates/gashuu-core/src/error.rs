@@ -41,6 +41,17 @@ pub enum CoreError {
     #[error("library format error: {0}")]
     Library(serde_json::Error),
 
+    /// The stored document was written by a newer schema version than this build
+    /// supports. Loading it would drop unknown fields and saving would downgrade it.
+    #[error(
+        "{what} file was written by a newer version of gashuu (schema v{found}; this build supports v{supported})"
+    )]
+    FutureSchema {
+        what: &'static str,
+        found: u32,
+        supported: u32,
+    },
+
     /// The OS did not provide a data directory for library storage.
     #[error("no data directory available for library")]
     NoDataDir,
@@ -56,6 +67,11 @@ pub enum CoreError {
     /// The path is neither a directory nor a recognized archive.
     #[error("unsupported format: {path}")]
     UnsupportedFormat { path: String },
+
+    /// The path is not valid UTF-8, so it cannot be stored in `library.json`
+    /// (serde's `Serialize for Path` rejects it and the whole document would fail).
+    #[error("path is not valid UTF-8 and cannot be added to the library: {path}")]
+    NonUtf8Path { path: String },
 
     /// The archive format is recognized but disabled by the active policy.
     #[error("{format} support is disabled in safer mode")]

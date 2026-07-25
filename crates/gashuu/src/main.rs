@@ -17,6 +17,7 @@ mod keymap;
 mod library_model;
 mod navigation;
 mod open_book;
+mod open_controller;
 mod page_count_prefetch;
 mod page_jump;
 mod page_loader;
@@ -44,6 +45,7 @@ use page_loader::PageController;
 #[cfg(not(test))]
 use page_loader::{PageSlot, SpreadDecodeRequest};
 use std::cell::RefCell;
+use std::path::Path;
 use std::rc::Rc;
 use thumbnail_strip::ThumbnailController;
 pub(crate) use view_sync::{current_book_name, persist_leave_point, ViewModeRoute};
@@ -56,19 +58,64 @@ use viewport::ViewportState;
 /// failure. `label` names the source for both the `errs` notice
 /// (`"<label> (<e>)"`, surfaced on the home screen) and the log. A missing file
 /// returns `Ok(default)` from the loader, so this fallback fires only on a
-/// GENUINE failure (corrupt data, I/O error, `NoDataDir`). Stays UI-side (it
-/// logs via `tracing`) so `gashuu-core` remains headless.
+/// GENUINE failure (corrupt data, I/O error, `NoDataDir`). An existing source
+/// file is quarantined before returning the default. Stays UI-side (it logs via
+/// `tracing`) so `gashuu-core` remains headless.
 fn load_or_default<T: Default>(
     label: &str,
     load: impl FnOnce() -> Result<T, CoreError>,
+    persisted_path: impl FnOnce() -> Result<std::path::PathBuf, CoreError>,
     errs: &mut Vec<String>,
 ) -> T {
     match load() {
         Ok(value) => value,
         Err(e) => {
             tracing::warn!(error = %e, "failed to load {label}; using defaults");
-            errs.push(format!("{label} ({e})"));
+            let notice = match persisted_path() {
+                Ok(path) if path.exists() => {
+                    let unix_now_secs = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_secs();
+                    quarantine_load_failure(label, &path, &e, unix_now_secs)
+                }
+                _ => format!("{label} ({e})"),
+            };
+            errs.push(notice);
             T::default()
+        }
+    }
+}
+
+/// Keep a persisted file aside after a load failure and return the home-screen
+/// notice. The caller supplies the timestamp so tests and core remain clock-free.
+fn quarantine_load_failure(
+    label: &str,
+    path: &Path,
+    load_error: &CoreError,
+    now_secs: u64,
+) -> String {
+    match gashuu_core::quarantine_file(path, now_secs) {
+        Ok(destination) => {
+            tracing::warn!(
+                label,
+                path = %destination.display(),
+                "corrupt file kept aside"
+            );
+            let destination_name = destination
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy();
+            format!("{label} ({load_error}); corrupt file kept as {destination_name}")
+        }
+        Err(quarantine_error) => {
+            tracing::warn!(
+                error = %quarantine_error,
+                label,
+                path = %path.display(),
+                "failed to keep corrupt file aside"
+            );
+            format!("{label} ({load_error})")
         }
     }
 }
@@ -115,7 +162,12 @@ fn main() -> color_eyre::Result<()> {
     // Load persisted state, collecting notices to surface AFTER the initial refresh,
     // which overwrites status-text.
     let mut load_errs: Vec<String> = Vec::new();
-    let settings = load_or_default("settings", Settings::load, &mut load_errs);
+    let settings = load_or_default(
+        "settings",
+        Settings::load,
+        Settings::config_path,
+        &mut load_errs,
+    );
     // Self-heal an invalid settings file: in-memory values are already sane, but the
     // bad bytes persist. Rewrite at startup so a crash before clean exit can't lose it.
     repair_settings_file_if_needed(&settings, &mut load_errs);
@@ -129,27 +181,7 @@ fn main() -> color_eyre::Result<()> {
                         .duration_since(std::time::UNIX_EPOCH)
                         .unwrap_or_default()
                         .as_secs();
-                    match Library::quarantine_corrupt_file(&path, unix_now_secs) {
-                        Ok(destination) => {
-                            tracing::warn!(
-                                path = %destination.display(),
-                                "corrupt library file kept aside"
-                            );
-                            let destination_name = destination
-                                .file_name()
-                                .unwrap_or_default()
-                                .to_string_lossy();
-                            format!("library ({e}); corrupt file kept as {destination_name}")
-                        }
-                        Err(quarantine_error) => {
-                            tracing::warn!(
-                                error = %quarantine_error,
-                                path = %path.display(),
-                                "failed to keep corrupt library file aside"
-                            );
-                            format!("library ({e})")
-                        }
-                    }
+                    quarantine_load_failure("library", &path, &e, unix_now_secs)
                 }
                 _ => format!("library ({e})"),
             };
@@ -191,6 +223,10 @@ fn main() -> color_eyre::Result<()> {
     // add never freezes the event loop. `start` dispatches; `add-finalize` applies.
     let adder = Rc::new(add_controller::AddController::new());
 
+    // Single-open controller: opens and inspects one source off the UI thread;
+    // `open-finalize` applies only the current epoch on the event loop.
+    let open_ctrl = Rc::new(open_controller::OpenController::new());
+
     // Shared library-search filter state, so every path (search, add/open backfill,
     // open-time rebuild) projects the SAME visible-index set. Starts on the empty query.
     let search = Rc::new(RefCell::new(LibrarySearchState::default()));
@@ -206,7 +242,8 @@ fn main() -> color_eyre::Result<()> {
     let selection = Rc::new(RefCell::new(LibrarySelectionState::default()));
 
     // The "open a book" use-case, shared via `Rc` so the open flow lives in one place
-    // (`use_cases::OpenBookUseCase`); `run` is headless and `finalize_open` applies the UI effects.
+    // (`use_cases::OpenBookUseCase`); the use case is headless and `finalize_open` applies
+    // the UI effects.
     let open_book = Rc::new(use_cases::OpenBookUseCase::new(
         Rc::clone(&state),
         Rc::clone(&settings),
@@ -272,8 +309,8 @@ fn main() -> color_eyre::Result<()> {
         &selection, &localizer,
     );
     handlers::wire_carousel_handlers(
-        &ui, &state, &viewport, &library, &nav, &open_book, &covers, &pages, &thumbs, &search,
-        &selection, &localizer,
+        &ui, &state, &viewport, &library, &nav, &settings, &open_book, &open_ctrl, &covers, &pages,
+        &thumbs, &search, &selection, &localizer,
     );
     handlers::wire_selection_handlers(
         &ui, &state, &library, &covers, &search, &selection, &localizer,
@@ -343,9 +380,15 @@ fn run_exit_persistence(
     // counted this session isn't re-counted next launch.
     covers.flush_counts(library);
     // Stage position + view-mode routing, then persist the library exactly once.
-    // Both callers run at top-level shutdown points, so all cells are unborrowed;
-    // failures stay log-only. Exit is now exactly one library write (formerly two).
-    let _ = persist_leave_point(ViewModeRoute::AppExit, state, viewport, settings, library);
+    // Both callers run at top-level shutdown points, so all cells are unborrowed.
+    // Exit is now exactly one library write (formerly two).
+    if let Err(e) = persist_leave_point(ViewModeRoute::AppExit, state, viewport, settings, library)
+    {
+        // Log-only by necessity: the normal-quit caller has no event loop left to show a
+        // notice, and the relaunch caller replaces the process moments later — but the
+        // failure must not be silently discarded.
+        tracing::error!(error = %e, "failed to persist the leave point on exit");
+    }
     // Record the final window geometry so the next launch restores it. Safe: the window
     // handle is still alive (`ui` in scope) and `settings` is unborrowed.
     window_state::capture_geometry(ui, &mut settings.borrow_mut());
@@ -585,7 +628,7 @@ pub(crate) fn empty_book_removed_status(
     }
 }
 
-/// Finalize an `open_book.run(path)` outcome on the UI — the headless use case
+/// Finalize an `open_book.apply_probed(path, probe)` outcome on the UI — the headless use case
 /// returns data and this applies every Slint effect. On failure, set the localized
 /// error status; on success, `refresh()` the viewer, rebuild the carousel when the
 /// open back-filled a page count (`count_changed`), launch thumbnails, and append
@@ -728,7 +771,12 @@ mod tests {
     #[test]
     fn load_or_default_returns_loaded_value_and_records_no_notice() {
         let mut errs: Vec<String> = Vec::new();
-        let value: u32 = load_or_default("settings", || Ok(42), &mut errs);
+        let value: u32 = load_or_default(
+            "settings",
+            || Ok(42),
+            || Err(CoreError::NoConfigDir),
+            &mut errs,
+        );
         assert_eq!(value, 42);
         assert!(errs.is_empty(), "a successful load records no notice");
     }
@@ -736,7 +784,12 @@ mod tests {
     #[test]
     fn load_or_default_falls_back_to_default_and_records_labelled_notice_on_err() {
         let mut errs: Vec<String> = Vec::new();
-        let value: u32 = load_or_default("library", || Err(CoreError::NoDataDir), &mut errs);
+        let value: u32 = load_or_default(
+            "library",
+            || Err(CoreError::NoDataDir),
+            || Err(CoreError::NoDataDir),
+            &mut errs,
+        );
         assert_eq!(
             value,
             u32::default(),
@@ -745,5 +798,38 @@ mod tests {
         // The notice is the label with the error detail appended (derived from the
         // error's own Display, so this pins the format, not the wording).
         assert_eq!(errs, vec![format!("library ({})", CoreError::NoDataDir)]);
+    }
+
+    #[test]
+    fn settings_load_failure_quarantines_the_file_and_notes_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        let original = br#"{"version":99,"future_field":"keep me"}"#;
+        std::fs::write(&path, original).unwrap();
+        let error = Settings::load_from(&path).unwrap_err();
+        let load_errs = [quarantine_load_failure(
+            "settings",
+            &path,
+            &error,
+            1_700_000_000,
+        )];
+
+        let destination = dir.path().join("settings.json.corrupt-1700000000");
+        assert!(!path.exists());
+        assert_eq!(std::fs::read(&destination).unwrap(), original);
+        assert!(load_errs[0].contains("settings.json.corrupt-1700000000"));
+    }
+
+    #[test]
+    fn quarantine_failure_still_yields_a_plain_notice() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        let destination = dir.path().join("settings.json.corrupt-1700000000");
+        let error = CoreError::NoConfigDir;
+
+        let notice = quarantine_load_failure("settings", &path, &error, 1_700_000_000);
+
+        assert_eq!(notice, format!("settings ({error})"));
+        assert!(!destination.exists());
     }
 }

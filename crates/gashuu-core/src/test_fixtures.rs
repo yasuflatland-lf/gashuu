@@ -43,9 +43,10 @@ pub(crate) const HOSTILE_CBR_B64: &str = "UmFyIRoHAM+QcwAADQAAAAAAAACrzHQAgCUASQ
 /// Fixture C (137 bytes): a valid `1.png`(2x2) followed by a corrupt trailing
 /// header. `unrar`'s List iterator yields `Ok("1.png")`, then `Ok("")` (a
 /// phantom empty-name entry it salvages from the corrupt block, filtered as
-/// neither image nor skip), then `Err(BadData)`. Under the skip+count+break
-/// listing loop: pages == `["1.png"]`, `skipped_count() == 1`, and
-/// `read_bytes(0)` still decodes the good 2x2 page.
+/// neither image nor skip), then `Err(BadData)`. Under the truncation-aware
+/// listing loop: pages == `["1.png"]`, `skipped_count() == 0`,
+/// `listing_truncated() == true`, and `read_bytes(0)` still decodes the good
+/// 2x2 page.
 pub(crate) const CORRUPT_TRAILING_CBR_B64: &str = "UmFyIRoHAM+QcwAADQAAAAAAAACrzHQAgCUASQAAAEkAAAADhbZecAAAoU4UMAUAIAAAADEucG5niVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAAEElEQVR42mP4z8AARAwQCgAf7gP9Y167WwAAAABJRU5ErkJggu++dAAABwA=";
 
 /// Fixture D (338 bytes): a macOS-metadata noise entry whose name carries an
