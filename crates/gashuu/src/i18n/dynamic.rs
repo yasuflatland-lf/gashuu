@@ -421,6 +421,9 @@ pub(crate) fn format_notices(
             detail = detail.as_str()
         ));
     }
+    if let Some(e_str) = &content.leave_save_err {
+        notices.push(failed_save_library(loader, e_str));
+    }
     if let Some(e_str) = &content.settings_save_err {
         notices.push(failed_save_settings(loader, e_str));
     }
@@ -444,6 +447,25 @@ mod tests {
 
     fn ja() -> Localizer {
         Localizer::new(Language::Ja)
+    }
+
+    #[test]
+    fn format_notices_reports_a_leave_save_failure_before_the_open_save_failure() {
+        for loc in [en(), ja()] {
+            let content = NoticesContent {
+                skipped: 0,
+                skipped_detail: SkippedDetail::None,
+                leave_save_err: Some("leave failed".to_string()),
+                settings_save_err: None,
+                library_save_err: Some("open failed".to_string()),
+            };
+
+            let notices = format_notices(loc.loader(), &content);
+
+            assert_eq!(notices.len(), 2);
+            assert!(notices[0].contains("leave failed"));
+            assert!(notices[1].contains("open failed"));
+        }
     }
 
     #[test]
