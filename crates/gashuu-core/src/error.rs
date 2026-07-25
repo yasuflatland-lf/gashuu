@@ -68,6 +68,11 @@ pub enum CoreError {
     #[error("unsupported format: {path}")]
     UnsupportedFormat { path: String },
 
+    /// The path is not valid UTF-8, so it cannot be stored in `library.json`
+    /// (serde's `Serialize for Path` rejects it and the whole document would fail).
+    #[error("path is not valid UTF-8 and cannot be added to the library: {path}")]
+    NonUtf8Path { path: String },
+
     /// The archive format is recognized but disabled by the active policy.
     #[error("{format} support is disabled in safer mode")]
     FormatDisabled { format: &'static str },

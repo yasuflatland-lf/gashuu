@@ -310,9 +310,9 @@ impl ViewerState {
         }
         self.last_open_skipped = skipped;
         self.set_source(source);
-        // Canonicalize best-effort, falling back to the verbatim path on error (same
-        // policy as Library::add: canonical form when available, verbatim otherwise).
-        self.open_file = Some(path.canonicalize().unwrap_or_else(|_| path.to_path_buf()));
+        // Capture the same persistable identity used by Library::add, including
+        // its fallback when canonicalization produces a non-UTF-8 path.
+        self.open_file = Some(gashuu_core::canonical_identity(path));
         Ok(())
     }
 
