@@ -474,7 +474,7 @@ transition on the POSITIVE outcome".
 Lives in the UI crate because it coordinates Slint components; `gashuu-core` is untouched.
 
 `run` writes back the OUTGOING book's per-book view override through the persistence chokepoint —
-`route_view_modes_to_sink(ViewModeRoute::OpenDifferentBook, …)` right beside the position write-back at
+`persist_leave_point(ViewModeRoute::OpenDifferentBook, …)` right beside the position write-back at
 its top — and that route writes ONLY the per-book sink, so — per the per-book-overrides feature —
 it does NOT reconcile runtime modes into the GLOBAL `Settings` on its open-time save (the runtime
 still holds the outgoing book's per-book modes there; reconciling would clobber the global
@@ -522,21 +522,24 @@ data and touches no Slint; the UI tail lives in `carousel_refresh::finalize_remo
 
 ### view-mode persistence seam (`view_sync.rs`)
 
-`view_sync.rs` owns `ViewModeRoute`, `route_view_modes_to_sink`,
-`apply_global_view_to_runtime`, `current_book_name`, and `write_back_position`; the crate root may
-re-export these `pub(crate)` seams so `open_book.rs` and `handlers/*` imports stay stable. It also
-keeps `apply_runtime_view_to_settings`, `position_to_write_back`, `view_override_to_write_back`,
-and `write_back_view_override` private. `route_view_modes_to_sink(route, &state, &viewport,
-&settings, &library)` (peer of `write_back_position`) is the ONE chokepoint that routes runtime view
-modes to
-their sink: `DialogClosedOnLibrary` → global reconcile; `DialogClosedOnViewer` / `LeaveViewer` /
-`OpenDifferentBook` → per-book write-back; `AppExit` → per-book write-back FIRST, then a global
-reconcile ONLY when `open_file().is_none()`. So the GLOBAL sink is invoked only via the
-Library-dialog close and the no-book-open exit; every leave point hits the per-book sink (a no-op
-when no book is open). `apply_global_view_to_runtime(&settings, &state, &viewport)` mirrors the
-GLOBAL `Settings` view modes into the runtime so the Library-screen settings dialog seeds from
-global (the inverse of `reconcile_settings`). See [patterns.md](patterns.md), "Per-book view
-overrides: write-back-at-leave-point + screen-scoped dialog routing".
+`view_sync.rs` owns `ViewModeRoute`. Its `pub(crate)` surface is `persist_leave_point`,
+`current_runtime_view`, `apply_global_view_to_runtime`, and `current_book_name`; its private members
+are `persist_leave_point_with`, `stage_view_modes_to_sink`, `apply_runtime_view_to_settings`,
+`position_to_write_back`, `stage_position_write_back`, `view_override_to_write_back`, and
+`stage_view_override_write_back`.
+
+`persist_leave_point(route, &state, &viewport, &settings, &library)` is the ONE leave-point
+persistence chokepoint: it stages the applicable position write-back, delegates view-mode routing
+to `stage_view_modes_to_sink`, and saves the library at most once. `stage_view_modes_to_sink`'s
+`match route` selects the sink: `DialogClosedOnLibrary` → global reconcile;
+`DialogClosedOnViewer` / `LeaveViewer` / `OpenDifferentBook` → per-book write-back; `AppExit` →
+per-book write-back FIRST, then a global reconcile ONLY when `open_file().is_none()`. So the GLOBAL
+sink is invoked only via the Library-dialog close and the no-book-open exit; every leave point hits
+the per-book sink (a no-op when no book is open).
+`apply_global_view_to_runtime(&settings, &state, &viewport)` mirrors the GLOBAL `Settings` view
+modes into the runtime so the Library-screen settings dialog seeds from global (the inverse of
+`apply_runtime_view_to_settings`). See [patterns.md](patterns.md), "Per-book view overrides:
+write-back-at-leave-point + screen-scoped dialog routing".
 
 ### library_model
 
