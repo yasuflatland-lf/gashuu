@@ -11,6 +11,10 @@ Rust is pinned to **1.96.0** via `mise.toml`. Run every cargo command through th
 
 **A fresh `mise install` fails with "Config files are not trusted."** Run `mise trust` once, then `mise install`. CI's `jdx/mise-action` handles trust automatically.
 
+### Dependency debuginfo trimmed to line tables (root-manifest `[profile.dev]`)
+
+The workspace root `Cargo.toml` sets `[profile.dev] debug = "line-tables-only"` and puts the two members back to `debug = 2` via `[profile.dev.package.gashuu-core]` / `[profile.dev.package.gashuu]`, so the trim is **dependencies-only**: stepping through and backtracing gashuu's own code is unchanged. `line-tables-only` rather than `0` because dependency frames then still carry `file:line` in panic backtraces — that is what makes an `image` / `zip` / `slint` panic inside a test diagnosable. Measured with a fresh `CARGO_TARGET_DIR` on a cold `cargo nextest run --workspace --profile ci --no-run`: target output 3.52 GiB → 3.03 GiB (-13.7%), rustc CPU 290 s → 272 s, incremental rebuild after a `gashuu-core` edit 5.1 s → 3.7 s. `[profile.test]` inherits all of this, so there is no `test` twin. **Do not "simplify" this to `[profile.dev.package."*"]`** — a package override counts as an *explicit* debuginfo setting, so cargo stops suppressing debuginfo for the build graph and the 211 build-script / proc-macro units (`i-slint-compiler` and friends) gain line tables, which cuts the saving from -493 MiB to -121 MiB; `[profile.dev.build-override]` cannot cancel that, because package overrides are applied after it.
+
 ### Linux system libraries (Slint)
 
 Slint links system libraries on **Linux** only: `libfontconfig1-dev libfreetype6-dev libxcb1-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libxkbcommon-dev`. macOS/Windows need nothing extra **for Slint** — but the dav1d AVIF build dependency below applies on all 3 OS.
