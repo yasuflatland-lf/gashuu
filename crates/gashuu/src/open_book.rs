@@ -34,6 +34,7 @@ type SaveSettings = Box<dyn Fn(&Settings) -> Result<(), CoreError>>;
 pub(crate) struct NoticesContent {
     pub(crate) skipped: usize,
     pub(crate) skipped_detail: SkippedDetail,
+    pub(crate) listing_truncated: bool,
     pub(crate) leave_save_err: Option<String>,
     pub(crate) settings_save_err: Option<String>,
     pub(crate) library_save_err: Option<String>,
@@ -239,6 +240,7 @@ impl OpenBookUseCase {
             tracing::error!(error = %e, "failed to save library on open");
         }
         let skipped = state.borrow().last_open_skipped();
+        let listing_truncated = state.borrow().last_open_truncated();
         let skipped_detail = if path.is_dir() {
             SkippedDetail::None
         } else {
@@ -250,6 +252,7 @@ impl OpenBookUseCase {
             notices: notices_content(
                 skipped,
                 skipped_detail,
+                listing_truncated,
                 &leave_save,
                 settings_save.as_ref(),
                 &library_save,
@@ -262,12 +265,13 @@ impl OpenBookUseCase {
 /// Collect neutral open-result notices without i18n. Formatting is deferred
 /// to `i18n::dynamic::format_notices`.
 ///
-/// Order: skipped entries → leave-save failure → settings-save failure →
-/// library-save failure.
+/// Order: truncated listing → skipped entries → leave-save failure →
+/// settings-save failure → library-save failure.
 /// `None` `settings_save` means tracking was off (no save attempted).
 pub(crate) fn notices_content(
     skipped: usize,
     skipped_detail: SkippedDetail,
+    listing_truncated: bool,
     leave_save: &Result<(), CoreError>,
     settings_save: Option<&Result<(), CoreError>>,
     library_save: &Result<(), CoreError>,
@@ -275,6 +279,7 @@ pub(crate) fn notices_content(
     NoticesContent {
         skipped,
         skipped_detail,
+        listing_truncated,
         leave_save_err: leave_save.as_ref().err().map(|e| format!("{e}")),
         settings_save_err: settings_save.and_then(|r| r.as_ref().err().map(|e| format!("{e}"))),
         library_save_err: library_save.as_ref().err().map(|e| format!("{e}")),
@@ -377,18 +382,51 @@ mod tests {
 
     #[test]
     fn clean_open_emits_no_notices() {
-        let c = notices_content(0, SkippedDetail::None, &Ok(()), None, &Ok(()));
+        let c = notices_content(0, SkippedDetail::None, false, &Ok(()), None, &Ok(()));
         assert_eq!(c.skipped, 0);
         assert!(c.leave_save_err.is_none());
         assert!(c.settings_save_err.is_none());
         assert!(c.library_save_err.is_none());
-        let c2 = notices_content(0, SkippedDetail::Archive, &Ok(()), None, &Ok(()));
+        let c2 = notices_content(0, SkippedDetail::Archive, false, &Ok(()), None, &Ok(()));
         assert_eq!(c2.skipped, 0);
     }
 
     #[test]
+    fn notices_content_carries_the_truncation_flag() {
+        for listing_truncated in [true, false] {
+            let content = notices_content(
+                2,
+                SkippedDetail::Archive,
+                listing_truncated,
+                &Ok(()),
+                Some(&Ok(())),
+                &Ok(()),
+            );
+
+            assert_eq!(
+                content,
+                NoticesContent {
+                    skipped: 2,
+                    skipped_detail: SkippedDetail::Archive,
+                    listing_truncated,
+                    leave_save_err: None,
+                    settings_save_err: None,
+                    library_save_err: None,
+                }
+            );
+        }
+    }
+
+    #[test]
     fn skipped_only_emits_skipped_notice() {
-        let c = notices_content(3, SkippedDetail::Archive, &Ok(()), Some(&Ok(())), &Ok(()));
+        let c = notices_content(
+            3,
+            SkippedDetail::Archive,
+            false,
+            &Ok(()),
+            Some(&Ok(())),
+            &Ok(()),
+        );
         assert_eq!(c.skipped, 3);
         assert_eq!(c.skipped_detail, SkippedDetail::Archive);
         assert!(c.leave_save_err.is_none());
@@ -398,7 +436,14 @@ mod tests {
 
     #[test]
     fn settings_failure_only_emits_settings_notice() {
-        let c = notices_content(0, SkippedDetail::None, &Ok(()), Some(&Err(err())), &Ok(()));
+        let c = notices_content(
+            0,
+            SkippedDetail::None,
+            false,
+            &Ok(()),
+            Some(&Err(err())),
+            &Ok(()),
+        );
         assert_eq!(c.skipped, 0);
         let e_str = c
             .settings_save_err
@@ -414,7 +459,14 @@ mod tests {
 
     #[test]
     fn library_failure_only_emits_library_notice() {
-        let c = notices_content(0, SkippedDetail::None, &Ok(()), Some(&Ok(())), &Err(err()));
+        let c = notices_content(
+            0,
+            SkippedDetail::None,
+            false,
+            &Ok(()),
+            Some(&Ok(())),
+            &Err(err()),
+        );
         assert_eq!(c.skipped, 0);
         assert!(c.settings_save_err.is_none());
         let e_str = c
@@ -433,6 +485,7 @@ mod tests {
         let c = notices_content(
             2,
             SkippedDetail::Archive,
+            false,
             &Ok(()),
             Some(&Err(err())),
             &Err(err()),
@@ -445,14 +498,14 @@ mod tests {
 
     #[test]
     fn settings_none_with_library_failure() {
-        let c = notices_content(0, SkippedDetail::None, &Ok(()), None, &Err(err()));
+        let c = notices_content(0, SkippedDetail::None, false, &Ok(()), None, &Err(err()));
         assert!(c.settings_save_err.is_none());
         assert!(c.library_save_err.is_some());
     }
 
     #[test]
     fn skipped_and_library_failure_without_settings_tracking() {
-        let c = notices_content(1, SkippedDetail::Archive, &Ok(()), None, &Err(err()));
+        let c = notices_content(1, SkippedDetail::Archive, false, &Ok(()), None, &Err(err()));
         assert_eq!(c.skipped, 1);
         assert!(c.settings_save_err.is_none());
         assert!(c.library_save_err.is_some());
@@ -460,7 +513,14 @@ mod tests {
 
     #[test]
     fn skipped_and_settings_failure_captured() {
-        let c = notices_content(1, SkippedDetail::None, &Ok(()), Some(&Err(err())), &Ok(()));
+        let c = notices_content(
+            1,
+            SkippedDetail::None,
+            false,
+            &Ok(()),
+            Some(&Err(err())),
+            &Ok(()),
+        );
         assert_eq!(c.skipped, 1);
         assert!(c.settings_save_err.is_some());
         assert!(c.library_save_err.is_none());
@@ -468,7 +528,7 @@ mod tests {
 
     #[test]
     fn notices_content_captures_a_leave_save_failure() {
-        let c = notices_content(0, SkippedDetail::None, &Err(err()), None, &Ok(()));
+        let c = notices_content(0, SkippedDetail::None, false, &Err(err()), None, &Ok(()));
 
         assert_eq!(
             c.leave_save_err,
@@ -480,7 +540,7 @@ mod tests {
 
     #[test]
     fn notices_content_leaves_leave_save_err_none_on_success() {
-        let c = notices_content(0, SkippedDetail::None, &Ok(()), None, &Ok(()));
+        let c = notices_content(0, SkippedDetail::None, false, &Ok(()), None, &Ok(()));
 
         assert!(c.leave_save_err.is_none());
     }

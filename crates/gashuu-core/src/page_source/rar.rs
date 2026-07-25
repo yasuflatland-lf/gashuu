@@ -51,6 +51,8 @@ pub struct RarSource {
     path: PathBuf,
     entries: Vec<EntryMeta>,
     skipped: usize,
+    /// Whether an error cut the non-resumable listing iterator short.
+    truncated: bool,
 }
 
 impl RarSource {
@@ -69,13 +71,15 @@ impl RarSource {
         let archive = ::unrar::Archive::new(&path).open_for_listing()?;
         let mut entries = Vec::new();
         let mut skipped = 0usize;
+        let mut truncated = false;
         for (seq_index, header) in archive.enumerate() {
             let header = match header {
                 Ok(h) => h,
                 Err(_) => {
                     // unrar's List iterator is non-resumable: after any error it sets `damaged`
-                    // and yields None forever, so we surface good pages + count the failure only.
-                    skipped += 1;
+                    // and yields None forever, so we surface good pages and flag the listing
+                    // as truncated rather than counting a single skipped entry.
+                    truncated = true;
                     break;
                 }
             };
@@ -110,6 +114,7 @@ impl RarSource {
             path,
             entries,
             skipped,
+            truncated,
         })
     }
 
@@ -192,6 +197,10 @@ impl PageSource for RarSource {
 
     fn skipped_count(&self) -> usize {
         self.skipped
+    }
+
+    fn listing_truncated(&self) -> bool {
+        self.truncated
     }
 }
 
@@ -316,18 +325,37 @@ mod tests {
         assert_eq!((decoded.width(), decoded.height()), (2, 2));
     }
 
-    /// skip+count+break: a corrupt trailing header does NOT fail the whole open.
-    /// The good page already indexed survives, the failure is counted, and the
-    /// good page still reads back.
+    /// A corrupt trailing header does NOT fail the whole open. The good page
+    /// already indexed survives, the listing is marked truncated without
+    /// counting a per-entry skip, and the good page still reads back.
     #[test]
-    fn corrupt_trailing_header_surfaces_good_pages_and_counts_the_failure() {
+    fn corrupt_trailing_header_marks_the_listing_truncated_without_counting_a_skip() {
         let cbr = write_cbr(CORRUPT_TRAILING_CBR_B64);
         let src = RarSource::open(cbr.path()).unwrap();
 
         assert_eq!(names(&src), vec!["1.png".to_string()]);
-        assert_eq!(src.skipped_count(), 1);
+        assert_eq!(src.skipped_count(), 0);
+        assert!(src.listing_truncated());
         let decoded = crate::image_ops::decode(&src.read_bytes(0).unwrap()).unwrap();
         assert_eq!((decoded.width(), decoded.height()), (2, 2));
+    }
+
+    #[test]
+    fn healthy_archive_is_not_truncated() {
+        let cbr = write_cbr(SAMPLE_CBR_B64);
+        let src = RarSource::open(cbr.path()).unwrap();
+
+        assert!(!src.listing_truncated());
+        assert_eq!(src.skipped_count(), 0);
+    }
+
+    #[test]
+    fn skipped_entries_do_not_imply_truncation() {
+        let cbr = write_cbr(HOSTILE_CBR_B64);
+        let src = RarSource::open(cbr.path()).unwrap();
+
+        assert_eq!(src.skipped_count(), 1);
+        assert!(!src.listing_truncated());
     }
 
     #[test]

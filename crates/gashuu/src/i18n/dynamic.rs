@@ -408,6 +408,9 @@ pub(crate) fn format_notices(
     content: &NoticesContent,
 ) -> Vec<String> {
     let mut notices = Vec::new();
+    if content.listing_truncated {
+        notices.push(fl!(loader, "notice-listing-truncated"));
+    }
     if content.skipped > 0 {
         let detail = match content.skipped_detail {
             SkippedDetail::None => String::new(),
@@ -450,11 +453,67 @@ mod tests {
     }
 
     #[test]
+    fn format_notices_reports_a_truncated_listing() {
+        let content = NoticesContent {
+            skipped: 0,
+            skipped_detail: SkippedDetail::None,
+            listing_truncated: true,
+            leave_save_err: None,
+            settings_save_err: None,
+            library_save_err: None,
+        };
+
+        assert_eq!(
+            format_notices(en().loader(), &content),
+            vec!["Archive damaged — later pages could not be listed and are missing."]
+        );
+        assert_eq!(
+            format_notices(ja().loader(), &content),
+            vec!["アーカイブが破損しています — 以降のページを読み取れず、表示されていません。"]
+        );
+    }
+
+    #[test]
+    fn truncation_notice_precedes_the_skipped_notice() {
+        let content = NoticesContent {
+            skipped: 2,
+            skipped_detail: SkippedDetail::Archive,
+            listing_truncated: true,
+            leave_save_err: None,
+            settings_save_err: None,
+            library_save_err: None,
+        };
+        let notices = format_notices(en().loader(), &content);
+
+        assert_eq!(notices.len(), 2);
+        assert_eq!(
+            notices[0],
+            "Archive damaged — later pages could not be listed and are missing."
+        );
+        assert_eq!(notices[1], "2 entries skipped (zip-slip or oversized)");
+    }
+
+    #[test]
+    fn format_notices_omits_truncation_when_the_listing_completed() {
+        let content = NoticesContent {
+            skipped: 0,
+            skipped_detail: SkippedDetail::None,
+            listing_truncated: false,
+            leave_save_err: None,
+            settings_save_err: None,
+            library_save_err: None,
+        };
+
+        assert!(format_notices(en().loader(), &content).is_empty());
+    }
+
+    #[test]
     fn format_notices_reports_a_leave_save_failure_before_the_open_save_failure() {
         for loc in [en(), ja()] {
             let content = NoticesContent {
                 skipped: 0,
                 skipped_detail: SkippedDetail::None,
+                listing_truncated: false,
                 leave_save_err: Some("leave failed".to_string()),
                 settings_save_err: None,
                 library_save_err: Some("open failed".to_string()),

@@ -272,6 +272,7 @@ continue-reading = 続きから読む
 notice-skipped-detail-archive = （zip-slip または上限超過）
 # Space between { $n } and 件 matched the deleted messages.rs Ja arm exactly.
 notice-entries-skipped = { $n } 件のエントリをスキップしました{ $detail }
+notice-listing-truncated = アーカイブが破損しています — 以降のページを読み取れず、表示されていません。
 notice-failed-save-settings = 設定を保存できませんでした: { $error }
 notice-failed-save-library = ライブラリを保存できませんでした: { $error }
 notice-could-not-save-settings = 設定を保存できませんでした: { $error }

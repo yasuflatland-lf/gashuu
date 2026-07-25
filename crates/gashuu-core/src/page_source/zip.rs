@@ -237,6 +237,14 @@ mod tests {
     }
 
     #[test]
+    fn listing_is_not_truncated_for_a_complete_zip() {
+        let cbz = write_cbz(&[("1.png", tiny_png())]);
+        let src = ZipSource::open(cbz.path()).unwrap();
+
+        assert!(!src.listing_truncated());
+    }
+
+    #[test]
     fn avif_entries_are_indexed_as_pages() {
         // Open-time filtering is extension-only (bytes are never decoded at open), so PNG
         // bytes under an `.avif` name suffice (same precedent as the `a.jpg` fixture).
