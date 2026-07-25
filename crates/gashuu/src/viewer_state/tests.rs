@@ -1116,7 +1116,7 @@ fn jump_to_stored_trailing_normalizes_to_leading_on_resume() {
 
 #[test]
 fn open_read_leave_sequence_state_invariants() {
-    // Pins the borrow-regression invariants write_back_position relies on: open_file()
+    // Pins the borrow-regression invariants stage_position_write_back relies on: open_file()
     // Some after open, index() tracks nav, and both read without a borrow conflict.
 
     let mut state = ViewerState::new();
@@ -1137,11 +1137,11 @@ fn open_read_leave_sequence_state_invariants() {
     assert!(state.jump_to(7));
     assert_eq!(state.index(), 7, "after jump_to(7): index is 7");
 
-    // The reads write_back_position performs must not conflict in sequence
+    // The reads stage_position_write_back performs must not conflict in sequence
     // (distinct immutable borrows); this test pins the shape of those reads.
     let _page = state.resume_index_to_persist(); // what write-back calls
                                                  // open_file() is None here (set_source path), but the call must not panic.
-    let _path = state.open_file(); // what write_back_position calls
+    let _path = state.open_file(); // what stage_position_write_back calls
                                    // No panic reached: the sequence is safe.
 
     // Simulate opening a second book (write_back fires for the first, then

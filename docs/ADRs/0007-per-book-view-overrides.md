@@ -41,13 +41,14 @@ Model the four preferences as a PER-BOOK override that falls back to the global 
    Library screen edits the GLOBAL `Settings` defaults; the Viewer screen edits the current book's
    override. The Viewer dialog also exposes a "Reset to global" button
    (→ `ViewOverride::none()`).
-5. **Two NAMED writes, one per scope, behind ONE routing chokepoint.** `reconcile_settings` writes
-   runtime → GLOBAL `Settings` (only via the Library settings dialog and the no-book-open exit path);
-   `write_back_view_override` writes runtime → the open book's per-book override (at every leave
-   point). Both are PRIVATE to `main.rs` and reached only through `persist_view_modes(route:
-   ViewModeRoute, …)`, which routes by named leave point to the correct sink (Wave-1 DDD refactor —
-   see Implementation notes). The aggregate owns the mutation (`Library::set_overrides` /
-   `overrides_for`); there is no `Book` setter.
+5. **Two NAMED writes, one per scope, behind ONE routing chokepoint.** `reconcile_settings` (now `apply_runtime_view_to_settings`)
+   writes runtime → GLOBAL `Settings` (only via the Library settings dialog and the no-book-open
+   exit path); `write_back_view_override` (now `stage_view_override_write_back`) writes runtime →
+   the open book's per-book override (at every leave point). Both are PRIVATE to `main.rs` (now
+   `view_sync.rs` after the Wave-1 DDD split) and reached only through `persist_view_modes` (now `persist_leave_point`)
+   `(route: ViewModeRoute, …)`, which routes by named leave point to the
+   correct sink (Wave-1 DDD refactor — see Implementation notes). The aggregate owns the mutation
+   (`Library::set_overrides` / `overrides_for`); there is no `Book` setter.
 
 ## Alternatives considered
 
@@ -89,31 +90,34 @@ Model the four preferences as a PER-BOOK override that falls back to the global 
 ## Implementation notes (as-built deltas)
 
 - **A shipped-then-caught clobber bug.** When a global-only setting becomes per-context, EVERY
-  runtime→global write (`reconcile_settings`) becomes a potential clobber. The plan gated the EXIT
-  reconcile on "no book open" but MISSED a second reconcile on the open path (inside
+  runtime→global write (`reconcile_settings` (now `apply_runtime_view_to_settings`)) becomes a
+  potential clobber. The plan gated the EXIT reconcile on "no book open" but MISSED a second
+  reconcile on the open path (inside
   `OpenBookUseCase::run`, behind the `track_recent_files` save gate): runtime modes are NOT reset on
   open (the new book's `ResolvedView` is applied later), so that save wrote the OUTGOING book's
   per-book modes into the global defaults. Fixed by NOT reconciling on the open-time save. Recorded
   as the headline harness in [patterns.md](../patterns.md), "Write-direction invariant audit".
 - The invariant, stated explicitly: GLOBAL view modes are written ONLY by the Library settings dialog
   close and the no-book-open exit path; PER-BOOK overrides ONLY at leave points
-  (`write_back_view_override`).
-- **Wave-1 DDD refactor: one routing chokepoint.** Both write fns are now PRIVATE to `main.rs`; their
-  only production caller is `persist_view_modes(route: ViewModeRoute, …)`. `ViewModeRoute` names the
-  leave point (`DialogClosedOnLibrary` / `DialogClosedOnViewer` / `LeaveViewer` / `OpenDifferentBook`
-  / `AppExit`) and ONE `match` routes each to its sink: `DialogClosedOnLibrary` → global reconcile;
-  the three per-book points → `write_back_view_override`; `AppExit` → per-book write-back, then global
-  reconcile ONLY when no book is open. The clobber-trap rationale (the shipped-then-caught bug above)
-  now lives as a comment on the chokepoint, and the write-direction audit (`patterns.md`) reduces to
-  auditing this single match rather than enumerating call sites. (`OpenDifferentBook` is invoked from `OpenBookUseCase::run` in
-  `app.rs`; all other routes from `main.rs`.)
+  (`write_back_view_override` (now `stage_view_override_write_back`)).
+- **Wave-1 DDD refactor: one routing chokepoint.** Both write fns are now PRIVATE to `main.rs` (now
+  `view_sync.rs` after the Wave-1 DDD split); their only production caller is `persist_view_modes` (now `persist_leave_point`)
+  `(route: ViewModeRoute, …)`. `ViewModeRoute` names the leave point
+  (`DialogClosedOnLibrary` / `DialogClosedOnViewer` / `LeaveViewer` / `OpenDifferentBook` /
+  `AppExit`) and ONE `match` routes each to its sink: `DialogClosedOnLibrary` → global reconcile;
+  the three per-book points → `write_back_view_override` (now `stage_view_override_write_back`);
+  `AppExit` → per-book write-back, then global reconcile ONLY when no book is open. The clobber-trap
+  rationale (the shipped-then-caught bug above) now lives as a comment on the chokepoint, and the
+  write-direction audit (`patterns.md`) reduces to auditing this single match rather than
+  enumerating call sites. (`OpenDifferentBook` is invoked from `OpenBookUseCase::run` in `app.rs`;
+  all other routes from `main.rs`.)
 - **The leave-point snapshot writes all four fields `Some`, in tension with `None` = inherit
-  (Decision 2 / Costs).** `write_back_view_override` snapshots the WHOLE runtime tuple, so after the
-  first leave a book's override pins all four modes to `Some(_)` even for modes the user never
-  touched — the book never returns to "inherit global" without an explicit "Reset to global".
-  Resolution: per-book overrides are an OPENED-BOOK SNAPSHOT that intentionally does NOT track later
-  global changes; this is accepted, not a bug. The diff-write alternative (persist only fields that
-  DIFFER from global at write time, keeping untouched modes `None`) was considered and DEFERRED — it
-  is more state and more failure modes, and the `Option<Enum>`-per-field shape keeps the door open
-  (Alternative C).
+  (Decision 2 / Costs).** `write_back_view_override` (now `stage_view_override_write_back`)
+  snapshots the WHOLE runtime tuple, so after the first leave a book's override pins all four modes
+  to `Some(_)` even for modes the user never touched — the book never returns to "inherit global"
+  without an explicit "Reset to global". Resolution: per-book overrides are an OPENED-BOOK SNAPSHOT
+  that intentionally does NOT track later global changes; this is accepted, not a bug. The
+  diff-write alternative (persist only fields that DIFFER from global at write time, keeping
+  untouched modes `None`) was considered and DEFERRED — it is more state and more failure modes,
+  and the `Option<Enum>`-per-field shape keeps the door open (Alternative C).
 - No new dependencies; `LIBRARY_VERSION` unchanged.
