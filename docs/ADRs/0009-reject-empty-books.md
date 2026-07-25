@@ -39,7 +39,7 @@ remove + notify".
    source is never reclassified as empty. At the cover worker this is the pure
    `should_signal_empty(open_result, count) = open_result.is_ok() && count == 0`.
 3. **Three UI hooks, no re-derivation of the rule.** Add (probe off the UI thread via
-   `add_loader::probe_path`, then `apply_outcomes` → `AddReport { added, skipped }`, issue 206):
+   `add_loader::probe_path` (now `add_controller::probe_path`), then `apply_outcomes` → `AddReport { added, skipped }`, issue 206):
    reject empty OR unreadable before insert, and persist the probed count on a genuine
    insert so a fresh add shows "1 / N" immediately. Open (`OpenBookUseCase::run` →
    `OpenOutcome::EmptyBookRejected { title, removed, save_error }`): on a clean zero-page open, bail out
@@ -82,6 +82,7 @@ remove + notify".
 - Add-time probing is SYNCHRONOUS on the UI thread. Zip probing reads only the central directory and
   folder probing is a shallow `max_depth(1)` walk — both light — but a huge batch on a network drive
   could lag. Moving probing off-thread is deferred (YAGNI) until it proves slow in practice.
+  (RESOLVED — see the Amendment.)
 - The open-time and cover-time removal paths can race for the same book; idempotency rests on
   `Library::remove`'s bool rather than a lock (the race loser stays silent). Accepted as simpler than
   serializing the two paths.
@@ -118,3 +119,31 @@ remove + notify".
   (identity, not page count) and is recorded as a known limitation in
   [patterns.md](../patterns.md), "book identity is the add-time canonical snapshot"; re-canonicalization
   + duplicate merge in `normalize()` is DEFERRED (separate-PR scale).
+
+## Amendment 2026-07-25: the rejected open closes the viewer; probing is off-thread at BOTH boundaries
+
+- **Decision 3's open hook gains a step.** After `remove_empty_book` and BEFORE returning
+  `OpenOutcome::EmptyBookRejected`, `OpenBookUseCase::run` (in its apply half) calls
+  `ViewerState::close()`. The post-rejection state is `open_file() == None`, `page_count() == 0`,
+  no source mounted.
+- **Why.** `open_path_with_policy` SUCCEEDS on an empty folder/archive, so the previous behavior
+  left the zero-page source mounted with `open_file = Some(<the just-removed book>)`. That showed
+  the removed book in the title bar; let the Library's Down key pass its only guard
+  (`open_file().is_none()`) and enter a 0-page Viewer, violating this ADR's own "the Viewer never
+  shows a 0-page book" consequence; silently closed whatever book WAS open; and made the `AppExit`
+  route see a phantom open book and skip reconciling runtime view modes into global `Settings`.
+- **The viewer is CLOSED, not restored to the previously open book.** The outgoing book's position
+  and per-book override were already persisted by the leave-point write at the top of the apply
+  half, so nothing is lost; this mirrors the bulk-remove use case's close-don't-restore precedent.
+  `close()` needs no companion viewport reset — it already zeroes the cache/source/count/index and
+  clears `inherit_pending`, while deliberately preserving display modes and `cache_config`.
+- **The Costs bullet is resolved.** Add probing moved off the UI thread with issue 206 (Decision 3
+  has said so since; the Costs bullet has contradicted it ever since). The single-book OPEN path is
+  now off-thread as well: the archive open, the full listing, canonicalization and the
+  `is_dir`/`exists` stats run on a rayon worker via `open_controller::probe_open`, while ALL state
+  mutation, both library saves and the optional settings save stay on the UI thread. The observable
+  ordering is preserved — `persist_leave_point(OpenDifferentBook)` still runs first in the apply
+  half, and exactly one leave-point write happens per APPLIED open (a superseded probe writes
+  nothing).
+- Decisions 1, 2, 4 and 5 are unaffected; `probe_page_count` semantics and the missing-path rule are
+  unchanged. See [architecture.md](../architecture.md), "open_controller" and "open_book".

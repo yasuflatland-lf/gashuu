@@ -41,6 +41,9 @@ Model the four preferences as a PER-BOOK override that falls back to the global 
    Library screen edits the GLOBAL `Settings` defaults; the Viewer screen edits the current book's
    override. The Viewer dialog also exposes a "Reset to global" button
    (→ `ViewOverride::none()`).
+
+   > Note: the library-screen dialog's seeding/restore gained a runtime SNAPSHOT (including the
+   > pending "inherit global" flag) — see the Amendment at the end of this record.
 5. **Two NAMED writes, one per scope, behind ONE routing chokepoint.** `reconcile_settings` (now `apply_runtime_view_to_settings`)
    writes runtime → GLOBAL `Settings` (only via the Library settings dialog and the no-book-open
    exit path); `write_back_view_override` (now `stage_view_override_write_back`) writes runtime →
@@ -121,3 +124,27 @@ Model the four preferences as a PER-BOOK override that falls back to the global 
   untouched modes `None`) was considered and DEFERRED — it is more state and more failure modes,
   and the `Option<Enum>`-per-field shape keeps the door open (Alternative C).
 - No new dependencies; `LIBRARY_VERSION` unchanged.
+
+## Amendment 2026-07-25: the library-screen dialog session snapshots the open book's runtime AND its pending-inherit flag
+
+- **`DialogSession` (`crates/gashuu/src/dialog_session.rs`) is the seam Decision 4 did not name.**
+  `open_on_library` captures `RuntimeSnapshot { view: ResolvedView, inherit_pending: bool }` for the
+  open book (`None` when no book is open) and THEN global-seeds the runtime;
+  `close_on_library` restores the view via `apply_resolved_view` and THEN the flag.
+- **The restore ORDER is load-bearing.** `apply_resolved_view` calls the value-changing `set_*`
+  methods, which CLEAR `inherit_pending`; restoring the flag first would be a no-op. "Reset to
+  global" (`reset_to_global`) has the same apply-then-mark order for exactly the same reason.
+- **The defect this closes.** A global edit made from the Library dialog mutated the SHARED runtime
+  and cleared the OPEN BOOK's `inherit_pending`; the next leave point then wrote a FULL override
+  pinning the OLD global values onto that book — the reset silently undone AND frozen stale. On the
+  Library screen the runtime is only a global-seeded scratchpad, so clearing the BOOK's pending
+  state from a GLOBAL edit is a category error.
+- **The flag is restored verbatim in both directions.** Nothing on the library screen can
+  legitimately set it — the reset button exists only on the per-book dialog — so a conditional
+  restore would only add a way to be wrong.
+- **Explicitly rejected:** screen-gating the individual combo handlers so they skip the flag clear
+  on the library screen. It scatters the invariant across four handlers and misses every future
+  setter; the session owns it in one place instead.
+- Decision 4's screen-scoped routing and Decision 5's two named writes are otherwise unchanged. See
+  [architecture.md](../architecture.md), "dialog_session", and [patterns.md](../patterns.md),
+  "Per-book view overrides".

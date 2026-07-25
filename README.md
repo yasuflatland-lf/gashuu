@@ -69,7 +69,10 @@ or run it with `--appimage-extract-and-run`.
   still opens.
 - **Archives** — pages are read in natural filename order and images nested in
   subfolders are included. Extraction is in-memory (nothing is written to disk); unsafe,
-  oversized, or corrupt entries are skipped and counted in the status bar.
+  oversized, or corrupt entries are skipped and counted in the status bar. If an archive is
+  damaged badly enough that the rest of its contents cannot be listed at all, it still opens
+  with the pages that survived and says so — "archive damaged — later pages could not be
+  listed and are missing" — because the number of lost pages is unknowable in that case.
 - **Library** — a cover-flow carousel with real cover art and per-book reading-progress
   bars, in numeric-aware title order (*vol 1*, *vol 2*, *vol 10* sort naturally). Empty
   folders/archives are rejected on add and auto-removed if found empty later. Opening a book

@@ -29,8 +29,9 @@ security and concurrency properties:
   - **zip-slip**: reject entries whose path escapes the root (`enclosed_name`); image-looking
     traversal entries are skip-and-counted (surfaced as "skipped N"), the container itself is not
     failed.
-  - **Oversized entries**: a shared 500 MB per-entry ceiling (`MAX_ENTRY_BYTES` in `naming.rs`),
-    enforced at open time (declared size) and at read time.
+  - **Oversized entries**: a shared 500 MB per-entry ceiling (`MAX_ENTRY_BYTES` in `naming.rs` (now `page_source/entry_policy.rs`)),
+    enforced at open time (declared size) and at read time (amended: RAR gained a third,
+    ACTUAL-length tier and the zip read's pre-allocation gained its own bound — see the Amendment).
   - **Image bombs**: handled at decode (`check_pixel_limit` + `image::Limits`,
     [ADR-0003](0003-image-loading-and-caching.md)).
 
@@ -73,5 +74,38 @@ security and concurrency properties:
 - **`Arc<dyn PageSource>`, not `Box`** — the `Send + Sync` supertrait plus rayon sharing and
   `ArchiveLoader` returning a shareable handle make `Arc` the right type (the design doc said `Box`).
 - **RAR's read-time size cap is weaker** than ZIP's: `unrar`'s `read()` materializes the whole entry
-  with no streaming `take`, so it only re-validates the declared size; `image::Limits` is the final
+  with no streaming `take`, so it only re-validates the declared size (now ALSO rejects by ACTUAL
+  length after the read — see the Amendment); `image::Limits` is the final
   backstop. Documented at the call site.
+
+## Amendment 2026-07-25: three-tier entry ceiling + non-UTF-8 path rejection at the door
+
+- **The read-time ceiling is now THREE tiers for RAR**: declared size at open (`classify_entry`),
+  declared `unpacked_size` re-validated at read, and `reject_over_actual(data, name, max)` on the
+  materialized buffer — an ACTUAL-length rejection sharing `cap_or_reject`'s inclusive boundary
+  (`len > max` rejects). What it buys: the oversized buffer is dropped before `decode` sees it, the
+  page fails with the same typed `EntryTooLarge` every other source produces, and a lying header can
+  no longer smuggle an over-ceiling payload into the decode path. The residual is stated, not
+  claimed away: peak RSS inside `unrar`'s `read()` is still unbounded by the entry's true size,
+  because `unrar` 0.5.8 exposes no streaming, chunked, or capped in-memory read (its accumulator
+  sits behind the private `ProcessMode` trait). This bounds the blast radius; it is NOT parity with
+  `ZipSource`. See [patterns.md](../patterns.md), "`RarSource`'s read-time size cap is WEAKER".
+- **The zip read's pre-allocation is bounded independently of the ceiling.** `cap_or_reject`'s
+  `capacity_hint` is a growth hint, never the defense, and must never be derived from a declared,
+  attacker-controlled size: `min(declared, MAX_ENTRY_BYTES)` is a 500 MiB allocation from a KB-sized
+  file, multiplied by up to 11 concurrent prefetch reads. `ZipSource` now passes
+  `initial_capacity(entry.size())`, clamped to `INITIAL_READ_CAPACITY` (1 MiB); `FolderSource` still
+  passes `0`. The `take(max + 1)` + length check remains THE cap.
+- **New admission rule: a source path that is not valid UTF-8 is rejected at the door.**
+  `ArchiveLoader::open_with_policy` returns `CoreError::NonUtf8Path` before any dispatch, so such a
+  path can never become a `Book`. `Book::path` serializes as a JSON string (serde's `Serialize for
+  Path` errors on non-UTF-8), so ONE non-UTF-8 path made `Library::to_json` — and therefore every
+  save, for every book — fail wholesale and silently. The canonical-identity rule is single-homed in
+  `gashuu_core::canonical_identity`, which falls back to the GIVEN path when canonicalization fails
+  OR yields a non-UTF-8 result, closing the "a UTF-8 symlink resolving into a non-UTF-8 directory"
+  hole; `Library::add_canonical`, `Library::recanonicalize_and_merge` and the UI's `open_file`
+  capture all route through it.
+- **Explicitly NOT adopted:** byte-encoded path serialization (`serde_bytes` / base64 for
+  `Book::path`). It would change the on-disk schema, break hand-editability, invalidate every shape
+  test, and force a `LIBRARY_VERSION` bump — for a platform-limited edge case that rejecting at the
+  boundary already closes.

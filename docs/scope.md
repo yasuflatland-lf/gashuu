@@ -9,13 +9,13 @@ This file is the authoritative record of what has shipped and what is intentiona
 
 - Top-level folder walk (`max_depth(1)`, no recursion).
 - CBZ/ZIP archives (flattened — images at any depth).
-- CBR/RAR archives (extraction only, flattened like ZIP).
+- CBR/RAR archives (extraction only, flattened like ZIP). A CBR whose listing is cut short by a damaged header still opens with the pages that survived, and reports a distinct damaged-archive notice (`notice-listing-truncated`) — separate from, and shown before, the skipped-entries count.
 - All PNG/JPG/JPEG/AVIF formats (AVIF decode via dav1d — see [docs/toolchain.md](toolchain.md)).
 - Dispatched by `ArchiveLoader` (extension → magic-byte sniff).
 
 **Intentional deviation from the Issue:** the ZIP Issue specified `async_zip` + `tokio` and the RAR plan specified `unrar`, but BOTH use the SYNCHRONOUS crate (`zip` / `unrar`) over the existing rayon pool — the synchronous `read_bytes` trait method plus CPU-bound decode fit rayon naturally, whereas async would force a `block_on` bridge and infect every layer with `tokio`.
 
-The per-entry 500 MB ceiling (`MAX_ENTRY_BYTES` in `naming.rs`) applies to both ZIP and RAR, though RAR's read-time cap is weaker (no streaming `take`; see [docs/patterns.md](patterns.md)).
+The per-entry 500 MB ceiling (`MAX_ENTRY_BYTES` in `entry_policy.rs`) applies to both ZIP and RAR. RAR still has no streaming `take`, but an entry whose ACTUAL decompressed length exceeds the ceiling is now rejected after the read, so an over-ceiling payload never reaches the decoder; the residual is the transient allocation inside `unrar`'s `read()` (see [docs/patterns.md](patterns.md)).
 RAR requires a C++ compiler on every OS (see [docs/toolchain.md](toolchain.md)).
 
 ### Cache and prefetch
@@ -116,6 +116,7 @@ RAR requires a C++ compiler on every OS (see [docs/toolchain.md](toolchain.md)).
 ### Per-book view overrides with global fallback
 
 - Reading direction, spread mode, cover mode, and fit mode are now **per-book overrides** backed by a `#[serde(default)]`-gated `ViewOverride` on `Book` (backward-compatible; missing field → `None` → inherit global `Settings`). Screen decides scope: the Library settings dialog edits the global `Settings` defaults; the Viewer settings dialog and the in-viewer D/R/C/fit toggles edit the current book's override (written back at every leave point). The Viewer settings dialog also exposes a "Reset to global" button.
+- Editing the global defaults from the **Library** settings dialog is invisible to the open book: the dialog session snapshots and restores that book's runtime view **and** its pending "inherit global" state, so "Reset to global" survives a global edit instead of being silently undone by the next leave point.
 
 ### Release builds — macOS + Windows executables (release workflow)
 
@@ -196,12 +197,12 @@ A source with no image pages (an empty folder, an archive with only non-image en
 
 - **The rule lives in core.** `ArchiveLoader::probe_page_count(path) -> Result<NonZeroUsize, CoreError>` opens the source and counts pages; `0` → `Err(CoreError::EmptyBook { path })` (a new `#[non_exhaustive]` variant), `1+` → `Ok(NonZeroUsize)`. I/O / `UnsupportedFormat` errors propagate UNCHANGED — "empty" and "unreadable" are strictly distinct. `Library::add` / `register_opened` are unchanged (no I/O enters the collection layer).
 - **Add time.** The probe (`add_loader::probe_path`, off the UI thread) classifies each path and `apply_outcomes` rejects empty OR unreadable sources before they enter the library (the notice says how many were skipped; mixed batches still add the valid books). On a genuine insert it persists the probed count via `set_page_count`, so a fresh add shows "1 / N" immediately. Return type is `AddReport { added, skipped }`.
-- **Open time.** `OpenBookUseCase::run` returns `OpenOutcome::EmptyBookRejected { title, removed, save_error }` for a clean open that counts zero pages: it removes the book (if present), re-saves, purges its cover (Wave-2 #150 closed the old open-path purge gap), and the recents push / settings save / `register_opened` are all bypassed; `main.rs` stays on the Library, rebuilds the carousel, and shows a notice (never enters the viewer).
+- **Open time.** `OpenBookUseCase::run` returns `OpenOutcome::EmptyBookRejected { title, removed, save_error }` for a clean open that counts zero pages: it removes the book (if present), re-saves, purges its cover (Wave-2 #150 closed the old open-path purge gap), and the recents push / settings save / `register_opened` are all bypassed; `main.rs` stays on the Library, rebuilds the carousel, and shows a notice (never enters the viewer). It ALSO closes the viewer, so `open_file()` is `None` after a rejection — no phantom book in the title bar, and the Library's Down key refuses to re-enter the viewer.
 - **Cover-load time.** A cover worker that opens a book cleanly with zero pages fires the `empty-book-detected(string)` Slint callback; `main.rs::on_empty_book_detected` runs the shared `app::remove_empty_book` transaction (remove → save → cover purge), rebuilds the carousel, and notifies. Idempotent with the open-time path via `Library::remove`'s bool (a race loser stays silent).
 - **A missing-path book is NOT removed** — the existing `is_available()` gray-out is preserved (a temporarily unmounted drive must not lose data). Removal happens only when a scan SUCCEEDS and confirms zero images.
 - **A FAILED open stays on the Library (PR #334, 2026-07-01).** When a carousel/bookmark open returns `OpenOutcome::Error` — not empty, not removed (e.g. the file moved or its volume is unmounted) — it no longer enters a blank 0-page Viewer: `open_and_enter` gates `enter_viewer` on `OpenOutcome::Success` only, and on `!path.exists()` shows the book-named `viewer-open-inaccessible` status message ("『…』を開けませんでした。ファイルが見つからないか、保存先のボリュームに接続できません。" / "Couldn't open …. The file is missing or its volume isn't connected.") instead of the raw I/O error. A failure with the file still present (a corrupt archive) keeps the detailed error. This is the missing-drive complement to the rule above.
 - Notices: `notice-added-books-skipped`, `notice-no-books-added-empty`, `notice-empty-book-removed` (en + ja, via `i18n/dynamic.rs`).
-- No new dependencies. Add-time probing is synchronous on the UI thread (light: zip reads only the central directory, folder probing is a shallow walk); a follow-up to move it off-thread is deferred (YAGNI) unless it proves slow on huge network-drive batches.
+- No new dependencies. Probing is OFF the UI thread at both boundaries: add-time probing moved off-thread with issue 206, and the single-book OPEN path now probes off-thread too — the archive open, the full listing, canonicalization and the `is_dir`/`exists` stats all run on a rayon worker, while ALL state mutation, both library saves and the optional settings save stay on the UI thread, and the outgoing book's leave-point save still happens first in the apply half.
 
 ### Cover-cache GC — size cap + near-LRU prune (#143, 2026-06-05)
 
@@ -240,10 +241,14 @@ post-confirmation action is packaging-aware (`detect_packaging` from `current_ex
 no `cfg!(target_os)`): macOS `.app` downloads + SHA-256-verifies the asset then reveals it in Finder
 for a manual drag-install (its ad-hoc, non-notarized signing makes in-place replace unsafe); Linux
 `.deb` and any unrecognized build (e.g. `cargo run`) just open the GitHub release page (deb defers to
-apt/dpkg); Linux AppImage and Windows portable resolve to `SelfReplace`, but that arm still falls
-back to opening the release page until the in-place self-replace pipeline lands. Every downloaded
-asset is verified against the release's `SHA256SUMS` before use. **Implemented on branch
-`worktree-auto-update`**, shipped in two stages: notify + guided-download paths (all platforms)
+apt/dpkg); Linux AppImage and Windows portable resolve to `SelfReplace`, which downloads,
+SHA-256-verifies, replaces the binary in place, runs the SAME exit persistence a normal quit runs
+(page counts, reading position, the open book's per-book view override, window geometry, settings)
+BEFORE spawning the replacement process, and then relaunches. Every downloaded asset is verified
+against the release's `SHA256SUMS` before use. While a download or install is in flight the dialog
+**blocks** its actions — "Update now" is disabled and Later / Skip / Esc / Return / backdrop click
+do not dismiss — and dismissing it returns focus to the topmost surviving modal rather than to the
+screen behind the scrim. Shipped in two stages: notify + guided-download paths (all platforms)
 first, then in-place self-replace for AppImage/Windows.
 - No new `gashuu-core` I/O: `semver` (version compare) and `sha2` (checksum) are pure additions.
   `gashuu` gains its first networking dependency, `ureq` (rustls), plus `opener` (open URL / reveal
