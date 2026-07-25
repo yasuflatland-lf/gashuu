@@ -65,8 +65,9 @@ action**: self-replace on the two safe forms, a reliable guided/manual path ever
    mirroring `ConfirmDialog`'s modal-key-trap idiom but extended to three stops) presents
    `Current vX → Latest vY`, a release-notes link, and three actions: **Update now**, **Later**
    (the default-focused, safe choice — also bound to Esc and Return so a reflexive keypress can
-   never fire an update), and **Skip this version** (persists `skipped_version` so that release is
-   never re-notified).
+   never fire an update) (amended: while an install is in flight Later/Skip/Esc/Return/backdrop are
+   BLOCKED and do NOT dismiss — see the Amendment), and **Skip this version** (persists
+   `skipped_version` so that release is never re-notified).
 4. **Packaging detection drives the post-confirmation action — the hybrid core.**
    `gashuu_core::update::packaging::detect_packaging(exe_path, appimage_env)` classifies the running
    build from `std::env::current_exe()` and `$APPIMAGE` alone (no `cfg!(target_os)`, so every branch
@@ -76,9 +77,9 @@ action**: self-replace on the two safe forms, a reliable guided/manual path ever
    `Packaging::strategy()` maps each form to an `UpdateStrategy`:
    - `SelfReplace` (Linux AppImage, Windows portable) — download the platform asset, verify it, and
      replace the running binary in place, then relaunch.
-   - `RevealDownload` (macOS `.app`) — download + verify, then reveal the saved file in Finder for a
+   - `RevealDownload` (now `ManualInstall`) (macOS `.app`) — download + verify, then reveal the saved file in Finder for a
      manual drag-into-`/Applications` install (in-place replace is unsafe here per the Context).
-   - `OpenReleasePage` (Linux deb, Unknown) — just open the GitHub release page in the browser; deb
+   - `OpenReleasePage` (now `ExternalInstall`) (Linux deb, Unknown) — just open the GitHub release page in the browser; deb
      defers to apt/dpkg (never fights the package manager), and an unknown/dev build has no
      sensible self-update target.
    The **consent dialog is shown for every form** — "Update now" always requires an explicit click
@@ -93,8 +94,8 @@ action**: self-replace on the two safe forms, a reliable guided/manual path ever
    unauthenticated rate limit (60 requests/hour/IP) is comfortably inside the 24h automatic-check
    throttle, and a manual "Check now" click is a human-paced action, not a loop.
 7. **Two shipping stages, same design.** PR1 ships the full detection/notify/consent flow and the
-   guided paths (`RevealDownload`, `OpenReleasePage`) for every packaging form, including
-   `SelfReplace` forms — which, until PR2 lands, fall back to `OpenReleasePage` rather than
+   guided paths (`RevealDownload` (now `ManualInstall`), `OpenReleasePage` (now `ExternalInstall`)) for every packaging form, including
+   `SelfReplace` forms — which, until PR2 lands, fall back to `OpenReleasePage` (now `ExternalInstall`) rather than
    replacing anything. PR2 replaces that fallback arm with the real self-replace pipeline
    (download → extract → verify → atomic replace → relaunch) for Linux AppImage and Windows
    portable. Splitting this way keeps each PR under the ~1000 production LOC guideline and lets the
@@ -164,7 +165,7 @@ action**: self-replace on the two safe forms, a reliable guided/manual path ever
 ## Implementation notes (as-built deltas)
 
 - **Module layout matches the design 1:1.** `gashuu-core/src/update/{version,release,packaging,asset,
-  check,verify}.rs` hold the pure decision logic; `gashuu/src/update/{mod,net}.rs` hold
+  check,verify}.rs` hold the pure decision logic; `gashuu/src/update/{mod,net}.rs` (now `{mod,net,install}.rs`) hold
   `fetch_latest_release_json` / `download_bytes` (blocking `ureq`, always called from a `rayon::spawn`
   thread, never the UI thread); `gashuu/src/handlers/update.rs` owns the Slint callback wiring
   (startup check, dialog actions, Settings About-section callbacks).
@@ -183,3 +184,59 @@ action**: self-replace on the two safe forms, a reliable guided/manual path ever
   the fully qualified `EventResult.accept` / `EventResult.reject` is required there (see the patterns.md
   entry for the full explanation and the "Callback must be called" compiler error it otherwise
   produces).
+
+## Amendment 2026-07-25: in-progress BLOCK semantics, stack-aware focus return, persist-before-relaunch, bounded network calls
+
+### (i) In-progress BLOCK (extends Decision 3)
+
+`is_action_allowed(action, in_progress)` in `gashuu-core/src/update/dialog.rs` is the authoritative
+gate; the handler asks it before every arm. While a download/verify/install is in flight the dialog
+is COMMITTED: "Update now" is disabled (a real disabled affordance, not a silently swallowed press),
+and Later / Skip / Esc / Return / backdrop click do NOT dismiss — the dialog stays mounted, keeps
+keyboard focus, and keeps showing progress. "Release notes" stays live (it neither dismisses nor
+touches the pipeline). Why: a second accept started a SECOND download and, on `SelfReplace`, two
+binary replacements racing the same staging path; and a dismissal cancelled nothing, so a user who
+declined got a forced mid-session restart seconds later. **There is deliberately no cancellation** —
+dismissal is BLOCKED, not aborted (recorded as deferred in `docs/scope.md`).
+
+### (ii) Persist before relaunch (extends Decision 4's `SelfReplace` arm)
+
+The relaunch runs the SAME shutdown sequence as a normal quit — page-count flush,
+`persist_leave_point(AppExit)` (the reading position AND the open book's per-book view override),
+window-geometry capture, one settings save — and it runs it BEFORE spawning the replacement
+process. `install::persist_then_spawn(persist, spawn)` makes that order explicit and unit-testable
+without exiting the test process. The order is load-bearing: the new instance reads `settings.json`
+/ `library.json` at startup, so anything written after the spawn can be read stale and then
+clobbered. `exit(0)` stays, including the deliberate "exit even if the spawn failed" behavior.
+Previously `exit(0)` bypassed the whole tail, so every successful self-update silently discarded
+that session's position, overrides, geometry and resolved page counts.
+
+### (iii) Stack-aware focus return
+
+The update dialog is the TOPMOST modal, so it can be dismissed while `SettingsDialog`,
+`SettingsDialog + ShortcutsOverlay`, or the delete `ConfirmDialog` are still open. Every dismissal
+arm — Later, Skip, `ExternalInstall` accept, and the `ManualInstall` (macOS reveal) success arm,
+which previously restored nothing at all — returns focus to the topmost SURVIVING surface via
+`focus_target_after_dialog(stack, screen)` (ConfirmDialog > ShortcutsOverlay > SettingsDialog >
+screen surface). **Never a screen surface while any modal is open**: the screen `FocusScope`s reject
+every key under `any-modal-open`, so a screen restore under an open modal is a keyboard deadlock.
+`if`-gated modals are refocused by bumping a focus epoch, never by id. The FAILURE arm keeps the
+dialog OPEN and therefore restores nothing.
+
+### (iv) Bounded network calls
+
+Both HTTP calls go through configured `ureq::Agent`s. ureq v3 ships **no default timeouts at all**,
+so an unconfigured call waits forever on a half-open socket, wedges the dialog in its in-progress
+state, and permanently consumes one worker of the rayon pool shared with cover/thumbnail decode. The
+check gets an end-to-end (global) budget; the download gets per-phase budgets (resolve, connect,
+response headers, body) and deliberately NO global one, because a large asset on a slow link is
+legitimate. ureq 3.3.0 has no per-read/idle/stall timeout; the property bought is "always fails in
+bounded time", which routes to the existing release-page fallback. No new error variant, no new
+user-facing string.
+
+### (v) Strategy names
+
+For the record: the shipped `UpdateStrategy` variants are `SelfReplace`, `ManualInstall` and
+`ExternalInstall`. Decision 4's `RevealDownload` (now `ManualInstall`) / `OpenReleasePage` (now `ExternalInstall`) never shipped under those
+spellings. See [architecture.md](../architecture.md), "update (pure decision logic)" and
+"update (gashuu)".

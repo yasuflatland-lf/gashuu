@@ -15,7 +15,9 @@ Two decode paths invoke native C code with untrusted, potentially malicious inpu
 
 - `RarSource` delegates to the `unrar` crate, which wraps the libunrar C library. libunrar
   processes the full decompressed entry bytes in-process with no streaming actual-size cap
-  equivalent to the `take(MAX_ENTRY_BYTES + 1)` guard used by `ZipSource`.
+  equivalent to the `take(MAX_ENTRY_BYTES + 1)` guard used by `ZipSource`. (Still true for a
+  STREAMING cap; an ACTUAL-length rejection now runs after `cursor.read()` — see
+  [ADR-0004](0004-archive-abstraction-and-extraction.md)'s Amendment.)
 - A crafted RAR file can cause unbounded memory allocation, infinite loops, or native crashes
   before the application-level size guard can fire.
 - Safe Mode (ADR-0011 phase 1, implemented in issue #175) can disable RAR at load time, but

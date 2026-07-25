@@ -19,6 +19,14 @@ prefetch. `skipped_count(&self)->usize` is a TRAIT method — default `0`, overr
 `FolderSource`/`ZipSource`/`RarSource` so the `Arc<dyn PageSource>` from `ArchiveLoader` exposes
 it uniformly and `MockPageSource`/future sources need no change.
 
+`listing_truncated(&self) -> bool` sits beside it with the same defaulting discipline — `false` on
+the trait, `false` for `FolderSource`/`ZipSource` (their walks are resumable), `true` only for
+`RarSource` when a damaged header ended `unrar`'s non-resumable `List` iterator. Its meaning: the
+returned pages are a PREFIX of the archive and an UNKNOWN number of later pages are missing. It is
+strictly distinct from `skipped_count`, which counts individual entries dropped from an otherwise
+COMPLETE listing — the two must never be conflated, because a cut-short listing makes the number of
+lost entries unknowable.
+
 See [ADR-0004](ADRs/0004-archive-abstraction-and-extraction.md) for the `PageSource` abstraction
 decision. See [ADR-0011](ADRs/0011-decoder-subprocess-isolation.md) for the planned subprocess
 isolation of RAR/CBR and AVIF decoders.
@@ -42,7 +50,7 @@ nested images like `ZipSource`. Lock-free via reopen + sequential-skip (RAR has 
 each `read_bytes` opens its OWN `::unrar::Archive` + `open_for_processing()`, then
 `read_header()`/`skip()` walks forward to the target's `seq_index` before `read()`.
 
-### naming.rs
+### entry_policy.rs
 
 Shared image-extension recognition (`IMAGE_EXTS`, `has_image_ext`) and archive-entry path
 validation (`MAX_ENTRY_BYTES`, `enclosed_name`) — all `pub(crate)`. `IMAGE_EXTS`/`has_image_ext`
@@ -51,7 +59,9 @@ identically. `enclosed_name` is the traversal/zip-slip guard rejecting absolute 
 root-or-prefix / any `..` paths, mirroring `zip`'s protection for RAR entries; `MAX_ENTRY_BYTES`
 lives here (neutral shared 500 MB archive-entry ceiling imported by
 both `zip.rs` and `rar.rs`). Filename ordering logic (`natural_cmp` and its helpers) was
-extracted to `ordering.rs` in #82.
+extracted to `ordering.rs` in #82. The pre-allocation bound (`INITIAL_READ_CAPACITY`,
+`initial_capacity`) and the post-materialization rejection (`reject_over_actual`) live here too —
+see the two paragraphs below.
 
 Two shared archive-entry helpers also live here so the rule is single-owned rather than
 open-coded (and drifting) in each source. `classify_entry(name, is_dir, declared_size, max) ->
@@ -60,18 +70,28 @@ make after `enclosed_name`: directories / non-images / macOS metadata are `Ignor
 noise, an oversized image is a counted `Skip`, everything else is a `Page` (the membership check
 precedes the size check). `cap_or_reject(src, name, max, capacity_hint)` is the read-time streaming
 size cap (`take(max + 1)` + length check → `EntryTooLarge`) shared by `FolderSource` and
-`ZipSource`; `RarSource` cannot stream-cap (`unrar` materializes the whole entry) so it keeps its
-declared-`unpacked_size` re-validation. The format-specific iteration (zip `by_index` vs rar
-sequential `read_header`) and the zip-slip guard stay in each source.
+`ZipSource`. Its `capacity_hint` is a BOUNDED growth hint, never the defense: `ZipSource` derives it
+via `initial_capacity(entry.size())`, which clamps the declared size to `INITIAL_READ_CAPACITY`
+(1 MiB), and `FolderSource` still passes `0`. A hint must NEVER be derived from an entry's DECLARED
+size, because that value is attacker-controlled: a hostile CBZ of a few KB can claim
+`MAX_ENTRY_BYTES` per entry, and under rayon prefetch (radius ≤ `MAX_PREFETCH_RADIUS` = 5 ⇒ up to 11
+concurrent reads) that turned into GiBs of transient allocation.
+`RarSource` cannot stream-cap (`unrar` materializes the whole entry), so its ceiling has THREE
+tiers: declared size at open (`classify_entry`), declared `unpacked_size` re-validated at read, and
+`reject_over_actual(data, name, max)` — an ACTUAL-length rejection after `cursor.read()` sharing
+`cap_or_reject`'s inclusive boundary (`len > max` rejects). The residual is stated, not claimed
+away: peak RSS inside `cursor.read()` is still unbounded by the entry's true size, so the third tier
+bounds the blast radius — it is **not** parity with Zip/Folder. The format-specific iteration (zip
+`by_index` vs rar sequential `read_header`) and the zip-slip guard stay in each source.
 
 ### ordering.rs
 
 `ordering.rs`. Shared numeric-aware natural-ordering comparator: `pub(crate) natural_cmp`
 plus private helpers `take_digits`/`cmp_numeric`. Numeric-aware so `vol 1 < vol 2 < vol 10`
 (digit runs are compared by numeric value, not lexicographically). Extracted from
-`page_source::naming` (#82) so the comparator is reachable from both page-source filename sorting
-(`FolderSource`/`ZipSource`/`RarSource`) and `Library` book ordering — a private submodule helper
-in `naming.rs` could not be reused across the crate.
+`page_source::entry_policy` (#82) so the comparator is reachable from both page-source filename
+sorting (`FolderSource`/`ZipSource`/`RarSource`) and `Library` book ordering — a private submodule
+helper in `entry_policy.rs` could not be reused across the crate.
 
 ### ArchiveLoader
 
@@ -86,6 +106,20 @@ pages — the SINGLE home of the domain rule "a valid book has >= 1 image page".
 `UnsupportedFormat` errors propagate unchanged ("empty" and "unreadable" are strictly distinct).
 See [ADR-0009](ADRs/0009-reject-empty-books.md) and [patterns.md](patterns.md) ("Lift a domain rule
 into ONE core type at the boundary").
+
+Both entry points have a policy-carrying twin — `open_with_policy(path, ArchivePolicy)` and
+`probe_page_count_with_policy(path, ArchivePolicy)`; `open`/`probe_page_count` are the
+`ArchivePolicy::default()` wrappers. `ArchivePolicy { allow_rar }` is the Safe Mode seam
+([ADR-0011](ADRs/0011-decoder-subprocess-isolation.md) phase 1): with `allow_rar: false` a
+RAR/CBR-resolved path returns `CoreError::FormatDisabled` instead of opening `RarSource`.
+
+`open_with_policy` also owns the admission gate: a path that is not valid UTF-8 is rejected with
+`CoreError::NonUtf8Path { path }` **before any dispatch** (before the `is_dir` branch, the extension
+check and the magic sniff), so `probe_page_count_with_policy` inherits it and a path that cannot be
+serialized into `library.json` can never become a `Book`. Why the door and not the shelf:
+`Book::path` serializes as a JSON string, so ONE non-UTF-8 path made `Library::to_json` — and
+therefore EVERY save, for every book — fail wholesale and silently. See
+[ADR-0004](ADRs/0004-archive-abstraction-and-extraction.md)'s Amendment.
 
 ### image_ops::decode
 
@@ -184,10 +218,18 @@ and capped on both write and load by `MAX_RECENT_SOURCES = 10`.
 
 **This is the first use of `serde` in core.** The headless boundary still holds (no
 slint/tracing). I/O shape: `load_from`/`save_to` take explicit paths (tempfile-testable);
-`load`/`save` are thin OS-path wrappers. Corrupt-file recovery (warn + fall back to defaults)
-lives in the UI (`main.rs`); core only returns typed `CoreError`:
+`load`/`save` are thin OS-path wrappers. Corrupt-file recovery lives in the UI (`main.rs`) and is
+**quarantine-then-fresh** for BOTH `settings.json` and `library.json`: a file this build cannot load
+is renamed aside as `<name>.corrupt-<now_secs>` (`gashuu_core::quarantine_file`), a notice is pushed
+onto the home screen, and the app starts from defaults — the user keeps their bytes and a newer
+build can still read them. `repair_settings_file_if_needed` is inert after a quarantine (its
+`!path.exists()` early return). Core still only returns typed `CoreError`:
 
 - `Settings(#[from] serde_json::Error)` and `NoConfigDir`
+- `FutureSchema { what, found, supported }` — the stored schema `version` is GREATER than this
+  build's; the document is neither deserialized nor saved over (see `persist` below)
+- `NonUtf8Path { path }` — raised by `ArchiveLoader::open_with_policy` before any dispatch, so a
+  path that cannot be serialized into `library.json` never becomes a `Book`
 - `ImageTooLarge`
 - `Zip(#[from] ::zip::result::ZipError)`, `EntryTooLarge { name, max }`, `UnsupportedFormat { path }`
 - `Rar(#[from] ::unrar::error::UnrarError)` (Display prefix `"rar archive error: "`)
@@ -196,6 +238,34 @@ lives in the UI (`main.rs`); core only returns typed `CoreError`:
 Errors are typed with `thiserror` (`CoreError`, `#[non_exhaustive]`).
 
 See [ADR-0005](ADRs/0005-settings-persistence.md) for the settings persistence decision.
+
+### persist
+
+`persist.rs` (crate-private module; `quarantine_file` is re-exported at the crate root). The shared
+parse/migrate guard both versioned-object documents run, so `Settings::from_json` and
+`Library::from_json` cannot drift.
+
+- `parse_versioned_object(json, current, migrate) -> Result<VersionedDocument, serde_json::Error>`
+  returns `Ready(serde_json::Value)` (stored version ≤ `current`, already migrated when older) or
+  `FromFuture { found }` (stored version > `current`).
+- **A stored version GREATER than the binary's is a hard load error** for BOTH `settings.json` and
+  `library.json`: this build must never deserialize it (every field is `#[serde(default)]`, so
+  unknown fields would be silently dropped) and never save over it (the file would be downgraded
+  while keeping its future label, permanently skipping every later migration — each step fires only
+  when `stored < target`). Callers map `FromFuture` to `CoreError::FutureSchema { what, found,
+  supported }`.
+- The non-object-root guard (which would otherwise panic inside `migrate`) and the checked
+  `u32::try_from` version resolution still run FIRST, and the `> u32::MAX → treated as 0 → migrate`
+  rule is UNCHANGED — a crafted huge version is "unknown", not "from the future".
+- `quarantine_file(path, now_secs) -> Result<PathBuf, CoreError>` lives here now (promoted from
+  `library_store.rs`); `Library::quarantine_corrupt_file` is a thin delegating wrapper. It never
+  reads or parses the file, and takes the clock as a parameter (core owns no clock).
+- `Settings::normalize` stamps `SETTINGS_VERSION` — the `version` field is a schema label owned by
+  the binary, never echoed back from disk — restoring the symmetry `Library::to_json` already had
+  via `LibraryDocument`. `LIBRARY_VERSION` and `SETTINGS_VERSION` both stay `1`.
+
+Headless (`serde_json` + `std::fs` only). See
+[ADR-0005](ADRs/0005-settings-persistence.md)'s Amendment.
 
 ### view-mode vocabulary (`view_modes.rs`)
 
@@ -298,6 +368,33 @@ them back to recover the exact pre-removal shelf (byte-identical re-serializatio
 `add()`-trap (which resets `last_page`/`page_count`) because the full clones carry all existing
 field values. Consumed exclusively by `remove_books_with_rollback` in `remove_books.rs`.
 
+### update (pure decision logic)
+
+`update/{version,release,packaging,asset,check,verify,dialog}.rs`. The auto-updater's headless half:
+no network, no filesystem, no `slint` — the `gashuu` crate owns HTTP, download and self-replacement,
+this tree owns "what should we decide" so every branch is unit-testable on any host. `version.rs`
+(`is_update_available`, `should_notify` — the latter also suppresses `Settings.skipped_version`),
+`release.rs` (`parse_latest_release` → `ReleaseInfo`/`Asset`), `packaging.rs` (`detect_packaging`
+from `current_exe()` + `$APPIMAGE`, `Packaging`, and the `UpdateStrategy {SelfReplace, ManualInstall,
+ExternalInstall}` mapping), `asset.rs` (`select_asset`), `check.rs` (`should_check`,
+`CHECK_INTERVAL_SECS`), `verify.rs` (`parse_sha256sums`, `sha256_hex`, `is_verified`). All are
+re-exported at the crate root. See [ADR-0013](ADRs/0013-auto-update.md).
+
+`update/dialog.rs` holds the two decisions the update dialog delegates:
+
+- `UpdateDialogAction { Accept, Later, Skip, Notes }` + `is_action_allowed(action, in_progress)`.
+  **BLOCK semantics**: while a download/verify/install is in flight, `Accept`, `Later` AND `Skip`
+  are all refused (dismissal gestures — Esc, Return, backdrop click — alias onto `Later`); `Notes`
+  stays allowed because it opens a browser page and neither dismisses the dialog nor touches the
+  pipeline. There is deliberately NO cancellation — dismissal is BLOCKED, not aborted.
+- `ModalStack { settings, shortcuts, confirm_delete }` + `FocusTarget {ConfirmDialog,
+  ShortcutsOverlay, SettingsDialog, Carousel, Pages}` + `focus_target_after_dialog(stack, screen)`,
+  which resolves the topmost SURVIVING surface in `ViewerWindow`'s modal paint order: ConfirmDialog
+  > ShortcutsOverlay > SettingsDialog > the screen surface (`Carousel` on screen 0, `Pages`
+  otherwise). INVARIANT: while ANY modal is still open the result is a modal, never a screen surface
+  — the screen `FocusScope`s reject every key under `any-modal-open`, so focusing one under an open
+  modal would be a keyboard deadlock.
+
 ---
 
 ## crates/gashuu (Slint presentation layer)
@@ -308,8 +405,16 @@ See [ADR-0001](ADRs/0001-gui-framework-slint.md) for the Slint framework decisio
 ### ViewerState
 
 Navigation backed by `ImageCache`; drives a two-page spread with `apply` moving in spread units.
-`open_path(path)` dispatches via `ArchiveLoader` + skipped warn + a `last_open_skipped()` getter,
-and `open_folder` delegates to it. `jump_to(page) -> bool` — routes through
+`open_path(path)` / `open_path_with_policy(path, policy)` are now the SYNCHRONOUS composition of the
+pure, `Send` `open_controller::probe_open` (archive dispatch + full listing + skipped/truncated
+flags + `canonical_identity`) and the new mutation-only tail
+`install_opened(source, skipped, truncated, canonical)`. The blocking work is therefore defined in
+ONE place and the async open path cannot drift from it, while the contract is unchanged — an error
+leaves the state untouched, because nothing is installed unless the probe opened. Two paired
+getters report what the probe saw: `last_open_skipped() -> usize` (entries dropped from an otherwise
+complete listing) and `last_open_truncated() -> bool` (the listing itself was cut short, so an
+unknown number of later pages are missing). BOTH are only meaningful after `Ok(())` — an error
+return leaves the previous successful open's values. `jump_to(page) -> bool` — routes through
 `SpreadContext::normalize` (via `spread_ctx()`) so `index` stays a valid spread leading, clamps
 out-of-range, guards `page_count==0` to avoid underflow, and returns whether it moved, mirroring
 `set_viewport_size`'s "did it change → caller refreshes" convention — and
@@ -341,8 +446,12 @@ the fields are seeded once at `from_settings` and `set_source` reads ViewerState
 live `Settings`).
 
 `open_file() -> Option<&Path>`: the CANONICAL path of the most recently successful
-`open_path` (set via `path.canonicalize().unwrap_or(verbatim)`, matching `Library::add`'s policy;
-`None` until the first `Ok`, reset by `set_source`, unchanged by a failed `open_path`).
+`open_path` (set via `gashuu_core::canonical_identity(path)` — canonicalize best-effort, falling
+back to the GIVEN path when canonicalization FAILS **or** yields a non-UTF-8 path; `None` until the
+first `Ok`, reset by `set_source`, unchanged by a failed `open_path`). That function is the single
+home of the rule and is also used by `Library::add_canonical` and
+`Library::recanonicalize_and_merge`, so canonicalization can never introduce an unserializable
+identity (a non-UTF-8 `Book::path` would break every library save).
 `view_sync.rs` reads it to form the write-back tuple `(canonical_path, index())` for the `Library`
 at every leave point — see the resume/write-back scope entry and `docs/patterns.md`.
 
@@ -369,7 +478,10 @@ Two pure scrubber-support helpers:
 and clears `open_file` — returning `ViewerState` to the no-book-open state. Display modes
 (`reading_direction`/`spread_mode`/`cover_mode`) and `cache_config`/`viewport_aspect` are
 deliberately preserved (closing a book is not a settings reset). Called by
-`RemoveBooksUseCase::run` (headless) when the open book is among the deleted ones; the matching
+`RemoveBooksUseCase::run` (headless) when the open book is among the deleted ones, and by
+`OpenBookUseCase::run`'s empty-book arm, so a rejected empty open leaves `open_file()` `None`
+instead of a phantom zero-page source (see §open_book below and
+[ADR-0009](ADRs/0009-reject-empty-books.md)'s Amendment); the matching
 title-bar blank — `ui.set_current_book_name("".into())` — is the Slint side of that close and lives
 in `carousel_refresh::finalize_remove` (`carousel_refresh.rs:302`), gated on the outcome's
 `closed_open_book` flag, NOT in `run`. The UI wiring sets this name at boot and on a successful open
@@ -441,17 +553,30 @@ So `use_cases::OpenBookUseCase`, `use_cases::remove_empty_book`,
   retained SYNCHRONOUS composition. It blocks on the archive open, so the Slint open sites dispatch
   through `open_controller` instead (issue #487) and only tests call it; it stays the single entry
   point for a future non-UI caller and pins that the split composes back to the pre-split behaviour.
-- `NoticesContent` — neutral data struct (skipped count, `SkippedDetail`, optional save-error
-  strings) passed to `i18n::dynamic::format_notices` in `finalize_open`. No locale logic inside.
+- `NoticesContent` — neutral data struct passed to `i18n::dynamic::format_notices` in
+  `finalize_open`; no locale logic inside. It carries the skipped count, `SkippedDetail`,
+  `listing_truncated: bool` (the damaged-archive signal, rendered FIRST — most severe first — via
+  the `notice-listing-truncated` key), and three optional save-error strings:
+  `leave_save_err` (the OUTGOING book's leave-point save failure, rendered through the existing
+  `notice-failed-save-library` key BEFORE the open-time save lines), `settings_save_err`, and
+  `library_save_err`.
 - `OpenOutcome` / `SkippedDetail` / `NoticesContent` are re-exported through `crate::use_cases`.
 
 The reject-empty-books feature added a third `OpenOutcome` variant: `EmptyBookRejected { title,
-removed, save_error }`, returned when the source opens CLEANLY but counts zero pages. `run` bails out
+removed, save_error }`, returned when the source opens CLEANLY but counts zero pages. `apply_probed`
+(and therefore `run`) bails out
 HERE — before `register_opened`, with the recents push / settings save / per-book view resolve /
 carousel rebuild / thumbnail start all bypassed (so an empty book never re-enters via
 `register_opened`); it removes the book if present (`Library::remove`, idempotent bool), re-saves,
 best-effort purges the removed book's cover (via the shared `use_cases::remove_empty_book`; Wave-2 #150
-closed the old open-path purge gap), and pre-captures any save error. The recents push + settings save are DEFERRED past this check so
+closed the old open-path purge gap), and pre-captures any save error. AFTER `remove_empty_book` and
+BEFORE returning the variant it also calls `ViewerState::close()`, so the post-rejection state is
+`open_file()` `None`, `page_count()` `0`, no source mounted. WHY: `open_path_with_policy` SUCCEEDS on
+an empty folder/archive, so the zero-page source used to stay mounted with `open_file =
+Some(<the just-REMOVED book>)` — which showed the removed book in the title bar, let the Library's
+Down key pass its only guard (`open_file().is_none()`) and enter a 0-page Viewer, silently closed
+whatever book WAS open, and made the `AppExit` route see a phantom open book and skip reconciling
+runtime view modes into global `Settings`. The recents push + settings save are DEFERRED past this check so
 they fire only for a non-empty book (see [patterns.md](patterns.md), "Insert a guard before X").
 `title` prefers the stored `Book::title`, falling back to `gashuu_core::display_title` (the core
 derivation rule made public in Wave 1 #149; the Wave-2 #150 switchover dissolved the UI replica —
@@ -482,7 +607,10 @@ Lives in the UI crate because it coordinates Slint components; `gashuu-core` is 
 
 `apply_probed` writes back the OUTGOING book's per-book view override through the persistence
 chokepoint — `persist_leave_point_with(ViewModeRoute::OpenDifferentBook, …, save_library)` right
-beside the position write-back at its top — and that route writes ONLY the per-book sink, so — per the per-book-overrides feature —
+beside the position write-back at its top, still the FIRST thing the apply half does, before the
+source is replaced. Because that write lives in the apply half and not in the probe, exactly ONE
+leave-point write happens per APPLIED open: a probe superseded mid-flight writes nothing. Its
+failure is surfaced as `NoticesContent::leave_save_err`. That route writes ONLY the per-book sink, so — per the per-book-overrides feature —
 it does NOT reconcile runtime modes into the GLOBAL `Settings` on its open-time save (the runtime
 still holds the outgoing book's per-book modes there; reconciling would clobber the global
 defaults — see [patterns.md](patterns.md), "Write-direction invariant audit"). It then applies the
@@ -549,6 +677,31 @@ the per-book sink (a no-op when no book is open).
 modes into the runtime so the Library-screen settings dialog seeds from global (the inverse of
 `apply_runtime_view_to_settings`). See [patterns.md](patterns.md), "Per-book view overrides:
 write-back-at-leave-point + screen-scoped dialog routing".
+
+### dialog_session
+
+`dialog_session.rs`. `DialogSession` owns the LIBRARY-screen settings-dialog session — the seam
+[ADR-0007](ADRs/0007-per-book-view-overrides.md)'s Decision 4 describes but does not name.
+
+- `open_on_library(state, viewport, settings)` captures the open book's
+  `RuntimeSnapshot { view: ResolvedView, inherit_pending: bool }` (`None` when no book is open) and
+  THEN global-seeds the runtime via `apply_global_view_to_runtime`.
+- `close_on_library(state, viewport)` restores the snapshot: the view via `apply_resolved_view`
+  **first**, the `inherit_pending` flag **after** (verbatim in both directions —
+  `mark_inherit_pending` / `clear_inherit_pending`). The order is LOAD-BEARING, because
+  `apply_resolved_view`'s value-changing `set_*` calls clear the flag; restoring the flag first
+  would be a no-op.
+- `reset_to_global(state, viewport, settings)` applies the globals and THEN marks
+  `inherit_pending`, for exactly the same reason.
+
+Consequence to state plainly: **a global edit made from the Library dialog is fully invisible to the
+open book's runtime AND its pending state.** On the Library screen the runtime is only a
+global-seeded scratchpad, so a GLOBAL edit must not touch the BOOK's pending state — without the
+snapshot, editing a global default from the Library cleared the open book's `inherit_pending` and
+the next leave point wrote a FULL override pinning the OLD global values onto that book ("Reset to
+global" silently undone and frozen stale). See
+[ADR-0007](ADRs/0007-per-book-view-overrides.md)'s Amendment and [patterns.md](patterns.md),
+"Per-book view overrides".
 
 ### library_model
 
@@ -705,10 +858,11 @@ subtracts 1. Replaces the removed `page_counter.rs`. The viewer wires the parsed
 ### handlers
 
 `handlers/` module (#151). Slint callback registration, split by feature area. `mod.rs` declares
-the four sub-modules and re-exports all nine `wire_*` fns at the `handlers::` level so `main.rs`
+the five sub-modules and re-exports all ten `wire_*` fns (plus `start_update_check`) at the
+`handlers::` level so `main.rs`
 needs no sub-module path. Each `wire_*` fn takes `&ui` and exactly the `Rc` handles its closures
 clone — the per-closure `Rc::clone` list IS that handler's dependency list (#151 panel constraint:
-no AppState bundle, explicit handle lists only). The four feature files are:
+no AppState bundle, explicit handle lists only). The five feature files are:
 
 - **`handlers/library.rs`**: `wire_open_handlers` (add-books,
   add-folder), `wire_carousel_handlers` (carousel search/open/continue-reading/move/back),
@@ -729,9 +883,14 @@ no AppState bundle, explicit handle lists only). The four feature files are:
   overlay on hover and debounces a drop's per-file `DroppedFile` burst into one batched
   `AddController::start` (the pure `drop_action_for` winit-event → `DropAction` mapping is the
   testable core). See the dedicated `### handlers/drag_drop` entry below.
+- **`handlers/update.rs`**: `wire_update_handlers` (the update dialog's Accept / Later / Skip /
+  Release-notes actions behind the in-progress gate, plus the Settings About-section callbacks) and
+  `start_update_check` (the startup + on-demand check entry point). See the `### update (gashuu)`
+  entry below.
 
 `fn main` = boot (tracing, settings/library load, Slint window, localizer, Rc construction, seed
-carousel, prune) + 9 wire calls + `ui.run()` + `run_exit_persistence` (count persistence,
+carousel, prune) + 10 `handlers::wire_*` calls + `handlers::start_update_check` + the crate-local
+`wire_relaunch_persistence` bridge + `ui.run()` + `run_exit_persistence` (count persistence,
 write-back, view-mode persistence, geometry snapshot, settings save) — the SAME callable the
 self-update relaunch invokes via the `persist-before-relaunch` bridge before `relaunch_and_exit`.
 All callback closures live in `handlers/`; `main.rs` retains `refresh`, `finalize_open`,
@@ -756,6 +915,38 @@ and re-arms a single-shot `DROP_DEBOUNCE` (50 ms) timer whose tick drains the wh
 `start` (so a multi-file drop is one supersede epoch / one progress run / one notice). Add is gated
 to `screen == 0`; the filter always returns `EventResult::Propagate`. UI-thread only — no `Send`
 state crosses a boundary here.
+
+### update (gashuu)
+
+`update/{mod,net,install}.rs` + `handlers/update.rs`. The presentation-side half of the auto-updater;
+every DECISION it makes is delegated to `gashuu_core::update` (see the core `### update` entry).
+`mod.rs` holds `CURRENT_VERSION`, the `releases/latest` API + release-page URLs, `user_agent()` and
+the `UpdateError {Http, Io, Verify}` glue error.
+
+- **`net.rs`** — `fetch_latest_release_json` / `download_bytes`, blocking, always called from a
+  `rayon::spawn` worker. Both go through configured `ureq::Agent`s held in `LazyLock` statics,
+  because **ureq v3 ships no default timeouts at all** (every `Timeouts` field defaults to `None`):
+  an unconfigured call waits forever on a half-open socket, wedges the dialog in its in-progress
+  state, and permanently burns one worker of the rayon pool shared with cover/thumbnail decode. The
+  CHECK agent bounds resolve + connect + a global end-to-end budget (a few KB of JSON). The DOWNLOAD
+  agent bounds resolve + connect + `recv_response` + `recv_body` and deliberately sets NO global
+  budget — a large asset on a slow link is legitimate. ureq 3.3.0 has no per-read/idle/stall
+  timeout, so the property bought is "always fails in bounded time", which routes to the existing
+  release-page fallback.
+- **`install.rs`** — the per-packaging self-replace primitives plus `relaunch_and_exit(exe, persist)`.
+  Its ordering is made explicit and unit-testable by `persist_then_spawn(persist, spawn)`: the exit
+  persistence runs BEFORE the replacement process is spawned, and only then `exit(0)`. The order is
+  load-bearing (the new instance reads `settings.json` / `library.json` at startup), and `exit(0)`
+  still happens even when the spawn failed.
+- **`handlers/update.rs`** — `wire_update_handlers` + `start_update_check`. Every dialog arm asks
+  `gashuu_core::is_action_allowed(action, ui.get_update_in_progress())` first, so the in-progress
+  BLOCK is a core decision, not UI-local logic; and every dismissal arm calls the local
+  `restore_focus_after_dialog`, which builds a `ModalStack` from the live `show-*` flags and maps
+  `gashuu_core::focus_target_after_dialog(stack, ui.get_screen())` onto
+  `focus-confirm` / `focus-shortcuts` / `focus-settings` / `focus-carousel` / `focus-pages`.
+
+See [ADR-0013](ADRs/0013-auto-update.md) and its Amendment, and [patterns.md](patterns.md),
+"Self-update replaces the running binary DIFFERENTLY per packaging".
 
 ### window_state
 
@@ -927,7 +1118,7 @@ count is never persisted, so the next generation re-detects), and a removed book
 next generation's requests (no loop). See [patterns.md](patterns.md), "Worker → UI ACTION via a
 Slint callback", and [ADR-0009](ADRs/0009-reject-empty-books.md).
 
-**`add_loader.rs`** (`AddController`, issue 206): the SAME async harness applied to the bulk ADD, so opening
+**`add_controller.rs`** (`AddController`, issue 206): the SAME async harness applied to the bulk ADD, so opening
 several large/cloud-synced archives in the `+` picker never freezes the event loop (`probe_page_count` reads each
 ZIP's central directory; `File::open` can block on hydration). `start(ui_weak, paths, policy, op)` bumps an
 `AtomicUsize` epoch, installs a fresh `Arc<Mutex<Vec<ProbeOutcome>>>` accumulator, shows `Adding… (0/N)`, then
@@ -978,10 +1169,18 @@ any-MISS, and hands a `SpreadDecodeRequest` to `dispatch_spread` on a miss.
 
 **`SettingsDialog.slint`** (issue 102 replaced its std-widgets `ComboBox`/`SpinBox`/`CheckBox` with the token-driven `Segmented`/`Stepper`/`Toggle`/`Dropdown` atoms): modal overlay editing active settings; two-way `current-index <=> in-out-prop` +
 `selected`/`edited`/`toggled` callbacks. Since issue 103/104 it is a **content-hug glass panel** (φ relocated into the component proportions; spec 2026-06-04) built from custom `components/` atoms and inheriting the shared `GlassModal` shell for the scrim + panel chrome; its footer "Shortcuts" link opens `ShortcutsOverlay`, and an `in property <int> focus-epoch` (bumped by `ViewerWindow.focus-settings()`) lets the parent re-focus this still-mounted dialog after the overlay closes.
+Tab containment is done with two zero-size sentinel `FocusScope`s at the dialog subtree's
+document-order edges — `tab-guard-head` declared BEFORE `fs`, `tab-guard-tail` as the LAST child
+inside `fs` — each bouncing focus back to `fs` (`changed has-focus => { if (self.has-focus) { fs.focus(); } }`)
+the moment window-level tab navigation lands on it, so Tab/Backtab can no longer walk focus onto a
+live surface behind the scrim. Enumeration-style rotation is not usable here because the focus chain
+is VARIABLE across the drill-in screens 0..5 and ids inside `if` subtrees are unreachable from `fs`;
+see [patterns.md](patterns.md), "Modal Tab containment", for the full enumerate-vs-sentinel rule and
+the accepted degradation.
 
-**`ShortcutsOverlay.slint`** (issue 104, NEW): a second glass modal listing the keyboard shortcuts read-only, stacked OVER the still-mounted `SettingsDialog` (both `show-settings` and `show-shortcuts` true). Inherits the shared `GlassModal` shell for the scrim + glass panel (`settings-w` width; only `shortcuts-h` is new). Its ancestor `FocusScope` traps every key so focus can't leak to the dialog underneath; closing returns focus to the dialog via the epoch seam. The keyboard-shortcuts reference text documents the full selection grammar (#129): `x`, `Space`, `Cmd/Ctrl+A`, `Delete`/`Backspace`, `Esc`.
+**`ShortcutsOverlay.slint`** (issue 104, NEW): a second glass modal listing the keyboard shortcuts read-only, stacked OVER the still-mounted `SettingsDialog` (both `show-settings` and `show-shortcuts` true). Inherits the shared `GlassModal` shell for the scrim + glass panel (`settings-w` width; only `shortcuts-h` is new). Its ancestor `FocusScope` traps every key so focus can't leak to the dialog underneath; closing returns focus to the dialog via the epoch seam. It now also declares its OWN `in property <int> focus-epoch` plus a root-level `changed focus-epoch => { fs.focus(); }`, so a modal dismissed ABOVE it (the update dialog) can hand focus back — the `init` claim still owns the OPEN path, because `changed` does not fire on the initial binding. The keyboard-shortcuts reference text documents the full selection grammar (#129): `x`, `Space`, `Cmd/Ctrl+A`, `Delete`/`Backspace`, `Esc`.
 
-**`components/ConfirmDialog.slint`** (issue 127, NEW; wired in `ViewerWindow` for the bulk-delete path, #129): a GENERIC two-choice confirm/cancel modal — no domain vocabulary. Every string on screen arrives through `in` properties (`title`, `body-lines: [string]`, `info-text`, `warning-text`, `confirm-label`, `cancel-label`) so the same component is reusable across confirm decisions. Inherits the shared `GlassModal` shell (scrim + four-layer fake-glass panel), like `SettingsDialog` / `ShortcutsOverlay`. Mounted in `ViewerWindow` behind `if root.show-confirm-delete` (an `if`-gate so the node is constructed only when needed). Cancel / Esc / backdrop click fire the `cancel` callback (Slint-side: set `show-confirm-delete = false`, restore carousel focus — selection PRESERVED); the confirm `DangerButton` fires the `confirm()` callback (`ConfirmDialog.slint:117`), which `ViewerWindow` forwards as `confirm => { root.confirm-delete-accepted(); }` (ViewerWindow.slint:591), and Rust registers on `ui.on_confirm_delete_accepted` to run `RemoveBooksUseCase` and dismiss the modal. `Enter` is wired to Cancel (the destructive action is never on `Enter`).
+**`components/ConfirmDialog.slint`** (issue 127, NEW; wired in `ViewerWindow` for the bulk-delete path, #129): a GENERIC two-choice confirm/cancel modal — no domain vocabulary. Every string on screen arrives through `in` properties (`title`, `body-lines: [string]`, `info-text`, `warning-text`, `confirm-label`, `cancel-label`) so the same component is reusable across confirm decisions. Inherits the shared `GlassModal` shell (scrim + four-layer fake-glass panel), like `SettingsDialog` / `ShortcutsOverlay`. Mounted in `ViewerWindow` behind `if root.show-confirm-delete` (an `if`-gate so the node is constructed only when needed). Cancel / Esc / backdrop click fire the `cancel` callback (Slint-side: set `show-confirm-delete = false`, restore carousel focus — selection PRESERVED); the confirm `DangerButton` fires the `confirm()` callback (`ConfirmDialog.slint:117`), which `ViewerWindow` forwards as `confirm => { root.confirm-delete-accepted(); }` (ViewerWindow.slint:591), and Rust registers on `ui.on_confirm_delete_accepted` to run `RemoveBooksUseCase` and dismiss the modal. `Enter` is wired to Cancel (the destructive action is never on `Enter`). `ViewerWindow` now also binds `focus-epoch: root.confirm-focus-epoch` (bumped by `ViewerWindow.focus-confirm()`), so the `changed focus-epoch` handler the component had always declared is finally live — it was dead code until the update dialog needed to hand focus back to a surviving confirm dialog.
 
 **`Theme.slint`** (NEW; completed #70): a single Slint `global Theme` that centralises all visual design
 tokens — colors, corner radii, spacing, font sizes, component sizes, shadow colors, motion durations, and font weights —
