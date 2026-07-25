@@ -13,6 +13,14 @@ export component ShortcutsOverlay inherits GlassModal {
     // Fired on Esc, backdrop-click, or the Close button. The parent returns
     // focus to the SettingsDialog (design §5) and hides this overlay.
     callback close-shortcuts();
+    // Bumped by the parent to (re)claim keyboard focus when a modal above this
+    // overlay is dismissed. `changed` does not fire on the initial binding, so the
+    // `init` claim below still owns the open path.
+    in property <int> focus-epoch: 0;
+
+    changed focus-epoch => {
+        fs.focus();
+    }
 
     // ── Panel geometry + backdrop wiring (glass chrome lives in GlassModal) ────
     panel-width: Theme.settings-w;

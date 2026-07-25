@@ -121,6 +121,12 @@ export component ViewerWindow inherits Window {
     // Private epoch: Rust bumps this (via focus-settings()) so SettingsDialog re-focuses.
     // The if-gated dialog has no id here, so it observes the epoch via a `changed` handler.
     property <int> settings-focus-epoch: 0;
+    // Private epochs: Rust bumps these (via focus-shortcuts()/focus-confirm()) so the
+    // if-gated overlay/dialog re-claims focus when a modal ABOVE it is dismissed. Same
+    // rationale as settings-focus-epoch: an if-gated element has no id here, and
+    // `changed` does not fire on the initial binding (the `init` claim owns the open path).
+    property <int> shortcuts-focus-epoch: 0;
+    property <int> confirm-focus-epoch: 0;
     in-out property <int> reading-direction-index;
     in-out property <int> spread-mode-index;
     in-out property <int> cover-mode-index;
@@ -152,6 +158,8 @@ export component ViewerWindow inherits Window {
     // Rust calls this after closing the shortcuts overlay to refocus SettingsDialog.
     // The if-gated dialog has no id, so it bumps an epoch the dialog observes.
     public function focus-settings() { root.settings-focus-epoch += 1; }
+    public function focus-shortcuts() { root.shortcuts-focus-epoch += 1; }
+    public function focus-confirm() { root.confirm-focus-epoch += 1; }
 
     // Re-arm the idle-fade: show the chrome, then stop+restart the timer so a full
     // interval elapses from THIS reveal. Called from Rust on every reveal.
@@ -713,13 +721,14 @@ export component ViewerWindow inherits Window {
         width: root.width;
         height: root.height;
         key-bindings-text: root.key-bindings-text;
+        focus-epoch: root.shortcuts-focus-epoch;
         close-shortcuts() => { root.close-shortcuts(); }
     }
     // ── Confirm-delete modal (PR-5) ───────────────────────────────────────────
     // Mounted LAST so it paints on top. The `if` gate re-instantiates on every open,
-    // so `init` re-focuses Cancel — NO focus-epoch needed. `cancel` is pure Slint
-    // (D4): closes + restores focus WITHOUT a Rust round-trip (selection preserved);
-    // only `confirm` crosses to Rust.
+    // so `init` re-focuses Cancel on the open path; the epoch re-claims focus after
+    // a stacked modal closes. `cancel` is pure Slint (D4): closes + restores focus
+    // WITHOUT a Rust round-trip (selection preserved); only `confirm` crosses to Rust.
     if root.show-confirm-delete : ConfirmDialog {
         width: root.width;
         height: root.height;
@@ -730,6 +739,7 @@ export component ViewerWindow inherits Window {
         confirm-label: Strings.selection-delete;
         cancel-label: Strings.confirm-delete-cancel;
         danger: true;
+        focus-epoch: root.confirm-focus-epoch;
         confirm => { root.confirm-delete-accepted(); }
         cancel => { root.show-confirm-delete = false; carousel.focus-self(); }
     }
