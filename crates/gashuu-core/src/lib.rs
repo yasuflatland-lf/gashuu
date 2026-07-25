@@ -39,6 +39,7 @@ pub use library::{
 };
 pub use library_store::LIBRARY_VERSION;
 pub use page_source::{FolderSource, PageEntry, PageSource, RarSource, ZipSource};
+pub use persist::quarantine_file;
 pub use reading_progress::ReadingProgress;
 pub use search::book_matches;
 pub use settings::{Settings, MAX_RECENT_SOURCES, SETTINGS_VERSION};
