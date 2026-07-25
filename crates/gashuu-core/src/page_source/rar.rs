@@ -3,6 +3,10 @@
 //! the target entry, so rayon prefetch threads decompress entries in parallel
 //! with no shared mutable state. Resident RAM per in-flight read is a single
 //! entry's bytes (multiple reads in flight under prefetch each own one buffer).
+//! The ceiling has three tiers: declared size at open, declared size at read,
+//! and actual length after read. Because `unrar` 0.5.8 has no public
+//! streaming/chunked/capped byte read, peak RSS inside `cursor.read()` remains
+//! unbounded by the entry's true size before the third tier can reject it.
 //!
 //! WHY sequential-skip (unlike `ZipSource`'s `by_index` random access): the RAR
 //! format has no central directory of random-access offsets the `unrar` crate
@@ -11,14 +15,14 @@
 //! or `read()`. So we record each image entry's 0-based position in the FULL
 //! sequential header stream (`seq_index`, counting dirs/non-images too) at open
 //! time, then re-walk from the front on every read, skipping until we reach it.
-//! Trade reopen + walk cost for parallelism and bounded memory (same philosophy
-//! as `ZipSource` reopening the file per read).
+//! Trade reopen + walk cost for parallelism (same philosophy as `ZipSource`
+//! reopening the file per read).
 //!
 //! The external `unrar` crate is referenced as `::unrar::` throughout for
 //! clarity even though the local module name (`rar`) does not collide with it.
 
 use super::entry_policy::{
-    classify_entry, enclosed_name, has_image_ext, EntryClass, MAX_ENTRY_BYTES,
+    classify_entry, enclosed_name, has_image_ext, reject_over_actual, EntryClass, MAX_ENTRY_BYTES,
 };
 use super::{PageEntry, PageSource};
 use crate::error::CoreError;
@@ -109,16 +113,19 @@ impl RarSource {
         })
     }
 
-    /// Read the bytes of page `index`, re-validating the entry's declared size
-    /// against `max` before materializing it.
+    /// Read the bytes of page `index` with three size checks: declared-at-open,
+    /// declared-at-read, and actual-after-read.
     ///
-    /// Honesty note (NOT parity with `ZipSource`'s two-tier cap): `unrar`'s
-    /// `read()` materializes the whole entry into a `Vec` with no streaming
-    /// `take`, so this read-time check only RE-VALIDATES the declared
-    /// `unpacked_size` — it guards against the entry changing between the listing
-    /// and reading passes, NOT against a header that under-reports its size.
-    /// That residual risk is bounded only by `image::Limits` in
-    /// `image_ops::decode`.
+    /// Honesty note (NOT parity with `ZipSource`'s streaming cap): `unrar` 0.5.8
+    /// exposes `read()` as its only public byte-returning API, and it
+    /// materializes the whole entry into a `Vec`. Its `ProcessMode`, `Internal`,
+    /// and `process_file_x` machinery is private, so downstream code cannot
+    /// inject a chunked or capped accumulator. The actual-after-read check drops
+    /// an oversized buffer before decode and returns the shared typed error, but
+    /// peak RSS during `cursor.read()` is still unbounded by the entry's true
+    /// size. Extracting to a temporary file was considered and rejected because
+    /// it adds a hot-path write and second read, temp-file lifecycle handling,
+    /// and `extract_to` can panic on a nul character in the destination path.
     fn read_entry(&self, index: usize, max: u64) -> Result<Vec<u8>, CoreError> {
         let meta = self.entries.get(index).ok_or(CoreError::IndexOutOfRange {
             index,
@@ -155,10 +162,11 @@ impl RarSource {
                         max,
                     });
                 }
-                // `read()` returns (decompressed bytes, rest-of-archive) — bytes
-                // come FIRST in the tuple.
+                // `read()` returns (decompressed bytes, rest-of-archive) — bytes come FIRST.
+                // THIRD TIER: `unpacked_size` above was only the DECLARED size; verify the
+                // bytes we actually got against `max` before this buffer leaves the function.
                 let (data, _rest) = cursor.read()?;
-                return Ok(data);
+                return reject_over_actual(data, &meta.name, max);
             }
             archive = cursor.skip()?;
             seq += 1;
@@ -233,6 +241,24 @@ mod tests {
         let src = RarSource::open(cbr.path()).unwrap();
 
         // (page index, expected decoded WxH) — distinct per page on purpose.
+        let expected = [(0, (2, 2)), (1, (2, 3)), (2, (3, 2)), (3, (4, 4))];
+        assert_eq!(src.list_pages().len(), expected.len());
+        for (i, (w, h)) in expected {
+            let bytes = src.read_bytes(i).unwrap();
+            let decoded = crate::image_ops::decode(&bytes).unwrap();
+            assert_eq!(
+                (decoded.width(), decoded.height()),
+                (w, h),
+                "page {i} must decode to a {w}x{h} image"
+            );
+        }
+    }
+
+    #[test]
+    fn read_bytes_still_returns_full_entries_under_the_default_ceiling() {
+        let cbr = write_cbr(SAMPLE_CBR_B64);
+        let src = RarSource::open(cbr.path()).unwrap();
+
         let expected = [(0, (2, 2)), (1, (2, 3)), (2, (3, 2)), (3, (4, 4))];
         assert_eq!(src.list_pages().len(), expected.len());
         for (i, (w, h)) in expected {
@@ -330,7 +356,8 @@ mod tests {
     }
 
     #[test]
-    fn read_entry_over_actual_size_limit_errors() {
+    fn read_entry_over_declared_size_limit_errors() {
+        // Pins the read-time declared-size tier; actual bytes are checked only after read().
         // Open with the default limit so entries pass indexing, then read index 3
         // (`sub/3.png`, seq 5) through a tiny per-read cap alongside the skip walk.
         let cbr = write_cbr(SAMPLE_CBR_B64);

@@ -4,9 +4,11 @@
 //! read safely: image-extension admission (`IMAGE_EXTS`, `has_image_ext`),
 //! entry classification (`EntryClass`, `classify_entry`), zip-slip path
 //! containment (`enclosed_name`), and the shared per-entry byte ceiling
-//! (`MAX_ENTRY_BYTES`, `cap_or_reject`) that guards streaming reads. Used by
-//! `FolderSource` (directory walk) and `ZipSource`/`RarSource` (archive
-//! entries). Filename ordering is provided by `crate::ordering::natural_cmp`.
+//! (`MAX_ENTRY_BYTES`, `cap_or_reject`) that guards streaming reads, plus the
+//! post-materialization decision (`reject_over_actual`) required by RAR's
+//! non-streaming backend. Used by `FolderSource` (directory walk) and
+//! `ZipSource`/`RarSource` (archive entries). Filename ordering is provided by
+//! `crate::ordering::natural_cmp`.
 
 use crate::error::CoreError;
 use std::io::Read;
@@ -123,9 +125,9 @@ pub(crate) fn enclosed_name(path: &std::path::Path) -> Option<std::path::PathBuf
 /// for none.
 ///
 /// Shared by the streaming readers: `FolderSource` file reads and `ZipSource`
-/// entry reads. `RarSource` cannot stream-cap (`unrar`'s `read()` materializes the
-/// whole entry with no `take`), so it keeps its declared-`unpacked_size`
-/// re-validation instead.
+/// entry reads. `RarSource` cannot stream-cap (`unrar`'s `read()` materializes
+/// the whole entry with no `take`), so it re-validates declared
+/// `unpacked_size` before reading and calls [`reject_over_actual`] afterward.
 pub(crate) fn cap_or_reject(
     src: impl Read,
     name: &str,
@@ -141,6 +143,27 @@ pub(crate) fn cap_or_reject(
         });
     }
     Ok(buf)
+}
+
+/// Reject an already-materialized entry buffer whose ACTUAL length exceeds
+/// `max`, mirroring [`cap_or_reject`]'s inclusive boundary (`len > max`
+/// rejects). Used by `RarSource`, whose backend cannot stream-cap: `unrar`
+/// 0.5.8 exposes only `read() -> Vec<u8>` (its chunk accumulator `ReadToVec`
+/// sits behind the private `ProcessMode` trait), so the buffer already exists
+/// by the time this runs. This BOUNDS the blast radius to one entry-sized
+/// allocation; it does not prevent it.
+pub(crate) fn reject_over_actual(
+    data: Vec<u8>,
+    name: &str,
+    max: u64,
+) -> Result<Vec<u8>, CoreError> {
+    if data.len() as u64 > max {
+        return Err(CoreError::EntryTooLarge {
+            name: name.to_string(),
+            max,
+        });
+    }
+    Ok(data)
 }
 
 #[cfg(test)]
@@ -346,5 +369,43 @@ mod cap_or_reject_tests {
             }
             other => panic!("expected EntryTooLarge, got {other:?}"),
         }
+    }
+}
+
+#[cfg(test)]
+mod reject_over_actual_tests {
+    use super::reject_over_actual;
+    use crate::error::CoreError;
+
+    #[test]
+    fn under_cap_returns_the_buffer_unchanged() {
+        let data = vec![7u8; 5];
+        let out = reject_over_actual(data, "x.png", 10).expect("under cap");
+        assert_eq!(out.len(), 5);
+        assert_eq!(out, vec![7u8; 5]);
+    }
+
+    #[test]
+    fn exactly_at_cap_is_accepted() {
+        let out = reject_over_actual(vec![0u8; 10], "x.png", 10).expect("at cap");
+        assert_eq!(out.len(), 10);
+    }
+
+    #[test]
+    fn one_over_cap_rejects_with_entry_too_large() {
+        let err = reject_over_actual(vec![0u8; 11], "big.png", 10).unwrap_err();
+        match err {
+            CoreError::EntryTooLarge { name, max } => {
+                assert_eq!(name, "big.png");
+                assert_eq!(max, 10);
+            }
+            other => panic!("expected EntryTooLarge, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn empty_buffer_is_accepted() {
+        let out = reject_over_actual(Vec::new(), "empty.png", 0).expect("empty at zero cap");
+        assert!(out.is_empty());
     }
 }
