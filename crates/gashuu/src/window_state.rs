@@ -61,7 +61,8 @@ fn apply_geometry(ui: &ViewerWindow, geom: WindowGeometry) {
 }
 
 /// Capture the live window geometry into `settings` at exit. Called after
-/// `run()` returns, while the window handle is still alive.
+/// `run()` returns, or from the self-update relaunch bridge just before
+/// `exit(0)`; in both cases the window handle is still alive.
 pub(crate) fn capture_geometry(ui: &ViewerWindow, settings: &mut Settings) {
     let size = ui.window().size();
     let pos = ui.window().position();

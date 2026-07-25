@@ -343,6 +343,7 @@ fn main() -> color_eyre::Result<()> {
     // GitHub Releases update checker: wire the dialog/settings callbacks, then kick off
     // a throttled, non-forced background check. Reuses the shared settings cell.
     handlers::wire_update_handlers(&ui, &settings);
+    wire_relaunch_persistence(&ui, &covers, &state, &viewport, &settings, &library);
     handlers::start_update_check(&ui, &settings, false);
 
     // Restore the last window size + position before the first paint. No-op on a
@@ -350,31 +351,75 @@ fn main() -> color_eyre::Result<()> {
     window_state::restore_geometry(&ui, &settings.borrow());
 
     ui.run()?;
+    run_exit_persistence(&ui, &covers, &state, &viewport, &settings, &library);
+    Ok(())
+}
+
+/// The app's single exit-persistence sequence: flush resolved page counts, stage
+/// the position + view-mode write-back through `persist_leave_point(AppExit)`,
+/// snapshot the window geometry, and save `Settings` once.
+///
+/// TWO callers: the normal quit (right after `ui.run()` returns) and the
+/// self-update relaunch (from the `persist-before-relaunch` callback, just before
+/// `relaunch_and_exit`). Both must run the SAME sequence — a self-update that
+/// skipped it silently discarded the session's position/overrides/geometry.
+///
+/// BORROW SAFETY: the relaunch caller runs INSIDE the event loop, from a
+/// `slint::Timer` dispatch — a top-level event-loop callback with no other
+/// handler on the stack, so no `RefCell` borrow is live. Never call this from
+/// inside another handler that holds a `borrow_mut()`.
+fn run_exit_persistence(
+    ui: &ViewerWindow,
+    covers: &Rc<cover_loader::CoverController>,
+    state: &Rc<RefCell<ViewerState>>,
+    viewport: &Rc<RefCell<ViewportState>>,
+    settings: &Rc<RefCell<Settings>>,
+    library: &Rc<RefCell<Library>>,
+) {
     // Persist page counts the cover prefetch resolved after the last refresh, so a book
-    // counted this session isn't re-counted next launch. Safe: event loop exited.
-    covers.flush_counts(&library);
+    // counted this session isn't re-counted next launch.
+    covers.flush_counts(library);
     // Stage position + view-mode routing, then persist the library exactly once.
-    // The event loop has exited, so all cells are unborrowed. Exit is now exactly
-    // one library write (formerly two).
-    if let Err(e) = persist_leave_point(
-        ViewModeRoute::AppExit,
-        &state,
-        &viewport,
-        &settings,
-        &library,
-    ) {
-        // No live UI at this point (the event loop has exited), so this is log-only by
-        // necessity — but it must not be silently discarded.
+    // Both callers run at top-level shutdown points, so all cells are unborrowed.
+    // Exit is now exactly one library write (formerly two).
+    if let Err(e) = persist_leave_point(ViewModeRoute::AppExit, state, viewport, settings, library)
+    {
+        // Log-only by necessity: the normal-quit caller has no event loop left to show a
+        // notice, and the relaunch caller replaces the process moments later — but the
+        // failure must not be silently discarded.
         tracing::error!(error = %e, "failed to persist the leave point on exit");
     }
     // Record the final window geometry so the next launch restores it. Safe: the window
     // handle is still alive (`ui` in scope) and `settings` is unborrowed.
-    window_state::capture_geometry(&ui, &mut settings.borrow_mut());
+    window_state::capture_geometry(ui, &mut settings.borrow_mut());
 
     if let Err(e) = settings.borrow().save() {
         tracing::error!(error = %e, "failed to save settings on exit");
     }
-    Ok(())
+}
+
+/// Wire the self-update relaunch's persistence bridge. Lives here, not in
+/// `handlers/update.rs`, because it is the only place all five state cells are in
+/// scope — and the relaunch closure itself is `Send` and cannot hold them.
+fn wire_relaunch_persistence(
+    ui: &ViewerWindow,
+    covers: &Rc<cover_loader::CoverController>,
+    state: &Rc<RefCell<ViewerState>>,
+    viewport: &Rc<RefCell<ViewportState>>,
+    settings: &Rc<RefCell<Settings>>,
+    library: &Rc<RefCell<Library>>,
+) {
+    let ui_weak = ui.as_weak();
+    let covers = Rc::clone(covers);
+    let state = Rc::clone(state);
+    let viewport = Rc::clone(viewport);
+    let settings = Rc::clone(settings);
+    let library = Rc::clone(library);
+    ui.on_persist_before_relaunch(move || {
+        with_ui(&ui_weak, |ui| {
+            run_exit_persistence(&ui, &covers, &state, &viewport, &settings, &library);
+        });
+    });
 }
 
 /// Upgrade a window `Weak` and run `f` with the live `ViewerWindow`, or no-op if

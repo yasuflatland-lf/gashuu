@@ -228,6 +228,13 @@ export component ViewerWindow inherits Window {
     callback update-later();
     callback update-skip();
     callback update-notes();
+    // Fired from the self-update relaunch timer, immediately before the process is
+    // replaced: Rust runs the SAME exit persistence the normal quit runs after
+    // `ui.run()` (page counts, position + per-book view override, window geometry,
+    // settings). Pure Rust bridge — nothing in the UI observes it; it exists because
+    // the relaunch is scheduled from a `Send` closure that cannot hold the !Send
+    // settings/library cells.
+    callback persist-before-relaunch();
     // Add-picker triggers forwarded from the Carousel toolbar/CTA. Rust decides the
     // add-books dialog flavor (files+folders on macOS, files-only elsewhere).
     callback add-books();

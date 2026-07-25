@@ -104,12 +104,28 @@ fn apply_appimage(_verified: &Path) -> Result<PathBuf, UpdateError> {
     ))
 }
 
-/// Spawn the freshly replaced executable and exit this process. Never returns.
-/// A spawn failure is logged but still ends in `exit(0)`: the update is already
-/// applied on disk, so exiting (and letting the user reopen the app) is better
-/// than continuing to run the stale, now-deleted binary.
-pub(crate) fn relaunch_and_exit(exe: &Path) -> ! {
-    if let Err(e) = std::process::Command::new(exe).spawn() {
+/// Persist, then spawn — in that order. Split out of `relaunch_and_exit` so the
+/// ORDER is unit-testable without exiting the test process. The order is
+/// load-bearing: the replacement process reads `settings.json` / `library.json`
+/// at startup, so anything written after the spawn can be read stale (and then
+/// clobbered) by the new instance.
+fn persist_then_spawn(
+    persist: impl FnOnce(),
+    spawn: impl FnOnce() -> std::io::Result<()>,
+) -> std::io::Result<()> {
+    persist();
+    spawn()
+}
+
+/// Run the exit persistence, spawn the freshly replaced executable, and exit this
+/// process. Never returns. A spawn failure is logged but still ends in `exit(0)`:
+/// the update is already applied on disk, so exiting (and letting the user reopen
+/// the app) is better than continuing to run the stale, now-deleted binary.
+pub(crate) fn relaunch_and_exit(exe: &Path, persist: impl FnOnce()) -> ! {
+    let spawned = persist_then_spawn(persist, || {
+        std::process::Command::new(exe).spawn().map(|_| ())
+    });
+    if let Err(e) = spawned {
         tracing::warn!(error = %e, "failed to relaunch after self-update");
     }
     std::process::exit(0);
@@ -118,6 +134,7 @@ pub(crate) fn relaunch_and_exit(exe: &Path) -> ! {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::RefCell;
     use std::io::Write;
     use zip::write::SimpleFileOptions;
     use zip::CompressionMethod;
@@ -169,5 +186,41 @@ mod tests {
         let path = extract_exe_from_zip(&zip, dir.path()).unwrap();
         assert_eq!(path.parent().unwrap(), dir.path());
         assert_eq!(path.file_name().unwrap(), "gashuu.exe");
+    }
+
+    #[test]
+    fn persist_runs_before_spawn() {
+        let log = RefCell::new(Vec::new());
+        persist_then_spawn(
+            || log.borrow_mut().push("persist"),
+            || {
+                log.borrow_mut().push("spawn");
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert_eq!(*log.borrow(), ["persist", "spawn"]);
+    }
+
+    #[test]
+    fn persist_runs_even_when_spawn_fails() {
+        let persisted = RefCell::new(false);
+        let result = persist_then_spawn(
+            || *persisted.borrow_mut() = true,
+            || {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    "no such exe",
+                ))
+            },
+        );
+        assert!(*persisted.borrow());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn spawn_result_is_propagated() {
+        let result = persist_then_spawn(|| {}, || Ok(()));
+        assert!(result.is_ok());
     }
 }
