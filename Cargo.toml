@@ -3,15 +3,17 @@ resolver = "2"
 members = ["crates/gashuu-core", "crates/gashuu"]
 
 # Dependency debuginfo trim. Profiles are only honoured in the workspace ROOT manifest, and
-# until this section existed the workspace declared none at all, so all 441 dependency crates
-# that actually compile here linked with `debug = 2`.
+# until this section existed the workspace declared none at all, so every dependency unit cargo
+# builds for the target linked with `debug = 2`: 366 of the 578 rustc invocations in a cold test
+# build, covering 322 of the 441 dependency crates that compile here. The other 119 crates only
+# ever compile as build-graph units, which cargo already leaves debuginfo-free.
 #
 # The SHAPE of this override was measured, not reasoned about. The obvious
 # `[profile.dev.package."*"]` form is a trap: a package override counts as an explicit
 # debuginfo setting, so cargo stops weakening it for the build graph and RAISES the ~211
 # build-script / proc-macro units (`i-slint-compiler` and friends) from their
 # debuginfo-free default up to line tables. That gives back three quarters of the win
-# (-121 MiB of target output instead of -493 MiB), and `[profile.dev.build-override]
+# (-118 MiB of target output instead of -493 MiB), and `[profile.dev.build-override]
 # debug = false` cannot cancel it, because package overrides are applied AFTER
 # build-override. Setting the profile default and re-raising the members instead leaves the
 # build graph exactly as cargo intends it.
