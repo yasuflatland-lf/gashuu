@@ -4,9 +4,11 @@
 //! read safely: image-extension admission (`IMAGE_EXTS`, `has_image_ext`),
 //! entry classification (`EntryClass`, `classify_entry`), zip-slip path
 //! containment (`enclosed_name`), and the shared per-entry byte ceiling
-//! (`MAX_ENTRY_BYTES`, `cap_or_reject`) that guards streaming reads. Used by
-//! `FolderSource` (directory walk) and `ZipSource`/`RarSource` (archive
-//! entries). Filename ordering is provided by `crate::ordering::natural_cmp`.
+//! (`MAX_ENTRY_BYTES`, `cap_or_reject`) that guards streaming reads, plus the
+//! post-materialization decision (`reject_over_actual`) required by RAR's
+//! non-streaming backend. Used by `FolderSource` (directory walk) and
+//! `ZipSource`/`RarSource` (archive entries). Filename ordering is provided by
+//! `crate::ordering::natural_cmp`.
 
 use crate::error::CoreError;
 use std::io::Read;
@@ -20,6 +22,22 @@ pub(crate) const IMAGE_EXTS: &[&str] = &["png", "jpg", "jpeg", "avif"];
 /// under this in practice). Lives here (not in `zip`/`rar`) because the ceiling
 /// is a property of the archive-entry domain, not of any one container format.
 pub(crate) const MAX_ENTRY_BYTES: u64 = 500 * 1024 * 1024;
+
+/// Upper bound on the buffer capacity a read may pre-allocate. `capacity_hint` is a
+/// growth hint, never the size defense, and it must NEVER be taken from an entry's
+/// DECLARED size: that value is attacker-controlled and may claim `MAX_ENTRY_BYTES`
+/// from a file of a few KB. 1 MiB comfortably exceeds a real manga page (so the
+/// common read still allocates once) while keeping the worst case per in-flight read
+/// three orders of magnitude below the ceiling.
+pub(crate) const INITIAL_READ_CAPACITY: usize = 1024 * 1024;
+
+/// The buffer capacity to pre-allocate for an entry whose DECLARED size is
+/// `declared`: the declared size when it is small, otherwise [`INITIAL_READ_CAPACITY`].
+/// The result is bounded regardless of what the archive header claims; the `Vec`
+/// grows from there with the bytes actually read.
+pub(crate) fn initial_capacity(declared: u64) -> usize {
+    declared.min(INITIAL_READ_CAPACITY as u64) as usize
+}
 
 /// True when `path` has a recognized image extension (ASCII case-insensitive).
 pub(crate) fn has_image_ext(path: &std::path::Path) -> bool {
@@ -119,13 +137,14 @@ pub(crate) fn enclosed_name(path: &std::path::Path) -> Option<std::path::PathBuf
 /// landing on exactly `max + 1` bytes means the real size is over the cap. This is
 /// the actual streaming size defense (the constant lives here as `MAX_ENTRY_BYTES`
 /// because the ceiling is an archive-entry-domain property). `capacity_hint`
-/// pre-sizes the buffer purely as a growth hint — NOT the defense — so pass `0`
-/// for none.
+/// pre-sizes the buffer purely as a growth hint — NOT the defense. Callers must
+/// never derive it directly from a declared, attacker-controlled size; use
+/// [`initial_capacity`] as the single home of that rule, or pass `0` for none.
 ///
 /// Shared by the streaming readers: `FolderSource` file reads and `ZipSource`
-/// entry reads. `RarSource` cannot stream-cap (`unrar`'s `read()` materializes the
-/// whole entry with no `take`), so it keeps its declared-`unpacked_size`
-/// re-validation instead.
+/// entry reads. `RarSource` cannot stream-cap (`unrar`'s `read()` materializes
+/// the whole entry with no `take`), so it re-validates declared
+/// `unpacked_size` before reading and calls [`reject_over_actual`] afterward.
 pub(crate) fn cap_or_reject(
     src: impl Read,
     name: &str,
@@ -141,6 +160,61 @@ pub(crate) fn cap_or_reject(
         });
     }
     Ok(buf)
+}
+
+/// Reject an already-materialized entry buffer whose ACTUAL length exceeds
+/// `max`, mirroring [`cap_or_reject`]'s inclusive boundary (`len > max`
+/// rejects). Used by `RarSource`, whose backend cannot stream-cap: `unrar`
+/// 0.5.8 exposes only `read() -> Vec<u8>` (its chunk accumulator `ReadToVec`
+/// sits behind the private `ProcessMode` trait), so the buffer already exists
+/// by the time this runs. This BOUNDS the blast radius to one entry-sized
+/// allocation; it does not prevent it.
+pub(crate) fn reject_over_actual(
+    data: Vec<u8>,
+    name: &str,
+    max: u64,
+) -> Result<Vec<u8>, CoreError> {
+    if data.len() as u64 > max {
+        return Err(CoreError::EntryTooLarge {
+            name: name.to_string(),
+            max,
+        });
+    }
+    Ok(data)
+}
+
+#[cfg(test)]
+mod initial_capacity_tests {
+    use super::{initial_capacity, INITIAL_READ_CAPACITY, MAX_ENTRY_BYTES};
+
+    #[test]
+    fn small_declared_size_is_used_verbatim() {
+        assert_eq!(initial_capacity(0), 0);
+        assert_eq!(initial_capacity(1024), 1024);
+    }
+
+    #[test]
+    fn declared_size_at_the_bound_is_used_verbatim() {
+        assert_eq!(
+            initial_capacity(INITIAL_READ_CAPACITY as u64),
+            INITIAL_READ_CAPACITY
+        );
+    }
+
+    #[test]
+    fn oversized_declared_size_is_clamped_to_the_bound() {
+        assert_eq!(
+            initial_capacity(INITIAL_READ_CAPACITY as u64 + 1),
+            INITIAL_READ_CAPACITY
+        );
+        assert_eq!(initial_capacity(MAX_ENTRY_BYTES), INITIAL_READ_CAPACITY);
+        assert_eq!(initial_capacity(u64::MAX), INITIAL_READ_CAPACITY);
+    }
+
+    #[test]
+    fn bound_is_far_below_the_entry_ceiling() {
+        assert!((INITIAL_READ_CAPACITY as u64) < MAX_ENTRY_BYTES);
+    }
 }
 
 #[cfg(test)]
@@ -346,5 +420,43 @@ mod cap_or_reject_tests {
             }
             other => panic!("expected EntryTooLarge, got {other:?}"),
         }
+    }
+}
+
+#[cfg(test)]
+mod reject_over_actual_tests {
+    use super::reject_over_actual;
+    use crate::error::CoreError;
+
+    #[test]
+    fn under_cap_returns_the_buffer_unchanged() {
+        let data = vec![7u8; 5];
+        let out = reject_over_actual(data, "x.png", 10).expect("under cap");
+        assert_eq!(out.len(), 5);
+        assert_eq!(out, vec![7u8; 5]);
+    }
+
+    #[test]
+    fn exactly_at_cap_is_accepted() {
+        let out = reject_over_actual(vec![0u8; 10], "x.png", 10).expect("at cap");
+        assert_eq!(out.len(), 10);
+    }
+
+    #[test]
+    fn one_over_cap_rejects_with_entry_too_large() {
+        let err = reject_over_actual(vec![0u8; 11], "big.png", 10).unwrap_err();
+        match err {
+            CoreError::EntryTooLarge { name, max } => {
+                assert_eq!(name, "big.png");
+                assert_eq!(max, 10);
+            }
+            other => panic!("expected EntryTooLarge, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn empty_buffer_is_accepted() {
+        let out = reject_over_actual(Vec::new(), "empty.png", 0).expect("empty at zero cap");
+        assert!(out.is_empty());
     }
 }

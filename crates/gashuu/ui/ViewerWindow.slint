@@ -257,6 +257,9 @@ export component ViewerWindow inherits Window {
     // workers (UI never freezes). add-finalize fires ONCE with the epoch to drop a stale add.
     callback add-progress(/* done */ int, /* total */ int);
     callback add-finalize(/* epoch */ int);
+    // Single-open async probe bridge: OpenController opens and inspects the source
+    // on a rayon worker, then this callback applies the current epoch on the UI thread.
+    callback open-finalize(/* epoch */ int);
     public function focus-carousel() { carousel.focus-self(); }
     // Forwarded navigation token: "left" | "right" | "space" | "backspace" |
     // "d" | "r" | "c" | "+" | "=" | "-" | "0" | "1" | "f".

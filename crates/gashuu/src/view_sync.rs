@@ -19,7 +19,7 @@ pub(crate) enum ViewModeRoute {
     DialogClosedOnViewer,
     /// Leaving the viewer for the Library (↑): persist the open book's override.
     LeaveViewer,
-    /// Opening a different book while one is open (`OpenBookUseCase::run`):
+    /// Opening a different book while one is open (`OpenBookUseCase::apply_probed`):
     /// persist the OUTGOING book's override before the source is replaced.
     OpenDifferentBook,
     /// App exit: persist the open book's override, then reconcile into the GLOBAL
@@ -61,7 +61,7 @@ pub(crate) fn persist_leave_point(
 
 /// Save-injection seam for proving the one-save boundary without touching the
 /// process data directory. Production passes [`Library::save`].
-fn persist_leave_point_with(
+pub(crate) fn persist_leave_point_with(
     route: ViewModeRoute,
     state: &Rc<RefCell<ViewerState>>,
     viewport: &Rc<RefCell<ViewportState>>,

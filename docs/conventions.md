@@ -73,7 +73,11 @@ Two rules validated by extracting the open-a-book use case into `app::OpenBookUs
 
 1. **Field-alias verbatim move.** When extracting a fn that threads many shared collaborators into a `…UseCase::run` method, store the collaborators as fields and alias them to locals at the top of `run` (`let state = &self.state;` per field) so the moved body stays BYTE-IDENTICAL. `Deref` absorbs the `&Rc<T>` (field) vs `&T` (former parameter) difference for method calls, so no statement in the body changes — minimal diff, borrow-discipline comments preserved verbatim.
 
-2. **`pub(crate)` bridge for module extraction under parallel writers.** Keep shared helpers (`refresh`/`persist_view_modes`/`write_back_position`) in `main.rs` but raise them to `pub(crate)` so the new module calls them via `crate::`. This lets a 2-file split (new module ∥ caller edit) be written by parallel no-cargo agents against an exact API contract, then verified once by the gates.
+2. **`pub(crate)` bridge for module extraction under parallel writers.** Expose shared helpers needed
+   across the boundary (`refresh` / `persist_leave_point`) as `pub(crate)`; keep internal write
+   helpers such as `stage_position_write_back` private in the extracted module. This lets a 2-file
+   split (new module ∥ caller edit) be written by parallel no-cargo agents against an exact API
+   contract, then verified once by the gates.
 
 ### Fluent catalog message IDs
 
