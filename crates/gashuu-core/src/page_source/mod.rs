@@ -39,6 +39,17 @@ pub trait PageSource: Send + Sync {
     fn skipped_count(&self) -> usize {
         0
     }
+    /// Whether the source's page listing was cut short by an error rather than
+    /// completing normally. `false` for a complete listing (the default, and
+    /// always false for `FolderSource`/`ZipSource`, whose walks are resumable).
+    /// `RarSource` returns `true` when a damaged header ended `unrar`'s
+    /// non-resumable `List` iterator: the pages returned are a prefix of the
+    /// archive and an unknown number of later pages are missing. Distinct from
+    /// `skipped_count`, which counts individual entries dropped from an
+    /// otherwise complete listing.
+    fn listing_truncated(&self) -> bool {
+        false
+    }
 }
 
 #[cfg(all(test, feature = "testing"))]

@@ -126,6 +126,12 @@ pub struct ViewerState {
     /// `Ok(())` returns; an error return leaves the value from the previous
     /// successful open unchanged.
     last_open_skipped: usize,
+    /// Whether an error cut short the page listing during the most recent
+    /// successful `open_path` call. False until a path has been opened or when
+    /// the last listing completed normally. Only updated on `Ok(())` returns;
+    /// an error return leaves the value from the previous successful open
+    /// unchanged.
+    last_open_truncated: bool,
     /// Canonical path of the most recently successfully opened source. `None`
     /// until `open_path` completes `Ok(())`; reset to `None` only by a
     /// subsequent `set_source` call (including the one the next successful
@@ -164,6 +170,7 @@ impl ViewerState {
             language: Language::default(),
             viewport_aspect: 1.0,
             last_open_skipped: 0,
+            last_open_truncated: false,
             open_file: None,
             inherit_pending: false,
         }
@@ -184,6 +191,7 @@ impl ViewerState {
             language: settings.language,
             viewport_aspect: 1.0,
             last_open_skipped: 0,
+            last_open_truncated: false,
             open_file: None,
             inherit_pending: false,
         }
@@ -212,7 +220,8 @@ impl ViewerState {
     /// opened" rather than keep rendering a book that no longer exists.
     ///
     /// Drops the cache + source, zeroes the page count / index /
-    /// `last_open_skipped`, and clears `open_file` so `current_book_name`
+    /// `last_open_skipped` / `last_open_truncated`, and clears `open_file` so
+    /// `current_book_name`
     /// reads `""` and `status_content` reports `NoFolder`. The display MODES (direction/spread/cover) and the
     /// `cache_config` / `viewport_aspect` are deliberately preserved — closing a
     /// book is not a settings reset; the next open reuses the same configuration.
@@ -225,6 +234,7 @@ impl ViewerState {
         self.page_count = 0;
         self.index = 0;
         self.last_open_skipped = 0;
+        self.last_open_truncated = false;
         self.open_file = None;
         self.inherit_pending = false;
     }
@@ -305,10 +315,18 @@ impl ViewerState {
     ) -> Result<(), CoreError> {
         let source = ArchiveLoader::open_with_policy(path, policy)?;
         let skipped = source.skipped_count();
+        let truncated = source.listing_truncated();
         if skipped > 0 {
             tracing::warn!(skipped, path = %path.display(), "entries skipped while opening path");
         }
+        if truncated {
+            tracing::warn!(
+                path = %path.display(),
+                "archive listing truncated; later pages are missing"
+            );
+        }
         self.last_open_skipped = skipped;
+        self.last_open_truncated = truncated;
         self.set_source(source);
         // Canonicalize best-effort, falling back to the verbatim path on error (same
         // policy as Library::add: canonical form when available, verbatim otherwise).
@@ -322,6 +340,15 @@ impl ViewerState {
     /// an error return leaves the value from the previous successful open.
     pub fn last_open_skipped(&self) -> usize {
         self.last_open_skipped
+    }
+
+    /// Whether an error cut short the page listing during the most recent
+    /// successful `open_path` call. False until a path has been successfully
+    /// opened or when the last listing completed normally. Only meaningful
+    /// after `Ok(())`; an error return leaves the value from the previous
+    /// successful open.
+    pub fn last_open_truncated(&self) -> bool {
+        self.last_open_truncated
     }
 
     /// The canonical path of the currently open source, or `None` after
