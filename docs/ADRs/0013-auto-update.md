@@ -150,6 +150,8 @@ action**: self-replace on the two safe forms, a reliable guided/manual path ever
   sibling `<name>.new` + `chmod +x` + atomic rename. Both are covered by unit tests (zip extraction)
   plus the gates and hands-on per-OS runs; on any failure the handler falls back to opening the
   release page, so a broken self-replace degrades to the guided path rather than stranding the user.
+  The hands-on procedure this bullet refers to is written down in
+  [toolchain.md](../toolchain.md), "Post-release hands-on checklist: self-update + relaunch".
   See `docs/patterns.md`.
 - **Unauthenticated GitHub API is a soft dependency on the 24h throttle holding.** If the throttle
   were ever bypassed or removed, unauthenticated calls could hit the 60 req/h/IP limit under heavy
