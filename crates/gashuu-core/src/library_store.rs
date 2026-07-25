@@ -47,11 +47,7 @@ impl Library {
     /// cannot destroy recoverable data. Never reads or parses the file. The caller
     /// injects `now_secs` (core takes no clock).
     pub fn quarantine_corrupt_file(path: &Path, now_secs: u64) -> Result<PathBuf, CoreError> {
-        let mut destination_name = path.file_name().unwrap_or_default().to_os_string();
-        destination_name.push(format!(".corrupt-{now_secs}"));
-        let destination = path.with_file_name(destination_name);
-        std::fs::rename(path, &destination).map_err(CoreError::from)?;
-        Ok(destination)
+        crate::persist::quarantine_file(path, now_secs)
     }
 
     /// Save to the OS data path (creating parent dirs as needed).
@@ -83,8 +79,18 @@ impl Library {
     pub fn from_json(json: &str) -> Result<Self, CoreError> {
         // Non-object guard + version resolution + migrate dispatch are single-homed in
         // `persist`. `CoreError::Library` is deliberately not `#[from]` (see error.rs).
-        let value = crate::persist::parse_versioned_object(json, LIBRARY_VERSION, migrate)
-            .map_err(CoreError::Library)?;
+        let value = match crate::persist::parse_versioned_object(json, LIBRARY_VERSION, migrate)
+            .map_err(CoreError::Library)?
+        {
+            crate::persist::VersionedDocument::Ready(value) => value,
+            crate::persist::VersionedDocument::FromFuture { found } => {
+                return Err(CoreError::FutureSchema {
+                    what: "library",
+                    found,
+                    supported: LIBRARY_VERSION,
+                });
+            }
+        };
         let mut library: Library = serde_json::from_value(value).map_err(CoreError::Library)?;
         // Re-canonicalize + merge duplicate identities (filesystem I/O) BEFORE the pure
         // sort/orphan-clear in `normalize`, so each load self-heals pre-canonical paths.
@@ -226,6 +232,40 @@ mod tests {
         let lib = Library::from_json(&json).unwrap();
 
         assert!(lib.books().is_empty());
+    }
+
+    #[test]
+    fn from_json_future_version_errors_without_downgrading() {
+        let result = Library::from_json(r#"{"version":2,"books":[]}"#);
+
+        assert!(matches!(
+            result,
+            Err(CoreError::FutureSchema {
+                what: "library",
+                found: 2,
+                supported: 1,
+            })
+        ));
+    }
+
+    #[test]
+    fn load_from_future_version_file_leaves_the_file_untouched() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("library.json");
+        let original = br#"{"version":2,"books":[],"future_field":"keep me"}"#;
+        std::fs::write(&path, original).unwrap();
+
+        let result = Library::load_from(&path);
+
+        assert!(matches!(
+            result,
+            Err(CoreError::FutureSchema {
+                what: "library",
+                found: 2,
+                supported: 1,
+            })
+        ));
+        assert_eq!(std::fs::read(&path).unwrap(), original);
     }
 
     #[test]

@@ -167,7 +167,16 @@ impl Settings {
     pub fn from_json(json: &str) -> Result<Self, CoreError> {
         // Non-object guard + version resolution + migrate dispatch are single-homed in
         // `persist`. `CoreError::Settings` is `#[from]`, so both `?`s convert automatically.
-        let value = crate::persist::parse_versioned_object(json, SETTINGS_VERSION, migrate)?;
+        let value = match crate::persist::parse_versioned_object(json, SETTINGS_VERSION, migrate)? {
+            crate::persist::VersionedDocument::Ready(value) => value,
+            crate::persist::VersionedDocument::FromFuture { found } => {
+                return Err(CoreError::FutureSchema {
+                    what: "settings",
+                    found,
+                    supported: SETTINGS_VERSION,
+                });
+            }
+        };
         let mut settings: Self = serde_json::from_value(value)?;
         settings.normalize();
         Ok(settings)
@@ -185,6 +194,12 @@ impl Settings {
     /// remains valid as a "prefetch disabled" sentinel; values above
     /// `MAX_PREFETCH_RADIUS` are clamped.)
     pub fn normalize(&mut self) {
+        // The `version` field is a SCHEMA LABEL owned by the binary, not user data: a value
+        // loaded from disk is never echoed back on save (F-C6 / CORE-S-16). Loads can only
+        // reach here with a version <= SETTINGS_VERSION (a higher one is now a hard error),
+        // and migrate already stamps the older ones, so this is the belt-and-braces guard
+        // for in-memory values built outside the load path. Idempotent.
+        self.version = SETTINGS_VERSION;
         let cfg = self.cache_config();
         self.cache_capacity = cfg.capacity();
         self.prefetch_radius = cfg.radius();
@@ -377,6 +392,44 @@ mod tests {
         std::fs::write(&path, "not json").unwrap();
         let err = Settings::load_from(&path).unwrap_err();
         assert!(matches!(err, CoreError::Settings(_)));
+    }
+
+    #[test]
+    fn from_json_future_version_errors() {
+        let result = Settings::from_json(r#"{"version":99}"#);
+
+        assert!(matches!(
+            result,
+            Err(CoreError::FutureSchema {
+                what: "settings",
+                found: 99,
+                supported: 1,
+            })
+        ));
+    }
+
+    #[test]
+    fn to_json_always_stamps_the_current_schema_version() {
+        let mut settings = non_default_settings();
+        settings.version = 99;
+
+        settings.normalize();
+
+        assert_eq!(settings.version, SETTINGS_VERSION);
+        let value: serde_json::Value = serde_json::from_str(&settings.to_json().unwrap()).unwrap();
+        assert_eq!(value["version"].as_u64(), Some(u64::from(SETTINGS_VERSION)));
+    }
+
+    #[test]
+    fn normalize_is_idempotent_for_the_version_field() {
+        let mut settings = non_default_settings();
+        settings.version = 99;
+
+        settings.normalize();
+        let once = settings.clone();
+        settings.normalize();
+
+        assert_eq!(settings, once);
     }
 
     #[test]
