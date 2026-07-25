@@ -17,6 +17,7 @@ mod keymap;
 mod library_model;
 mod navigation;
 mod open_book;
+mod open_controller;
 mod page_count_prefetch;
 mod page_jump;
 mod page_loader;
@@ -222,6 +223,10 @@ fn main() -> color_eyre::Result<()> {
     // add never freezes the event loop. `start` dispatches; `add-finalize` applies.
     let adder = Rc::new(add_controller::AddController::new());
 
+    // Single-open controller: opens and inspects one source off the UI thread;
+    // `open-finalize` applies only the current epoch on the event loop.
+    let open_ctrl = Rc::new(open_controller::OpenController::new());
+
     // Shared library-search filter state, so every path (search, add/open backfill,
     // open-time rebuild) projects the SAME visible-index set. Starts on the empty query.
     let search = Rc::new(RefCell::new(LibrarySearchState::default()));
@@ -237,7 +242,8 @@ fn main() -> color_eyre::Result<()> {
     let selection = Rc::new(RefCell::new(LibrarySelectionState::default()));
 
     // The "open a book" use-case, shared via `Rc` so the open flow lives in one place
-    // (`use_cases::OpenBookUseCase`); `run` is headless and `finalize_open` applies the UI effects.
+    // (`use_cases::OpenBookUseCase`); the use case is headless and `finalize_open` applies
+    // the UI effects.
     let open_book = Rc::new(use_cases::OpenBookUseCase::new(
         Rc::clone(&state),
         Rc::clone(&settings),
@@ -303,8 +309,8 @@ fn main() -> color_eyre::Result<()> {
         &selection, &localizer,
     );
     handlers::wire_carousel_handlers(
-        &ui, &state, &viewport, &library, &nav, &open_book, &covers, &pages, &thumbs, &search,
-        &selection, &localizer,
+        &ui, &state, &viewport, &library, &nav, &settings, &open_book, &open_ctrl, &covers, &pages,
+        &thumbs, &search, &selection, &localizer,
     );
     handlers::wire_selection_handlers(
         &ui, &state, &library, &covers, &search, &selection, &localizer,
@@ -577,7 +583,7 @@ pub(crate) fn empty_book_removed_status(
     }
 }
 
-/// Finalize an `open_book.run(path)` outcome on the UI — the headless use case
+/// Finalize an `open_book.apply_probed(path, probe)` outcome on the UI — the headless use case
 /// returns data and this applies every Slint effect. On failure, set the localized
 /// error status; on success, `refresh()` the viewer, rebuild the carousel when the
 /// open back-filled a page count (`count_changed`), launch thumbnails, and append

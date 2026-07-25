@@ -75,7 +75,7 @@ pub(crate) fn open_error_str(loader: &FluentLanguageLoader, e_str: &str) -> Stri
 
 /// Status line for a failed open whose source file is unreachable — moved, or on
 /// a volume that isn't mounted. Names the book and explains in plain language;
-/// the raw I/O error is logged in `OpenBookUseCase::run`, not surfaced here.
+/// the raw I/O error is logged in `OpenBookUseCase::apply_probed`, not surfaced here.
 pub(crate) fn open_inaccessible(loader: &FluentLanguageLoader, title: &str) -> String {
     fl!(loader, "viewer-open-inaccessible", title = title)
 }
