@@ -25,8 +25,9 @@ type SaveSettings = Box<dyn Fn(&Settings) -> Result<(), CoreError>>;
 /// Neutral content description of notices to append to the status line after
 /// an open. No i18n; all string formatting happens in `i18n::dynamic`.
 ///
+/// `leave_save_err` and `library_save_err` are `None` on success.
 /// `settings_save_err` is `None` if no save was attempted (tracking off) or
-/// if the save succeeded. `library_save_err` is `None` on success.
+/// if the save succeeded.
 /// Error details are pre-captured as `String` (via `Display`) so no
 /// `CoreError` needs to escape this module.
 #[derive(Debug, PartialEq)]
@@ -34,6 +35,7 @@ pub(crate) struct NoticesContent {
     pub(crate) skipped: usize,
     pub(crate) skipped_detail: SkippedDetail,
     pub(crate) listing_truncated: bool,
+    pub(crate) leave_save_err: Option<String>,
     pub(crate) settings_save_err: Option<String>,
     pub(crate) library_save_err: Option<String>,
 }
@@ -136,9 +138,9 @@ impl OpenBookUseCase {
         let library = &self.library;
 
         // Capture the OUTGOING book's position and view modes before replacing
-        // the source, then save them together. This headless use case has no
-        // live UI for the outgoing book, so failures stay logged.
-        let _ = persist_leave_point(
+        // the source, then save them together. Preserve the result so the live
+        // UI can report a failure after a successful open.
+        let leave_save = persist_leave_point(
             ViewModeRoute::OpenDifferentBook,
             state,
             viewport,
@@ -167,12 +169,17 @@ impl OpenBookUseCase {
         // `;` so it cannot conflict with the `library.borrow_mut()` below.
         let page_count = state.borrow().page_count_opt();
         // Reject an empty book: bail HERE, before `register_opened`, so spec-pinned side
-        // effects bypass (cover purge in `remove_empty_book`, #150); source left inert by design.
+        // effects bypass (cover purge in `remove_empty_book`, #150); close the mounted source.
         if page_count.is_none() {
             if let Some(c) = canonical.as_deref() {
                 // Shared transaction: title capture → remove → save → cover purge. #150
                 // added the purge here; the old cover-load-only asymmetry orphaned cached covers.
                 let removal = remove_empty_book(library, c);
+                // The zero-page source must not stay mounted: close the viewer back to the
+                // boot state so open_file() is None (title clears, carousel-back refuses,
+                // AppExit reconciles global modes). The OUTGOING book's position/override
+                // were already persisted by the leave-point write above.
+                state.borrow_mut().close();
                 return OpenOutcome::EmptyBookRejected {
                     title: removal.title,
                     removed: removal.removed,
@@ -246,6 +253,7 @@ impl OpenBookUseCase {
                 skipped,
                 skipped_detail,
                 listing_truncated,
+                &leave_save,
                 settings_save.as_ref(),
                 &library_save,
             ),
@@ -257,13 +265,14 @@ impl OpenBookUseCase {
 /// Collect neutral open-result notices without i18n. Formatting is deferred
 /// to `i18n::dynamic::format_notices`.
 ///
-/// Order: truncated listing → skipped entries → settings-save failure →
-/// library-save failure.
+/// Order: truncated listing → skipped entries → leave-save failure →
+/// settings-save failure → library-save failure.
 /// `None` `settings_save` means tracking was off (no save attempted).
 pub(crate) fn notices_content(
     skipped: usize,
     skipped_detail: SkippedDetail,
     listing_truncated: bool,
+    leave_save: &Result<(), CoreError>,
     settings_save: Option<&Result<(), CoreError>>,
     library_save: &Result<(), CoreError>,
 ) -> NoticesContent {
@@ -271,6 +280,7 @@ pub(crate) fn notices_content(
         skipped,
         skipped_detail,
         listing_truncated,
+        leave_save_err: leave_save.as_ref().err().map(|e| format!("{e}")),
         settings_save_err: settings_save.and_then(|r| r.as_ref().err().map(|e| format!("{e}"))),
         library_save_err: library_save.as_ref().err().map(|e| format!("{e}")),
     }
@@ -372,11 +382,12 @@ mod tests {
 
     #[test]
     fn clean_open_emits_no_notices() {
-        let c = notices_content(0, SkippedDetail::None, false, None, &Ok(()));
+        let c = notices_content(0, SkippedDetail::None, false, &Ok(()), None, &Ok(()));
         assert_eq!(c.skipped, 0);
+        assert!(c.leave_save_err.is_none());
         assert!(c.settings_save_err.is_none());
         assert!(c.library_save_err.is_none());
-        let c2 = notices_content(0, SkippedDetail::Archive, false, None, &Ok(()));
+        let c2 = notices_content(0, SkippedDetail::Archive, false, &Ok(()), None, &Ok(()));
         assert_eq!(c2.skipped, 0);
     }
 
@@ -387,6 +398,7 @@ mod tests {
                 2,
                 SkippedDetail::Archive,
                 listing_truncated,
+                &Ok(()),
                 Some(&Ok(())),
                 &Ok(()),
             );
@@ -397,6 +409,7 @@ mod tests {
                     skipped: 2,
                     skipped_detail: SkippedDetail::Archive,
                     listing_truncated,
+                    leave_save_err: None,
                     settings_save_err: None,
                     library_save_err: None,
                 }
@@ -406,16 +419,31 @@ mod tests {
 
     #[test]
     fn skipped_only_emits_skipped_notice() {
-        let c = notices_content(3, SkippedDetail::Archive, false, Some(&Ok(())), &Ok(()));
+        let c = notices_content(
+            3,
+            SkippedDetail::Archive,
+            false,
+            &Ok(()),
+            Some(&Ok(())),
+            &Ok(()),
+        );
         assert_eq!(c.skipped, 3);
         assert_eq!(c.skipped_detail, SkippedDetail::Archive);
+        assert!(c.leave_save_err.is_none());
         assert!(c.settings_save_err.is_none());
         assert!(c.library_save_err.is_none());
     }
 
     #[test]
     fn settings_failure_only_emits_settings_notice() {
-        let c = notices_content(0, SkippedDetail::None, false, Some(&Err(err())), &Ok(()));
+        let c = notices_content(
+            0,
+            SkippedDetail::None,
+            false,
+            &Ok(()),
+            Some(&Err(err())),
+            &Ok(()),
+        );
         assert_eq!(c.skipped, 0);
         let e_str = c
             .settings_save_err
@@ -431,7 +459,14 @@ mod tests {
 
     #[test]
     fn library_failure_only_emits_library_notice() {
-        let c = notices_content(0, SkippedDetail::None, false, Some(&Ok(())), &Err(err()));
+        let c = notices_content(
+            0,
+            SkippedDetail::None,
+            false,
+            &Ok(()),
+            Some(&Ok(())),
+            &Err(err()),
+        );
         assert_eq!(c.skipped, 0);
         assert!(c.settings_save_err.is_none());
         let e_str = c
@@ -451,6 +486,7 @@ mod tests {
             2,
             SkippedDetail::Archive,
             false,
+            &Ok(()),
             Some(&Err(err())),
             &Err(err()),
         );
@@ -462,14 +498,14 @@ mod tests {
 
     #[test]
     fn settings_none_with_library_failure() {
-        let c = notices_content(0, SkippedDetail::None, false, None, &Err(err()));
+        let c = notices_content(0, SkippedDetail::None, false, &Ok(()), None, &Err(err()));
         assert!(c.settings_save_err.is_none());
         assert!(c.library_save_err.is_some());
     }
 
     #[test]
     fn skipped_and_library_failure_without_settings_tracking() {
-        let c = notices_content(1, SkippedDetail::Archive, false, None, &Err(err()));
+        let c = notices_content(1, SkippedDetail::Archive, false, &Ok(()), None, &Err(err()));
         assert_eq!(c.skipped, 1);
         assert!(c.settings_save_err.is_none());
         assert!(c.library_save_err.is_some());
@@ -477,10 +513,36 @@ mod tests {
 
     #[test]
     fn skipped_and_settings_failure_captured() {
-        let c = notices_content(1, SkippedDetail::None, false, Some(&Err(err())), &Ok(()));
+        let c = notices_content(
+            1,
+            SkippedDetail::None,
+            false,
+            &Ok(()),
+            Some(&Err(err())),
+            &Ok(()),
+        );
         assert_eq!(c.skipped, 1);
         assert!(c.settings_save_err.is_some());
         assert!(c.library_save_err.is_none());
+    }
+
+    #[test]
+    fn notices_content_captures_a_leave_save_failure() {
+        let c = notices_content(0, SkippedDetail::None, false, &Err(err()), None, &Ok(()));
+
+        assert_eq!(
+            c.leave_save_err,
+            Some("I/O error: x".to_string()),
+            "the outgoing-book save error must be captured for the live UI"
+        );
+        assert!(c.library_save_err.is_none());
+    }
+
+    #[test]
+    fn notices_content_leaves_leave_save_err_none_on_success() {
+        let c = notices_content(0, SkippedDetail::None, false, &Ok(()), None, &Ok(()));
+
+        assert!(c.leave_save_err.is_none());
     }
 
     // ---- synchronous open-time library save (issue #360) ------------------
@@ -712,6 +774,81 @@ mod tests {
         assert!(
             library.borrow().books().is_empty(),
             "an empty source is never registered in the library"
+        );
+    }
+
+    #[test]
+    fn empty_book_rejection_unmounts_the_source() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let library = Rc::new(RefCell::new(Library::new()));
+        let (use_case, state) = use_case_with_saves(
+            Settings::default(),
+            Rc::clone(&library),
+            |_| Ok(()),
+            |_| Ok(()),
+        );
+
+        let outcome = use_case.run(dir.path());
+
+        assert!(
+            matches!(outcome, OpenOutcome::EmptyBookRejected { .. }),
+            "an empty source must be rejected, got {outcome:?}"
+        );
+        let state = state.borrow();
+        assert!(state.open_file().is_none());
+        assert_eq!(state.page_count(), 0);
+        assert!(state.current_source().is_none());
+    }
+
+    #[test]
+    fn empty_book_rejection_after_open_book_closes_it() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let book_a_parent = root.path().join("book-a-parent");
+        std::fs::create_dir(&book_a_parent).expect("create book A parent");
+        let book_a = make_book_dir(&book_a_parent, 3);
+        let canonical_a = book_a.canonicalize().expect("canonical book A path");
+        let book_b = root.path().join("empty-book-b");
+        std::fs::create_dir(&book_b).expect("create empty book B");
+        let canonical_b = book_b.canonicalize().expect("canonical book B path");
+
+        let mut seeded = Library::new();
+        assert!(seeded.add(canonical_b.clone()).is_some());
+        let library = Rc::new(RefCell::new(seeded));
+        let (use_case, state) = use_case_with_saves(
+            Settings::default(),
+            Rc::clone(&library),
+            |_| Ok(()),
+            |_| Ok(()),
+        );
+
+        let first_outcome = use_case.run(&book_a);
+
+        assert!(
+            matches!(first_outcome, OpenOutcome::Success { .. }),
+            "book A must open successfully, got {first_outcome:?}"
+        );
+        assert_eq!(state.borrow().open_file(), Some(canonical_a.as_path()));
+
+        let second_outcome = use_case.run(&book_b);
+
+        assert!(
+            matches!(
+                second_outcome,
+                OpenOutcome::EmptyBookRejected { removed: true, .. }
+            ),
+            "book B must be rejected and removed, got {second_outcome:?}"
+        );
+        let state = state.borrow();
+        assert!(state.open_file().is_none());
+        assert_eq!(state.page_count(), 0);
+        drop(state);
+        assert!(
+            library
+                .borrow()
+                .books()
+                .iter()
+                .all(|book| book.path() != canonical_b),
+            "empty book B must be removed from the library"
         );
     }
 

@@ -824,6 +824,7 @@ Selection:
             skipped: 3,
             skipped_detail: SkippedDetail::Archive,
             listing_truncated: false,
+            leave_save_err: None,
             settings_save_err: None,
             library_save_err: None,
         };
@@ -882,6 +883,7 @@ Selection:
             skipped: 3,
             skipped_detail: SkippedDetail::Archive,
             listing_truncated: false,
+            leave_save_err: None,
             settings_save_err: None,
             library_save_err: None,
         };
@@ -898,6 +900,7 @@ Selection:
             skipped: 0,
             skipped_detail: SkippedDetail::None,
             listing_truncated: false,
+            leave_save_err: None,
             settings_save_err: Some("x".to_string()),
             library_save_err: None,
         };
@@ -908,6 +911,7 @@ Selection:
             skipped: 0,
             skipped_detail: SkippedDetail::None,
             listing_truncated: false,
+            leave_save_err: None,
             settings_save_err: None,
             library_save_err: Some("x".to_string()),
         };
@@ -947,6 +951,7 @@ Selection:
             skipped: 2,
             skipped_detail: SkippedDetail::Archive,
             listing_truncated: false,
+            leave_save_err: None,
             settings_save_err: Some("se".to_string()),
             library_save_err: Some("le".to_string()),
         };
