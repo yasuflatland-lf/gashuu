@@ -97,6 +97,13 @@ impl ArchiveLoader {
         policy: ArchivePolicy,
     ) -> Result<Arc<dyn PageSource>, CoreError> {
         let path = path.as_ref();
+        // A path that cannot be serialized as a JSON string must never become a Book:
+        // one such path breaks EVERY library save (CORE-S-1). Reject at the door.
+        if path.to_str().is_none() {
+            return Err(CoreError::NonUtf8Path {
+                path: path.to_string_lossy().into_owned(),
+            });
+        }
         if path.is_dir() {
             return Ok(Arc::new(FolderSource::open(path)?));
         }
@@ -166,6 +173,37 @@ mod tests {
     use crate::test_fixtures::{write_cbr_with_suffix, SAMPLE_CBR_B64};
     use image::RgbaImage;
     use std::io::{Cursor, Write};
+
+    #[cfg(unix)]
+    #[test]
+    fn open_with_policy_rejects_a_non_utf8_path() {
+        // Unix permits arbitrary path bytes; macOS paths are always valid UTF-8.
+        use std::ffi::OsStr;
+        use std::os::unix::ffi::OsStrExt;
+
+        let path = Path::new(OsStr::from_bytes(b"bad\xffname.cbz"));
+        let Err(CoreError::NonUtf8Path { path }) =
+            ArchiveLoader::open_with_policy(path, ArchivePolicy::default())
+        else {
+            panic!("expected NonUtf8Path");
+        };
+        assert!(!path.is_empty(), "the lossy path must remain readable");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn probe_page_count_propagates_non_utf8_rejection() {
+        // Unix permits arbitrary path bytes; macOS paths are always valid UTF-8.
+        use std::ffi::OsStr;
+        use std::os::unix::ffi::OsStrExt;
+
+        let path = Path::new(OsStr::from_bytes(b"bad\xffname.cbz"));
+        let error = ArchiveLoader::probe_page_count(path).expect_err("expected rejection");
+        assert!(
+            matches!(error, CoreError::NonUtf8Path { .. }),
+            "unreadable must not be classified as empty or unsupported: {error:?}"
+        );
+    }
 
     /// Build a minimal valid 2x2 PNG in memory.
     fn tiny_png() -> Vec<u8> {

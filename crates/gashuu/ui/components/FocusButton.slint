@@ -1,34 +1,50 @@
 // FocusButton — wraps a non-focusable button atom to make it a Tab stop + Space-activatable
 // without editing it (issue 127/362); Tab/Enter/Esc are rejected so the ancestor `fs` owns keys.
+//
+// ROOT IS A Rectangle, NOT a FocusScope: `enabled` here must gate only the `pressed()`
+// emission (issue 481). FocusScope's OWN built-in `enabled` refuses focus by click, by Tab
+// AND programmatically, which would drop a disabled-but-focused stop out of a modal's Tab
+// rotation — and a component cannot re-declare a property its base already owns. So the
+// scope is wrapped instead: `forward-focus` keeps `<id>.focus()` working from the outside
+// and `has-focus` is re-exposed for the modal's rotation. Space stays swallowed while
+// disabled so it never leaks to the ancestor `fs`.
 import { Theme } from "../Theme.slint";
 
-export component FocusButton inherits FocusScope {
+export component FocusButton inherits Rectangle {
+    in property <bool> enabled: true;
+    out property <bool> has-focus: scope.has-focus;
     callback pressed;
+    forward-focus: scope;
     width: slot.preferred-width;
     height: slot.preferred-height;
-    key-pressed(event) => {
-        if (event.text == Key.Space) {
-            root.pressed();
-            return accept;
+
+    scope := FocusScope {
+        width: parent.width;
+        height: parent.height;
+        key-pressed(event) => {
+            if (event.text == Key.Space) {
+                if (root.enabled) { root.pressed(); }
+                return accept;
+            }
+            return reject;
         }
-        return reject;
-    }
-    // Focus ring: accent border + soft accent-glow halo (the Toggle/Segmented
-    // idiom), drawn just outside the button.
-    Rectangle {
-        x: -Theme.space-xxs;
-        y: -Theme.space-xxs;
-        width: parent.width + 2 * Theme.space-xxs;
-        height: parent.height + 2 * Theme.space-xxs;
-        background: transparent;
-        border-radius: Theme.radius-md + Theme.space-xxs;
-        border-width: parent.has-focus ? 1px : 0px;
-        border-color: parent.has-focus ? Theme.accent : transparent;
-        drop-shadow-color: parent.has-focus ? Theme.accent-glow : transparent;
-        drop-shadow-blur: parent.has-focus ? Theme.focus-glow-blur : 0px;
-        animate border-color { duration: Theme.motion-fast; }
-    }
-    slot := HorizontalLayout {
-        @children
+        // Focus ring: accent border + soft accent-glow halo (the Toggle/Segmented
+        // idiom), drawn just outside the button.
+        Rectangle {
+            x: -Theme.space-xxs;
+            y: -Theme.space-xxs;
+            width: parent.width + 2 * Theme.space-xxs;
+            height: parent.height + 2 * Theme.space-xxs;
+            background: transparent;
+            border-radius: Theme.radius-md + Theme.space-xxs;
+            border-width: parent.has-focus ? 1px : 0px;
+            border-color: parent.has-focus ? Theme.accent : transparent;
+            drop-shadow-color: parent.has-focus ? Theme.accent-glow : transparent;
+            drop-shadow-blur: parent.has-focus ? Theme.focus-glow-blur : 0px;
+            animate border-color { duration: Theme.motion-fast; }
+        }
+        slot := HorizontalLayout {
+            @children
+        }
     }
 }

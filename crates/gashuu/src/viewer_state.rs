@@ -9,11 +9,12 @@
 //! `reading_direction`; this state only exposes the leading/trailing images.
 
 use crate::keymap::NavAction;
+use crate::open_controller::{probe_open, OpenProbeOutcome};
 use crate::viewport::ViewportState;
 use gashuu_core::{
-    cache::CacheDispatch, ArchiveLoader, ArchivePolicy, CacheConfig, CoreError, CoverMode,
-    DecodedImage, ImageCache, Language, PageSource, ReadingDirection, ResolvedView, Settings,
-    Spread, SpreadContext, SpreadLayout, SpreadMode,
+    cache::CacheDispatch, ArchivePolicy, CacheConfig, CoreError, CoverMode, DecodedImage,
+    ImageCache, Language, PageSource, ReadingDirection, ResolvedView, Settings, Spread,
+    SpreadContext, SpreadLayout, SpreadMode,
 };
 use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
@@ -126,6 +127,12 @@ pub struct ViewerState {
     /// `Ok(())` returns; an error return leaves the value from the previous
     /// successful open unchanged.
     last_open_skipped: usize,
+    /// Whether an error cut short the page listing during the most recent
+    /// successful `open_path` call. False until a path has been opened or when
+    /// the last listing completed normally. Only updated on `Ok(())` returns;
+    /// an error return leaves the value from the previous successful open
+    /// unchanged.
+    last_open_truncated: bool,
     /// Canonical path of the most recently successfully opened source. `None`
     /// until `open_path` completes `Ok(())`; reset to `None` only by a
     /// subsequent `set_source` call (including the one the next successful
@@ -139,7 +146,7 @@ pub struct ViewerState {
     /// defaults) instead of being re-pinned by the next view-override write-back.
     /// Set by the reset handler via [`Self::mark_inherit_pending`]; cleared on any
     /// real mode change (the `set_*`/`toggle_*` methods) and on `set_source`/`close`
-    /// (opening/closing a book). Read by `view_sync::write_back_view_override`.
+    /// (opening/closing a book). Read by `view_sync::stage_view_override_write_back`.
     inherit_pending: bool,
 }
 
@@ -164,6 +171,7 @@ impl ViewerState {
             language: Language::default(),
             viewport_aspect: 1.0,
             last_open_skipped: 0,
+            last_open_truncated: false,
             open_file: None,
             inherit_pending: false,
         }
@@ -184,6 +192,7 @@ impl ViewerState {
             language: settings.language,
             viewport_aspect: 1.0,
             last_open_skipped: 0,
+            last_open_truncated: false,
             open_file: None,
             inherit_pending: false,
         }
@@ -212,7 +221,8 @@ impl ViewerState {
     /// opened" rather than keep rendering a book that no longer exists.
     ///
     /// Drops the cache + source, zeroes the page count / index /
-    /// `last_open_skipped`, and clears `open_file` so `current_book_name`
+    /// `last_open_skipped` / `last_open_truncated`, and clears `open_file` so
+    /// `current_book_name`
     /// reads `""` and `status_content` reports `NoFolder`. The display MODES (direction/spread/cover) and the
     /// `cache_config` / `viewport_aspect` are deliberately preserved — closing a
     /// book is not a settings reset; the next open reuses the same configuration.
@@ -225,6 +235,7 @@ impl ViewerState {
         self.page_count = 0;
         self.index = 0;
         self.last_open_skipped = 0;
+        self.last_open_truncated = false;
         self.open_file = None;
         self.inherit_pending = false;
     }
@@ -232,7 +243,7 @@ impl ViewerState {
     /// Mark the open book as inherit-pending after a "Reset to global": the next
     /// view-override write-back must keep the override EMPTY (inherit) rather than
     /// re-pin the runtime modes. Cleared by any real mode change or by opening/
-    /// closing a book. See `view_sync::write_back_view_override`.
+    /// closing a book. See `view_sync::stage_view_override_write_back`.
     pub fn mark_inherit_pending(&mut self) {
         self.inherit_pending = true;
     }
@@ -298,22 +309,48 @@ impl ViewerState {
 
     /// Open any supported path (directory or archive) as the active source,
     /// using the given `policy` to control which formats are permitted.
+    ///
+    /// The synchronous composition of [`probe_open`] + [`Self::install_opened`],
+    /// so the blocking work is defined in ONE place and the async open path
+    /// (`OpenController`) cannot drift from it. Because the probe outcome is
+    /// `Send` it carries the failure as a pre-captured message, so an error is
+    /// re-wrapped here rather than forwarding the original `CoreError` variant;
+    /// no caller discriminates it, and the state-on-error contract is unchanged
+    /// (nothing is installed unless the probe opened).
     pub fn open_path_with_policy(
         &mut self,
         path: &Path,
         policy: ArchivePolicy,
     ) -> Result<(), CoreError> {
-        let source = ArchiveLoader::open_with_policy(path, policy)?;
-        let skipped = source.skipped_count();
-        if skipped > 0 {
-            tracing::warn!(skipped, path = %path.display(), "entries skipped while opening path");
+        match probe_open(path, policy) {
+            OpenProbeOutcome::Opened(probe) => {
+                self.install_opened(
+                    probe.source,
+                    probe.skipped,
+                    probe.truncated,
+                    probe.canonical,
+                );
+                Ok(())
+            }
+            OpenProbeOutcome::Failed { error, .. } => Err(std::io::Error::other(error).into()),
         }
+    }
+
+    /// Install a source already opened by [`probe_open`]. This is the
+    /// mutation-only tail of [`ViewerState::open_path_with_policy`]: `skipped`
+    /// and `truncated` are read off the source by the probe (which also logs
+    /// them), so this half performs no I/O.
+    pub fn install_opened(
+        &mut self,
+        source: Arc<dyn PageSource>,
+        skipped: usize,
+        truncated: bool,
+        canonical: PathBuf,
+    ) {
         self.last_open_skipped = skipped;
+        self.last_open_truncated = truncated;
         self.set_source(source);
-        // Canonicalize best-effort, falling back to the verbatim path on error (same
-        // policy as Library::add: canonical form when available, verbatim otherwise).
-        self.open_file = Some(path.canonicalize().unwrap_or_else(|_| path.to_path_buf()));
-        Ok(())
+        self.open_file = Some(canonical);
     }
 
     /// Number of entries skipped during the most recent successful `open_path`
@@ -322,6 +359,15 @@ impl ViewerState {
     /// an error return leaves the value from the previous successful open.
     pub fn last_open_skipped(&self) -> usize {
         self.last_open_skipped
+    }
+
+    /// Whether an error cut short the page listing during the most recent
+    /// successful `open_path` call. False until a path has been successfully
+    /// opened or when the last listing completed normally. Only meaningful
+    /// after `Ok(())`; an error return leaves the value from the previous
+    /// successful open.
+    pub fn last_open_truncated(&self) -> bool {
+        self.last_open_truncated
     }
 
     /// The canonical path of the currently open source, or `None` after
@@ -334,7 +380,8 @@ impl ViewerState {
     }
 
     /// Open any supported path with the default (allow-all) policy.
-    /// Kept for test compatibility; production callers use `open_path_with_policy`.
+    /// Kept for test compatibility; the production open path dispatches through
+    /// `OpenController` (`probe_open` + `install_opened`).
     #[allow(dead_code)]
     pub fn open_path(&mut self, path: &Path) -> Result<(), CoreError> {
         self.open_path_with_policy(path, ArchivePolicy::default())

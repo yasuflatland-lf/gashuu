@@ -29,7 +29,7 @@ RAR requires a C++ compiler on every OS (see [docs/toolchain.md](toolchain.md)).
 - Space = next / Backspace = prev (reading order, direction-independent); arrows are direction-aware (LTR → = next, RTL ← = next).
 - **Pointer / gesture page-turn**: a single click/tap (left half → `nav("left")`, right half → `nav("right")`) and a two-finger trackpad horizontal swipe (≥100 px, with a release-latch that swallows the macOS momentum tail until it is spent so ONE flick turns exactly one page yet a deliberate re-flick turns the next — CONSECUTIVE turns without double-firing) both route through the SAME `nav()` seam as the arrow keys, so reading direction is resolved once (RTL: left = next). The swipe lights an **edge-glow affordance** on the side the fingers push toward (opacity tracks accumulation toward the threshold, peaking then easing out on the turn as a confirmation; absent when zoomed in, since the turn branch is not taken). The horizontal swipe turns pages whenever the page fits HORIZONTALLY (dominant-axis gate + `content-w <= width`), so a tall Width-fit page still turns on a flick; only when the content overflows horizontally (zoomed in / wider than the viewport) does two-finger scroll pan instead, and vertical scroll always pans a fit page that overflows vertically. Both page-turn paths are suppressed under any open modal.
 - `Auto` picks single vs double from the window aspect ratio (landscape/square → single, portrait → double) and follows resizes live; composes with RTL/LTR and cover mode.
-- Runtime toggles: **D** = spread mode (3-cycle: single → double → auto), **R** = reading direction, **C** = cover mode — each mutates RUNTIME state only (`ViewerState`); `reconcile_settings` mirrors the modes into `Settings` at the next save (issue #32), still persisted via save-on-exit (not per-key).
+- Runtime toggles: **D** = spread mode (3-cycle: single → double → auto), **R** = reading direction, **C** = cover mode — each mutates RUNTIME state only (`ViewerState`); `apply_runtime_view_to_settings` mirrors the modes into `Settings` at the next save (issue #32), still persisted via save-on-exit (not per-key).
 
 ### Zoom, pan, and fit modes
 
@@ -253,6 +253,10 @@ first, then in-place self-replace for AppImage/Windows.
 
 ## Deferred (intentionally out of scope)
 
+- Cancelling an in-flight update download/install. While a download or self-replace is running the
+  update dialog BLOCKS its actions (Update now disabled; Later/Skip/Esc/backdrop do not dismiss)
+  rather than aborting the job — there is no cancellation token in `download_bytes` or the install
+  steps.
 - A genuinely-RAR-compressed test fixture (issue #22 — only a store-format fixture ships, which does not exercise real RAR decompression).
 - Progressive per-slot double-spread display (rejected — per-slot geometry would fracture the unified zoom/pan content rectangle; the spread applies atomically).
 - Thumbnail-strip follow-ups:

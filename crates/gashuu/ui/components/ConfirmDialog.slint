@@ -18,7 +18,7 @@
 // handler re-claims focus after a stacked overlay closes.
 //
 // BUTTONS: DangerButton/PrimaryButton are TouchArea-based/non-focusable, so each is
-// wrapped in the shared FocusButton (a FocusScope) that draws the ring and fires
+// wrapped in the shared FocusButton (a Rectangle around a FocusScope) that draws the ring and fires
 // `pressed` on Space. Tab/Backtab/Enter/Esc are rejected by the button scopes and
 // bubble to `fs`, which maps Enter/Esc to cancel() and ROTATES focus between the two
 // stops itself — never deferring to Slint's window Tab nav, which could carry focus

@@ -35,10 +35,12 @@ pub use cache_config::{CacheConfig, MAX_CACHE_CAPACITY, MAX_PREFETCH_RADIUS};
 pub use error::CoreError;
 pub use image_ops::{check_pixel_limit, decode, decode_thumbnail, DecodedImage, MAX_PIXELS};
 pub use library::{
-    book_is_available, display_title, Book, Library, OpenRegistration, RemovalReport,
+    book_is_available, canonical_identity, display_title, Book, Library, OpenRegistration,
+    RemovalReport,
 };
 pub use library_store::LIBRARY_VERSION;
 pub use page_source::{FolderSource, PageEntry, PageSource, RarSource, ZipSource};
+pub use persist::quarantine_file;
 pub use reading_progress::ReadingProgress;
 pub use search::book_matches;
 pub use settings::{Settings, MAX_RECENT_SOURCES, SETTINGS_VERSION};
@@ -52,6 +54,9 @@ pub use thumbnail_cache::{
 };
 pub use update::asset::select_asset;
 pub use update::check::{should_check, CHECK_INTERVAL_SECS};
+pub use update::dialog::{
+    focus_target_after_dialog, is_action_allowed, FocusTarget, ModalStack, UpdateDialogAction,
+};
 pub use update::packaging::{detect_packaging, Packaging, UpdateStrategy};
 pub use update::release::{parse_latest_release, Asset, ReleaseInfo};
 pub use update::verify::{is_verified, parse_sha256sums, sha256_hex};

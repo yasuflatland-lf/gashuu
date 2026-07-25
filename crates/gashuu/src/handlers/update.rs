@@ -20,8 +20,9 @@ use crate::update::net::{download_bytes, fetch_latest_release_json};
 use crate::update::{UpdateError, CURRENT_VERSION, RELEASES_PAGE_URL};
 use crate::{Strings, ViewerWindow};
 use gashuu_core::{
-    detect_packaging, is_verified, parse_latest_release, parse_sha256sums, select_asset,
-    should_check, should_notify, Packaging, ReleaseInfo, Settings, UpdateStrategy,
+    detect_packaging, focus_target_after_dialog, is_action_allowed, is_verified,
+    parse_latest_release, parse_sha256sums, select_asset, should_check, should_notify, FocusTarget,
+    ModalStack, Packaging, ReleaseInfo, Settings, UpdateDialogAction, UpdateStrategy,
     CHECK_INTERVAL_SECS,
 };
 use slint::ComponentHandle;
@@ -57,17 +58,33 @@ fn now_unix() -> i64 {
         .unwrap_or(0)
 }
 
-/// Restore keyboard focus to whichever screen is underneath a just-dismissed
-/// update dialog. Mirrors the screen-aware focus restore in
-/// `handlers/settings.rs` (`on_close_settings`): screen 0 = Library, so focus
-/// the carousel; screen 1 = Viewer, so focus the page area. Without this,
-/// dismissing the dialog leaves no focused element and every key is dead until
-/// the user clicks (issue #359). UI-thread only.
+/// Restore keyboard focus after the update dialog is dismissed.
+///
+/// The update dialog is the TOPMOST modal (ViewerWindow.slint's modal-stack
+/// order), so it can be dismissed while OTHER modals are still open: Settings
+/// (About -> "Check for updates now"), Settings+Shortcuts, or the delete
+/// ConfirmDialog when a background check fires mid-confirmation. Focus must land
+/// on the topmost SURVIVING surface, never on the screen behind it — the screen
+/// FocusScopes reject every key while `any-modal-open`
+/// (ViewerWindow.slint:458), so a screen restore under an open modal leaves the
+/// keyboard completely dead (issue #359's failure mode, one layer up).
+///
+/// Precedence lives in `gashuu_core::focus_target_after_dialog` so it is
+/// unit-testable; each if-gated modal is refocused by bumping its focus epoch
+/// (the shortcuts-close precedent in `handlers/settings.rs:211-221`).
+/// UI-thread only.
 fn restore_focus_after_dialog(ui: &ViewerWindow) {
-    if ui.get_screen() == 0 {
-        ui.invoke_focus_carousel();
-    } else {
-        ui.invoke_focus_pages();
+    let stack = ModalStack {
+        settings: ui.get_show_settings(),
+        shortcuts: ui.get_show_shortcuts(),
+        confirm_delete: ui.get_show_confirm_delete(),
+    };
+    match focus_target_after_dialog(stack, ui.get_screen()) {
+        FocusTarget::ConfirmDialog => ui.invoke_focus_confirm(),
+        FocusTarget::ShortcutsOverlay => ui.invoke_focus_shortcuts(),
+        FocusTarget::SettingsDialog => ui.invoke_focus_settings(),
+        FocusTarget::Carousel => ui.invoke_focus_carousel(),
+        FocusTarget::Pages => ui.invoke_focus_pages(),
     }
 }
 
@@ -167,9 +184,13 @@ pub(crate) fn wire_update_handlers(ui: &ViewerWindow, settings: &Rc<RefCell<Sett
     {
         let weak = ui.as_weak();
         ui.on_update_later(move || {
-            if let Some(ui) = weak.upgrade() {
-                restore_focus_after_dialog(&ui);
+            let Some(ui) = weak.upgrade() else {
+                return;
+            };
+            if !is_action_allowed(UpdateDialogAction::Later, ui.get_update_in_progress()) {
+                return;
             }
+            restore_focus_after_dialog(&ui);
         });
     }
 
@@ -179,6 +200,12 @@ pub(crate) fn wire_update_handlers(ui: &ViewerWindow, settings: &Rc<RefCell<Sett
         let weak = ui.as_weak();
         let settings = Rc::clone(settings);
         ui.on_update_skip(move || {
+            let Some(ui) = weak.upgrade() else {
+                return;
+            };
+            if !is_action_allowed(UpdateDialogAction::Skip, ui.get_update_in_progress()) {
+                return;
+            }
             if let Some(info) = latest_release() {
                 let mut s = settings.borrow_mut();
                 s.skipped_version = Some(info.version);
@@ -186,9 +213,7 @@ pub(crate) fn wire_update_handlers(ui: &ViewerWindow, settings: &Rc<RefCell<Sett
                     tracing::warn!(error = %e, "failed to persist skipped update version");
                 }
             }
-            if let Some(ui) = weak.upgrade() {
-                restore_focus_after_dialog(&ui);
-            }
+            restore_focus_after_dialog(&ui);
         });
     }
 
@@ -200,6 +225,9 @@ pub(crate) fn wire_update_handlers(ui: &ViewerWindow, settings: &Rc<RefCell<Sett
             let Some(ui) = weak.upgrade() else {
                 return;
             };
+            if !is_action_allowed(UpdateDialogAction::Accept, ui.get_update_in_progress()) {
+                return;
+            }
             let Some(info) = latest_release() else {
                 return;
             };
@@ -295,6 +323,9 @@ fn reveal_download(ui: &ViewerWindow, pkg: Packaging, info: ReleaseInfo) {
                         tracing::warn!(error = %e, "failed to reveal downloaded update in file manager");
                     }
                     ui.set_show_update_available(false);
+                    // This arm dismisses the dialog, so it owes the same focus
+                    // restore as later/skip/ExternalInstall (issue #359).
+                    restore_focus_after_dialog(&ui);
                 }
                 Err(e) => report_failure_and_open_release(&ui, "update download failed", &e),
             }
@@ -319,9 +350,16 @@ fn self_replace_update(ui: &ViewerWindow, pkg: Packaging, info: ReleaseInfo) {
                         ui.global::<Strings>().get_update_status_restarting(),
                     );
                 }
-                // Let the "restarting" note paint, then relaunch + exit.
+                // Let the "restarting" note paint, then persist the session
+                // (position, per-book override, geometry, settings) exactly as a
+                // normal quit would, and only THEN relaunch + exit.
                 slint::Timer::single_shot(std::time::Duration::from_millis(900), move || {
-                    relaunch_and_exit(&exe);
+                    let ui = weak.upgrade();
+                    relaunch_and_exit(&exe, move || {
+                        if let Some(ui) = ui {
+                            ui.invoke_persist_before_relaunch();
+                        }
+                    });
                 });
             }
             Err(e) => {
