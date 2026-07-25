@@ -113,6 +113,28 @@ mod tests {
     use std::num::NonZeroUsize;
     use std::path::{Path, PathBuf};
 
+    #[cfg(unix)]
+    #[test]
+    fn to_json_fails_for_a_non_utf8_book_path() {
+        // Unix permits arbitrary path bytes, which lets this test document why
+        // ArchiveLoader must gate non-UTF-8 paths before they can become books.
+        use std::ffi::OsStr;
+        use std::os::unix::ffi::OsStrExt;
+
+        let mut lib = Library::new();
+        assert!(lib
+            .add(PathBuf::from(OsStr::from_bytes(b"bad\xffname.cbz")))
+            .is_some());
+
+        let Err(CoreError::Library(error)) = lib.to_json() else {
+            panic!("expected a library serialization error for a non-UTF-8 path");
+        };
+        assert!(error
+            .to_string()
+            .to_ascii_lowercase()
+            .contains("invalid utf-8"));
+    }
+
     #[test]
     fn to_json_then_from_json_round_trips() {
         let mut lib = Library::new();

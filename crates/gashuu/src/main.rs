@@ -317,15 +317,19 @@ fn main() -> color_eyre::Result<()> {
     // counted this session isn't re-counted next launch. Safe: event loop exited.
     covers.flush_counts(&library);
     // Stage position + view-mode routing, then persist the library exactly once.
-    // The event loop has exited, so all cells are unborrowed; with no live UI,
-    // failures stay log-only. Exit is now exactly one library write (formerly two).
-    let _ = persist_leave_point(
+    // The event loop has exited, so all cells are unborrowed. Exit is now exactly
+    // one library write (formerly two).
+    if let Err(e) = persist_leave_point(
         ViewModeRoute::AppExit,
         &state,
         &viewport,
         &settings,
         &library,
-    );
+    ) {
+        // No live UI at this point (the event loop has exited), so this is log-only by
+        // necessity — but it must not be silently discarded.
+        tracing::error!(error = %e, "failed to persist the leave point on exit");
+    }
     // Record the final window geometry so the next launch restores it. Safe: the window
     // handle is still alive (`ui` in scope) and `settings` is unborrowed.
     window_state::capture_geometry(&ui, &mut settings.borrow_mut());
