@@ -30,7 +30,7 @@ Wall clock, measured in a worktree with warm target directories after `touch cra
 | all five concurrent, clippy sharing the default target dir | 8.2 s |
 | `mise run gates` — clippy on its own `--target-dir target/clippy` | 5.5 s |
 
-The original measurement on an idle machine recorded 12 s / 10 s / 7 s for the same three modes. Both runs agree on the point: naive concurrency is a marginal win, and giving clippy its own target directory is what turns it into a ~1.8x one. Individual warm-incremental costs here: `fmt --check` 0.2 s, clippy 3.6-4.0 s, `nextest run` 6.0 s (915 tests themselves 1.2 s), `check-tokens` 0.2 s, `check-docs` 0.3 s.
+The original measurement on an idle machine recorded 12 s / 10 s / 7 s for the same three strategies applied to the three cargo gates alone, so those figures are not row-for-row comparable with the five-gate ones above (the two bash harnesses add ~0.5 s serially and nothing measurable in parallel). Both runs agree on the point: naive concurrency is a marginal win, and giving clippy its own target directory is what turns it into a ~1.8x one. Individual warm-incremental costs here: `fmt --check` 0.2 s, clippy 3.6-4.0 s, `nextest run` 6.0 s (915 tests themselves 1.2 s), `check-tokens` 0.2 s, `check-docs` 0.3 s.
 
 **Why clippy needs its own `--target-dir`.** Cargo takes an exclusive build lock on a target directory, so clippy and nextest sharing the default one serialize on that lock and most of the parallelism evaporates. The separate directory is about the lock only — clippy and test artifacts do **not** invalidate each other's fingerprints (`nextest run --no-run` straight after clippy, and clippy straight after a test build, are both near-instant in a shared directory).
 
