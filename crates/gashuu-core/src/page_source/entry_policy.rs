@@ -21,6 +21,22 @@ pub(crate) const IMAGE_EXTS: &[&str] = &["png", "jpg", "jpeg", "avif"];
 /// is a property of the archive-entry domain, not of any one container format.
 pub(crate) const MAX_ENTRY_BYTES: u64 = 500 * 1024 * 1024;
 
+/// Upper bound on the buffer capacity a read may pre-allocate. `capacity_hint` is a
+/// growth hint, never the size defense, and it must NEVER be taken from an entry's
+/// DECLARED size: that value is attacker-controlled and may claim `MAX_ENTRY_BYTES`
+/// from a file of a few KB. 1 MiB comfortably exceeds a real manga page (so the
+/// common read still allocates once) while keeping the worst case per in-flight read
+/// three orders of magnitude below the ceiling.
+pub(crate) const INITIAL_READ_CAPACITY: usize = 1024 * 1024;
+
+/// The buffer capacity to pre-allocate for an entry whose DECLARED size is
+/// `declared`: the declared size when it is small, otherwise [`INITIAL_READ_CAPACITY`].
+/// The result is bounded regardless of what the archive header claims; the `Vec`
+/// grows from there with the bytes actually read.
+pub(crate) fn initial_capacity(declared: u64) -> usize {
+    declared.min(INITIAL_READ_CAPACITY as u64) as usize
+}
+
 /// True when `path` has a recognized image extension (ASCII case-insensitive).
 pub(crate) fn has_image_ext(path: &std::path::Path) -> bool {
     path.extension()
@@ -119,8 +135,9 @@ pub(crate) fn enclosed_name(path: &std::path::Path) -> Option<std::path::PathBuf
 /// landing on exactly `max + 1` bytes means the real size is over the cap. This is
 /// the actual streaming size defense (the constant lives here as `MAX_ENTRY_BYTES`
 /// because the ceiling is an archive-entry-domain property). `capacity_hint`
-/// pre-sizes the buffer purely as a growth hint — NOT the defense — so pass `0`
-/// for none.
+/// pre-sizes the buffer purely as a growth hint — NOT the defense. Callers must
+/// never derive it directly from a declared, attacker-controlled size; use
+/// [`initial_capacity`] as the single home of that rule, or pass `0` for none.
 ///
 /// Shared by the streaming readers: `FolderSource` file reads and `ZipSource`
 /// entry reads. `RarSource` cannot stream-cap (`unrar`'s `read()` materializes the
@@ -141,6 +158,40 @@ pub(crate) fn cap_or_reject(
         });
     }
     Ok(buf)
+}
+
+#[cfg(test)]
+mod initial_capacity_tests {
+    use super::{initial_capacity, INITIAL_READ_CAPACITY, MAX_ENTRY_BYTES};
+
+    #[test]
+    fn small_declared_size_is_used_verbatim() {
+        assert_eq!(initial_capacity(0), 0);
+        assert_eq!(initial_capacity(1024), 1024);
+    }
+
+    #[test]
+    fn declared_size_at_the_bound_is_used_verbatim() {
+        assert_eq!(
+            initial_capacity(INITIAL_READ_CAPACITY as u64),
+            INITIAL_READ_CAPACITY
+        );
+    }
+
+    #[test]
+    fn oversized_declared_size_is_clamped_to_the_bound() {
+        assert_eq!(
+            initial_capacity(INITIAL_READ_CAPACITY as u64 + 1),
+            INITIAL_READ_CAPACITY
+        );
+        assert_eq!(initial_capacity(MAX_ENTRY_BYTES), INITIAL_READ_CAPACITY);
+        assert_eq!(initial_capacity(u64::MAX), INITIAL_READ_CAPACITY);
+    }
+
+    #[test]
+    fn bound_is_far_below_the_entry_ceiling() {
+        assert!((INITIAL_READ_CAPACITY as u64) < MAX_ENTRY_BYTES);
+    }
 }
 
 #[cfg(test)]
