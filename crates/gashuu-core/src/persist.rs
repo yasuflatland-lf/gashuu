@@ -11,7 +11,11 @@
 //! own `from_value` mapping, error variant, and post-deserialize step; only the
 //! shared prefix is single-homed.
 //!
-//! Headless: this module uses only `serde_json` (no `slint`, no `tracing`).
+//! It also owns `quarantine_file`: the shared "rename aside a file this build
+//! must not overwrite" recovery step both documents take after a failed load.
+//!
+//! Headless: this module uses only `serde_json` and `std::fs` (no `slint`, no
+//! `tracing`).
 
 use crate::error::CoreError;
 use std::path::{Path, PathBuf};
