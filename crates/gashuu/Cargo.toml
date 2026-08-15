@@ -10,7 +10,7 @@ gashuu-core = { path = "../gashuu-core" }
 # `WindowEvent` filter), used by `handlers/drag_drop.rs` to receive OS file-drop
 # events Slint has no stable API for. That module is feature-gated and "may be
 # removed or changed in future minor releases", so slint/slint-build are pinned
-# to an exact version (=1.16.1) rather than `1` — a slint minor bump must be a
+# to an exact version (=1.17.1) rather than `1` — a slint minor bump must be a
 # deliberate, tested step. See docs/toolchain.md.
 slint = { version = "=1.17.1", features = ["unstable-winit-030"] }
 rfd = "0.17"
