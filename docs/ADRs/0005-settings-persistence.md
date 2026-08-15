@@ -21,7 +21,8 @@ Persist settings as **JSON with an explicit `version` field**, in the OS-standar
   `Settings::migrate()`. (Amended: a stored version GREATER than the binary's is now a hard load
   error, not a silent pass-through — see the Amendment.)
 - I/O takes explicit paths (`load_from` / `save_to`, tempfile-testable); `load` / `save` are thin
-  OS-path wrappers.
+  OS-path wrappers. (Superseded — see the 2026-08-15 Amendment: the path-taking primitives are now
+  the stores' private implementation and the OS-path wrappers are gone.)
 - Corrupt-file recovery (warn + fall back to defaults) lives in the UI (`main.rs`) (now
   quarantine-then-fresh — see the Amendment); core only returns a typed `CoreError`.
 - An `insta` snapshot of `Settings::default().to_json()` freezes the default schema; CI never
@@ -92,3 +93,43 @@ Chose JSON + a version field for simplicity, human readability, and easy migrati
   malformed or `> u32::MAX` version is still "unknown" and still migrates from 0 — it must never be
   misrouted into the future-version arm. See [patterns.md](../patterns.md), "A schema `version` from
   the FUTURE is a hard load error", and [architecture.md](../architecture.md), "persist".
+
+## Amendment 2026-08-15: persistence moved behind `SettingsStore` / `LibraryStore`
+
+- **What was wrong.** The original decision put `load`/`save`/`config_path` ON `Settings`, and the
+  same shape grew on `Library` (`data_path` / `load` / `save` / `quarantine_corrupt_file`, in
+  `library_store.rs`). Two domain types therefore resolved a real user's home directory, and
+  `gashuu-core` carried `directories` as a hard dependency purely to let them do it — the dependency
+  arrow pointed from the domain to infrastructure. The symptoms were already in the code: every test
+  had to use the `*_from` / `*_to` twins with `tempfile` because the inherent `load`/`save` would
+  touch the developer's real profile, and "save this library somewhere else" was only expressible by
+  hand-threading a path (`OpenBookUseCase` resorted to boxed `Fn(&Library) -> Result<…>` closures).
+- **Decision.** One repository type per persisted document, both in core (`gashuu-core` is
+  "domain + I/O" per ADR-0002, so a repository belongs there): `LibraryStore { path: PathBuf }` and
+  `SettingsStore { path: PathBuf }`, each exposing `new(path)`, `default_location()` (the
+  `ProjectDirs` resolution, keeping `CoreError::NoDataDir` / `NoConfigDir`), `path()`, `load()`,
+  `save(&value)`, plus `LibraryStore::quarantine(now_secs)`. The path-taking `load_from`/`save_to`
+  are now those stores' private bodies and are gone from the public surface, together with
+  `Settings::config_path`/`load`/`save` and `impl Library { data_path, load, load_from, save,
+  save_to, quarantine_corrupt_file }`.
+- **What stayed on the domain types.** The pure serialization/parse entry points, unchanged and
+  still public: `Library::to_json`/`from_json` and `Settings::to_json`/`from_json`/`normalize`
+  (plus `push_recent` / `cache_config` / `archive_policy`). Only path resolution and file I/O moved.
+  `LibraryDocument` and the `migrate` steps stay module-private exactly as before.
+- **Unchanged behaviour.** WHICH saves happen, in what ORDER, and HOW MANY: this was a mechanical
+  rewrite of `x.save()` into `store.save(&x)`. The `Rc<RefCell<…>>` ownership model, the
+  atomic-write path, the quarantine naming scheme, the versioned-document parse/migrate guard, the
+  `load_or_default` recovery + home-screen notice, and the startup settings-file repair are all as
+  they were. The injected-save seams (`persist_leave_point_with`, `remove_books_with_rollback`,
+  `remove_empty_book_with`, `OpenBookUseCase`'s boxed closures) are the proof: they still pass with
+  their assertions unchanged.
+- **UI-side shape.** `main.rs` resolves each store once and threads it as an explicit named
+  parameter (never a bundle — the #151 explicit-handle-list policy). Because `default_location()`
+  is fallible, the shared handle is an `Rc<Option<Store>>` with `save_settings` / `save_library`
+  helpers that report `NoConfigDir` / `NoDataDir` when the OS directory could not be resolved —
+  the same error the removed inherent saves raised from `config_path()` / `data_path()`, so an
+  environment without a home directory behaves exactly as before and no panic path is introduced.
+- **Deliberately not done.** `ThumbnailCache::new()` has the same shape but is a CACHE, not a
+  domain aggregate; folding it in would double the diff for no layering gain, so it keeps its
+  `ProjectDirs` resolution. `directories` also stays a `gashuu-core` dependency — the stores live
+  in core; the point is that `Library`/`Settings` stopped being the stores.

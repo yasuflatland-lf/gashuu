@@ -199,7 +199,8 @@ impl OpenBookUseCase {
             if let Some(c) = canonical.as_deref() {
                 // Shared transaction: title capture → remove → save → cover purge. #150
                 // added the purge here; the old cover-load-only asymmetry orphaned cached covers.
-                let removal = remove_empty_book(library, c);
+                let save_library = &self.save_library;
+                let removal = remove_empty_book(library, c, |library| save_library(library));
                 // The zero-page source must not stay mounted: close the viewer back to the
                 // boot state so open_file() is None (title clears, carousel-back refuses,
                 // AppExit reconciles global modes). The OUTGOING book's position/override
@@ -346,9 +347,13 @@ pub(crate) fn book_display_title(lib: &Library, path: &Path) -> String {
 /// when something was removed) → best-effort cover purge. Both the open-time
 /// bail-out and the cover-load signal handler call this; callers compose
 /// notices / rebuild the carousel from the returned data.
-pub(crate) fn remove_empty_book(library: &RefCell<Library>, path: &Path) -> EmptyBookOutcome {
+pub(crate) fn remove_empty_book(
+    library: &RefCell<Library>,
+    path: &Path,
+    save: impl FnOnce(&Library) -> Result<(), CoreError>,
+) -> EmptyBookOutcome {
     // The `borrow_mut` is confined to this statement and drops at the `;`.
-    let removal = remove_empty_book_with(&mut library.borrow_mut(), path, |l| l.save());
+    let removal = remove_empty_book_with(&mut library.borrow_mut(), path, save);
     // Best-effort purge OUTSIDE the seam so the transaction stays headless-testable.
     // mtime drift / missing file is expected (only warned); cache-construction failure skips it.
     if removal.removed {
@@ -403,7 +408,9 @@ fn remove_empty_book_with(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gashuu_core::{ArchivePolicy, CoverMode, SpreadMode, ViewOverride};
+    use gashuu_core::{
+        ArchivePolicy, CoverMode, LibraryStore, SettingsStore, SpreadMode, ViewOverride,
+    };
     use std::cell::Cell;
     use std::path::PathBuf;
 
@@ -586,18 +593,18 @@ mod tests {
         // Regression guard for #360: the open-time save was a detached `thread::spawn`,
         // so a slow write could land after a later save and revert position/drop a book.
         let dir = tempfile::tempdir().expect("tempdir");
-        let store = dir.path().join("library.json");
+        let store = LibraryStore::new(dir.path().join("library.json"));
 
         let mut lib = Library::new();
         let book = PathBuf::from("/manga/Just Opened Vol.cbz");
         // Mirror the open path: register with a known page count, then save synchronously
-        // (production `library.borrow().save()` is `save_to(data_path())`).
+        // (production saves the borrowed library through `LibraryStore`).
         lib.register_opened(&book, std::num::NonZeroUsize::new(42));
-        lib.save_to(&store).expect("synchronous save must succeed");
+        store.save(&lib).expect("synchronous save must succeed");
 
         // The write completed before control returned here (no background thread
         // to await): reloading immediately reflects the just-opened book.
-        let reloaded = Library::load_from(&store).expect("reload must succeed");
+        let reloaded = store.load().expect("reload must succeed");
         let stored = reloaded
             .books()
             .iter()
@@ -1252,8 +1259,8 @@ mod tests {
         let (use_case, state) = use_case_with_saves(
             Settings::default(),
             Rc::clone(&library),
-            move |value| value.save_to(&save_library_to),
-            move |value| value.save_to(&settings_store),
+            move |value| LibraryStore::new(save_library_to.clone()).save(value),
+            move |value| SettingsStore::new(settings_store.clone()).save(value),
         );
 
         let outcome = use_case.run(&source);
@@ -1274,7 +1281,9 @@ mod tests {
             "the viewer must resume at the pre-seeded page"
         );
 
-        let saved = Library::load_from(&library_store).expect("reload injected library save");
+        let saved = LibraryStore::new(library_store)
+            .load()
+            .expect("reload injected library save");
         let stored = saved
             .books()
             .iter()
@@ -1298,7 +1307,7 @@ mod tests {
             Settings::default(),
             Rc::clone(&library),
             |_| Err(err()),
-            move |value| value.save_to(&settings_store),
+            move |value| SettingsStore::new(settings_store.clone()).save(value),
         );
 
         let outcome = use_case.run(&source);
@@ -1332,10 +1341,10 @@ mod tests {
         let (use_case, _) = use_case_with_saves(
             settings,
             Rc::new(RefCell::new(Library::new())),
-            move |value| value.save_to(&save_library_to),
+            move |value| LibraryStore::new(save_library_to.clone()).save(value),
             move |value| {
                 observed_saves.set(observed_saves.get() + 1);
-                value.save_to(&save_settings_to)
+                SettingsStore::new(save_settings_to.clone()).save(value)
             },
         );
 
@@ -1343,7 +1352,9 @@ mod tests {
 
         assert!(matches!(outcome, OpenOutcome::Success { .. }));
         assert_eq!(settings_saves.get(), 1);
-        let saved = Settings::load_from(&settings_store).expect("reload injected settings save");
+        let saved = SettingsStore::new(settings_store)
+            .load()
+            .expect("reload injected settings save");
         assert_eq!(saved.recent_sources.first(), Some(&source));
     }
 
@@ -1360,10 +1371,10 @@ mod tests {
         let (use_case, _) = use_case_with_saves(
             Settings::default(),
             Rc::new(RefCell::new(Library::new())),
-            move |value| value.save_to(&save_library_to),
+            move |value| LibraryStore::new(save_library_to.clone()).save(value),
             move |value| {
                 observed_saves.set(observed_saves.get() + 1);
-                value.save_to(&save_settings_to)
+                SettingsStore::new(save_settings_to.clone()).save(value)
             },
         );
 

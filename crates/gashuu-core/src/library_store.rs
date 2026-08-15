@@ -21,45 +21,57 @@ struct LibraryDocument<'a> {
     last_opened: Option<&'a Path>,
 }
 
-impl Library {
+/// Repository for `library.json`: owns the file location and the file I/O, so the
+/// `Library` aggregate stays a pure in-memory domain type (ADR-0002 — the domain
+/// no longer resolves an OS directory). Construct with an explicit path
+/// ([`LibraryStore::new`], the seam tests and alternate locations use) or with the
+/// OS data-dir default ([`LibraryStore::default_location`]).
+#[derive(Debug)]
+pub struct LibraryStore {
+    path: PathBuf,
+}
+
+impl LibraryStore {
+    /// Construct a store for an explicit path.
+    pub fn new(path: PathBuf) -> Self {
+        Self { path }
+    }
+
     /// Resolve `library.json` in the OS data dir (creates nothing).
-    pub fn data_path() -> Result<PathBuf, CoreError> {
+    pub fn default_location() -> Result<Self, CoreError> {
         let dirs = ProjectDirs::from("", "", "gashuu").ok_or(CoreError::NoDataDir)?;
-        Ok(dirs.data_dir().join("library.json"))
+        Ok(Self::new(dirs.data_dir().join("library.json")))
     }
 
-    /// Load from the OS data path. Missing file returns an empty library.
-    pub fn load() -> Result<Library, CoreError> {
-        Self::load_from(&Self::data_path()?)
+    /// The file this store reads and writes.
+    pub fn path(&self) -> &Path {
+        &self.path
     }
 
-    /// Load from an explicit path. Missing file returns an empty library.
-    pub fn load_from(path: &Path) -> Result<Library, CoreError> {
-        match std::fs::read_to_string(path) {
-            Ok(json) => Self::from_json(&json),
+    /// Load the library. Missing file returns an empty library.
+    pub fn load(&self) -> Result<Library, CoreError> {
+        match std::fs::read_to_string(&self.path) {
+            Ok(json) => Library::from_json(&json),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Library::new()),
             Err(e) => Err(CoreError::from(e)),
         }
+    }
+
+    /// Atomically write `library`, creating parent directories as needed.
+    pub fn save(&self, library: &Library) -> Result<(), CoreError> {
+        crate::atomic_write::write_atomic(&self.path, library.to_json()?.as_bytes())
     }
 
     /// Rename a corrupt library file aside as `library.json.corrupt-<now_secs>`
     /// (same directory — the rename is atomic on one filesystem) so the next save
     /// cannot destroy recoverable data. Never reads or parses the file. The caller
     /// injects `now_secs` (core takes no clock).
-    pub fn quarantine_corrupt_file(path: &Path, now_secs: u64) -> Result<PathBuf, CoreError> {
-        crate::persist::quarantine_file(path, now_secs)
+    pub fn quarantine(&self, now_secs: u64) -> Result<PathBuf, CoreError> {
+        crate::persist::quarantine_file(&self.path, now_secs)
     }
+}
 
-    /// Save to the OS data path (creating parent dirs as needed).
-    pub fn save(&self) -> Result<(), CoreError> {
-        self.save_to(&Self::data_path()?)
-    }
-
-    /// Atomically write the library to `path`, creating parent directories as needed.
-    pub fn save_to(&self, path: &Path) -> Result<(), CoreError> {
-        crate::atomic_write::write_atomic(path, self.to_json()?.as_bytes())
-    }
-
+impl Library {
     /// Serialize to pretty JSON with the on-disk schema version.
     ///
     /// Serialization goes through a single derived `Serialize` path
@@ -118,6 +130,16 @@ mod tests {
     use super::*;
     use std::num::NonZeroUsize;
     use std::path::{Path, PathBuf};
+
+    #[test]
+    fn store_default_location_resolves_under_project_dirs() {
+        let store = LibraryStore::default_location();
+
+        assert!(store.is_ok());
+        assert!(store
+            .as_ref()
+            .is_ok_and(|store| store.path().ends_with(Path::new("gashuu/library.json"))));
+    }
 
     #[cfg(unix)]
     #[test]
@@ -255,7 +277,7 @@ mod tests {
         let original = br#"{"version":2,"books":[],"future_field":"keep me"}"#;
         std::fs::write(&path, original).unwrap();
 
-        let result = Library::load_from(&path);
+        let result = LibraryStore::new(path.clone()).load();
 
         assert!(matches!(
             result,
@@ -285,7 +307,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("does-not-exist.json");
 
-        let lib = Library::load_from(&path).unwrap();
+        let lib = LibraryStore::new(path).load().unwrap();
 
         assert!(lib.books().is_empty());
     }
@@ -299,8 +321,9 @@ mod tests {
         assert!(original.add(book.clone()).is_some());
         assert!(original.set_resume_page(&book, 7));
 
-        original.save_to(&path).unwrap();
-        let loaded = Library::load_from(&path).unwrap();
+        let store = LibraryStore::new(path);
+        store.save(&original).unwrap();
+        let loaded = store.load().unwrap();
 
         assert_eq!(loaded.books().len(), 1);
         assert_eq!(loaded.books()[0].path(), Path::new("/manga/a.cbz"));
@@ -314,7 +337,9 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("deep").join("nest").join("library.json");
         assert!(!path.parent().unwrap().exists());
-        Library::new().save_to(&path).unwrap();
+        LibraryStore::new(path.clone())
+            .save(&Library::new())
+            .unwrap();
         assert!(path.exists());
     }
 
@@ -329,17 +354,18 @@ mod tests {
         let mut original = Library::new();
         assert!(original.add(PathBuf::from("/manga/a.cbz")).is_some());
         assert!(original.add(PathBuf::from("/manga/b.cbz")).is_some());
-        original.save_to(&path).unwrap();
+        let store = LibraryStore::new(path.clone());
+        store.save(&original).unwrap();
 
         // Second save: a single empty library (a shorter document).
         let replacement = Library::new();
-        replacement.save_to(&path).unwrap();
+        store.save(&replacement).unwrap();
 
         // The bytes on disk must equal exactly the new serialization, with no
         // residue from the first write, and parse back to an empty library.
         let on_disk = std::fs::read_to_string(&path).unwrap();
         assert_eq!(on_disk, replacement.to_json().unwrap());
-        assert!(Library::load_from(&path).unwrap().books().is_empty());
+        assert!(store.load().unwrap().books().is_empty());
     }
 
     #[test]
@@ -349,7 +375,7 @@ mod tests {
         let stored = r#"{"version":1,"books":[{"path":"/manga/vol 10.cbz","title":"vol 10","last_page":0,"page_count":0},{"path":"/manga/vol 1.cbz","title":"vol 1","last_page":0,"page_count":0},{"path":"/manga/vol 2.cbz","title":"vol 2","last_page":0,"page_count":0}]}"#;
         std::fs::write(&path, stored).unwrap();
 
-        let loaded = Library::load_from(&path).unwrap();
+        let loaded = LibraryStore::new(path).load().unwrap();
 
         let titles: Vec<&str> = loaded.books().iter().map(|book| book.title()).collect();
         assert_eq!(titles, vec!["vol 1", "vol 2", "vol 10"]);
@@ -364,8 +390,9 @@ mod tests {
         assert!(original.add(book.clone()).is_some());
         assert!(original.set_page_count(&book, NonZeroUsize::new(42).unwrap()));
 
-        original.save_to(&path).unwrap();
-        let loaded = Library::load_from(&path).unwrap();
+        let store = LibraryStore::new(path);
+        store.save(&original).unwrap();
+        let loaded = store.load().unwrap();
 
         assert_eq!(loaded.books().len(), 1);
         assert_eq!(loaded.books()[0].path(), Path::new("/manga/a.cbz"));
@@ -378,19 +405,21 @@ mod tests {
         let path = dir.path().join("corrupt.json");
         std::fs::write(&path, "not json").unwrap();
 
-        let err = Library::load_from(&path).unwrap_err();
+        let err = LibraryStore::new(path).load().unwrap_err();
 
         assert!(matches!(err, CoreError::Library(_)));
     }
 
     #[test]
-    fn quarantine_corrupt_file_preserves_original_bytes_under_timestamped_name() {
+    fn library_store_quarantine_renames_aside() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("library.json");
         std::fs::write(&path, "not json").unwrap();
         let expected = dir.path().join("library.json.corrupt-1700000000");
 
-        let destination = Library::quarantine_corrupt_file(&path, 1_700_000_000).unwrap();
+        let destination = LibraryStore::new(path.clone())
+            .quarantine(1_700_000_000)
+            .unwrap();
 
         assert_eq!(destination, expected);
         assert!(!path.exists());
@@ -403,16 +432,8 @@ mod tests {
         let path = dir.path().join("library.json");
         let destination = dir.path().join("library.json.corrupt-1700000000");
 
-        assert!(Library::quarantine_corrupt_file(&path, 1_700_000_000).is_err());
+        assert!(LibraryStore::new(path).quarantine(1_700_000_000).is_err());
         assert!(!destination.exists());
-    }
-
-    #[test]
-    fn data_path_targets_gashuu_library_json() {
-        let path = Library::data_path().unwrap();
-
-        assert!(path.ends_with("library.json"));
-        assert!(path.to_string_lossy().contains("gashuu"));
     }
 
     #[test]
@@ -557,8 +578,9 @@ mod tests {
         let mut lib = Library::new();
         lib.register_opened(&book, NonZeroUsize::new(10));
 
-        lib.save_to(&file_path).unwrap();
-        let loaded = Library::load_from(&file_path).unwrap();
+        let store = LibraryStore::new(file_path);
+        store.save(&lib).unwrap();
+        let loaded = store.load().unwrap();
 
         assert_eq!(
             loaded.last_opened(),
@@ -568,8 +590,8 @@ mod tests {
     }
 
     #[test]
-    fn save_to_preserves_last_opened() {
-        // Verify that last_opened survives a full save_to → load_from round-trip.
+    fn store_save_preserves_last_opened() {
+        // Verify that last_opened survives a full store save → load round-trip.
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("library.json");
         let book = PathBuf::from("/manga/vol1.cbz");
@@ -579,8 +601,9 @@ mod tests {
         // last_opened is set before saving.
         assert_eq!(lib.last_opened(), Some(Path::new("/manga/vol1.cbz")));
 
-        lib.save_to(&path).unwrap();
-        let loaded = Library::load_from(&path).unwrap();
+        let store = LibraryStore::new(path);
+        store.save(&lib).unwrap();
+        let loaded = store.load().unwrap();
 
         assert_eq!(
             loaded.last_opened(),

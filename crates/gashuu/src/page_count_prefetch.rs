@@ -14,7 +14,7 @@
 use crate::carousel::update_carousel_row;
 use crate::library_model::clamp_to_i32;
 use crate::ui_marshal::marshal_to_ui;
-use crate::ViewerWindow;
+use crate::{save_library, LibraryStoreHandle, ViewerWindow};
 use gashuu_core::Library;
 use std::cell::RefCell;
 use std::num::NonZeroUsize;
@@ -118,7 +118,7 @@ impl PageCountPrefetch {
     /// saves ONCE if any changed. Borrow discipline: each `borrow_mut` is confined
     /// to its own statement (dropped at the `;`); the final `borrow` for `save` is
     /// a separate statement — collapsing them would double-borrow-panic.
-    pub(crate) fn apply(&self, library: &Rc<RefCell<Library>>) {
+    pub(crate) fn apply(&self, library: &Rc<RefCell<Library>>, library_store: &LibraryStoreHandle) {
         let drained: Vec<ResolvedCount> = {
             let mut queue = self
                 .pending
@@ -137,14 +137,14 @@ impl PageCountPrefetch {
         }
         if changed {
             // Losing a page-count back-fill is harmless (re-persisted at the next leave point).
-            if let Err(e) = library.borrow().save() {
+            if let Err(e) = save_library(library_store, &library.borrow()) {
                 tracing::error!(error = %e, "cover: failed to save library after page-count prefetch");
             }
         }
     }
 
     /// Persist any still-pending prefetched page counts. Call once on shutdown.
-    pub(crate) fn flush(&self, library: &Rc<RefCell<Library>>) {
-        self.apply(library);
+    pub(crate) fn flush(&self, library: &Rc<RefCell<Library>>, library_store: &LibraryStoreHandle) {
+        self.apply(library, library_store);
     }
 }

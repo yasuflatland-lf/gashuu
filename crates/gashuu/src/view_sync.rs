@@ -1,4 +1,4 @@
-use crate::{viewer_state::ViewerState, viewport::ViewportState};
+use crate::{save_library, viewer_state::ViewerState, viewport::ViewportState, LibraryStoreHandle};
 use gashuu_core::{
     CoreError, FitMode, Library, ReadingDirection, ResolvedView, Settings, ViewOverride,
 };
@@ -55,12 +55,15 @@ pub(crate) fn persist_leave_point(
     viewport: &Rc<RefCell<ViewportState>>,
     settings: &Rc<RefCell<Settings>>,
     library: &Rc<RefCell<Library>>,
+    library_store: &LibraryStoreHandle,
 ) -> Result<(), CoreError> {
-    persist_leave_point_with(route, state, viewport, settings, library, Library::save)
+    persist_leave_point_with(route, state, viewport, settings, library, |library| {
+        save_library(library_store, library)
+    })
 }
 
 /// Save-injection seam for proving the one-save boundary without touching the
-/// process data directory. Production passes [`Library::save`].
+/// process data directory. Production saves through `LibraryStore`.
 pub(crate) fn persist_leave_point_with(
     route: ViewModeRoute,
     state: &Rc<RefCell<ViewerState>>,

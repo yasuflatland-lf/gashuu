@@ -16,7 +16,7 @@ use crate::carousel::{
 use crate::library_model::{LibrarySearchState, LibrarySelectionState};
 use crate::open_book::EmptyBookOutcome;
 use crate::remove_books::RemoveOutcome;
-use crate::{cover_loader, i18n, ViewerWindow};
+use crate::{cover_loader, i18n, save_library, LibraryStoreHandle, ViewerWindow};
 use gashuu_core::Library;
 use slint::ComponentHandle;
 use std::cell::RefCell;
@@ -168,6 +168,7 @@ pub(crate) fn push_selection_toolbar_state(
 /// they are one collaboration unit, not independent params.
 pub(crate) struct CarouselRefresh<'a> {
     pub(crate) library: &'a Rc<RefCell<Library>>,
+    pub(crate) library_store: &'a LibraryStoreHandle,
     pub(crate) covers: &'a cover_loader::CoverController,
     pub(crate) search: &'a Rc<RefCell<LibrarySearchState>>,
     pub(crate) selection: &'a Rc<RefCell<LibrarySelectionState>>,
@@ -239,6 +240,7 @@ pub(crate) fn refresh_library_carousel(
     deps.covers.start(
         ui.as_weak(),
         deps.library,
+        deps.library_store,
         cover_loader::prioritize_by_focus(cover_reqs, focus_row),
     );
 }
@@ -365,7 +367,9 @@ pub(crate) fn apply_add_report(
     loader: &i18n_embed::fluent::FluentLanguageLoader,
 ) {
     let (report, save_result) =
-        apply_outcomes_and_save(&mut deps.library.borrow_mut(), outcomes, Library::save);
+        apply_outcomes_and_save(&mut deps.library.borrow_mut(), outcomes, |library| {
+            save_library(deps.library_store, library)
+        });
     let AddReport {
         added: added_paths,
         skipped,

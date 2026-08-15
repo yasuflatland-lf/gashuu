@@ -21,6 +21,7 @@ use i18n_embed::fluent::FluentLanguageLoader;
 use crate::cover_loader::purge_cover;
 use crate::library_model::{LibrarySearchState, LibrarySelectionState};
 use crate::viewer_state::ViewerState;
+use crate::{save_library, LibraryStoreHandle};
 
 /// Maximum number of book titles listed verbatim in the delete-confirmation
 /// dialog body before the list is truncated with an "…and M more" line. Beyond
@@ -58,7 +59,7 @@ pub(crate) enum RemoveOutcome {
 ///    failure — only the persisted shelf is the transaction boundary.
 ///
 /// On success the caller purges covers and clears the selection; on failure it
-/// must do neither. `save` is injected (`|l| l.save()` in production) so this is
+/// must do neither. `save` is injected (a `LibraryStore` save in production) so this is
 /// unit-testable against an in-memory failing/succeeding save.
 pub(crate) fn remove_books_with_rollback(
     library: &mut Library,
@@ -117,6 +118,7 @@ pub(crate) struct RemoveBooksUseCase {
     library: Rc<RefCell<Library>>,
     search: Rc<RefCell<LibrarySearchState>>,
     selection: Rc<RefCell<LibrarySelectionState>>,
+    library_store: LibraryStoreHandle,
 }
 
 impl RemoveBooksUseCase {
@@ -125,12 +127,14 @@ impl RemoveBooksUseCase {
         library: Rc<RefCell<Library>>,
         search: Rc<RefCell<LibrarySearchState>>,
         selection: Rc<RefCell<LibrarySelectionState>>,
+        library_store: LibraryStoreHandle,
     ) -> Self {
         Self {
             state,
             library,
             search,
             selection,
+            library_store,
         }
     }
 
@@ -179,9 +183,11 @@ impl RemoveBooksUseCase {
 
         // 2. Mutate + save with rollback. The `library.borrow_mut()` is confined
         //    to this statement so the cover-purge borrow below cannot conflict.
-        let report = match remove_books_with_rollback(&mut self.library.borrow_mut(), &paths, |l| {
-            l.save()
-        }) {
+        let report = match remove_books_with_rollback(
+            &mut self.library.borrow_mut(),
+            &paths,
+            |library| save_library(&self.library_store, library),
+        ) {
             Ok(report) => report,
             Err(e) => {
                 tracing::error!(error = %e, "failed to save library on bulk remove; rolled back");

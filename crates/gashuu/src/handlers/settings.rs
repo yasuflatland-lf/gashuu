@@ -11,7 +11,8 @@ use crate::viewer_state::ViewerState;
 use crate::viewport::ViewportState;
 use crate::{
     cover_loader, i18n, persist_leave_point, push_selection_toolbar_state, refresh,
-    refresh_library_carousel, with_ui, CarouselRefresh, ViewModeRoute, ViewerWindow,
+    refresh_library_carousel, save_library, save_settings, with_ui, CarouselRefresh,
+    LibraryStoreHandle, SettingsStoreHandle, ViewModeRoute, ViewerWindow,
 };
 use gashuu_core::{CacheConfig, Library, Settings, ThumbnailCache, ViewOverride};
 use slint::ComponentHandle;
@@ -61,6 +62,8 @@ pub(crate) fn wire_settings_handlers(
     search: &Rc<RefCell<LibrarySearchState>>,
     selection: &Rc<RefCell<LibrarySelectionState>>,
     localizer: &Rc<i18n::Localizer>,
+    settings_store: &SettingsStoreHandle,
+    library_store: &LibraryStoreHandle,
 ) {
     let state = Rc::clone(state);
     let viewport = Rc::clone(viewport);
@@ -72,6 +75,8 @@ pub(crate) fn wire_settings_handlers(
     let search = Rc::clone(search);
     let selection = Rc::clone(selection);
     let localizer = Rc::clone(localizer);
+    let settings_store = Rc::clone(settings_store);
+    let library_store = Rc::clone(library_store);
 
     // Open the settings dialog. Display modes are read from the RUNTIME source of truth
     // (state/viewport) so it never shows a stale value; cache/preload/track from Settings.
@@ -131,6 +136,8 @@ pub(crate) fn wire_settings_handlers(
         let library = Rc::clone(&library);
         let localizer = Rc::clone(&localizer);
         let dialog_session = Rc::clone(&dialog_session);
+        let settings_store = Rc::clone(&settings_store);
+        let library_store = Rc::clone(&library_store);
         ui.on_close_settings(move || {
             with_ui(&ui_weak, |ui| {
                 ui.set_show_settings(false);
@@ -150,6 +157,7 @@ pub(crate) fn wire_settings_handlers(
                             &viewport,
                             &settings,
                             &library,
+                            &library_store,
                         ) {
                             report_save_error(
                                 &ui,
@@ -158,7 +166,7 @@ pub(crate) fn wire_settings_handlers(
                                 "failed to save library from dialog",
                             );
                         }
-                        if let Err(e) = settings.borrow().save() {
+                        if let Err(e) = save_settings(&settings_store, &settings.borrow()) {
                             report_save_error(
                                 &ui,
                                 localizer.loader(),
@@ -178,6 +186,7 @@ pub(crate) fn wire_settings_handlers(
                             &viewport,
                             &settings,
                             &library,
+                            &library_store,
                         ) {
                             report_save_error(
                                 &ui,
@@ -186,7 +195,7 @@ pub(crate) fn wire_settings_handlers(
                                 "failed to save library from dialog",
                             );
                         }
-                        if let Err(e) = settings.borrow().save() {
+                        if let Err(e) = save_settings(&settings_store, &settings.borrow()) {
                             report_save_error(
                                 &ui,
                                 localizer.loader(),
@@ -242,6 +251,7 @@ pub(crate) fn wire_settings_handlers(
         let viewport = Rc::clone(&viewport);
         let library = Rc::clone(&library);
         let localizer = Rc::clone(&localizer);
+        let library_store = Rc::clone(&library_store);
         ui.on_reset_overrides(move || {
             with_ui(&ui_weak, |ui| {
                 if let Some(path) = state.borrow().open_file().map(|p| p.to_path_buf()) {
@@ -249,7 +259,7 @@ pub(crate) fn wire_settings_handlers(
                     if !changed {
                         tracing::warn!(path = %path.display(), "reset override: open book not found in library");
                     }
-                    if let Err(e) = library.borrow().save() {
+                    if let Err(e) = save_library(&library_store, &library.borrow()) {
                         report_save_error(&ui, localizer.loader(), &e, "failed to save library on override reset");
                     }
                 }
@@ -282,6 +292,8 @@ pub(crate) fn wire_settings_handlers(
         let search = Rc::clone(&search);
         let selection = Rc::clone(&selection);
         let localizer = Rc::clone(&localizer);
+        let settings_store = Rc::clone(&settings_store);
+        let library_store = Rc::clone(&library_store);
         ui.on_clear_reading_history(move || {
             with_ui(&ui_weak, |ui| {
                 // Mutate then save under tight borrow scopes that drop before the
@@ -290,8 +302,8 @@ pub(crate) fn wire_settings_handlers(
                 settings.borrow_mut().recent_sources.clear();
                 // Save library and settings INDEPENDENTLY so each failure is diagnosed
                 // distinctly (a partial success is correctly reported).
-                let lib_err = library.borrow().save().err();
-                let set_err = settings.borrow().save().err();
+                let lib_err = save_library(&library_store, &library.borrow()).err();
+                let set_err = save_settings(&settings_store, &settings.borrow()).err();
                 if let Some(ref e) = lib_err {
                     tracing::error!(error = %e, "failed to persist library while clearing reading history");
                 }
@@ -311,6 +323,7 @@ pub(crate) fn wire_settings_handlers(
                     &ui,
                     &CarouselRefresh {
                         library: &library,
+                        library_store: &library_store,
                         covers: &covers,
                         search: &search,
                         selection: &selection,

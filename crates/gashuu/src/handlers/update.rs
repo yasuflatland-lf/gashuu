@@ -18,7 +18,7 @@
 use crate::update::install::{apply_self_replace, extract_exe_from_zip, relaunch_and_exit};
 use crate::update::net::{download_bytes, fetch_latest_release_json};
 use crate::update::{UpdateError, CURRENT_VERSION, RELEASES_PAGE_URL};
-use crate::{Strings, ViewerWindow};
+use crate::{save_settings, SettingsStoreHandle, Strings, ViewerWindow};
 use gashuu_core::{
     detect_packaging, focus_target_after_dialog, is_action_allowed, is_verified,
     parse_latest_release, parse_sha256sums, select_asset, should_check, should_notify, FocusTarget,
@@ -90,7 +90,12 @@ fn restore_focus_after_dialog(ui: &ViewerWindow) {
 
 /// Kick off a background update check. `force = true` bypasses the enabled
 /// flag and the 24h throttle (used by the manual "Check now" button).
-pub(crate) fn start_update_check(ui: &ViewerWindow, settings: &Rc<RefCell<Settings>>, force: bool) {
+pub(crate) fn start_update_check(
+    ui: &ViewerWindow,
+    settings: &Rc<RefCell<Settings>>,
+    settings_store: &SettingsStoreHandle,
+    force: bool,
+) {
     let now = now_unix();
     let (enabled, last, skipped) = {
         let s = settings.borrow();
@@ -108,7 +113,7 @@ pub(crate) fn start_update_check(ui: &ViewerWindow, settings: &Rc<RefCell<Settin
     {
         let mut s = settings.borrow_mut();
         s.last_update_check = Some(now);
-        if let Err(e) = s.save() {
+        if let Err(e) = save_settings(settings_store, &s) {
             tracing::warn!(error = %e, "failed to persist last update check timestamp");
         }
     }
@@ -167,7 +172,11 @@ pub(crate) fn start_update_check(ui: &ViewerWindow, settings: &Rc<RefCell<Settin
 /// About section's version + toggle from the current settings, then
 /// registers the update-available dialog's action callbacks and the
 /// settings check-now / auto-update-toggle callbacks.
-pub(crate) fn wire_update_handlers(ui: &ViewerWindow, settings: &Rc<RefCell<Settings>>) {
+pub(crate) fn wire_update_handlers(
+    ui: &ViewerWindow,
+    settings: &Rc<RefCell<Settings>>,
+    settings_store: &SettingsStoreHandle,
+) {
     ui.set_settings_app_version(CURRENT_VERSION.into());
     ui.set_settings_auto_update_check(settings.borrow().auto_update_check);
 
@@ -199,6 +208,7 @@ pub(crate) fn wire_update_handlers(ui: &ViewerWindow, settings: &Rc<RefCell<Sett
     {
         let weak = ui.as_weak();
         let settings = Rc::clone(settings);
+        let settings_store = Rc::clone(settings_store);
         ui.on_update_skip(move || {
             let Some(ui) = weak.upgrade() else {
                 return;
@@ -209,7 +219,7 @@ pub(crate) fn wire_update_handlers(ui: &ViewerWindow, settings: &Rc<RefCell<Sett
             if let Some(info) = latest_release() {
                 let mut s = settings.borrow_mut();
                 s.skipped_version = Some(info.version);
-                if let Err(e) = s.save() {
+                if let Err(e) = save_settings(&settings_store, &s) {
                     tracing::warn!(error = %e, "failed to persist skipped update version");
                 }
             }
@@ -258,10 +268,11 @@ pub(crate) fn wire_update_handlers(ui: &ViewerWindow, settings: &Rc<RefCell<Sett
     // on dialog close) so the preference survives an abnormal exit.
     {
         let settings = Rc::clone(settings);
+        let settings_store = Rc::clone(settings_store);
         ui.on_settings_set_auto_update_check(move |v| {
             let mut s = settings.borrow_mut();
             s.auto_update_check = v;
-            if let Err(e) = s.save() {
+            if let Err(e) = save_settings(&settings_store, &s) {
                 tracing::warn!(error = %e, "failed to persist auto-update toggle");
             }
         });
@@ -271,9 +282,10 @@ pub(crate) fn wire_update_handlers(ui: &ViewerWindow, settings: &Rc<RefCell<Sett
     {
         let weak = ui.as_weak();
         let settings = Rc::clone(settings);
+        let settings_store = Rc::clone(settings_store);
         ui.on_settings_check_for_updates(move || {
             if let Some(ui) = weak.upgrade() {
-                start_update_check(&ui, &settings, true);
+                start_update_check(&ui, &settings, &settings_store, true);
             }
         });
     }
