@@ -161,9 +161,11 @@ fn book_order(a: &Book, b: &Book) -> std::cmp::Ordering {
 /// survivor. The first member is the base — it keeps its `title` (the earliest-added
 /// identity) — and the rest fold in under the deterministic merge policy: `resume_page`
 /// takes the max, `page_count` the first `Some` in vec order, `overrides` the first
-/// non-empty in vec order. The survivor's `path` is finally set to `key`, which
-/// re-canonicalizes a now-resolvable raw path even for a group of one. `members`
-/// is non-empty by construction (a group is only created when a member is pushed).
+/// non-empty in vec order. The survivor's resume is then clamped to its page count
+/// because the max resume and first-`Some` count can come from different members.
+/// The survivor's `path` is finally set to `key`, which re-canonicalizes a
+/// now-resolvable raw path even for a group of one. `members` is non-empty by
+/// construction (a group is only created when a member is pushed).
 fn merge_group(key: PathBuf, members: Vec<Book>) -> Book {
     let mut iter = members.into_iter();
     let mut survivor = iter
@@ -179,6 +181,9 @@ fn merge_group(key: PathBuf, members: Vec<Book>) -> Book {
         }
     }
     survivor.path = key;
+    if let Some(count) = survivor.page_count {
+        survivor.resume_page = survivor.resume_page.min(count.get() - 1);
+    }
     survivor
 }
 
@@ -221,7 +226,9 @@ pub struct RemovalReport {
 pub struct OpenRegistration {
     /// The position to resume at (the book's recorded `ReadingProgress`).
     pub resume: ReadingProgress,
-    /// Whether the stored page count actually changed during registration.
+    /// Whether the back-fill changed anything the carousel shows: the stored page
+    /// count itself, or a stale resume that [`Library::set_page_count`] repaired
+    /// against the new count. Both change the row, and both mean "save".
     pub count_changed: bool,
 }
 
@@ -504,18 +511,23 @@ impl Library {
         }
     }
 
-    /// Record the total `count` of pages for `path`. Returns `false` when the
-    /// path is absent OR the value is unchanged (mirrors `set_resume_page`, so
-    /// callers can skip a save). `count` is a `NonZeroUsize`: the "must be
-    /// positive" invariant (a measured count is never `0`, the unknown encoding)
-    /// is now a type fact carried by the parameter, so no runtime guard is needed.
+    /// Record the total `count` of pages for `path`, also repairing a stale resume
+    /// past the new final index. Returns `false` when the path is absent OR both
+    /// the count and resume are unchanged (mirrors `set_resume_page`, so callers
+    /// can skip a save). `count` is a `NonZeroUsize`: the "must be positive"
+    /// invariant (a measured count is never `0`, the unknown encoding) is now a
+    /// type fact carried by the parameter, so no runtime guard is needed.
     pub fn set_page_count(&mut self, path: &Path, count: NonZeroUsize) -> bool {
         match self.find_book_mut(path) {
-            Some(book) if book.page_count != Some(count) => {
+            Some(book) => {
+                let count_changed = book.page_count != Some(count);
                 book.page_count = Some(count);
-                true
+                let resume_page = book.resume_page.min(count.get() - 1);
+                let resume_changed = book.resume_page != resume_page;
+                book.resume_page = resume_page;
+                count_changed || resume_changed
             }
-            _ => false,
+            None => false,
         }
     }
 
@@ -546,8 +558,9 @@ impl Library {
     /// is `Some(n)` for a measured total and `None` when the total is unknown
     /// (an empty/fully-skipped source); the `None` arm skips the back-fill and
     /// leaves the stored count at its unknown encoding. Returns the resume
-    /// position (the book's `ReadingProgress`) and whether the stored count
-    /// changed, so the caller can decide to rebuild the carousel.
+    /// position (the book's `ReadingProgress`) and whether the back-fill changed
+    /// the stored count OR repaired a resume left past the new final index, so the
+    /// caller can decide to rebuild the carousel.
     ///
     /// `open_path` must be valid UTF-8. Production callers satisfy this because
     /// it is captured only after a successful [`crate::ArchiveLoader`] open.
@@ -1217,6 +1230,43 @@ mod tests {
     }
 
     #[test]
+    fn set_page_count_repairs_a_stale_resume_page() {
+        // A book read to page 41 whose archive later shrank to 5 pages: writing the
+        // new count must also pull the stored resume back into the book.
+        let mut lib = Library::new();
+        let path = PathBuf::from("/manga/a.cbz");
+        assert!(lib.add(path.clone()).is_some());
+        assert!(lib.set_resume_page(&path, 40));
+        assert!(
+            lib.set_page_count(&path, NonZeroUsize::new(5).unwrap()),
+            "the count write changed something, so the caller must save"
+        );
+        assert_eq!(
+            lib.resume_page(&path),
+            4,
+            "resume clamped to the last index"
+        );
+        assert_eq!(lib.books()[0].progress().current(), 5);
+    }
+
+    #[test]
+    fn set_page_count_returns_true_when_only_the_resume_changed() {
+        // Second write with an UNCHANGED count: the count comparison alone would
+        // return false, but the stale resume still needs repairing and saving.
+        let mut lib = Library::new();
+        let path = PathBuf::from("/manga/a.cbz");
+        assert!(lib.add(path.clone()).is_some());
+        assert!(lib.set_page_count(&path, NonZeroUsize::new(5).unwrap()));
+        assert!(lib.set_resume_page(&path, 9));
+        assert!(
+            lib.set_page_count(&path, NonZeroUsize::new(5).unwrap()),
+            "count unchanged but the resume was repaired, so the caller must save"
+        );
+        assert_eq!(lib.books()[0].page_count_opt(), Some(5));
+        assert_eq!(lib.resume_page(&path), 4);
+    }
+
+    #[test]
     fn book_without_page_count_field_deserializes_to_unknown() {
         // Backward compat: an older `Book` JSON predating the `page_count` field must
         // still deserialize, the missing field defaulting to unknown (`None`).
@@ -1331,15 +1381,18 @@ mod tests {
     fn register_opened_twice_preserves_recorded_resume_page() {
         // Re-opening a book must NOT reset its resume position: the idempotent
         // add inside register_opened keeps the existing entry (and its resume_page).
+        // The resume is deliberately IN RANGE for the 10-page count — an out-of-range
+        // one is now repaired by `set_page_count`, which would test the clamp rather
+        // than the preservation this case is about.
         let mut lib = Library::new();
         let p = PathBuf::from("/manga/a.cbz");
         lib.register_opened(&p, NonZeroUsize::new(10));
-        assert!(lib.set_resume_page(&p, 42));
+        assert!(lib.set_resume_page(&p, 4));
         let reg = lib.register_opened(&p, NonZeroUsize::new(10));
         assert_eq!(lib.books().len(), 1, "re-open must not duplicate the book");
         assert_eq!(
             reg.resume.last_viewed(),
-            42,
+            4,
             "re-open must preserve resume_page"
         );
         assert!(!reg.count_changed, "same count on re-open is no change");
@@ -1685,6 +1738,40 @@ mod tests {
             book.overrides().reading_direction,
             Some(crate::view_modes::ReadingDirection::Rtl),
             "overrides come from the first non-empty member"
+        );
+    }
+
+    #[test]
+    fn merge_group_clamps_the_survivor_position() {
+        // The merge takes `resume_page` as the MAX and `page_count` as the first
+        // `Some`, so the two fields can come from DIFFERENT members and pair a large
+        // position with a small total. The survivor must be repaired.
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("Book.cbz");
+        std::fs::write(&file, []).unwrap();
+        let canonical = file.canonicalize().unwrap();
+        let non_canonical = detour_spelling(&canonical);
+
+        let json = serde_json::json!({
+            "version": 1,
+            "books": [
+                {"path": canonical.to_str().unwrap(), "title": "Book", "last_page": 0,
+                 "page_count": 5},
+                {"path": non_canonical.to_str().unwrap(), "title": "Other", "last_page": 40,
+                 "page_count": 0},
+            ]
+        })
+        .to_string();
+
+        let lib = Library::from_json(&json).unwrap();
+
+        assert_eq!(lib.books().len(), 1, "the two spellings merge");
+        let book = &lib.books()[0];
+        assert_eq!(book.page_count_opt(), Some(5), "count is the first Some");
+        assert_eq!(
+            book.resume_page(),
+            4,
+            "the max resume is clamped into the surviving page count"
         );
     }
 

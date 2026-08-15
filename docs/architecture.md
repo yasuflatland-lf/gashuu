@@ -288,12 +288,14 @@ resume page index: normally the displayed spread's leading, but the final page I
 displayed spread contains the final page. Both values reopen onto the same spread because
 `ViewerState::jump_to` normalizes them.
 
-Its derivations are `current()` (1-based, `last_viewed + 1` saturating, always ≥ 1),
+Construction clamps `last_viewed` to `total - 1` when the total is known and leaves it verbatim
+when the total is unknown (nothing bounds an unknown book). Its derivations are `current()`
+(1-based, `last_viewed + 1` saturating, always ≥ 1),
 `fraction()` (position-normalized `last_viewed / (total - 1)`, clamped to `0.0..=1.0`), and
 `is_finished()` (`last_viewed >= total - 1`). An unknown total and a one-page total both yield
 `fraction() == 0.0` and `is_finished() == false`: a one-page book has no meaningful progress bar.
-The non-zero total type makes `Some(0)` unrepresentable. A stale resume past the final index still
-clamps to `1.0`. `is_at_start()` remains `last_viewed == 0`.
+The non-zero total type makes `Some(0)` unrepresentable. A stale constructor input still produces
+`fraction() == 1.0` and `is_finished() == true`. `is_at_start()` remains `last_viewed == 0`.
 
 This is the single home of the fraction guard and 1-based offset that BOTH the carousel
 (`library_model::carousel_data_for_indices` via `Book::progress()`) and the open-time resume
@@ -327,8 +329,11 @@ previously lived in `main.rs`'s open flow: idempotent add by canonical path
 (dedup); page-count back-fill applied only for `Some(_)` (an unknown total = `None` is skipped);
 resume lookup via `Book::progress()`. The positivity that was once enforced with a runtime guard is
 now a type fact — `set_page_count(_, count: NonZeroUsize)` makes `0` unrepresentable at the write
-boundary, so there is no `debug_assert` in core and no `page_count > 0` guard at the call site
-(#65). `Book::page_count_opt() -> Option<usize>` exposes the typed stored count to callers that
+boundary, repairs a stored resume past the new final index, and returns whether EITHER field
+changed; there is no `debug_assert` in core and no `page_count > 0` guard at the call site (#65).
+Identity merges (`merge_group`) likewise clamp the survivor after combining the max resume with the
+first known count, because those two values can come from different members.
+`Book::page_count_opt() -> Option<usize>` exposes the typed stored count to callers that
 need a plain value, while `Book::progress()` passes the `Option<NonZeroUsize>` field directly.
 `ViewerState::page_count_opt() -> Option<NonZeroUsize>` supplies the already-typed count;
 `OpenBookUseCase::run` passes it to `register_opened` and calls
