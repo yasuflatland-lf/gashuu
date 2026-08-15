@@ -40,7 +40,7 @@ sha2 = "0.11"
 
 [dev-dependencies]
 insta = "1.47.2"
-base64 = "0.22"
+base64 = "0.23"
 
 [features]
 testing = ["dep:mockall"]
