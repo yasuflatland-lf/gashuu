@@ -67,6 +67,72 @@ dav1d dynamic reference). CI test jobs may link dynamically (brew/apt) — nothi
 
 **The cover carousel added `rayon` to the `gashuu` UI crate's manifest** for its fire-and-forget cover worker (`cover_loader.rs` `rayon::spawn`). This adds NO new crate to `Cargo.lock` — `rayon` was already in the tree as a direct dep of `gashuu-core` (and transitively via `image`). The nuance: "no new dependencies" means the LOCKFILE (no new third-party code, no build cost), NOT the per-crate manifest — promoting an already-present transitive/sibling crate to a direct dep of another workspace crate is free.
 
+### Dependency updates: Renovate automerge policy
+
+**Renovate merges non-major dependency updates on its own — no human review.**
+[`renovate.json`](../renovate.json) sets `"automerge": true` on a final `packageRules` entry
+matching the `minor`, `patch`, `pin` and `digest` update types, and on the `lockFileMaintenance`
+object. That entry carries no `matchManagers` and no `matchPackageNames`, so it is unrestricted —
+it applies to every manager Renovate detects here, today `cargo`, `github-actions`, `mise` and
+`npm`, and to any manager added later. **`major` bumps are NOT
+automerged** — they open a PR and wait for a person, deliberately, because a major release is
+where the breaking change lives.
+
+**Renovate performs the merge, not GitHub.** `"platformAutomerge": false` is set EXPLICITLY
+(Renovate's default is `true`), and it is load-bearing: `main` has no branch protection and its
+only ruleset blocks deletion and non-fast-forward, so there are **zero required status checks**
+for GitHub's own auto-merge to wait on — it could merge a PR whose CI is red. With
+`platformAutomerge: false`, Renovate merges the PR itself on a later run, and only after it has
+confirmed every check is green. The accepted cost is latency: a PR merges on Renovate's next run
+after its checks pass, not the instant they pass. `"automergeStrategy": "squash"` matches the
+repo's squash-based history (`allow_rebase_merge` is false).
+
+**Automerge does not weaken the supply-chain guards.** `"minimumReleaseAge": "7 days"` still
+withholds any release younger than seven days, and `"internalChecksFilter": "strict"` still holds
+an update back until that age check has cleared. An automerged PR is therefore one that both
+waited out the age guard and went green on every check — the guards run before automerge, not
+instead of it. Do not relax either key to make a PR land sooner.
+
+**Consequence for `deny.toml`: a stale ignore blocks the lockfile-maintenance PR, on purpose.**
+[`.github/workflows/security.yml`](../.github/workflows/security.yml) runs
+`cargo deny check advisories sources --deny advisory-not-detected`. That flag escalates an ignore
+whose crate has LEFT the dependency tree from a warning into a hard error — and refreshing the
+lockfile is exactly the operation that drops such crates, as their framework parents migrate away.
+So a lockfile-maintenance branch is typically the one that goes red first, with every other check
+green:
+
+```
+error[advisory-not-detected]: advisory was not encountered
+  ┌─ deny.toml:<line>:11        # the offending ignore, wherever it sits
+  │           no crate matched advisory criteria
+
+advisories FAILED, sources ok
+```
+
+The PR then stops being automergeable and needs a human, which is the design working as intended:
+`--deny advisory-not-detected` is the forcing function that keeps [`deny.toml`](../deny.toml)
+pruned. **The fix is to delete the now-stale ignore — never to drop the flag, relax automerge, or
+close the PR.**
+
+**How to land that deletion: one commit that advances the lockfile AND deletes the ignore.**
+There is no intermediate green state, so neither half can go in on its own:
+
+- delete the ignore on `main` alone → the crate is still in `main`'s tree, so the advisory is
+  detected with nothing ignoring it → `advisories FAILED`;
+- advance the lockfile alone → the crate is gone, the ignore matches nothing →
+  `error[advisory-not-detected]`.
+
+And the deletion cannot come from the Renovate branch itself: **Renovate only authors `Cargo.lock`
+and manifest edits — it will never write to `deny.toml`.** So a human opens a PR that carries both
+halves in a single commit (bump the locked version that drops the crate, delete the matching
+`ignore` line), and the stuck Renovate branches are rebased onto it afterwards.
+
+**Known gap — pinned crates are not excluded.** The automerge rule has no per-package exclusion,
+so a `minor` release of a crate this file pins on purpose (see the slint exact-pin section above,
+where a minor bump is required to be a deliberate, tested step) is swept into automerge along with
+everything else. If that matters for a given pin, add a `matchPackageNames` rule with
+`"automerge": false` to `renovate.json`; nothing in the config does that today.
+
 ### image 0.25: RGBA → PNG bytes goes through `DynamicImage`
 
 To encode raw RGBA into an in-memory PNG (`thumbnail_cache::put`), wrap the buffer in a `DynamicImage` and encode: `image::DynamicImage::ImageRgba8(image::RgbaImage::from_raw(w, h, bytes)?).write_to(&mut std::io::Cursor::new(&mut out), image::ImageFormat::Png)?`. Calling `write_to` directly on the `RgbaImage` (`ImageBuffer`) does NOT resolve against `image` 0.25 — `write_to` is reached via `DynamicImage`. `RgbaImage::from_raw` returns `Option` (`None` when the buffer is shorter than `w*h*4`), mapped to `CoreError::MalformedImage`. PNG is lossless, so a `put` → `get` round-trip is byte-exact.
