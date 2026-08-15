@@ -115,9 +115,10 @@ and the positional ordering is a silent transposition footgun (the compiler cann
 `SpreadContext` (`spread.rs`) is the canonical example: it bundles
 `(total: Option<usize>, layout: SpreadLayout, cover: CoverMode)` into a `Copy` struct and exposes
 `.spread_at(i)`, `.next(i)`, `.prev(i)`, `.normalize(i)` — each delegating directly to the
-corresponding free fn (`spread_at`, `next_leading`, `prev_leading`, `normalize_leading`). A private
-`ViewerState::spread_ctx()` assembles it once; the six call sites switch from three positional args
-to a single named receiver, making the wrong argument order a compile error.
+corresponding free fn (`spread_at`, `next_leading`, `prev_leading`, `normalize_leading`).
+`SpreadNavigation::context()` assembles it from the stored total, the resolved layout and the cover
+mode; every call site switches from three positional args to a single named receiver, making the
+wrong argument order a compile error.
 
 Four hard rules for this flavor:
 
@@ -304,7 +305,7 @@ a `settings.json` written by this build (`spread_mode:"auto"`) cannot be read by
 
 ### `spread_mode`/`reading_direction`, `SpreadMode::Auto`, and `fit_mode` are ACTIVE; only `key_bindings` stays persisted-but-inactive
 
-The spread settings are active: `keymap::map_key` takes a `dir: ReadingDirection` and emits a `KeyCommand` (arrows resolve against the active direction). `SpreadMode::Auto` is resolved via `SpreadMode::resolve(window aspect)` at the UI layer (`ViewerState::effective_layout()`) into a `SpreadLayout` before every pairing call; pairing functions take `SpreadLayout` so `Auto` is unreachable in pairing by type. `fit_mode` is wired to real behavior (persisted, forward-compat like `cover_mode`). `key_bindings` is still saved for forward-compat only: `KeyBindings`'s default tokens match what `map_key` hard-codes, but `map_key` does NOT read the struct — user-remappable keys remain deferred.
+The spread settings are active: `keymap::map_key` takes a `dir: ReadingDirection` and emits a `KeyCommand` (arrows resolve against the active direction). `SpreadMode::Auto` is resolved via `SpreadMode::resolve(window aspect)` inside `SpreadNavigation` (`gashuu-core`'s `spread.rs`), which turns its stored viewport aspect into a `SpreadLayout` on every `context()` call, i.e. before every pairing call; pairing functions take `SpreadLayout` so `Auto` is unreachable in pairing by type. `fit_mode` is wired to real behavior (persisted, forward-compat like `cover_mode`). `key_bindings` is still saved for forward-compat only: `KeyBindings`'s default tokens match what `map_key` hard-codes, but `map_key` does NOT read the struct — user-remappable keys remain deferred.
 
 ### A new/changed key binding must be updated in BOTH places that describe keys
 
@@ -316,11 +317,11 @@ The spread settings are active: `keymap::map_key` takes a `dir: ReadingDirection
 
 ### Spread is a derived value, not stored state
 
-`ViewerState` keeps only `index` (= current spread's leading page) + the modes; the spread is recomputed each call via `spread_at` (avoids dual-source drift). Invariant: `index` is ALWAYS a valid spread-start — reset to 0 on `set_source`, mutated only via `next_/prev_leading`, and re-anchored by `normalize_leading` after a `spread_mode`/`cover_mode` toggle so the visible page stays on screen. `reading_direction` toggles do NOT normalize (pairing is direction-agnostic). In practice `ViewerState` assembles the `(total, layout, cover)` triple once via `spread_ctx()` (a `SpreadContext`) and calls `.next()`/`.prev()`/`.normalize()` on it; the free functions remain the source of truth.
+`SpreadNavigation` (`gashuu-core`'s `spread.rs`) keeps `index` (= current spread's leading page) + the total + the modes + the viewport aspect; the spread is recomputed each call via `spread_at` (avoids dual-source drift). `ViewerState` holds ONE `nav: SpreadNavigation` field and delegates — it stores no index and no spread of its own. Invariant: `index` is ALWAYS a valid spread-start — reset to 0 on `set_total` (which `set_source`/`close` call), mutated only via `next_/prev_leading`, and re-anchored by `normalize_leading` at the END of every mutator that can affect pairing (`jump_to`, `set_spread_mode`, `set_cover_mode`, `set_viewport_size`), so no caller can observe an un-normalised index and the mode-change-then-jump ordering bug is unwritable by construction. `reading_direction` stays on `ViewerState` and its toggles do NOT normalize (pairing is direction-agnostic). Internally `SpreadNavigation::context()` assembles the `(total, layout, cover)` triple (a `SpreadContext`) and calls `.next()`/`.prev()`/`.normalize()` on it; the free functions remain the source of truth.
 
 ### `ViewerState::set_viewport_size(width, height) -> bool`
 
-updates `viewport_aspect` and returns `true` ONLY when the effective `SpreadLayout` actually flips (so `auto` mode causes no churn while resizing within the same layout). On a flip, `normalize_leading` re-anchors the index so the current page stays visible. `main.rs` calls `refresh` only when `set_viewport_size` returns `true`. `auto` resolves aspect `>= 1.0` (landscape/square) as Single and aspect `< 1.0` (portrait) as Double. The stored `viewport_aspect` is sanitized at storage — any `width/height` ratio that is non-finite or non-positive is coerced to `1.0` (→ Single), so the field always holds a valid ratio; `SpreadMode::resolve` repeats the same guard as a standalone safety net. The `D` toggle is now a 3-cycle (single → double → auto) handled in `ViewerState::toggle_spread`; `keymap` still just returns `ToggleSpread`.
+delegates to `SpreadNavigation::set_viewport_size`, which updates the aspect it stores and returns `true` ONLY when the effective `SpreadLayout` actually flips (so `auto` mode causes no churn while resizing within the same layout). It re-anchors the index with `normalize_leading` on every call so the current page stays visible across a flip — unconditionally, which is a no-op when the layout did not flip because the index is already normalised. `main.rs` calls `refresh` only when `set_viewport_size` returns `true`. `auto` resolves aspect `>= 1.0` (landscape/square) as Single and aspect `< 1.0` (portrait) as Double. The stored aspect is sanitized at storage — any `width/height` ratio that is non-finite or non-positive is coerced to `1.0` (→ Single), so the field always holds a valid ratio; `SpreadMode::resolve` repeats the same guard as a standalone safety net. The `D` toggle is now a 3-cycle (single → double → auto) handled in `ViewerState::toggle_spread`; `keymap` still just returns `ToggleSpread`.
 
 ### `CoverMode {Standalone(default), Paired}` controls cover layout in Double mode only
 
