@@ -14,7 +14,10 @@ use std::num::NonZeroUsize;
 /// final page index so completion is representable. Both values resume to the
 /// same spread after normalization. This is the reader's resume position, NOT
 /// "the furthest page the reader saw", so it can decrease when the reader turns
-/// back.
+/// back. Construction clamps the position into the book when `total` is known;
+/// an unknown total cannot provide a bound, so it leaves the position verbatim.
+/// For a stale input past the final index, `fraction()` still reports `1.0` and
+/// `is_finished()` still reports `true`, preserving their previous behaviour.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ReadingProgress {
     last_viewed: usize,
@@ -22,9 +25,11 @@ pub struct ReadingProgress {
 }
 
 impl ReadingProgress {
-    /// Construct from the last-viewed resume page index and the total page count
-    /// (`None` = unknown / never opened).
+    /// Construct from the last-viewed resume page index and the total page count,
+    /// clamping the position to the final index when the total is known. `None`
+    /// means unknown / never opened and leaves the position verbatim.
     pub fn new(last_viewed: usize, total: Option<NonZeroUsize>) -> Self {
+        let last_viewed = total.map_or(last_viewed, |t| last_viewed.min(t.get() - 1));
         Self { last_viewed, total }
     }
     /// Last-viewed resume page index (0-based; 0 = never opened).
@@ -157,6 +162,39 @@ mod tests {
     fn current_saturates_at_usize_max() {
         let p = ReadingProgress::new(usize::MAX, None);
         assert_eq!(p.current(), usize::MAX);
+    }
+
+    #[test]
+    fn new_clamps_position_into_the_book() {
+        // A resume position past the final index (the archive shrank) is pulled
+        // back onto the last page at construction.
+        let p = ReadingProgress::new(40, nz(5));
+        assert_eq!(p.last_viewed(), 4, "clamped to the last page index");
+        assert_eq!(p.current(), 5, "display page cannot exceed the total");
+        assert_eq!(p.total(), Some(5), "the total itself is untouched");
+    }
+
+    #[test]
+    fn new_leaves_position_verbatim_when_total_unknown() {
+        // An unknown total cannot bound anything, so the position is stored as-is.
+        let p = ReadingProgress::new(40, None);
+        assert_eq!(p.last_viewed(), 40);
+        assert_eq!(p.current(), 41);
+    }
+
+    #[test]
+    fn current_never_exceeds_total() {
+        for total in 1..=8usize {
+            for last_viewed in 0..=12usize {
+                let p = ReadingProgress::new(last_viewed, nz(total));
+                let t = p.total().expect("a Some total stays Some");
+                assert!(
+                    p.current() <= t,
+                    "current {} exceeds total {t} (last_viewed {last_viewed})",
+                    p.current()
+                );
+            }
+        }
     }
 
     // --- is_at_start ---

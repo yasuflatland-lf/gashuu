@@ -67,6 +67,10 @@ fn carousel_data_for_book(book: &Book, bookmarked: bool) -> CarouselData {
     // Pin the documented invariants at the single construction site (debug-only).
     debug_assert!(current >= 1, "current is 1-based and must be >= 1");
     debug_assert!(
+        total == 0 || current <= total,
+        "current must not exceed a known total"
+    );
+    debug_assert!(
         (0.0..=1.0).contains(&fraction),
         "progress fraction must be in 0.0..=1.0"
     );
@@ -441,6 +445,26 @@ mod tests {
         state.force_visible([beta_path], &lib);
         // alpha (query match) + beta (forced) only; gamma is absent.
         assert_eq!(state.visible_indices(), &[0, 1]);
+    }
+
+    #[test]
+    fn carousel_row_current_never_exceeds_total() {
+        // `set_resume_page` has no trustworthy total, so it can still park a position
+        // past the count. The row must never read "41 / 5".
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut lib = Library::new();
+        assert!(lib.add(dir.path().to_path_buf()).is_some());
+        let path = lib.books()[0].path().to_path_buf();
+        assert!(lib.set_page_count(&path, NonZeroUsize::new(5).unwrap()));
+        assert!(lib.set_resume_page(&path, 40));
+        let rows = carousel_data(&lib);
+        assert_eq!(rows[0].total, 5);
+        assert!(
+            rows[0].current <= rows[0].total,
+            "current {} must not exceed total {}",
+            rows[0].current,
+            rows[0].total
+        );
     }
 
     #[test]

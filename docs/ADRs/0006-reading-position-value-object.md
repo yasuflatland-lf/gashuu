@@ -130,9 +130,11 @@ whole Update (#65) type-system lift, are unaffected.
 
 - A one-page book and an unknown total both yield `fraction() == 0.0` and
   `is_finished() == false`: a one-page book has no meaningful progress bar and is never "finished".
-- A stale resume past the final index (`last_viewed > total - 1`, e.g. after the archive shrank)
-  still clamps `fraction()` to 1.0 and reports finished; it is tolerated at read time, never
-  rejected at construction (unchanged from the original Costs bullet).
+- A position is clamped into the book at construction (`last_viewed.min(total - 1)` when the total
+  is known; verbatim when it is `None`). For a stale input past the final index, `fraction()` still
+  clamps to `1.0` and `is_finished()` still reports true (behaviour unchanged).
+  `Library::set_page_count` and `merge_group` also repair the persisted pair, so bad data is fixed
+  once rather than re-clamped on every read.
 - The persisted resume stays a BARE page index and `LIBRARY_VERSION` stays 1 — no migration.
   Resumes saved before the finished-aware write-back therefore reach 100% only after the reader
   revisits the final spread.
@@ -150,10 +152,11 @@ whole Update (#65) type-system lift, are unaffected.
 | Decision 1 | `is_unread()` | never shipped; `is_at_start()` is the shipped predicate |
 | Alternatives (C) | "Rejected for THIS decision" | ADOPTED (issue #454); see this Amendment |
 | Positive, bullet 1 | "the `total == 0` guard" | the `total <= 1` guard |
-| Costs, bullet 2 | "permits `reached > total`" | permits `last_viewed > total - 1` |
+| Costs, bullet 2 | "permits `reached > total`" | the constructor clamps `last_viewed` to `total - 1` when the total is known; an unknown total leaves it verbatim |
 | Costs, bullet 3 | "Persisted semantics remain mode-dependent … deferral" | resolved (final-page exception) |
 | Update (#65), bullet 1 | "`total` is now `Option<usize>`" | the FIELD is `Option<NonZeroUsize>`; the `total()` ACCESSOR still returns `Option<usize>` |
 | Update (#65), bullet 1 | "`fraction()` returns `0.0` … defensively for `Some(0)`" | `Some(0)` is unrepresentable (`NonZeroUsize`); the real guard is `t <= 1` |
+| Amendment, Accepted side effects, bullet 2 | "tolerated at read time, never rejected at construction" | construction clamps a known-total position; `set_page_count` and `merge_group` repair the persisted pair |
 
 `Book::page_count_opt() -> Option<usize>` (Update #65, bullet 2) is UNCHANGED and still correct
 (`crates/gashuu-core/src/library.rs:120`).
