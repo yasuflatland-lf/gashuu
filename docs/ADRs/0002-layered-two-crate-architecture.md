@@ -60,7 +60,7 @@ Within each crate, keep a three-layer separation: presentation (`.slint`) / appl
 
 ## Implementation notes (as-built deltas)
 
-- **Toolchain pin**: the design doc said "Rust 1.75+"; the repository pins Rust to **1.96.0** via
+- **Toolchain pin**: the design doc said "Rust 1.75+"; the repository pins Rust to **1.97.1** via
   `mise.toml` (run every cargo command through `mise exec --`). The pin is stricter than the
   design's floor; no decision reversed.
 - The realized boundary type is `Arc<dyn PageSource>` rather than `Box<dyn PageSource>` — see

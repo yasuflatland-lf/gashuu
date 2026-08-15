@@ -258,7 +258,7 @@ defaults (an empty library) and keeps running.
 
 ### Setup
 
-Toolchain and tools are managed by [mise](https://mise.jdx.dev) (Rust 1.96.0 +
+Toolchain and tools are managed by [mise](https://mise.jdx.dev) (Rust 1.97.1 +
 cargo-nextest + cargo-llvm-cov):
 
 ```bash

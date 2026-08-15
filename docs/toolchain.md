@@ -5,7 +5,7 @@ All technical details are preserved verbatim from that source of truth.
 
 ### Rust pin & mise
 
-Rust is pinned to **1.96.0** via `mise.toml`. Run every cargo command through the pin: `mise exec -- cargo <...>`.
+Rust is pinned to **1.97.1** via `mise.toml`. Run every cargo command through the pin: `mise exec -- cargo <...>`.
 
 ### Fresh install: mise trust
 
