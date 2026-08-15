@@ -10,6 +10,9 @@
 
 use crate::add_controller;
 use gashuu_core::{canonical_identity, CoreError, Library};
+use std::collections::HashMap;
+use std::num::NonZeroUsize;
+use std::path::PathBuf;
 
 /// Outcome of an add batch: the canonical paths actually inserted (new books
 /// only, in INPUT order) and the count of paths REJECTED because they could not
@@ -36,9 +39,10 @@ pub(crate) struct AddReport {
 ///   half stays pure).
 /// - `ProbeKind::Counted(count)` — derive the identity via [`canonical_identity`]
 ///   and add the complete batch via [`Library::add_many`] (deduplicating and
-///   re-sorting once). For each genuine insert the page count is recorded
-///   immediately so a freshly added book shows "1 / N" without waiting for its
-///   first open; duplicates are silently dropped (neither added nor skipped).
+///   re-sorting once). Each genuine insert's page count is looked up by identity
+///   and recorded immediately so a freshly added book shows "1 / N" without
+///   waiting for its first open; duplicates are silently dropped (neither added
+///   nor skipped).
 ///
 /// Behaviour is byte-identical to the pre-206 synchronous `add_paths`; only the
 /// probe was moved off-thread.
@@ -47,7 +51,8 @@ pub(crate) fn apply_outcomes(
     outcomes: Vec<add_controller::ProbeOutcome>,
 ) -> AddReport {
     use add_controller::ProbeKind;
-    let mut counted = Vec::new();
+    let mut canonicals: Vec<PathBuf> = Vec::new();
+    let mut counts: HashMap<PathBuf, NonZeroUsize> = HashMap::new();
     let mut skipped = 0usize;
     for add_controller::ProbeOutcome { path, kind, .. } in outcomes {
         match kind {
@@ -68,26 +73,34 @@ pub(crate) fn apply_outcomes(
                 tracing::warn!(%error, path = %path.display(), "skipping unreadable source");
             }
             ProbeKind::Counted(count) => {
-                counted.push((canonical_identity(&path), count));
+                let canonical = canonical_identity(&path);
+                // Record the first probed count for each new identity, matching repeated
+                // `add` behaviour when an input batch contains duplicates.
+                counts.entry(canonical.clone()).or_insert(count);
+                canonicals.push(canonical);
             }
         }
     }
 
-    let canonicals = counted
-        .iter()
-        .map(|(canonical, _)| canonical.clone())
-        .collect();
     let added = lib.add_many(canonicals);
-    let mut counts = counted.into_iter();
-    for canonical in &added {
-        let (_, count) = counts
-            .find(|(candidate, _)| candidate == canonical)
-            .expect("add_many returns only identities supplied by this batch");
-        // Record the first probed count for each new identity, matching repeated
-        // `add` behaviour when an input batch contains duplicates.
-        lib.set_page_count(canonical, count);
-    }
+    record_page_counts(lib, &added, &counts);
     AddReport { added, skipped }
+}
+
+/// Record counts by canonical identity so correctness does not depend on the
+/// order in which `Library::add_many` returns newly added books. An identity
+/// without a probed count keeps the library's unknown-count state rather than
+/// turning a recoverable omission into a UI-thread panic.
+fn record_page_counts(
+    lib: &mut Library,
+    added: &[PathBuf],
+    counts: &HashMap<PathBuf, NonZeroUsize>,
+) {
+    for canonical in added {
+        if let Some(count) = counts.get(canonical) {
+            lib.set_page_count(canonical, *count);
+        }
+    }
 }
 
 /// Apply a probed batch and persist the resulting library mutation as one
@@ -379,6 +392,128 @@ mod tests {
             book.page_count_opt(),
             Some(3),
             "the probed page count is recorded on add"
+        );
+    }
+
+    #[test]
+    fn add_paths_intra_batch_duplicate_keeps_the_first_probed_count() {
+        // Behaviour pin: when one batch carries the SAME source twice with two
+        // DIFFERENT probed counts, the FIRST probe wins — matching repeated `add`.
+        let mut lib = gashuu_core::Library::new();
+        let root = tempfile::tempdir().expect("tempdir");
+        let book = make_book_dir(root.path(), "book", 1);
+        let outcomes = vec![
+            add_controller::ProbeOutcome {
+                index: 0,
+                path: book.clone(),
+                kind: add_controller::ProbeKind::Counted(
+                    std::num::NonZeroUsize::new(3).expect("nonzero"),
+                ),
+            },
+            add_controller::ProbeOutcome {
+                index: 1,
+                path: book.clone(),
+                kind: add_controller::ProbeKind::Counted(
+                    std::num::NonZeroUsize::new(7).expect("nonzero"),
+                ),
+            },
+        ];
+
+        let report = apply_outcomes(&mut lib, outcomes);
+
+        assert_eq!(report.added, vec![canon(&book)]);
+        assert_eq!(report.skipped, 0, "a duplicate is not a skip");
+        assert_eq!(lib.books().len(), 1);
+        assert_eq!(
+            lib.books()[0].page_count_opt(),
+            Some(3),
+            "the FIRST probed count wins for a repeated path"
+        );
+    }
+
+    #[test]
+    fn apply_outcomes_survives_an_identity_add_many_did_not_return() {
+        // `added` is a STRICT SUBSET of the batch: two of the three probed sources
+        // are already on the shelf, so only the middle one comes back. The count
+        // must still land on it, and the two pre-existing books must be left with
+        // their stored (here: unknown) counts — `record_page_counts` walks `added`,
+        // never the whole batch.
+        let root = tempfile::tempdir().expect("tempdir");
+        let already_a = canon(&make_book_dir(root.path(), "a", 1));
+        let fresh_b = canon(&make_book_dir(root.path(), "b", 1));
+        let already_c = canon(&make_book_dir(root.path(), "c", 1));
+        let mut lib = Library::new();
+        assert!(lib.add(already_a.clone()).is_some());
+        assert!(lib.add(already_c.clone()).is_some());
+
+        let counted =
+            |index: usize, path: &std::path::Path, pages: usize| add_controller::ProbeOutcome {
+                index,
+                path: path.to_path_buf(),
+                kind: add_controller::ProbeKind::Counted(
+                    std::num::NonZeroUsize::new(pages).expect("nonzero"),
+                ),
+            };
+        let report = apply_outcomes(
+            &mut lib,
+            vec![
+                counted(0, &already_a, 4),
+                counted(1, &fresh_b, 5),
+                counted(2, &already_c, 6),
+            ],
+        );
+
+        assert_eq!(report.added, vec![fresh_b.clone()], "only b is new");
+        assert_eq!(report.skipped, 0, "duplicates are not skips");
+        let page_count = |path: &std::path::Path| {
+            lib.books()
+                .iter()
+                .find(|book| book.path() == path)
+                .expect("book on the shelf")
+                .page_count_opt()
+        };
+        assert_eq!(page_count(&fresh_b), Some(5), "the new book gets its count");
+        assert_eq!(
+            (page_count(&already_a), page_count(&already_c)),
+            (None, None),
+            "books already on the shelf are not re-counted by an add"
+        );
+    }
+
+    #[test]
+    fn apply_outcomes_ignores_add_many_return_order() {
+        // The regression barrier. The count mapping is keyed by IDENTITY, so it
+        // holds for any permutation of `added`; the old single cross-iteration
+        // `Iterator::find` walk consumed the counts in input order and would run
+        // off the end here.
+        let first = std::path::PathBuf::from("first.cbz");
+        let second = std::path::PathBuf::from("second.cbz");
+        let mut lib = Library::new();
+        lib.add_many(vec![first.clone(), second.clone()]);
+        let added = vec![second.clone(), first.clone()];
+        let counts = std::collections::HashMap::from([
+            (
+                first.clone(),
+                std::num::NonZeroUsize::new(3).expect("nonzero"),
+            ),
+            (
+                second.clone(),
+                std::num::NonZeroUsize::new(7).expect("nonzero"),
+            ),
+        ]);
+
+        record_page_counts(&mut lib, &added, &counts);
+
+        let page_count = |path: &std::path::Path| {
+            lib.books()
+                .iter()
+                .find(|book| book.path() == path)
+                .and_then(|book| book.page_count_opt())
+        };
+        assert_eq!(
+            (page_count(&first), page_count(&second)),
+            (Some(3), Some(7)),
+            "counts must be matched by identity even when added paths are reordered"
         );
     }
 
