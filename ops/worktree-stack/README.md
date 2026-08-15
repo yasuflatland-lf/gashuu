@@ -93,6 +93,20 @@ do not need to be edited by hand. Intermediate CI runs on `main` showing `cancel
 during back-to-back merges are the Actions concurrency group superseding them — only the
 tip's verdict counts.
 
+## The shared `target` has one sharp edge
+
+`wt-new.sh` symlinks every worktree's `target` at the main checkout's build directory,
+which is what makes the gates fast. The cost: two worktrees are building into one place, so
+**cross-branch comparisons through cargo are unreliable** — `cargo nextest list` run in one
+worktree can report the other branch's test set. A gate run is unaffected (it rebuilds, and
+its exit code is honest); only *comparisons between branches* are.
+
+Compare blobs instead:
+
+```sh
+git show <branch>:crates/gashuu/src/viewer_state/tests.rs | grep -c '#\[test\]'
+```
+
 ## Cleanup
 
 ```sh
