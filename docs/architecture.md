@@ -521,25 +521,6 @@ focus. The Up arrow (`KeyCommand::GoToLibrary`, direction-independent) and the c
 one-shot-snaps the focused index to the last-opened book's visible row (resolved through the search
 projection; falls back to 0 when `None`, filtered out, or empty).
 
-### use_cases
-
-`use_cases.rs`. A thin re-export facade (split #241) that keeps the established
-`crate::use_cases::*` import
-paths stable after the open-a-book and bulk-remove use cases moved into their own modules (they share
-no state and no call path, so each got its own home). The whole file is two `pub(crate) use` blocks:
-
-```rust
-pub(crate) use crate::open_book::{
-    book_display_title, remove_empty_book, NoticesContent, OpenBookUseCase, OpenOutcome,
-    SkippedDetail,
-};
-pub(crate) use crate::remove_books::{confirm_delete_content, RemoveBooksUseCase};
-```
-
-So `use_cases::OpenBookUseCase`, `use_cases::remove_empty_book`,
-`use_cases::RemoveBooksUseCase`, etc. resolve; the definitions live in `open_book.rs` and
-`remove_books.rs` (the two entries below).
-
 ### open_book
 
 `open_book.rs`. `OpenBookUseCase` — the open-a-book application use case extracted from `main.rs`
@@ -565,7 +546,8 @@ So `use_cases::OpenBookUseCase`, `use_cases::remove_empty_book`,
   `leave_save_err` (the OUTGOING book's leave-point save failure, rendered through the existing
   `notice-failed-save-library` key BEFORE the open-time save lines), `settings_save_err`, and
   `library_save_err`.
-- `OpenOutcome` / `SkippedDetail` / `NoticesContent` are re-exported through `crate::use_cases`.
+- `OpenOutcome` / `SkippedDetail` / `NoticesContent` live here; `main.rs`, `handlers/library.rs`,
+  and `i18n::dynamic` import them straight from this module — there is no re-export facade.
 
 The reject-empty-books feature added a third `OpenOutcome` variant: `EmptyBookRejected { title,
 removed, save_error }`, returned when the source opens CLEANLY but counts zero pages. `apply_probed`
@@ -573,7 +555,7 @@ removed, save_error }`, returned when the source opens CLEANLY but counts zero p
 HERE — before `register_opened`, with the recents push / settings save / per-book view resolve /
 carousel rebuild / thumbnail start all bypassed (so an empty book never re-enters via
 `register_opened`); it removes the book if present (`Library::remove`, idempotent bool), re-saves,
-best-effort purges the removed book's cover (via the shared `use_cases::remove_empty_book`; Wave-2 #150
+best-effort purges the removed book's cover (via the shared `open_book::remove_empty_book`; Wave-2 #150
 closed the old open-path purge gap), and pre-captures any save error. AFTER `remove_empty_book` and
 BEFORE returning the variant it also calls `ViewerState::close()`, so the post-rejection state is
 `open_file()` `None`, `page_count()` `0`, no source mounted. WHY: `open_path_with_policy` SUCCEEDS on
@@ -604,7 +586,7 @@ it on the POSITIVE outcome — `enter_viewer = matches!(outcome, OpenOutcome::Su
 dropped the user into a blank 0-page stage). On `Error` it stays on the Library; when the file is
 missing or its volume is unmounted (the probe's `path_exists == false`, stat'd off-thread rather
 than by a live `path.exists()` call) it replaces the raw I/O error with the book-named
-`viewer-open-inaccessible` message (title via `use_cases::book_display_title`).
+`viewer-open-inaccessible` message (title via `open_book::book_display_title`).
 See [patterns.md](patterns.md), "OpenOutcome pattern", "finalize_open helper", and "Gate a screen
 transition on the POSITIVE outcome".
 
@@ -623,9 +605,8 @@ just-opened book's `ResolvedView` via `ViewerState::apply_resolved_view` (+ `Vie
 
 ### remove_books
 
-`remove_books.rs`. The "remove the selected books" bulk-delete use case (#129), split behind the
-`use_cases.rs` facade (#241) — the destructive parallel to `open_book`. Lean and HEADLESS: every
-member returns
+`remove_books.rs`. The "remove the selected books" bulk-delete use case (#129), given its own module
+by the #241 split — the destructive parallel to `open_book`. Lean and HEADLESS: every member returns
 data and touches no Slint; the UI tail lives in `carousel_refresh::finalize_remove`.
 
 - `RemoveBooksUseCase` — the "remove the selected books" use case. Holds four shared collaborators

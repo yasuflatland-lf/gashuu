@@ -26,7 +26,6 @@ mod selection_projection;
 mod thumbnail_strip;
 mod ui_marshal;
 mod update;
-mod use_cases;
 mod view_sync;
 mod viewer_state;
 mod viewport;
@@ -242,9 +241,9 @@ fn main() -> color_eyre::Result<()> {
     let selection = Rc::new(RefCell::new(LibrarySelectionState::default()));
 
     // The "open a book" use-case, shared via `Rc` so the open flow lives in one place
-    // (`use_cases::OpenBookUseCase`); the use case is headless and `finalize_open` applies
+    // (`open_book::OpenBookUseCase`); the use case is headless and `finalize_open` applies
     // the UI effects.
-    let open_book = Rc::new(use_cases::OpenBookUseCase::new(
+    let open_book = Rc::new(open_book::OpenBookUseCase::new(
         Rc::clone(&state),
         Rc::clone(&settings),
         Rc::clone(&viewport),
@@ -305,8 +304,7 @@ fn main() -> color_eyre::Result<()> {
 
     // Wire all event handlers onto the window (handlers/, #151).
     handlers::wire_open_handlers(
-        &ui, &state, &viewport, &settings, &library, &open_book, &covers, &pages, &adder, &search,
-        &selection, &localizer,
+        &ui, &settings, &library, &covers, &adder, &search, &selection, &localizer,
     );
     handlers::wire_carousel_handlers(
         &ui,
@@ -717,14 +715,14 @@ fn finalize_open(
     pages: &PageController,
     thumbs: &Rc<ThumbnailController>,
     deps: &CarouselRefresh,
-    outcome: use_cases::OpenOutcome,
+    outcome: open_book::OpenOutcome,
 ) {
     let loader = deps.localizer.loader();
     match outcome {
-        use_cases::OpenOutcome::Error(e_str) => {
+        open_book::OpenOutcome::Error(e_str) => {
             ui.set_status_text(crate::i18n::dynamic::open_error_str(loader, &e_str).into());
         }
-        use_cases::OpenOutcome::Success {
+        open_book::OpenOutcome::Success {
             notices,
             count_changed,
         } => {
@@ -755,7 +753,7 @@ fn finalize_open(
                 ui.set_status_text(format!("{base} \u{2014} {detail}").into());
             }
         }
-        use_cases::OpenOutcome::EmptyBookRejected {
+        open_book::OpenOutcome::EmptyBookRejected {
             title,
             removed,
             save_error,
@@ -766,7 +764,7 @@ fn finalize_open(
             finalize_empty_book_rejected(
                 ui,
                 deps,
-                &crate::open_book::EmptyBookOutcome {
+                &open_book::EmptyBookOutcome {
                     title,
                     removed,
                     save_error,

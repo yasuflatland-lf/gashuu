@@ -7,10 +7,10 @@
 //!
 //! The `format_status` and `format_notices` aggregators apply the active locale to
 //! the language-free content structs from `crate::viewer_state` (`StatusContent`)
-//! and `crate::use_cases` (`NoticesContent`) respectively; the remaining functions format
+//! and `crate::open_book` (`NoticesContent`) respectively; the remaining functions format
 //! individual messages from `gashuu_core` types.
 
-use crate::use_cases::{NoticesContent, SkippedDetail};
+use crate::open_book::{NoticesContent, SkippedDetail};
 use crate::viewer_state::{StatusContent, StatusKind};
 use gashuu_core::{ReadingDirection, SpreadMode};
 use i18n_embed::fluent::FluentLanguageLoader;

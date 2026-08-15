@@ -814,11 +814,11 @@ Selection:
 
     // ---- test 7: japanese notices render in japanese ---------------------
 
-    /// Successor to the deleted `use_cases::tests::japanese_notices_render_in_japanese`.
+    /// Successor to the deleted `open_book::tests::japanese_notices_render_in_japanese`.
     /// Exercises `dynamic::format_notices` with a ja-switched loader.
     #[test]
     fn japanese_notices_render_in_japanese() {
-        use crate::use_cases::{NoticesContent, SkippedDetail};
+        use crate::open_book::{NoticesContent, SkippedDetail};
         let loc = Localizer::new(Language::Ja);
         let content = NoticesContent {
             skipped: 3,
@@ -848,7 +848,7 @@ Selection:
     /// Pins exact English output of `dynamic::` fns against the historical strings.
     #[test]
     fn english_dynamic_fns_preserve_historical_strings() {
-        use crate::use_cases::{NoticesContent, SkippedDetail};
+        use crate::open_book::{NoticesContent, SkippedDetail};
         use crate::viewer_state::{StatusContent, StatusKind};
         use gashuu_core::{ReadingDirection, SpreadMode};
 
@@ -939,12 +939,12 @@ Selection:
 
     // ---- test 8b: format_notices ordering -----------------------------------
 
-    /// Successor to use_cases::tests::all_three_failures_emit_in_skipped_settings_library_order.
+    /// Successor to open_book::tests::all_three_failures_emit_in_skipped_settings_library_order.
     /// Asserts that format_notices produces notices in the canonical order:
     /// skipped entries FIRST, then settings-save failure, then library-save failure.
     #[test]
     fn format_notices_preserves_skipped_settings_library_order() {
-        use crate::use_cases::{NoticesContent, SkippedDetail};
+        use crate::open_book::{NoticesContent, SkippedDetail};
         let loc = Localizer::new(Language::En);
         let l = loc.loader();
         let all_three = NoticesContent {
