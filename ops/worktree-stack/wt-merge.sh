@@ -64,9 +64,15 @@ for n in "$@"; do
 
   st=$(gh pr view "$n" --json baseRefName,mergeable,mergeStateStatus \
         -q '"\(.baseRefName)|\(.mergeable)|\(.mergeStateStatus)"')
-  chk=$(gh pr view "$n" --json statusCheckRollup \
-        -q '[.statusCheckRollup[]?|.conclusion//.state]|group_by(.)|map("\(.[0]):\(length)")|join(",")')
-  echo "#$n  $st  checks=$chk"
+  # Count, do not pattern-match. An earlier version tested the rendered summary
+  # with `case "$chk" in SUCCESS:*)`, which is sorted alphabetically by group_by:
+  # FAILURE sorts BEFORE SUCCESS and was caught, but TIMED_OUT sorts AFTER it, so
+  # "SUCCESS:8,TIMED_OUT:1" matched the glob and would have merged a red PR.
+  rollup=$(gh pr view "$n" --json statusCheckRollup -q '[.statusCheckRollup[]?|.conclusion//.state]')
+  total=$(printf '%s' "$rollup" | jq 'length')
+  green=$(printf '%s' "$rollup" | jq '[.[]|select(.=="SUCCESS")]|length')
+  chk=$(printf '%s' "$rollup" | jq -r 'group_by(.)|map("\(.[0]):\(length)")|join(",")')
+  echo "#$n  $st  checks=${chk:-<none>}"
 
   case "$st" in
     main\|MERGEABLE\|CLEAN) ;;
@@ -83,10 +89,16 @@ for n in "$@"; do
       exit 5 ;;
   esac
 
-  case "$chk" in
-    SUCCESS:*) ;;
-    *) echo ">>> #$n CI is not fully green ($chk) — refusing"; exit 6 ;;
-  esac
+  if [ "$total" -eq 0 ]; then
+    echo ">>> #$n reports NO checks at all. Either CI has not started, or GitHub"
+    echo ">>> dropped the pull_request event — \`gh pr close $n && gh pr reopen $n\`"
+    echo ">>> re-fires it. Refusing to merge something nothing has verified."
+    exit 6
+  fi
+  if [ "$green" -ne "$total" ]; then
+    echo ">>> #$n CI is not fully green ($green/$total SUCCESS: $chk) — refusing"
+    exit 6
+  fi
 
   if gh pr merge "$n" --merge; then
     sleep 5
