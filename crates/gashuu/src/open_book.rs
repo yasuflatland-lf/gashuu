@@ -893,19 +893,26 @@ mod tests {
     }
 
     /// The behaviour-preservation barrier for the `apply_probed` split: the split
-    /// may not add, drop, or move a disk write. Counts BOTH effects on all four
+    /// may not add, drop, or move a disk write. Counts BOTH effects on all five
     /// paths at once, so moving a step across the empty-book early return (the one
     /// mistake the split could plausibly make) shows up as a changed count rather
     /// than as a silently different side effect.
     ///
+    /// The empty-book rows run BOTH ways on `track_recent_sources`: with tracking
+    /// off, a `record_recent` hoisted above the ADR-0009 bail-out would still write
+    /// nothing, so that row alone cannot see the move. The tracking-ON empty row is
+    /// what pins the recents push to the far side of the early return — its expected
+    /// 0 settings writes are unreachable unless the push really is skipped.
+    ///
     /// Rows collect into a `Vec` and assert once, so one broken path cannot mask
-    /// the other three.
+    /// the other four.
     #[test]
     fn apply_probed_write_count_is_unchanged() {
         #[derive(Clone, Copy)]
         enum Scenario {
             Failed,
             StoredEmpty,
+            StoredEmptyWithRecents,
             SuccessWithoutRecents,
             SuccessWithRecents,
         }
@@ -913,6 +920,11 @@ mod tests {
         let cases = [
             ("failed open", Scenario::Failed, (1, 0)),
             ("stored empty book", Scenario::StoredEmpty, (2, 0)),
+            (
+                "stored empty book with recents on",
+                Scenario::StoredEmptyWithRecents,
+                (2, 0),
+            ),
             (
                 "successful open with recents off",
                 Scenario::SuccessWithoutRecents,
@@ -930,7 +942,7 @@ mod tests {
             let root = tempfile::tempdir().expect("tempdir");
             let source = root.path().join("source");
             let library = match scenario {
-                Scenario::StoredEmpty => {
+                Scenario::StoredEmpty | Scenario::StoredEmptyWithRecents => {
                     std::fs::create_dir(&source).expect("create empty source");
                     let canonical = source.canonicalize().expect("canonical empty source");
                     let mut library = Library::new();
@@ -949,7 +961,10 @@ mod tests {
             let settings_writes = Rc::new(Cell::new(0));
             let counted_settings_writes = Rc::clone(&settings_writes);
             let settings = Settings {
-                track_recent_sources: matches!(scenario, Scenario::SuccessWithRecents),
+                track_recent_sources: matches!(
+                    scenario,
+                    Scenario::SuccessWithRecents | Scenario::StoredEmptyWithRecents
+                ),
                 ..Settings::default()
             };
             let (use_case, _) = use_case_with_saves(
