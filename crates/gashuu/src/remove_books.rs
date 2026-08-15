@@ -342,6 +342,9 @@ pub(crate) fn confirm_delete_content(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::view_sync::current_runtime_view;
+    use crate::viewport::ViewportState;
+    use gashuu_core::{CoverMode, FitMode, ReadingDirection, Settings, SpreadMode};
     use std::num::NonZeroUsize;
 
     /// Build a real failing `CoreError` for the save-result arguments. Uses the
@@ -696,6 +699,91 @@ mod tests {
             content.title.contains('2'),
             "title still counts the unresolvable selection, got {:?}",
             content.title
+        );
+    }
+
+    // ---- the pending-inherit discard on remove (#540, scope item 6) --------
+
+    /// Deleting the OPEN book must discard that book's pending "reset to global"
+    /// intent along with the book itself. `ViewerState::close` clears the source,
+    /// not the runtime view modes, so the intent recorded for the deleted book
+    /// still equals the live runtime afterwards — the equality predicate cannot
+    /// retire it, only the explicit `clear_pending_inherit()` can, and anything
+    /// opened next would otherwise start out believing it had just been reset.
+    #[test]
+    fn removing_the_open_book_discards_its_pending_inherit() {
+        let book_dir = tempfile::tempdir().expect("create book directory");
+        let store_dir = tempfile::tempdir().expect("create store directory");
+        let raw = Settings {
+            reading_direction: ReadingDirection::Rtl,
+            spread_mode: SpreadMode::Double,
+            cover_mode: CoverMode::Paired,
+            fit_mode: FitMode::Actual,
+            ..Settings::default()
+        };
+        let state = Rc::new(RefCell::new(ViewerState::from_settings(&raw)));
+        let viewport = Rc::new(RefCell::new(ViewportState::from_settings(&raw)));
+        let settings = Rc::new(RefCell::new(raw));
+        state
+            .borrow_mut()
+            .open_path(book_dir.path())
+            .expect("open the fixture book");
+        let open = state
+            .borrow()
+            .open_file()
+            .map(Path::to_path_buf)
+            .expect("the fixture book must be open");
+
+        let mut lib = Library::new();
+        assert!(lib.add(open.clone()).is_some());
+        let library = Rc::new(RefCell::new(lib));
+        let mut search = LibrarySearchState::default();
+        search.recompute(&library.borrow());
+        let mut selection = LibrarySelectionState::default();
+        selection.insert(open.clone());
+
+        // Arm the intent the way the dialog does: move the runtime off the globals,
+        // then reset it back, so the recorded view is genuinely re-installed.
+        let session = Rc::new(RefCell::new(DialogSession::new()));
+        let _ = state
+            .borrow_mut()
+            .set_spread_mode(gashuu_core::SpreadMode::Single);
+        session
+            .borrow_mut()
+            .reset_to_global(&state, &viewport, &settings);
+        assert!(
+            session
+                .borrow()
+                .inherit_pending(current_runtime_view(&state, &viewport)),
+            "fixture must arm the pending intent before the removal"
+        );
+
+        let use_case = RemoveBooksUseCase::new(
+            Rc::clone(&state),
+            Rc::clone(&session),
+            Rc::clone(&library),
+            Rc::new(RefCell::new(search)),
+            Rc::new(RefCell::new(selection)),
+            Rc::new(Some(gashuu_core::LibraryStore::new(
+                store_dir.path().join("library.json"),
+            ))),
+        );
+
+        assert_eq!(
+            use_case.run(),
+            RemoveOutcome::Removed {
+                n: 1,
+                closed_open_book: true
+            }
+        );
+
+        // `close()` leaves the view modes standing, so the recorded view still
+        // matches the runtime — the discard has to be explicit.
+        assert!(
+            !session
+                .borrow()
+                .inherit_pending(current_runtime_view(&state, &viewport)),
+            "deleting the open book must discard its pending reset intent"
         );
     }
 }
