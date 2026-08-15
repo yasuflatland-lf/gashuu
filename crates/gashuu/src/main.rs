@@ -305,6 +305,7 @@ fn main() -> color_eyre::Result<()> {
         Rc::clone(&state),
         Rc::clone(&settings),
         Rc::clone(&viewport),
+        Rc::clone(&dialog_session),
         Rc::clone(&library),
         Box::new({
             let store = Rc::clone(&library_store);
@@ -400,6 +401,7 @@ fn main() -> color_eyre::Result<()> {
     handlers::wire_selection_handlers(
         &ui,
         &state,
+        &dialog_session,
         &library,
         &covers,
         &search,
@@ -431,6 +433,7 @@ fn main() -> color_eyre::Result<()> {
         &ui,
         &state,
         &viewport,
+        &dialog_session,
         &settings,
         &library,
         &nav,
@@ -554,6 +557,7 @@ fn stage_exit_state(
         ViewModeRoute::AppExit,
         state,
         viewport,
+        dialog_session,
         settings,
         library,
         save,

@@ -141,13 +141,6 @@ pub struct ViewerState {
     /// Used by `view_sync` to identify the book when staging its resume position
     /// at every leave point.
     open_file: Option<PathBuf>,
-    /// True while the open book is "inherit-pending": the user just pressed
-    /// "Reset to global", so its per-book override should stay EMPTY (inherit all
-    /// defaults) instead of being re-pinned by the next view-override write-back.
-    /// Set by the reset handler via [`Self::mark_inherit_pending`]; cleared on any
-    /// real mode change (the `set_*`/`toggle_*` methods) and on `set_source`/`close`
-    /// (opening/closing a book). Read by `view_sync::stage_view_override_write_back`.
-    inherit_pending: bool,
 }
 
 impl ViewerState {
@@ -173,7 +166,6 @@ impl ViewerState {
             last_open_skipped: 0,
             last_open_truncated: false,
             open_file: None,
-            inherit_pending: false,
         }
     }
 
@@ -194,7 +186,6 @@ impl ViewerState {
             last_open_skipped: 0,
             last_open_truncated: false,
             open_file: None,
-            inherit_pending: false,
         }
     }
 
@@ -205,9 +196,6 @@ impl ViewerState {
     pub fn set_source(&mut self, source: Arc<dyn PageSource>) {
         self.source = Some(Arc::clone(&source));
         self.open_file = None;
-        // Opening (or replacing) a book resets any pending "inherit" intent: it
-        // belonged to the previously open book, not this one.
-        self.inherit_pending = false;
         let cache = ImageCache::new(source, self.cache_config);
         self.page_count = cache.len();
         self.cache = Some(cache);
@@ -237,26 +225,6 @@ impl ViewerState {
         self.last_open_skipped = 0;
         self.last_open_truncated = false;
         self.open_file = None;
-        self.inherit_pending = false;
-    }
-
-    /// Mark the open book as inherit-pending after a "Reset to global": the next
-    /// view-override write-back must keep the override EMPTY (inherit) rather than
-    /// re-pin the runtime modes. Cleared by any real mode change or by opening/
-    /// closing a book. See `view_sync::stage_view_override_write_back`.
-    pub fn mark_inherit_pending(&mut self) {
-        self.inherit_pending = true;
-    }
-
-    /// Clear the inherit-pending flag: a real view-mode change re-enables pinning
-    /// the runtime modes into the book's override at the next write-back.
-    pub fn clear_inherit_pending(&mut self) {
-        self.inherit_pending = false;
-    }
-
-    /// Whether the open book is inherit-pending (see [`Self::mark_inherit_pending`]).
-    pub fn is_inherit_pending(&self) -> bool {
-        self.inherit_pending
     }
 
     /// Returns the currently opened page source, if any. Used by the UI to
@@ -529,8 +497,6 @@ impl ViewerState {
             SpreadMode::Auto => SpreadMode::Single,
         };
         self.renormalize_index();
-        // A real mode change re-enables pinning the runtime into the override.
-        self.inherit_pending = false;
         before != self.spread_mode
     }
 
@@ -571,8 +537,6 @@ impl ViewerState {
             CoverMode::Paired => CoverMode::Standalone,
         };
         self.renormalize_index();
-        // A real mode change re-enables pinning the runtime into the override.
-        self.inherit_pending = false;
         before != self.cover_mode
     }
 
@@ -587,8 +551,6 @@ impl ViewerState {
             ReadingDirection::Ltr => ReadingDirection::Rtl,
             ReadingDirection::Rtl => ReadingDirection::Ltr,
         };
-        // A real mode change re-enables pinning the runtime into the override.
-        self.inherit_pending = false;
         before != self.reading_direction
     }
 
@@ -601,8 +563,6 @@ impl ViewerState {
         }
         self.spread_mode = mode;
         self.renormalize_index();
-        // A real mode change re-enables pinning the runtime into the override.
-        self.inherit_pending = false;
         true
     }
 
@@ -615,8 +575,6 @@ impl ViewerState {
         }
         self.cover_mode = mode;
         self.renormalize_index();
-        // A real mode change re-enables pinning the runtime into the override.
-        self.inherit_pending = false;
         true
     }
 
@@ -638,8 +596,6 @@ impl ViewerState {
             return false;
         }
         self.reading_direction = dir;
-        // A real mode change re-enables pinning the runtime into the override.
-        self.inherit_pending = false;
         true
     }
 

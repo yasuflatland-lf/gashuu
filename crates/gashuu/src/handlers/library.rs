@@ -437,6 +437,7 @@ pub(crate) fn wire_carousel_handlers(
 pub(crate) fn wire_selection_handlers(
     ui: &ViewerWindow,
     state: &Rc<RefCell<ViewerState>>,
+    dialog_session: &Rc<RefCell<DialogSession>>,
     library: &Rc<RefCell<Library>>,
     covers: &Rc<cover_loader::CoverController>,
     search: &Rc<RefCell<LibrarySearchState>>,
@@ -447,6 +448,7 @@ pub(crate) fn wire_selection_handlers(
     // Rebind the `&Rc<_>` params to owned `Rc` locals so each closure's `Rc::clone(&handle)`
     // prelude stays byte-identical to its pre-extraction form in `main`.
     let state = Rc::clone(state);
+    let dialog_session = Rc::clone(dialog_session);
     let library = Rc::clone(library);
     let covers = Rc::clone(covers);
     let search = Rc::clone(search);
@@ -626,6 +628,7 @@ pub(crate) fn wire_selection_handlers(
         let library_store = Rc::clone(&library_store);
         let remove_books = remove_books::RemoveBooksUseCase::new(
             Rc::clone(&state),
+            Rc::clone(&dialog_session),
             Rc::clone(&library),
             Rc::clone(&search),
             Rc::clone(&selection),
@@ -748,18 +751,18 @@ mod tests {
         let mut library_value = Library::new();
         assert!(library_value.add(canonical.clone()).is_some());
         let library = Rc::new(RefCell::new(library_value));
+        let dialog_session = Rc::new(RefCell::new(DialogSession::new()));
         // Hermetic: both persistence effects are injected no-ops, so nothing reaches
         // the process data directory.
         let open_book = open_book::OpenBookUseCase::new(
             Rc::clone(&state),
             Rc::clone(&settings),
             Rc::clone(&viewport),
+            Rc::clone(&dialog_session),
             Rc::clone(&library),
             Box::new(|_| Ok(())),
             Box::new(|_| Ok(())),
         );
-        let dialog_session = Rc::new(RefCell::new(DialogSession::new()));
-
         // The Library-screen dialog seeds the runtime with G, then the in-flight
         // open of the SECOND book lands.
         dialog_session

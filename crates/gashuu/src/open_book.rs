@@ -1,7 +1,7 @@
 //! The "open a book" application use case, extracted out of `main.rs`.
 //!
-//! [`OpenBookUseCase`] bundles the four headless collaborators the open path
-//! coordinates (state, settings, viewport, library) as fields, so the open sites
+//! [`OpenBookUseCase`] bundles the headless collaborators the open path
+//! coordinates as fields, so the open sites
 //! call [`OpenBookUseCase::apply_probed`] with the per-call `path` plus the
 //! already-completed probe (`skipped_detail` is derived internally);
 //! [`OpenBookUseCase::run`] is the synchronous `probe_open` + `apply_probed`
@@ -17,6 +17,7 @@ use std::rc::Rc;
 use gashuu_core::{CoreError, Library, Settings, ThumbnailCache};
 
 use crate::cover_loader::purge_cover;
+use crate::dialog_session::DialogSession;
 use crate::open_controller::{probe_open, OpenProbeOutcome};
 use crate::view_sync::persist_leave_point_with;
 use crate::viewer_state::ViewerState;
@@ -88,7 +89,7 @@ pub(crate) enum SkippedDetail {
     Archive,
 }
 
-/// Coordinates the "open a book" use case. The four headless collaborators it
+/// Coordinates the "open a book" use case. The headless collaborators it
 /// threads are fields, so the open sites call [`OpenBookUseCase::apply_probed`]
 /// with just a `path` and its probe; `main.rs`'s `finalize_open` applies the UI
 /// effects (symmetry with `RemoveBooksUseCase`).
@@ -96,6 +97,7 @@ pub(crate) struct OpenBookUseCase {
     state: Rc<RefCell<ViewerState>>,
     settings: Rc<RefCell<Settings>>,
     viewport: Rc<RefCell<ViewportState>>,
+    dialog_session: Rc<RefCell<DialogSession>>,
     library: Rc<RefCell<Library>>,
     save_library: SaveLibrary,
     save_settings: SaveSettings,
@@ -108,6 +110,7 @@ impl OpenBookUseCase {
         state: Rc<RefCell<ViewerState>>,
         settings: Rc<RefCell<Settings>>,
         viewport: Rc<RefCell<ViewportState>>,
+        dialog_session: Rc<RefCell<DialogSession>>,
         library: Rc<RefCell<Library>>,
         save_library: SaveLibrary,
         save_settings: SaveSettings,
@@ -116,6 +119,7 @@ impl OpenBookUseCase {
             state,
             settings,
             viewport,
+            dialog_session,
             library,
             save_library,
             save_settings,
@@ -155,6 +159,7 @@ impl OpenBookUseCase {
         let state = &self.state;
         let settings = &self.settings;
         let viewport = &self.viewport;
+        let dialog_session = &self.dialog_session;
         let library = &self.library;
 
         // Capture the OUTGOING book's position and view modes before replacing
@@ -164,6 +169,7 @@ impl OpenBookUseCase {
             ViewModeRoute::OpenDifferentBook,
             state,
             viewport,
+            dialog_session,
             settings,
             library,
             |library| (self.save_library)(library),
@@ -179,6 +185,7 @@ impl OpenBookUseCase {
                     probe.truncated,
                     probe.canonical,
                 );
+                dialog_session.borrow_mut().clear_pending_inherit();
                 tracing::info!(path = %path.display(), "opened source");
                 is_dir
             }
@@ -754,10 +761,12 @@ mod tests {
     ) -> (OpenBookUseCase, Rc<RefCell<ViewerState>>) {
         let state = Rc::new(RefCell::new(ViewerState::from_settings(&settings)));
         let viewport = Rc::new(RefCell::new(ViewportState::from_settings(&settings)));
+        let dialog_session = Rc::new(RefCell::new(DialogSession::new()));
         let use_case = OpenBookUseCase::new(
             Rc::clone(&state),
             Rc::new(RefCell::new(settings)),
             viewport,
+            dialog_session,
             library,
             Box::new(save_library),
             Box::new(save_settings),

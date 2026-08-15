@@ -155,6 +155,7 @@ pub(crate) fn wire_settings_handlers(
                             ViewModeRoute::DialogClosedOnLibrary,
                             &state,
                             &viewport,
+                            &dialog_session,
                             &settings,
                             &library,
                             &library_store,
@@ -184,6 +185,7 @@ pub(crate) fn wire_settings_handlers(
                             ViewModeRoute::DialogClosedOnViewer,
                             &state,
                             &viewport,
+                            &dialog_session,
                             &settings,
                             &library,
                             &library_store,
@@ -249,6 +251,7 @@ pub(crate) fn wire_settings_handlers(
         let state = Rc::clone(&state);
         let settings = Rc::clone(&settings);
         let viewport = Rc::clone(&viewport);
+        let dialog_session = Rc::clone(&dialog_session);
         let library = Rc::clone(&library);
         let localizer = Rc::clone(&localizer);
         let library_store = Rc::clone(&library_store);
@@ -263,7 +266,9 @@ pub(crate) fn wire_settings_handlers(
                         report_save_error(&ui, localizer.loader(), &e, "failed to save library on override reset");
                     }
                 }
-                DialogSession::reset_to_global(&state, &viewport, &settings);
+                dialog_session
+                    .borrow_mut()
+                    .reset_to_global(&state, &viewport, &settings);
                 refresh(
                     &ui,
                     &state.borrow(),
@@ -483,10 +488,6 @@ pub(crate) fn wire_view_mode_handlers(
                 // owns fit_mode, persisted to the book's per-book override, not Settings.
                 if viewport.borrow().fit_mode() != mode {
                     viewport.borrow_mut().set_fit(mode);
-                    // Fit lives on ViewportState, so its change can't clear the
-                    // inherit-pending guard the way the ViewerState setters do (#415);
-                    // clear it here so a fit change after a reset re-enables pinning.
-                    state.borrow_mut().clear_inherit_pending();
                     refresh(
                         &ui,
                         &state.borrow(),

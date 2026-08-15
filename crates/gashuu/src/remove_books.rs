@@ -19,6 +19,7 @@ use gashuu_core::{Book, CoreError, Library, RemovalReport, ThumbnailCache};
 use i18n_embed::fluent::FluentLanguageLoader;
 
 use crate::cover_loader::purge_cover;
+use crate::dialog_session::DialogSession;
 use crate::library_model::{LibrarySearchState, LibrarySelectionState};
 use crate::viewer_state::ViewerState;
 use crate::{save_library, LibraryStoreHandle};
@@ -115,6 +116,7 @@ pub(crate) fn removed_contains_open(open_file: Option<&Path>, removed: &[PathBuf
 /// outcome.
 pub(crate) struct RemoveBooksUseCase {
     state: Rc<RefCell<ViewerState>>,
+    dialog_session: Rc<RefCell<DialogSession>>,
     library: Rc<RefCell<Library>>,
     search: Rc<RefCell<LibrarySearchState>>,
     selection: Rc<RefCell<LibrarySelectionState>>,
@@ -124,6 +126,7 @@ pub(crate) struct RemoveBooksUseCase {
 impl RemoveBooksUseCase {
     pub(crate) fn new(
         state: Rc<RefCell<ViewerState>>,
+        dialog_session: Rc<RefCell<DialogSession>>,
         library: Rc<RefCell<Library>>,
         search: Rc<RefCell<LibrarySearchState>>,
         selection: Rc<RefCell<LibrarySelectionState>>,
@@ -131,6 +134,7 @@ impl RemoveBooksUseCase {
     ) -> Self {
         Self {
             state,
+            dialog_session,
             library,
             search,
             selection,
@@ -225,6 +229,7 @@ impl RemoveBooksUseCase {
             let open_file = self.state.borrow().open_file().map(Path::to_path_buf);
             if removed_contains_open(open_file.as_deref(), &report.removed) {
                 self.state.borrow_mut().close();
+                self.dialog_session.borrow_mut().clear_pending_inherit();
                 true
             } else {
                 false

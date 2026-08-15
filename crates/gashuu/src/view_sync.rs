@@ -1,4 +1,7 @@
-use crate::{save_library, viewer_state::ViewerState, viewport::ViewportState, LibraryStoreHandle};
+use crate::{
+    dialog_session::DialogSession, save_library, viewer_state::ViewerState,
+    viewport::ViewportState, LibraryStoreHandle,
+};
 use gashuu_core::{
     CoreError, FitMode, Library, ReadingDirection, ResolvedView, Settings, ViewOverride,
 };
@@ -53,13 +56,20 @@ pub(crate) fn persist_leave_point(
     route: ViewModeRoute,
     state: &Rc<RefCell<ViewerState>>,
     viewport: &Rc<RefCell<ViewportState>>,
+    dialog_session: &Rc<RefCell<DialogSession>>,
     settings: &Rc<RefCell<Settings>>,
     library: &Rc<RefCell<Library>>,
     library_store: &LibraryStoreHandle,
 ) -> Result<(), CoreError> {
-    persist_leave_point_with(route, state, viewport, settings, library, |library| {
-        save_library(library_store, library)
-    })
+    persist_leave_point_with(
+        route,
+        state,
+        viewport,
+        dialog_session,
+        settings,
+        library,
+        |library| save_library(library_store, library),
+    )
 }
 
 /// Save-injection seam for proving the one-save boundary without touching the
@@ -68,6 +78,7 @@ pub(crate) fn persist_leave_point_with(
     route: ViewModeRoute,
     state: &Rc<RefCell<ViewerState>>,
     viewport: &Rc<RefCell<ViewportState>>,
+    dialog_session: &Rc<RefCell<DialogSession>>,
     settings: &Rc<RefCell<Settings>>,
     library: &Rc<RefCell<Library>>,
     save: impl FnOnce(&Library) -> Result<(), CoreError>,
@@ -78,7 +89,7 @@ pub(crate) fn persist_leave_point_with(
     ) {
         stage_position_write_back(state, library);
     }
-    stage_view_modes_to_sink(route, state, viewport, settings, library);
+    stage_view_modes_to_sink(route, state, viewport, dialog_session, settings, library);
 
     let result = save(&library.borrow());
     if let Err(e) = &result {
@@ -92,6 +103,7 @@ fn stage_view_modes_to_sink(
     route: ViewModeRoute,
     state: &Rc<RefCell<ViewerState>>,
     viewport: &Rc<RefCell<ViewportState>>,
+    dialog_session: &Rc<RefCell<DialogSession>>,
     settings: &Rc<RefCell<Settings>>,
     library: &Rc<RefCell<Library>>,
 ) {
@@ -106,12 +118,12 @@ fn stage_view_modes_to_sink(
         ViewModeRoute::DialogClosedOnViewer
         | ViewModeRoute::LeaveViewer
         | ViewModeRoute::OpenDifferentBook => {
-            stage_view_override_write_back(state, viewport, library);
+            stage_view_override_write_back(state, viewport, dialog_session, library);
         }
         ViewModeRoute::AppExit => {
             // Per-book override FIRST (no-op if no book is open), so the open
             // book's modes are saved before the open-state-guarded global reconcile.
-            stage_view_override_write_back(state, viewport, library);
+            stage_view_override_write_back(state, viewport, dialog_session, library);
             if state.borrow().open_file().is_none() {
                 apply_runtime_view_to_settings(
                     &state.borrow(),
@@ -259,7 +271,7 @@ fn stage_position_write_back(state: &Rc<RefCell<ViewerState>>, library: &Rc<RefC
 /// reset and no mode has changed since, the write-back must keep the override
 /// EMPTY (`ViewOverride::none()`) rather than re-pin the runtime — otherwise
 /// closing the dialog would instantly undo the reset. Cleared by any real mode
-/// change (see `ViewerState`), so a re-selection after reset still pins normally.
+/// change, because `DialogSession` derives the guard from runtime equality.
 ///
 /// Extracted (mirrors `position_to_write_back`) so the predicate is unit-tested
 /// without the effectful `set_overrides` + `save`.
@@ -293,24 +305,26 @@ fn view_override_to_write_back(
 /// keyboard toggle (D/R/C/fit) persists per-book without opening the dialog.
 /// No-op when no book is open.
 ///
-/// Borrow discipline (mirrors `stage_position_write_back`): the `state`/`viewport`
-/// shared borrows are confined to the leading block expression and drop before
-/// `library.borrow_mut()`. `state` and `viewport` are distinct `RefCell`s, so
-/// holding shared borrows of both at once is fine.
+/// Borrow discipline (mirrors `stage_position_write_back`): the current runtime
+/// view is built in its own statement, then the session predicate is computed.
+/// All shared borrows drop before `library.borrow_mut()`.
 fn stage_view_override_write_back(
     state: &Rc<RefCell<ViewerState>>,
     viewport: &Rc<RefCell<ViewportState>>,
+    dialog_session: &Rc<RefCell<DialogSession>>,
     library: &Rc<RefCell<Library>>,
 ) {
+    let current = current_runtime_view(state, viewport);
+    let inherit_pending = dialog_session.borrow().inherit_pending(current);
     let Some((path, overrides)) = ({
         let s = state.borrow();
         view_override_to_write_back(
             s.open_file(),
-            s.reading_direction(),
-            s.spread_mode(),
-            s.cover_mode(),
-            viewport.borrow().fit_mode(),
-            s.is_inherit_pending(),
+            current.reading_direction,
+            current.spread_mode,
+            current.cover_mode,
+            current.fit_mode,
+            inherit_pending,
         )
     }) else {
         return; // no book open — nothing to write back
@@ -554,7 +568,7 @@ mod tests {
     }
 
     #[test]
-    fn library_dialog_global_edit_after_reset_keeps_override_empty_on_leave() {
+    fn write_back_after_reset_then_fit_change_pins_the_runtime() {
         let root = tempfile::tempdir().expect("tempdir");
         let book = root.path().join("book");
         std::fs::create_dir(&book).expect("create book");
@@ -579,16 +593,127 @@ mod tests {
         let mut library_value = Library::new();
         assert!(library_value.add(canonical.clone()).is_some());
         let library = Rc::new(RefCell::new(library_value));
-        let mut session = DialogSession::new();
+        let dialog_session = Rc::new(RefCell::new(DialogSession::new()));
 
-        DialogSession::reset_to_global(&state, &viewport, &settings);
-        session.open(DialogScope::Library, &state, &viewport, &settings);
-        state.borrow_mut().set_spread_mode(SpreadMode::Single);
-        session.end(&state, &viewport);
+        dialog_session
+            .borrow_mut()
+            .reset_to_global(&state, &viewport, &settings);
+        viewport.borrow_mut().set_fit(FitMode::Whole);
         persist_leave_point_with(
             ViewModeRoute::LeaveViewer,
             &state,
             &viewport,
+            &dialog_session,
+            &settings,
+            &library,
+            |_| Ok(()),
+        )
+        .expect("persist leave point");
+
+        assert_eq!(
+            library.borrow().overrides_for(&canonical),
+            ViewOverride {
+                reading_direction: Some(ReadingDirection::Rtl),
+                spread_mode: Some(SpreadMode::Double),
+                cover_mode: Some(CoverMode::Paired),
+                fit_mode: Some(FitMode::Whole),
+            }
+        );
+    }
+
+    #[test]
+    fn write_back_after_reset_keeps_the_override_empty() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let book = root.path().join("book");
+        std::fs::create_dir(&book).expect("create book");
+
+        let settings = Rc::new(RefCell::new(Settings {
+            reading_direction: ReadingDirection::Rtl,
+            spread_mode: SpreadMode::Double,
+            cover_mode: CoverMode::Paired,
+            fit_mode: FitMode::Actual,
+            ..Settings::default()
+        }));
+        let state = Rc::new(RefCell::new(ViewerState::new()));
+        state.borrow_mut().open_path(&book).expect("open test book");
+        let canonical = state
+            .borrow()
+            .open_file()
+            .expect("open file after successful open")
+            .to_path_buf();
+        let viewport = Rc::new(RefCell::new(ViewportState::from_settings(
+            &settings.borrow(),
+        )));
+        let mut library_value = Library::new();
+        assert!(library_value.add(canonical.clone()).is_some());
+        let library = Rc::new(RefCell::new(library_value));
+        let dialog_session = Rc::new(RefCell::new(DialogSession::new()));
+
+        dialog_session
+            .borrow_mut()
+            .reset_to_global(&state, &viewport, &settings);
+        persist_leave_point_with(
+            ViewModeRoute::LeaveViewer,
+            &state,
+            &viewport,
+            &dialog_session,
+            &settings,
+            &library,
+            |_| Ok(()),
+        )
+        .expect("persist leave point");
+
+        assert_eq!(
+            library.borrow().overrides_for(&canonical),
+            ViewOverride::none()
+        );
+    }
+
+    #[test]
+    fn library_dialog_global_edit_after_reset_keeps_override_empty_on_leave() {
+        // #414/#415 end-to-end: after a reset, editing a GLOBAL default from the
+        // Library-screen dialog must not re-pin the book. The session snapshot
+        // restores the reset-installed runtime at `end()`, so the derived
+        // predicate still matches and the override stays EMPTY.
+        let root = tempfile::tempdir().expect("tempdir");
+        let book = root.path().join("book");
+        std::fs::create_dir(&book).expect("create book");
+
+        let settings = Rc::new(RefCell::new(Settings {
+            reading_direction: ReadingDirection::Rtl,
+            spread_mode: SpreadMode::Double,
+            cover_mode: CoverMode::Paired,
+            fit_mode: FitMode::Actual,
+            ..Settings::default()
+        }));
+        let state = Rc::new(RefCell::new(ViewerState::new()));
+        state.borrow_mut().open_path(&book).expect("open test book");
+        let canonical = state
+            .borrow()
+            .open_file()
+            .expect("open file after successful open")
+            .to_path_buf();
+        let viewport = Rc::new(RefCell::new(ViewportState::from_settings(
+            &settings.borrow(),
+        )));
+        let mut library_value = Library::new();
+        assert!(library_value.add(canonical.clone()).is_some());
+        let library = Rc::new(RefCell::new(library_value));
+        let dialog_session = Rc::new(RefCell::new(DialogSession::new()));
+
+        dialog_session
+            .borrow_mut()
+            .reset_to_global(&state, &viewport, &settings);
+        dialog_session
+            .borrow_mut()
+            .open(DialogScope::Library, &state, &viewport, &settings);
+        state.borrow_mut().set_spread_mode(SpreadMode::Single);
+        dialog_session.borrow_mut().end(&state, &viewport);
+        persist_leave_point_with(
+            ViewModeRoute::LeaveViewer,
+            &state,
+            &viewport,
+            &dialog_session,
             &settings,
             &library,
             |_| Ok(()),
@@ -636,14 +761,17 @@ mod tests {
         let mut library_value = Library::new();
         assert!(library_value.add(canonical.clone()).is_some());
         let library = Rc::new(RefCell::new(library_value));
-        let mut session = DialogSession::new();
+        let dialog_session = Rc::new(RefCell::new(DialogSession::new()));
 
-        session.open(DialogScope::Library, &state, &viewport, &settings);
-        session.end(&state, &viewport);
+        dialog_session
+            .borrow_mut()
+            .open(DialogScope::Library, &state, &viewport, &settings);
+        dialog_session.borrow_mut().end(&state, &viewport);
         persist_leave_point_with(
             ViewModeRoute::AppExit,
             &state,
             &viewport,
+            &dialog_session,
             &settings,
             &library,
             |_| Ok(()),
@@ -712,13 +840,21 @@ mod tests {
                 )));
                 viewport.borrow_mut().set_fit(FitMode::Whole);
                 let library = Rc::new(RefCell::new(library_value));
+                let dialog_session = Rc::new(RefCell::new(DialogSession::new()));
                 let save_count = std::cell::Cell::new(0);
 
-                let result =
-                    persist_leave_point_with(route, &state, &viewport, &settings, &library, |_| {
+                let result = persist_leave_point_with(
+                    route,
+                    &state,
+                    &viewport,
+                    &dialog_session,
+                    &settings,
+                    &library,
+                    |_| {
                         save_count.set(save_count.get() + 1);
                         Ok(())
-                    });
+                    },
+                );
 
                 assert!(result.is_ok());
                 assert_eq!(

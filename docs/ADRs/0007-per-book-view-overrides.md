@@ -154,3 +154,23 @@ Model the four preferences as a PER-BOOK override that falls back to the global 
 - Decision 4's screen-scoped routing and Decision 5's two named writes are otherwise unchanged. See
   [architecture.md](../architecture.md), "dialog_session", and [patterns.md](../patterns.md),
   "Per-book view overrides".
+
+### Sub-amendment 2026-08-16: pending inherit is session-owned and derived
+
+- This sub-amendment supersedes the flag ownership and setter-clearing mechanics above; the
+  recorded-scope lifecycle and apply-then-restore ordering remain in force.
+- The pending-inherit intent now lives on `DialogSession` as
+  `pending_inherit: Option<ResolvedView>`; `ViewerState` no longer carries a flag or asks every
+  view setter to clear one. `reset_to_global(&mut self, ...)` applies the globals first and then
+  records the installed runtime view.
+- `inherit_pending(current)` derives the write-back guard from
+  `pending_inherit == Some(current)`. Any viewer or viewport mode change therefore disables the
+  guard by making the live runtime differ, including future setters and fit-mode changes, without
+  handler-specific clearing.
+- A Library-scope `RuntimeSnapshot` carries the `Option<ResolvedView>` verbatim. `end()` still
+  applies the saved view first and restores the saved intent after it, so the restored view is the
+  one the derived predicate observes. Replacing or closing the open book explicitly discards the
+  intent in `OpenBookUseCase::apply_probed` and `RemoveBooksUseCase::run`.
+- One behavior changes deliberately: if the user changes modes after reset and later returns the
+  runtime to exactly the reset-installed view, the equality predicate re-arms the pending intent.
+  `reset_then_change_and_change_back_is_pending_again` pins this behavior.

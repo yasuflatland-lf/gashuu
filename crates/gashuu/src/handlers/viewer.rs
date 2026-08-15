@@ -1,5 +1,6 @@
 use super::report_save_error;
 use crate::carousel::{thumb_state_at, ThumbState};
+use crate::dialog_session::DialogSession;
 use crate::keymap::{map_key, KeyCommand};
 use crate::library_model::{LibrarySearchState, LibrarySelectionState};
 use crate::navigation::NavState;
@@ -340,6 +341,7 @@ pub(crate) fn wire_nav_handlers(
     ui: &ViewerWindow,
     state: &Rc<RefCell<ViewerState>>,
     viewport: &Rc<RefCell<ViewportState>>,
+    dialog_session: &Rc<RefCell<DialogSession>>,
     settings: &Rc<RefCell<Settings>>,
     library: &Rc<RefCell<Library>>,
     nav: &Rc<RefCell<NavState>>,
@@ -352,6 +354,7 @@ pub(crate) fn wire_nav_handlers(
 ) {
     let state = Rc::clone(state);
     let viewport = Rc::clone(viewport);
+    let dialog_session = Rc::clone(dialog_session);
     let settings = Rc::clone(settings);
     let library = Rc::clone(library);
     let nav = Rc::clone(nav);
@@ -367,6 +370,7 @@ pub(crate) fn wire_nav_handlers(
         let ui_weak = ui.as_weak();
         let state = Rc::clone(&state);
         let viewport = Rc::clone(&viewport);
+        let dialog_session = Rc::clone(&dialog_session);
         let nav = Rc::clone(&nav);
         let library = Rc::clone(&library);
         let pages = Rc::clone(&pages);
@@ -466,16 +470,10 @@ pub(crate) fn wire_nav_handlers(
                     // persisted at the next leave (zoom/pan are session-only).
                     KeyCommand::FitActual => {
                         viewport.borrow_mut().set_fit(FitMode::Actual);
-                        // Fit is viewport-owned, so clear the inherit-pending guard
-                        // here (#415) — a fit change after a reset re-enables pinning.
-                        state.borrow_mut().clear_inherit_pending();
                         apply_viewport(&ui, &viewport.borrow());
                     }
                     KeyCommand::CycleFit => {
                         viewport.borrow_mut().cycle_fit();
-                        // Fit is viewport-owned, so clear the inherit-pending guard
-                        // here (#415) — a fit change after a reset re-enables pinning.
-                        state.borrow_mut().clear_inherit_pending();
                         apply_viewport(&ui, &viewport.borrow());
                     }
                     // Toggle the thumbnail strip. No refresh needed: it changes PageView's
@@ -492,6 +490,7 @@ pub(crate) fn wire_nav_handlers(
                             ViewModeRoute::LeaveViewer,
                             &state,
                             &viewport,
+                            &dialog_session,
                             &settings,
                             &library,
                             &library_store,
