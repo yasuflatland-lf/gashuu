@@ -18,6 +18,7 @@ This file is the L1 entry point; detailed conventions and hard-won gotchas live 
 | Code conventions | [docs/conventions.md](docs/conventions.md) | writing any code |
 | Patterns & gotchas | [docs/patterns.md](docs/patterns.md) | **editing core or UI logic** |
 | Scope: shipped / deferred | [docs/scope.md](docs/scope.md) | scoping a feature |
+| Stacked branches & merging | [ops/worktree-stack/README.md](ops/worktree-stack/README.md) | **any merge, or work spanning dependent branches** |
 
 ## Non-negotiable rules
 
