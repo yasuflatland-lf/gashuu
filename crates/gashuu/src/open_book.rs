@@ -228,13 +228,10 @@ impl OpenBookUseCase {
             }
         };
         // `register_opened` = idempotent add + back-fill + resume lookup; its `borrow_mut`
-        // is confined to the `let reg` line and released before `jump_to`, avoiding a clash.
-        let count_changed = if let Some(c) = canonical.as_deref() {
+        // is confined to the `let reg` line and released before the later state updates.
+        let (count_changed, resume_page) = if let Some(c) = canonical.as_deref() {
             let reg = library.borrow_mut().register_opened(c, page_count);
-            // Resume at the recorded position; for a never-read book `last_viewed` is 0
-            // and `jump_to(0)` is a no-op when the index is already 0.
-            state.borrow_mut().jump_to(reg.resume.last_viewed());
-            reg.count_changed
+            (reg.count_changed, Some(reg.resume.last_viewed()))
         } else {
             // Unreachable in practice: a successful open always sets `open_file`. Log if
             // the invariant breaks so the book-not-registered failure isn't silent.
@@ -242,10 +239,11 @@ impl OpenBookUseCase {
                 path = %path.display(),
                 "open_file was None after a successful open; book not registered in library"
             );
-            false
+            (false, None)
         };
-        // Resolve this book's per-book override (empty => globals) and apply it BEFORE the
-        // first refresh, after `jump_to`, so the resumed page re-anchors to a valid leading.
+        // Resolve this book's per-book override (empty => globals) and install its modes
+        // BEFORE `jump_to`, so the resume index is normalised under this book's pairing,
+        // not the outgoing book's.
         let resolved = {
             let overrides = canonical
                 .as_deref()
@@ -256,6 +254,12 @@ impl OpenBookUseCase {
         state
             .borrow_mut()
             .apply_resolved_view(resolved, &mut viewport.borrow_mut());
+        // Resume at the recorded position, now that this book's own spread/cover modes
+        // are installed, so `jump_to` normalises under the correct pairing. For a
+        // never-read book `last_viewed` is 0 and this is a no-op.
+        if let Some(page) = resume_page {
+            state.borrow_mut().jump_to(page);
+        }
         // Persist the registered book + back-filled page count; this MUST stay a SYNCHRONOUS
         // save, else a detached write could land after a later save and revert position/drop book.
         // Opening a different book is now exactly two library writes: one outgoing
@@ -398,7 +402,7 @@ fn remove_empty_book_with(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gashuu_core::ArchivePolicy;
+    use gashuu_core::{ArchivePolicy, CoverMode, SpreadMode, ViewOverride};
     use std::cell::Cell;
     use std::path::PathBuf;
 
@@ -763,6 +767,225 @@ mod tests {
                 .expect("write fixture page");
         }
         source
+    }
+
+    /// Regression guard for #534: `apply_probed` used to `jump_to` the stored
+    /// resume BEFORE installing the book's own view modes, so the target was
+    /// normalised under the OUTGOING book's pairing and then re-normalised — a
+    /// composition that is not commutative across modes, landing the reader one
+    /// spread early.
+    ///
+    /// One row per proved counterexample, as
+    /// `(runtime spread, runtime cover, book spread, book cover, total pages,
+    /// stored resume, expected index)`. `expected` is the DIRECT normalisation
+    /// under the book's own modes, so every row fails on the pre-fix ordering.
+    #[test]
+    fn resume_is_normalised_under_the_opened_books_own_modes() {
+        let cases = [
+            (
+                SpreadMode::Single,
+                CoverMode::Standalone,
+                SpreadMode::Double,
+                CoverMode::Paired,
+                5,
+                2,
+                2,
+            ),
+            (
+                SpreadMode::Single,
+                CoverMode::Paired,
+                SpreadMode::Double,
+                CoverMode::Standalone,
+                6,
+                3,
+                3,
+            ),
+            (
+                SpreadMode::Double,
+                CoverMode::Standalone,
+                SpreadMode::Single,
+                CoverMode::Standalone,
+                5,
+                2,
+                2,
+            ),
+            (
+                SpreadMode::Double,
+                CoverMode::Standalone,
+                SpreadMode::Single,
+                CoverMode::Paired,
+                5,
+                2,
+                2,
+            ),
+            (
+                SpreadMode::Double,
+                CoverMode::Standalone,
+                SpreadMode::Double,
+                CoverMode::Paired,
+                6,
+                2,
+                2,
+            ),
+            (
+                SpreadMode::Double,
+                CoverMode::Paired,
+                SpreadMode::Single,
+                CoverMode::Standalone,
+                3,
+                1,
+                1,
+            ),
+            (
+                SpreadMode::Double,
+                CoverMode::Paired,
+                SpreadMode::Single,
+                CoverMode::Paired,
+                3,
+                1,
+                1,
+            ),
+            (
+                SpreadMode::Double,
+                CoverMode::Paired,
+                SpreadMode::Double,
+                CoverMode::Standalone,
+                7,
+                3,
+                3,
+            ),
+        ];
+
+        for (before_spread, before_cover, book_spread, book_cover, total, resume, expected) in cases
+        {
+            let root = tempfile::tempdir().expect("tempdir");
+            let source = make_book_dir(root.path(), total);
+            let canonical = source.canonicalize().expect("canonical fixture path");
+            let settings = Settings {
+                spread_mode: before_spread,
+                cover_mode: before_cover,
+                ..Settings::default()
+            };
+            let mut seeded = Library::new();
+            seeded.register_opened(&canonical, std::num::NonZeroUsize::new(total));
+            assert!(seeded.set_resume_page(&canonical, resume));
+            assert!(seeded.set_overrides(
+                &canonical,
+                ViewOverride {
+                    spread_mode: Some(book_spread),
+                    cover_mode: Some(book_cover),
+                    reading_direction: None,
+                    fit_mode: None,
+                }
+            ));
+            let library = Rc::new(RefCell::new(seeded));
+            let (use_case, state) = use_case_with_saves(
+                settings,
+                library,
+                |_| Ok(()),
+                |_| panic!("settings save must not be attempted"),
+            );
+            let probe = crate::open_controller::probe_open(&source, ArchivePolicy::default());
+
+            assert!(matches!(
+                use_case.apply_probed(&source, probe),
+                OpenOutcome::Success { .. }
+            ));
+
+            let state = state.borrow();
+            assert_eq!(
+                state.index(),
+                expected,
+                "resume {resume} of {total}: {before_spread:?}/{before_cover:?} -> {book_spread:?}/{book_cover:?}"
+            );
+            let spread = state
+                .preview_spread(resume)
+                .expect("stored resume must have a spread");
+            assert!(
+                spread.leading == resume || spread.trailing == Some(resume),
+                "spread {spread:?} must contain stored resume {resume}"
+            );
+        }
+    }
+
+    /// The reorder must be a no-op on the already-correct path: when the book's
+    /// override equals the runtime modes, the index is still the stored resume's
+    /// normalisation (Double/Standalone over 5 pages puts page 2 on the {1,2} spread).
+    #[test]
+    fn resume_unchanged_when_book_modes_match_runtime() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let source = make_book_dir(root.path(), 5);
+        let canonical = source.canonicalize().expect("canonical fixture path");
+        let settings = Settings {
+            spread_mode: SpreadMode::Double,
+            cover_mode: CoverMode::Standalone,
+            ..Settings::default()
+        };
+        let mut seeded = Library::new();
+        seeded.register_opened(&canonical, std::num::NonZeroUsize::new(5));
+        assert!(seeded.set_resume_page(&canonical, 2));
+        assert!(seeded.set_overrides(
+            &canonical,
+            ViewOverride {
+                spread_mode: Some(SpreadMode::Double),
+                cover_mode: Some(CoverMode::Standalone),
+                reading_direction: None,
+                fit_mode: None,
+            }
+        ));
+        let (use_case, state) = use_case_with_saves(
+            settings,
+            Rc::new(RefCell::new(seeded)),
+            |_| Ok(()),
+            |_| panic!("settings save must not be attempted"),
+        );
+        let probe = crate::open_controller::probe_open(&source, ArchivePolicy::default());
+
+        assert!(matches!(
+            use_case.apply_probed(&source, probe),
+            OpenOutcome::Success { .. }
+        ));
+
+        assert_eq!(state.borrow().index(), 1);
+    }
+
+    /// A never-read book has no stored resume, so the deferred `jump_to(0)` must
+    /// still leave the reader on page 0 even with a non-empty override installed.
+    #[test]
+    fn never_read_book_still_opens_at_page_zero() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let source = make_book_dir(root.path(), 5);
+        let canonical = source.canonicalize().expect("canonical fixture path");
+        let settings = Settings {
+            spread_mode: SpreadMode::Single,
+            cover_mode: CoverMode::Standalone,
+            ..Settings::default()
+        };
+        let mut seeded = Library::new();
+        seeded.register_opened(&canonical, std::num::NonZeroUsize::new(5));
+        assert!(seeded.set_overrides(
+            &canonical,
+            ViewOverride {
+                spread_mode: Some(SpreadMode::Double),
+                cover_mode: Some(CoverMode::Paired),
+                reading_direction: None,
+                fit_mode: None,
+            }
+        ));
+        let (use_case, state) = use_case_with_saves(
+            settings,
+            Rc::new(RefCell::new(seeded)),
+            |_| Ok(()),
+            |_| panic!("settings save must not be attempted"),
+        );
+        let probe = crate::open_controller::probe_open(&source, ArchivePolicy::default());
+
+        assert!(matches!(
+            use_case.apply_probed(&source, probe),
+            OpenOutcome::Success { .. }
+        ));
+
+        assert_eq!(state.borrow().index(), 0);
     }
 
     #[test]
