@@ -422,7 +422,6 @@ pub(crate) fn wire_carousel_handlers(
 
 /// Registers the carousel selection/focus, bulk-delete, and empty-book-removal callbacks onto `ui`.
 /// Panel constraint (#151): explicit handle list IS the dependency list — no AppState bundle.
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn wire_selection_handlers(
     ui: &ViewerWindow,
     state: &Rc<RefCell<ViewerState>>,
