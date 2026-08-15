@@ -66,7 +66,9 @@ Model the four preferences as a PER-BOOK override that falls back to the global 
   precise diff against the resolved baseline at every toggle is more state and more failure modes;
   the "Reset to global" button covers the escape hatch. The partial shape still allows
   change-tracking later with no storage change. (Trade-off recorded in
-  [patterns.md](../patterns.md), "write-back-at-leave-point".)
+  [patterns.md](../patterns.md), "write-back-at-leave-point".) (The value-diff form of this
+  alternative is now ADOPTED; see the 2026-08-16 amendment. Explicit touched-field tracking remains
+  rejected.)
 - **(D) Bump `LIBRARY_VERSION` + migrate for the new field.** Unnecessary: a defaulted, empty-skipped
   nested field is forward/backward-compatible (ADR-0005's `#[serde(default)]` mechanism).
 
@@ -86,7 +88,8 @@ Model the four preferences as a PER-BOOK override that falls back to the global 
 
 - After the first leave from a book, its override pins ALL FOUR fields to `Some` (full override) — it
   stops tracking later global changes for those modes until reset. The Viewer dialog's "Reset to
-  global defaults" clears it back to all-`None`.
+  global defaults" clears it back to all-`None`. (Now superseded by the 2026-08-16 leave-point
+  diff-write amendment.)
 - The book-intrinsic vs. environment distinction is unmodeled (Decision 1 / Alternative B); a window
   resize on one machine writes back a `spread_mode` that travels with the book.
 
@@ -122,7 +125,8 @@ Model the four preferences as a PER-BOOK override that falls back to the global 
   that intentionally does NOT track later global changes; this is accepted, not a bug. The
   diff-write alternative (persist only fields that DIFFER from global at write time, keeping
   untouched modes `None`) was considered and DEFERRED — it is more state and more failure modes,
-  and the `Option<Enum>`-per-field shape keeps the door open (Alternative C).
+  and the `Option<Enum>`-per-field shape keeps the door open (Alternative C). (Now superseded by
+  the 2026-08-16 leave-point diff-write amendment.)
 - No new dependencies; `LIBRARY_VERSION` unchanged.
 
 ## Amendment 2026-07-25: the library-screen dialog session snapshots the open book's runtime AND its pending-inherit flag
@@ -174,3 +178,20 @@ Model the four preferences as a PER-BOOK override that falls back to the global 
 - One behavior changes deliberately: if the user changes modes after reset and later returns the
   runtime to exactly the reset-installed view, the equality predicate re-arms the pending intent.
   `reset_then_change_and_change_back_is_pending_again` pins this behavior.
+
+## Amendment 2026-08-16: the leave-point write-back is a diff against global
+
+- The deferred diff-write outcome in Alternative C is now ADOPTED. At each leave point, every
+  runtime field is compared with the matching global `Settings` value in force at write time:
+  unequal values persist as `Some(runtime)`, while equal values persist as `None` (inherit).
+  `ViewOverride::differences_from(view, global)` is the inverse beside `resolve`, with the invariant
+  `differences_from(view, global).resolve(global) == view`. This is a value diff, not touched-field
+  or dirty-flag tracking; explicit change tracking remains rejected.
+- The deliberate user-visible consequence is that a book sitting at the current global value now
+  FOLLOWS a later change to that global. Write-back is therefore not idempotent with respect to a
+  changing global, which is the active-inheritance meaning of `None` from Decision 2.
+- `ViewOverride::none()`, `is_empty()`, and the serde skip shape are unchanged.
+  `LIBRARY_VERSION` remains 1, and `library.json` remains byte-compatible: an all-inheriting book
+  still emits no `overrides` key.
+- Existing full four-field overrides require no migration and receive no load-time rewrite. They
+  narrow naturally to the fields that differ from global on their next leave point.

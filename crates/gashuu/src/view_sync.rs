@@ -2,9 +2,7 @@ use crate::{
     dialog_session::DialogSession, save_library, viewer_state::ViewerState,
     viewport::ViewportState, LibraryStoreHandle,
 };
-use gashuu_core::{
-    CoreError, FitMode, Library, ReadingDirection, ResolvedView, Settings, ViewOverride,
-};
+use gashuu_core::{CoreError, Library, ResolvedView, Settings, ViewOverride};
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -118,12 +116,12 @@ fn stage_view_modes_to_sink(
         ViewModeRoute::DialogClosedOnViewer
         | ViewModeRoute::LeaveViewer
         | ViewModeRoute::OpenDifferentBook => {
-            stage_view_override_write_back(state, viewport, dialog_session, library);
+            stage_view_override_write_back(state, viewport, dialog_session, settings, library);
         }
         ViewModeRoute::AppExit => {
             // Per-book override FIRST (no-op if no book is open), so the open
             // book's modes are saved before the open-state-guarded global reconcile.
-            stage_view_override_write_back(state, viewport, dialog_session, library);
+            stage_view_override_write_back(state, viewport, dialog_session, settings, library);
             if state.borrow().open_file().is_none() {
                 apply_runtime_view_to_settings(
                     &state.borrow(),
@@ -159,8 +157,8 @@ fn apply_runtime_view_to_settings(
 /// (issue #414): the dialog seeds the SHARED runtime with global defaults on
 /// open (`apply_global_view_to_runtime`), which would clobber a still-open
 /// book's runtime; snapshotting it here lets `on_close_settings` restore the
-/// book's own runtime, so the later leave/exit write-back pins the BOOK's value
-/// rather than the transiently-global one.
+/// book's own runtime, so the later leave/exit write-back diffs the restored
+/// BOOK's value rather than the transiently-global one.
 ///
 /// Borrow discipline: `state` and `viewport` are distinct `RefCell`s, so the
 /// two shared borrows never conflict; both drop on return.
@@ -263,9 +261,8 @@ fn stage_position_write_back(state: &Rc<RefCell<ViewerState>>, library: &Rc<RefC
 /// Pure helper: decide what view override to write back for the open book.
 ///
 /// Returns `Some((canonical_path, override))` when a book is open (so the
-/// caller persists it), `None` otherwise. The override carries all four current
-/// runtime modes as `Some(_)`: while a book is open, ITS modes are authoritative,
-/// so a write-back fully pins them (a later "reset to global" clears them again).
+/// caller persists it), `None` otherwise. The override carries only runtime modes
+/// that differ from `global`; matching fields remain inherited.
 ///
 /// `inherit_pending` is the "Reset to global" guard: when the open book was just
 /// reset and no mode has changed since, the write-back must keep the override
@@ -277,10 +274,8 @@ fn stage_position_write_back(state: &Rc<RefCell<ViewerState>>, library: &Rc<RefC
 /// without the effectful `set_overrides` + `save`.
 fn view_override_to_write_back(
     open_file: Option<&Path>,
-    reading_direction: ReadingDirection,
-    spread_mode: gashuu_core::SpreadMode,
-    cover_mode: gashuu_core::CoverMode,
-    fit_mode: FitMode,
+    view: ResolvedView,
+    global: &Settings,
     inherit_pending: bool,
 ) -> Option<(PathBuf, ViewOverride)> {
     open_file.map(|p| {
@@ -288,12 +283,7 @@ fn view_override_to_write_back(
             // Keep inheriting: an empty override falls back to every global default.
             ViewOverride::none()
         } else {
-            ViewOverride {
-                reading_direction: Some(reading_direction),
-                spread_mode: Some(spread_mode),
-                cover_mode: Some(cover_mode),
-                fit_mode: Some(fit_mode),
-            }
+            ViewOverride::differences_from(view, global)
         };
         (p.to_path_buf(), overrides)
     })
@@ -306,26 +296,21 @@ fn view_override_to_write_back(
 /// No-op when no book is open.
 ///
 /// Borrow discipline (mirrors `stage_position_write_back`): the current runtime
-/// view is built in its own statement, then the session predicate is computed.
-/// All shared borrows drop before `library.borrow_mut()`.
+/// view is built in its own statement, then the session predicate and diff are
+/// each computed in one statement. All shared borrows drop before
+/// `library.borrow_mut()`.
 fn stage_view_override_write_back(
     state: &Rc<RefCell<ViewerState>>,
     viewport: &Rc<RefCell<ViewportState>>,
     dialog_session: &Rc<RefCell<DialogSession>>,
+    settings: &Rc<RefCell<Settings>>,
     library: &Rc<RefCell<Library>>,
 ) {
     let current = current_runtime_view(state, viewport);
     let inherit_pending = dialog_session.borrow().inherit_pending(current);
     let Some((path, overrides)) = ({
         let s = state.borrow();
-        view_override_to_write_back(
-            s.open_file(),
-            current.reading_direction,
-            current.spread_mode,
-            current.cover_mode,
-            current.fit_mode,
-            inherit_pending,
-        )
+        view_override_to_write_back(s.open_file(), current, &settings.borrow(), inherit_pending)
     }) else {
         return; // no book open — nothing to write back
     };
@@ -336,7 +321,7 @@ fn stage_view_override_write_back(
 mod tests {
     use super::*;
     use crate::dialog_session::{DialogScope, DialogSession};
-    use gashuu_core::{CoverMode, SpreadMode};
+    use gashuu_core::{CoverMode, FitMode, ReadingDirection, SpreadMode};
     use std::path::{Path, PathBuf};
 
     #[test]
@@ -486,14 +471,205 @@ mod tests {
     // ---- view_override_to_write_back (per-book overrides) ------------------
 
     #[test]
+    fn leaving_a_book_at_the_global_defaults_writes_no_override() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let book = root.path().join("book");
+        std::fs::create_dir(&book).expect("create book");
+
+        let global = Settings {
+            reading_direction: ReadingDirection::Ltr,
+            spread_mode: SpreadMode::Double,
+            cover_mode: CoverMode::Paired,
+            fit_mode: FitMode::Actual,
+            ..Settings::default()
+        };
+        let mut runtime = ViewerState::from_settings(&global);
+        runtime.open_path(&book).expect("open test book");
+        let canonical = runtime
+            .open_file()
+            .expect("open file after successful open")
+            .to_path_buf();
+        let state = Rc::new(RefCell::new(runtime));
+        let viewport = Rc::new(RefCell::new(ViewportState::from_settings(&global)));
+        let settings = Rc::new(RefCell::new(global));
+        let mut library_value = Library::new();
+        assert!(library_value.add(canonical.clone()).is_some());
+        let library = Rc::new(RefCell::new(library_value));
+        let dialog_session = Rc::new(RefCell::new(DialogSession::new()));
+
+        persist_leave_point_with(
+            ViewModeRoute::LeaveViewer,
+            &state,
+            &viewport,
+            &dialog_session,
+            &settings,
+            &library,
+            |_| Ok(()),
+        )
+        .expect("persist leave point");
+
+        let staged = library.borrow().overrides_for(&canonical);
+        assert!(
+            staged.is_empty(),
+            "leaving without changing the global-seeded runtime must keep every field inherited; \
+             got {staged:?}"
+        );
+        let json = library.borrow().to_json().expect("serialize library");
+        assert!(
+            !json.contains("\"overrides\""),
+            "an empty override must not emit an overrides key: {json}"
+        );
+    }
+
+    #[test]
+    fn a_book_at_the_global_value_follows_a_later_global_change() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let book = root.path().join("book");
+        std::fs::create_dir(&book).expect("create book");
+
+        let initial_global = Settings {
+            reading_direction: ReadingDirection::Rtl,
+            spread_mode: SpreadMode::Double,
+            cover_mode: CoverMode::Paired,
+            fit_mode: FitMode::Actual,
+            ..Settings::default()
+        };
+        let mut runtime = ViewerState::from_settings(&initial_global);
+        runtime.open_path(&book).expect("open test book");
+        let canonical = runtime
+            .open_file()
+            .expect("open file after successful open")
+            .to_path_buf();
+        let state = Rc::new(RefCell::new(runtime));
+        let viewport = Rc::new(RefCell::new(ViewportState::from_settings(&initial_global)));
+        let settings = Rc::new(RefCell::new(initial_global));
+        let mut library_value = Library::new();
+        assert!(library_value.add(canonical.clone()).is_some());
+        let library = Rc::new(RefCell::new(library_value));
+        let dialog_session = Rc::new(RefCell::new(DialogSession::new()));
+
+        persist_leave_point_with(
+            ViewModeRoute::LeaveViewer,
+            &state,
+            &viewport,
+            &dialog_session,
+            &settings,
+            &library,
+            |_| Ok(()),
+        )
+        .expect("persist leave point");
+        assert!(library.borrow().overrides_for(&canonical).is_empty());
+
+        *settings.borrow_mut() = Settings {
+            reading_direction: ReadingDirection::Ltr,
+            spread_mode: SpreadMode::Single,
+            cover_mode: CoverMode::Standalone,
+            fit_mode: FitMode::Whole,
+            ..Settings::default()
+        };
+        // Opening a book resolves its stored override against the settings in
+        // force at that time; exercise that same reopen boundary directly.
+        let reopened = library
+            .borrow()
+            .overrides_for(&canonical)
+            .resolve(&settings.borrow());
+
+        assert_eq!(
+            reopened,
+            ResolvedView {
+                reading_direction: ReadingDirection::Ltr,
+                spread_mode: SpreadMode::Single,
+                cover_mode: CoverMode::Standalone,
+                fit_mode: FitMode::Whole,
+            }
+        );
+    }
+
+    #[test]
+    fn an_explicitly_different_mode_survives_a_global_change() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let book = root.path().join("book");
+        std::fs::create_dir(&book).expect("create book");
+
+        let initial_global = Settings {
+            reading_direction: ReadingDirection::Rtl,
+            spread_mode: SpreadMode::Double,
+            cover_mode: CoverMode::Paired,
+            fit_mode: FitMode::Actual,
+            ..Settings::default()
+        };
+        let mut runtime = ViewerState::from_settings(&initial_global);
+        runtime.set_spread_mode(SpreadMode::Single);
+        runtime.open_path(&book).expect("open test book");
+        let canonical = runtime
+            .open_file()
+            .expect("open file after successful open")
+            .to_path_buf();
+        let state = Rc::new(RefCell::new(runtime));
+        let viewport = Rc::new(RefCell::new(ViewportState::from_settings(&initial_global)));
+        let settings = Rc::new(RefCell::new(initial_global));
+        let mut library_value = Library::new();
+        assert!(library_value.add(canonical.clone()).is_some());
+        let library = Rc::new(RefCell::new(library_value));
+        let dialog_session = Rc::new(RefCell::new(DialogSession::new()));
+
+        persist_leave_point_with(
+            ViewModeRoute::LeaveViewer,
+            &state,
+            &viewport,
+            &dialog_session,
+            &settings,
+            &library,
+            |_| Ok(()),
+        )
+        .expect("persist leave point");
+        assert_eq!(
+            library.borrow().overrides_for(&canonical),
+            ViewOverride {
+                reading_direction: None,
+                spread_mode: Some(SpreadMode::Single),
+                cover_mode: None,
+                fit_mode: None,
+            }
+        );
+
+        *settings.borrow_mut() = Settings {
+            reading_direction: ReadingDirection::Ltr,
+            spread_mode: SpreadMode::Auto,
+            cover_mode: CoverMode::Standalone,
+            fit_mode: FitMode::Whole,
+            ..Settings::default()
+        };
+        let reopened = library
+            .borrow()
+            .overrides_for(&canonical)
+            .resolve(&settings.borrow());
+
+        assert_eq!(
+            reopened,
+            ResolvedView {
+                reading_direction: ReadingDirection::Ltr,
+                spread_mode: SpreadMode::Single,
+                cover_mode: CoverMode::Standalone,
+                fit_mode: FitMode::Whole,
+            },
+            "the explicit spread survives while inherited fields follow the new global"
+        );
+    }
+
+    #[test]
     fn view_override_to_write_back_none_when_no_open_file() {
+        let global = Settings::default();
         assert!(
             view_override_to_write_back(
                 None,
-                ReadingDirection::Ltr,
-                gashuu_core::SpreadMode::Single,
-                gashuu_core::CoverMode::Standalone,
-                FitMode::Whole,
+                ResolvedView {
+                    reading_direction: ReadingDirection::Ltr,
+                    spread_mode: SpreadMode::Double,
+                    cover_mode: CoverMode::Paired,
+                    fit_mode: FitMode::Actual,
+                },
+                &global,
                 false,
             )
             .is_none(),
@@ -504,12 +680,22 @@ mod tests {
     #[test]
     fn view_override_to_write_back_some_carries_all_four_modes() {
         let path = PathBuf::from("/manga/book.cbz");
+        let global = Settings {
+            reading_direction: ReadingDirection::Ltr,
+            spread_mode: SpreadMode::Single,
+            cover_mode: CoverMode::Standalone,
+            fit_mode: FitMode::Whole,
+            ..Settings::default()
+        };
         let result = view_override_to_write_back(
             Some(path.as_path()),
-            ReadingDirection::Rtl,
-            gashuu_core::SpreadMode::Double,
-            gashuu_core::CoverMode::Paired,
-            FitMode::Actual,
+            ResolvedView {
+                reading_direction: ReadingDirection::Rtl,
+                spread_mode: SpreadMode::Double,
+                cover_mode: CoverMode::Paired,
+                fit_mode: FitMode::Actual,
+            },
+            &global,
             false,
         );
         let (p, ov) = result.expect("open file => write-back tuple");
@@ -520,20 +706,64 @@ mod tests {
         assert_eq!(ov.fit_mode, Some(FitMode::Actual));
     }
 
+    #[test]
+    fn write_back_emits_only_fields_that_differ_from_global() {
+        let path = PathBuf::from("/manga/book.cbz");
+        let global = Settings {
+            reading_direction: ReadingDirection::Rtl,
+            spread_mode: SpreadMode::Double,
+            cover_mode: CoverMode::Standalone,
+            fit_mode: FitMode::Actual,
+            ..Settings::default()
+        };
+        let (_, overrides) = view_override_to_write_back(
+            Some(path.as_path()),
+            ResolvedView {
+                reading_direction: ReadingDirection::Ltr,
+                spread_mode: SpreadMode::Double,
+                cover_mode: CoverMode::Paired,
+                fit_mode: FitMode::Actual,
+            },
+            &global,
+            false,
+        )
+        .expect("open file => write-back tuple");
+
+        assert_eq!(
+            overrides,
+            ViewOverride {
+                reading_direction: Some(ReadingDirection::Ltr),
+                spread_mode: None,
+                cover_mode: Some(CoverMode::Paired),
+                fit_mode: None,
+            }
+        );
+    }
+
     // ---- inherit-pending guard (#415: reset-to-global undone on close) -----
 
     #[test]
-    fn view_override_to_write_back_inherit_pending_keeps_override_empty() {
+    fn write_back_with_inherit_pending_ignores_the_diff() {
         // CX repro: a book is open AND was just "reset to global" (inherit_pending),
         // so the write-back on dialog close must keep the override EMPTY (inherit),
-        // NOT re-pin the four current runtime modes.
+        // even though every current runtime mode differs from global.
         let path = PathBuf::from("/manga/book.cbz");
+        let global = Settings {
+            reading_direction: ReadingDirection::Ltr,
+            spread_mode: SpreadMode::Single,
+            cover_mode: CoverMode::Standalone,
+            fit_mode: FitMode::Whole,
+            ..Settings::default()
+        };
         let result = view_override_to_write_back(
             Some(path.as_path()),
-            ReadingDirection::Rtl,
-            gashuu_core::SpreadMode::Double,
-            gashuu_core::CoverMode::Paired,
-            FitMode::Actual,
+            ResolvedView {
+                reading_direction: ReadingDirection::Rtl,
+                spread_mode: SpreadMode::Double,
+                cover_mode: CoverMode::Paired,
+                fit_mode: FitMode::Actual,
+            },
+            &global,
             true,
         );
         let (p, ov) = result.expect("open file => write-back tuple");
@@ -548,23 +778,33 @@ mod tests {
     #[test]
     fn view_override_to_write_back_pins_when_flag_cleared_after_reset() {
         // Regression case: after reset the user changes a mode again, which clears
-        // inherit_pending; the write-back must then re-create the override with the
-        // four current runtime modes (the guard does not block re-selection).
+        // inherit_pending; the write-back must then re-create the differing field
+        // (the guard does not block re-selection).
         let path = PathBuf::from("/manga/book.cbz");
+        let global = Settings {
+            reading_direction: ReadingDirection::Rtl,
+            spread_mode: SpreadMode::Single,
+            cover_mode: CoverMode::Standalone,
+            fit_mode: FitMode::Whole,
+            ..Settings::default()
+        };
         let (_, ov) = view_override_to_write_back(
             Some(path.as_path()),
-            ReadingDirection::Ltr,
-            gashuu_core::SpreadMode::Single,
-            gashuu_core::CoverMode::Standalone,
-            FitMode::Whole,
+            ResolvedView {
+                reading_direction: ReadingDirection::Ltr,
+                spread_mode: SpreadMode::Single,
+                cover_mode: CoverMode::Standalone,
+                fit_mode: FitMode::Whole,
+            },
+            &global,
             false,
         )
         .expect("open file => write-back tuple");
         assert!(!ov.is_empty(), "a cleared flag must pin the runtime modes");
         assert_eq!(ov.reading_direction, Some(ReadingDirection::Ltr));
-        assert_eq!(ov.spread_mode, Some(gashuu_core::SpreadMode::Single));
-        assert_eq!(ov.cover_mode, Some(gashuu_core::CoverMode::Standalone));
-        assert_eq!(ov.fit_mode, Some(FitMode::Whole));
+        assert_eq!(ov.spread_mode, None);
+        assert_eq!(ov.cover_mode, None);
+        assert_eq!(ov.fit_mode, None);
     }
 
     #[test]
@@ -613,9 +853,11 @@ mod tests {
         assert_eq!(
             library.borrow().overrides_for(&canonical),
             ViewOverride {
-                reading_direction: Some(ReadingDirection::Rtl),
-                spread_mode: Some(SpreadMode::Double),
-                cover_mode: Some(CoverMode::Paired),
+                // Reset installed the globals and the fit change disarmed its
+                // guard, so only that choice is persisted and survives reopen.
+                reading_direction: None,
+                spread_mode: None,
+                cover_mode: None,
                 fit_mode: Some(FitMode::Whole),
             }
         );
