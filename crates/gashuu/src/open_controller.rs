@@ -54,8 +54,8 @@ pub(crate) fn probe_open(path: &Path, policy: ArchivePolicy) -> OpenProbeOutcome
                 source,
                 skipped,
                 truncated,
-                // The same persistable identity `Library::add` uses, including its
-                // fallback when canonicalization produces a non-UTF-8 path.
+                // Produce the persistable identity required by `Library::add`, including
+                // the fallback when canonicalization produces a non-UTF-8 path.
                 canonical: canonical_identity(path),
                 is_dir: path.is_dir(),
             })

@@ -307,7 +307,9 @@ mod tests {
         // `resume_page` defaults to 0 — the "unread, total unknown" case (current=1, total=0).
         let dir = tempfile::tempdir().expect("tempdir");
         let mut lib = Library::new();
-        assert!(lib.add(dir.path().to_path_buf()).is_some());
+        assert!(lib
+            .add(gashuu_core::canonical_identity(dir.path()))
+            .is_some());
 
         let rows = carousel_data(&lib);
         assert_eq!(rows.len(), 1);
@@ -333,7 +335,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let path: PathBuf = dir.path().to_path_buf();
         let mut lib = Library::new();
-        assert!(lib.add(path.clone()).is_some());
+        assert!(lib.add(gashuu_core::canonical_identity(&path)).is_some());
         drop(dir); // remove the directory from disk
 
         let rows = carousel_data(&lib);
@@ -356,7 +358,7 @@ mod tests {
         for name in ["vol 10", "vol 1", "vol 2"] {
             let dir = root.path().join(name);
             std::fs::create_dir(&dir).expect("create subdir");
-            assert!(lib.add(dir).is_some());
+            assert!(lib.add(gashuu_core::canonical_identity(&dir)).is_some());
         }
         let rows = carousel_data(&lib);
         assert_eq!(rows.len(), 3);
@@ -373,8 +375,8 @@ mod tests {
         std::fs::create_dir(&keep).expect("create keep");
         std::fs::create_dir(&gone).expect("create gone");
         let mut lib = Library::new();
-        assert!(lib.add(keep).is_some());
-        assert!(lib.add(gone.clone()).is_some());
+        assert!(lib.add(gashuu_core::canonical_identity(&keep)).is_some());
+        assert!(lib.add(gashuu_core::canonical_identity(&gone)).is_some());
         std::fs::remove_dir_all(&gone).expect("remove gone"); // now unresolvable
         let rows = carousel_data(&lib);
         assert_eq!(
@@ -390,7 +392,9 @@ mod tests {
     fn carousel_data_current_reflects_resume_page() {
         let dir = tempfile::tempdir().expect("tempdir");
         let mut lib = Library::new();
-        assert!(lib.add(dir.path().to_path_buf()).is_some());
+        assert!(lib
+            .add(gashuu_core::canonical_identity(dir.path()))
+            .is_some());
         let path = lib.books()[0].path().to_path_buf();
         assert!(lib.set_resume_page(&path, 4));
         let rows = carousel_data(&lib);
@@ -403,7 +407,9 @@ mod tests {
         // `total` and computes `progress = fraction()` (last_viewed=4, total=10 → 4/9).
         let dir = tempfile::tempdir().expect("tempdir");
         let mut lib = Library::new();
-        assert!(lib.add(dir.path().to_path_buf()).is_some());
+        assert!(lib
+            .add(gashuu_core::canonical_identity(dir.path()))
+            .is_some());
         let path = lib.books()[0].path().to_path_buf();
         assert!(lib.set_resume_page(&path, 4));
         assert!(lib.set_page_count(&path, NonZeroUsize::new(10).unwrap()));
@@ -453,7 +459,9 @@ mod tests {
         // past the count. The row must never read "41 / 5".
         let dir = tempfile::tempdir().expect("tempdir");
         let mut lib = Library::new();
-        assert!(lib.add(dir.path().to_path_buf()).is_some());
+        assert!(lib
+            .add(gashuu_core::canonical_identity(dir.path()))
+            .is_some());
         let path = lib.books()[0].path().to_path_buf();
         assert!(lib.set_page_count(&path, NonZeroUsize::new(5).unwrap()));
         assert!(lib.set_resume_page(&path, 40));

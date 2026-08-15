@@ -103,8 +103,9 @@ security and concurrency properties:
   save, for every book — fail wholesale and silently. The canonical-identity rule is single-homed in
   `gashuu_core::canonical_identity`, which falls back to the GIVEN path when canonicalization fails
   OR yields a non-UTF-8 result, closing the "a UTF-8 symlink resolving into a non-UTF-8 directory"
-  hole; `Library::add_canonical`, `Library::recanonicalize_and_merge` and the UI's `open_file`
-  capture all route through it.
+  hole. Aggregate callers use the result as the identity passed to `Library::add` /
+  `register_opened`, and `Library::recanonicalize_and_merge` uses the same rule for load-time
+  self-healing.
 - **Explicitly NOT adopted:** byte-encoded path serialization (`serde_bytes` / base64 for
   `Book::path`). It would change the on-disk schema, break hand-editability, invalidate every shape
   test, and force a `LIBRARY_VERSION` bump — for a platform-limited edge case that rejecting at the

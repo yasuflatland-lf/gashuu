@@ -230,6 +230,7 @@ impl OpenBookUseCase {
         // `register_opened` = idempotent add + back-fill + resume lookup; its `borrow_mut`
         // is confined to the `let reg` line and released before the later state updates.
         let (count_changed, resume_page) = if let Some(c) = canonical.as_deref() {
+            // `open_controller::probe_open` produced this identity; do not re-derive it here.
             let reg = library.borrow_mut().register_opened(c, page_count);
             (reg.count_changed, Some(reg.resume.last_viewed()))
         } else {

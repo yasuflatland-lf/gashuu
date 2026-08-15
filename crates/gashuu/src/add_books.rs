@@ -9,7 +9,7 @@
 //! The off-UI-thread PROBE half lives in `crate::add_controller`.
 
 use crate::add_controller;
-use gashuu_core::{CoreError, Library};
+use gashuu_core::{canonical_identity, CoreError, Library};
 
 /// Outcome of an add batch: the canonical paths actually inserted (new books
 /// only, in INPUT order) and the count of paths REJECTED because they could not
@@ -34,11 +34,11 @@ pub(crate) struct AddReport {
 ///   as a book: skip, count in `skipped`, and log (the same level + detail the
 ///   old synchronous `add_paths` logged; logging is deferred to here so the probe
 ///   half stays pure).
-/// - `ProbeKind::Counted(count)` — add via `Library::add` (canonicalizes, dedups,
-///   re-sorts). On a genuine insert (`Some(canonical)`) the page count is recorded
+/// - `ProbeKind::Counted(count)` — derive the identity via [`canonical_identity`]
+///   and add the complete batch via [`Library::add_many`] (deduplicating and
+///   re-sorting once). For each genuine insert the page count is recorded
 ///   immediately so a freshly added book shows "1 / N" without waiting for its
-///   first open; a duplicate (`None`) is silently dropped (neither added nor
-///   skipped).
+///   first open; duplicates are silently dropped (neither added nor skipped).
 ///
 /// Behaviour is byte-identical to the pre-206 synchronous `add_paths`; only the
 /// probe was moved off-thread.
@@ -47,7 +47,7 @@ pub(crate) fn apply_outcomes(
     outcomes: Vec<add_controller::ProbeOutcome>,
 ) -> AddReport {
     use add_controller::ProbeKind;
-    let mut added = Vec::new();
+    let mut counted = Vec::new();
     let mut skipped = 0usize;
     for add_controller::ProbeOutcome { path, kind, .. } in outcomes {
         match kind {
@@ -68,16 +68,24 @@ pub(crate) fn apply_outcomes(
                 tracing::warn!(%error, path = %path.display(), "skipping unreadable source");
             }
             ProbeKind::Counted(count) => {
-                if let Some(canonical) = lib.add(path).map(std::path::Path::to_path_buf) {
-                    // Record the probed count so a freshly inserted book shows "1 / N"
-                    // before its first open (set_page_count re-finds it by canonical path).
-                    lib.set_page_count(&canonical, count);
-                    added.push(canonical);
-                }
-                // `None` here means a duplicate (within the batch or already
-                // present): neither added nor skipped, as before.
+                counted.push((canonical_identity(&path), count));
             }
         }
+    }
+
+    let canonicals = counted
+        .iter()
+        .map(|(canonical, _)| canonical.clone())
+        .collect();
+    let added = lib.add_many(canonicals);
+    let mut counts = counted.into_iter();
+    for canonical in &added {
+        let (_, count) = counts
+            .find(|(candidate, _)| candidate == canonical)
+            .expect("add_many returns only identities supplied by this batch");
+        // Record the first probed count for each new identity, matching repeated
+        // `add` behaviour when an input batch contains duplicates.
+        lib.set_page_count(canonical, count);
     }
     AddReport { added, skipped }
 }
@@ -163,7 +171,7 @@ mod tests {
     /// Create a fresh temp directory under `parent/<name>` holding `pages`
     /// zero-byte `*.png` files (so it probes to a `pages`-page book). With
     /// `pages == 0` the directory is empty and probes to `EmptyBook`. Returns the
-    /// directory path (its canonical form is what `Library::add` stores).
+    /// directory path (its canonical form is what the apply half stores).
     fn make_book_dir(parent: &std::path::Path, name: &str, pages: usize) -> std::path::PathBuf {
         let dir = parent.join(name);
         std::fs::create_dir_all(&dir).expect("create book dir");
@@ -173,10 +181,10 @@ mod tests {
         dir
     }
 
-    /// Canonicalize a path the same way `Library::add` does, so test expectations
-    /// match the stored/returned canonical paths.
+    /// Produce the same caller-side identity as the apply half so test expectations
+    /// match the stored/returned paths.
     fn canon(path: &std::path::Path) -> std::path::PathBuf {
-        path.canonicalize().expect("canonicalize existing path")
+        gashuu_core::canonical_identity(path)
     }
 
     #[test]
@@ -207,7 +215,7 @@ mod tests {
     }
 
     #[test]
-    fn add_paths_dedup_within_batch() {
+    fn add_paths_intra_batch_duplicate_counted_once() {
         let mut lib = gashuu_core::Library::new();
         let root = tempfile::tempdir().expect("tempdir");
         let vol1 = make_book_dir(root.path(), "vol1", 1);
@@ -235,7 +243,7 @@ mod tests {
         let root = tempfile::tempdir().expect("tempdir");
         let vol1 = make_book_dir(root.path(), "vol1", 1);
         let vol2 = make_book_dir(root.path(), "vol2", 1);
-        lib.add(vol1.clone());
+        lib.add(gashuu_core::canonical_identity(&vol1));
         let report = add_paths(
             &mut lib,
             vec![vol1.clone(), vol2.clone()],
@@ -279,8 +287,8 @@ mod tests {
         let root = tempfile::tempdir().expect("tempdir");
         let vol1 = make_book_dir(root.path(), "vol1", 1);
         let vol2 = make_book_dir(root.path(), "vol2", 1);
-        lib.add(vol1.clone());
-        lib.add(vol2.clone());
+        lib.add(gashuu_core::canonical_identity(&vol1));
+        lib.add(gashuu_core::canonical_identity(&vol2));
         let before = lib.books().len();
         let report = add_paths(
             &mut lib,

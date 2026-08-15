@@ -62,7 +62,7 @@ pub(crate) enum ProbeKind {
 
 /// One probed source awaiting the UI-thread apply: its INPUT-order `index` (so
 /// the apply half can restore input order regardless of probe completion order),
-/// its canonical-on-add `path`, and its classified `kind`. All fields `Send`.
+/// its selected `path`, and its classified `kind`. All fields `Send`.
 pub(crate) struct ProbeOutcome {
     /// Position in the picked-paths input, used to re-sort to input order before
     /// applying (probes complete out of order on parallel workers).

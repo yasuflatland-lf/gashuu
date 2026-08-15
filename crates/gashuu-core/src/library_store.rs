@@ -615,7 +615,7 @@ mod tests {
         for name in ["a.cbz", "b.cbz"] {
             let f = dir.path().join(name);
             std::fs::write(&f, []).unwrap();
-            assert!(lib.add(f).is_some());
+            assert!(lib.add(crate::canonical_identity(&f)).is_some());
         }
         let canonical_b = dir.path().join("b.cbz").canonicalize().unwrap();
         assert!(lib.set_resume_page(&canonical_b, 4));
