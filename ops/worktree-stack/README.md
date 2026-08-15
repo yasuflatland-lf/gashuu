@@ -88,8 +88,20 @@ every later link is built on the one below it. Two stops are routine rather than
 - **drift** — `origin/main` moved from outside the stack (Renovate landed something).
   `wt-sync.sh` the next branch, re-gate, push, wait for CI, re-run.
 
-After a merge, GitHub retargets the next stacked PR onto `main` on its own, so PR bases
-do not need to be edited by hand. Intermediate CI runs on `main` showing `cancelled`
+Two consequences of `delete_branch_on_merge` being on, worth knowing before you hit them:
+
+- After a merge, GitHub retargets the next stacked PR onto `main` on its own, so PR bases
+  do not need to be edited by hand — that retargeting is triggered by the head branch being
+  deleted.
+- **A link's parent branch stops existing once that link lands.** `wt-new.sh <slug>
+  wt/<parent>` fails at that point; pass `origin/main` as the parent instead, which by then
+  contains the parent link anyway.
+
+`wt-merge.sh` requires **every** entry in the check rollup to be `SUCCESS`, which is
+stricter than "every *required* check", because `main` has none. Today that costs nothing —
+`codecov.yml` marks both codecov contexts `informational: true`, so they report success —
+but a future non-blocking check that reports a real conclusion would stop the script, by
+design. Fix or exclude the check rather than loosening the guard. Intermediate CI runs on `main` showing `cancelled`
 during back-to-back merges are the Actions concurrency group superseding them — only the
 tip's verdict counts.
 
