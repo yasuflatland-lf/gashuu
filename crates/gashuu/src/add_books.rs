@@ -518,6 +518,50 @@ mod tests {
     }
 
     #[test]
+    fn record_page_counts_skips_an_added_identity_with_no_probed_count() {
+        // The panic removal itself. An `added` identity with NO entry in the count
+        // map is the exact shape that made the old `find(..).expect(..)` blow up on
+        // the UI thread; here it must be a silent skip that leaves the book in the
+        // pre-existing unknown-count state. The miss sits in the MIDDLE so a panic
+        // (or any early exit) also robs the identity after it of its count.
+        let first = std::path::PathBuf::from("first.cbz");
+        let uncounted = std::path::PathBuf::from("uncounted.cbz");
+        let last = std::path::PathBuf::from("last.cbz");
+        let mut lib = Library::new();
+        lib.add_many(vec![first.clone(), uncounted.clone(), last.clone()]);
+        let added = vec![first.clone(), uncounted.clone(), last.clone()];
+        let counts = std::collections::HashMap::from([
+            (
+                first.clone(),
+                std::num::NonZeroUsize::new(3).expect("nonzero"),
+            ),
+            (
+                last.clone(),
+                std::num::NonZeroUsize::new(7).expect("nonzero"),
+            ),
+        ]);
+
+        record_page_counts(&mut lib, &added, &counts);
+
+        let page_count = |path: &std::path::Path| {
+            lib.books()
+                .iter()
+                .find(|book| book.path() == path)
+                .and_then(|book| book.page_count_opt())
+        };
+        assert_eq!(
+            page_count(&uncounted),
+            None,
+            "an identity without a probed count keeps the unknown-count state"
+        );
+        assert_eq!(
+            (page_count(&first), page_count(&last)),
+            (Some(3), Some(7)),
+            "a miss is skipped without disturbing the identities around it"
+        );
+    }
+
+    #[test]
     fn apply_outcomes_and_save_returns_report_when_save_fails() {
         let root = tempfile::tempdir().expect("tempdir");
         let book = make_book_dir(root.path(), "book", 2);
