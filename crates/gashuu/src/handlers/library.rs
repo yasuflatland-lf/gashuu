@@ -1,3 +1,4 @@
+use crate::dialog_session::DialogSession;
 use crate::{
     add_controller,
     carousel::{apply_selection_flags, set_carousel_selected},
@@ -162,6 +163,29 @@ fn open_and_enter(
     open_ctrl.start(ui.as_weak(), path, policy);
 }
 
+/// End any in-progress settings-dialog session, then apply the landed probe.
+///
+/// ORDER IS LOAD-BEARING, and this pairing is why the two statements live in one
+/// function: `apply_probed` opens with `persist_leave_point(OpenDifferentBook)`,
+/// which writes the CURRENT runtime onto the OUTGOING book. A settings dialog
+/// opened on the Library screen leaves that runtime seeded with the GLOBAL
+/// defaults, so an open that lands while the dialog is up used to overwrite the
+/// previous book's own view modes with the globals (issue #535, path (b)).
+///
+/// Extracted from the `on_open_finalize` closure so the ordering is reachable
+/// without a live window; the borrow stays confined to the one statement.
+fn end_session_and_apply_probed(
+    dialog_session: &Rc<RefCell<DialogSession>>,
+    state: &Rc<RefCell<ViewerState>>,
+    viewport: &Rc<RefCell<ViewportState>>,
+    open_book: &use_cases::OpenBookUseCase,
+    path: &std::path::Path,
+    probe: OpenProbeOutcome,
+) -> use_cases::OpenOutcome {
+    dialog_session.borrow_mut().end(state, viewport);
+    open_book.apply_probed(path, probe)
+}
+
 /// Registers the library-search and carousel navigation/open callbacks onto `ui`.
 /// Panel constraint (#151): explicit handle list IS the dependency list — no AppState bundle.
 #[allow(clippy::too_many_arguments)]
@@ -169,6 +193,7 @@ pub(crate) fn wire_carousel_handlers(
     ui: &ViewerWindow,
     state: &Rc<RefCell<ViewerState>>,
     viewport: &Rc<RefCell<ViewportState>>,
+    dialog_session: &Rc<RefCell<DialogSession>>,
     library: &Rc<RefCell<Library>>,
     nav: &Rc<RefCell<NavState>>,
     settings: &Rc<RefCell<Settings>>,
@@ -185,6 +210,7 @@ pub(crate) fn wire_carousel_handlers(
     // prelude stays byte-identical to its pre-extraction form in `main`.
     let state = Rc::clone(state);
     let viewport = Rc::clone(viewport);
+    let dialog_session = Rc::clone(dialog_session);
     let library = Rc::clone(library);
     let nav = Rc::clone(nav);
     let settings = Rc::clone(settings);
@@ -206,6 +232,7 @@ pub(crate) fn wire_carousel_handlers(
         let open_book = Rc::clone(&open_book);
         let state = Rc::clone(&state);
         let viewport = Rc::clone(&viewport);
+        let dialog_session = Rc::clone(&dialog_session);
         let pages = Rc::clone(&pages);
         let thumbs = Rc::clone(&thumbs);
         let library = Rc::clone(&library);
@@ -218,11 +245,20 @@ pub(crate) fn wire_carousel_handlers(
                 let Some((path, probe)) = open_ctrl.take_outcome(epoch.max(0) as usize) else {
                     return;
                 };
+                // Pure read of the probe before ownership moves; no shared state is
+                // touched, so the session end below still precedes every write.
                 let path_exists = match &probe {
                     OpenProbeOutcome::Failed { path_exists, .. } => Some(*path_exists),
                     OpenProbeOutcome::Opened(_) => None,
                 };
-                let outcome = open_book.apply_probed(&path, probe);
+                let outcome = end_session_and_apply_probed(
+                    &dialog_session,
+                    &state,
+                    &viewport,
+                    &open_book,
+                    &path,
+                    probe,
+                );
                 // Enter the Viewer ONLY on a clean open: an empty source was already
                 // removed, and a failed open must keep the user on the Library screen.
                 let enter_viewer = matches!(outcome, use_cases::OpenOutcome::Success { .. });
@@ -635,5 +671,110 @@ pub(crate) fn wire_selection_handlers(
                 );
             })
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::dialog_session::DialogScope;
+    use crate::open_controller::probe_open;
+    use gashuu_core::{
+        ArchivePolicy, CoverMode, FitMode, ReadingDirection, ResolvedView, SpreadMode, ViewOverride,
+    };
+
+    fn make_book_dir(parent: &std::path::Path, name: &str, pages: usize) -> std::path::PathBuf {
+        let source = parent.join(name);
+        std::fs::create_dir(&source).expect("create fixture book");
+        for page in 0..pages {
+            std::fs::write(source.join(format!("page{page:03}.png")), [])
+                .expect("write fixture page");
+        }
+        source
+    }
+
+    /// Issue #535, path (b), pinned at the PRODUCTION call site: an open that lands
+    /// while a settings dialog opened on the Library screen is still up must persist
+    /// the OUTGOING book's own view modes, not the global-seeded scratchpad the
+    /// dialog installed. Deleting the `end()` call from `end_session_and_apply_probed`
+    /// stages the globals onto the outgoing book instead.
+    #[test]
+    fn open_finalize_with_a_library_dialog_open_persists_the_outgoing_books_own_modes() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let first = make_book_dir(root.path(), "first", 3);
+        let second = make_book_dir(root.path(), "second", 3);
+
+        // Globals (G) and the outgoing book's own modes (B) differ in all four axes.
+        let settings = Rc::new(RefCell::new(Settings {
+            reading_direction: ReadingDirection::Rtl,
+            spread_mode: SpreadMode::Double,
+            cover_mode: CoverMode::Paired,
+            fit_mode: FitMode::Actual,
+            ..Settings::default()
+        }));
+        let state = Rc::new(RefCell::new(ViewerState::new()));
+        state.borrow_mut().open_path(&first).expect("open first");
+        let canonical = state
+            .borrow()
+            .open_file()
+            .expect("open file after successful open")
+            .to_path_buf();
+        let viewport = Rc::new(RefCell::new(ViewportState::from_settings(
+            &settings.borrow(),
+        )));
+        state.borrow_mut().apply_resolved_view(
+            ResolvedView {
+                reading_direction: ReadingDirection::Ltr,
+                spread_mode: SpreadMode::Single,
+                cover_mode: CoverMode::Standalone,
+                fit_mode: FitMode::Whole,
+            },
+            &mut viewport.borrow_mut(),
+        );
+        let mut library_value = Library::new();
+        assert!(library_value.add(canonical.clone()).is_some());
+        let library = Rc::new(RefCell::new(library_value));
+        // Hermetic: both persistence effects are injected no-ops, so nothing reaches
+        // the process data directory.
+        let open_book = use_cases::OpenBookUseCase::new(
+            Rc::clone(&state),
+            Rc::clone(&settings),
+            Rc::clone(&viewport),
+            Rc::clone(&library),
+            Box::new(|_| Ok(())),
+            Box::new(|_| Ok(())),
+        );
+        let dialog_session = Rc::new(RefCell::new(DialogSession::new()));
+
+        // The Library-screen dialog seeds the runtime with G, then the in-flight
+        // open of the SECOND book lands.
+        dialog_session
+            .borrow_mut()
+            .open(DialogScope::Library, &state, &viewport, &settings);
+        let probe = probe_open(&second, ArchivePolicy::default());
+        let outcome = end_session_and_apply_probed(
+            &dialog_session,
+            &state,
+            &viewport,
+            &open_book,
+            &second,
+            probe,
+        );
+
+        assert!(matches!(outcome, use_cases::OpenOutcome::Success { .. }));
+        assert_eq!(
+            library.borrow().overrides_for(&canonical),
+            ViewOverride {
+                reading_direction: Some(ReadingDirection::Ltr),
+                spread_mode: Some(SpreadMode::Single),
+                cover_mode: Some(CoverMode::Standalone),
+                fit_mode: Some(FitMode::Whole),
+            },
+            "the outgoing book keeps its own modes, not the dialog's global scratchpad"
+        );
+        assert!(
+            dialog_session.borrow().scope().is_none(),
+            "the open-finalize path ends the session"
+        );
     }
 }
