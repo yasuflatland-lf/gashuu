@@ -1,7 +1,7 @@
 //! The "open a book" application use case, extracted out of `main.rs`.
 //!
-//! [`OpenBookUseCase`] bundles the four headless collaborators the open path
-//! coordinates (state, settings, viewport, library) as fields, so the open sites
+//! [`OpenBookUseCase`] bundles the headless collaborators the open path
+//! coordinates as fields, so the open sites
 //! call [`OpenBookUseCase::apply_probed`] with the per-call `path` plus the
 //! already-completed probe (`skipped_detail` is derived internally);
 //! [`OpenBookUseCase::run`] is the synchronous `probe_open` + `apply_probed`
@@ -17,6 +17,7 @@ use std::rc::Rc;
 use gashuu_core::{CoreError, Library, Settings, ThumbnailCache};
 
 use crate::cover_loader::purge_cover;
+use crate::dialog_session::DialogSession;
 use crate::open_controller::{probe_open, OpenProbeOutcome};
 use crate::view_sync::persist_leave_point_with;
 use crate::viewer_state::ViewerState;
@@ -88,7 +89,7 @@ pub(crate) enum SkippedDetail {
     Archive,
 }
 
-/// Coordinates the "open a book" use case. The four headless collaborators it
+/// Coordinates the "open a book" use case. The headless collaborators it
 /// threads are fields, so the open sites call [`OpenBookUseCase::apply_probed`]
 /// with just a `path` and its probe; `main.rs`'s `finalize_open` applies the UI
 /// effects (symmetry with `RemoveBooksUseCase`).
@@ -96,6 +97,7 @@ pub(crate) struct OpenBookUseCase {
     state: Rc<RefCell<ViewerState>>,
     settings: Rc<RefCell<Settings>>,
     viewport: Rc<RefCell<ViewportState>>,
+    dialog_session: Rc<RefCell<DialogSession>>,
     library: Rc<RefCell<Library>>,
     save_library: SaveLibrary,
     save_settings: SaveSettings,
@@ -108,6 +110,7 @@ impl OpenBookUseCase {
         state: Rc<RefCell<ViewerState>>,
         settings: Rc<RefCell<Settings>>,
         viewport: Rc<RefCell<ViewportState>>,
+        dialog_session: Rc<RefCell<DialogSession>>,
         library: Rc<RefCell<Library>>,
         save_library: SaveLibrary,
         save_settings: SaveSettings,
@@ -116,6 +119,7 @@ impl OpenBookUseCase {
             state,
             settings,
             viewport,
+            dialog_session,
             library,
             save_library,
             save_settings,
@@ -155,6 +159,7 @@ impl OpenBookUseCase {
         let state = &self.state;
         let settings = &self.settings;
         let viewport = &self.viewport;
+        let dialog_session = &self.dialog_session;
         let library = &self.library;
 
         // Capture the OUTGOING book's position and view modes before replacing
@@ -164,6 +169,7 @@ impl OpenBookUseCase {
             ViewModeRoute::OpenDifferentBook,
             state,
             viewport,
+            dialog_session,
             settings,
             library,
             |library| (self.save_library)(library),
@@ -179,6 +185,7 @@ impl OpenBookUseCase {
                     probe.truncated,
                     probe.canonical,
                 );
+                dialog_session.borrow_mut().clear_pending_inherit();
                 tracing::info!(path = %path.display(), "opened source");
                 is_dir
             }
@@ -408,8 +415,10 @@ fn remove_empty_book_with(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::view_sync::current_runtime_view;
     use gashuu_core::{
-        ArchivePolicy, CoverMode, LibraryStore, SettingsStore, SpreadMode, ViewOverride,
+        ArchivePolicy, CoverMode, FitMode, LibraryStore, ReadingDirection, ResolvedView,
+        SettingsStore, SpreadMode, ViewOverride,
     };
     use std::cell::Cell;
     use std::path::PathBuf;
@@ -752,17 +761,47 @@ mod tests {
         save_library: impl Fn(&Library) -> Result<(), CoreError> + 'static,
         save_settings: impl Fn(&Settings) -> Result<(), CoreError> + 'static,
     ) -> (OpenBookUseCase, Rc<RefCell<ViewerState>>) {
+        let parts = use_case_parts(settings, library, save_library, save_settings);
+        (parts.use_case, parts.state)
+    }
+
+    /// Every collaborator the use case was built over, for the tests that assert
+    /// on more than the viewer state (the pending-inherit intent needs the
+    /// viewport, the shared settings, and the session itself).
+    struct UseCaseParts {
+        use_case: OpenBookUseCase,
+        state: Rc<RefCell<ViewerState>>,
+        viewport: Rc<RefCell<ViewportState>>,
+        settings: Rc<RefCell<Settings>>,
+        dialog_session: Rc<RefCell<DialogSession>>,
+    }
+
+    fn use_case_parts(
+        settings: Settings,
+        library: Rc<RefCell<Library>>,
+        save_library: impl Fn(&Library) -> Result<(), CoreError> + 'static,
+        save_settings: impl Fn(&Settings) -> Result<(), CoreError> + 'static,
+    ) -> UseCaseParts {
         let state = Rc::new(RefCell::new(ViewerState::from_settings(&settings)));
         let viewport = Rc::new(RefCell::new(ViewportState::from_settings(&settings)));
+        let dialog_session = Rc::new(RefCell::new(DialogSession::new()));
+        let settings = Rc::new(RefCell::new(settings));
         let use_case = OpenBookUseCase::new(
             Rc::clone(&state),
-            Rc::new(RefCell::new(settings)),
-            viewport,
+            Rc::clone(&settings),
+            Rc::clone(&viewport),
+            Rc::clone(&dialog_session),
             library,
             Box::new(save_library),
             Box::new(save_settings),
         );
-        (use_case, state)
+        UseCaseParts {
+            use_case,
+            state,
+            viewport,
+            settings,
+            dialog_session,
+        }
     }
 
     /// Create a real folder source using the same zero-byte image fixtures as
@@ -1385,6 +1424,142 @@ mod tests {
         assert!(
             !settings_store.exists(),
             "tracking off must not write settings"
+        );
+    }
+
+    // ---- the pending-inherit discard on open (#540, scope item 6) ----------
+
+    /// Opening a book must DISCARD the outgoing book's pending "reset to global"
+    /// intent, and the discard cannot be left to the equality predicate: the
+    /// intent records the resolved GLOBAL view, and a book with no override
+    /// resolves to exactly that view, so the incoming book would match the
+    /// outgoing book's reset by coincidence. Without
+    /// `clear_pending_inherit()` the very next leave point erases the incoming
+    /// book's override instead of pinning its modes.
+    ///
+    /// Book A carries a full override that differs from the globals, so its own
+    /// write-back at the open of book B is a real mutation (to `none()`, the
+    /// reset being honoured for the book it was made on); book B has no override
+    /// at all, so it resolves to the globals and walks straight into the trap.
+    #[test]
+    fn opening_a_book_discards_the_outgoing_books_pending_inherit() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let book_a_parent = root.path().join("book-a-parent");
+        let book_b_parent = root.path().join("book-b-parent");
+        std::fs::create_dir(&book_a_parent).expect("create book A parent");
+        std::fs::create_dir(&book_b_parent).expect("create book B parent");
+        let book_a = make_book_dir(&book_a_parent, 3);
+        let book_b = make_book_dir(&book_b_parent, 2);
+        let canonical_a = book_a.canonicalize().expect("canonical book A");
+        let canonical_b = book_b.canonicalize().expect("canonical book B");
+
+        let settings = Settings {
+            reading_direction: ReadingDirection::Rtl,
+            spread_mode: SpreadMode::Double,
+            cover_mode: CoverMode::Paired,
+            fit_mode: FitMode::Actual,
+            ..Settings::default()
+        };
+        let global_view = ResolvedView {
+            reading_direction: settings.reading_direction,
+            spread_mode: settings.spread_mode,
+            cover_mode: settings.cover_mode,
+            fit_mode: settings.fit_mode,
+        };
+        // A's stored override differs from the globals in all four fields, so the
+        // write-back that clears it at B's open cannot pass vacuously.
+        let book_a_override = ViewOverride {
+            reading_direction: Some(ReadingDirection::Ltr),
+            spread_mode: Some(SpreadMode::Single),
+            cover_mode: Some(CoverMode::Standalone),
+            fit_mode: Some(FitMode::Whole),
+        };
+        let mut seeded = Library::new();
+        seeded.register_opened(&canonical_a, std::num::NonZeroUsize::new(3));
+        assert!(seeded.set_overrides(&canonical_a, book_a_override));
+        let library = Rc::new(RefCell::new(seeded));
+        let parts = use_case_parts(
+            settings,
+            Rc::clone(&library),
+            |_| Ok(()),
+            |_| panic!("settings save must not be attempted"),
+        );
+        let (state, viewport, settings, session) = (
+            parts.state,
+            parts.viewport,
+            parts.settings,
+            parts.dialog_session,
+        );
+
+        // Open A, then reset it to global — the runtime moves off A's override and
+        // the session records the installed (global) view as the pending intent.
+        assert!(matches!(
+            parts.use_case.apply_probed(
+                &book_a,
+                crate::open_controller::probe_open(&book_a, ArchivePolicy::default()),
+            ),
+            OpenOutcome::Success { .. }
+        ));
+        session
+            .borrow_mut()
+            .reset_to_global(&state, &viewport, &settings);
+        assert!(
+            session
+                .borrow()
+                .inherit_pending(current_runtime_view(&state, &viewport)),
+            "fixture must arm the pending intent before opening the next book"
+        );
+
+        assert!(matches!(
+            parts.use_case.apply_probed(
+                &book_b,
+                crate::open_controller::probe_open(&book_b, ArchivePolicy::default()),
+            ),
+            OpenOutcome::Success { .. }
+        ));
+
+        // The reset is still honoured for the book it was made on: A's leave-point
+        // write-back (which runs before the discard) empties A's override.
+        assert_eq!(
+            library.borrow().overrides_for(&canonical_a),
+            ViewOverride::none(),
+            "the outgoing book's reset must still be honoured at its leave point"
+        );
+        // The trap is live: B has no override, so its runtime equals the very view
+        // the reset recorded. Only the explicit discard separates the two.
+        assert_eq!(
+            current_runtime_view(&state, &viewport),
+            global_view,
+            "book B must resolve to the globals, or the equality trap is not exercised"
+        );
+        assert!(
+            !session
+                .borrow()
+                .inherit_pending(current_runtime_view(&state, &viewport)),
+            "opening a book must discard the outgoing book's pending reset intent"
+        );
+
+        // The consequence the discard exists for: B's next leave point pins B's
+        // modes instead of erasing its override as an inherited reset would.
+        persist_leave_point_with(
+            ViewModeRoute::LeaveViewer,
+            &state,
+            &viewport,
+            &session,
+            &settings,
+            &library,
+            |_| Ok(()),
+        )
+        .expect("leave-point save must succeed");
+        assert_eq!(
+            library.borrow().overrides_for(&canonical_b),
+            ViewOverride {
+                reading_direction: Some(global_view.reading_direction),
+                spread_mode: Some(global_view.spread_mode),
+                cover_mode: Some(global_view.cover_mode),
+                fit_mode: Some(global_view.fit_mode),
+            },
+            "the newly opened book must pin its own modes, not inherit the reset"
         );
     }
 }

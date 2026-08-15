@@ -7,7 +7,7 @@ use std::rc::Rc;
 /// The open book's pre-dialog runtime, captured at library-screen dialog open.
 struct RuntimeSnapshot {
     view: ResolvedView,
-    inherit_pending: bool,
+    pending_inherit: Option<ResolvedView>,
 }
 
 /// The screen the settings dialog was OPENED on, recorded once at open. Every
@@ -29,6 +29,7 @@ pub(crate) enum DialogScope {
 pub(crate) struct DialogSession {
     scope: Option<DialogScope>,
     snapshot: Option<RuntimeSnapshot>,
+    pending_inherit: Option<ResolvedView>,
 }
 
 impl DialogSession {
@@ -36,6 +37,7 @@ impl DialogSession {
         Self {
             scope: None,
             snapshot: None,
+            pending_inherit: None,
         }
     }
 
@@ -54,7 +56,7 @@ impl DialogSession {
             let has_open_book = state.borrow().open_file().is_some();
             self.snapshot = has_open_book.then(|| RuntimeSnapshot {
                 view: current_runtime_view(state, viewport),
-                inherit_pending: state.borrow().is_inherit_pending(),
+                pending_inherit: self.pending_inherit,
             });
             apply_global_view_to_runtime(settings, state, viewport);
         }
@@ -71,26 +73,33 @@ impl DialogSession {
             state
                 .borrow_mut()
                 .apply_resolved_view(snapshot.view, &mut viewport.borrow_mut());
-            // AFTER apply_resolved_view: its set_* calls clear the flag (#415 order).
-            if snapshot.inherit_pending {
-                state.borrow_mut().mark_inherit_pending();
-            } else {
-                state.borrow_mut().clear_inherit_pending();
-            }
+            self.pending_inherit = snapshot.pending_inherit;
         }
         self.scope = None;
         self.snapshot = None;
     }
 
-    /// Reset-to-global: apply globals to the runtime, THEN
-    /// `mark_inherit_pending`. Owns the #415 order.
+    /// Whether a reset is pending and the live runtime still matches the view
+    /// installed by that reset.
+    pub fn inherit_pending(&self, current: ResolvedView) -> bool {
+        self.pending_inherit == Some(current)
+    }
+
+    /// Discard any pending reset intent for the current book.
+    pub fn clear_pending_inherit(&mut self) {
+        self.pending_inherit = None;
+    }
+
+    /// Reset-to-global: apply globals to the runtime, THEN record the installed
+    /// view as pending inherit. Owns the #415 order.
     pub fn reset_to_global(
+        &mut self,
         state: &Rc<RefCell<ViewerState>>,
         viewport: &Rc<RefCell<ViewportState>>,
         settings: &Rc<RefCell<Settings>>,
     ) {
         apply_global_view_to_runtime(settings, state, viewport);
-        state.borrow_mut().mark_inherit_pending();
+        self.pending_inherit = Some(current_runtime_view(state, viewport));
     }
 }
 
@@ -154,6 +163,157 @@ mod tests {
             .open_path(dir.path())
             .expect("open book directory");
         dir
+    }
+
+    #[test]
+    fn reset_then_no_change_is_inherit_pending() {
+        let settings = global_settings();
+        let state = Rc::new(RefCell::new(ViewerState::new()));
+        let viewport = Rc::new(RefCell::new(ViewportState::from_settings(
+            &settings.borrow(),
+        )));
+        apply_runtime_view(&state, &viewport, book_view());
+        let mut session = DialogSession::new();
+
+        session.reset_to_global(&state, &viewport, &settings);
+        let current = current_runtime_view(&state, &viewport);
+
+        assert!(session.inherit_pending(current));
+    }
+
+    #[test]
+    fn reset_then_any_viewer_mode_change_clears_it() {
+        type Mutation = fn(&mut ViewerState);
+        let cases: [(&str, Mutation); 6] = [
+            ("set_reading_direction", |state| {
+                state.set_reading_direction(ReadingDirection::Ltr);
+            }),
+            ("set_spread_mode", |state| {
+                state.set_spread_mode(SpreadMode::Single);
+            }),
+            ("set_cover_mode", |state| {
+                state.set_cover_mode(CoverMode::Standalone);
+            }),
+            ("toggle_spread", |state| {
+                state.toggle_spread();
+            }),
+            ("toggle_cover", |state| {
+                state.toggle_cover();
+            }),
+            ("toggle_reading_direction", |state| {
+                state.toggle_reading_direction();
+            }),
+        ];
+        let mut failures = Vec::new();
+
+        for (name, mutate) in cases {
+            let settings = global_settings();
+            let state = Rc::new(RefCell::new(ViewerState::new()));
+            let viewport = Rc::new(RefCell::new(ViewportState::from_settings(
+                &settings.borrow(),
+            )));
+            apply_runtime_view(&state, &viewport, book_view());
+            let mut session = DialogSession::new();
+            session.reset_to_global(&state, &viewport, &settings);
+
+            mutate(&mut state.borrow_mut());
+            let current = current_runtime_view(&state, &viewport);
+            if session.inherit_pending(current) {
+                failures.push(name.to_owned());
+            }
+        }
+
+        assert!(failures.is_empty(), "{failures:#?}");
+    }
+
+    #[test]
+    fn reset_then_fit_change_clears_it() {
+        let settings = global_settings();
+        let state = Rc::new(RefCell::new(ViewerState::new()));
+        let viewport = Rc::new(RefCell::new(ViewportState::from_settings(
+            &settings.borrow(),
+        )));
+        apply_runtime_view(&state, &viewport, book_view());
+        let mut session = DialogSession::new();
+        session.reset_to_global(&state, &viewport, &settings);
+
+        viewport.borrow_mut().set_fit(FitMode::Whole);
+        let current = current_runtime_view(&state, &viewport);
+
+        assert!(!session.inherit_pending(current));
+    }
+
+    #[test]
+    fn reset_then_change_and_change_back_is_pending_again() {
+        let settings = global_settings();
+        let state = Rc::new(RefCell::new(ViewerState::new()));
+        let viewport = Rc::new(RefCell::new(ViewportState::from_settings(
+            &settings.borrow(),
+        )));
+        apply_runtime_view(&state, &viewport, book_view());
+        let mut session = DialogSession::new();
+        session.reset_to_global(&state, &viewport, &settings);
+
+        state.borrow_mut().set_spread_mode(SpreadMode::Single);
+        state.borrow_mut().set_spread_mode(SpreadMode::Double);
+        let current = current_runtime_view(&state, &viewport);
+
+        assert!(session.inherit_pending(current));
+    }
+
+    #[test]
+    fn snapshot_restore_preserves_pending_intent() {
+        let settings = global_settings();
+        let state = Rc::new(RefCell::new(ViewerState::new()));
+        let viewport = Rc::new(RefCell::new(ViewportState::from_settings(
+            &settings.borrow(),
+        )));
+        let _book = open_book(&state);
+        let mut session = DialogSession::new();
+        session.reset_to_global(&state, &viewport, &settings);
+
+        session.open(DialogScope::Library, &state, &viewport, &settings);
+        state.borrow_mut().set_spread_mode(SpreadMode::Single);
+        session.end(&state, &viewport);
+        let current = current_runtime_view(&state, &viewport);
+
+        assert!(session.inherit_pending(current));
+    }
+
+    #[test]
+    fn snapshot_restore_preserves_absence() {
+        let settings = global_settings();
+        let state = Rc::new(RefCell::new(ViewerState::new()));
+        let viewport = Rc::new(RefCell::new(ViewportState::from_settings(
+            &settings.borrow(),
+        )));
+        let _book = open_book(&state);
+        apply_runtime_view(&state, &viewport, book_view());
+        let mut session = DialogSession::new();
+
+        session.open(DialogScope::Library, &state, &viewport, &settings);
+        state.borrow_mut().set_spread_mode(SpreadMode::Single);
+        session.end(&state, &viewport);
+        let current = current_runtime_view(&state, &viewport);
+
+        assert!(!session.inherit_pending(current));
+    }
+
+    #[test]
+    fn clear_pending_inherit_is_idempotent() {
+        let settings = global_settings();
+        let state = Rc::new(RefCell::new(ViewerState::new()));
+        let viewport = Rc::new(RefCell::new(ViewportState::from_settings(
+            &settings.borrow(),
+        )));
+        let mut session = DialogSession::new();
+        session.reset_to_global(&state, &viewport, &settings);
+
+        session.clear_pending_inherit();
+        session.clear_pending_inherit();
+        let current = current_runtime_view(&state, &viewport);
+
+        assert!(!session.inherit_pending(current));
     }
 
     #[test]
@@ -224,67 +384,6 @@ mod tests {
             current_runtime_view(&state, &viewport),
             alternate_book_view()
         );
-    }
-
-    #[test]
-    fn reset_to_global_applies_globals_then_marks_inherit_pending() {
-        let settings = global_settings();
-        let state = Rc::new(RefCell::new(ViewerState::new()));
-        let viewport = Rc::new(RefCell::new(ViewportState::from_settings(
-            &settings.borrow(),
-        )));
-        apply_runtime_view(&state, &viewport, book_view());
-
-        DialogSession::reset_to_global(&state, &viewport, &settings);
-
-        assert_eq!(
-            current_runtime_view(&state, &viewport),
-            global_view(&settings)
-        );
-        assert!(state.borrow().is_inherit_pending());
-    }
-
-    #[test]
-    fn library_dialog_global_edit_preserves_inherit_pending() {
-        let settings = global_settings();
-        let state = Rc::new(RefCell::new(ViewerState::new()));
-        let viewport = Rc::new(RefCell::new(ViewportState::from_settings(
-            &settings.borrow(),
-        )));
-        let _book = open_book(&state);
-        apply_runtime_view(&state, &viewport, book_view());
-        DialogSession::reset_to_global(&state, &viewport, &settings);
-        assert!(state.borrow().is_inherit_pending());
-        let mut session = DialogSession::new();
-
-        session.open(DialogScope::Library, &state, &viewport, &settings);
-        state.borrow_mut().set_spread_mode(SpreadMode::Single);
-        session.end(&state, &viewport);
-
-        assert_eq!(
-            current_runtime_view(&state, &viewport),
-            global_view(&settings)
-        );
-        assert!(state.borrow().is_inherit_pending());
-    }
-
-    #[test]
-    fn library_dialog_restores_flag_verbatim_when_not_pending() {
-        let settings = global_settings();
-        let state = Rc::new(RefCell::new(ViewerState::new()));
-        let viewport = Rc::new(RefCell::new(ViewportState::from_settings(
-            &settings.borrow(),
-        )));
-        let _book = open_book(&state);
-        apply_runtime_view(&state, &viewport, book_view());
-        assert!(!state.borrow().is_inherit_pending());
-        let mut session = DialogSession::new();
-
-        session.open(DialogScope::Library, &state, &viewport, &settings);
-        state.borrow_mut().set_spread_mode(SpreadMode::Single);
-        session.end(&state, &viewport);
-
-        assert!(!state.borrow().is_inherit_pending());
     }
 
     #[test]

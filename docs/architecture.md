@@ -564,11 +564,13 @@ projection; falls back to 0 when `None`, filtered out, or empty).
 ### open_book
 
 `open_book.rs`. `OpenBookUseCase` — the open-a-book application use case extracted from `main.rs`
-(#67). Holds four headless collaborators as `Rc<RefCell<…>>` fields: `ViewerState`, `Settings`,
-`ViewportState`, and `Library`. The return value (#114) is built from two types and a single export:
+(#67). Holds five headless collaborators as `Rc<RefCell<…>>` fields: `ViewerState`, `Settings`,
+`ViewportState`, `DialogSession`, and `Library`. The return value (#114) is built from two types and
+a single export:
 
 - `apply_probed(&self, path: &Path, probe: OpenProbeOutcome) -> OpenOutcome` — writes back the
   previous book's position and view modes; installs the ALREADY-opened source from the probe;
+  clears the replaced book's pending-inherit intent;
   updates and saves recent sources when tracking is enabled; registers and saves the book in
   `Library`; jumps to the resume page; and applies the resolved per-book view. On a `Failed` probe
   it returns `OpenOutcome::Error(String)` (the worker's pre-captured message); on success it
@@ -649,14 +651,15 @@ just-opened book's `ResolvedView` via `ViewerState::apply_resolved_view` (+ `Vie
 by the #241 split — the destructive parallel to `open_book`. Lean and HEADLESS: every member returns
 data and touches no Slint; the UI tail lives in `carousel_refresh::finalize_remove`.
 
-- `RemoveBooksUseCase` — the "remove the selected books" use case. Holds four shared collaborators
-  as `Rc<RefCell<…>>` fields: `ViewerState`, `Library`, `LibrarySearchState`, and
+- `RemoveBooksUseCase` — the "remove the selected books" use case. Holds five shared collaborators
+  as `Rc<RefCell<…>>` fields: `ViewerState`, `DialogSession`, `Library`, `LibrarySearchState`, and
   `LibrarySelectionState`. `run(&self) -> RemoveOutcome` (no `ui` arg — headless) executes the full
   destructive transaction in the non-negotiable order: snapshot selected paths → mutate+save with
   rollback (via `remove_books_with_rollback`) → best-effort cover purge via `cover_loader::purge_cover`
   (the single home of the cover-key recipe; `mtime_secs` and `COVER_MAX_SIDE` are private to
-  `cover_loader.rs`; `tracing::warn`-only on miss) → clear the viewer via `ViewerState::close()`
-  (headless state only) when the open book was deleted, recording `closed_open_book` in the outcome
+  `cover_loader.rs`; `tracing::warn`-only on miss) → clear the viewer via `ViewerState::close()` and
+  its pending intent via `DialogSession::clear_pending_inherit()` when the open book was deleted,
+  recording `closed_open_book` in the outcome
   so the Slint side can blank the title bar → recompute the search projection → clear the selection
   (success only; `SaveFailed` preserves it so the user can retry). Returns
   `RemoveOutcome::NoSelection` (empty selection guard), `RemoveOutcome::SaveFailed { error }` (shelf
@@ -691,7 +694,8 @@ data and touches no Slint; the UI tail lives in `carousel_refresh::finalize_remo
 the save-injection seam `persist_leave_point` wraps: `open_book.rs` calls it directly so the open
 use case routes its leave-point save through the injected `save_library`.
 
-`persist_leave_point(route, &state, &viewport, &settings, &library, &library_store)` is the ONE
+`persist_leave_point(route, &state, &viewport, &dialog_session, &settings, &library,
+&library_store)` is the ONE
 leave-point persistence chokepoint (the trailing `&LibraryStoreHandle` is what it saves THROUGH;
 it wraps `persist_leave_point_with` by injecting `save_library(library_store, …)`): it stages the
 applicable position write-back, delegates view-mode routing
@@ -701,6 +705,9 @@ to `stage_view_modes_to_sink`, and saves the library at most once. `stage_view_m
 per-book write-back FIRST, then a global reconcile ONLY when `open_file().is_none()`. So the GLOBAL
 sink is invoked only via the Library-dialog close and the no-book-open exit; every leave point hits
 the per-book sink (a no-op when no book is open).
+Before a per-book write-back, `stage_view_override_write_back` builds the current `ResolvedView`
+and asks `DialogSession::inherit_pending(current)` whether the reset guard still applies. The
+predicate is derived from runtime equality, so mode setters do not participate in its maintenance.
 `apply_global_view_to_runtime(&settings, &state, &viewport)` mirrors the GLOBAL `Settings` view
 modes into the runtime so the Library-screen settings dialog seeds from global (the inverse of
 `apply_runtime_view_to_settings`). See [patterns.md](patterns.md), "Per-book view overrides:
@@ -713,27 +720,33 @@ open — the seam [ADR-0007](ADRs/0007-per-book-view-overrides.md)'s Decision 4 
 not name.
 
 - `open(scope, state, viewport, settings)` records `DialogScope::Library` or `Viewer`. Library
-  scope captures the open book's `RuntimeSnapshot { view: ResolvedView, inherit_pending: bool }`
+  scope captures the open book's
+  `RuntimeSnapshot { view: ResolvedView, pending_inherit: Option<ResolvedView> }`
   (`None` when no book is open) and THEN global-seeds the runtime via
   `apply_global_view_to_runtime`; Viewer scope leaves the runtime untouched. Persistence routes by
   this recorded scope, while close-time focus restoration routes by the current screen.
 - `end(state, viewport)` is idempotent: it restores any snapshot via `apply_resolved_view`
-  **first**, restores the `inherit_pending` flag **after** (verbatim in both directions), then
-  clears the scope and snapshot. The order is LOAD-BEARING, because `apply_resolved_view`'s
-  value-changing `set_*` calls clear the flag; restoring the flag first would be a no-op. It runs
+  **first**, restores `pending_inherit` **after** (verbatim in both directions), then clears the
+  scope and snapshot. This keeps the restored view in place before that pending intent is observed.
+  It runs
   from both close-handler branches, exit persistence before `AppExit`, and `on_open_finalize`
   before `apply_probed`. The latter two live inside window-bound code, so each is paired with its
   leave point in one window-free function — `main.rs::stage_exit_state` and
   `handlers/library.rs::end_session_and_apply_probed` — which is what the regression tests call.
-- `reset_to_global(state, viewport, settings)` applies the globals and THEN marks
-  `inherit_pending`, for exactly the same reason.
+- `inherit_pending(current) -> bool` is
+  `pending_inherit == Some(current)`, so any runtime mode change disables the guard without a
+  setter-side clear; returning to the exact reset view deliberately re-arms it.
+- `clear_pending_inherit()` discards the current book's pending intent.
+  `OpenBookUseCase::apply_probed` calls it after replacing the open source, and
+  `RemoveBooksUseCase::run` calls it when deleting and closing the open book.
+- `reset_to_global(&mut self, state, viewport, settings)` applies the globals and THEN records the
+  installed runtime view in `pending_inherit`.
 
 Consequence to state plainly: **a global edit made from the Library dialog is fully invisible to the
 open book's runtime AND its pending state.** On the Library screen the runtime is only a
 global-seeded scratchpad, so a GLOBAL edit must not touch the BOOK's pending state — without the
-snapshot, editing a global default from the Library cleared the open book's `inherit_pending` and
-the next leave point wrote a FULL override pinning the OLD global values onto that book ("Reset to
-global" silently undone and frozen stale). See
+snapshot, the next leave point could write a FULL override pinning the OLD global values onto that
+book ("Reset to global" silently undone and frozen stale). See
 [ADR-0007](ADRs/0007-per-book-view-overrides.md)'s Amendment and [patterns.md](patterns.md),
 "Per-book view overrides".
 

@@ -134,8 +134,9 @@ remove + notify".
 - **The viewer is CLOSED, not restored to the previously open book.** The outgoing book's position
   and per-book override were already persisted by the leave-point write at the top of the apply
   half, so nothing is lost; this mirrors the bulk-remove use case's close-don't-restore precedent.
-  `close()` needs no companion viewport reset — it already zeroes the cache/source/count/index and
-  clears `inherit_pending`, while deliberately preserving display modes and `cache_config`.
+  `close()` needs no companion viewport reset — it zeroes the cache/source/count/index while
+  deliberately preserving display modes and `cache_config`. `OpenBookUseCase::apply_probed`
+  separately clears the `DialogSession` pending-inherit intent when it replaces the open source.
 - **The Costs bullet is resolved.** Add probing moved off the UI thread with issue 206 (Decision 3
   has said so since; the Costs bullet has contradicted it ever since). The single-book OPEN path is
   now off-thread as well: the archive open, the full listing, canonicalization and the
