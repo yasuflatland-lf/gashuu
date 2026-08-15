@@ -93,6 +93,21 @@ an update back until that age check has cleared. An automerged PR is therefore o
 waited out the age guard and went green on every check — the guards run before automerge, not
 instead of it. Do not relax either key to make a PR land sooner.
 
+**Observed once, 2026-08-15.** The first unattended merge under this policy was `renovate/site`
+(six npm patch/minor bumps), merged at 2026-08-15T07:40:02Z by `app/renovate` — the first merge
+by a non-human actor in this repository; the 32 Renovate PRs merged before it were all merged by
+hand. Three things it proves that the config alone cannot: **Renovate merged it, not GitHub** —
+the merged PR reports `auto_merge: null`, so GitHub's native auto-merge was never armed, which
+is exactly what `platformAutomerge: false` predicts; **the strategy held** — the merge commit
+`a19f0cb` has a single parent, where every hand-merged Renovate PR around it is a two-parent
+merge commit; and **the guards ran first** — all ten checks were green on the merged head,
+including `renovate/stability-days`, which reached `success` 15m27s before the merge. Two things
+it does NOT prove: no `major` update has been offered to this path since the policy landed, so
+the `major` exclusion above is configured but still unobserved; and the Renovate run that
+performed the merge was hand-triggered from the Dependency Dashboard — recorded at the time,
+not re-derivable from the API afterwards — so the unattended *decision* is proven while
+Renovate's unprompted cadence is not.
+
 **Consequence for `deny.toml`: a stale ignore blocks the lockfile-maintenance PR, on purpose.**
 [`.github/workflows/security.yml`](../.github/workflows/security.yml) runs
 `cargo deny check advisories sources --deny advisory-not-detected`. That flag escalates an ignore
