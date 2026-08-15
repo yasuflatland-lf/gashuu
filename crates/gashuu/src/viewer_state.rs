@@ -4,7 +4,7 @@
 //!
 //! The pure page-pairing math lives in `gashuu_core::spread` and is
 //! reading-direction-agnostic: it decides WHICH pages form a spread (in reading
-//! order); this layer owns the modes, the cache, and the navigation actions.
+//! order); this layer owns the cache and maps UI navigation actions onto it.
 //! Placement (which side each page renders on) is resolved in the UI from
 //! `reading_direction`; this state only exposes the leading/trailing images.
 
@@ -13,12 +13,14 @@ use crate::open_controller::{probe_open, OpenProbeOutcome};
 use crate::viewport::ViewportState;
 use gashuu_core::{
     cache::CacheDispatch, ArchivePolicy, CacheConfig, CoreError, CoverMode, DecodedImage,
-    ImageCache, Language, PageSource, ReadingDirection, ResolvedView, Settings, Spread,
-    SpreadContext, SpreadLayout, SpreadMode,
+    ImageCache, Language, PageSource, ReadingDirection, ResolvedView, Settings, Spread, SpreadMode,
+    SpreadNavigation,
 };
 use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+
+pub use gashuu_core::scrub_fraction_to_page;
 
 /// Discriminates the three content shapes of the viewer status line.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -64,63 +66,22 @@ pub(crate) struct SpreadCacheState {
     pub(crate) single: bool,
 }
 
-/// Map a scrub fraction (knob position along the track, 0.0 = screen-left edge,
-/// 1.0 = screen-right edge) to a 0-based RAW page index. Pure and total: clamps
-/// the fraction to `[0, 1]` (a non-finite input clamps to 0), guards
-/// `page_count == 0` (returns 0), and rounds to the nearest page using the last
-/// index (`page_count - 1`) as the span so BOTH ends are reachable.
-///
-/// `rtl` inverts the fraction: in right-to-left (manga) reading, dragging the
-/// knob LEFT advances the page, so the screen-left edge maps to the LAST page
-/// and the screen-right edge to the FIRST (spec §5 / decision 11). The returned
-/// index is RAW; the caller normalizes it to a valid spread leading via
-/// `ViewerState::jump_to` (which respects single/double + cover mode), so this
-/// helper carries NO layout awareness — only direction and clamping.
-// Single source of rounding (#71 Part D): the Slint scrubber passes the RAW clamped
-// fraction via preview/commit; `handlers/viewer.rs` resolves the page through this helper.
-pub fn scrub_fraction_to_page(fraction: f32, page_count: usize, rtl: bool) -> usize {
-    if page_count == 0 {
-        return 0;
-    }
-    // Clamp; a non-finite fraction (NaN/inf) collapses to 0 first.
-    let f = if fraction.is_finite() {
-        fraction.clamp(0.0, 1.0)
-    } else {
-        0.0
-    };
-    let f = if rtl { 1.0 - f } else { f };
-    let last = page_count - 1;
-    // Round half-up: +0.5 then floor (via `as usize` truncation on a non-negative
-    // value). `last` fits f32 exactly for any realistic page count.
-    let scaled = (f * last as f32 + 0.5) as usize;
-    scaled.min(last)
-}
-
-/// Holds the active image cache, the current spread's leading page index, and
-/// the display modes. `index` is ALWAYS a valid leading page for the current
-/// `(spread_mode, cover_mode)`: it is reset to 0 on `set_source`, advanced only
-/// via `next_leading`/`prev_leading`, and re-normalized after a mode toggle.
+/// Holds the active image cache, source metadata, and presentation settings.
+/// Spread pairing and its always-valid-leading invariant live in `nav`.
 pub struct ViewerState {
     cache: Option<ImageCache>,
     /// The currently open `PageSource`, retained separately from `ImageCache`
     /// (which does not expose its source) so the UI can launch background
     /// thumbnail generation. `None` until a source is successfully opened.
     source: Option<Arc<dyn PageSource>>,
-    page_count: usize,
-    index: usize,
+    nav: SpreadNavigation,
     cache_config: CacheConfig,
-    spread_mode: SpreadMode,
-    cover_mode: CoverMode,
     reading_direction: ReadingDirection,
     /// UI display language, mirrored from the global `Settings` (the same
     /// dual-write `cache_config` uses: the settings handler updates both).
     /// Retained for the language getter; the status line itself is now language-free
     /// (`status_content`) and localized by `i18n::dynamic::format_status`.
     language: Language,
-    /// Window aspect ratio (width / height) used to resolve `SpreadMode::Auto`
-    /// into a concrete `SpreadLayout`. Ignored by Single/Double. Defaults to
-    /// `1.0` until the UI pushes the real window size via `set_viewport_size`.
-    viewport_aspect: f32,
     /// Number of entries skipped during the most recent successful `open_path`
     /// call (unreadable or filtered-out entries). Zero when no path has been
     /// opened yet or when the last open skipped nothing. Only updated on
@@ -155,14 +116,10 @@ impl ViewerState {
         Self {
             cache: None,
             source: None,
-            page_count: 0,
-            index: 0,
+            nav: SpreadNavigation::new(SpreadMode::Single, CoverMode::Standalone),
             cache_config,
-            spread_mode: SpreadMode::Single,
-            cover_mode: CoverMode::Standalone,
             reading_direction: ReadingDirection::Ltr,
             language: Language::default(),
-            viewport_aspect: 1.0,
             last_open_skipped: 0,
             last_open_truncated: false,
             open_file: None,
@@ -175,14 +132,10 @@ impl ViewerState {
         Self {
             cache: None,
             source: None,
-            page_count: 0,
-            index: 0,
+            nav: SpreadNavigation::new(settings.spread_mode, settings.cover_mode),
             cache_config: settings.cache_config(),
-            spread_mode: settings.spread_mode,
-            cover_mode: settings.cover_mode,
             reading_direction: settings.reading_direction,
             language: settings.language,
-            viewport_aspect: 1.0,
             last_open_skipped: 0,
             last_open_truncated: false,
             open_file: None,
@@ -197,9 +150,8 @@ impl ViewerState {
         self.source = Some(Arc::clone(&source));
         self.open_file = None;
         let cache = ImageCache::new(source, self.cache_config);
-        self.page_count = cache.len();
+        self.nav.set_total(cache.len());
         self.cache = Some(cache);
-        self.index = 0;
     }
 
     /// Close the current source, returning the viewer to the boot/no-book-open
@@ -212,16 +164,16 @@ impl ViewerState {
     /// `last_open_skipped` / `last_open_truncated`, and clears `open_file` so
     /// `current_book_name`
     /// reads `""` and `status_content` reports `NoFolder`. The display MODES (direction/spread/cover) and the
-    /// `cache_config` / `viewport_aspect` are deliberately preserved — closing a
-    /// book is not a settings reset; the next open reuses the same configuration.
+    /// `cache_config` and `nav`'s display configuration are deliberately
+    /// preserved — closing a book is not a settings reset; the next open reuses
+    /// the same configuration.
     ///
     /// Called by `remove_books::RemoveBooksUseCase::run` when the open book is among
     /// the deleted ones (PR-5 #129).
     pub fn close(&mut self) {
         self.cache = None;
         self.source = None;
-        self.page_count = 0;
-        self.index = 0;
+        self.nav.set_total(0);
         self.last_open_skipped = 0;
         self.last_open_truncated = false;
         self.open_file = None;
@@ -240,31 +192,21 @@ impl ViewerState {
     /// `false`) when no source is loaded or the resolved leading equals the
     /// current index. Out-of-range `page` is clamped.
     pub fn jump_to(&mut self, page: usize) -> bool {
-        let Some(count) = self.page_count_opt() else {
-            return false;
-        };
-        let target = self.spread_ctx().normalize(page.min(count.get() - 1));
-        let moved = target != self.index;
-        self.index = target;
-        moved
+        self.nav.jump_to(page)
     }
 
     /// The spread the scrubber preview/commit would land on for `page`: clamps,
     /// normalizes to the containing spread for the CURRENT modes, and returns it.
     /// `None` when no source is loaded. Does NOT move the index.
     pub fn preview_spread(&self, page: usize) -> Option<Spread> {
-        let count = self.page_count_opt()?;
-        let ctx = self.spread_ctx();
-        let lead = ctx.normalize(page.min(count.get() - 1));
-        Some(ctx.spread_at(lead))
+        self.nav.preview_spread(page)
     }
 
     /// Whether a hypothetical jump to `page` would land on a double-page spread
     /// (used by the scrubber preview to show 1 vs 2 thumbnails WITHOUT changing
     /// the current index). Returns `false` when no source is loaded.
     pub fn preview_is_double(&self, page: usize) -> bool {
-        self.preview_spread(page)
-            .is_some_and(|s| s.trailing.is_some())
+        self.nav.preview_is_double(page)
     }
 
     // Test-only accessors: in a binary crate `pub` is not a public API surface, so
@@ -359,7 +301,7 @@ impl ViewerState {
     /// thumbnail-strip wiring in `app.rs` to size the placeholder model, and by
     /// the unit tests below.
     pub fn page_count(&self) -> usize {
-        self.page_count
+        self.nav.total()
     }
 
     /// The current source's page count as a domain-typed `Option`, mirroring the
@@ -369,63 +311,33 @@ impl ViewerState {
     /// raw `0`. (`page_count()` is kept for the Slint boundary, which needs the
     /// plain count.)
     pub(crate) fn page_count_opt(&self) -> Option<NonZeroUsize> {
-        NonZeroUsize::new(self.page_count)
+        self.nav.total_nonzero()
     }
 
     /// The current spread's leading page index. Used by the highlight wiring in
     /// `main.rs` (`refresh` pushes it into `current-index`), and by the unit
     /// tests below.
     pub fn index(&self) -> usize {
-        self.index
+        self.nav.index()
     }
 
     /// The page index to persist as the resume position: the last page index when
     /// the CURRENT spread contains the final page (so a finished book reads 100%),
     /// else the spread leading. `index()` when no source.
     pub fn resume_index_to_persist(&self) -> usize {
-        let Some(count) = self.page_count_opt().map(NonZeroUsize::get) else {
-            return self.index();
-        };
-        let final_index = count - 1;
-        let spread = self.spread_ctx().spread_at(self.index);
-        if spread.trailing == Some(final_index) || spread.leading == final_index {
-            final_index
-        } else {
-            self.index()
-        }
-    }
-
-    /// Resolve the configured `spread_mode` against the current viewport aspect
-    /// into the concrete `SpreadLayout` the pure `spread::*` math operates on.
-    /// Single/Double are identity; Auto picks Single/Double from the aspect.
-    fn effective_layout(&self) -> SpreadLayout {
-        self.spread_mode.resolve(self.viewport_aspect)
-    }
-
-    /// Build a `SpreadContext` from the current `page_count`, `effective_layout()`,
-    /// and `cover_mode` so the `(total, layout, cover)` triple is assembled in one
-    /// place rather than reconstructed positionally at each call site.
-    fn spread_ctx(&self) -> SpreadContext {
-        SpreadContext::new(self.page_count, self.effective_layout(), self.cover_mode)
+        self.nav.resume_index_to_persist()
     }
 
     /// Apply a navigation action a spread at a time. Returns true if the leading
     /// index moved. In Single mode this is the old ±1 clamp; in Double mode it
     /// advances/retreats one spread (skipping the partner page). Auto first
-    /// resolves to Single or Double from the current viewport aspect (via
-    /// `effective_layout()`) before the navigation step.
+    /// resolves to Single or Double from the current viewport aspect before the
+    /// navigation step.
     pub fn apply(&mut self, action: NavAction) -> bool {
-        if self.page_count == 0 {
-            return false;
+        match action {
+            NavAction::Next => self.nav.next(),
+            NavAction::Prev => self.nav.prev(),
         }
-        let ctx = self.spread_ctx();
-        let next = match action {
-            NavAction::Next => ctx.next(self.index),
-            NavAction::Prev => ctx.prev(self.index),
-        };
-        let moved = next != self.index;
-        self.index = next;
-        moved
     }
 
     /// Return a non-blocking classification of the current spread.
@@ -434,10 +346,7 @@ impl ViewerState {
     /// MISS; callers must dispatch missing slots separately.
     pub(crate) fn classify_spread(&self) -> Option<SpreadCacheState> {
         let cache = self.cache.as_ref()?;
-        if self.page_count == 0 {
-            return None;
-        }
-        let s = self.spread_ctx().spread_at(self.index);
+        let s = self.nav.spread()?;
         let leading = (s.leading, cache.get_cached(s.leading));
         let trailing = s.trailing.map(|t| (t, cache.get_cached(t)));
         Some(SpreadCacheState {
@@ -461,10 +370,7 @@ impl ViewerState {
     #[cfg(test)]
     pub fn decode_current_spread(&self) -> Option<Result<SpreadImages, CoreError>> {
         let cache = self.cache.as_ref()?;
-        if self.page_count == 0 {
-            return None;
-        }
-        let s = self.spread_ctx().spread_at(self.index);
+        let s = self.nav.spread()?;
         let leading = match cache.get(s.leading) {
             Ok(img) => img,
             Err(e) => return Some(Err(e)),
@@ -490,14 +396,12 @@ impl ViewerState {
     /// (via the effective layout) so the currently visible page stays on screen.
     /// Always returns `true` (a 3-cycle always changes the configured mode).
     pub fn toggle_spread(&mut self) -> bool {
-        let before = self.spread_mode;
-        self.spread_mode = match before {
+        let next = match self.nav.spread_mode() {
             SpreadMode::Single => SpreadMode::Double,
             SpreadMode::Double => SpreadMode::Auto,
             SpreadMode::Auto => SpreadMode::Single,
         };
-        self.renormalize_index();
-        before != self.spread_mode
+        self.nav.set_spread_mode(next)
     }
 
     /// Update the window aspect ratio used to resolve `SpreadMode::Auto`. Returns
@@ -505,24 +409,10 @@ impl ViewerState {
     /// the square boundary). On a change, re-normalizes the index so the
     /// currently visible page stays on screen. A degenerate window size — any
     /// `width`/`height` whose ratio is non-finite or non-positive — falls back to
-    /// aspect `1.0`, so `viewport_aspect` always holds a valid ratio
-    /// (`SpreadMode::resolve` is the standalone safety net but the field itself
-    /// stays sane). No-op-safe with no folder open (index stays 0).
+    /// aspect `1.0`, so the navigation value object always holds a valid ratio.
+    /// No-op-safe with no folder open (index stays 0).
     pub fn set_viewport_size(&mut self, width: f32, height: f32) -> bool {
-        let before = self.effective_layout();
-        let aspect = width / height;
-        self.viewport_aspect = if aspect.is_finite() && aspect > 0.0 {
-            aspect
-        } else {
-            1.0
-        };
-        let after = self.effective_layout();
-        if before != after {
-            self.renormalize_index();
-            true
-        } else {
-            false
-        }
+        self.nav.set_viewport_size(width, height)
     }
 
     /// Flip Standalone <-> Paired cover, then re-normalize the index so the
@@ -531,13 +421,11 @@ impl ViewerState {
     /// `true`. The bool is retained for forward-compatibility with multi-valued
     /// modes (e.g. a future `CoverMode` variant).
     pub fn toggle_cover(&mut self) -> bool {
-        let before = self.cover_mode;
-        self.cover_mode = match before {
+        let next = match self.nav.cover_mode() {
             CoverMode::Standalone => CoverMode::Paired,
             CoverMode::Paired => CoverMode::Standalone,
         };
-        self.renormalize_index();
-        before != self.cover_mode
+        self.nav.set_cover_mode(next)
     }
 
     /// Flip Ltr <-> Rtl. Reading direction only affects placement, not pairing,
@@ -555,27 +443,17 @@ impl ViewerState {
     }
 
     /// Set the spread mode to an exact value (vs. `toggle_spread`'s cycle).
-    /// Re-anchors the index via `renormalize_index` so the visible page stays on
-    /// screen. Idempotent: returns `false` (no change) when already set.
+    /// Re-anchors the index inside `SpreadNavigation` so the visible page stays
+    /// on screen. Idempotent: returns `false` (no change) when already set.
     pub fn set_spread_mode(&mut self, mode: SpreadMode) -> bool {
-        if self.spread_mode == mode {
-            return false;
-        }
-        self.spread_mode = mode;
-        self.renormalize_index();
-        true
+        self.nav.set_spread_mode(mode)
     }
 
     /// Set the cover mode to an exact value (vs. `toggle_cover`'s flip).
-    /// Re-anchors the index via `renormalize_index` so the visible page stays on
-    /// screen. Idempotent: returns `false` (no change) when already set.
+    /// Re-anchors the index inside `SpreadNavigation` so the visible page stays
+    /// on screen. Idempotent: returns `false` (no change) when already set.
     pub fn set_cover_mode(&mut self, mode: CoverMode) -> bool {
-        if self.cover_mode == mode {
-            return false;
-        }
-        self.cover_mode = mode;
-        self.renormalize_index();
-        true
+        self.nav.set_cover_mode(mode)
     }
 
     /// Update the cache configuration used the NEXT time a book is opened.
@@ -636,26 +514,16 @@ impl ViewerState {
         viewport.set_fit(view.fit_mode);
     }
 
-    /// Re-anchor `index` onto a valid leading for the current modes after a
-    /// pairing-affecting toggle. No-op when no pages are loaded (keeps index 0).
-    fn renormalize_index(&mut self) {
-        if self.page_count == 0 {
-            self.index = 0;
-            return;
-        }
-        self.index = self.spread_ctx().normalize(self.index);
-    }
-
     pub fn reading_direction(&self) -> ReadingDirection {
         self.reading_direction
     }
 
     pub fn spread_mode(&self) -> SpreadMode {
-        self.spread_mode
+        self.nav.spread_mode()
     }
 
     pub fn cover_mode(&self) -> CoverMode {
-        self.cover_mode
+        self.nav.cover_mode()
     }
 
     /// Return a language-free description of the current status line.
@@ -663,22 +531,21 @@ impl ViewerState {
     pub fn status_content(&self) -> StatusContent {
         // `spread`/`direction` are the same in every arm; only `pages`/`kind`
         // vary, so compute that pair per-arm and build the struct once.
-        let (pages, kind) = match (&self.cache, self.page_count) {
+        let (pages, kind) = match (&self.cache, self.nav.spread()) {
             (None, _) => (String::new(), StatusKind::NoFolder),
-            (Some(_), 0) => (String::new(), StatusKind::NoImages),
-            (Some(_), _) => {
-                let s = self.spread_ctx().spread_at(self.index);
+            (Some(_), None) => (String::new(), StatusKind::NoImages),
+            (Some(_), Some(s)) => {
                 let pages = if let Some(t) = s.trailing {
-                    format!("{}\u{2013}{} / {}", s.leading + 1, t + 1, self.page_count)
+                    format!("{}\u{2013}{} / {}", s.leading + 1, t + 1, self.nav.total())
                 } else {
-                    format!("{} / {}", s.leading + 1, self.page_count)
+                    format!("{} / {}", s.leading + 1, self.nav.total())
                 };
                 (pages, StatusKind::Pages)
             }
         };
         StatusContent {
             pages,
-            spread: self.spread_mode,
+            spread: self.nav.spread_mode(),
             direction: self.reading_direction,
             kind,
         }

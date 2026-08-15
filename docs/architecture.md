@@ -198,9 +198,14 @@ Intentionally not `Deserialize` (that would bypass the clamp). See
 `spread.rs`. Pure, Slint/tracing-free, reading-direction-agnostic page-pairing
 (`spread_at`/`next_leading`/`prev_leading`/`normalize_leading` over
 `Spread {leading, trailing: Option<usize>}`); pairing functions take `SpreadLayout` (never
-`SpreadMode`/`Auto` — `Auto` is unreachable at the type level in pairing). Also exports
-`SpreadContext` — an immutable cohesion wrapper bundling `(total, layout, cover)` that
-delegates to those free fns, so call sites read as intent rather than positional-arg plumbing.
+`SpreadMode`/`Auto` — `Auto` is unreachable at the type level in pairing). `SpreadContext` is an
+immutable cohesion wrapper bundling `(total, layout, cover)` that delegates to those free fns.
+`SpreadNavigation` is the mutable value object above that proved pairing layer: it owns
+`(total, spread_mode, cover_mode, viewport_aspect, index)`, resolves `Auto`, and guarantees after
+every mutation that `index` is a valid leading for its resolved context. It also owns jump,
+next/previous, preview, and resume-persistence derivations. The pure
+`scrub_fraction_to_page(fraction, page_count, rtl)` helper lives here as well; direction affects
+the raw scrub mapping but remains separate from pairing and page placement.
 
 ### viewport
 
@@ -448,7 +453,11 @@ See [ADR-0001](ADRs/0001-gui-framework-slint.md) for the Slint framework decisio
 
 ### ViewerState
 
-Navigation backed by `ImageCache`; drives a two-page spread with `apply` moving in spread units.
+Presentation state with two primary responsibilities: the active page source/cache and open-book
+metadata/settings integration. Spread position and pairing inputs are held as a single
+`SpreadNavigation` field; `ViewerState::apply` only maps the UI crate's `NavAction` onto
+`SpreadNavigation::next`/`prev`, and its other navigation-facing public methods delegate without
+reconstructing pairing context.
 `open_path(path)` / `open_path_with_policy(path, policy)` are now the SYNCHRONOUS composition of the
 pure, `Send` `open_controller::probe_open` (archive dispatch + full listing + skipped/truncated
 flags + `canonical_identity`) and the new mutation-only tail
@@ -458,10 +467,9 @@ leaves the state untouched, because nothing is installed unless the probe opened
 getters report what the probe saw: `last_open_skipped() -> usize` (entries dropped from an otherwise
 complete listing) and `last_open_truncated() -> bool` (the listing itself was cut short, so an
 unknown number of later pages are missing). BOTH are only meaningful after `Ok(())` — an error
-return leaves the previous successful open's values. `jump_to(page) -> bool` — routes through
-`SpreadContext::normalize` (via `spread_ctx()`) so `index` stays a valid spread leading, clamps
-out-of-range, guards `page_count==0` to avoid underflow, and returns whether it moved, mirroring
-`set_viewport_size`'s "did it change → caller refreshes" convention — and
+return leaves the previous successful open's values. `jump_to(page) -> bool` delegates to
+`SpreadNavigation::jump_to`, which clamps and normalizes atomically and returns whether it moved,
+mirroring `set_viewport_size`'s "did it change → caller refreshes" convention — and
 `resume_index_to_persist()` returns the final page index when the current spread contains the final
 page, otherwise the current leading (or `index()` when no source), so finished write-back reaches
 `100%` without changing which spread reopens — and
@@ -482,7 +490,8 @@ and never called on the UI thread in production.
 
 The settings dialog drives IDEMPOTENT value setters `set_spread_mode(SpreadMode)`/`set_cover_mode(CoverMode)`/`set_reading_direction(ReadingDirection)`
 (all `-> bool`, same value → `false` no-op, mirroring `jump_to`'s "moved? → caller refreshes"
-convention) — `set_spread_mode`/`set_cover_mode` call `renormalize_index`,
+convention) — `set_spread_mode`/`set_cover_mode` delegate to `SpreadNavigation`, which
+re-normalizes before returning,
 `set_reading_direction` does NOT (pairing is direction-agnostic) — plus
 `set_cache_config(cache_size, preload_pages)` which updates the fields `set_source` reads on the
 NEXT open (the dialog's cache/preload edits would otherwise only take effect after relaunch, since
@@ -507,11 +516,12 @@ against global `Settings`) takes effect. Runtime modes are intentionally NOT res
 re-seeded by this call — which is why the open-time global reconcile is a clobber trap (see
 [patterns.md](patterns.md), "Write-direction invariant audit").
 
-Two pure scrubber-support helpers:
+Two scrubber-support helpers:
 
 - `scrub_fraction_to_page(fraction, page_count, rtl)` — pure, total, RTL-aware mapping of a
   `0..1` knob fraction to a raw 0-based page index (clamped, non-finite-safe). As of #71 it is the
-  SINGLE LIVE source of that mapping: `Scrubber.slint` passes the raw clamped fraction up via
+  SINGLE LIVE source of that mapping. It now lives in `gashuu_core::spread` and is re-exported by
+  `viewer_state` to preserve the handler import path: `Scrubber.slint` passes the raw clamped fraction up via
   `preview(float)`/`commit(float)` and `handlers/viewer.rs`'s `on_scrub_preview`/`on_scrub_commit` call this
   helper to resolve the page (the former in-Slint `drag-page` rounding is gone, so it no longer
   carries `#[allow(dead_code)]`). See [patterns.md](patterns.md) for the one-authoritative-side rule.
@@ -519,9 +529,9 @@ Two pure scrubber-support helpers:
   (using the same layout resolution the body uses) WITHOUT advancing the index; used by the
   scrubber preview to choose 1 vs 2 popover thumbnails.
 
-`close(&mut self)` (#129): drops the cache and source, zeroes `page_count`/`index`,
+`close(&mut self)` (#129): drops the cache and source and calls `nav.set_total(0)`,
 and clears `open_file` — returning `ViewerState` to the no-book-open state. Display modes
-(`reading_direction`/`spread_mode`/`cover_mode`) and `cache_config`/`viewport_aspect` are
+(`reading_direction` plus the spread/cover/aspect configuration inside `nav`) and `cache_config` are
 deliberately preserved (closing a book is not a settings reset). Called by
 `RemoveBooksUseCase::run` (headless) when the open book is among the deleted ones, and by
 `OpenBookUseCase::run`'s empty-book arm, so a rejected empty open leaves `open_file()` `None`
