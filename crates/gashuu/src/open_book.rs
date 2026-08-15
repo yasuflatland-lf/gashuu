@@ -1434,8 +1434,8 @@ mod tests {
     /// intent records the resolved GLOBAL view, and a book with no override
     /// resolves to exactly that view, so the incoming book would match the
     /// outgoing book's reset by coincidence. Without
-    /// `clear_pending_inherit()` the very next leave point erases the incoming
-    /// book's override instead of pinning its modes.
+    /// `clear_pending_inherit()` a later leave point can incorrectly short-circuit
+    /// a real diff for the incoming book.
     ///
     /// Book A carries a full override that differs from the globals, so its own
     /// write-back at the open of book B is a real mutation (to `none()`, the
@@ -1539,8 +1539,16 @@ mod tests {
             "opening a book must discard the outgoing book's pending reset intent"
         );
 
-        // The consequence the discard exists for: B's next leave point pins B's
-        // modes instead of erasing its override as an inherited reset would.
+        // Make B's still-open runtime differ from every global at write time.
+        // With the pending intent discarded, B's next leave point writes that
+        // four-field diff; without the discard, the stale guard would emit none.
+        *settings.borrow_mut() = Settings {
+            reading_direction: ReadingDirection::Ltr,
+            spread_mode: SpreadMode::Single,
+            cover_mode: CoverMode::Standalone,
+            fit_mode: FitMode::Whole,
+            ..Settings::default()
+        };
         persist_leave_point_with(
             ViewModeRoute::LeaveViewer,
             &state,
@@ -1559,7 +1567,7 @@ mod tests {
                 cover_mode: Some(global_view.cover_mode),
                 fit_mode: Some(global_view.fit_mode),
             },
-            "the newly opened book must pin its own modes, not inherit the reset"
+            "the incoming book's real diff must not inherit the outgoing reset"
         );
     }
 }

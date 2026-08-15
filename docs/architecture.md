@@ -358,7 +358,11 @@ each an `Option<Enum>` where `None` means INHERIT the global default (an active 
 serde `skip_serializing_if` predicate on `Book::overrides`). The TRANSIENT, total form
 `ResolvedView` — every field concrete, never persisted, produced ONLY by
 `ViewOverride::resolve(&Settings) -> ResolvedView` (the single definition of the per-field
-`unwrap_or(global)` fallback). Re-exported from the crate root (`pub use view_override::{ResolvedView, ViewOverride}`).
+`unwrap_or(global)` fallback). The public inverse
+`ViewOverride::differences_from(ResolvedView, &Settings) -> ViewOverride` produces the minimal
+write-back (`Some` only for fields that differ from global), with the round-trip invariant
+`differences_from(view, global).resolve(global) == view`. Re-exported from the crate root
+(`pub use view_override::{ResolvedView, ViewOverride}`).
 Consumed by the UI's `ViewerState::apply_resolved_view` (+ `ViewportState::set_fit` for the
 viewport-owned `fit_mode`). See [ADR-0007](ADRs/0007-per-book-view-overrides.md) for the design
 decision and [patterns.md](patterns.md) ("Partial/total override pair") for the value-object flavor.
@@ -715,9 +719,12 @@ to `stage_view_modes_to_sink`, and saves the library at most once. `stage_view_m
 per-book write-back FIRST, then a global reconcile ONLY when `open_file().is_none()`. So the GLOBAL
 sink is invoked only via the Library-dialog close and the no-book-open exit; every leave point hits
 the per-book sink (a no-op when no book is open).
-Before a per-book write-back, `stage_view_override_write_back` builds the current `ResolvedView`
-and asks `DialogSession::inherit_pending(current)` whether the reset guard still applies. The
-predicate is derived from runtime equality, so mode setters do not participate in its maintenance.
+Before a per-book write-back, `stage_view_override_write_back` builds the current `ResolvedView`,
+asks `DialogSession::inherit_pending(current)` whether the reset guard still applies, and consults
+the shared `Settings` handle to stage only fields that differ from global. The private pure helper
+is `view_override_to_write_back(open_file, view, global, inherit_pending)`; pending inherit keeps
+priority and emits `ViewOverride::none()` outright. The predicate is derived from runtime equality,
+so mode setters do not participate in its maintenance.
 `apply_global_view_to_runtime(&settings, &state, &viewport)` mirrors the GLOBAL `Settings` view
 modes into the runtime so the Library-screen settings dialog seeds from global (the inverse of
 `apply_runtime_view_to_settings`). See [patterns.md](patterns.md), "Per-book view overrides:
@@ -755,7 +762,7 @@ not name.
 Consequence to state plainly: **a global edit made from the Library dialog is fully invisible to the
 open book's runtime AND its pending state.** On the Library screen the runtime is only a
 global-seeded scratchpad, so a GLOBAL edit must not touch the BOOK's pending state — without the
-snapshot, the next leave point could write a FULL override pinning the OLD global values onto that
+snapshot, the next leave point could write an override pinning the OLD global values onto that
 book ("Reset to global" silently undone and frozen stale). See
 [ADR-0007](ADRs/0007-per-book-view-overrides.md)'s Amendment and [patterns.md](patterns.md),
 "Per-book view overrides".

@@ -5,8 +5,9 @@
 //! `Settings` default. `None` here means "inherit the global default" — an active
 //! choice, NOT "unknown" (contrast `ReadingProgress::total`). `ResolvedView` is the
 //! derived, transient form with every field concrete; it is produced by
-//! `ViewOverride::resolve(&Settings)` and never persisted. The merge rule lives in
-//! exactly one place (`resolve`) so the per-field fallback is unit-tested once.
+//! `ViewOverride::resolve(&Settings)` and never persisted. The merge rule and its
+//! inverse live together in exactly one place (`resolve` and `differences_from`) so
+//! the per-field fallback and minimal write-back are each unit-tested once.
 //!
 //! Headless: no `slint`, no `tracing`.
 
@@ -20,10 +21,9 @@ use serde::{Deserialize, Serialize};
 /// each field and on `Book::overrides`), keeping `library.json` byte-compatible
 /// with files written before this feature existed. Immutable `Copy` value object.
 ///
-/// In practice the leave-point write-back (`stage_view_override_write_back`) records
-/// all four fields as `Some`, so a book that has been opened at least once carries
-/// a full override until it is explicitly reset to `none()`; a fresh/never-opened
-/// book (or one just reset) has all-`None` and inherits global.
+/// The leave-point write-back records only fields that differ from the global
+/// settings, so matching fields remain `None` and continue to inherit later global
+/// changes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct ViewOverride {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -60,6 +60,19 @@ impl ViewOverride {
             fit_mode: self.fit_mode.unwrap_or(global.fit_mode),
         }
     }
+
+    /// The minimal override that resolves back to `view` against `global`:
+    /// a field equal to its global counterpart is left `None` (inherit).
+    /// Invariant: `differences_from(view, global).resolve(global) == view`.
+    pub fn differences_from(view: ResolvedView, global: &Settings) -> ViewOverride {
+        ViewOverride {
+            reading_direction: (view.reading_direction != global.reading_direction)
+                .then_some(view.reading_direction),
+            spread_mode: (view.spread_mode != global.spread_mode).then_some(view.spread_mode),
+            cover_mode: (view.cover_mode != global.cover_mode).then_some(view.cover_mode),
+            fit_mode: (view.fit_mode != global.fit_mode).then_some(view.fit_mode),
+        }
+    }
 }
 
 /// Fully resolved view preferences for one open book: every field concrete (no
@@ -88,6 +101,134 @@ mod tests {
             fit_mode: FitMode::Actual,
             ..Settings::default()
         }
+    }
+
+    #[test]
+    fn differences_from_round_trips_through_resolve() {
+        let global = global();
+        let mut failures = Vec::new();
+
+        for reading_direction in [ReadingDirection::Ltr, ReadingDirection::Rtl] {
+            for spread_mode in [SpreadMode::Single, SpreadMode::Double, SpreadMode::Auto] {
+                for cover_mode in [CoverMode::Standalone, CoverMode::Paired] {
+                    for fit_mode in [FitMode::Whole, FitMode::Width, FitMode::Actual] {
+                        let view = ResolvedView {
+                            reading_direction,
+                            spread_mode,
+                            cover_mode,
+                            fit_mode,
+                        };
+                        let resolved =
+                            ViewOverride::differences_from(view, &global).resolve(&global);
+                        if resolved != view {
+                            failures.push(format!("view {view:?}: diff resolved to {resolved:?}"));
+                        }
+                    }
+                }
+            }
+        }
+
+        assert!(
+            failures.is_empty(),
+            "{} of 36 round-trip rows failed:\n{}",
+            failures.len(),
+            failures.join("\n")
+        );
+    }
+
+    #[test]
+    fn differences_from_global_view_is_empty() {
+        let global = global();
+        let view = ViewOverride::none().resolve(&global);
+        let diff = ViewOverride::differences_from(view, &global);
+
+        assert_eq!(diff, ViewOverride::none());
+        assert!(diff.is_empty());
+    }
+
+    #[test]
+    fn differences_from_single_field_emits_only_that_field() {
+        let global = global();
+        let view = ResolvedView {
+            reading_direction: ReadingDirection::Ltr,
+            ..ViewOverride::none().resolve(&global)
+        };
+
+        assert_eq!(
+            ViewOverride::differences_from(view, &global),
+            ViewOverride {
+                reading_direction: Some(ReadingDirection::Ltr),
+                spread_mode: None,
+                cover_mode: None,
+                fit_mode: None,
+            }
+        );
+    }
+
+    #[test]
+    fn differences_from_single_spread_mode_emits_only_that_field() {
+        let global = global();
+        let view = ResolvedView {
+            spread_mode: SpreadMode::Single,
+            ..ViewOverride::none().resolve(&global)
+        };
+
+        assert_eq!(
+            ViewOverride::differences_from(view, &global),
+            ViewOverride {
+                reading_direction: None,
+                spread_mode: Some(SpreadMode::Single),
+                cover_mode: None,
+                fit_mode: None,
+            }
+        );
+    }
+
+    #[test]
+    fn differences_from_single_cover_mode_emits_only_that_field() {
+        let global = global();
+        let view = ResolvedView {
+            cover_mode: CoverMode::Standalone,
+            ..ViewOverride::none().resolve(&global)
+        };
+
+        assert_eq!(
+            ViewOverride::differences_from(view, &global),
+            ViewOverride {
+                reading_direction: None,
+                spread_mode: None,
+                cover_mode: Some(CoverMode::Standalone),
+                fit_mode: None,
+            }
+        );
+    }
+
+    #[test]
+    fn differences_from_single_fit_mode_emits_only_that_field() {
+        let global = global();
+        let view = ResolvedView {
+            fit_mode: FitMode::Whole,
+            ..ViewOverride::none().resolve(&global)
+        };
+
+        assert_eq!(
+            ViewOverride::differences_from(view, &global),
+            ViewOverride {
+                reading_direction: None,
+                spread_mode: None,
+                cover_mode: None,
+                fit_mode: Some(FitMode::Whole),
+            }
+        );
+    }
+
+    #[test]
+    fn empty_diff_serializes_to_nothing() {
+        let global = global();
+        let view = ViewOverride::none().resolve(&global);
+        let diff = ViewOverride::differences_from(view, &global);
+
+        assert_eq!(serde_json::to_string(&diff).unwrap(), "{}");
     }
 
     #[test]
