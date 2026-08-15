@@ -67,6 +67,13 @@
       "description": "Automerge non-major updates once every status check is green; major bumps stay manual",
       "matchUpdateTypes": ["minor", "patch", "pin", "digest"],
       "automerge": true
+    },
+    {
+      "description": "Keep the deliberately exact-pinned slint crates out of automerge: `unstable-winit-030` may be removed or changed in any minor release, and a behavior change there breaks drag-and-drop and window-geometry restore at runtime while every gate stays green. MUST stay after the automerge rule above — later rules win. Own group because a grouped branch automerges only if EVERY upgrade in it does.",
+      "matchManagers": ["cargo"],
+      "matchPackageNames": ["slint", "slint-build"],
+      "groupName": "slint",
+      "automerge": false
     }
   ]
 }
