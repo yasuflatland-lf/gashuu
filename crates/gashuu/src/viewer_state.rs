@@ -227,7 +227,7 @@ impl ViewerState {
     /// `cache_config` / `viewport_aspect` are deliberately preserved — closing a
     /// book is not a settings reset; the next open reuses the same configuration.
     ///
-    /// Called by `use_cases::RemoveBooksUseCase::run` when the open book is among
+    /// Called by `remove_books::RemoveBooksUseCase::run` when the open book is among
     /// the deleted ones (PR-5 #129).
     pub fn close(&mut self) {
         self.cache = None;

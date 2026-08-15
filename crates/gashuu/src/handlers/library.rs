@@ -2,7 +2,7 @@ use crate::dialog_session::DialogSession;
 use crate::{
     add_controller,
     carousel::{apply_selection_flags, set_carousel_selected},
-    cover_loader, i18n, use_cases,
+    cover_loader, i18n, open_book, remove_books,
 };
 use crate::{
     apply_add_report, current_book_name, finalize_empty_book_rejected, finalize_open,
@@ -28,15 +28,9 @@ use std::rc::Rc;
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn wire_open_handlers(
     ui: &ViewerWindow,
-    // Retained for call-site stability (`main` wires every handler group with the
-    // same collaborator list); the add-only paths below no longer touch these.
-    _state: &Rc<RefCell<ViewerState>>,
-    _viewport: &Rc<RefCell<ViewportState>>,
     settings: &Rc<RefCell<Settings>>,
     library: &Rc<RefCell<Library>>,
-    _open_book: &Rc<use_cases::OpenBookUseCase>,
     covers: &Rc<cover_loader::CoverController>,
-    _pages: &Rc<PageController>,
     adder: &Rc<add_controller::AddController>,
     search: &Rc<RefCell<LibrarySearchState>>,
     selection: &Rc<RefCell<LibrarySelectionState>>,
@@ -178,10 +172,10 @@ fn end_session_and_apply_probed(
     dialog_session: &Rc<RefCell<DialogSession>>,
     state: &Rc<RefCell<ViewerState>>,
     viewport: &Rc<RefCell<ViewportState>>,
-    open_book: &use_cases::OpenBookUseCase,
+    open_book: &open_book::OpenBookUseCase,
     path: &std::path::Path,
     probe: OpenProbeOutcome,
-) -> use_cases::OpenOutcome {
+) -> open_book::OpenOutcome {
     dialog_session.borrow_mut().end(state, viewport);
     open_book.apply_probed(path, probe)
 }
@@ -197,7 +191,7 @@ pub(crate) fn wire_carousel_handlers(
     library: &Rc<RefCell<Library>>,
     nav: &Rc<RefCell<NavState>>,
     settings: &Rc<RefCell<Settings>>,
-    open_book: &Rc<use_cases::OpenBookUseCase>,
+    open_book: &Rc<open_book::OpenBookUseCase>,
     open_ctrl: &Rc<OpenController>,
     covers: &Rc<cover_loader::CoverController>,
     pages: &Rc<PageController>,
@@ -261,8 +255,8 @@ pub(crate) fn wire_carousel_handlers(
                 );
                 // Enter the Viewer ONLY on a clean open: an empty source was already
                 // removed, and a failed open must keep the user on the Library screen.
-                let enter_viewer = matches!(outcome, use_cases::OpenOutcome::Success { .. });
-                let open_failed = matches!(outcome, use_cases::OpenOutcome::Error(_));
+                let enter_viewer = matches!(outcome, open_book::OpenOutcome::Success { .. });
+                let open_failed = matches!(outcome, open_book::OpenOutcome::Error(_));
                 finalize_open(
                     &ui,
                     &state,
@@ -281,7 +275,7 @@ pub(crate) fn wire_carousel_handlers(
                 // The worker already performed the existence stat. Missing or
                 // unmounted paths get the same book-named replacement message.
                 if open_failed && path_exists == Some(false) {
-                    let title = use_cases::book_display_title(&library.borrow(), &path);
+                    let title = open_book::book_display_title(&library.borrow(), &path);
                     ui.set_status_text(
                         crate::i18n::dynamic::open_inaccessible(localizer.loader(), &title).into(),
                     );
@@ -584,7 +578,7 @@ pub(crate) fn wire_selection_handlers(
                 // RefCells hold immutable Refs safely; the owned result drops before UI setters.
                 let content = {
                     let st = state.borrow();
-                    use_cases::confirm_delete_content(
+                    remove_books::confirm_delete_content(
                         localizer.loader(),
                         &selection.borrow(),
                         &search.borrow(),
@@ -616,7 +610,7 @@ pub(crate) fn wire_selection_handlers(
         let selection = Rc::clone(&selection);
         let localizer = Rc::clone(&localizer);
         let covers = Rc::clone(&covers);
-        let remove_books = use_cases::RemoveBooksUseCase::new(
+        let remove_books = remove_books::RemoveBooksUseCase::new(
             Rc::clone(&state),
             Rc::clone(&library),
             Rc::clone(&search),
@@ -657,7 +651,7 @@ pub(crate) fn wire_selection_handlers(
                 let path = std::path::PathBuf::from(path_str.as_str());
                 // The shared transaction (single home in open_book): title capture
                 // BEFORE removal -> Library::remove -> save -> best-effort cover purge.
-                let removal = use_cases::remove_empty_book(&library, &path);
+                let removal = open_book::remove_empty_book(&library, &path);
                 finalize_empty_book_rejected(
                     &ui,
                     &CarouselRefresh {
@@ -736,7 +730,7 @@ mod tests {
         let library = Rc::new(RefCell::new(library_value));
         // Hermetic: both persistence effects are injected no-ops, so nothing reaches
         // the process data directory.
-        let open_book = use_cases::OpenBookUseCase::new(
+        let open_book = open_book::OpenBookUseCase::new(
             Rc::clone(&state),
             Rc::clone(&settings),
             Rc::clone(&viewport),
@@ -761,7 +755,7 @@ mod tests {
             probe,
         );
 
-        assert!(matches!(outcome, use_cases::OpenOutcome::Success { .. }));
+        assert!(matches!(outcome, open_book::OpenOutcome::Success { .. }));
         assert_eq!(
             library.borrow().overrides_for(&canonical),
             ViewOverride {
