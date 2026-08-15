@@ -406,6 +406,42 @@ fn run_exit_persistence(
     settings: &Rc<RefCell<Settings>>,
     library: &Rc<RefCell<Library>>,
 ) {
+    stage_exit_state(
+        dialog_session,
+        covers,
+        state,
+        viewport,
+        settings,
+        library,
+        Library::save,
+    );
+    // Record the final window geometry so the next launch restores it. Safe: the window
+    // handle is still alive (`ui` in scope) and `settings` is unborrowed.
+    window_state::capture_geometry(ui, &mut settings.borrow_mut());
+
+    if let Err(e) = settings.borrow().save() {
+        tracing::error!(error = %e, "failed to save settings on exit");
+    }
+}
+
+/// The window-free half of [`run_exit_persistence`], with the library save
+/// injected (the same seam `persist_leave_point_with` uses) so the sequence is
+/// reachable without a live window. Production passes [`Library::save`].
+///
+/// ORDER IS LOAD-BEARING: the dialog session ENDS first. A settings dialog opened
+/// on the Library screen leaves the runtime seeded with the GLOBAL defaults, and
+/// `persist_leave_point(AppExit)` writes that runtime onto the open book — so a
+/// quit with the dialog still up used to overwrite the book's own view modes
+/// with the globals (issue #535, path (a)).
+fn stage_exit_state(
+    dialog_session: &Rc<RefCell<DialogSession>>,
+    covers: &Rc<cover_loader::CoverController>,
+    state: &Rc<RefCell<ViewerState>>,
+    viewport: &Rc<RefCell<ViewportState>>,
+    settings: &Rc<RefCell<Settings>>,
+    library: &Rc<RefCell<Library>>,
+    save: impl FnOnce(&Library) -> Result<(), CoreError>,
+) {
     dialog_session.borrow_mut().end(state, viewport);
     // Persist page counts the cover prefetch resolved after the last refresh, so a book
     // counted this session isn't re-counted next launch.
@@ -413,19 +449,18 @@ fn run_exit_persistence(
     // Stage position + view-mode routing, then persist the library exactly once.
     // Both callers run at top-level shutdown points, so all cells are unborrowed.
     // Exit is now exactly one library write (formerly two).
-    if let Err(e) = persist_leave_point(ViewModeRoute::AppExit, state, viewport, settings, library)
-    {
+    if let Err(e) = view_sync::persist_leave_point_with(
+        ViewModeRoute::AppExit,
+        state,
+        viewport,
+        settings,
+        library,
+        save,
+    ) {
         // Log-only by necessity: the normal-quit caller has no event loop left to show a
         // notice, and the relaunch caller replaces the process moments later — but the
         // failure must not be silently discarded.
         tracing::error!(error = %e, "failed to persist the leave point on exit");
-    }
-    // Record the final window geometry so the next launch restores it. Safe: the window
-    // handle is still alive (`ui` in scope) and `settings` is unborrowed.
-    window_state::capture_geometry(ui, &mut settings.borrow_mut());
-
-    if let Err(e) = settings.borrow().save() {
-        tracing::error!(error = %e, "failed to save settings on exit");
     }
 }
 
@@ -808,6 +843,82 @@ fn to_slint_image(decoded: &DecodedImage) -> slint::Image {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use dialog_session::DialogScope;
+    use gashuu_core::{CoverMode, FitMode, ResolvedView, SpreadMode, ViewOverride};
+
+    /// Issue #535, path (a), pinned at the PRODUCTION call site: quitting while a
+    /// settings dialog opened on the Library screen is still up must persist the
+    /// open book's OWN view modes, not the global-seeded scratchpad the dialog
+    /// installed. Deleting the `end()` call from `stage_exit_state` stages the
+    /// globals here instead.
+    #[test]
+    fn exit_state_with_a_library_dialog_open_persists_the_books_own_modes() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let book = root.path().join("book");
+        std::fs::create_dir(&book).expect("create book");
+
+        // Globals (G) and the book's own modes (B) differ in all four axes.
+        let settings = Rc::new(RefCell::new(Settings {
+            reading_direction: ReadingDirection::Rtl,
+            spread_mode: SpreadMode::Double,
+            cover_mode: CoverMode::Paired,
+            fit_mode: FitMode::Actual,
+            ..Settings::default()
+        }));
+        let state = Rc::new(RefCell::new(ViewerState::new()));
+        state.borrow_mut().open_path(&book).expect("open test book");
+        let canonical = state
+            .borrow()
+            .open_file()
+            .expect("open file after successful open")
+            .to_path_buf();
+        let viewport = Rc::new(RefCell::new(ViewportState::from_settings(
+            &settings.borrow(),
+        )));
+        state.borrow_mut().apply_resolved_view(
+            ResolvedView {
+                reading_direction: ReadingDirection::Ltr,
+                spread_mode: SpreadMode::Single,
+                cover_mode: CoverMode::Standalone,
+                fit_mode: FitMode::Whole,
+            },
+            &mut viewport.borrow_mut(),
+        );
+        let mut library_value = Library::new();
+        assert!(library_value.add(canonical.clone()).is_some());
+        let library = Rc::new(RefCell::new(library_value));
+        let dialog_session = Rc::new(RefCell::new(DialogSession::new()));
+        let covers = Rc::new(cover_loader::CoverController::new());
+
+        // The Library-screen dialog seeds the runtime with G, then the user quits.
+        dialog_session
+            .borrow_mut()
+            .open(DialogScope::Library, &state, &viewport, &settings);
+        stage_exit_state(
+            &dialog_session,
+            &covers,
+            &state,
+            &viewport,
+            &settings,
+            &library,
+            |_| Ok(()),
+        );
+
+        assert_eq!(
+            library.borrow().overrides_for(&canonical),
+            ViewOverride {
+                reading_direction: Some(ReadingDirection::Ltr),
+                spread_mode: Some(SpreadMode::Single),
+                cover_mode: Some(CoverMode::Standalone),
+                fit_mode: Some(FitMode::Whole),
+            },
+            "exit must stage the book's own modes, not the dialog's global scratchpad"
+        );
+        assert!(
+            dialog_session.borrow().scope().is_none(),
+            "the exit path ends the session"
+        );
+    }
 
     #[test]
     fn load_or_default_returns_loaded_value_and_records_no_notice() {

@@ -694,7 +694,9 @@ not name.
   clears the scope and snapshot. The order is LOAD-BEARING, because `apply_resolved_view`'s
   value-changing `set_*` calls clear the flag; restoring the flag first would be a no-op. It runs
   from both close-handler branches, exit persistence before `AppExit`, and `on_open_finalize`
-  before `apply_probed`.
+  before `apply_probed`. The latter two live inside window-bound code, so each is paired with its
+  leave point in one window-free function — `main.rs::stage_exit_state` and
+  `handlers/library.rs::end_session_and_apply_probed` — which is what the regression tests call.
 - `reset_to_global(state, viewport, settings)` applies the globals and THEN marks
   `inherit_pending`, for exactly the same reason.
 
@@ -897,6 +899,10 @@ carousel, prune) + 10 `handlers::wire_*` calls + `handlers::start_update_check` 
 `wire_relaunch_persistence` bridge + `ui.run()` + `run_exit_persistence` (count persistence,
 write-back, view-mode persistence, geometry snapshot, settings save) — the SAME callable the
 self-update relaunch invokes via the `persist-before-relaunch` bridge before `relaunch_and_exit`.
+`run_exit_persistence` is a thin window-bound shell over `stage_exit_state`, which holds the
+window-free prefix (dialog-session end → `flush_counts` → `AppExit` leave point) with the library
+save injected exactly as `persist_leave_point_with` does it, so the ordering is testable without a
+live window.
 All callback closures live in `handlers/`; `main.rs` retains `refresh`, `finalize_open`,
 `go_to_library`/`go_to_viewer`, and the add-batch helpers, plus the crate-root re-exports for the
 `view_sync.rs` and `carousel_refresh.rs` seams (the carousel-refresh/projection cluster itself now
