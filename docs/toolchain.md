@@ -84,8 +84,12 @@ only ruleset blocks deletion and non-fast-forward, so there are **zero required 
 for GitHub's own auto-merge to wait on — it could merge a PR whose CI is red. With
 `platformAutomerge: false`, Renovate merges the PR itself on a later run, and only after it has
 confirmed every check is green. The accepted cost is latency: a PR merges on Renovate's next run
-after its checks pass, not the instant they pass. `"automergeStrategy": "squash"` matches the
-repo's squash-based history (`allow_rebase_merge` is false).
+after its checks pass, not the instant they pass. `"automergeStrategy"` must name a method the
+repository actually permits, or GitHub rejects Renovate's merge call and automerge stops working
+with no symptom other than its PRs sitting open. It is `"merge"`, matching `allow_merge_commit`
+being the only enabled method (`allow_squash_merge` and `allow_rebase_merge` are both false).
+`ops/worktree-stack/preflight.sh` asserts that pairing, along with the local git config that
+keeps a fast-forwardable merge from landing with no merge commit at all.
 
 **Automerge does not weaken the supply-chain guards.** `"minimumReleaseAge": "7 days"` still
 withholds any release younger than seven days, and `"internalChecksFilter": "strict"` still holds
