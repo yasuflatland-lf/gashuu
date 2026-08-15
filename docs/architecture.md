@@ -703,11 +703,13 @@ data and touches no Slint; the UI tail lives in `carousel_refresh::finalize_remo
 
 `view_sync.rs` owns `ViewModeRoute` and the one-per-app `LeavePointService`. Its `pub(crate)` surface
 is `LeavePointService::{new, persist, persist_with}`, `current_runtime_view`,
-`apply_global_view_to_runtime`, and `current_book_name`; its private members are `stage_view_modes_to_sink`,
-`apply_runtime_view_to_settings`, `position_to_write_back`, `stage_position_write_back`,
+`apply_global_view_to_runtime`, `apply_runtime_view_to_settings`, and `current_book_name`; its
+private members are `stage_view_modes_to_sink`, `position_to_write_back`, `stage_position_write_back`,
 `view_override_to_write_back`, and `stage_view_override_write_back`. `persist_with` is the
 save-injection seam used by `OpenBookUseCase` and exit staging; `persist` supplies the service's
-stored `LibraryStoreHandle` for production handler calls.
+stored `LibraryStoreHandle` for production handler calls. `apply_runtime_view_to_settings` is
+crate-visible because `DialogSession::end` must use the same runtime-to-global definition as the
+`DialogClosedOnLibrary` route.
 
 `LeavePointService::persist(route)` is the ONE leave-point persistence chokepoint. The service owns
 the state, viewport, dialog-session, settings, library, and store handles once; `persist` delegates
@@ -717,8 +719,9 @@ to `stage_view_modes_to_sink`, and saves the library at most once. `stage_view_m
 `match route` selects the sink: `DialogClosedOnLibrary` → global reconcile;
 `DialogClosedOnViewer` / `LeaveViewer` / `OpenDifferentBook` → per-book write-back; `AppExit` →
 per-book write-back FIRST, then a global reconcile ONLY when `open_file().is_none()`. So the GLOBAL
-sink is invoked only via the Library-dialog close and the no-book-open exit; every leave point hits
-the per-book sink (a no-op when no book is open).
+route sink is invoked only via the Library-dialog close and the no-book-open exit; a Library-scope
+`DialogSession::end` also invokes the same helper before restoring its snapshot. Every leave point
+hits the per-book sink (a no-op when no book is open).
 Before a per-book write-back, `stage_view_override_write_back` builds the current `ResolvedView`,
 asks `DialogSession::inherit_pending(current)` whether the reset guard still applies, and consults
 the shared `Settings` handle to stage only fields that differ from global. The private pure helper
@@ -742,10 +745,13 @@ not name.
   (`None` when no book is open) and THEN global-seeds the runtime via
   `apply_global_view_to_runtime`; Viewer scope leaves the runtime untouched. Persistence routes by
   this recorded scope, while close-time focus restoration routes by the current screen.
-- `end(state, viewport)` is idempotent: it restores any snapshot via `apply_resolved_view`
-  **first**, restores `pending_inherit` **after** (verbatim in both directions), then clears the
-  scope and snapshot. This keeps the restored view in place before that pending intent is observed.
-  It runs
+- `end(state, viewport, settings)` is idempotent. When the recorded scope is `Library`, it first
+  reconciles the LIVE global-edit scratchpad into `Settings` via
+  `apply_runtime_view_to_settings`; it then restores any snapshot via `apply_resolved_view`,
+  restores `pending_inherit` after the view (verbatim in both directions), and finally clears the
+  scope and snapshot. Reconcile-before-restore is load-bearing: reversing those first two steps
+  writes the open book's view into the global defaults. Viewer scope and a no-session call leave
+  `Settings` untouched. It runs
   from both close-handler branches, exit persistence before `AppExit`, and `on_open_finalize`
   before `apply_probed`. The latter two live inside window-bound code, so each is paired with its
   leave point in one window-free function — `main.rs::stage_exit_state` and
@@ -759,11 +765,12 @@ not name.
 - `reset_to_global(&mut self, state, viewport, settings)` applies the globals and THEN records the
   installed runtime view in `pending_inherit`.
 
-Consequence to state plainly: **a global edit made from the Library dialog is fully invisible to the
-open book's runtime AND its pending state.** On the Library screen the runtime is only a
-global-seeded scratchpad, so a GLOBAL edit must not touch the BOOK's pending state — without the
-snapshot, the next leave point could write an override pinning the OLD global values onto that
-book ("Reset to global" silently undone and frozen stale). See
+Consequence to state plainly: **a global edit made from the Library dialog is committed to
+`Settings` but remains invisible to the open book's restored runtime and pending state.** On the
+Library screen the live runtime is a global-seeded scratchpad; `end` commits that scratchpad before
+restoring the BOOK snapshot. The global edit must not touch the BOOK's pending state — without the
+snapshot, the next leave point could write an override pinning the OLD global values onto that book
+("Reset to global" silently undone and frozen stale). See
 [ADR-0007](ADRs/0007-per-book-view-overrides.md)'s Amendment and [patterns.md](patterns.md),
 "Per-book view overrides".
 
@@ -962,9 +969,9 @@ carousel, prune) + 10 `handlers::wire_*` calls + `handlers::start_update_check` 
 write-back, view-mode persistence, geometry snapshot, settings save) — the SAME callable the
 self-update relaunch invokes via the `persist-before-relaunch` bridge before `relaunch_and_exit`.
 `run_exit_persistence` is a thin window-bound shell over `stage_exit_state`, which holds the
-window-free prefix (dialog-session end → `flush_counts` → `AppExit` leave point) with the library
-save injected through `LeavePointService::persist_with`, so the ordering is testable without a
-live window.
+window-free prefix (dialog-session reconcile/restore end → `flush_counts` → `AppExit` leave point)
+with `settings` threaded as an explicit named parameter and the library save injected through
+`LeavePointService::persist_with`, so the ordering is testable without a live window.
 All callback closures live in `handlers/`; `main.rs` retains `refresh`, `finalize_open`,
 `go_to_library`/`go_to_viewer`, and the add-batch helpers, plus the crate-root re-exports for the
 `view_sync.rs` and `carousel_refresh.rs` seams (the carousel-refresh/projection cluster itself now

@@ -168,10 +168,14 @@ pub(crate) fn wire_settings_handlers(
                                 "failed to save settings from dialog",
                             );
                         }
-                        dialog_session.borrow_mut().end(&state, &viewport);
+                        dialog_session
+                            .borrow_mut()
+                            .end(&state, &viewport, &settings);
                     }
                     DialogScope::Viewer => {
-                        dialog_session.borrow_mut().end(&state, &viewport);
+                        dialog_session
+                            .borrow_mut()
+                            .end(&state, &viewport, &settings);
                         // Persist the four view modes to this book's override.
                         // cache/preload/track are global, so save Settings too.
                         if let Err(e) = leave_point.persist(ViewModeRoute::DialogClosedOnViewer) {

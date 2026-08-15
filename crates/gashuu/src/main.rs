@@ -525,6 +525,7 @@ fn run_exit_persistence(
         covers,
         state,
         viewport,
+        settings,
         library,
         library_store,
         leave_point,
@@ -548,18 +549,22 @@ fn run_exit_persistence(
 /// `LeavePointService::persist(AppExit)` writes that runtime onto the open book — so a
 /// quit with the dialog still up used to overwrite the book's own view modes
 /// with the globals (issue #535, path (a)).
+/// `end` first commits any Library-scope global edit, then restores the book
+/// runtime, so the existing exit settings save persists that edit without letting
+/// `AppExit` pin the global scratchpad onto the book (issue #556).
 #[allow(clippy::too_many_arguments)]
 fn stage_exit_state(
     dialog_session: &Rc<RefCell<DialogSession>>,
     covers: &Rc<cover_loader::CoverController>,
     state: &Rc<RefCell<ViewerState>>,
     viewport: &Rc<RefCell<ViewportState>>,
+    settings: &Rc<RefCell<Settings>>,
     library: &Rc<RefCell<Library>>,
     library_store: &LibraryStoreHandle,
     leave_point: &Rc<LeavePointService>,
     save: impl FnOnce(&Library) -> Result<(), CoreError>,
 ) {
-    dialog_session.borrow_mut().end(state, viewport);
+    dialog_session.borrow_mut().end(state, viewport, settings);
     // Persist page counts the cover prefetch resolved after the last refresh, so a book
     // counted this session isn't re-counted next launch.
     covers.flush_counts(library, library_store);
@@ -1028,6 +1033,7 @@ mod tests {
             &covers,
             &state,
             &viewport,
+            &settings,
             &library,
             &library_store,
             &leave_point,

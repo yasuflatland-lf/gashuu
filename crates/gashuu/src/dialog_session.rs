@@ -1,4 +1,6 @@
-use crate::view_sync::{apply_global_view_to_runtime, current_runtime_view};
+use crate::view_sync::{
+    apply_global_view_to_runtime, apply_runtime_view_to_settings, current_runtime_view,
+};
 use crate::{viewer_state::ViewerState, viewport::ViewportState};
 use gashuu_core::{ResolvedView, Settings};
 use std::cell::RefCell;
@@ -66,10 +68,24 @@ impl DialogSession {
         self.scope
     }
 
-    /// End the current session. Restore a Library-scope snapshot, then clear
-    /// all session state. Calling this without an active session is a no-op.
-    pub fn end(&mut self, state: &Rc<RefCell<ViewerState>>, viewport: &Rc<RefCell<ViewportState>>) {
-        if let Some(snapshot) = self.snapshot.take() {
+    /// End the current session. A Library-scope session first commits its live
+    /// runtime scratchpad to the global settings, then restores any open-book
+    /// snapshot, then clears all session state. Reconcile MUST precede restore,
+    /// or the book's view would overwrite the edited globals. Viewer scope and
+    /// a call without an active session leave `Settings` untouched.
+    pub fn end(
+        &mut self,
+        state: &Rc<RefCell<ViewerState>>,
+        viewport: &Rc<RefCell<ViewportState>>,
+        settings: &Rc<RefCell<Settings>>,
+    ) {
+        let scope = self.scope;
+        if scope == Some(DialogScope::Library) {
+            let state = state.borrow();
+            let viewport = viewport.borrow();
+            apply_runtime_view_to_settings(&state, &viewport, &mut settings.borrow_mut());
+        }
+        if let Some(snapshot) = &self.snapshot {
             state
                 .borrow_mut()
                 .apply_resolved_view(snapshot.view, &mut viewport.borrow_mut());
@@ -146,6 +162,15 @@ mod tests {
         }
     }
 
+    fn edited_global_view() -> ResolvedView {
+        ResolvedView {
+            reading_direction: ReadingDirection::Rtl,
+            spread_mode: SpreadMode::Auto,
+            cover_mode: CoverMode::Paired,
+            fit_mode: FitMode::Width,
+        }
+    }
+
     fn apply_runtime_view(
         state: &Rc<RefCell<ViewerState>>,
         viewport: &Rc<RefCell<ViewportState>>,
@@ -163,6 +188,105 @@ mod tests {
             .open_path(dir.path())
             .expect("open book directory");
         dir
+    }
+
+    #[test]
+    fn ending_a_library_session_commits_the_global_edit() {
+        let settings = global_settings();
+        let state = Rc::new(RefCell::new(ViewerState::new()));
+        let viewport = Rc::new(RefCell::new(ViewportState::from_settings(
+            &settings.borrow(),
+        )));
+        let _book = open_book(&state);
+        apply_runtime_view(&state, &viewport, book_view());
+        let mut session = DialogSession::new();
+
+        session.open(DialogScope::Library, &state, &viewport, &settings);
+        apply_runtime_view(&state, &viewport, edited_global_view());
+        session.end(&state, &viewport, &settings);
+
+        assert_eq!(global_view(&settings), edited_global_view());
+        assert_eq!(current_runtime_view(&state, &viewport), book_view());
+    }
+
+    #[test]
+    fn ending_a_library_session_does_not_write_the_books_view_to_global() {
+        let settings = global_settings();
+        let state = Rc::new(RefCell::new(ViewerState::new()));
+        let viewport = Rc::new(RefCell::new(ViewportState::from_settings(
+            &settings.borrow(),
+        )));
+        let _book = open_book(&state);
+        apply_runtime_view(&state, &viewport, book_view());
+        let mut session = DialogSession::new();
+
+        session.open(DialogScope::Library, &state, &viewport, &settings);
+        apply_runtime_view(&state, &viewport, edited_global_view());
+        session.end(&state, &viewport, &settings);
+
+        assert_eq!(global_view(&settings), edited_global_view());
+    }
+
+    #[test]
+    fn ending_a_viewer_session_leaves_settings_untouched() {
+        let settings = global_settings();
+        let initial_global = global_view(&settings);
+        let state = Rc::new(RefCell::new(ViewerState::new()));
+        let viewport = Rc::new(RefCell::new(ViewportState::from_settings(
+            &settings.borrow(),
+        )));
+        apply_runtime_view(&state, &viewport, book_view());
+        let mut session = DialogSession::new();
+
+        session.open(DialogScope::Viewer, &state, &viewport, &settings);
+        apply_runtime_view(&state, &viewport, edited_global_view());
+        session.end(&state, &viewport, &settings);
+
+        assert_eq!(global_view(&settings), initial_global);
+        assert_eq!(
+            current_runtime_view(&state, &viewport),
+            edited_global_view()
+        );
+    }
+
+    #[test]
+    fn ending_without_a_session_leaves_settings_untouched() {
+        let settings = global_settings();
+        let initial_global = global_view(&settings);
+        let state = Rc::new(RefCell::new(ViewerState::new()));
+        let viewport = Rc::new(RefCell::new(ViewportState::from_settings(
+            &settings.borrow(),
+        )));
+        apply_runtime_view(&state, &viewport, edited_global_view());
+        let mut session = DialogSession::new();
+
+        session.end(&state, &viewport, &settings);
+
+        assert_eq!(global_view(&settings), initial_global);
+        assert_eq!(
+            current_runtime_view(&state, &viewport),
+            edited_global_view()
+        );
+    }
+
+    #[test]
+    fn ending_a_library_session_with_no_open_book_still_commits() {
+        let settings = global_settings();
+        let state = Rc::new(RefCell::new(ViewerState::new()));
+        let viewport = Rc::new(RefCell::new(ViewportState::from_settings(
+            &settings.borrow(),
+        )));
+        let mut session = DialogSession::new();
+
+        session.open(DialogScope::Library, &state, &viewport, &settings);
+        apply_runtime_view(&state, &viewport, edited_global_view());
+        session.end(&state, &viewport, &settings);
+
+        assert_eq!(global_view(&settings), edited_global_view());
+        assert_eq!(
+            current_runtime_view(&state, &viewport),
+            edited_global_view()
+        );
     }
 
     #[test]
@@ -274,7 +398,7 @@ mod tests {
 
         session.open(DialogScope::Library, &state, &viewport, &settings);
         state.borrow_mut().set_spread_mode(SpreadMode::Single);
-        session.end(&state, &viewport);
+        session.end(&state, &viewport, &settings);
         let current = current_runtime_view(&state, &viewport);
 
         assert!(session.inherit_pending(current));
@@ -293,7 +417,7 @@ mod tests {
 
         session.open(DialogScope::Library, &state, &viewport, &settings);
         state.borrow_mut().set_spread_mode(SpreadMode::Single);
-        session.end(&state, &viewport);
+        session.end(&state, &viewport, &settings);
         let current = current_runtime_view(&state, &viewport);
 
         assert!(!session.inherit_pending(current));
@@ -333,7 +457,7 @@ mod tests {
             global_view(&settings)
         );
 
-        session.end(&state, &viewport);
+        session.end(&state, &viewport, &settings);
         assert_eq!(current_runtime_view(&state, &viewport), book_view());
     }
 
@@ -353,7 +477,7 @@ mod tests {
             global_view(&settings)
         );
 
-        session.end(&state, &viewport);
+        session.end(&state, &viewport, &settings);
         assert_eq!(
             current_runtime_view(&state, &viewport),
             global_view(&settings)
@@ -379,7 +503,7 @@ mod tests {
             global_view(&settings)
         );
 
-        session.end(&state, &viewport);
+        session.end(&state, &viewport, &settings);
         assert_eq!(
             current_runtime_view(&state, &viewport),
             alternate_book_view()
@@ -403,7 +527,7 @@ mod tests {
             global_view(&settings)
         );
 
-        session.end(&state, &viewport);
+        session.end(&state, &viewport, &settings);
         assert_eq!(current_runtime_view(&state, &viewport), book_view());
         assert_eq!(session.scope(), None);
     }
@@ -420,9 +544,9 @@ mod tests {
         let mut session = DialogSession::new();
 
         session.open(DialogScope::Library, &state, &viewport, &settings);
-        session.end(&state, &viewport);
+        session.end(&state, &viewport, &settings);
         apply_runtime_view(&state, &viewport, alternate_book_view());
-        session.end(&state, &viewport);
+        session.end(&state, &viewport, &settings);
 
         assert_eq!(
             current_runtime_view(&state, &viewport),
@@ -443,7 +567,7 @@ mod tests {
         session.open(DialogScope::Viewer, &state, &viewport, &settings);
         assert_eq!(current_runtime_view(&state, &viewport), book_view());
 
-        session.end(&state, &viewport);
+        session.end(&state, &viewport, &settings);
         assert_eq!(current_runtime_view(&state, &viewport), book_view());
         assert_eq!(session.scope(), None);
     }
@@ -465,7 +589,7 @@ mod tests {
             global_view(&settings)
         );
 
-        session.end(&state, &viewport);
+        session.end(&state, &viewport, &settings);
         assert_eq!(current_runtime_view(&state, &viewport), book_view());
         assert_eq!(session.scope(), None);
         assert!(session.snapshot.is_none());
