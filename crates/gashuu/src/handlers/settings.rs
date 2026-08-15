@@ -10,9 +10,9 @@ use crate::page_loader::PageController;
 use crate::viewer_state::ViewerState;
 use crate::viewport::ViewportState;
 use crate::{
-    cover_loader, i18n, persist_leave_point, push_selection_toolbar_state, refresh,
-    refresh_library_carousel, save_library, save_settings, with_ui, CarouselRefresh,
-    LibraryStoreHandle, SettingsStoreHandle, ViewModeRoute, ViewerWindow,
+    cover_loader, i18n, push_selection_toolbar_state, refresh, refresh_library_carousel,
+    save_library, save_settings, with_ui, CarouselRefresh, LeavePointService, LibraryStoreHandle,
+    SettingsStoreHandle, ViewModeRoute, ViewerWindow,
 };
 use gashuu_core::{CacheConfig, Library, Settings, ThumbnailCache, ViewOverride};
 use slint::ComponentHandle;
@@ -57,6 +57,7 @@ pub(crate) fn wire_settings_handlers(
     settings: &Rc<RefCell<Settings>>,
     dialog_session: &Rc<RefCell<DialogSession>>,
     library: &Rc<RefCell<Library>>,
+    leave_point: &Rc<LeavePointService>,
     covers: &Rc<cover_loader::CoverController>,
     pages: &Rc<PageController>,
     search: &Rc<RefCell<LibrarySearchState>>,
@@ -70,6 +71,7 @@ pub(crate) fn wire_settings_handlers(
     let settings = Rc::clone(settings);
     let dialog_session = Rc::clone(dialog_session);
     let library = Rc::clone(library);
+    let leave_point = Rc::clone(leave_point);
     let covers = Rc::clone(covers);
     let pages = Rc::clone(pages);
     let search = Rc::clone(search);
@@ -133,11 +135,10 @@ pub(crate) fn wire_settings_handlers(
         let state = Rc::clone(&state);
         let settings = Rc::clone(&settings);
         let viewport = Rc::clone(&viewport);
-        let library = Rc::clone(&library);
+        let leave_point = Rc::clone(&leave_point);
         let localizer = Rc::clone(&localizer);
         let dialog_session = Rc::clone(&dialog_session);
         let settings_store = Rc::clone(&settings_store);
-        let library_store = Rc::clone(&library_store);
         ui.on_close_settings(move || {
             with_ui(&ui_weak, |ui| {
                 ui.set_show_settings(false);
@@ -151,15 +152,7 @@ pub(crate) fn wire_settings_handlers(
 
                 match scope {
                     DialogScope::Library => {
-                        if let Err(e) = persist_leave_point(
-                            ViewModeRoute::DialogClosedOnLibrary,
-                            &state,
-                            &viewport,
-                            &dialog_session,
-                            &settings,
-                            &library,
-                            &library_store,
-                        ) {
+                        if let Err(e) = leave_point.persist(ViewModeRoute::DialogClosedOnLibrary) {
                             report_save_error(
                                 &ui,
                                 localizer.loader(),
@@ -181,15 +174,7 @@ pub(crate) fn wire_settings_handlers(
                         dialog_session.borrow_mut().end(&state, &viewport);
                         // Persist the four view modes to this book's override.
                         // cache/preload/track are global, so save Settings too.
-                        if let Err(e) = persist_leave_point(
-                            ViewModeRoute::DialogClosedOnViewer,
-                            &state,
-                            &viewport,
-                            &dialog_session,
-                            &settings,
-                            &library,
-                            &library_store,
-                        ) {
+                        if let Err(e) = leave_point.persist(ViewModeRoute::DialogClosedOnViewer) {
                             report_save_error(
                                 &ui,
                                 localizer.loader(),
@@ -413,7 +398,7 @@ pub(crate) fn wire_view_mode_handlers(
             with_ui(&ui_weak, |ui| {
                 let dir = index_to_reading_direction(i);
                 // Mutates the runtime view mode only; while a book is open it persists to
-                // the book's per-book override via `persist_leave_point`, not Settings.
+                // the book's per-book override via the leave-point service, not Settings.
                 if state.borrow_mut().set_reading_direction(dir) {
                     refresh(
                         &ui,
@@ -437,7 +422,7 @@ pub(crate) fn wire_view_mode_handlers(
             with_ui(&ui_weak, |ui| {
                 let mode = index_to_spread_mode(i);
                 // Mutates the runtime view mode only; while a book is open it persists to
-                // the book's per-book override via `persist_leave_point`, not Settings.
+                // the book's per-book override via the leave-point service, not Settings.
                 if state.borrow_mut().set_spread_mode(mode) {
                     refresh(
                         &ui,
@@ -461,7 +446,7 @@ pub(crate) fn wire_view_mode_handlers(
             with_ui(&ui_weak, |ui| {
                 let mode = index_to_cover_mode(i);
                 // Mutates the runtime view mode only; while a book is open it persists to
-                // the book's per-book override via `persist_leave_point`, not Settings.
+                // the book's per-book override via the leave-point service, not Settings.
                 if state.borrow_mut().set_cover_mode(mode) {
                     refresh(
                         &ui,

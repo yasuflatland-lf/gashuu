@@ -71,10 +71,10 @@ Key facts: `#[path]` resolves relative to the **parent file's directory** (`src/
 
 Two rules validated by extracting the open-a-book use case into `app::OpenBookUseCase`; full rationale in [patterns.md](patterns.md) ("Use-case object").
 
-1. **Field-alias verbatim move.** When extracting a fn that threads many shared collaborators into a `…UseCase::run` method, store the collaborators as fields and alias them to locals at the top of `run` (`let state = &self.state;` per field) so the moved body stays BYTE-IDENTICAL. `Deref` absorbs the `&Rc<T>` (field) vs `&T` (former parameter) difference for method calls, so no statement in the body changes — minimal diff, borrow-discipline comments preserved verbatim.
+1. **Field-alias verbatim move.** When extracting a fn that threads many shared collaborators into a `…UseCase::run` method, store the collaborators as fields and alias them to locals at the top of `run` (`let state = &self.state;` per field) so the moved body stays BYTE-IDENTICAL. `Deref` absorbs the `&Rc<T>` (field) vs `&T` (former parameter) difference for method calls, so no statement in the body changes — minimal diff, borrow-discipline comments preserved verbatim. The aliases are TRANSITIONAL scaffolding for the move commit only: leaving them in place keeps the method written as the free function it used to be, which is how `OpenBookUseCase::apply_probed` grew to seven responsibilities before being split. Drop them in the follow-up that gives each responsibility its own method.
 
 2. **`pub(crate)` bridge for module extraction under parallel writers.** Expose shared helpers needed
-   across the boundary (`refresh` / `persist_leave_point`) as `pub(crate)`; keep internal write
+   across the boundary (`refresh` / `LeavePointService`) as `pub(crate)`; keep internal write
    helpers such as `stage_position_write_back` private in the extracted module. This lets a 2-file
    split (new module ∥ caller edit) be written by parallel no-cargo agents against an exact API
    contract, then verified once by the gates.

@@ -202,7 +202,7 @@ dismissal is BLOCKED, not aborted (recorded as deferred in `docs/scope.md`).
 ### (ii) Persist before relaunch (extends Decision 4's `SelfReplace` arm)
 
 The relaunch runs the SAME shutdown sequence as a normal quit — page-count flush,
-`persist_leave_point(AppExit)` (the reading position AND the open book's per-book view override),
+the `AppExit` leave point (the reading position AND the open book's per-book view override),
 window-geometry capture, one settings save — and it runs it BEFORE spawning the replacement
 process. `install::persist_then_spawn(persist, spawn)` makes that order explicit and unit-testable
 without exiting the test process. The order is load-bearing: the new instance reads `settings.json`

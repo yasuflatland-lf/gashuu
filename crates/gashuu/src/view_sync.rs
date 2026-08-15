@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 /// The leave/close point at which runtime view modes are persisted, naming WHERE
-/// the runtime came from so [`persist_leave_point`] can route to the right sink.
+/// the runtime came from so [`LeavePointService::persist`] can route to the right sink.
 /// One variant per production call site of the old write helpers.
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum ViewModeRoute {
@@ -28,72 +28,104 @@ pub(crate) enum ViewModeRoute {
     AppExit,
 }
 
-/// The ONE place a leave point persists the library: stages the position
-/// write-back (viewer-leaving routes) and the view-mode routing for `route`,
-/// then saves the library at most ONCE. Returns the save result for surfacing.
-/// Settings saves deliberately stay at their call sites (already <= 1 per
-/// event; consolidation evaluated and declined — geometry capture must precede
-/// the exit-time settings save).
+/// The leave-point persistence application service: one instance per app,
+/// constructed in `main.rs` and shared by `Rc` with every leave point (the two
+/// settings-dialog close branches, the ↑ leave-viewer key, `OpenBookUseCase`,
+/// and exit staging).
 ///
-/// ADR-0007 clobber-trap, made structural here (it once shipped as a real bug):
-/// once view modes became per-book with a global fallback, EVERY "copy runtime →
-/// global" op (`apply_runtime_view_to_settings`) became a potential CLOBBER — the runtime may
-/// hold a per-book value, so reconciling it would overwrite the GLOBAL default
-/// with one book's preference. The routing match below is the invariant: the
-/// GLOBAL sink is written ONLY by (a) the Library-screen settings dialog close and
-/// (b) the no-book-open exit path; the PER-BOOK sink is written ONLY at leave
-/// points (the Viewer-screen settings dialog close, the ↑ leave-viewer key, and
-/// opening a different book while one is open). Note (a): the Library dialog
-/// legitimately reconciles into global even while a book is loaded in
-/// `ViewerState`, because the runtime was global-seeded
-/// by `apply_global_view_to_runtime` at dialog open — so this path must NOT be
-/// blanket-guarded on `open_file().is_none()`, or Library-dialog edits would be
-/// dropped. The exit path keeps the per-book write FIRST, then the open-state
-/// guard on the global reconcile.
-pub(crate) fn persist_leave_point(
-    route: ViewModeRoute,
-    state: &Rc<RefCell<ViewerState>>,
-    viewport: &Rc<RefCell<ViewportState>>,
-    dialog_session: &Rc<RefCell<DialogSession>>,
-    settings: &Rc<RefCell<Settings>>,
-    library: &Rc<RefCell<Library>>,
-    library_store: &LibraryStoreHandle,
-) -> Result<(), CoreError> {
-    persist_leave_point_with(
-        route,
-        state,
-        viewport,
-        dialog_session,
-        settings,
-        library,
-        |library| save_library(library_store, library),
-    )
+/// It is a SERVICE OBJECT, not a state bundle: the handles below are its own
+/// collaborators for this one transaction and are never exposed, so a caller
+/// cannot reach through it for unrelated state. This mirrors how
+/// `OpenBookUseCase` and `RemoveBooksUseCase` hold their collaborators as
+/// fields, replacing the bare procedure that re-took the same five handles at
+/// each of its four call sites and grew a parameter on every leave-point change.
+pub(crate) struct LeavePointService {
+    state: Rc<RefCell<ViewerState>>,
+    viewport: Rc<RefCell<ViewportState>>,
+    dialog_session: Rc<RefCell<DialogSession>>,
+    settings: Rc<RefCell<Settings>>,
+    library: Rc<RefCell<Library>>,
+    library_store: LibraryStoreHandle,
 }
 
-/// Save-injection seam for proving the one-save boundary without touching the
-/// process data directory. Production saves through `LibraryStore`.
-pub(crate) fn persist_leave_point_with(
-    route: ViewModeRoute,
-    state: &Rc<RefCell<ViewerState>>,
-    viewport: &Rc<RefCell<ViewportState>>,
-    dialog_session: &Rc<RefCell<DialogSession>>,
-    settings: &Rc<RefCell<Settings>>,
-    library: &Rc<RefCell<Library>>,
-    save: impl FnOnce(&Library) -> Result<(), CoreError>,
-) -> Result<(), CoreError> {
-    if matches!(
-        route,
-        ViewModeRoute::LeaveViewer | ViewModeRoute::OpenDifferentBook | ViewModeRoute::AppExit
-    ) {
-        stage_position_write_back(state, library);
+impl LeavePointService {
+    pub(crate) fn new(
+        state: Rc<RefCell<ViewerState>>,
+        viewport: Rc<RefCell<ViewportState>>,
+        dialog_session: Rc<RefCell<DialogSession>>,
+        settings: Rc<RefCell<Settings>>,
+        library: Rc<RefCell<Library>>,
+        library_store: LibraryStoreHandle,
+    ) -> Self {
+        Self {
+            state,
+            viewport,
+            dialog_session,
+            settings,
+            library,
+            library_store,
+        }
     }
-    stage_view_modes_to_sink(route, state, viewport, dialog_session, settings, library);
 
-    let result = save(&library.borrow());
-    if let Err(e) = &result {
-        tracing::error!(error = %e, "failed to save library at leave point");
+    /// Production entry point: runs [`Self::persist_with`] with the save the
+    /// service was constructed over, i.e. through its own `LibraryStore` handle.
+    pub(crate) fn persist(&self, route: ViewModeRoute) -> Result<(), CoreError> {
+        self.persist_with(route, |library| save_library(&self.library_store, library))
     }
-    result
+
+    /// The ONE place a leave point persists the library: stages the position
+    /// write-back (viewer-leaving routes) and the view-mode routing for `route`,
+    /// then saves the library at most ONCE. Returns the save result for surfacing.
+    /// Settings saves deliberately stay at their call sites (already <= 1 per
+    /// event; consolidation evaluated and declined — geometry capture must precede
+    /// the exit-time settings save).
+    ///
+    /// ADR-0007 clobber-trap, made structural here (it once shipped as a real bug):
+    /// once view modes became per-book with a global fallback, EVERY "copy runtime →
+    /// global" op (`apply_runtime_view_to_settings`) became a potential CLOBBER — the runtime may
+    /// hold a per-book value, so reconciling it would overwrite the GLOBAL default
+    /// with one book's preference. The routing match below is the invariant: the
+    /// GLOBAL sink is written ONLY by (a) the Library-screen settings dialog close and
+    /// (b) the no-book-open exit path; the PER-BOOK sink is written ONLY at leave
+    /// points (the Viewer-screen settings dialog close, the ↑ leave-viewer key, and
+    /// opening a different book while one is open). Note (a): the Library dialog
+    /// legitimately reconciles into global even while a book is loaded in
+    /// `ViewerState`, because the runtime was global-seeded
+    /// by `apply_global_view_to_runtime` at dialog open — so this path must NOT be
+    /// blanket-guarded on `open_file().is_none()`, or Library-dialog edits would be
+    /// dropped. The exit path keeps the per-book write FIRST, then the open-state
+    /// guard on the global reconcile.
+    ///
+    /// This is also the SAVE-INJECTION SEAM: `open_book.rs` and `main.rs`'s
+    /// `stage_exit_state` call it with their own effect so the one-save boundary
+    /// and the write ORDERING are provable without touching the process data
+    /// directory. [`Self::persist`] is the thin production wrapper.
+    pub(crate) fn persist_with(
+        &self,
+        route: ViewModeRoute,
+        save: impl FnOnce(&Library) -> Result<(), CoreError>,
+    ) -> Result<(), CoreError> {
+        if matches!(
+            route,
+            ViewModeRoute::LeaveViewer | ViewModeRoute::OpenDifferentBook | ViewModeRoute::AppExit
+        ) {
+            stage_position_write_back(&self.state, &self.library);
+        }
+        stage_view_modes_to_sink(
+            route,
+            &self.state,
+            &self.viewport,
+            &self.dialog_session,
+            &self.settings,
+            &self.library,
+        );
+
+        let result = save(&self.library.borrow());
+        if let Err(e) = &result {
+            tracing::error!(error = %e, "failed to save library at leave point");
+        }
+        result
+    }
 }
 
 /// Stage the ADR-0007 view-mode sink mutation without performing I/O.
@@ -138,7 +170,7 @@ fn stage_view_modes_to_sink(
 /// `cover_mode`, and `fit_mode` are written back to `Settings`, so a new
 /// mode-mutation site can never "forget to mirror" — it only changes runtime
 /// state, and the next save reconciles automatically. Reached only via
-/// [`persist_leave_point`] (the routing chokepoint).
+/// [`LeavePointService::persist`] (the routing chokepoint).
 fn apply_runtime_view_to_settings(
     state: &ViewerState,
     viewport: &ViewportState,
@@ -237,7 +269,7 @@ fn position_to_write_back(open_file: Option<&Path>, page: usize) -> Option<(Path
 ///
 /// Called at every leave point: ↑ to Library, opening a different book,
 /// and app exit. `set_resume_page` returns `false` when the path is absent or
-/// the value is unchanged (idempotent). [`persist_leave_point`] performs the
+/// the value is unchanged (idempotent). [`LeavePointService::persist`] performs the
 /// single save after every applicable mutation has been staged.
 ///
 /// Borrow discipline: `state` and `library` are distinct `RefCell`s, so
@@ -290,7 +322,7 @@ fn view_override_to_write_back(
 }
 
 /// Write the current runtime view modes back to the OPEN book's override and
-/// stage it without persisting. Reached ONLY via [`persist_leave_point`] (the
+/// stage it without persisting. Reached ONLY via [`LeavePointService::persist`] (the
 /// routing chokepoint) for the viewer leave/close, open-a-different-book, and exit paths, so a bare
 /// keyboard toggle (D/R/C/fit) persists per-book without opening the dialog.
 /// No-op when no book is open.
@@ -323,6 +355,23 @@ mod tests {
     use crate::dialog_session::{DialogScope, DialogSession};
     use gashuu_core::{CoverMode, FitMode, ReadingDirection, SpreadMode};
     use std::path::{Path, PathBuf};
+
+    fn leave_point_service(
+        state: &Rc<RefCell<ViewerState>>,
+        viewport: &Rc<RefCell<ViewportState>>,
+        dialog_session: &Rc<RefCell<DialogSession>>,
+        settings: &Rc<RefCell<Settings>>,
+        library: &Rc<RefCell<Library>>,
+    ) -> LeavePointService {
+        LeavePointService::new(
+            Rc::clone(state),
+            Rc::clone(viewport),
+            Rc::clone(dialog_session),
+            Rc::clone(settings),
+            Rc::clone(library),
+            Rc::new(None),
+        )
+    }
 
     #[test]
     fn reconcile_writes_runtime_modes_into_settings() {
@@ -497,16 +546,9 @@ mod tests {
         let library = Rc::new(RefCell::new(library_value));
         let dialog_session = Rc::new(RefCell::new(DialogSession::new()));
 
-        persist_leave_point_with(
-            ViewModeRoute::LeaveViewer,
-            &state,
-            &viewport,
-            &dialog_session,
-            &settings,
-            &library,
-            |_| Ok(()),
-        )
-        .expect("persist leave point");
+        leave_point_service(&state, &viewport, &dialog_session, &settings, &library)
+            .persist_with(ViewModeRoute::LeaveViewer, |_| Ok(()))
+            .expect("persist leave point");
 
         let staged = library.borrow().overrides_for(&canonical);
         assert!(
@@ -548,16 +590,9 @@ mod tests {
         let library = Rc::new(RefCell::new(library_value));
         let dialog_session = Rc::new(RefCell::new(DialogSession::new()));
 
-        persist_leave_point_with(
-            ViewModeRoute::LeaveViewer,
-            &state,
-            &viewport,
-            &dialog_session,
-            &settings,
-            &library,
-            |_| Ok(()),
-        )
-        .expect("persist leave point");
+        leave_point_service(&state, &viewport, &dialog_session, &settings, &library)
+            .persist_with(ViewModeRoute::LeaveViewer, |_| Ok(()))
+            .expect("persist leave point");
         assert!(library.borrow().overrides_for(&canonical).is_empty());
 
         *settings.borrow_mut() = Settings {
@@ -613,16 +648,9 @@ mod tests {
         let library = Rc::new(RefCell::new(library_value));
         let dialog_session = Rc::new(RefCell::new(DialogSession::new()));
 
-        persist_leave_point_with(
-            ViewModeRoute::LeaveViewer,
-            &state,
-            &viewport,
-            &dialog_session,
-            &settings,
-            &library,
-            |_| Ok(()),
-        )
-        .expect("persist leave point");
+        leave_point_service(&state, &viewport, &dialog_session, &settings, &library)
+            .persist_with(ViewModeRoute::LeaveViewer, |_| Ok(()))
+            .expect("persist leave point");
         assert_eq!(
             library.borrow().overrides_for(&canonical),
             ViewOverride {
@@ -839,16 +867,9 @@ mod tests {
             .borrow_mut()
             .reset_to_global(&state, &viewport, &settings);
         viewport.borrow_mut().set_fit(FitMode::Whole);
-        persist_leave_point_with(
-            ViewModeRoute::LeaveViewer,
-            &state,
-            &viewport,
-            &dialog_session,
-            &settings,
-            &library,
-            |_| Ok(()),
-        )
-        .expect("persist leave point");
+        leave_point_service(&state, &viewport, &dialog_session, &settings, &library)
+            .persist_with(ViewModeRoute::LeaveViewer, |_| Ok(()))
+            .expect("persist leave point");
 
         assert_eq!(
             library.borrow().overrides_for(&canonical),
@@ -894,16 +915,9 @@ mod tests {
         dialog_session
             .borrow_mut()
             .reset_to_global(&state, &viewport, &settings);
-        persist_leave_point_with(
-            ViewModeRoute::LeaveViewer,
-            &state,
-            &viewport,
-            &dialog_session,
-            &settings,
-            &library,
-            |_| Ok(()),
-        )
-        .expect("persist leave point");
+        leave_point_service(&state, &viewport, &dialog_session, &settings, &library)
+            .persist_with(ViewModeRoute::LeaveViewer, |_| Ok(()))
+            .expect("persist leave point");
 
         assert_eq!(
             library.borrow().overrides_for(&canonical),
@@ -951,16 +965,9 @@ mod tests {
             .open(DialogScope::Library, &state, &viewport, &settings);
         state.borrow_mut().set_spread_mode(SpreadMode::Single);
         dialog_session.borrow_mut().end(&state, &viewport);
-        persist_leave_point_with(
-            ViewModeRoute::LeaveViewer,
-            &state,
-            &viewport,
-            &dialog_session,
-            &settings,
-            &library,
-            |_| Ok(()),
-        )
-        .expect("persist leave point");
+        leave_point_service(&state, &viewport, &dialog_session, &settings, &library)
+            .persist_with(ViewModeRoute::LeaveViewer, |_| Ok(()))
+            .expect("persist leave point");
 
         assert_eq!(
             library.borrow().overrides_for(&canonical),
@@ -1009,16 +1016,9 @@ mod tests {
             .borrow_mut()
             .open(DialogScope::Library, &state, &viewport, &settings);
         dialog_session.borrow_mut().end(&state, &viewport);
-        persist_leave_point_with(
-            ViewModeRoute::AppExit,
-            &state,
-            &viewport,
-            &dialog_session,
-            &settings,
-            &library,
-            |_| Ok(()),
-        )
-        .expect("persist leave point");
+        leave_point_service(&state, &viewport, &dialog_session, &settings, &library)
+            .persist_with(ViewModeRoute::AppExit, |_| Ok(()))
+            .expect("persist leave point");
 
         assert_eq!(
             library.borrow().overrides_for(&canonical),
@@ -1032,7 +1032,7 @@ mod tests {
     }
 
     #[test]
-    fn persist_leave_point_saves_once_and_preserves_route_matrix() {
+    fn leave_point_service_saves_once_and_preserves_route_matrix() {
         let routes = [
             ViewModeRoute::DialogClosedOnLibrary,
             ViewModeRoute::DialogClosedOnViewer,
@@ -1085,18 +1085,12 @@ mod tests {
                 let dialog_session = Rc::new(RefCell::new(DialogSession::new()));
                 let save_count = std::cell::Cell::new(0);
 
-                let result = persist_leave_point_with(
-                    route,
-                    &state,
-                    &viewport,
-                    &dialog_session,
-                    &settings,
-                    &library,
-                    |_| {
-                        save_count.set(save_count.get() + 1);
-                        Ok(())
-                    },
-                );
+                let result =
+                    leave_point_service(&state, &viewport, &dialog_session, &settings, &library)
+                        .persist_with(route, |_| {
+                            save_count.set(save_count.get() + 1);
+                            Ok(())
+                        });
 
                 assert!(result.is_ok());
                 assert_eq!(

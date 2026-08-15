@@ -48,7 +48,7 @@ Model the four preferences as a PER-BOOK override that falls back to the global 
    writes runtime → GLOBAL `Settings` (only via the Library settings dialog and the no-book-open
    exit path); `write_back_view_override` (now `stage_view_override_write_back`) writes runtime →
    the open book's per-book override (at every leave point). Both are PRIVATE to `main.rs` (now
-   `view_sync.rs` after the Wave-1 DDD split) and reached only through `persist_view_modes` (now `persist_leave_point`)
+   `view_sync.rs` after the Wave-1 DDD split) and reached only through `persist_view_modes` (now `LeavePointService::persist`)
    `(route: ViewModeRoute, …)`, which routes by named leave point to the
    correct sink (Wave-1 DDD refactor — see Implementation notes). The aggregate owns the mutation
    (`Library::set_overrides` / `overrides_for`); there is no `Book` setter.
@@ -107,7 +107,7 @@ Model the four preferences as a PER-BOOK override that falls back to the global 
   close and the no-book-open exit path; PER-BOOK overrides ONLY at leave points
   (`write_back_view_override` (now `stage_view_override_write_back`)).
 - **Wave-1 DDD refactor: one routing chokepoint.** Both write fns are now PRIVATE to `main.rs` (now
-  `view_sync.rs` after the Wave-1 DDD split); their only production caller is `persist_view_modes` (now `persist_leave_point`)
+  `view_sync.rs` after the Wave-1 DDD split); their only production caller is `persist_view_modes` (now `LeavePointService::persist`)
   `(route: ViewModeRoute, …)`. `ViewModeRoute` names the leave point
   (`DialogClosedOnLibrary` / `DialogClosedOnViewer` / `LeaveViewer` / `OpenDifferentBook` /
   `AppExit`) and ONE `match` routes each to its sink: `DialogClosedOnLibrary` → global reconcile;

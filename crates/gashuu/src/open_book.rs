@@ -11,6 +11,7 @@
 //! headless-use-case + UI-finalize split as `RemoveBooksUseCase` / `finalize_remove`.
 
 use std::cell::RefCell;
+use std::num::NonZeroUsize;
 use std::path::Path;
 use std::rc::Rc;
 
@@ -19,7 +20,7 @@ use gashuu_core::{CoreError, Library, Settings, ThumbnailCache};
 use crate::cover_loader::purge_cover;
 use crate::dialog_session::DialogSession;
 use crate::open_controller::{probe_open, OpenProbeOutcome};
-use crate::view_sync::persist_leave_point_with;
+use crate::view_sync::LeavePointService;
 use crate::viewer_state::ViewerState;
 use crate::viewport::ViewportState;
 use crate::ViewModeRoute;
@@ -99,19 +100,25 @@ pub(crate) struct OpenBookUseCase {
     viewport: Rc<RefCell<ViewportState>>,
     dialog_session: Rc<RefCell<DialogSession>>,
     library: Rc<RefCell<Library>>,
+    leave_point: Rc<LeavePointService>,
     save_library: SaveLibrary,
     save_settings: SaveSettings,
 }
 
 impl OpenBookUseCase {
     // Explicit collaborators and persistence effects (#151 explicit-handle policy:
-    // named params, not an AppState bundle).
+    // named params, not an AppState bundle). The list is one over clippy's default
+    // ceiling because the leave-point service is a SEVENTH collaborator, not a
+    // replacement: every cell below is still read directly by one of the private
+    // steps, so folding them behind the service would make it a state bundle.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         state: Rc<RefCell<ViewerState>>,
         settings: Rc<RefCell<Settings>>,
         viewport: Rc<RefCell<ViewportState>>,
         dialog_session: Rc<RefCell<DialogSession>>,
         library: Rc<RefCell<Library>>,
+        leave_point: Rc<LeavePointService>,
         save_library: SaveLibrary,
         save_settings: SaveSettings,
     ) -> Self {
@@ -121,6 +128,7 @@ impl OpenBookUseCase {
             viewport,
             dialog_session,
             library,
+            leave_point,
             save_library,
             save_settings,
         }
@@ -154,131 +162,44 @@ impl OpenBookUseCase {
 
     /// Apply a completed read-only probe on the UI thread. All shared-state
     /// mutation and persistence remain in this half.
+    ///
+    /// The body is pure ORCHESTRATION: one named private step per responsibility,
+    /// in an order that is itself load-bearing. Read the steps in order —
+    /// [`Self::persist_outgoing`] (library write 1) → [`Self::install`] →
+    /// [`Self::reject_empty`] (library write 2 + cache write, early return) →
+    /// [`Self::record_recent`] (settings write) → [`Self::register_and_resume`] →
+    /// [`Self::persist_registered`] (library write 2 on the success path). Moving
+    /// a step across the empty-book bail-out changes which side effects a zero-page
+    /// source triggers, which is spec-pinned by ADR-0009.
     pub(crate) fn apply_probed(&self, path: &Path, probe: OpenProbeOutcome) -> OpenOutcome {
-        // Alias the fields so the body reads identically to its pre-extraction form.
-        let state = &self.state;
-        let settings = &self.settings;
-        let viewport = &self.viewport;
-        let dialog_session = &self.dialog_session;
-        let library = &self.library;
-
-        // Capture the OUTGOING book's position and view modes before replacing
-        // the source, then save them together. Preserve the result so the live
-        // UI can report a failure after a successful open.
-        let leave_save = persist_leave_point_with(
-            ViewModeRoute::OpenDifferentBook,
-            state,
-            viewport,
-            dialog_session,
-            settings,
-            library,
-            |library| (self.save_library)(library),
-        );
-        // Discriminate the open result only — recents push + settings save are DEFERRED
-        // past the empty-book check so a zero-page source bypasses them (spec-pinned).
-        let is_dir = match probe {
-            OpenProbeOutcome::Opened(probe) => {
-                let is_dir = probe.is_dir;
-                state.borrow_mut().install_opened(
-                    probe.source,
-                    probe.skipped,
-                    probe.truncated,
-                    probe.canonical,
-                );
-                dialog_session.borrow_mut().clear_pending_inherit();
-                tracing::info!(path = %path.display(), "opened source");
-                is_dir
-            }
-            OpenProbeOutcome::Failed { error, .. } => {
-                tracing::error!(error = %error, "failed to open source");
-                return OpenOutcome::Error(error);
-            }
+        // Preserve the result so the live UI can report a leave-point failure even
+        // after the new book opens successfully.
+        let leave_save = self.persist_outgoing();
+        let is_dir = match self.install(probe, path) {
+            Ok(is_dir) => is_dir,
+            Err(error) => return OpenOutcome::Error(error),
         };
         // The CANONICAL key the source was opened under (from `open_file`), not the raw
         // dialog `path` — the same key `resume_page`/`set_page_count`/write-back use.
-        let canonical = state.borrow().open_file().map(Path::to_path_buf);
-        // `page_count_opt()` returns a `Copy` `Option<NonZeroUsize>`; the `state.borrow()` drops at the
-        // `;` so it cannot conflict with the `library.borrow_mut()` below.
-        let page_count = state.borrow().page_count_opt();
-        // Reject an empty book: bail HERE, before `register_opened`, so spec-pinned side
-        // effects bypass (cover purge in `remove_empty_book`, #150); close the mounted source.
+        let canonical = self.state.borrow().open_file().map(Path::to_path_buf);
+        // `page_count_opt()` returns a `Copy` `Option<NonZeroUsize>`; the `borrow()` drops at
+        // the `;` so it cannot conflict with the `borrow_mut()`s the later steps take.
+        let page_count = self.state.borrow().page_count_opt();
+        // Reject an empty book HERE, before `register_opened` and before the recents push, so
+        // a zero-page source bypasses both (spec-pinned, ADR-0009). Deliberately an early
+        // return rather than a single exit point.
         if page_count.is_none() {
             if let Some(c) = canonical.as_deref() {
-                // Shared transaction: title capture → remove → save → cover purge. #150
-                // added the purge here; the old cover-load-only asymmetry orphaned cached covers.
-                let save_library = &self.save_library;
-                let removal = remove_empty_book(library, c, |library| save_library(library));
-                // The zero-page source must not stay mounted: close the viewer back to the
-                // boot state so open_file() is None (title clears, carousel-back refuses,
-                // AppExit reconciles global modes). The OUTGOING book's position/override
-                // were already persisted by the leave-point write above.
-                state.borrow_mut().close();
-                return OpenOutcome::EmptyBookRejected {
-                    title: removal.title,
-                    removed: removal.removed,
-                    save_error: removal.save_error,
-                };
+                return self.reject_empty(c);
             }
         }
-        // Non-empty path: run the DEFERRED recents push + settings save now (bypassed for
-        // zero-page). Does NOT reconcile runtime view modes into Settings (per-book, not global).
-        let settings_save: Option<Result<(), CoreError>> = {
-            let mut s = settings.borrow_mut();
-            if s.track_recent_sources {
-                s.push_recent(path.to_path_buf());
-                let result = (self.save_settings)(&s);
-                if let Err(e) = &result {
-                    tracing::error!(error = %e, "failed to save settings on open");
-                }
-                Some(result)
-            } else {
-                None
-            }
-        };
-        // `register_opened` = idempotent add + back-fill + resume lookup; its `borrow_mut`
-        // is confined to the `let reg` line and released before the later state updates.
-        let (count_changed, resume_page) = if let Some(c) = canonical.as_deref() {
-            // `open_controller::probe_open` produced this identity; do not re-derive it here.
-            let reg = library.borrow_mut().register_opened(c, page_count);
-            (reg.count_changed, Some(reg.resume.last_viewed()))
-        } else {
-            // Unreachable in practice: a successful open always sets `open_file`. Log if
-            // the invariant breaks so the book-not-registered failure isn't silent.
-            tracing::warn!(
-                path = %path.display(),
-                "open_file was None after a successful open; book not registered in library"
-            );
-            (false, None)
-        };
-        // Resolve this book's per-book override (empty => globals) and install its modes
-        // BEFORE `jump_to`, so the resume index is normalised under this book's pairing,
-        // not the outgoing book's.
-        let resolved = {
-            let overrides = canonical
-                .as_deref()
-                .map(|c| library.borrow().overrides_for(c))
-                .unwrap_or_default();
-            overrides.resolve(&settings.borrow())
-        };
-        state
-            .borrow_mut()
-            .apply_resolved_view(resolved, &mut viewport.borrow_mut());
-        // Resume at the recorded position, now that this book's own spread/cover modes
-        // are installed, so `jump_to` normalises under the correct pairing. For a
-        // never-read book `last_viewed` is 0 and this is a no-op.
-        if let Some(page) = resume_page {
-            state.borrow_mut().jump_to(page);
-        }
-        // Persist the registered book + back-filled page count; this MUST stay a SYNCHRONOUS
-        // save, else a detached write could land after a later save and revert position/drop book.
-        // Opening a different book is now exactly two library writes: one outgoing
-        // leave-point write above, then this immediate register_opened write (formerly three).
-        let library_save = (self.save_library)(&library.borrow());
-        if let Err(e) = &library_save {
-            tracing::error!(error = %e, "failed to save library on open");
-        }
-        let skipped = state.borrow().last_open_skipped();
-        let listing_truncated = state.borrow().last_open_truncated();
+        // Non-empty path only: the recents push + settings save were DEFERRED past the
+        // empty-book check above precisely so a rejected source never reaches them.
+        let settings_save = self.record_recent(path);
+        let count_changed = self.register_and_resume(canonical.as_deref(), page_count, path);
+        let library_save = self.persist_registered();
+        let skipped = self.state.borrow().last_open_skipped();
+        let listing_truncated = self.state.borrow().last_open_truncated();
         // `is_dir` comes from the probe, not a fresh `path.is_dir()` — the whole
         // point of the split is that this half touches no filesystem.
         let skipped_detail = if is_dir {
@@ -299,6 +220,152 @@ impl OpenBookUseCase {
             ),
             count_changed,
         }
+    }
+
+    /// Step 1 — library write 1. Capture the OUTGOING book's position and view
+    /// modes and save them together BEFORE the source is replaced; once
+    /// [`Self::install`] runs, `open_file()` names the incoming book and the
+    /// outgoing book's runtime is unrecoverable. Routed through the leave-point
+    /// chokepoint's save-injection seam so the open use case's own
+    /// `save_library` effect stays the one that performs the write.
+    fn persist_outgoing(&self) -> Result<(), CoreError> {
+        self.leave_point
+            .persist_with(ViewModeRoute::OpenDifferentBook, |library| {
+                (self.save_library)(library)
+            })
+    }
+
+    /// Step 2 — discriminate the probe result and install the source. Returns the
+    /// probe's `is_dir` (which decides the skipped-entries detail suffix) or the
+    /// pre-captured failure message. Nothing is persisted here: the recents push
+    /// and the register save are deliberately deferred past the empty-book check.
+    fn install(&self, probe: OpenProbeOutcome, path: &Path) -> Result<bool, String> {
+        match probe {
+            OpenProbeOutcome::Opened(probe) => {
+                let is_dir = probe.is_dir;
+                self.state.borrow_mut().install_opened(
+                    probe.source,
+                    probe.skipped,
+                    probe.truncated,
+                    probe.canonical,
+                );
+                self.dialog_session.borrow_mut().clear_pending_inherit();
+                tracing::info!(path = %path.display(), "opened source");
+                Ok(is_dir)
+            }
+            OpenProbeOutcome::Failed { error, .. } => {
+                tracing::error!(error = %error, "failed to open source");
+                Err(error)
+            }
+        }
+    }
+
+    /// Step 3 — library write 2 + cache write, then an early return (ADR-0009).
+    /// Delegates to the shared transaction so the title capture → remove → save
+    /// → cover purge sequence stays single-homed (#150 added the purge; the old
+    /// cover-load-only asymmetry orphaned cached covers).
+    ///
+    /// The zero-page source must not stay mounted, so the viewer is closed back to
+    /// the boot state: `open_file()` becomes `None`, which is what clears the
+    /// title, makes carousel-back refuse, and lets `AppExit` reconcile the global
+    /// modes. The OUTGOING book's position/override were already persisted by
+    /// [`Self::persist_outgoing`], so closing here loses nothing.
+    fn reject_empty(&self, canonical: &Path) -> OpenOutcome {
+        let removal = remove_empty_book(&self.library, canonical, |library| {
+            (self.save_library)(library)
+        });
+        self.state.borrow_mut().close();
+        OpenOutcome::EmptyBookRejected {
+            title: removal.title,
+            removed: removal.removed,
+            save_error: removal.save_error,
+        }
+    }
+
+    /// Step 4 — the settings write, gated on recent-source tracking. `None` means
+    /// no save was ATTEMPTED (tracking off), which the notices treat differently
+    /// from an attempted save that failed. Pushes the raw `path` the user picked,
+    /// not the canonical identity, because the recents menu re-opens what was
+    /// picked. Deliberately does NOT reconcile runtime view modes into `Settings`:
+    /// they are per-book here, and reconciling would clobber the globals
+    /// (the ADR-0007 write-direction trap).
+    fn record_recent(&self, path: &Path) -> Option<Result<(), CoreError>> {
+        let mut settings = self.settings.borrow_mut();
+        if !settings.track_recent_sources {
+            return None;
+        }
+        settings.push_recent(path.to_path_buf());
+        let result = (self.save_settings)(&settings);
+        if let Err(e) = &result {
+            tracing::error!(error = %e, "failed to save settings on open");
+        }
+        Some(result)
+    }
+
+    /// Steps 5 + 6 — register the book, back-fill its page count, install this
+    /// book's resolved view, and resume. Returns whether the back-fill changed the
+    /// stored count (the flag `finalize_open` gates the carousel rebuild on).
+    ///
+    /// THE TWO HALVES ARE INSEPARABLE (#534): the resolved view must be applied
+    /// BEFORE `jump_to`, or the stored resume index is normalised under the
+    /// OUTGOING book's pairing and then re-normalised under this one — a
+    /// composition that is not commutative across spread/cover modes and lands the
+    /// reader a spread early. They live in one method so no later edit can put a
+    /// step between them or reorder them.
+    fn register_and_resume(
+        &self,
+        canonical: Option<&Path>,
+        page_count: Option<NonZeroUsize>,
+        path: &Path,
+    ) -> bool {
+        // `register_opened` = idempotent add + back-fill + resume lookup; its `borrow_mut`
+        // is confined to this statement and released before the state updates below.
+        let (count_changed, resume_page) = if let Some(c) = canonical {
+            let reg = self.library.borrow_mut().register_opened(c, page_count);
+            (reg.count_changed, Some(reg.resume.last_viewed()))
+        } else {
+            // Unreachable in practice: a successful open always sets `open_file`. Log if
+            // the invariant breaks so the book-not-registered failure isn't silent.
+            tracing::warn!(
+                path = %path.display(),
+                "open_file was None after a successful open; book not registered in library"
+            );
+            (false, None)
+        };
+        // Resolve this book's per-book override (empty => globals) and install its modes
+        // BEFORE `jump_to`, so the resume index is normalised under this book's pairing,
+        // not the outgoing book's.
+        let resolved = {
+            let overrides = canonical
+                .map(|c| self.library.borrow().overrides_for(c))
+                .unwrap_or_default();
+            overrides.resolve(&self.settings.borrow())
+        };
+        self.state
+            .borrow_mut()
+            .apply_resolved_view(resolved, &mut self.viewport.borrow_mut());
+        // Resume at the recorded position, now that this book's own spread/cover modes
+        // are installed, so `jump_to` normalises under the correct pairing. For a
+        // never-read book `last_viewed` is 0 and this is a no-op.
+        if let Some(page) = resume_page {
+            self.state.borrow_mut().jump_to(page);
+        }
+        count_changed
+    }
+
+    /// Step 7 — library write 2 on the success path: persist the registered book
+    /// plus its back-filled page count.
+    ///
+    /// This MUST stay a SYNCHRONOUS save. A detached write could land after a
+    /// later save and revert the reading position or drop the book (#360).
+    /// Opening a different book is therefore exactly two library writes: the
+    /// outgoing leave-point write and this one (formerly three).
+    fn persist_registered(&self) -> Result<(), CoreError> {
+        let result = (self.save_library)(&self.library.borrow());
+        if let Err(e) = &result {
+            tracing::error!(error = %e, "failed to save library on open");
+        }
+        result
     }
 }
 
@@ -786,12 +853,21 @@ mod tests {
         let viewport = Rc::new(RefCell::new(ViewportState::from_settings(&settings)));
         let dialog_session = Rc::new(RefCell::new(DialogSession::new()));
         let settings = Rc::new(RefCell::new(settings));
+        let leave_point = Rc::new(LeavePointService::new(
+            Rc::clone(&state),
+            Rc::clone(&viewport),
+            Rc::clone(&dialog_session),
+            Rc::clone(&settings),
+            Rc::clone(&library),
+            Rc::new(None),
+        ));
         let use_case = OpenBookUseCase::new(
             Rc::clone(&state),
             Rc::clone(&settings),
             Rc::clone(&viewport),
             Rc::clone(&dialog_session),
             library,
+            leave_point,
             Box::new(save_library),
             Box::new(save_settings),
         );
@@ -814,6 +890,232 @@ mod tests {
                 .expect("write fixture page");
         }
         source
+    }
+
+    /// The behaviour-preservation barrier for the `apply_probed` split: the split
+    /// may not add, drop, or move a disk write. Counts BOTH effects on all five
+    /// paths at once, so moving a step across the empty-book early return (the one
+    /// mistake the split could plausibly make) shows up as a changed count rather
+    /// than as a silently different side effect.
+    ///
+    /// The empty-book rows run BOTH ways on `track_recent_sources`: with tracking
+    /// off, a `record_recent` hoisted above the ADR-0009 bail-out would still write
+    /// nothing, so that row alone cannot see the move. The tracking-ON empty row is
+    /// what pins the recents push to the far side of the early return — its expected
+    /// 0 settings writes are unreachable unless the push really is skipped.
+    ///
+    /// Rows collect into a `Vec` and assert once, so one broken path cannot mask
+    /// the other four.
+    #[test]
+    fn apply_probed_write_count_is_unchanged() {
+        #[derive(Clone, Copy)]
+        enum Scenario {
+            Failed,
+            StoredEmpty,
+            StoredEmptyWithRecents,
+            SuccessWithoutRecents,
+            SuccessWithRecents,
+        }
+
+        let cases = [
+            ("failed open", Scenario::Failed, (1, 0)),
+            ("stored empty book", Scenario::StoredEmpty, (2, 0)),
+            (
+                "stored empty book with recents on",
+                Scenario::StoredEmptyWithRecents,
+                (2, 0),
+            ),
+            (
+                "successful open with recents off",
+                Scenario::SuccessWithoutRecents,
+                (2, 0),
+            ),
+            (
+                "successful open with recents on",
+                Scenario::SuccessWithRecents,
+                (2, 1),
+            ),
+        ];
+        let mut failures = Vec::new();
+
+        for (label, scenario, expected) in cases {
+            let root = tempfile::tempdir().expect("tempdir");
+            let source = root.path().join("source");
+            let library = match scenario {
+                Scenario::StoredEmpty | Scenario::StoredEmptyWithRecents => {
+                    std::fs::create_dir(&source).expect("create empty source");
+                    let canonical = source.canonicalize().expect("canonical empty source");
+                    let mut library = Library::new();
+                    let _ = library.add(canonical);
+                    Rc::new(RefCell::new(library))
+                }
+                Scenario::SuccessWithoutRecents | Scenario::SuccessWithRecents => {
+                    std::fs::create_dir(&source).expect("create source");
+                    std::fs::write(source.join("page.png"), []).expect("write page");
+                    Rc::new(RefCell::new(Library::new()))
+                }
+                Scenario::Failed => Rc::new(RefCell::new(Library::new())),
+            };
+            let library_writes = Rc::new(Cell::new(0));
+            let counted_library_writes = Rc::clone(&library_writes);
+            let settings_writes = Rc::new(Cell::new(0));
+            let counted_settings_writes = Rc::clone(&settings_writes);
+            let settings = Settings {
+                track_recent_sources: matches!(
+                    scenario,
+                    Scenario::SuccessWithRecents | Scenario::StoredEmptyWithRecents
+                ),
+                ..Settings::default()
+            };
+            let (use_case, _) = use_case_with_saves(
+                settings,
+                library,
+                move |_| {
+                    counted_library_writes.set(counted_library_writes.get() + 1);
+                    Ok(())
+                },
+                move |_| {
+                    counted_settings_writes.set(counted_settings_writes.get() + 1);
+                    Ok(())
+                },
+            );
+            let probe = match scenario {
+                Scenario::Failed => OpenProbeOutcome::Failed {
+                    error: "unavailable".to_string(),
+                    path_exists: false,
+                },
+                _ => probe_open(&source, ArchivePolicy::default()),
+            };
+
+            let _ = use_case.apply_probed(&source, probe);
+            let actual = (library_writes.get(), settings_writes.get());
+            if actual != expected {
+                failures.push(format!(
+                    "{label}: expected {expected:?} library/settings writes, got {actual:?}"
+                ));
+            }
+        }
+
+        assert!(
+            failures.is_empty(),
+            "write-count regressions:\n{}",
+            failures.join("\n")
+        );
+    }
+
+    /// Step 3 in isolation, which the whole-`apply_probed` tests cannot reach
+    /// separately: the stored `Book`'s title wins over the path derivation, the
+    /// save runs ONLY when something was actually removed, and the viewer is
+    /// closed either way so a zero-page source never stays mounted.
+    #[test]
+    fn reject_empty_prefers_stored_title_saves_only_removal_and_closes_viewer() {
+        let root = tempfile::tempdir().expect("tempdir");
+        // Canonicalise the PARENT so the paths below are already canonical identities
+        // and `Library::add` stores them verbatim (macOS resolves a tempdir's `/var`).
+        let root = root.path().canonicalize().expect("canonical tempdir");
+        let stored = root.join("Stored Title.cbz");
+        let absent = root.join("Never Added.cbz");
+        // Seed the shelf while `stored` does NOT yet exist: `display_title` then takes the
+        // file STEM ("Stored Title"). Creating the directory afterwards flips the same
+        // derivation to the full directory NAME ("Stored Title.cbz"), so the stored title
+        // and the path-derived fallback differ and the preference cannot pass vacuously.
+        let mut seeded = Library::new();
+        assert!(seeded.add(stored.clone()).is_some());
+        std::fs::create_dir(&stored).expect("create stored empty source");
+        std::fs::create_dir(&absent).expect("create absent empty source");
+        assert_eq!(
+            gashuu_core::display_title(&stored),
+            "Stored Title.cbz",
+            "fixture must make the path-derived fallback differ from the stored title"
+        );
+        let library = Rc::new(RefCell::new(seeded));
+        let saves = Rc::new(Cell::new(0));
+        let counted_saves = Rc::clone(&saves);
+        let parts = use_case_parts(
+            Settings::default(),
+            Rc::clone(&library),
+            move |_| {
+                counted_saves.set(counted_saves.get() + 1);
+                Ok(())
+            },
+            |_| panic!("settings save must not be attempted"),
+        );
+
+        parts
+            .state
+            .borrow_mut()
+            .open_path(&stored)
+            .expect("open stored empty source");
+        let stored_outcome = parts.use_case.reject_empty(&stored);
+        assert!(matches!(
+            stored_outcome,
+            OpenOutcome::EmptyBookRejected {
+                ref title,
+                removed: true,
+                save_error: None,
+            } if title == "Stored Title"
+        ));
+        assert_eq!(saves.get(), 1, "a removed book is saved once");
+        assert!(parts.state.borrow().open_file().is_none());
+
+        parts
+            .state
+            .borrow_mut()
+            .open_path(&absent)
+            .expect("open absent empty source");
+        let absent_outcome = parts.use_case.reject_empty(&absent);
+        assert!(matches!(
+            absent_outcome,
+            OpenOutcome::EmptyBookRejected { removed: false, .. }
+        ));
+        assert_eq!(
+            saves.get(),
+            1,
+            "an absent book must not trigger another save"
+        );
+        assert!(parts.state.borrow().open_file().is_none());
+    }
+
+    /// Step 4 in isolation. `None` (tracking off) is NOT the same as `Some(Ok(()))`
+    /// — the notices layer renders "no save attempted" differently from "the save
+    /// succeeded" — so both arms are pinned, along with the raw picked path being
+    /// what lands in `recent_sources`.
+    #[test]
+    fn record_recent_reports_gate_and_persists_enabled_entry() {
+        let path = PathBuf::from("/manga/Recent.cbz");
+        let disabled = use_case_parts(
+            Settings::default(),
+            Rc::new(RefCell::new(Library::new())),
+            |_| Ok(()),
+            |_| panic!("settings save must not be attempted"),
+        );
+
+        let disabled_result = disabled.use_case.record_recent(&path);
+        assert!(disabled_result.is_none());
+        assert!(disabled.settings.borrow().recent_sources.is_empty());
+
+        let settings_writes = Rc::new(Cell::new(0));
+        let counted_settings_writes = Rc::clone(&settings_writes);
+        let enabled = use_case_parts(
+            Settings {
+                track_recent_sources: true,
+                ..Settings::default()
+            },
+            Rc::new(RefCell::new(Library::new())),
+            |_| Ok(()),
+            move |_| {
+                counted_settings_writes.set(counted_settings_writes.get() + 1);
+                Ok(())
+            },
+        );
+
+        let enabled_result = enabled.use_case.record_recent(&path);
+        assert!(matches!(enabled_result, Some(Ok(()))));
+        assert_eq!(
+            enabled.settings.borrow().recent_sources.first(),
+            Some(&path)
+        );
+        assert_eq!(settings_writes.get(), 1);
     }
 
     /// Regression guard for #534: `apply_probed` used to `jump_to` the stored
@@ -1549,16 +1851,11 @@ mod tests {
             fit_mode: FitMode::Whole,
             ..Settings::default()
         };
-        persist_leave_point_with(
-            ViewModeRoute::LeaveViewer,
-            &state,
-            &viewport,
-            &session,
-            &settings,
-            &library,
-            |_| Ok(()),
-        )
-        .expect("leave-point save must succeed");
+        parts
+            .use_case
+            .leave_point
+            .persist_with(ViewModeRoute::LeaveViewer, |_| Ok(()))
+            .expect("leave-point save must succeed");
         assert_eq!(
             library.borrow().overrides_for(&canonical_b),
             ViewOverride {

@@ -165,7 +165,7 @@ fn open_and_enter(
 /// End any in-progress settings-dialog session, then apply the landed probe.
 ///
 /// ORDER IS LOAD-BEARING, and this pairing is why the two statements live in one
-/// function: `apply_probed` opens with `persist_leave_point(OpenDifferentBook)`,
+/// function: `apply_probed` opens with the `OpenDifferentBook` leave-point transaction,
 /// which writes the CURRENT runtime onto the OUTGOING book. A settings dialog
 /// opened on the Library screen leaves that runtime seeded with the GLOBAL
 /// defaults, so an open that lands while the dialog is up used to overwrite the
@@ -752,6 +752,14 @@ mod tests {
         assert!(library_value.add(canonical.clone()).is_some());
         let library = Rc::new(RefCell::new(library_value));
         let dialog_session = Rc::new(RefCell::new(DialogSession::new()));
+        let leave_point = Rc::new(crate::LeavePointService::new(
+            Rc::clone(&state),
+            Rc::clone(&viewport),
+            Rc::clone(&dialog_session),
+            Rc::clone(&settings),
+            Rc::clone(&library),
+            Rc::new(None),
+        ));
         // Hermetic: both persistence effects are injected no-ops, so nothing reaches
         // the process data directory.
         let open_book = open_book::OpenBookUseCase::new(
@@ -760,6 +768,7 @@ mod tests {
             Rc::clone(&viewport),
             Rc::clone(&dialog_session),
             Rc::clone(&library),
+            leave_point,
             Box::new(|_| Ok(())),
             Box::new(|_| Ok(())),
         );
