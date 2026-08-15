@@ -1,6 +1,5 @@
 use super::report_save_error;
 use crate::carousel::{thumb_state_at, ThumbState};
-use crate::dialog_session::DialogSession;
 use crate::keymap::{map_key, KeyCommand};
 use crate::library_model::{LibrarySearchState, LibrarySelectionState};
 use crate::navigation::NavState;
@@ -10,10 +9,10 @@ use crate::viewer_state::{scrub_fraction_to_page, ViewerState};
 use crate::viewport::ViewportState;
 use crate::{
     apply_spread_geometry, apply_viewport, clear_page_view, current_page_1based, go_to_library,
-    persist_leave_point, refresh, with_ui, CarouselRefresh, ViewModeRoute, ViewerWindow,
+    refresh, with_ui, CarouselRefresh, LeavePointService, ViewModeRoute, ViewerWindow,
 };
 use crate::{cover_loader, i18n};
-use gashuu_core::{FitMode, Library, ReadingDirection, Settings};
+use gashuu_core::{FitMode, Library, ReadingDirection};
 use slint::ComponentHandle;
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -341,9 +340,8 @@ pub(crate) fn wire_nav_handlers(
     ui: &ViewerWindow,
     state: &Rc<RefCell<ViewerState>>,
     viewport: &Rc<RefCell<ViewportState>>,
-    dialog_session: &Rc<RefCell<DialogSession>>,
-    settings: &Rc<RefCell<Settings>>,
     library: &Rc<RefCell<Library>>,
+    leave_point: &Rc<LeavePointService>,
     nav: &Rc<RefCell<NavState>>,
     covers: &Rc<cover_loader::CoverController>,
     pages: &Rc<PageController>,
@@ -354,9 +352,8 @@ pub(crate) fn wire_nav_handlers(
 ) {
     let state = Rc::clone(state);
     let viewport = Rc::clone(viewport);
-    let dialog_session = Rc::clone(dialog_session);
-    let settings = Rc::clone(settings);
     let library = Rc::clone(library);
+    let leave_point = Rc::clone(leave_point);
     let nav = Rc::clone(nav);
     let covers = Rc::clone(covers);
     let pages = Rc::clone(pages);
@@ -370,14 +367,11 @@ pub(crate) fn wire_nav_handlers(
         let ui_weak = ui.as_weak();
         let state = Rc::clone(&state);
         let viewport = Rc::clone(&viewport);
-        let dialog_session = Rc::clone(&dialog_session);
         let nav = Rc::clone(&nav);
         let library = Rc::clone(&library);
         let pages = Rc::clone(&pages);
         let localizer = Rc::clone(&localizer);
-        // `settings` is captured only to satisfy `persist_leave_point`'s signature
-        // on the GoToLibrary leave point; the LeaveViewer route never reads it.
-        let settings = Rc::clone(&settings);
+        let leave_point = Rc::clone(&leave_point);
         // The carousel-refresh collaborators are captured because the GoToLibrary arm
         // rebuilds the carousel on entry via `go_to_library` / `refresh_library_carousel`.
         let covers = Rc::clone(&covers);
@@ -415,7 +409,7 @@ pub(crate) fn wire_nav_handlers(
                         // menu/scrubber don't flash on every turn (pointer move + drag still reveal).
                     }
                     // Runtime state is the single source of truth for these modes;
-                    // `persist_leave_point` routes them to Settings/override at the next leave.
+                    // The leave-point service routes them to Settings/override at the next leave.
                     KeyCommand::ToggleSpread => {
                         if state.borrow_mut().toggle_spread() {
                             refresh(
@@ -486,15 +480,7 @@ pub(crate) fn wire_nav_handlers(
                     KeyCommand::GoToLibrary => {
                         // Stage position AND view modes, then save exactly once before
                         // leaving. A D/R/C/fit toggle persists without opening settings.
-                        let leave_save = persist_leave_point(
-                            ViewModeRoute::LeaveViewer,
-                            &state,
-                            &viewport,
-                            &dialog_session,
-                            &settings,
-                            &library,
-                            &library_store,
-                        );
+                        let leave_save = leave_point.persist(ViewModeRoute::LeaveViewer);
                         // `go_to_library` rebuilds the carousel on entry so the continue-reading
                         // ribbon reflects the `last_opened` just persisted, and snaps focus to it.
                         go_to_library(

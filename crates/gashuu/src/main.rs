@@ -49,7 +49,7 @@ use std::cell::RefCell;
 use std::path::Path;
 use std::rc::Rc;
 use thumbnail_strip::ThumbnailController;
-pub(crate) use view_sync::{current_book_name, persist_leave_point, ViewModeRoute};
+pub(crate) use view_sync::{current_book_name, LeavePointService, ViewModeRoute};
 #[cfg(not(test))]
 use viewer_state::SpreadCacheState;
 use viewer_state::{StatusContent, ViewerState};
@@ -298,6 +298,15 @@ fn main() -> color_eyre::Result<()> {
     // projection — a query change never drops a selection.
     let selection = Rc::new(RefCell::new(LibrarySelectionState::default()));
 
+    let leave_point = Rc::new(LeavePointService::new(
+        Rc::clone(&state),
+        Rc::clone(&viewport),
+        Rc::clone(&dialog_session),
+        Rc::clone(&settings),
+        Rc::clone(&library),
+        Rc::clone(&library_store),
+    ));
+
     // The "open a book" use-case, shared via `Rc` so the open flow lives in one place
     // (`open_book::OpenBookUseCase`); the use case is headless and `finalize_open` applies
     // the UI effects.
@@ -307,6 +316,7 @@ fn main() -> color_eyre::Result<()> {
         Rc::clone(&viewport),
         Rc::clone(&dialog_session),
         Rc::clone(&library),
+        Rc::clone(&leave_point),
         Box::new({
             let store = Rc::clone(&library_store);
             move |library| save_library(&store, library)
@@ -417,6 +427,7 @@ fn main() -> color_eyre::Result<()> {
         &settings,
         &dialog_session,
         &library,
+        &leave_point,
         &covers,
         &pages,
         &search,
@@ -433,9 +444,8 @@ fn main() -> color_eyre::Result<()> {
         &ui,
         &state,
         &viewport,
-        &dialog_session,
-        &settings,
         &library,
+        &leave_point,
         &nav,
         &covers,
         &pages,
@@ -458,6 +468,7 @@ fn main() -> color_eyre::Result<()> {
         &dialog_session,
         &settings,
         &library,
+        &leave_point,
         &settings_store,
         &library_store,
     );
@@ -476,6 +487,7 @@ fn main() -> color_eyre::Result<()> {
         &dialog_session,
         &settings,
         &library,
+        &leave_point,
         &settings_store,
         &library_store,
     );
@@ -483,7 +495,7 @@ fn main() -> color_eyre::Result<()> {
 }
 
 /// The app's single exit-persistence sequence: flush resolved page counts, stage
-/// the position + view-mode write-back through `persist_leave_point(AppExit)`,
+/// the position + view-mode write-back through `LeavePointService::persist_with(AppExit)`,
 /// snapshot the window geometry, and save `Settings` once.
 ///
 /// TWO callers: the normal quit (right after `ui.run()` returns) and the
@@ -504,6 +516,7 @@ fn run_exit_persistence(
     dialog_session: &Rc<RefCell<DialogSession>>,
     settings: &Rc<RefCell<Settings>>,
     library: &Rc<RefCell<Library>>,
+    leave_point: &Rc<LeavePointService>,
     settings_store: &SettingsStoreHandle,
     library_store: &LibraryStoreHandle,
 ) {
@@ -512,9 +525,9 @@ fn run_exit_persistence(
         covers,
         state,
         viewport,
-        settings,
         library,
         library_store,
+        leave_point,
         |library| save_library(library_store, library),
     );
     // Record the final window geometry so the next launch restores it. Safe: the window
@@ -527,12 +540,12 @@ fn run_exit_persistence(
 }
 
 /// The window-free half of [`run_exit_persistence`], with the library save
-/// injected (the same seam `persist_leave_point_with` uses) so the sequence is
+/// injected (the same seam `LeavePointService::persist_with` uses) so the sequence is
 /// reachable without a live window. Production saves through `LibraryStore`.
 ///
 /// ORDER IS LOAD-BEARING: the dialog session ENDS first. A settings dialog opened
 /// on the Library screen leaves the runtime seeded with the GLOBAL defaults, and
-/// `persist_leave_point(AppExit)` writes that runtime onto the open book — so a
+/// `LeavePointService::persist(AppExit)` writes that runtime onto the open book — so a
 /// quit with the dialog still up used to overwrite the book's own view modes
 /// with the globals (issue #535, path (a)).
 #[allow(clippy::too_many_arguments)]
@@ -541,9 +554,9 @@ fn stage_exit_state(
     covers: &Rc<cover_loader::CoverController>,
     state: &Rc<RefCell<ViewerState>>,
     viewport: &Rc<RefCell<ViewportState>>,
-    settings: &Rc<RefCell<Settings>>,
     library: &Rc<RefCell<Library>>,
     library_store: &LibraryStoreHandle,
+    leave_point: &Rc<LeavePointService>,
     save: impl FnOnce(&Library) -> Result<(), CoreError>,
 ) {
     dialog_session.borrow_mut().end(state, viewport);
@@ -553,15 +566,7 @@ fn stage_exit_state(
     // Stage position + view-mode routing, then persist the library exactly once.
     // Both callers run at top-level shutdown points, so all cells are unborrowed.
     // Exit is now exactly one library write (formerly two).
-    if let Err(e) = view_sync::persist_leave_point_with(
-        ViewModeRoute::AppExit,
-        state,
-        viewport,
-        dialog_session,
-        settings,
-        library,
-        save,
-    ) {
+    if let Err(e) = leave_point.persist_with(ViewModeRoute::AppExit, save) {
         // Log-only by necessity: the normal-quit caller has no event loop left to show a
         // notice, and the relaunch caller replaces the process moments later — but the
         // failure must not be silently discarded.
@@ -581,6 +586,7 @@ fn wire_relaunch_persistence(
     dialog_session: &Rc<RefCell<DialogSession>>,
     settings: &Rc<RefCell<Settings>>,
     library: &Rc<RefCell<Library>>,
+    leave_point: &Rc<LeavePointService>,
     settings_store: &SettingsStoreHandle,
     library_store: &LibraryStoreHandle,
 ) {
@@ -591,6 +597,7 @@ fn wire_relaunch_persistence(
     let dialog_session = Rc::clone(dialog_session);
     let settings = Rc::clone(settings);
     let library = Rc::clone(library);
+    let leave_point = Rc::clone(leave_point);
     let settings_store = Rc::clone(settings_store);
     let library_store = Rc::clone(library_store);
     ui.on_persist_before_relaunch(move || {
@@ -603,6 +610,7 @@ fn wire_relaunch_persistence(
                 &dialog_session,
                 &settings,
                 &library,
+                &leave_point,
                 &settings_store,
                 &library_store,
             );
@@ -1002,6 +1010,14 @@ mod tests {
         let dialog_session = Rc::new(RefCell::new(DialogSession::new()));
         let covers = Rc::new(cover_loader::CoverController::new());
         let library_store = Rc::new(Some(LibraryStore::new(root.path().join("library.json"))));
+        let leave_point = Rc::new(LeavePointService::new(
+            Rc::clone(&state),
+            Rc::clone(&viewport),
+            Rc::clone(&dialog_session),
+            Rc::clone(&settings),
+            Rc::clone(&library),
+            Rc::clone(&library_store),
+        ));
 
         // The Library-screen dialog seeds the runtime with G, then the user quits.
         dialog_session
@@ -1012,9 +1028,9 @@ mod tests {
             &covers,
             &state,
             &viewport,
-            &settings,
             &library,
             &library_store,
+            &leave_point,
             |_| Ok(()),
         );
 

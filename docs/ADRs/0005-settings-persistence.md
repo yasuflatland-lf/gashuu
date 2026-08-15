@@ -120,7 +120,7 @@ Chose JSON + a version field for simplicity, human readability, and easy migrati
   rewrite of `x.save()` into `store.save(&x)`. The `Rc<RefCell<…>>` ownership model, the
   atomic-write path, the quarantine naming scheme, the versioned-document parse/migrate guard, the
   `load_or_default` recovery + home-screen notice, and the startup settings-file repair are all as
-  they were. The injected-save seams (`persist_leave_point_with`, `remove_books_with_rollback`,
+  they were. The injected-save seams (`LeavePointService::persist_with`, `remove_books_with_rollback`,
   `remove_empty_book_with`, `OpenBookUseCase`'s boxed closures) are the proof: they still pass with
   their assertions unchanged.
 - **UI-side shape.** `main.rs` resolves each store once and threads it as an explicit named

@@ -306,7 +306,7 @@ every function that persists (`main.rs`'s `SettingsStoreHandle` / `LibraryStoreH
 their `save_settings` / `save_library` helpers). The handle is an `Option` because
 `default_location()` can fail: that reproduces the pre-store behaviour exactly — the app still runs
 and each attempted save reports `NoConfigDir` / `NoDataDir` — without a panic path. The injected
-`save` seams (`persist_leave_point_with`, `remove_books_with_rollback`, `remove_empty_book_with`,
+`save` seams (`LeavePointService::persist_with`, `remove_books_with_rollback`, `remove_empty_book_with`,
 `OpenBookUseCase`'s two boxed closures, `stage_exit_state`) are unchanged; production now passes a
 store save through them instead of an inherent `Library::save`. Headless (`serde_json` + `std::fs` +
 `directories`). See [ADR-0005](ADRs/0005-settings-persistence.md)'s 2026-08-15 Amendment.
@@ -578,15 +578,16 @@ projection; falls back to 0 when `None`, filtered out, or empty).
 ### open_book
 
 `open_book.rs`. `OpenBookUseCase` — the open-a-book application use case extracted from `main.rs`
-(#67). Holds five headless collaborators as `Rc<RefCell<…>>` fields: `ViewerState`, `Settings`,
-`ViewportState`, `DialogSession`, and `Library`. The return value (#114) is built from two types and
-a single export:
+(#67). Holds five headless collaborators as `Rc<RefCell<…>>` fields (`ViewerState`, `Settings`,
+`ViewportState`, `DialogSession`, and `Library`), plus the shared `Rc<LeavePointService>` and its two
+injected save effects. The return value (#114) is built from two types and a single export:
 
-- `apply_probed(&self, path: &Path, probe: OpenProbeOutcome) -> OpenOutcome` — writes back the
-  previous book's position and view modes; installs the ALREADY-opened source from the probe;
-  clears the replaced book's pending-inherit intent;
-  updates and saves recent sources when tracking is enabled; registers and saves the book in
-  `Library`; jumps to the resume page; and applies the resolved per-book view. On a `Failed` probe
+- `apply_probed(&self, path: &Path, probe: OpenProbeOutcome) -> OpenOutcome` — short orchestration
+  over six private steps: `persist_outgoing` (outgoing position/view save), `install` (probe
+  discrimination, source install, pending-inherit clear), `reject_empty` (removal transaction and
+  viewer close), `record_recent` (tracking-gated settings save), `register_and_resume` (register and
+  page-count back-fill, then apply the resolved per-book view BEFORE jumping to the resume page),
+  and `persist_registered` (the second synchronous library save). On a `Failed` probe
   it returns `OpenOutcome::Error(String)` (the worker's pre-captured message); on success it
   returns `OpenOutcome::Success { notices, count_changed }`. **`apply_probed` does NOT transition
   screens, rebuild the carousel, launch thumbnails, or import `crate::i18n`** — those UI effects and
@@ -649,7 +650,7 @@ transition on the POSITIVE outcome".
 Lives in the UI crate because it coordinates Slint components; `gashuu-core` is untouched.
 
 `apply_probed` writes back the OUTGOING book's per-book view override through the persistence
-chokepoint — `persist_leave_point_with(ViewModeRoute::OpenDifferentBook, …, save_library)` right
+chokepoint — `LeavePointService::persist_with(ViewModeRoute::OpenDifferentBook, save_library)` right
 beside the position write-back at its top, still the FIRST thing the apply half does, before the
 source is replaced. Because that write lives in the apply half and not in the probe, exactly ONE
 leave-point write happens per APPLIED open: a probe superseded mid-flight writes nothing. Its
@@ -700,18 +701,17 @@ data and touches no Slint; the UI tail lives in `carousel_refresh::finalize_remo
 
 ### view-mode persistence seam (`view_sync.rs`)
 
-`view_sync.rs` owns `ViewModeRoute`. Its `pub(crate)` surface is `persist_leave_point`,
-`persist_leave_point_with`, `current_runtime_view`, `apply_global_view_to_runtime`, and
-`current_book_name`; its private members are `stage_view_modes_to_sink`,
+`view_sync.rs` owns `ViewModeRoute` and the one-per-app `LeavePointService`. Its `pub(crate)` surface
+is `LeavePointService::{new, persist, persist_with}`, `current_runtime_view`,
+`apply_global_view_to_runtime`, and `current_book_name`; its private members are `stage_view_modes_to_sink`,
 `apply_runtime_view_to_settings`, `position_to_write_back`, `stage_position_write_back`,
-`view_override_to_write_back`, and `stage_view_override_write_back`. `persist_leave_point_with` is
-the save-injection seam `persist_leave_point` wraps: `open_book.rs` calls it directly so the open
-use case routes its leave-point save through the injected `save_library`.
+`view_override_to_write_back`, and `stage_view_override_write_back`. `persist_with` is the
+save-injection seam used by `OpenBookUseCase` and exit staging; `persist` supplies the service's
+stored `LibraryStoreHandle` for production handler calls.
 
-`persist_leave_point(route, &state, &viewport, &dialog_session, &settings, &library,
-&library_store)` is the ONE
-leave-point persistence chokepoint (the trailing `&LibraryStoreHandle` is what it saves THROUGH;
-it wraps `persist_leave_point_with` by injecting `save_library(library_store, …)`): it stages the
+`LeavePointService::persist(route)` is the ONE leave-point persistence chokepoint. The service owns
+the state, viewport, dialog-session, settings, library, and store handles once; `persist` delegates
+to `persist_with` by injecting `save_library(&library_store, …)`. The transaction stages the
 applicable position write-back, delegates view-mode routing
 to `stage_view_modes_to_sink`, and saves the library at most once. `stage_view_modes_to_sink`'s
 `match route` selects the sink: `DialogClosedOnLibrary` → global reconcile;
@@ -963,7 +963,7 @@ write-back, view-mode persistence, geometry snapshot, settings save) — the SAM
 self-update relaunch invokes via the `persist-before-relaunch` bridge before `relaunch_and_exit`.
 `run_exit_persistence` is a thin window-bound shell over `stage_exit_state`, which holds the
 window-free prefix (dialog-session end → `flush_counts` → `AppExit` leave point) with the library
-save injected exactly as `persist_leave_point_with` does it, so the ordering is testable without a
+save injected through `LeavePointService::persist_with`, so the ordering is testable without a
 live window.
 All callback closures live in `handlers/`; `main.rs` retains `refresh`, `finalize_open`,
 `go_to_library`/`go_to_viewer`, and the add-batch helpers, plus the crate-root re-exports for the
@@ -1218,7 +1218,7 @@ fresh `Arc<Mutex<Option<…>>>` slot, `rayon::spawn`s the probe, and marshals `o
 `take_outcome(epoch)` drains it once and returns `None` when superseded, so double-clicking a second
 book mid-probe opens ONLY the second. Every state mutation and BOTH library saves (plus the optional
 settings save) stay on the UI thread in `OpenBookUseCase::apply_probed` — the synchronous-save
-rationale (the detached-write revert hazard) is untouched, and `persist_leave_point` still runs
+rationale (the detached-write revert hazard) is untouched, and `persist_outgoing` still runs
 first, before the source is replaced. See [patterns.md](patterns.md), "Worker → UI ACTION via a
 Slint callback".
 

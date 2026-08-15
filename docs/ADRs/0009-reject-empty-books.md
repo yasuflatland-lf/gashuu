@@ -142,7 +142,7 @@ remove + notify".
   now off-thread as well: the archive open, the full listing, canonicalization and the
   `is_dir`/`exists` stats run on a rayon worker via `open_controller::probe_open`, while ALL state
   mutation, both library saves and the optional settings save stay on the UI thread. The observable
-  ordering is preserved — `persist_leave_point(OpenDifferentBook)` still runs first in the apply
+  ordering is preserved — the `OpenDifferentBook` leave point still runs first in the apply
   half, and exactly one leave-point write happens per APPLIED open (a superseded probe writes
   nothing).
 - Decisions 1, 2, 4 and 5 are unaffected; `probe_page_count` semantics and the missing-path rule are
