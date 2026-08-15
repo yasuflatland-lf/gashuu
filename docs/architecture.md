@@ -454,9 +454,10 @@ live `Settings`).
 `open_path` (set via `gashuu_core::canonical_identity(path)` — canonicalize best-effort, falling
 back to the GIVEN path when canonicalization FAILS **or** yields a non-UTF-8 path; `None` until the
 first `Ok`, reset by `set_source`, unchanged by a failed `open_path`). That function is the single
-home of the rule and is also used by `Library::add_canonical` and
-`Library::recanonicalize_and_merge`, so canonicalization can never introduce an unserializable
-identity (a non-UTF-8 `Book::path` would break every library save).
+home of the rule: callers pass its result unchanged to `Library::add` / `Library::register_opened`,
+and `Library::recanonicalize_and_merge` uses it for the explicit load-time self-heal, so
+canonicalization can never introduce an unserializable identity (a non-UTF-8 `Book::path` would
+break every library save).
 `view_sync.rs` reads it to form the write-back tuple `(canonical_path, index())` for the `Library`
 at every leave point — see the resume/write-back scope entry and `docs/patterns.md`.
 

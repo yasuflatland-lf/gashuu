@@ -268,7 +268,7 @@ For unit-testability, `build_carousel_model` was split into a HEADLESS builder (
 
 ### Return the stored authoritative value from a mutating method; don't recompute-and-re-find in the caller (#82)
 
-When a method canonicalizes/normalizes its input and stores a derived value (e.g. `Library::add` canonicalizes a path before storing the `Book`), have it RETURN that stored value (`add` returns `Option<&Path>` — the stored canonical path, `None` on duplicate) rather than a `bool`. A caller that re-derives the key itself (a second `canonicalize`) and then `find`s the item the callee just inserted can silently diverge from the callee's own derivation — a filesystem TOCTOU, symlink, or case difference between the two `canonicalize` calls makes the lookup miss, so the item is stored but dropped from the caller's result set with no error (here: the added book vanishes from the focus/count path). One source of truth: the mutator returns what it stored; the caller consumes it (`apply_outcomes` is `filter_map(|p| lib.add(p).map(Path::to_path_buf))`). This also removes the redundant second syscall and the O(n) re-find.
+When a boundary derives an identity, derive it ONCE and pass that value through unchanged. `canonical_identity` is the single filesystem rule; `Library::add` receives its result and returns `Option<&Path>` for the exact stored identity (`None` on duplicate), while bulk apply derives each counted probe's identity and passes the batch to `Library::add_many`. Re-deriving a key after mutation creates a filesystem TOCTOU: a symlink, case, or mount change can make the lookup miss, so a stored item disappears from the caller's result set with no error. One source of truth: the caller derives once, the aggregate stores verbatim, and downstream work consumes the returned identities.
 
 Smell to watch for: a caller computes a key, calls a mutator, then searches for what the mutator just created.
 
@@ -749,7 +749,7 @@ fmt/clippy/nextest cover Rust only; Slint key handlers, bindings, and visibility
 
 ### Verify gate-invisible `.slint`/handler behavior by SCREENSHOTTING a forced UI state (instrument → launch → frontmost → screencapture → revert)
 
-The "verify by hand" obligation above has a repeatable one-off harness for when eyeballing the running app is the only check (modal layout, a screen transition, a status message). Temporarily instrument `main.rs` just before `ui.run()` to FORCE the state under test — `ui.set_show_settings(true)`; or set the `confirm-delete-*` props + `ui.set_show_confirm_delete(true)`; or a `slint::Timer` single-shot firing `ui.invoke_carousel_open(0)`. Then build, launch the binary in a BACKGROUND shell (a foreground `sleep` is blocked in this environment — `sleep` INSIDE the backgrounded command is fine), bring it frontmost with `osascript -e 'tell application "System Events" to set frontmost of (first process whose unix id is <pid>) to true'` (else the window hides behind other apps and the capture grabs the wrong thing), `screencapture -x out.png`, then `kill` it. For Library/open states that need a specific shelf, point the run at a throwaway `HOME=<scratch>/testhome` holding a hand-written `library.json` (+ a `settings.json` with the `window` key dropped → centered window) so the user's REAL `~/Library/Application Support/gashuu` data is untouched; `Library::add` → `add_canonical` does `path.canonicalize().unwrap_or(path)`, so a NON-EXISTENT path is still stored with its raw spelling — exactly the fixture for an unreachable-file test. ALWAYS revert the instrumentation, rebuild, and re-run the three gates before committing. `screencapture` needs macOS Screen-Recording permission (a black capture means it is missing).
+The "verify by hand" obligation above has a repeatable one-off harness for when eyeballing the running app is the only check (modal layout, a screen transition, a status message). Temporarily instrument `main.rs` just before `ui.run()` to FORCE the state under test — `ui.set_show_settings(true)`; or set the `confirm-delete-*` props + `ui.set_show_confirm_delete(true)`; or a `slint::Timer` single-shot firing `ui.invoke_carousel_open(0)`. Then build, launch the binary in a BACKGROUND shell (a foreground `sleep` is blocked in this environment — `sleep` INSIDE the backgrounded command is fine), bring it frontmost with `osascript -e 'tell application "System Events" to set frontmost of (first process whose unix id is <pid>) to true'` (else the window hides behind other apps and the capture grabs the wrong thing), `screencapture -x out.png`, then `kill` it. For Library/open states that need a specific shelf, point the run at a throwaway `HOME=<scratch>/testhome` holding a hand-written `library.json` (+ a `settings.json` with the `window` key dropped → centered window) so the user's REAL `~/Library/Application Support/gashuu` data is untouched. A NON-EXISTENT path is its own `canonical_identity` fallback, so its raw spelling is the exact fixture for an unreachable-file test. ALWAYS revert the instrumentation, rebuild, and re-run the three gates before committing. `screencapture` needs macOS Screen-Recording permission (a black capture means it is missing).
 
 ### Slint compiles only what is REACHABLE from the entry file — create-and-consume are verified together (#71)
 
@@ -941,24 +941,24 @@ TRADE-OFF worth stating: `stage_view_override_write_back` pins ALL FOUR fields t
 
 ### Key `Library` by the CANONICAL path, never the raw dialog path
 
-Any code that keys into `Library` by path (`last_page`/`set_last_page`/`add`) MUST use the
-**canonical** path form. `ViewerState::open_path` stores `path.canonicalize().unwrap_or(verbatim)`
-in `open_file`, and `Library::add` applies the identical policy to the same input, so the keys
-match. Resume/write-back therefore read the key from `state.open_file()`, NEVER the raw `path`
-argument (which may carry `..`/symlinks/case differences). This is a SILENT-failure trap: a raw-path
-lookup "succeeds" returning `last_page` = 0, so the bug presents as resuming at page 0 rather than an
+Any code that keys into `Library` by path (`resume_page`/`set_resume_page`/`add`) MUST use the
+caller-produced `canonical_identity`. `open_controller::probe_open` derives that identity off the UI
+thread, `install_opened` parks it in `open_file`, and the open tail passes it unchanged to
+`Library::register_opened`; bulk add derives the same identity before calling `Library::add_many`.
+Resume/write-back therefore read the key from `state.open_file()`, NEVER the raw `path` argument
+(which may carry `..`/symlinks/case differences). This is a SILENT-failure trap: a raw-path lookup
+"succeeds" returning `resume_page` = 0, so the bug presents as resuming at page 0 rather than an
 error.
 
 ### Re-canonicalize and merge duplicate book identities on load
 
-Book identity is the add-time `path.canonicalize().unwrap_or(path)` snapshot taken in
-`Library::add` (via the private `add_canonical` seam in `crates/gashuu-core/src/library.rs`):
-canonicalize succeeds for an existing path, but falls back to the path VERBATIM when it fails —
-e.g. the file was missing at add time. So a book added while its file was unmounted/missing keeps a
-NON-canonical identity. If the same source is later re-added once its canonical form is reachable,
-`add_canonical`'s `iter().any(|b| b.path() == canonical)` de-dup MISSES the earlier verbatim entry,
-and a SECOND `Book` is inserted — a duplicate carrying its own separate `last_page` / `page_count` /
-`overrides`. On the NEXT load, `library_store::from_json` calls
+Book identity is the caller's add-time `canonical_identity(path)` snapshot, passed verbatim to
+`Library::add` / `Library::add_many` and stored as-is. Resolution succeeds for an existing path but
+falls back to the path VERBATIM when it fails — e.g. the file was missing at add time. So a book
+added while its file was unmounted/missing keeps a NON-canonical identity. If the same source is
+later re-added once its canonical form is reachable, the aggregate's exact-path de-dup MISSES the
+earlier verbatim entry, and a SECOND `Book` is inserted — a duplicate carrying its own separate
+`last_page` / `page_count` / `overrides`. On the NEXT load, `library_store::from_json` calls
 `Library::recanonicalize_and_merge()` before the pure `normalize()` pass. It canonicalizes each
 stored path, groups entries by the resolved key, and uses `merge_group` to keep the maximum resume
 page, the first `Some` page count, and the first non-empty overrides in stored-vector order; the
@@ -1230,11 +1230,11 @@ Anchor: `crates/gashuu/src/i18n/mod.rs` `message_arguments_match_across_locales`
 
 ### Set sibling fields from what was STORED, not from the raw input — aggregate invariants hold by construction (continue-reading)
 
-When an aggregate stores a DERIVED form of an input (e.g. `Library::add` stores `path.canonicalize().unwrap_or(path)` rather than the raw path), any SIBLING field set from the raw input is an invariant time bomb. The bug: the first cut of `register_opened` read `last_opened` from the `canonical` argument directly — making the "last_opened ∈ books" invariant depend on canonicalize-idempotence of the sole caller (a coincidence across two functions). The fix resolves the stored book once (`books.iter().find(|b| b.path() == canonical)`) and derives both outputs from that lookup — `last_opened` from `b.path().to_path_buf()`, reading progress from `b.progress()`. Membership holds BY CONSTRUCTION; divergence degrades to `None` instead of a stale orphan that `normalize()` would silently erase on next load.
+When an aggregate may store a form of its input that differs from what the caller holds, any SIBLING field set from the caller's own copy is an invariant time bomb. The bug: the first cut of `register_opened` read `last_opened` from its `canonical` argument directly — making the "last_opened ∈ books" invariant depend on the caller and the aggregate deriving the identical key (a coincidence across two functions). The fix resolves the stored book once (`books.iter().find(|b| b.path() == canonical)`) and derives both outputs from that lookup — `last_opened` from `b.path().to_path_buf()`, reading progress from `b.progress()`. Membership holds BY CONSTRUCTION; divergence degrades to `None` instead of a stale orphan that `normalize()` would silently erase on next load. The identity derivation has since moved out to the caller (`canonical_identity` is applied before `add`/`register_opened`), which removes the divergence at its source — but the structural rule stands, because it is what makes the invariant hold regardless of where the key is computed.
 
 **Corollary — do not `debug_assert!` caller-input assumptions.** The original code carried `debug_assert!(found.is_some(), "canonical path must be in books")`, which asserted an over-strong PRECONDITION rather than a real post-condition invariant. When the divergence path became legitimately reachable (a test passes a `..`-containing path), the assert had to go. A `debug_assert!` on a caller's input assumption is a precondition disguised as an invariant; the correct guard is the structural fix: if the lookup misses, degrade gracefully to `None` rather than asserting the caller was right.
 
-Anchor: `crates/gashuu-core/src/library.rs` `register_opened` (~line 335–365), test `register_opened_with_non_canonical_path_keeps_invariant`.
+Anchor: `crates/gashuu-core/src/library.rs` `register_opened`, test `register_opened_with_caller_supplied_identity_keeps_invariant`.
 
 **Relationship to the #82 entry ("Return the stored authoritative value …"):** that entry addresses what the METHOD RETURNS to callers; this entry addresses what the method uses when setting its OWN sibling fields. Both instances of the same principle — derive everything from the single authoritative store, not from any re-derivation of the input.
 

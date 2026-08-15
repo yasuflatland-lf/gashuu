@@ -258,8 +258,8 @@ mod tests {
         std::fs::create_dir(&known).expect("create known");
 
         let mut lib = Library::new();
-        assert!(lib.add(unknown.clone()).is_some());
-        assert!(lib.add(known.clone()).is_some());
+        assert!(lib.add(gashuu_core::canonical_identity(&unknown)).is_some());
+        assert!(lib.add(gashuu_core::canonical_identity(&known)).is_some());
         // Give the naturally first-sorted book a persisted page count (as an open would back-fill).
         let known_path = lib.books()[0].path().to_path_buf();
         assert!(lib.set_page_count(&known_path, NonZeroUsize::new(10).unwrap()));
@@ -383,17 +383,15 @@ mod tests {
     /// still carry `bookmarked == true` — the ribbon renders regardless of
     /// `available` (edge case 4 of the design).
     ///
-    /// A non-existent path is used intentionally: `Library::add` falls back to
-    /// the raw path when `canonicalize` fails (the file does not exist), so the
-    /// book lands in the shelf as unavailable from the start. `register_opened`
-    /// uses the same raw path, so the post-add lookup succeeds.
+    /// A non-existent path is used intentionally: it is already the result of
+    /// `canonical_identity` because resolution fails, so the book lands in the
+    /// shelf as unavailable from the start.
     #[test]
     fn build_carousel_model_unavailable_book_still_bookmarked() {
         use slint::Model;
 
         let mut lib = Library::new();
-        // A path that never existed: `add` falls back to the raw path (no canonicalize),
-        // so the book is stored unavailable; `register_opened` finds it via that same path.
+        // A path that never existed is its own caller-supplied identity.
         let path = std::path::PathBuf::from("/manga/gone.cbz");
         lib.register_opened(&path, None);
 

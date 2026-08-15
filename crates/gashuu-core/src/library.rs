@@ -1,7 +1,10 @@
 //! Library domain model: a naturally ordered, de-duplicated shelf of books.
 //!
-//! Headless (no slint, no tracing). Identity is the canonical filesystem path;
-//! availability is derived (never stored). Persistence lives in `library_store`.
+//! Headless (no slint, no tracing). Identity is a filesystem path the CALLER has
+//! already put through [`canonical_identity`]; availability is derived (never
+//! stored). The aggregate is therefore an in-memory ordered set with one
+//! deliberate filesystem-I/O exception, [`Library::recanonicalize_and_merge`],
+//! which the load path invokes explicitly. Persistence lives in `library_store`.
 
 use crate::reading_progress::ReadingProgress;
 use crate::view_override::ViewOverride;
@@ -92,8 +95,8 @@ pub fn display_title(path: &Path) -> String {
 /// fail wholesale (CORE-S-1). A UTF-8 path that canonicalizes into a directory with
 /// non-UTF-8 bytes must therefore keep its own (persistable) spelling; dedup is
 /// marginally weaker for that book, which is strictly better than losing all saves.
-/// This is the single home of the rule: `Library::add_canonical`,
-/// `Library::recanonicalize_and_merge` and the UI's `open_file` capture all use it.
+/// This is the single home of the rule: aggregate callers and
+/// [`Library::recanonicalize_and_merge`] use it for every persisted identity.
 pub fn canonical_identity(path: &Path) -> PathBuf {
     path.canonicalize()
         .ok()
@@ -163,8 +166,8 @@ fn book_order(a: &Book, b: &Book) -> std::cmp::Ordering {
 /// takes the max, `page_count` the first `Some` in vec order, `overrides` the first
 /// non-empty in vec order. The survivor's resume is then clamped to its page count
 /// because the max resume and first-`Some` count can come from different members.
-/// The survivor's `path` is finally set to `key`, which re-canonicalizes a
-/// now-resolvable raw path even for a group of one. `members` is non-empty by
+/// The survivor's `path` is finally set to `key`, which upgrades a now-resolvable
+/// raw path even for a group of one. `members` is non-empty by
 /// construction (a group is only created when a member is pushed).
 fn merge_group(key: PathBuf, members: Vec<Book>) -> Book {
     let mut iter = members.into_iter();
@@ -189,7 +192,7 @@ fn merge_group(key: PathBuf, members: Vec<Book>) -> Book {
 
 /// An ordered, de-duplicated shelf of books. Natural title order is the carousel
 /// order, with canonical path as the deterministic tie-break. Identity / dedup
-/// is on the canonical path (best-effort canonicalized at `add` time). Mirrors
+/// is on the caller-supplied [`canonical_identity`] result. Mirrors
 /// `Settings::push_recent` discipline: one place owns the invariants.
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct Library {
@@ -287,18 +290,17 @@ impl Library {
         self.contains_path(last_opened).then_some(last_opened)
     }
 
-    /// Add `path` to the shelf. Canonicalizes best-effort (falling back to the
-    /// path verbatim when canonicalization fails or produces a non-UTF-8 path),
-    /// derives the title, and de-duplicates by canonical path. Returns `Some`
-    /// with the canonical path of the newly stored book, or `None` if the path
-    /// was already present (duplicate, no-op).
+    /// Add `canonical` to the shelf, deriving the title and de-duplicating by
+    /// the supplied identity. Returns `Some` with the path of the newly stored
+    /// book, or `None` if the path was already present (duplicate, no-op).
     ///
     /// # Preconditions
     ///
-    /// `path` must be valid UTF-8. Production callers satisfy this because every
-    /// book path originates from an [`crate::ArchiveLoader`] open or probe.
-    pub fn add(&mut self, path: PathBuf) -> Option<&Path> {
-        let (canonical, added) = self.add_canonical(path);
+    /// `canonical` must be the caller's [`canonical_identity`] result and therefore
+    /// valid UTF-8. Production callers obtain it after an [`crate::ArchiveLoader`]
+    /// open or probe.
+    pub fn add(&mut self, canonical: PathBuf) -> Option<&Path> {
+        let (canonical, added) = self.add_canonical(canonical);
         // Preserve the public contract: `Some` only for a newly stored book,
         // `None` for an already-present duplicate.
         added.then(|| {
@@ -308,15 +310,14 @@ impl Library {
         })
     }
 
-    /// Canonicalize `path` and ensure it is on the shelf, returning the stored
-    /// canonical identity together with whether this call newly added it. The
+    /// Ensure `canonical` is on the shelf, returning the stored identity together
+    /// with whether this call newly added it. The
     /// returned `PathBuf` is the shelf's identity for the book in BOTH cases —
     /// newly added or already present — so a caller that needs to look the book
     /// up after a subsequent `&mut self` call (e.g. `register_opened`) has an
     /// owned key that always matches a stored entry. Internal seam shared by
     /// `add`; not part of the public surface.
-    fn add_canonical(&mut self, path: PathBuf) -> (PathBuf, bool) {
-        let canonical = canonical_identity(&path);
+    fn add_canonical(&mut self, canonical: PathBuf) -> (PathBuf, bool) {
         // The serialization oracle deliberately exercises direct invalid input
         // in unit tests; production debug builds still enforce the public precondition.
         #[cfg(not(test))]
@@ -332,6 +333,33 @@ impl Library {
         (canonical, true)
     }
 
+    /// Add a batch of caller-supplied [`canonical_identity`] results, skipping
+    /// identities already on the shelf or repeated within the batch. This is the
+    /// batch form of [`add`](Library::add): returned paths are newly stored books
+    /// in input order, while the shelf is re-sorted only once at the end.
+    ///
+    /// # Preconditions
+    ///
+    /// Every path must be the caller's [`canonical_identity`] result and therefore
+    /// valid UTF-8.
+    pub fn add_many(&mut self, canonicals: Vec<PathBuf>) -> Vec<PathBuf> {
+        let mut added = Vec::new();
+        for canonical in canonicals {
+            #[cfg(not(test))]
+            debug_assert!(
+                canonical.to_str().is_some(),
+                "book identities must be UTF-8; non-UTF-8 paths are rejected by ArchiveLoader",
+            );
+            if self.contains_path(&canonical) {
+                continue;
+            }
+            self.books.push(Book::from_path(canonical.clone()));
+            added.push(canonical);
+        }
+        self.books.sort_by(book_order);
+        added
+    }
+
     /// Re-canonicalize stored book paths and merge entries that resolve to the
     /// same physical file into one. This self-heals a `library.json` written
     /// before book identity was the add-time canonical path: a book added while
@@ -339,11 +367,12 @@ impl Library {
     /// same file is later added once it resolves, the two divergent spellings end
     /// up as two `Book` entries for one file with split reading progress.
     ///
-    /// Unlike [`normalize`](Library::normalize) this performs filesystem I/O (the
-    /// per-book `canonicalize`, the same touch `add` and `book_is_available`
-    /// already make), so it is deliberately a SEPARATE pub(crate) routine invoked
-    /// explicitly from `library_store::from_json` before `normalize`, not folded
-    /// into the pure `normalize`.
+    /// Unlike [`normalize`](Library::normalize) this performs filesystem I/O (a
+    /// per-book `canonicalize`) — it is the aggregate's ONE such exception,
+    /// because there is no identity a caller could supply for a stored spelling
+    /// that must be re-resolved. It is therefore deliberately a SEPARATE
+    /// pub(crate) routine invoked explicitly from `library_store::from_json`
+    /// before `normalize`, not folded into the pure `normalize`.
     ///
     /// Resolution key: [`canonical_identity`] — the same rule `add_canonical`
     /// uses. A missing file or a non-UTF-8 canonical form keeps the raw path as
@@ -562,22 +591,18 @@ impl Library {
     /// the stored count OR repaired a resume left past the new final index, so the
     /// caller can decide to rebuild the carousel.
     ///
-    /// `open_path` must be valid UTF-8. Production callers satisfy this because
-    /// it is captured only after a successful [`crate::ArchiveLoader`] open.
-    /// No persistence I/O; the only filesystem touch is the best-effort
-    /// `canonicalize` inside `add_canonical`, which re-canonicalizes `open_path`
-    /// (idempotent when it is already canonical — the result is unchanged, though
-    /// the syscall still runs; as it is when read from `open_file`). `open_path` is
-    /// the just-opened source path, NOT assumed canonical; the shelf identity is
-    /// the key `resume_page`/`set_page_count` use.
+    /// `canonical` must be the caller's [`canonical_identity`] result and therefore
+    /// valid UTF-8. Production callers capture it after a successful
+    /// [`crate::ArchiveLoader`] open. It is the shelf identity used by
+    /// `resume_page` and `set_page_count`.
     pub fn register_opened(
         &mut self,
-        open_path: &Path,
+        canonical: &Path,
         page_count: Option<NonZeroUsize>,
     ) -> OpenRegistration {
         // `add_canonical` returns the shelf's identity (same owned `PathBuf` whether newly
         // added or already present), ending the `self` borrow before the `&mut self` calls.
-        let (stored, _added) = self.add_canonical(open_path.to_path_buf());
+        let (stored, _added) = self.add_canonical(canonical.to_path_buf());
         let count_changed = page_count.is_some_and(|c| self.set_page_count(&stored, c));
         // Resolve the resume position from the book stored under `stored`, so the
         // `last_opened`-is-a-member invariant holds by construction (the lookup is total).
@@ -596,10 +621,11 @@ impl Library {
 /// Derived availability: whether the book's path currently resolves on disk.
 ///
 /// This performs filesystem I/O (`Path::exists`) and is deliberately a free
-/// function rather than a `Library` method: the `Library` aggregate is a pure
-/// in-memory ordered set and stays I/O-free. Availability is NOT stored - an
-/// unavailable book is kept (its reading position is preserved); removal is an
-/// explicit user action.
+/// function rather than a `Library` method: the `Library` aggregate is an
+/// in-memory ordered set over caller-supplied identities and stays I/O-free
+/// EXCEPT for [`Library::recanonicalize_and_merge`], the load-time self-heal the
+/// load path invokes explicitly. Availability is NOT stored - an unavailable book
+/// is kept (its reading position is preserved); removal is an explicit user action.
 pub fn book_is_available(book: &Book) -> bool {
     book.path().exists()
 }
@@ -746,7 +772,7 @@ mod tests {
         let (_dir, link) = utf8_symlink_to_non_utf8_target();
         let mut lib = Library::new();
 
-        assert!(lib.add(link.clone()).is_some());
+        assert!(lib.add(canonical_identity(&link)).is_some());
         let value: serde_json::Value =
             serde_json::from_str(&lib.to_json().expect("UTF-8 identity must serialize")).unwrap();
 
@@ -790,8 +816,7 @@ mod tests {
 
     #[test]
     fn add_orders_books_by_natural_title() {
-        // Non-existent paths exercise the best-effort canonicalize fallback
-        // (canonicalize fails - path is used verbatim).
+        // Non-existent paths are already their caller-supplied identities.
         let mut lib = Library::new();
         assert!(lib.add(PathBuf::from("/manga/vol 10.cbz")).is_some());
         assert!(lib.add(PathBuf::from("/manga/vol 1.cbz")).is_some());
@@ -839,8 +864,8 @@ mod tests {
 
     #[test]
     fn add_returns_stored_canonical_path_then_none_on_duplicate() {
-        // A real temp file so canonicalize succeeds and the stored path is the
-        // canonical one; the first add returns it, the second (duplicate) is None.
+        // A real temp file whose identity is produced caller-side; the first add
+        // returns that canonical path and the second (duplicate) is None.
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("Book.cbz");
         std::fs::write(&file, []).unwrap();
@@ -848,31 +873,120 @@ mod tests {
 
         let mut lib = Library::new();
         assert_eq!(
-            lib.add(file.clone()),
+            lib.add(canonical_identity(&file)),
             Some(canonical.as_path()),
             "first add must return the stored canonical path"
         );
         assert!(
-            lib.add(file).is_none(),
+            lib.add(canonical_identity(&file)).is_none(),
             "adding the same path again must return None (duplicate)"
         );
         assert_eq!(lib.books().len(), 1);
     }
 
     #[test]
-    fn add_canonicalizes_existing_path_for_identity() {
+    fn add_many_matches_repeated_add() {
+        let already_present = PathBuf::from("/manga/already.cbz");
+        let vol10 = PathBuf::from("/manga/vol 10.cbz");
+        let vol2 = PathBuf::from("/manga/vol 2.cbz");
+        let vol1 = PathBuf::from("/manga/vol 1.cbz");
+        let inputs = vec![
+            vol10.clone(),
+            already_present.clone(),
+            vol2.clone(),
+            vol2.clone(),
+            vol1.clone(),
+        ];
+
+        let mut batched = Library::new();
+        assert!(batched.add(already_present.clone()).is_some());
+        let added = batched.add_many(inputs.clone());
+
+        let mut repeated = Library::new();
+        assert!(repeated.add(already_present).is_some());
+        let repeated_added: Vec<PathBuf> = inputs
+            .into_iter()
+            .filter_map(|path| repeated.add(path).map(Path::to_path_buf))
+            .collect();
+
+        let batched_paths: Vec<&Path> = batched.books().iter().map(Book::path).collect();
+        let repeated_paths: Vec<&Path> = repeated.books().iter().map(Book::path).collect();
+        assert_eq!(batched_paths, repeated_paths);
+        assert_eq!(added, repeated_added);
+        assert_eq!(added, vec![vol10, vol2, vol1]);
+    }
+
+    #[test]
+    fn add_many_sorts_once_into_natural_order() {
+        let vol10 = PathBuf::from("/manga/vol 10.cbz");
+        let vol2 = PathBuf::from("/manga/vol 2.cbz");
+        let vol1 = PathBuf::from("/manga/vol 1.cbz");
+        let mut lib = Library::new();
+
+        assert_eq!(
+            lib.add_many(vec![vol10.clone(), vol2.clone(), vol1.clone()]),
+            vec![vol10.clone(), vol2.clone(), vol1.clone()]
+        );
+
+        let paths: Vec<&Path> = lib.books().iter().map(Book::path).collect();
+        assert_eq!(paths, vec![vol1.as_path(), vol2.as_path(), vol10.as_path()]);
+    }
+
+    #[test]
+    fn add_many_empty_input_is_a_no_op() {
+        let existing = PathBuf::from("/manga/existing.cbz");
+        let mut lib = Library::new();
+        assert!(lib.add(existing.clone()).is_some());
+        let before = lib.to_json().unwrap();
+
+        assert!(lib.add_many(Vec::new()).is_empty());
+
+        assert_eq!(lib.to_json().unwrap(), before);
+        assert_eq!(lib.books()[0].path(), existing);
+    }
+
+    #[test]
+    fn add_stores_caller_supplied_canonical_identity() {
         let dir = tempfile::tempdir().unwrap();
         let folder = dir.path().join("Series.1997");
         std::fs::create_dir(&folder).unwrap();
+        let canonical = canonical_identity(&folder.join("."));
 
         let mut lib = Library::new();
-        assert!(lib.add(folder.join(".")).is_some());
+        assert!(lib.add(canonical.clone()).is_some());
+        assert_eq!(lib.books().len(), 1);
+        assert_eq!(lib.books()[0].path(), canonical);
+        assert_eq!(lib.books()[0].title(), "Series.1997");
+    }
+
+    #[test]
+    fn add_stores_the_given_identity_verbatim() {
+        // The aggregate no longer canonicalises: whatever identity the caller
+        // supplies is what gets stored, even when the filesystem could resolve it
+        // to something shorter.
+        let dir = tempfile::tempdir().unwrap();
+        let folder = dir.path().join("Series.1997");
+        std::fs::create_dir(&folder).unwrap();
+        // Existing, resolvable, but deliberately NOT canonical.
+        let non_canonical = dir
+            .path()
+            .join("..")
+            .join(dir.path().file_name().expect("tempdir has a leaf name"));
+        let non_canonical = non_canonical.join("Series.1997");
+        assert_ne!(
+            non_canonical,
+            non_canonical.canonicalize().unwrap(),
+            "the fixture must be genuinely non-canonical"
+        );
+
+        let mut lib = Library::new();
+        assert!(lib.add(non_canonical.clone()).is_some());
         assert_eq!(lib.books().len(), 1);
         assert_eq!(
             lib.books()[0].path(),
-            folder.canonicalize().unwrap().as_path()
+            non_canonical.as_path(),
+            "add must store the caller-supplied identity verbatim"
         );
-        assert_eq!(lib.books()[0].title(), "Series.1997");
     }
 
     #[test]
@@ -1411,9 +1525,9 @@ mod tests {
     }
 
     #[test]
-    fn register_opened_with_non_canonical_path_keeps_invariant() {
-        // Invariant: register_opened always sets last_opened to a stored book even when the
-        // caller passes a non-canonical path (`..` detour / macOS symlink) that once gave None.
+    fn register_opened_with_caller_supplied_identity_keeps_invariant() {
+        // Invariant: register_opened always sets last_opened to the stored book when the
+        // caller supplies the identity for a path containing a `..` detour.
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("Book.cbz");
         std::fs::write(&file, []).unwrap();
@@ -1423,9 +1537,10 @@ mod tests {
         let sub = dir.path().join("sub");
         std::fs::create_dir(&sub).unwrap();
         let non_canonical = sub.join("..").join("Book.cbz");
+        let canonical = canonical_identity(&non_canonical);
 
         let mut lib = Library::new();
-        lib.register_opened(&non_canonical, None);
+        lib.register_opened(&canonical, None);
 
         // last_opened is set, and its path is a book actually in the shelf.
         let lo = lib
@@ -1436,14 +1551,10 @@ mod tests {
             lib.books().iter().any(|b| b.path() == lo),
             "last_opened must point at a book actually in the shelf"
         );
-        // On hosts where canonicalize resolves the `..`, the stored path equals
-        // the canonical form.
-        if let Ok(canonical) = non_canonical.canonicalize() {
-            assert_eq!(
-                lo, canonical,
-                "last_opened must equal the canonicalized path stored by add"
-            );
-        }
+        assert_eq!(
+            lo, canonical,
+            "last_opened must equal the caller-supplied stored identity"
+        );
     }
 
     #[test]
