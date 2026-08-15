@@ -37,7 +37,9 @@ pub(crate) use carousel_refresh::{
     CarouselRefresh,
 };
 use dialog_session::DialogSession;
-use gashuu_core::{CoreError, DecodedImage, Library, ReadingDirection, Settings};
+use gashuu_core::{
+    CoreError, DecodedImage, Library, LibraryStore, ReadingDirection, Settings, SettingsStore,
+};
 use library_model::{LibrarySearchState, LibrarySelectionState};
 use navigation::{screen_to_index, NavState};
 use page_loader::PageController;
@@ -53,6 +55,36 @@ use viewer_state::SpreadCacheState;
 use viewer_state::{StatusContent, ViewerState};
 use viewport::ViewportState;
 
+/// Shared handle to the settings store. `None` only when the OS config directory
+/// could not be resolved: `SettingsStore::default_location` has exactly one failure
+/// mode (`CoreError::NoConfigDir`), so [`save_settings`] reproduces it and every
+/// save reports what the removed domain-owned save reported. The app still runs.
+pub(crate) type SettingsStoreHandle = Rc<Option<SettingsStore>>;
+
+/// Shared handle to the library store; `None` mirrors [`SettingsStoreHandle`]
+/// with `CoreError::NoDataDir`.
+pub(crate) type LibraryStoreHandle = Rc<Option<LibraryStore>>;
+
+/// Save `settings` through the resolved store, or report the unresolvable OS config
+/// directory — the same error the removed domain-owned save raised.
+pub(crate) fn save_settings(
+    store: &SettingsStoreHandle,
+    settings: &Settings,
+) -> Result<(), CoreError> {
+    match store.as_ref() {
+        Some(store) => store.save(settings),
+        None => Err(CoreError::NoConfigDir),
+    }
+}
+
+/// Library twin of [`save_settings`]; the unresolved case is `CoreError::NoDataDir`.
+pub(crate) fn save_library(store: &LibraryStoreHandle, library: &Library) -> Result<(), CoreError> {
+    match store.as_ref() {
+        Some(store) => store.save(library),
+        None => Err(CoreError::NoDataDir),
+    }
+}
+
 /// Load a persisted value, falling back to its `Default` on a RECOVERABLE
 /// failure. `label` names the source for both the `errs` notice
 /// (`"<label> (<e>)"`, surfaced on the home screen) and the log. A missing file
@@ -60,25 +92,34 @@ use viewport::ViewportState;
 /// GENUINE failure (corrupt data, I/O error, `NoDataDir`). An existing source
 /// file is quarantined before returning the default. Stays UI-side (it logs via
 /// `tracing`) so `gashuu-core` remains headless.
-fn load_or_default<T: Default>(
+fn load_or_default<'a, T: Default, S>(
     label: &str,
-    load: impl FnOnce() -> Result<T, CoreError>,
-    persisted_path: impl FnOnce() -> Result<std::path::PathBuf, CoreError>,
+    store: Result<&'a S, &CoreError>,
+    load: impl FnOnce(&'a S) -> Result<T, CoreError>,
+    path_of: impl FnOnce(&'a S) -> &'a Path,
     errs: &mut Vec<String>,
 ) -> T {
-    match load() {
+    let store = match store {
+        Ok(store) => store,
+        Err(e) => {
+            tracing::warn!(error = %e, "failed to load {label}; using defaults");
+            errs.push(format!("{label} ({e})"));
+            return T::default();
+        }
+    };
+    match load(store) {
         Ok(value) => value,
         Err(e) => {
             tracing::warn!(error = %e, "failed to load {label}; using defaults");
-            let notice = match persisted_path() {
-                Ok(path) if path.exists() => {
-                    let unix_now_secs = std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .unwrap_or_default()
-                        .as_secs();
-                    quarantine_load_failure(label, &path, &e, unix_now_secs)
-                }
-                _ => format!("{label} ({e})"),
+            let path = path_of(store);
+            let notice = if path.exists() {
+                let unix_now_secs = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs();
+                quarantine_load_failure(label, path, &e, unix_now_secs)
+            } else {
+                format!("{label} ({e})")
             };
             errs.push(notice);
             T::default()
@@ -127,21 +168,26 @@ fn quarantine_load_failure(
 /// next clean exit. A missing file is left untouched (a fresh install writes on its
 /// first real save). Best-effort: a write failure is logged and surfaced, never
 /// fatal.
-fn repair_settings_file_if_needed(settings: &Settings, errs: &mut Vec<String>) {
-    let Ok(path) = Settings::config_path() else {
+fn repair_settings_file_if_needed(
+    store: Option<&SettingsStore>,
+    settings: &Settings,
+    errs: &mut Vec<String>,
+) {
+    let Some(store) = store else {
         return;
     };
+    let path = store.path();
     if !path.exists() {
         return;
     }
-    let on_disk = std::fs::read_to_string(&path).unwrap_or_default();
+    let on_disk = std::fs::read_to_string(path).unwrap_or_default();
     let Ok(canonical) = settings.to_json() else {
         return;
     };
     if canonical == on_disk {
         return;
     }
-    if let Err(e) = settings.save_to(&path) {
+    if let Err(e) = store.save(settings) {
         tracing::warn!(error = %e, "failed to rewrite repaired settings file");
         errs.push(format!("settings rewrite ({e})"));
     }
@@ -161,33 +207,45 @@ fn main() -> color_eyre::Result<()> {
     // Load persisted state, collecting notices to surface AFTER the initial refresh,
     // which overwrites status-text.
     let mut load_errs: Vec<String> = Vec::new();
+    let settings_store = SettingsStore::default_location();
     let settings = load_or_default(
         "settings",
-        Settings::load,
-        Settings::config_path,
+        settings_store.as_ref(),
+        SettingsStore::load,
+        SettingsStore::path,
         &mut load_errs,
     );
     // Self-heal an invalid settings file: in-memory values are already sane, but the
     // bad bytes persist. Rewrite at startup so a crash before clean exit can't lose it.
-    repair_settings_file_if_needed(&settings, &mut load_errs);
-    let library = match Library::load() {
-        Ok(library) => library,
-        Err(e) => {
-            tracing::warn!(error = %e, "failed to load library; using defaults");
-            let notice = match Library::data_path() {
-                Ok(path) if path.exists() => {
+    repair_settings_file_if_needed(settings_store.as_ref().ok(), &settings, &mut load_errs);
+    let library_store = LibraryStore::default_location();
+    let library = match &library_store {
+        Ok(store) => match store.load() {
+            Ok(library) => library,
+            Err(e) => {
+                tracing::warn!(error = %e, "failed to load library; using defaults");
+                let notice = if store.path().exists() {
                     let unix_now_secs = std::time::SystemTime::now()
                         .duration_since(std::time::UNIX_EPOCH)
                         .unwrap_or_default()
                         .as_secs();
-                    quarantine_load_failure("library", &path, &e, unix_now_secs)
-                }
-                _ => format!("library ({e})"),
-            };
-            load_errs.push(notice);
+                    quarantine_load_failure("library", store.path(), &e, unix_now_secs)
+                } else {
+                    format!("library ({e})")
+                };
+                load_errs.push(notice);
+                Library::new()
+            }
+        },
+        Err(e) => {
+            tracing::warn!(error = %e, "failed to load library; using defaults");
+            load_errs.push(format!("library ({e})"));
             Library::new()
         }
     };
+
+    let settings_store: SettingsStoreHandle = Rc::new(settings_store.ok());
+    let library_store: LibraryStoreHandle = Rc::new(library_store.ok());
 
     let ui = ViewerWindow::new()?;
     // Boot the Fluent localizer with the persisted language; `apply()` pushes
@@ -248,8 +306,14 @@ fn main() -> color_eyre::Result<()> {
         Rc::clone(&settings),
         Rc::clone(&viewport),
         Rc::clone(&library),
-        Box::new(|library| library.save()),
-        Box::new(|settings| settings.save()),
+        Box::new({
+            let store = Rc::clone(&library_store);
+            move |library| save_library(&store, library)
+        }),
+        Box::new({
+            let store = Rc::clone(&settings_store);
+            move |settings| save_settings(&store, settings)
+        }),
     ));
 
     // Seed the carousel from the persisted library so boot shows saved books. This is
@@ -258,6 +322,7 @@ fn main() -> color_eyre::Result<()> {
         &ui,
         &CarouselRefresh {
             library: &library,
+            library_store: &library_store,
             covers: &covers,
             search: &search,
             selection: &selection,
@@ -304,7 +369,15 @@ fn main() -> color_eyre::Result<()> {
 
     // Wire all event handlers onto the window (handlers/, #151).
     handlers::wire_open_handlers(
-        &ui, &settings, &library, &covers, &adder, &search, &selection, &localizer,
+        &ui,
+        &settings,
+        &library,
+        &covers,
+        &adder,
+        &search,
+        &selection,
+        &localizer,
+        &library_store,
     );
     handlers::wire_carousel_handlers(
         &ui,
@@ -322,9 +395,17 @@ fn main() -> color_eyre::Result<()> {
         &search,
         &selection,
         &localizer,
+        &library_store,
     );
     handlers::wire_selection_handlers(
-        &ui, &state, &library, &covers, &search, &selection, &localizer,
+        &ui,
+        &state,
+        &library,
+        &covers,
+        &search,
+        &selection,
+        &localizer,
+        &library_store,
     );
     handlers::wire_viewer_input_handlers(&ui, &state, &viewport, &pages, &localizer);
     handlers::wire_settings_handlers(
@@ -339,21 +420,33 @@ fn main() -> color_eyre::Result<()> {
         &search,
         &selection,
         &localizer,
+        &settings_store,
+        &library_store,
     );
     handlers::wire_view_mode_handlers(
         &ui, &state, &viewport, &settings, &library, &pages, &search, &selection, &localizer,
     );
     handlers::wire_viewport_handlers(&ui, &viewport);
     handlers::wire_nav_handlers(
-        &ui, &state, &viewport, &settings, &library, &nav, &covers, &pages, &search, &selection,
+        &ui,
+        &state,
+        &viewport,
+        &settings,
+        &library,
+        &nav,
+        &covers,
+        &pages,
+        &search,
+        &selection,
         &localizer,
+        &library_store,
     );
     // File/folder drag-and-drop onto the Library screen, feeding the same bulk-add
     // pipeline as the Add buttons (handlers/drag_drop.rs).
     handlers::wire_drag_drop_handlers(&ui, &settings, &adder);
     // GitHub Releases update checker: wire the dialog/settings callbacks, then kick off
     // a throttled, non-forced background check. Reuses the shared settings cell.
-    handlers::wire_update_handlers(&ui, &settings);
+    handlers::wire_update_handlers(&ui, &settings, &settings_store);
     wire_relaunch_persistence(
         &ui,
         &covers,
@@ -362,8 +455,10 @@ fn main() -> color_eyre::Result<()> {
         &dialog_session,
         &settings,
         &library,
+        &settings_store,
+        &library_store,
     );
-    handlers::start_update_check(&ui, &settings, false);
+    handlers::start_update_check(&ui, &settings, &settings_store, false);
 
     // Restore the last window size + position before the first paint. No-op on a
     // fresh install; off-screen positions are dropped in favor of centering.
@@ -378,6 +473,8 @@ fn main() -> color_eyre::Result<()> {
         &dialog_session,
         &settings,
         &library,
+        &settings_store,
+        &library_store,
     );
     Ok(())
 }
@@ -395,6 +492,7 @@ fn main() -> color_eyre::Result<()> {
 /// `slint::Timer` dispatch — a top-level event-loop callback with no other
 /// handler on the stack, so no `RefCell` borrow is live. Never call this from
 /// inside another handler that holds a `borrow_mut()`.
+#[allow(clippy::too_many_arguments)]
 fn run_exit_persistence(
     ui: &ViewerWindow,
     covers: &Rc<cover_loader::CoverController>,
@@ -403,6 +501,8 @@ fn run_exit_persistence(
     dialog_session: &Rc<RefCell<DialogSession>>,
     settings: &Rc<RefCell<Settings>>,
     library: &Rc<RefCell<Library>>,
+    settings_store: &SettingsStoreHandle,
+    library_store: &LibraryStoreHandle,
 ) {
     stage_exit_state(
         dialog_session,
@@ -411,26 +511,28 @@ fn run_exit_persistence(
         viewport,
         settings,
         library,
-        Library::save,
+        library_store,
+        |library| save_library(library_store, library),
     );
     // Record the final window geometry so the next launch restores it. Safe: the window
     // handle is still alive (`ui` in scope) and `settings` is unborrowed.
     window_state::capture_geometry(ui, &mut settings.borrow_mut());
 
-    if let Err(e) = settings.borrow().save() {
+    if let Err(e) = save_settings(settings_store, &settings.borrow()) {
         tracing::error!(error = %e, "failed to save settings on exit");
     }
 }
 
 /// The window-free half of [`run_exit_persistence`], with the library save
 /// injected (the same seam `persist_leave_point_with` uses) so the sequence is
-/// reachable without a live window. Production passes [`Library::save`].
+/// reachable without a live window. Production saves through `LibraryStore`.
 ///
 /// ORDER IS LOAD-BEARING: the dialog session ENDS first. A settings dialog opened
 /// on the Library screen leaves the runtime seeded with the GLOBAL defaults, and
 /// `persist_leave_point(AppExit)` writes that runtime onto the open book — so a
 /// quit with the dialog still up used to overwrite the book's own view modes
 /// with the globals (issue #535, path (a)).
+#[allow(clippy::too_many_arguments)]
 fn stage_exit_state(
     dialog_session: &Rc<RefCell<DialogSession>>,
     covers: &Rc<cover_loader::CoverController>,
@@ -438,12 +540,13 @@ fn stage_exit_state(
     viewport: &Rc<RefCell<ViewportState>>,
     settings: &Rc<RefCell<Settings>>,
     library: &Rc<RefCell<Library>>,
+    library_store: &LibraryStoreHandle,
     save: impl FnOnce(&Library) -> Result<(), CoreError>,
 ) {
     dialog_session.borrow_mut().end(state, viewport);
     // Persist page counts the cover prefetch resolved after the last refresh, so a book
     // counted this session isn't re-counted next launch.
-    covers.flush_counts(library);
+    covers.flush_counts(library, library_store);
     // Stage position + view-mode routing, then persist the library exactly once.
     // Both callers run at top-level shutdown points, so all cells are unborrowed.
     // Exit is now exactly one library write (formerly two).
@@ -465,6 +568,7 @@ fn stage_exit_state(
 /// Wire the self-update relaunch's persistence bridge. Lives here, not in
 /// `handlers/update.rs`, because it is the only place all five state cells are in
 /// scope — and the relaunch closure itself is `Send` and cannot hold them.
+#[allow(clippy::too_many_arguments)]
 fn wire_relaunch_persistence(
     ui: &ViewerWindow,
     covers: &Rc<cover_loader::CoverController>,
@@ -473,6 +577,8 @@ fn wire_relaunch_persistence(
     dialog_session: &Rc<RefCell<DialogSession>>,
     settings: &Rc<RefCell<Settings>>,
     library: &Rc<RefCell<Library>>,
+    settings_store: &SettingsStoreHandle,
+    library_store: &LibraryStoreHandle,
 ) {
     let ui_weak = ui.as_weak();
     let covers = Rc::clone(covers);
@@ -481,6 +587,8 @@ fn wire_relaunch_persistence(
     let dialog_session = Rc::clone(dialog_session);
     let settings = Rc::clone(settings);
     let library = Rc::clone(library);
+    let settings_store = Rc::clone(settings_store);
+    let library_store = Rc::clone(library_store);
     ui.on_persist_before_relaunch(move || {
         with_ui(&ui_weak, |ui| {
             run_exit_persistence(
@@ -491,6 +599,8 @@ fn wire_relaunch_persistence(
                 &dialog_session,
                 &settings,
                 &library,
+                &settings_store,
+                &library_store,
             );
         });
     });
@@ -887,6 +997,7 @@ mod tests {
         let library = Rc::new(RefCell::new(library_value));
         let dialog_session = Rc::new(RefCell::new(DialogSession::new()));
         let covers = Rc::new(cover_loader::CoverController::new());
+        let library_store = Rc::new(Some(LibraryStore::new(root.path().join("library.json"))));
 
         // The Library-screen dialog seeds the runtime with G, then the user quits.
         dialog_session
@@ -899,6 +1010,7 @@ mod tests {
             &viewport,
             &settings,
             &library,
+            &library_store,
             |_| Ok(()),
         );
 
@@ -921,10 +1033,12 @@ mod tests {
     #[test]
     fn load_or_default_returns_loaded_value_and_records_no_notice() {
         let mut errs: Vec<String> = Vec::new();
+        let store = SettingsStore::new(std::path::PathBuf::from("unused-settings.json"));
         let value: u32 = load_or_default(
             "settings",
-            || Ok(42),
-            || Err(CoreError::NoConfigDir),
+            Ok(&store),
+            |_| Ok(42),
+            SettingsStore::path,
             &mut errs,
         );
         assert_eq!(value, 42);
@@ -934,10 +1048,12 @@ mod tests {
     #[test]
     fn load_or_default_falls_back_to_default_and_records_labelled_notice_on_err() {
         let mut errs: Vec<String> = Vec::new();
-        let value: u32 = load_or_default(
+        let error = CoreError::NoDataDir;
+        let value: u32 = load_or_default::<u32, LibraryStore>(
             "library",
-            || Err(CoreError::NoDataDir),
-            || Err(CoreError::NoDataDir),
+            Err(&error),
+            |_| Ok(42),
+            LibraryStore::path,
             &mut errs,
         );
         assert_eq!(
@@ -956,7 +1072,7 @@ mod tests {
         let path = dir.path().join("settings.json");
         let original = br#"{"version":99,"future_field":"keep me"}"#;
         std::fs::write(&path, original).unwrap();
-        let error = Settings::load_from(&path).unwrap_err();
+        let error = SettingsStore::new(path.clone()).load().unwrap_err();
         let load_errs = [quarantine_load_failure(
             "settings",
             &path,
@@ -968,6 +1084,145 @@ mod tests {
         assert!(!path.exists());
         assert_eq!(std::fs::read(&destination).unwrap(), original);
         assert!(load_errs[0].contains("settings.json.corrupt-1700000000"));
+    }
+
+    #[test]
+    fn unresolved_store_handles_return_the_original_directory_errors() {
+        let library_store: LibraryStoreHandle = Rc::new(None);
+        let settings_store: SettingsStoreHandle = Rc::new(None);
+
+        let library_result = save_library(&library_store, &Library::new());
+        let settings_result = save_settings(&settings_store, &Settings::default());
+
+        assert!(matches!(library_result, Err(CoreError::NoDataDir)));
+        assert!(matches!(settings_result, Err(CoreError::NoConfigDir)));
+    }
+
+    /// The RESOLVED arm of the same two dispatch helpers: the test above pins only
+    /// the `None` arm, so replacing either `Some(store) => store.save(…)` with
+    /// `Ok(())` survives it. This one reads the value back off the handle's own
+    /// path, so that mutation fails here (a missing file loads as the default,
+    /// which carries neither the added book nor the flipped flag).
+    #[test]
+    fn resolved_store_handles_save_through_to_the_stores_own_path() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let library_path = dir.path().join("library.json");
+        let settings_path = dir.path().join("settings.json");
+        let library_store: LibraryStoreHandle =
+            Rc::new(Some(LibraryStore::new(library_path.clone())));
+        let settings_store: SettingsStoreHandle =
+            Rc::new(Some(SettingsStore::new(settings_path.clone())));
+
+        let book = dir.path().join("book");
+        std::fs::create_dir(&book).expect("create book");
+        // Add the canonical identity, the form the load path normalizes to (on macOS
+        // a tempdir's `/var` resolves to `/private/var`), so the round trip compares
+        // like with like.
+        let stored = gashuu_core::canonical_identity(&book);
+        let mut library_value = Library::new();
+        assert!(library_value.add(stored.clone()).is_some());
+        // `track_recent_sources` is off by default and untouched by `normalize`,
+        // so it survives the round trip iff the save actually happened.
+        let settings_value = Settings {
+            track_recent_sources: true,
+            ..Settings::default()
+        };
+
+        save_library(&library_store, &library_value).expect("save via a resolved library handle");
+        save_settings(&settings_store, &settings_value)
+            .expect("save via a resolved settings handle");
+
+        assert!(
+            library_path.exists(),
+            "the library must land on the store's path"
+        );
+        assert!(
+            settings_path.exists(),
+            "the settings must land on the store's path"
+        );
+        let reloaded_library = LibraryStore::new(library_path)
+            .load()
+            .expect("reload the saved library");
+        let reloaded_settings = SettingsStore::new(settings_path)
+            .load()
+            .expect("reload the saved settings");
+        assert_eq!(
+            reloaded_library
+                .books()
+                .iter()
+                .map(|b| b.path().to_path_buf())
+                .collect::<Vec<_>>(),
+            vec![stored],
+            "the resolved handle must persist the library it was handed"
+        );
+        assert!(
+            reloaded_settings.track_recent_sources,
+            "the resolved handle must persist the settings it was handed"
+        );
+    }
+
+    /// Startup self-heal, case 1 of 3: a first run has no `settings.json`, and the
+    /// repair must not create one — the first real save does that.
+    #[test]
+    fn repair_settings_file_leaves_a_missing_file_alone() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("settings.json");
+        let store = SettingsStore::new(path.clone());
+        let mut errs: Vec<String> = Vec::new();
+
+        repair_settings_file_if_needed(Some(&store), &Settings::default(), &mut errs);
+
+        assert!(!path.exists(), "a first run must not write settings.json");
+        assert!(errs.is_empty(), "a first run records no notice");
+    }
+
+    /// Case 2 of 3: a file that already matches the canonical serialization is not
+    /// rewritten, so a clean launch performs no settings write at all.
+    #[test]
+    fn repair_settings_file_leaves_a_canonical_file_untouched() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("settings.json");
+        let store = SettingsStore::new(path.clone());
+        let settings = Settings::default();
+        let canonical = settings.to_json().expect("canonical settings json");
+        std::fs::write(&path, &canonical).expect("seed a canonical file");
+        let before = std::fs::metadata(&path).expect("metadata").modified().ok();
+        let mut errs: Vec<String> = Vec::new();
+
+        repair_settings_file_if_needed(Some(&store), &settings, &mut errs);
+
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("read back"),
+            canonical
+        );
+        assert_eq!(
+            std::fs::metadata(&path).expect("metadata").modified().ok(),
+            before,
+            "a matching file must not be rewritten"
+        );
+        assert!(errs.is_empty());
+    }
+
+    /// Case 3 of 3: a file whose bytes diverge from the loaded settings (corrupt, or
+    /// out-of-bounds values `normalize` repaired in memory) is rewritten in place at
+    /// startup, so a crash before the next clean exit cannot lose the repair.
+    #[test]
+    fn repair_settings_file_rewrites_a_divergent_file() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("settings.json");
+        let store = SettingsStore::new(path.clone());
+        let settings = Settings::default();
+        std::fs::write(&path, b"{ this is not settings json").expect("seed a corrupt file");
+        let mut errs: Vec<String> = Vec::new();
+
+        repair_settings_file_if_needed(Some(&store), &settings, &mut errs);
+
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("read back"),
+            settings.to_json().expect("canonical settings json"),
+            "a divergent file is repaired to the canonical serialization"
+        );
+        assert!(errs.is_empty(), "a successful repair records no notice");
     }
 
     #[test]

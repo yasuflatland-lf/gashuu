@@ -17,6 +17,7 @@ pub(crate) mod persist;
 pub mod reading_progress;
 pub mod search;
 pub mod settings;
+pub mod settings_store;
 pub mod spread;
 #[cfg(test)]
 mod test_fixtures;
@@ -38,12 +39,13 @@ pub use library::{
     book_is_available, canonical_identity, display_title, Book, Library, OpenRegistration,
     RemovalReport,
 };
-pub use library_store::LIBRARY_VERSION;
+pub use library_store::{LibraryStore, LIBRARY_VERSION};
 pub use page_source::{FolderSource, PageEntry, PageSource, RarSource, ZipSource};
 pub use persist::quarantine_file;
 pub use reading_progress::ReadingProgress;
 pub use search::book_matches;
 pub use settings::{Settings, MAX_RECENT_SOURCES, SETTINGS_VERSION};
+pub use settings_store::SettingsStore;
 pub use spread::{next_leading, normalize_leading, prev_leading, spread_at, Spread, SpreadContext};
 pub use thumbnail::{
     generate_cover, generate_one_thumbnail, generate_thumbnails, PageThumbContext,

@@ -1,11 +1,4 @@
-//! Persistent user settings, serialized to JSON in the OS config directory.
-//!
-//! Path resolution uses the `directories` crate (`~/.config/gashuu/settings.json`
-//! on Linux, the platform equivalents elsewhere). I/O is exposed both as
-//! path-taking primitives (`load_from`/`save_to`, testable with `tempfile`) and
-//! convenience wrappers (`load`/`save`) that resolve the OS path. This crate stays
-//! logging-free: load-failure recovery (including corrupt files) lives in the
-//! presentation layer.
+//! Persistent user settings domain model and JSON representation.
 
 use crate::archive_loader::ArchivePolicy;
 use crate::cache::{DEFAULT_CAPACITY, DEFAULT_PREFETCH_RADIUS};
@@ -13,9 +6,8 @@ use crate::cache_config::CacheConfig;
 use crate::error::CoreError;
 use crate::view_modes::{CoverMode, FitMode, KeyBindings, Language, ReadingDirection, SpreadMode};
 use crate::window_geometry::WindowGeometry;
-use directories::ProjectDirs;
 use serde::{Deserialize, Serialize};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 /// On-disk schema version. Bump when the shape changes and add a `migrate` step.
 pub const SETTINGS_VERSION: u32 = 1;
@@ -120,37 +112,6 @@ impl Default for Settings {
 }
 
 impl Settings {
-    /// Resolve `settings.json` in the OS config dir (creates nothing).
-    pub fn config_path() -> Result<PathBuf, CoreError> {
-        let dirs = ProjectDirs::from("", "", "gashuu").ok_or(CoreError::NoConfigDir)?;
-        Ok(dirs.config_dir().join("settings.json"))
-    }
-
-    /// Load from the OS config path. Missing file → defaults (first run).
-    pub fn load() -> Result<Self, CoreError> {
-        Self::load_from(&Self::config_path()?)
-    }
-
-    /// Load from an explicit path. Missing → defaults; any other I/O error or
-    /// malformed JSON → `Err`.
-    pub fn load_from(path: &Path) -> Result<Self, CoreError> {
-        match std::fs::read_to_string(path) {
-            Ok(json) => Self::from_json(&json),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
-            Err(e) => Err(CoreError::from(e)),
-        }
-    }
-
-    /// Save to the OS config path (creating parent dirs as needed).
-    pub fn save(&self) -> Result<(), CoreError> {
-        self.save_to(&Self::config_path()?)
-    }
-
-    /// Atomically write the settings to `path`, creating parent directories as needed.
-    pub fn save_to(&self, path: &Path) -> Result<(), CoreError> {
-        crate::atomic_write::write_atomic(path, self.to_json()?.as_bytes())
-    }
-
     /// Derive the archive-open policy from these settings.
     pub fn archive_policy(&self) -> ArchivePolicy {
         ArchivePolicy {
@@ -335,66 +296,6 @@ mod tests {
     }
 
     #[test]
-    fn save_to_then_load_from_round_trips() {
-        let dir = tempfile::tempdir().unwrap();
-        // Path under a non-existent subdir to verify parent auto-creation.
-        let path = dir.path().join("nested").join("sub").join("settings.json");
-        let original = non_default_settings();
-        original.save_to(&path).unwrap();
-        let loaded = Settings::load_from(&path).unwrap();
-        assert_eq!(original, loaded);
-    }
-
-    #[test]
-    fn save_to_creates_missing_parent_directories() {
-        // The atomic helper owns parent creation; saving under a non-existent
-        // subtree must materialize the directories AND the file.
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("deep").join("nest").join("settings.json");
-        assert!(!path.parent().unwrap().exists());
-        Settings::default().save_to(&path).unwrap();
-        assert!(path.exists());
-    }
-
-    #[test]
-    fn save_to_overwrites_existing_file_with_complete_json() {
-        // Saving over an existing (longer) settings file must replace it wholesale
-        // with the new document — no truncation, no leftover tail from the old one.
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("settings.json");
-
-        // First save: a fully-populated (longer) document.
-        non_default_settings().save_to(&path).unwrap();
-
-        // Second save: defaults (a shorter document on most fields).
-        let replacement = Settings::default();
-        replacement.save_to(&path).unwrap();
-
-        // The bytes on disk must equal exactly the new serialization, and parse
-        // back to the replacement value with no residue from the first write.
-        let on_disk = std::fs::read_to_string(&path).unwrap();
-        assert_eq!(on_disk, replacement.to_json().unwrap());
-        assert_eq!(Settings::load_from(&path).unwrap(), replacement);
-    }
-
-    #[test]
-    fn load_from_missing_file_returns_defaults() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("does-not-exist.json");
-        let loaded = Settings::load_from(&path).unwrap();
-        assert_eq!(loaded, Settings::default());
-    }
-
-    #[test]
-    fn load_from_corrupt_json_errors() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("corrupt.json");
-        std::fs::write(&path, "not json").unwrap();
-        let err = Settings::load_from(&path).unwrap_err();
-        assert!(matches!(err, CoreError::Settings(_)));
-    }
-
-    #[test]
     fn from_json_future_version_errors() {
         let result = Settings::from_json(r#"{"version":99}"#);
 
@@ -562,13 +463,6 @@ mod tests {
     }
 
     #[test]
-    fn config_path_targets_gashuu_settings_json() {
-        let path = Settings::config_path().unwrap();
-        assert!(path.ends_with("settings.json"));
-        assert!(path.to_string_lossy().contains("gashuu"));
-    }
-
-    #[test]
     fn default_settings_json_snapshot() {
         insta::assert_snapshot!(Settings::default().to_json().unwrap());
     }
@@ -607,19 +501,6 @@ mod tests {
     }
 
     // ── FIX 3 regression: cache_size=0 normalized to 1; preload_pages=0 kept ──
-
-    #[test]
-    fn load_normalizes_zero_cache_size_to_one() {
-        let json = serde_json::json!({
-            "version": SETTINGS_VERSION,
-            "cache_size": 0,
-            "preload_pages": 0,
-        })
-        .to_string();
-        let s = Settings::from_json(&json).unwrap();
-        assert_eq!(s.cache_capacity, 1, "cache_size=0 must be normalized to 1");
-        assert_eq!(s.prefetch_radius, 0, "preload_pages=0 must NOT be clamped");
-    }
 
     // ── push_recent ordering: promote an existing middle entry ──
 

@@ -7,7 +7,8 @@ use crate::{
 use crate::{
     apply_add_report, current_book_name, finalize_empty_book_rejected, finalize_open,
     finalize_remove, go_to_viewer, push_selection_toolbar_state, refresh_library_carousel,
-    visible_index_to_path, with_ui, CarouselRefresh, ViewerWindow,
+    save_library, visible_index_to_path, with_ui, CarouselRefresh, LibraryStoreHandle,
+    ViewerWindow,
 };
 use crate::{
     library_model::{LibrarySearchState, LibrarySelectionState},
@@ -35,6 +36,7 @@ pub(crate) fn wire_open_handlers(
     search: &Rc<RefCell<LibrarySearchState>>,
     selection: &Rc<RefCell<LibrarySelectionState>>,
     localizer: &Rc<i18n::Localizer>,
+    library_store: &LibraryStoreHandle,
 ) {
     // Rebind the `&Rc<_>` params to owned `Rc` locals so each closure's `Rc::clone(&handle)`
     // prelude stays byte-identical to its pre-extraction form in `main`.
@@ -45,6 +47,7 @@ pub(crate) fn wire_open_handlers(
     let search = Rc::clone(search);
     let selection = Rc::clone(selection);
     let localizer = Rc::clone(localizer);
+    let library_store = Rc::clone(library_store);
 
     // Add Books: pick comic sources. macOS picks archives AND folders in one panel
     // (`pick_files_or_folders`); sources are probed off the UI thread (issue 206).
@@ -120,6 +123,7 @@ pub(crate) fn wire_open_handlers(
         let search = Rc::clone(&search);
         let selection = Rc::clone(&selection);
         let localizer = Rc::clone(&localizer);
+        let library_store = Rc::clone(&library_store);
         ui.on_add_finalize(move |epoch| {
             with_ui(&ui_weak, |ui| {
                 let Some((outcomes, op)) = adder.take_outcomes(epoch.max(0) as usize) else {
@@ -129,6 +133,7 @@ pub(crate) fn wire_open_handlers(
                     &ui,
                     &CarouselRefresh {
                         library: &library,
+                        library_store: &library_store,
                         covers: &covers,
                         search: &search,
                         selection: &selection,
@@ -199,6 +204,7 @@ pub(crate) fn wire_carousel_handlers(
     search: &Rc<RefCell<LibrarySearchState>>,
     selection: &Rc<RefCell<LibrarySelectionState>>,
     localizer: &Rc<i18n::Localizer>,
+    library_store: &LibraryStoreHandle,
 ) {
     // Rebind the `&Rc<_>` params to owned `Rc` locals so each closure's `Rc::clone(&handle)`
     // prelude stays byte-identical to its pre-extraction form in `main`.
@@ -216,6 +222,7 @@ pub(crate) fn wire_carousel_handlers(
     let search = Rc::clone(search);
     let selection = Rc::clone(selection);
     let localizer = Rc::clone(localizer);
+    let library_store = Rc::clone(library_store);
 
     // Single-open finalize: drain only the current epoch, then run the complete
     // mutation/persistence/UI tail on the event-loop thread.
@@ -231,6 +238,7 @@ pub(crate) fn wire_carousel_handlers(
         let thumbs = Rc::clone(&thumbs);
         let library = Rc::clone(&library);
         let covers = Rc::clone(&covers);
+        let library_store = Rc::clone(&library_store);
         let search = Rc::clone(&search);
         let selection = Rc::clone(&selection);
         let localizer = Rc::clone(&localizer);
@@ -265,6 +273,7 @@ pub(crate) fn wire_carousel_handlers(
                     &thumbs,
                     &CarouselRefresh {
                         library: &library,
+                        library_store: &library_store,
                         covers: &covers,
                         search: &search,
                         selection: &selection,
@@ -297,6 +306,7 @@ pub(crate) fn wire_carousel_handlers(
         let search = Rc::clone(&search);
         let selection = Rc::clone(&selection);
         let localizer = Rc::clone(&localizer);
+        let library_store = Rc::clone(&library_store);
         ui.on_library_search_changed(move |query| {
             with_ui(&ui_weak, |ui| {
                 // `search` and `library` are distinct RefCells, so a mut borrow of one and a
@@ -310,6 +320,7 @@ pub(crate) fn wire_carousel_handlers(
                     &ui,
                     &CarouselRefresh {
                         library: &library,
+                        library_store: &library_store,
                         covers: &covers,
                         search: &search,
                         selection: &selection,
@@ -422,6 +433,7 @@ pub(crate) fn wire_carousel_handlers(
 
 /// Registers the carousel selection/focus, bulk-delete, and empty-book-removal callbacks onto `ui`.
 /// Panel constraint (#151): explicit handle list IS the dependency list — no AppState bundle.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn wire_selection_handlers(
     ui: &ViewerWindow,
     state: &Rc<RefCell<ViewerState>>,
@@ -430,6 +442,7 @@ pub(crate) fn wire_selection_handlers(
     search: &Rc<RefCell<LibrarySearchState>>,
     selection: &Rc<RefCell<LibrarySelectionState>>,
     localizer: &Rc<i18n::Localizer>,
+    library_store: &LibraryStoreHandle,
 ) {
     // Rebind the `&Rc<_>` params to owned `Rc` locals so each closure's `Rc::clone(&handle)`
     // prelude stays byte-identical to its pre-extraction form in `main`.
@@ -439,6 +452,7 @@ pub(crate) fn wire_selection_handlers(
     let search = Rc::clone(search);
     let selection = Rc::clone(selection);
     let localizer = Rc::clone(localizer);
+    let library_store = Rc::clone(library_store);
 
     // Toggle the focused/clicked book's selection (VISIBLE index → path via the search
     // projection). Flips ONLY that row's `selected` flag, no model rebuild; desync = no-op.
@@ -609,11 +623,13 @@ pub(crate) fn wire_selection_handlers(
         let selection = Rc::clone(&selection);
         let localizer = Rc::clone(&localizer);
         let covers = Rc::clone(&covers);
+        let library_store = Rc::clone(&library_store);
         let remove_books = remove_books::RemoveBooksUseCase::new(
             Rc::clone(&state),
             Rc::clone(&library),
             Rc::clone(&search),
             Rc::clone(&selection),
+            Rc::clone(&library_store),
         );
         ui.on_confirm_delete_accepted(move || {
             with_ui(&ui_weak, |ui| {
@@ -625,6 +641,7 @@ pub(crate) fn wire_selection_handlers(
                     &ui,
                     &CarouselRefresh {
                         library: &library,
+                        library_store: &library_store,
                         covers: &covers,
                         search: &search,
                         selection: &selection,
@@ -645,16 +662,20 @@ pub(crate) fn wire_selection_handlers(
         let search = Rc::clone(&search);
         let selection = Rc::clone(&selection);
         let localizer = Rc::clone(&localizer);
+        let library_store = Rc::clone(&library_store);
         ui.on_empty_book_detected(move |path_str| {
             with_ui(&ui_weak, |ui| {
                 let path = std::path::PathBuf::from(path_str.as_str());
                 // The shared transaction (single home in open_book): title capture
                 // BEFORE removal -> Library::remove -> save -> best-effort cover purge.
-                let removal = open_book::remove_empty_book(&library, &path);
+                let removal = open_book::remove_empty_book(&library, &path, |library| {
+                    save_library(&library_store, library)
+                });
                 finalize_empty_book_rejected(
                     &ui,
                     &CarouselRefresh {
                         library: &library,
+                        library_store: &library_store,
                         covers: &covers,
                         search: &search,
                         selection: &selection,

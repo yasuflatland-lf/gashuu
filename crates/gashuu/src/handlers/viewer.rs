@@ -348,6 +348,7 @@ pub(crate) fn wire_nav_handlers(
     search: &Rc<RefCell<LibrarySearchState>>,
     selection: &Rc<RefCell<LibrarySelectionState>>,
     localizer: &Rc<i18n::Localizer>,
+    library_store: &crate::LibraryStoreHandle,
 ) {
     let state = Rc::clone(state);
     let viewport = Rc::clone(viewport);
@@ -359,6 +360,7 @@ pub(crate) fn wire_nav_handlers(
     let search = Rc::clone(search);
     let selection = Rc::clone(selection);
     let localizer = Rc::clone(localizer);
+    let library_store = Rc::clone(library_store);
 
     // Keyboard navigation forwarded from the FocusScope.
     {
@@ -377,6 +379,7 @@ pub(crate) fn wire_nav_handlers(
         let covers = Rc::clone(&covers);
         let search = Rc::clone(&search);
         let selection = Rc::clone(&selection);
+        let library_store = Rc::clone(&library_store);
         ui.on_nav(move |token| {
             with_ui(&ui_weak, |ui| {
                 let dir = state.borrow().reading_direction();
@@ -491,6 +494,7 @@ pub(crate) fn wire_nav_handlers(
                             &viewport,
                             &settings,
                             &library,
+                            &library_store,
                         );
                         // `go_to_library` rebuilds the carousel on entry so the continue-reading
                         // ribbon reflects the `last_opened` just persisted, and snaps focus to it.
@@ -499,6 +503,7 @@ pub(crate) fn wire_nav_handlers(
                             &nav,
                             &CarouselRefresh {
                                 library: &library,
+                                library_store: &library_store,
                                 covers: &covers,
                                 search: &search,
                                 selection: &selection,

@@ -417,7 +417,7 @@ impl Library {
 
     /// Re-sort the shelf into natural title order (with canonical path tie-break)
     /// and enforce the `last_opened` invariant. Called on load
-    /// (`library_store::load_from`) so libraries persisted before natural
+    /// (`LibraryStore::load`) so libraries persisted before natural
     /// ordering converge to the canonical sort on the next save; it also repairs
     /// any otherwise-unsorted `books` vec and clears an orphan `last_opened`
     /// (a path that is no longer present in `books`).

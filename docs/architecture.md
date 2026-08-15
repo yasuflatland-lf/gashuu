@@ -210,15 +210,17 @@ pan clamping (`clamp_offset`/`centered_offset`), cursor-anchored zoom (`anchored
 
 ### Settings
 
-`settings.rs`. Persistent user settings serialized to JSON in the OS config dir via
-`directories::ProjectDirs`. The view-mode vocabulary it persists
+`settings.rs`. The persistent user-settings domain model and its JSON representation. The file
+location and the file I/O belong to `SettingsStore` (see below), so `Settings` itself never
+resolves an OS directory and never touches the filesystem. The view-mode vocabulary it persists
 (`reading_direction`/`spread_mode`/`cover_mode`/`fit_mode`/`language`/`key_bindings`) now lives in
 `view_modes.rs` (see below); `Settings` is just one consumer. `recent_sources` is most-recent-first
 and capped on both write and load by `MAX_RECENT_SOURCES = 10`.
 
 **This is the first use of `serde` in core.** The headless boundary still holds (no
-slint/tracing). I/O shape: `load_from`/`save_to` take explicit paths (tempfile-testable);
-`load`/`save` are thin OS-path wrappers. Corrupt-file recovery lives in the UI (`main.rs`) and is
+slint/tracing). `Settings` keeps only the pure entry points `to_json` / `from_json` / `normalize`
+(plus `push_recent` / `cache_config` / `archive_policy`); `SettingsStore` owns `load` / `save`.
+Corrupt-file recovery lives in the UI (`main.rs`) and is
 **quarantine-then-fresh** for BOTH `settings.json` and `library.json`: a file this build cannot load
 is renamed aside as `<name>.corrupt-<now_secs>` (`gashuu_core::quarantine_file`), a notice is pushed
 onto the home screen, and the app starts from defaults — the user keeps their bytes and a newer
@@ -258,7 +260,7 @@ parse/migrate guard both versioned-object documents run, so `Settings::from_json
   `u32::try_from` version resolution still run FIRST, and the `> u32::MAX → treated as 0 → migrate`
   rule is UNCHANGED — a crafted huge version is "unknown", not "from the future".
 - `quarantine_file(path, now_secs) -> Result<PathBuf, CoreError>` lives here now (promoted from
-  `library_store.rs`); `Library::quarantine_corrupt_file` is a thin delegating wrapper. It never
+  `library_store.rs`); `LibraryStore::quarantine` is a thin delegating wrapper. It never
   reads or parses the file, and takes the clock as a parameter (core owns no clock).
 - `Settings::normalize` stamps `SETTINGS_VERSION` — the `version` field is a schema label owned by
   the binary, never echoed back from disk — restoring the symmetry `Library::to_json` already had
@@ -266,6 +268,43 @@ parse/migrate guard both versioned-object documents run, so `Settings::from_json
 
 Headless (`serde_json` + `std::fs` only). See
 [ADR-0005](ADRs/0005-settings-persistence.md)'s Amendment.
+
+### library_store / settings_store (the two repositories)
+
+`library_store.rs` and `settings_store.rs`. One repository type per persisted document —
+`LibraryStore` for `library.json`, `SettingsStore` for `settings.json` — each a `{ path: PathBuf }`
+newtype that owns the storage LOCATION and the file I/O, and nothing else. The two aggregates
+(`Library`, `Settings`) are therefore pure in-memory domain types again: they keep only their
+serialization entry points (`Library::to_json`/`from_json`, `Settings::to_json`/`from_json`/
+`normalize`) and no longer resolve an OS directory or touch the filesystem, so the domain →
+infrastructure dependency arrow is gone (ADR-0002).
+
+Identical surface on both:
+
+- `new(path: PathBuf)` — an explicit location; what tests (`tempfile`) and any alternate location use.
+- `default_location() -> Result<Self, CoreError>` — the `directories::ProjectDirs` resolution
+  (`library.json` under the data dir → `CoreError::NoDataDir`; `settings.json` under the config dir
+  → `CoreError::NoConfigDir`). Creates nothing.
+- `path(&self) -> &Path` — the file this store reads and writes (the UI needs it for the
+  exists-check + quarantine notice on a load failure).
+- `load(&self) -> Result<T, CoreError>` — a MISSING file is not an error (`Library::new()` /
+  `Settings::default()`, i.e. first run); anything else (I/O, malformed JSON, future schema) is.
+- `save(&self, value: &T) -> Result<(), CoreError>` — `write_atomic(&self.path,
+  value.to_json()?.as_bytes())`, parent directories included.
+
+`LibraryStore` additionally has `quarantine(&self, now_secs: u64) -> Result<PathBuf, CoreError>`,
+delegating to `persist::quarantine_file`. `directories::ProjectDirs` now appears in exactly three
+core modules: these two and `thumbnail_cache.rs` (a cache directory, deliberately out of scope).
+
+The UI crate holds each store once, behind `Rc`, and threads it as an explicit named parameter to
+every function that persists (`main.rs`'s `SettingsStoreHandle` / `LibraryStoreHandle` aliases and
+their `save_settings` / `save_library` helpers). The handle is an `Option` because
+`default_location()` can fail: that reproduces the pre-store behaviour exactly — the app still runs
+and each attempted save reports `NoConfigDir` / `NoDataDir` — without a panic path. The injected
+`save` seams (`persist_leave_point_with`, `remove_books_with_rollback`, `remove_empty_book_with`,
+`OpenBookUseCase`'s two boxed closures, `stage_exit_state`) are unchanged; production now passes a
+store save through them instead of an inherent `Library::save`. Headless (`serde_json` + `std::fs` +
+`directories`). See [ADR-0005](ADRs/0005-settings-persistence.md)'s 2026-08-15 Amendment.
 
 ### view-mode vocabulary (`view_modes.rs`)
 
@@ -349,7 +388,7 @@ both use;
 `Library` is the single source of truth for book ordering: **natural title order** (numeric-aware,
 via `ordering::natural_cmp`) with the canonical path as a stable tiebreak for identically titled
 books. `add()` sorts the book list after inserting; `normalize()` re-sorts on load
-(`library_store::load_from`) so libraries persisted before #82 (insertion order) converge to
+(`LibraryStore::load`) so libraries persisted before #82 (insertion order) converge to
 natural title order on the next launch. The presentation layer (`carousel_data_for_indices`,
 `cover_requests`) inherits this order by iterating `books()` — it does NOT sort independently,
 which keeps carousel row indices and cover-request indices aligned.
@@ -652,8 +691,10 @@ data and touches no Slint; the UI tail lives in `carousel_refresh::finalize_remo
 the save-injection seam `persist_leave_point` wraps: `open_book.rs` calls it directly so the open
 use case routes its leave-point save through the injected `save_library`.
 
-`persist_leave_point(route, &state, &viewport, &settings, &library)` is the ONE leave-point
-persistence chokepoint: it stages the applicable position write-back, delegates view-mode routing
+`persist_leave_point(route, &state, &viewport, &settings, &library, &library_store)` is the ONE
+leave-point persistence chokepoint (the trailing `&LibraryStoreHandle` is what it saves THROUGH;
+it wraps `persist_leave_point_with` by injecting `save_library(library_store, …)`): it stages the
+applicable position write-back, delegates view-mode routing
 to `stage_view_modes_to_sink`, and saves the library at most once. `stage_view_modes_to_sink`'s
 `match route` selects the sink: `DialogClosedOnLibrary` → global reconcile;
 `DialogClosedOnViewer` / `LeaveViewer` / `OpenDifferentBook` → per-book write-back; `AppExit` →
@@ -781,7 +822,7 @@ All four share a private `visible_paths(search, library)` join and are headlessl
 
 ### carousel refresh / projection (`carousel_refresh.rs`)
 
-`carousel_refresh.rs` (extracted from `main.rs`, mirroring the `view_sync.rs` split). Owns the carousel-refresh/projection cluster: `refresh_library_carousel` (the single chokepoint that rebuilds + binds the filtered carousel model, optionally resets focus, re-applies the path-keyed selection, and (re)starts focus-prioritized cover loading), the `CarouselRefresh` borrowed-collaborator bundle it takes (`library` / `covers` / `search` / `selection` / `localizer`, all `pub(crate)`), the visible-index projection helpers (`visible_index_to_path`, `visible_focus_index_for_path`, `entry_focus_index` (private), `snap_carousel_focus_to_last_opened`, `clamp_focused_index`), and `push_selection_strings` (the selection-toolbar string chokepoint). UI-thread only; driven almost entirely from `handlers/library.rs` and `handlers/settings.rs`, with `go_to_library`/`go_to_viewer` (still in `main.rs`) routing their carousel work through it via the crate-root re-exports.
+`carousel_refresh.rs` (extracted from `main.rs`, mirroring the `view_sync.rs` split). Owns the carousel-refresh/projection cluster: `refresh_library_carousel` (the single chokepoint that rebuilds + binds the filtered carousel model, optionally resets focus, re-applies the path-keyed selection, and (re)starts focus-prioritized cover loading), the `CarouselRefresh` borrowed-collaborator bundle it takes (`library` / `library_store` / `covers` / `search` / `selection` / `localizer`, all `pub(crate)`; `library_store` is the `LibraryStoreHandle` the add-path save routes through), the visible-index projection helpers (`visible_index_to_path`, `visible_focus_index_for_path`, `entry_focus_index` (private), `snap_carousel_focus_to_last_opened`, `clamp_focused_index`), and `push_selection_strings` (the selection-toolbar string chokepoint). UI-thread only; driven almost entirely from `handlers/library.rs` and `handlers/settings.rs`, with `go_to_library`/`go_to_viewer` (still in `main.rs`) routing their carousel work through it via the crate-root re-exports.
 
 ### page_count_prefetch
 
@@ -856,6 +897,10 @@ the five sub-modules and re-exports all ten `wire_*` fns (plus `start_update_che
 needs no sub-module path. Each `wire_*` fn takes `&ui` and exactly the `Rc` handles its closures
 clone — the per-closure `Rc::clone` list IS that handler's dependency list (#151 panel constraint:
 no AppState bundle, explicit handle lists only). The five feature files are:
+
+The persistence store handles are part of that explicit list: a `wire_*` fn whose closures save
+takes `library_store: &LibraryStoreHandle` and/or `settings_store: &SettingsStoreHandle` as its own
+named trailing parameter(s) and clones them per closure like any other handle — never a bundle.
 
 - **`handlers/library.rs`**: `wire_open_handlers` (add-books,
   add-folder), `wire_carousel_handlers` (carousel search/open/continue-reading/move/back),

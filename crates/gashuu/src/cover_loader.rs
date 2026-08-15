@@ -33,7 +33,7 @@ use crate::carousel::update_carousel_row;
 use crate::page_count_prefetch::{self, PageCountPrefetch, ResolvedCount};
 use crate::to_slint_image;
 use crate::ui_marshal::marshal_to_ui;
-use crate::{CarouselItem, ViewerWindow};
+use crate::{CarouselItem, LibraryStoreHandle, ViewerWindow};
 use gashuu_core::{
     cache_key, generate_cover, thumbnail_cache::source_mtime_secs, ArchiveLoader, DecodedImage,
     Library, ThumbnailCache,
@@ -458,8 +458,8 @@ impl CoverController {
     /// Persist any still-pending prefetched page counts. Call once on shutdown
     /// (after the event loop ends) so counts resolved after the last `start`
     /// survive a restart instead of being recomputed by re-opening every archive.
-    pub fn flush_counts(&self, library: &Rc<RefCell<Library>>) {
-        self.prefetch.flush(library);
+    pub fn flush_counts(&self, library: &Rc<RefCell<Library>>, library_store: &LibraryStoreHandle) {
+        self.prefetch.flush(library, library_store);
     }
 
     /// Load one cover on a rayon worker — the SINGLE per-book path for cache hit
@@ -613,10 +613,11 @@ impl CoverController {
         &self,
         ui_weak: slint::Weak<ViewerWindow>,
         library: &Rc<RefCell<Library>>,
+        library_store: &LibraryStoreHandle,
         requests: Vec<CoverRequest>,
     ) {
         // 0. Persist counts the PREVIOUS generation's workers resolved (UI thread).
-        self.prefetch.apply(library);
+        self.prefetch.apply(library, library_store);
 
         // 1. Supersede the previous generation and take this one's fresh cancel flag.
         let cancel_flag = self.rotate_cancel();

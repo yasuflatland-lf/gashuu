@@ -278,7 +278,7 @@ When display order must stay consistent, make the core aggregate the one place t
 
 ### Normalize-on-load when adding an ordering invariant to a `#[derive(Deserialize)]` type (#82)
 
-`serde` builds the struct field-by-field, bypassing `new()`/`add()`, so an ordering invariant established only in those constructors is NOT applied to deserialized data. Add a `pub(crate) fn normalize(&mut self)` that re-establishes the invariant (here: re-sort `books`) and call it on the load path (`library_store::load_from`) right after `from_value`/`from_str`. This is the same discipline as the `CacheConfig` no-Deserialize rule, applied to a type that must carry `#[derive(Deserialize)]`: the type cannot shed the derive, so the invariant is re-enforced after deserialization instead. Bonus: calling `normalize` on load upgrades data persisted before the invariant existed — insertion-ordered libraries converge to natural order on the next save, with no migration version bump.
+`serde` builds the struct field-by-field, bypassing `new()`/`add()`, so an ordering invariant established only in those constructors is NOT applied to deserialized data. Add a `pub(crate) fn normalize(&mut self)` that re-establishes the invariant (here: re-sort `books`) and call it on the load path (`LibraryStore::load`) right after `from_value`/`from_str`. This is the same discipline as the `CacheConfig` no-Deserialize rule, applied to a type that must carry `#[derive(Deserialize)]`: the type cannot shed the derive, so the invariant is re-enforced after deserialization instead. Bonus: calling `normalize` on load upgrades data persisted before the invariant existed — insertion-ordered libraries converge to natural order on the next save, with no migration version bump.
 
 ### Changing an ordering invariant silently flips order-dependent test fixtures (#82)
 
@@ -1009,7 +1009,7 @@ NUANCE (`stage_position_write_back`): to read MULTIPLE fields from one `RefCell`
 
 **Single owner of `create_dir_all`.** `write_atomic` owns parent-directory creation (module doc comment: `atomic_write.rs:15`). Call sites MUST NOT also call `create_dir_all` for the same parent; the invariant is held in one place.
 
-**`save_to` delegation.** Both `Library::save_to` (`library_store.rs:38-40`) and `Settings::save_to` (`settings.rs:228-231`) are one-liners that call `write_atomic(path, self.to_json()?.as_bytes())`. No other code in the crate writes these JSON files directly.
+**Store `save` delegation.** Both `LibraryStore::save` (`library_store.rs`) and `SettingsStore::save` (`settings_store.rs`) are one-liners that call `write_atomic(&self.path, value.to_json()?.as_bytes())`. No other code in the crate writes these JSON files directly.
 
 **`tempfile` in `[dependencies]`, not `[dev-dependencies]`** (`gashuu-core/Cargo.toml:24`). `write_atomic` is production code, so `tempfile` must be a regular dependency — placing it in `[dev-dependencies]` would make `NamedTempFile` unavailable at compile time in release builds.
 
@@ -1053,11 +1053,11 @@ GENERAL PRINCIPLE: when an invariant is expressible as a type (`NonZeroUsize`, `
 
 ### Make the save path fallible end-to-end — never `unwrap_or` a serialize step
 
-`Library::to_json -> Result<String, CoreError>` (symmetric with `from_json`), and `save`/`save_to` propagate it via `?`. A serialize step must NOT fall back (`serde_json::to_value(...).unwrap_or(Null)` / `to_string_pretty(...).unwrap_or("{}")`): that writes a TRUNCATED file to disk while the UI reports the save succeeded — silent data loss. Map each step to `CoreError::Library` and bubble it. (`ThumbnailCache::get` swallowing a corrupt read to `None` is the deliberate OPPOSITE and correct there — a cache miss is recoverable; a primary-store save is not.)
+`Library::to_json -> Result<String, CoreError>` (symmetric with `from_json`), and `LibraryStore::save` propagates it via `?`. A serialize step must NOT fall back (`serde_json::to_value(...).unwrap_or(Null)` / `to_string_pretty(...).unwrap_or("{}")`): that writes a TRUNCATED file to disk while the UI reports the save succeeded — silent data loss. Map each step to `CoreError::Library` and bubble it. (`ThumbnailCache::get` swallowing a corrupt read to `None` is the deliberate OPPOSITE and correct there — a cache miss is recoverable; a primary-store save is not.)
 
 ### `CoreError` and `Library` are NOT `Clone` — use `match` to both keep a fallback AND surface the error
 
-To recover from a failed startup load (fall back to a default) WHILE still surfacing the error message, you cannot write `result.clone().unwrap_or_default()` — neither `Library` nor `CoreError` is `Clone`, so it doesn't compile. Instead `match` the `Result`: the `Ok` arm moves the value out; the `Err` arm pushes the error's `Display` (`format!("{e}")`) into a `Vec<String>` of notices and substitutes the default. `main` does this for both `Settings::load` and `Library::load`, then surfaces the collected notices after the initial refresh (see the status-compose entry below).
+To recover from a failed startup load (fall back to a default) WHILE still surfacing the error message, you cannot write `result.clone().unwrap_or_default()` — neither `Library` nor `CoreError` is `Clone`, so it doesn't compile. Instead `match` the `Result`: the `Ok` arm moves the value out; the `Err` arm pushes the error's `Display` (`format!("{e}")`) into a `Vec<String>` of notices and substitutes the default. `main` does this for both `SettingsStore::load` and `LibraryStore::load`, then surfaces the collected notices after the initial refresh (see the status-compose entry below).
 
 ### Move-only refactors — checklist of hard-won gotchas
 
