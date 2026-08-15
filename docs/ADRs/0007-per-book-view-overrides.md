@@ -128,9 +128,15 @@ Model the four preferences as a PER-BOOK override that falls back to the global 
 ## Amendment 2026-07-25: the library-screen dialog session snapshots the open book's runtime AND its pending-inherit flag
 
 - **`DialogSession` (`crates/gashuu/src/dialog_session.rs`) is the seam Decision 4 did not name.**
-  `open_on_library` captures `RuntimeSnapshot { view: ResolvedView, inherit_pending: bool }` for the
-  open book (`None` when no book is open) and THEN global-seeds the runtime;
-  `close_on_library` restores the view via `apply_resolved_view` and THEN the flag.
+  `open(scope, ...)` records `DialogScope::Library` or `Viewer`. Library scope captures
+  `RuntimeSnapshot { view: ResolvedView, inherit_pending: bool }` for the open book (`None` when no
+  book is open) and THEN global-seeds the runtime; Viewer scope touches no runtime state.
+  Persistence routes by this recorded scope, not the screen at close; focus restoration still uses
+  the current screen.
+- **Idempotent `end()` closes every session boundary.** It restores a Library snapshot via
+  `apply_resolved_view` and THEN the flag, then clears both scope and snapshot. It is called from
+  both `on_close_settings` branches, from `run_exit_persistence` before `AppExit` persistence, and
+  from `on_open_finalize` before `apply_probed` (four call sites total).
 - **The restore ORDER is load-bearing.** `apply_resolved_view` calls the value-changing `set_*`
   methods, which CLEAR `inherit_pending`; restoring the flag first would be a no-op. "Reset to
   global" (`reset_to_global`) has the same apply-then-mark order for exactly the same reason.

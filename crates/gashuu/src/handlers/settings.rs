@@ -1,5 +1,5 @@
 use super::report_save_error;
-use crate::dialog_session::DialogSession;
+use crate::dialog_session::{DialogScope, DialogSession};
 use crate::enum_adapters::{
     cover_mode_to_index, fit_mode_to_index, index_to_cover_mode, index_to_fit_mode,
     index_to_language, index_to_reading_direction, index_to_spread_mode, language_to_index,
@@ -85,14 +85,15 @@ pub(crate) fn wire_settings_handlers(
         ui.on_open_settings(move || {
             with_ui(&ui_weak, |ui| {
                 // screen 1 = Viewer (per-book), screen 0 = Library (global defaults).
-                let per_book = ui.get_screen() == 1;
-                // On the Library screen the dialog edits GLOBAL defaults, so mirror them
-                // into the runtime first (it seeds from there); a book re-applies its override.
-                if !per_book {
-                    dialog_session
-                        .borrow_mut()
-                        .open_on_library(&state, &viewport, &settings);
-                }
+                let scope = if ui.get_screen() == 1 {
+                    DialogScope::Viewer
+                } else {
+                    DialogScope::Library
+                };
+                let per_book = scope == DialogScope::Viewer;
+                dialog_session
+                    .borrow_mut()
+                    .open(scope, &state, &viewport, &settings);
                 let s = settings.borrow();
                 let st = state.borrow();
                 ui.set_reading_direction_index(reading_direction_to_index(st.reading_direction()));
@@ -133,60 +134,72 @@ pub(crate) fn wire_settings_handlers(
         ui.on_close_settings(move || {
             with_ui(&ui_weak, |ui| {
                 ui.set_show_settings(false);
-                // screen 0 = Library (GLOBAL defaults), 1 = Viewer (per-book override).
-                // Routing lives in `persist_leave_point` (ADR-0007 clobber-trap).
-                if ui.get_screen() == 0 {
-                    if let Err(e) = persist_leave_point(
-                        ViewModeRoute::DialogClosedOnLibrary,
-                        &state,
-                        &viewport,
-                        &settings,
-                        &library,
-                    ) {
-                        report_save_error(
-                            &ui,
-                            localizer.loader(),
-                            &e,
-                            "failed to save library from dialog",
-                        );
+                let current_screen = ui.get_screen();
+                let fallback_scope = if current_screen == 0 {
+                    DialogScope::Library
+                } else {
+                    DialogScope::Viewer
+                };
+                let scope = dialog_session.borrow().scope().unwrap_or(fallback_scope);
+
+                match scope {
+                    DialogScope::Library => {
+                        if let Err(e) = persist_leave_point(
+                            ViewModeRoute::DialogClosedOnLibrary,
+                            &state,
+                            &viewport,
+                            &settings,
+                            &library,
+                        ) {
+                            report_save_error(
+                                &ui,
+                                localizer.loader(),
+                                &e,
+                                "failed to save library from dialog",
+                            );
+                        }
+                        if let Err(e) = settings.borrow().save() {
+                            report_save_error(
+                                &ui,
+                                localizer.loader(),
+                                &e,
+                                "failed to save settings from dialog",
+                            );
+                        }
+                        dialog_session.borrow_mut().end(&state, &viewport);
                     }
-                    if let Err(e) = settings.borrow().save() {
-                        report_save_error(
-                            &ui,
-                            localizer.loader(),
-                            &e,
-                            "failed to save settings from dialog",
-                        );
+                    DialogScope::Viewer => {
+                        dialog_session.borrow_mut().end(&state, &viewport);
+                        // Persist the four view modes to this book's override.
+                        // cache/preload/track are global, so save Settings too.
+                        if let Err(e) = persist_leave_point(
+                            ViewModeRoute::DialogClosedOnViewer,
+                            &state,
+                            &viewport,
+                            &settings,
+                            &library,
+                        ) {
+                            report_save_error(
+                                &ui,
+                                localizer.loader(),
+                                &e,
+                                "failed to save library from dialog",
+                            );
+                        }
+                        if let Err(e) = settings.borrow().save() {
+                            report_save_error(
+                                &ui,
+                                localizer.loader(),
+                                &e,
+                                "failed to save settings from dialog",
+                            );
+                        }
                     }
-                    dialog_session
-                        .borrow_mut()
-                        .close_on_library(&state, &viewport);
+                }
+
+                if current_screen == 0 {
                     ui.invoke_focus_carousel();
                 } else {
-                    // Persist the four view modes to this book's override. cache/preload/track
-                    // are global, so save Settings too (its view-mode fields stay untouched).
-                    if let Err(e) = persist_leave_point(
-                        ViewModeRoute::DialogClosedOnViewer,
-                        &state,
-                        &viewport,
-                        &settings,
-                        &library,
-                    ) {
-                        report_save_error(
-                            &ui,
-                            localizer.loader(),
-                            &e,
-                            "failed to save library from dialog",
-                        );
-                    }
-                    if let Err(e) = settings.borrow().save() {
-                        report_save_error(
-                            &ui,
-                            localizer.loader(),
-                            &e,
-                            "failed to save settings from dialog",
-                        );
-                    }
                     ui.invoke_focus_pages();
                 }
             })

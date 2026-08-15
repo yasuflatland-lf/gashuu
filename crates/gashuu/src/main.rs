@@ -309,8 +309,21 @@ fn main() -> color_eyre::Result<()> {
         &selection, &localizer,
     );
     handlers::wire_carousel_handlers(
-        &ui, &state, &viewport, &library, &nav, &settings, &open_book, &open_ctrl, &covers, &pages,
-        &thumbs, &search, &selection, &localizer,
+        &ui,
+        &state,
+        &viewport,
+        &dialog_session,
+        &library,
+        &nav,
+        &settings,
+        &open_book,
+        &open_ctrl,
+        &covers,
+        &pages,
+        &thumbs,
+        &search,
+        &selection,
+        &localizer,
     );
     handlers::wire_selection_handlers(
         &ui, &state, &library, &covers, &search, &selection, &localizer,
@@ -343,7 +356,15 @@ fn main() -> color_eyre::Result<()> {
     // GitHub Releases update checker: wire the dialog/settings callbacks, then kick off
     // a throttled, non-forced background check. Reuses the shared settings cell.
     handlers::wire_update_handlers(&ui, &settings);
-    wire_relaunch_persistence(&ui, &covers, &state, &viewport, &settings, &library);
+    wire_relaunch_persistence(
+        &ui,
+        &covers,
+        &state,
+        &viewport,
+        &dialog_session,
+        &settings,
+        &library,
+    );
     handlers::start_update_check(&ui, &settings, false);
 
     // Restore the last window size + position before the first paint. No-op on a
@@ -351,7 +372,15 @@ fn main() -> color_eyre::Result<()> {
     window_state::restore_geometry(&ui, &settings.borrow());
 
     ui.run()?;
-    run_exit_persistence(&ui, &covers, &state, &viewport, &settings, &library);
+    run_exit_persistence(
+        &ui,
+        &covers,
+        &state,
+        &viewport,
+        &dialog_session,
+        &settings,
+        &library,
+    );
     Ok(())
 }
 
@@ -373,9 +402,11 @@ fn run_exit_persistence(
     covers: &Rc<cover_loader::CoverController>,
     state: &Rc<RefCell<ViewerState>>,
     viewport: &Rc<RefCell<ViewportState>>,
+    dialog_session: &Rc<RefCell<DialogSession>>,
     settings: &Rc<RefCell<Settings>>,
     library: &Rc<RefCell<Library>>,
 ) {
+    dialog_session.borrow_mut().end(state, viewport);
     // Persist page counts the cover prefetch resolved after the last refresh, so a book
     // counted this session isn't re-counted next launch.
     covers.flush_counts(library);
@@ -406,6 +437,7 @@ fn wire_relaunch_persistence(
     covers: &Rc<cover_loader::CoverController>,
     state: &Rc<RefCell<ViewerState>>,
     viewport: &Rc<RefCell<ViewportState>>,
+    dialog_session: &Rc<RefCell<DialogSession>>,
     settings: &Rc<RefCell<Settings>>,
     library: &Rc<RefCell<Library>>,
 ) {
@@ -413,11 +445,20 @@ fn wire_relaunch_persistence(
     let covers = Rc::clone(covers);
     let state = Rc::clone(state);
     let viewport = Rc::clone(viewport);
+    let dialog_session = Rc::clone(dialog_session);
     let settings = Rc::clone(settings);
     let library = Rc::clone(library);
     ui.on_persist_before_relaunch(move || {
         with_ui(&ui_weak, |ui| {
-            run_exit_persistence(&ui, &covers, &state, &viewport, &settings, &library);
+            run_exit_persistence(
+                &ui,
+                &covers,
+                &state,
+                &viewport,
+                &dialog_session,
+                &settings,
+                &library,
+            );
         });
     });
 }

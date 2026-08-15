@@ -318,7 +318,7 @@ fn stage_view_override_write_back(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dialog_session::DialogSession;
+    use crate::dialog_session::{DialogScope, DialogSession};
     use gashuu_core::{CoverMode, SpreadMode};
     use std::path::{Path, PathBuf};
 
@@ -579,9 +579,9 @@ mod tests {
         let mut session = DialogSession::new();
 
         DialogSession::reset_to_global(&state, &viewport, &settings);
-        session.open_on_library(&state, &viewport, &settings);
+        session.open(DialogScope::Library, &state, &viewport, &settings);
         state.borrow_mut().set_spread_mode(SpreadMode::Single);
-        session.close_on_library(&state, &viewport);
+        session.end(&state, &viewport);
         persist_leave_point_with(
             ViewModeRoute::LeaveViewer,
             &state,
@@ -595,6 +595,66 @@ mod tests {
         assert_eq!(
             library.borrow().overrides_for(&canonical),
             ViewOverride::none()
+        );
+    }
+
+    #[test]
+    fn exit_with_library_dialog_open_persists_the_books_own_modes() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let book = root.path().join("book");
+        std::fs::create_dir(&book).expect("create book");
+
+        let settings = Rc::new(RefCell::new(Settings {
+            reading_direction: ReadingDirection::Rtl,
+            spread_mode: SpreadMode::Double,
+            cover_mode: CoverMode::Paired,
+            fit_mode: FitMode::Actual,
+            ..Settings::default()
+        }));
+        let state = Rc::new(RefCell::new(ViewerState::new()));
+        state.borrow_mut().open_path(&book).expect("open test book");
+        let canonical = state
+            .borrow()
+            .open_file()
+            .expect("open file after successful open")
+            .to_path_buf();
+        let viewport = Rc::new(RefCell::new(ViewportState::from_settings(
+            &settings.borrow(),
+        )));
+        state.borrow_mut().apply_resolved_view(
+            ResolvedView {
+                reading_direction: ReadingDirection::Ltr,
+                spread_mode: SpreadMode::Single,
+                cover_mode: CoverMode::Standalone,
+                fit_mode: FitMode::Whole,
+            },
+            &mut viewport.borrow_mut(),
+        );
+        let mut library_value = Library::new();
+        assert!(library_value.add(canonical.clone()).is_some());
+        let library = Rc::new(RefCell::new(library_value));
+        let mut session = DialogSession::new();
+
+        session.open(DialogScope::Library, &state, &viewport, &settings);
+        session.end(&state, &viewport);
+        persist_leave_point_with(
+            ViewModeRoute::AppExit,
+            &state,
+            &viewport,
+            &settings,
+            &library,
+            |_| Ok(()),
+        )
+        .expect("persist leave point");
+
+        assert_eq!(
+            library.borrow().overrides_for(&canonical),
+            ViewOverride {
+                reading_direction: Some(ReadingDirection::Ltr),
+                spread_mode: Some(SpreadMode::Single),
+                cover_mode: Some(CoverMode::Standalone),
+                fit_mode: Some(FitMode::Whole),
+            }
         );
     }
 

@@ -1,3 +1,4 @@
+use crate::dialog_session::DialogSession;
 use crate::{
     add_controller,
     carousel::{apply_selection_flags, set_carousel_selected},
@@ -169,6 +170,7 @@ pub(crate) fn wire_carousel_handlers(
     ui: &ViewerWindow,
     state: &Rc<RefCell<ViewerState>>,
     viewport: &Rc<RefCell<ViewportState>>,
+    dialog_session: &Rc<RefCell<DialogSession>>,
     library: &Rc<RefCell<Library>>,
     nav: &Rc<RefCell<NavState>>,
     settings: &Rc<RefCell<Settings>>,
@@ -185,6 +187,7 @@ pub(crate) fn wire_carousel_handlers(
     // prelude stays byte-identical to its pre-extraction form in `main`.
     let state = Rc::clone(state);
     let viewport = Rc::clone(viewport);
+    let dialog_session = Rc::clone(dialog_session);
     let library = Rc::clone(library);
     let nav = Rc::clone(nav);
     let settings = Rc::clone(settings);
@@ -206,6 +209,7 @@ pub(crate) fn wire_carousel_handlers(
         let open_book = Rc::clone(&open_book);
         let state = Rc::clone(&state);
         let viewport = Rc::clone(&viewport);
+        let dialog_session = Rc::clone(&dialog_session);
         let pages = Rc::clone(&pages);
         let thumbs = Rc::clone(&thumbs);
         let library = Rc::clone(&library);
@@ -218,6 +222,7 @@ pub(crate) fn wire_carousel_handlers(
                 let Some((path, probe)) = open_ctrl.take_outcome(epoch.max(0) as usize) else {
                     return;
                 };
+                dialog_session.borrow_mut().end(&state, &viewport);
                 let path_exists = match &probe {
                     OpenProbeOutcome::Failed { path_exists, .. } => Some(*path_exists),
                     OpenProbeOutcome::Opened(_) => None,
