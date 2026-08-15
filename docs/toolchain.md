@@ -70,13 +70,13 @@ dav1d dynamic reference). CI test jobs may link dynamically (brew/apt) — nothi
 ### Dependency updates: Renovate automerge policy
 
 **Renovate merges non-major dependency updates on its own — no human review.**
-[`renovate.json`](../renovate.json) sets `"automerge": true` on a final `packageRules` entry
-matching the `minor`, `patch`, `pin` and `digest` update types, and on the `lockFileMaintenance`
-object. That entry carries no `matchManagers` and no `matchPackageNames`, so it is unrestricted —
-it applies to every manager Renovate detects here, today `cargo`, `github-actions`, `mise` and
-`npm`, and to any manager added later. **`major` bumps are NOT
-automerged** — they open a PR and wait for a person, deliberately, because a major release is
-where the breaking change lives.
+[`renovate.json`](../renovate.json) sets `"automerge": true` on the second-to-last `packageRules`
+entry, matching the `minor`, `patch`, `pin` and `digest` update types, and on the
+`lockFileMaintenance` object. That entry carries no `matchManagers` and no `matchPackageNames`, so
+it is unrestricted — it applies to every manager Renovate detects here, today `cargo`,
+`github-actions`, `mise` and `npm`, and to any manager added later. Exactly one entry follows it:
+the `slint` exclusion described below. **`major` bumps are NOT automerged** — they open a PR and
+wait for a person, deliberately, because a major release is where the breaking change lives.
 
 **Renovate performs the merge, not GitHub.** `"platformAutomerge": false` is set EXPLICITLY
 (Renovate's default is `true`), and it is load-bearing: `main` has no branch protection and its
@@ -127,11 +127,18 @@ and manifest edits — it will never write to `deny.toml`.** So a human opens a 
 halves in a single commit (bump the locked version that drops the crate, delete the matching
 `ignore` line), and the stuck Renovate branches are rebased onto it afterwards.
 
-**Known gap — pinned crates are not excluded.** The automerge rule has no per-package exclusion,
-so a `minor` release of a crate this file pins on purpose (see the slint exact-pin section above,
-where a minor bump is required to be a deliberate, tested step) is swept into automerge along with
-everything else. If that matters for a given pin, add a `matchPackageNames` rule with
-`"automerge": false` to `renovate.json`; nothing in the config does that today.
+**Deliberately pinned crates are excluded.** `slint` and `slint-build` are exact-pinned (`=`) on
+purpose — see the slint exact-pin section above — so the LAST `packageRules` entry puts them in
+their own `slint` group with `"automerge": false`. It sits AFTER the automerge entry, and that
+ordering is what makes it work: Renovate applies matching rules in order and merges each match over
+the previous one, so an exclusion placed before the automerge entry is silently overwritten. The
+`config:recommended` preset contributes only earlier entries, so this repo's own rules always
+resolve last. The separate group is load-bearing too — a grouped branch automerges only if EVERY
+upgrade in it does, so leaving slint in the `rust` group would have stopped that whole group from
+automerging whenever slint had a release. Nothing else is excluded: `image` and `zip` carry feature
+allowlists rather than version pins (a bad bump is a hard cargo error, which a gate catches), the
+`mise` tool versions are exact merely because mise requires a concrete version, and the SHA-pinned
+GitHub Actions are supply-chain digest pins that Renovate exists to advance.
 
 ### image 0.25: RGBA → PNG bytes goes through `DynamicImage`
 
