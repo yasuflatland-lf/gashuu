@@ -103,11 +103,12 @@ Model the four preferences as a PER-BOOK override that falls back to the global 
   open (the new book's `ResolvedView` is applied later), so that save wrote the OUTGOING book's
   per-book modes into the global defaults. Fixed by NOT reconciling on the open-time save. Recorded
   as the headline harness in [patterns.md](../patterns.md), "Write-direction invariant audit".
-- The invariant, stated explicitly: GLOBAL view modes are written ONLY by the Library settings dialog
-  close and the no-book-open exit path; PER-BOOK overrides ONLY at leave points
-  (`write_back_view_override` (now `stage_view_override_write_back`)).
-- **Wave-1 DDD refactor: one routing chokepoint.** Both write fns are now PRIVATE to `main.rs` (now
-  `view_sync.rs` after the Wave-1 DDD split); their only production caller is `persist_view_modes` (now `LeavePointService::persist`)
+- The invariant, stated explicitly: GLOBAL view modes are written only by a Library-scope dialog
+  lifecycle (close or session end) and the no-book-open exit path; PER-BOOK overrides ONLY at leave
+  points (`write_back_view_override` (now `stage_view_override_write_back`)).
+- **Wave-1 DDD refactor: one routing chokepoint.** The per-book write remains private to
+  `view_sync.rs`; the global helper is `pub(crate)` so `DialogSession::end` shares the exact same
+  reconcile operation as the routing chokepoint, `persist_view_modes` (now `LeavePointService::persist`)
   `(route: ViewModeRoute, …)`. `ViewModeRoute` names the leave point
   (`DialogClosedOnLibrary` / `DialogClosedOnViewer` / `LeaveViewer` / `OpenDifferentBook` /
   `AppExit`) and ONE `match` routes each to its sink: `DialogClosedOnLibrary` → global reconcile;
@@ -115,7 +116,8 @@ Model the four preferences as a PER-BOOK override that falls back to the global 
   `AppExit` → per-book write-back, then global reconcile ONLY when no book is open. The clobber-trap
   rationale (the shipped-then-caught bug above) now lives as a comment on the chokepoint, and the
   write-direction audit (`patterns.md`) reduces to auditing this single match rather than
-  enumerating call sites. (`OpenDifferentBook` is invoked from `OpenBookUseCase::run` in `app.rs`;
+  enumerating route call sites. The one intentional non-route caller is the recorded-scope session
+  boundary described below. (`OpenDifferentBook` is invoked from `OpenBookUseCase::run` in `app.rs`;
   all other routes from `main.rs`.)
 - **The leave-point snapshot writes all four fields `Some`, in tension with `None` = inherit
   (Decision 2 / Costs).** `write_back_view_override` (now `stage_view_override_write_back`)
@@ -171,13 +173,33 @@ Model the four preferences as a PER-BOOK override that falls back to the global 
   `pending_inherit == Some(current)`. Any viewer or viewport mode change therefore disables the
   guard by making the live runtime differ, including future setters and fit-mode changes, without
   handler-specific clearing.
-- A Library-scope `RuntimeSnapshot` carries the `Option<ResolvedView>` verbatim. `end()` still
-  applies the saved view first and restores the saved intent after it, so the restored view is the
-  one the derived predicate observes. Replacing or closing the open book explicitly discards the
-  intent in `OpenBookUseCase::apply_probed` and `RemoveBooksUseCase::run`.
+- A Library-scope `RuntimeSnapshot` carries the `Option<ResolvedView>` verbatim. After any global
+  reconcile described below, `end()` applies the saved view first and restores the saved intent
+  after it, so the restored view is the one the derived predicate observes. Replacing or closing
+  the open book explicitly discards the intent in `OpenBookUseCase::apply_probed` and
+  `RemoveBooksUseCase::run`.
 - One behavior changes deliberately: if the user changes modes after reset and later returns the
   runtime to exactly the reset-installed view, the equality predicate re-arms the pending intent.
   `reset_then_change_and_change_back_is_pending_again` pins this behavior.
+
+### Sub-amendment 2026-08-16: ending a Library session commits its global edit
+
+- `DialogSession::end(state, viewport, settings)` commits the live runtime into `Settings` when,
+  and only when, the recorded scope is `Library`. Viewer-scope end and no-session end remain pure
+  no-ops for `Settings`. The commit is in-memory only; the existing Library-close and app-exit save
+  points remain unchanged, while an async-open end receives the same durability as other in-memory
+  settings edits.
+- The order is load-bearing: (1) reconcile the LIVE runtime into `Settings`; (2) restore the open
+  book's snapshot and its pending-inherit intent; (3) clear scope and snapshot. Restoring before
+  reconciling would write the OPEN BOOK's view into the global defaults, recreating the ADR-0007
+  clobber this boundary prevents.
+- The `DialogClosedOnLibrary` route remains intact and still runs before `end` in the close branch.
+  It and `end` therefore write the same unchanged runtime value twice; the operation is
+  idempotent, and the routing table remains unchanged.
+- This closes the hole where an async open or app exit ended a Library session, cleared its scope,
+  and silently discarded the global edit before the eventual close or exit save. The async-open
+  path still restores before `apply_probed`, and the exit path still restores before `AppExit`
+  write-back, so neither can pin the global scratchpad onto the open book.
 
 ## Amendment 2026-08-16: the leave-point write-back is a diff against global
 

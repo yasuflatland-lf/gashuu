@@ -170,6 +170,9 @@ fn open_and_enter(
 /// opened on the Library screen leaves that runtime seeded with the GLOBAL
 /// defaults, so an open that lands while the dialog is up used to overwrite the
 /// previous book's own view modes with the globals (issue #535, path (b)).
+/// Ending also commits a Library-scope global edit before restoring that book
+/// runtime, so an async open cannot discard the edit when it clears the session
+/// (issue #556). It mutates `Settings` in memory; existing save points are unchanged.
 ///
 /// Extracted from the `on_open_finalize` closure so the ordering is reachable
 /// without a live window; the borrow stays confined to the one statement.
@@ -177,11 +180,12 @@ fn end_session_and_apply_probed(
     dialog_session: &Rc<RefCell<DialogSession>>,
     state: &Rc<RefCell<ViewerState>>,
     viewport: &Rc<RefCell<ViewportState>>,
+    settings: &Rc<RefCell<Settings>>,
     open_book: &open_book::OpenBookUseCase,
     path: &std::path::Path,
     probe: OpenProbeOutcome,
 ) -> open_book::OpenOutcome {
-    dialog_session.borrow_mut().end(state, viewport);
+    dialog_session.borrow_mut().end(state, viewport, settings);
     open_book.apply_probed(path, probe)
 }
 
@@ -234,6 +238,7 @@ pub(crate) fn wire_carousel_handlers(
         let state = Rc::clone(&state);
         let viewport = Rc::clone(&viewport);
         let dialog_session = Rc::clone(&dialog_session);
+        let settings = Rc::clone(&settings);
         let pages = Rc::clone(&pages);
         let thumbs = Rc::clone(&thumbs);
         let library = Rc::clone(&library);
@@ -257,6 +262,7 @@ pub(crate) fn wire_carousel_handlers(
                     &dialog_session,
                     &state,
                     &viewport,
+                    &settings,
                     &open_book,
                     &path,
                     probe,
@@ -782,6 +788,7 @@ mod tests {
             &dialog_session,
             &state,
             &viewport,
+            &settings,
             &open_book,
             &second,
             probe,
@@ -802,5 +809,121 @@ mod tests {
             dialog_session.borrow().scope().is_none(),
             "the open-finalize path ends the session"
         );
+    }
+
+    #[test]
+    fn open_finalize_during_a_library_dialog_keeps_the_global_edit() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let first = make_book_dir(root.path(), "first", 3);
+        let second = make_book_dir(root.path(), "second", 3);
+        let first_canonical = first.canonicalize().expect("canonical first book");
+        let second_canonical = second.canonicalize().expect("canonical second book");
+
+        // G, G', and B differ wherever the enum cardinality permits; B and G'
+        // differ in all four axes so reconcile/restore order cannot pass by chance.
+        let settings = Rc::new(RefCell::new(Settings {
+            reading_direction: ReadingDirection::Rtl,
+            spread_mode: SpreadMode::Double,
+            cover_mode: CoverMode::Paired,
+            fit_mode: FitMode::Actual,
+            ..Settings::default()
+        }));
+        let book_view = ResolvedView {
+            reading_direction: ReadingDirection::Ltr,
+            spread_mode: SpreadMode::Single,
+            cover_mode: CoverMode::Standalone,
+            fit_mode: FitMode::Whole,
+        };
+        let edited_global = ResolvedView {
+            reading_direction: ReadingDirection::Rtl,
+            spread_mode: SpreadMode::Auto,
+            cover_mode: CoverMode::Paired,
+            fit_mode: FitMode::Width,
+        };
+        let incoming_view = ResolvedView {
+            reading_direction: ReadingDirection::Ltr,
+            spread_mode: SpreadMode::Double,
+            cover_mode: CoverMode::Paired,
+            fit_mode: FitMode::Actual,
+        };
+        let state = Rc::new(RefCell::new(ViewerState::new()));
+        state.borrow_mut().open_path(&first).expect("open first");
+        let viewport = Rc::new(RefCell::new(ViewportState::from_settings(
+            &settings.borrow(),
+        )));
+        state
+            .borrow_mut()
+            .apply_resolved_view(book_view, &mut viewport.borrow_mut());
+        let mut library_value = Library::new();
+        assert!(library_value.add(first_canonical.clone()).is_some());
+        assert!(library_value.add(second_canonical.clone()).is_some());
+        assert!(library_value.set_overrides(
+            &second_canonical,
+            ViewOverride {
+                reading_direction: Some(incoming_view.reading_direction),
+                spread_mode: Some(incoming_view.spread_mode),
+                cover_mode: Some(incoming_view.cover_mode),
+                fit_mode: Some(incoming_view.fit_mode),
+            }
+        ));
+        let library = Rc::new(RefCell::new(library_value));
+        let dialog_session = Rc::new(RefCell::new(DialogSession::new()));
+        let leave_point = Rc::new(crate::LeavePointService::new(
+            Rc::clone(&state),
+            Rc::clone(&viewport),
+            Rc::clone(&dialog_session),
+            Rc::clone(&settings),
+            Rc::clone(&library),
+            Rc::new(None),
+        ));
+        let open_book = open_book::OpenBookUseCase::new(
+            Rc::clone(&state),
+            Rc::clone(&settings),
+            Rc::clone(&viewport),
+            Rc::clone(&dialog_session),
+            Rc::clone(&library),
+            leave_point,
+            Box::new(|_| Ok(())),
+            Box::new(|_| Ok(())),
+        );
+
+        dialog_session
+            .borrow_mut()
+            .open(DialogScope::Library, &state, &viewport, &settings);
+        state
+            .borrow_mut()
+            .apply_resolved_view(edited_global, &mut viewport.borrow_mut());
+        let probe = probe_open(&second, ArchivePolicy::default());
+        let outcome = end_session_and_apply_probed(
+            &dialog_session,
+            &state,
+            &viewport,
+            &settings,
+            &open_book,
+            &second,
+            probe,
+        );
+
+        assert!(matches!(outcome, open_book::OpenOutcome::Success { .. }));
+        assert_eq!(
+            library.borrow().overrides_for(&first_canonical),
+            ViewOverride {
+                reading_direction: Some(book_view.reading_direction),
+                spread_mode: Some(book_view.spread_mode),
+                cover_mode: Some(book_view.cover_mode),
+                fit_mode: Some(book_view.fit_mode),
+            },
+            "the outgoing book keeps its own view"
+        );
+        assert_eq!(
+            crate::view_sync::current_runtime_view(&state, &viewport),
+            incoming_view,
+            "the incoming book resolves its own override"
+        );
+        let settings = settings.borrow();
+        assert_eq!(settings.reading_direction, edited_global.reading_direction);
+        assert_eq!(settings.spread_mode, edited_global.spread_mode);
+        assert_eq!(settings.cover_mode, edited_global.cover_mode);
+        assert_eq!(settings.fit_mode, edited_global.fit_mode);
     }
 }

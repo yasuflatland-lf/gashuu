@@ -169,9 +169,10 @@ fn stage_view_modes_to_sink(
 /// before saving. This is the SINGLE place `reading_direction`, `spread_mode`,
 /// `cover_mode`, and `fit_mode` are written back to `Settings`, so a new
 /// mode-mutation site can never "forget to mirror" — it only changes runtime
-/// state, and the next save reconciles automatically. Reached only via
-/// [`LeavePointService::persist`] (the routing chokepoint).
-fn apply_runtime_view_to_settings(
+/// state, and the next save reconciles automatically. Reached via the routing
+/// chokepoint and by `DialogSession::end`, so both Library-session end paths use
+/// the same definition of runtime-to-global reconciliation.
+pub(crate) fn apply_runtime_view_to_settings(
     state: &ViewerState,
     viewport: &ViewportState,
     settings: &mut Settings,
@@ -964,7 +965,9 @@ mod tests {
             .borrow_mut()
             .open(DialogScope::Library, &state, &viewport, &settings);
         state.borrow_mut().set_spread_mode(SpreadMode::Single);
-        dialog_session.borrow_mut().end(&state, &viewport);
+        dialog_session
+            .borrow_mut()
+            .end(&state, &viewport, &settings);
         leave_point_service(&state, &viewport, &dialog_session, &settings, &library)
             .persist_with(ViewModeRoute::LeaveViewer, |_| Ok(()))
             .expect("persist leave point");
@@ -973,6 +976,69 @@ mod tests {
             library.borrow().overrides_for(&canonical),
             ViewOverride::none()
         );
+    }
+
+    #[test]
+    fn library_close_writes_global_once_and_idempotently() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let book = root.path().join("book");
+        std::fs::create_dir(&book).expect("create book");
+        let settings = Rc::new(RefCell::new(Settings {
+            reading_direction: ReadingDirection::Rtl,
+            spread_mode: SpreadMode::Double,
+            cover_mode: CoverMode::Paired,
+            fit_mode: FitMode::Actual,
+            ..Settings::default()
+        }));
+        let book_view = ResolvedView {
+            reading_direction: ReadingDirection::Ltr,
+            spread_mode: SpreadMode::Single,
+            cover_mode: CoverMode::Standalone,
+            fit_mode: FitMode::Whole,
+        };
+        let edited_global = ResolvedView {
+            reading_direction: ReadingDirection::Rtl,
+            spread_mode: SpreadMode::Auto,
+            cover_mode: CoverMode::Paired,
+            fit_mode: FitMode::Width,
+        };
+        let state = Rc::new(RefCell::new(ViewerState::new()));
+        state.borrow_mut().open_path(&book).expect("open test book");
+        let viewport = Rc::new(RefCell::new(ViewportState::from_settings(
+            &settings.borrow(),
+        )));
+        state
+            .borrow_mut()
+            .apply_resolved_view(book_view, &mut viewport.borrow_mut());
+        let mut library_value = Library::new();
+        let canonical = state
+            .borrow()
+            .open_file()
+            .expect("open file after successful open")
+            .to_path_buf();
+        assert!(library_value.add(canonical).is_some());
+        let library = Rc::new(RefCell::new(library_value));
+        let dialog_session = Rc::new(RefCell::new(DialogSession::new()));
+
+        dialog_session
+            .borrow_mut()
+            .open(DialogScope::Library, &state, &viewport, &settings);
+        state
+            .borrow_mut()
+            .apply_resolved_view(edited_global, &mut viewport.borrow_mut());
+        leave_point_service(&state, &viewport, &dialog_session, &settings, &library)
+            .persist_with(ViewModeRoute::DialogClosedOnLibrary, |_| Ok(()))
+            .expect("persist library dialog close");
+        dialog_session
+            .borrow_mut()
+            .end(&state, &viewport, &settings);
+
+        let settings = settings.borrow();
+        assert_eq!(settings.reading_direction, edited_global.reading_direction);
+        assert_eq!(settings.spread_mode, edited_global.spread_mode);
+        assert_eq!(settings.cover_mode, edited_global.cover_mode);
+        assert_eq!(settings.fit_mode, edited_global.fit_mode);
+        assert_eq!(current_runtime_view(&state, &viewport), book_view);
     }
 
     #[test]
@@ -1015,7 +1081,9 @@ mod tests {
         dialog_session
             .borrow_mut()
             .open(DialogScope::Library, &state, &viewport, &settings);
-        dialog_session.borrow_mut().end(&state, &viewport);
+        dialog_session
+            .borrow_mut()
+            .end(&state, &viewport, &settings);
         leave_point_service(&state, &viewport, &dialog_session, &settings, &library)
             .persist_with(ViewModeRoute::AppExit, |_| Ok(()))
             .expect("persist leave point");

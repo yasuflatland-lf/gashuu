@@ -525,6 +525,7 @@ fn run_exit_persistence(
         covers,
         state,
         viewport,
+        settings,
         library,
         library_store,
         leave_point,
@@ -548,18 +549,22 @@ fn run_exit_persistence(
 /// `LeavePointService::persist(AppExit)` writes that runtime onto the open book — so a
 /// quit with the dialog still up used to overwrite the book's own view modes
 /// with the globals (issue #535, path (a)).
+/// `end` first commits any Library-scope global edit, then restores the book
+/// runtime, so the existing exit settings save persists that edit without letting
+/// `AppExit` pin the global scratchpad onto the book (issue #556).
 #[allow(clippy::too_many_arguments)]
 fn stage_exit_state(
     dialog_session: &Rc<RefCell<DialogSession>>,
     covers: &Rc<cover_loader::CoverController>,
     state: &Rc<RefCell<ViewerState>>,
     viewport: &Rc<RefCell<ViewportState>>,
+    settings: &Rc<RefCell<Settings>>,
     library: &Rc<RefCell<Library>>,
     library_store: &LibraryStoreHandle,
     leave_point: &Rc<LeavePointService>,
     save: impl FnOnce(&Library) -> Result<(), CoreError>,
 ) {
-    dialog_session.borrow_mut().end(state, viewport);
+    dialog_session.borrow_mut().end(state, viewport, settings);
     // Persist page counts the cover prefetch resolved after the last refresh, so a book
     // counted this session isn't re-counted next launch.
     covers.flush_counts(library, library_store);
@@ -1028,6 +1033,7 @@ mod tests {
             &covers,
             &state,
             &viewport,
+            &settings,
             &library,
             &library_store,
             &leave_point,
@@ -1047,6 +1053,109 @@ mod tests {
         assert!(
             dialog_session.borrow().scope().is_none(),
             "the exit path ends the session"
+        );
+    }
+
+    /// Issue #556, exit half, pinned at the PRODUCTION call site: quitting while a
+    /// Library-scope settings dialog is still up must COMMIT the global edit the
+    /// user made in it. `LeavePointService::persist(AppExit)` cannot do it — a book
+    /// is open, so its global reconcile is gated off — which leaves `end()` as the
+    /// only path from the runtime scratchpad to `Settings`. Handing `end()` anything
+    /// other than the real settings handle (or reconciling AFTER the snapshot
+    /// restore) drops the edit or replaces it with the book's own view.
+    #[test]
+    fn exit_state_with_a_library_dialog_open_commits_the_global_edit() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let book = root.path().join("book");
+        std::fs::create_dir(&book).expect("create book");
+
+        // Globals (G) and the book's own modes (B) differ in all four axes.
+        let settings = Rc::new(RefCell::new(Settings {
+            reading_direction: ReadingDirection::Rtl,
+            spread_mode: SpreadMode::Double,
+            cover_mode: CoverMode::Paired,
+            fit_mode: FitMode::Actual,
+            ..Settings::default()
+        }));
+        let state = Rc::new(RefCell::new(ViewerState::new()));
+        state.borrow_mut().open_path(&book).expect("open test book");
+        let canonical = state
+            .borrow()
+            .open_file()
+            .expect("open file after successful open")
+            .to_path_buf();
+        let viewport = Rc::new(RefCell::new(ViewportState::from_settings(
+            &settings.borrow(),
+        )));
+        let book_view = ResolvedView {
+            reading_direction: ReadingDirection::Ltr,
+            spread_mode: SpreadMode::Single,
+            cover_mode: CoverMode::Standalone,
+            fit_mode: FitMode::Whole,
+        };
+        state
+            .borrow_mut()
+            .apply_resolved_view(book_view, &mut viewport.borrow_mut());
+        let mut library_value = Library::new();
+        assert!(library_value.add(canonical.clone()).is_some());
+        let library = Rc::new(RefCell::new(library_value));
+        let dialog_session = Rc::new(RefCell::new(DialogSession::new()));
+        let covers = Rc::new(cover_loader::CoverController::new());
+        let library_store = Rc::new(Some(LibraryStore::new(root.path().join("library.json"))));
+        let leave_point = Rc::new(LeavePointService::new(
+            Rc::clone(&state),
+            Rc::clone(&viewport),
+            Rc::clone(&dialog_session),
+            Rc::clone(&settings),
+            Rc::clone(&library),
+            Rc::clone(&library_store),
+        ));
+
+        // The Library-screen dialog seeds the runtime with G; the user then edits two
+        // axes to G' (differing from BOTH G and B) and quits with the dialog still up.
+        dialog_session
+            .borrow_mut()
+            .open(DialogScope::Library, &state, &viewport, &settings);
+        let edited_global_view = ResolvedView {
+            reading_direction: ReadingDirection::Rtl,
+            spread_mode: SpreadMode::Auto,
+            cover_mode: CoverMode::Paired,
+            fit_mode: FitMode::Width,
+        };
+        state
+            .borrow_mut()
+            .apply_resolved_view(edited_global_view, &mut viewport.borrow_mut());
+        stage_exit_state(
+            &dialog_session,
+            &covers,
+            &state,
+            &viewport,
+            &settings,
+            &library,
+            &library_store,
+            &leave_point,
+            |_| Ok(()),
+        );
+
+        let persisted_global = ResolvedView {
+            reading_direction: settings.borrow().reading_direction,
+            spread_mode: settings.borrow().spread_mode,
+            cover_mode: settings.borrow().cover_mode,
+            fit_mode: settings.borrow().fit_mode,
+        };
+        assert_eq!(
+            persisted_global, edited_global_view,
+            "the exit path must commit the dialog's global edit into Settings"
+        );
+        assert_eq!(
+            library.borrow().overrides_for(&canonical),
+            ViewOverride {
+                reading_direction: Some(ReadingDirection::Ltr),
+                spread_mode: Some(SpreadMode::Single),
+                cover_mode: Some(CoverMode::Standalone),
+                fit_mode: Some(FitMode::Whole),
+            },
+            "committing the global edit must not disturb the book's own staged modes"
         );
     }
 
