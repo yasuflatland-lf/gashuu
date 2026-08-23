@@ -7,4 +7,4 @@
 # Local coverage runs therefore need the env active, e.g.:
 #   MISE_ENV=coverage mise exec -- cargo llvm-cov nextest -p gashuu-core --profile ci --summary-only
 [tools]
-"cargo:cargo-llvm-cov" = "0.8.7"
+"cargo:cargo-llvm-cov" = "0.9.0"
