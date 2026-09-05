@@ -2,7 +2,7 @@
 # mise.toml stays Rust-only, so Rust CI jobs never pull node. Activates on `cd site`.
 [tools]
 node = "24"
-pnpm = "11"
+pnpm = "12"
 
 [tasks.dev]
 description = "Vite dev server"
