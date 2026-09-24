@@ -10,7 +10,7 @@
 # the per-OS `app` jobs don't pull it; the coverage-only `core` CI job adds it via
 # `rustup component add` — see mise.coverage.toml.
 rust = { version = "1.98.1", components = "rustfmt,clippy" }
-"cargo:cargo-nextest" = "0.9.143"
+"cargo:cargo-nextest" = "0.9.145"
 
 [settings]
 # Prefer binary fetch via cargo-binstall when available (faster installs).
