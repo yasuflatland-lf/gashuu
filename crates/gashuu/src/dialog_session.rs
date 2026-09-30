@@ -4,7 +4,6 @@ use crate::view_sync::{
 use crate::{viewer_state::ViewerState, viewport::ViewportState};
 use gashuu_core::{ResolvedView, Settings};
 use std::cell::RefCell;
-use std::rc::Rc;
 
 /// The open book's pre-dialog runtime, captured at library-screen dialog open.
 struct RuntimeSnapshot {
@@ -49,9 +48,9 @@ impl DialogSession {
     pub fn open(
         &mut self,
         scope: DialogScope,
-        state: &Rc<RefCell<ViewerState>>,
-        viewport: &Rc<RefCell<ViewportState>>,
-        settings: &Rc<RefCell<Settings>>,
+        state: &RefCell<ViewerState>,
+        viewport: &RefCell<ViewportState>,
+        settings: &RefCell<Settings>,
     ) {
         self.scope = Some(scope);
         if scope == DialogScope::Library {
@@ -75,9 +74,9 @@ impl DialogSession {
     /// a call without an active session leave `Settings` untouched.
     pub fn end(
         &mut self,
-        state: &Rc<RefCell<ViewerState>>,
-        viewport: &Rc<RefCell<ViewportState>>,
-        settings: &Rc<RefCell<Settings>>,
+        state: &RefCell<ViewerState>,
+        viewport: &RefCell<ViewportState>,
+        settings: &RefCell<Settings>,
     ) {
         let scope = self.scope;
         if scope == Some(DialogScope::Library) {
@@ -110,9 +109,9 @@ impl DialogSession {
     /// view as pending inherit. Owns the #415 order.
     pub fn reset_to_global(
         &mut self,
-        state: &Rc<RefCell<ViewerState>>,
-        viewport: &Rc<RefCell<ViewportState>>,
-        settings: &Rc<RefCell<Settings>>,
+        state: &RefCell<ViewerState>,
+        viewport: &RefCell<ViewportState>,
+        settings: &RefCell<Settings>,
     ) {
         apply_global_view_to_runtime(settings, state, viewport);
         self.pending_inherit = Some(current_runtime_view(state, viewport));
@@ -123,6 +122,7 @@ impl DialogSession {
 mod tests {
     use super::*;
     use gashuu_core::{CoverMode, FitMode, ReadingDirection, SpreadMode};
+    use std::rc::Rc;
 
     fn global_settings() -> Rc<RefCell<Settings>> {
         Rc::new(RefCell::new(Settings {

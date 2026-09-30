@@ -361,6 +361,15 @@ pub(crate) fn wire_nav_handlers(
     let selection = Rc::clone(selection);
     let localizer = Rc::clone(localizer);
     let library_store = Rc::clone(library_store);
+    // One carousel-refresh bundle for this fn's callbacks; each callback captures a clone.
+    let carousel = CarouselRefresh {
+        library,
+        library_store,
+        covers,
+        search,
+        selection,
+        localizer: Rc::clone(&localizer),
+    };
 
     // Keyboard navigation forwarded from the FocusScope.
     {
@@ -368,16 +377,12 @@ pub(crate) fn wire_nav_handlers(
         let state = Rc::clone(&state);
         let viewport = Rc::clone(&viewport);
         let nav = Rc::clone(&nav);
-        let library = Rc::clone(&library);
         let pages = Rc::clone(&pages);
         let localizer = Rc::clone(&localizer);
         let leave_point = Rc::clone(&leave_point);
-        // The carousel-refresh collaborators are captured because the GoToLibrary arm
+        // The carousel-refresh bundle is captured because the GoToLibrary arm
         // rebuilds the carousel on entry via `go_to_library` / `refresh_library_carousel`.
-        let covers = Rc::clone(&covers);
-        let search = Rc::clone(&search);
-        let selection = Rc::clone(&selection);
-        let library_store = Rc::clone(&library_store);
+        let carousel = carousel.clone();
         ui.on_nav(move |token| {
             with_ui(&ui_weak, |ui| {
                 let dir = state.borrow().reading_direction();
@@ -483,18 +488,7 @@ pub(crate) fn wire_nav_handlers(
                         let leave_save = leave_point.persist(ViewModeRoute::LeaveViewer);
                         // `go_to_library` rebuilds the carousel on entry so the continue-reading
                         // ribbon reflects the `last_opened` just persisted, and snaps focus to it.
-                        go_to_library(
-                            &ui,
-                            &nav,
-                            &CarouselRefresh {
-                                library: &library,
-                                library_store: &library_store,
-                                covers: &covers,
-                                search: &search,
-                                selection: &selection,
-                                localizer: &localizer,
-                            },
-                        );
+                        go_to_library(&ui, &nav, &carousel);
                         if let Err(e) = leave_save {
                             report_save_error(
                                 &ui,

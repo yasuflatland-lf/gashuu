@@ -122,7 +122,7 @@ pub(crate) fn wire_drag_drop_handlers(
 /// Re-arming on each drop collapses a multi-file drop's event burst into a single
 /// add generation (one supersede epoch, one progress run, one notice).
 fn arm_flush(
-    timer: &Rc<slint::Timer>,
+    timer: &slint::Timer,
     buffer: &Rc<RefCell<Vec<PathBuf>>>,
     ui_weak: &slint::Weak<ViewerWindow>,
     settings: &Rc<RefCell<Settings>>,

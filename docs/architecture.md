@@ -135,11 +135,12 @@ See [ADR-0003](ADRs/0003-image-loading-and-caching.md) for image loading decisio
 
 ### thumbnail
 
-`thumbnail.rs`. `generate_thumbnails(source: Arc<dyn PageSource>, max_side, cancelled: Arc<AtomicBool>, on_ready: F)` —
-SYNCHRONOUS, rayon `par_iter` over all pages invoking `on_ready(index, Result<DecodedImage, CoreError>)`
-as each completes (arbitrary order), BLOCKING until done or `cancelled` flips (polled TWICE per
-page: before read AND before callback); per-page failure is delivered as `Err` (never panics);
-`DEFAULT_THUMB_MAX_SIDE`=160; headless (no slint/tracing), same "testable synchronous core; UI
+`thumbnail.rs`. `generate_one_thumbnail(source: &Arc<dyn PageSource>, max_side, page_index, cache_ctx: Option<PageThumbContext>) -> Result<DecodedImage, CoreError>` —
+SYNCHRONOUS single-page thumbnail. With a `PageThumbContext { cache, path }` it reads from / writes to
+the on-disk `ThumbnailCache` under `page_cache_key(path, mtime, max_side, page_index)` (a hit skips
+the full-page read+decode; the `put` result is ignored); failure is returned as `Err` (never panics).
+Parallelism and cancellation are the caller's: the UI's `thumbnail_strip` worker `par_iter`s the
+visible batch and polls its cancel flag before AND after each call. `DEFAULT_THUMB_MAX_SIDE`=160; headless (no slint/tracing), same "testable synchronous core; UI
 owns the fire-and-forget spawn" philosophy as `ImageCache`. The single-page sibling
 `generate_cover(source: Arc<dyn PageSource>, max_side) -> Result<DecodedImage, CoreError>` (a
 downscaled thumbnail of page index 0, the book's cover; `Err(IndexOutOfRange{index:0,len:0})` on a
@@ -635,7 +636,7 @@ notice-plus-save-failure compose.
 `on_carousel_open` and `on_carousel_continue_reading` only DISPATCH
 (`handlers/library.rs::open_and_enter` → `OpenController::start`); the whole tail below runs in the
 `on_open_finalize` handler. It calls
-`finalize_open(&ui, &state, &viewport, &CarouselRefresh { … }, outcome)` after `apply_probed`
+`finalize_open(&ui, &state, &viewport, &pages, &thumbs, &carousel, outcome)` after `apply_probed`
 returns — the signature gained the full `CarouselRefresh` deps (was just `&localizer`) because the
 `EmptyBookRejected` arm may rebuild the carousel. That handler also calls `go_to_viewer`, but gates
 it on the POSITIVE outcome — `enter_viewer = matches!(outcome, OpenOutcome::Success(..))` (was
@@ -859,7 +860,7 @@ All four share a private `visible_paths(search, library)` join and are headlessl
 
 ### carousel refresh / projection (`carousel_refresh.rs`)
 
-`carousel_refresh.rs` (extracted from `main.rs`, mirroring the `view_sync.rs` split). Owns the carousel-refresh/projection cluster: `refresh_library_carousel` (the single chokepoint that rebuilds + binds the filtered carousel model, optionally resets focus, re-applies the path-keyed selection, and (re)starts focus-prioritized cover loading), the `CarouselRefresh` borrowed-collaborator bundle it takes (`library` / `library_store` / `covers` / `search` / `selection` / `localizer`, all `pub(crate)`; `library_store` is the `LibraryStoreHandle` the add-path save routes through), the visible-index projection helpers (`visible_index_to_path`, `visible_focus_index_for_path`, `entry_focus_index` (private), `snap_carousel_focus_to_last_opened`, `clamp_focused_index`), and `push_selection_strings` (the selection-toolbar string chokepoint). UI-thread only; driven almost entirely from `handlers/library.rs` and `handlers/settings.rs`, with `go_to_library`/`go_to_viewer` (still in `main.rs`) routing their carousel work through it via the crate-root re-exports.
+`carousel_refresh.rs` (extracted from `main.rs`, mirroring the `view_sync.rs` split). Owns the carousel-refresh/projection cluster: `refresh_library_carousel` (the single chokepoint that rebuilds + binds the filtered carousel model, optionally resets focus, re-applies the path-keyed selection, and (re)starts focus-prioritized cover loading), the `CarouselRefresh` collaborator bundle it takes (`library` / `library_store` / `covers` / `search` / `selection` / `localizer`, all `pub(crate)`; `library_store` is the `LibraryStoreHandle` the add-path save routes through), the visible-index projection helpers (`visible_index_to_path`, `visible_focus_index_for_path`, `entry_focus_index` (private), `snap_carousel_focus_to_last_opened`, `clamp_focused_index`), and `push_selection_strings` (the selection-toolbar string chokepoint). The `CarouselRefresh` bundle OWNS its `Rc` handles and derives `Clone`: a Slint callback must be `'static`, so each `wire_*` fn whose callbacks rebuild the carousel assembles one bundle from its own parameters and every such callback captures `carousel.clone()`. UI-thread only; driven almost entirely from `handlers/library.rs` and `handlers/settings.rs`, with `go_to_library`/`go_to_viewer` (still in `main.rs`) routing their carousel work through it via the crate-root re-exports.
 
 ### page_count_prefetch
 
@@ -938,6 +939,10 @@ no AppState bundle, explicit handle lists only). The five feature files are:
 The persistence store handles are part of that explicit list: a `wire_*` fn whose closures save
 takes `library_store: &LibraryStoreHandle` and/or `settings_store: &SettingsStoreHandle` as its own
 named trailing parameter(s) and clones them per closure like any other handle — never a bundle.
+The `CarouselRefresh` bundle (see the carousel refresh section) does not change this: it is never a
+`wire_*` parameter. A `wire_*` fn whose callbacks rebuild the carousel still receives the six
+handles individually and assembles the bundle in its own body; a callback keeps its own
+`Rc::clone` line for any of those handles it also uses outside the bundle.
 
 - **`handlers/library.rs`**: `wire_open_handlers` (add-books,
   add-folder), `wire_carousel_handlers` (carousel search/open/continue-reading/move/back),

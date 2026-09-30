@@ -79,6 +79,15 @@ pub(crate) fn wire_settings_handlers(
     let localizer = Rc::clone(localizer);
     let settings_store = Rc::clone(settings_store);
     let library_store = Rc::clone(library_store);
+    // One carousel-refresh bundle for this fn's callbacks; each callback captures a clone.
+    let carousel = CarouselRefresh {
+        library: Rc::clone(&library),
+        library_store: Rc::clone(&library_store),
+        covers,
+        search: Rc::clone(&search),
+        selection: Rc::clone(&selection),
+        localizer: Rc::clone(&localizer),
+    };
 
     // Open the settings dialog. Display modes are read from the RUNTIME source of truth
     // (state/viewport) so it never shows a stale value; cache/preload/track from Settings.
@@ -282,12 +291,12 @@ pub(crate) fn wire_settings_handlers(
         let ui_weak = ui.as_weak();
         let settings = Rc::clone(&settings);
         let library = Rc::clone(&library);
-        let covers = Rc::clone(&covers);
         let search = Rc::clone(&search);
         let selection = Rc::clone(&selection);
         let localizer = Rc::clone(&localizer);
         let settings_store = Rc::clone(&settings_store);
         let library_store = Rc::clone(&library_store);
+        let carousel = carousel.clone();
         ui.on_clear_reading_history(move || {
             with_ui(&ui_weak, |ui| {
                 // Mutate then save under tight borrow scopes that drop before the
@@ -315,14 +324,7 @@ pub(crate) fn wire_settings_handlers(
                 selection.borrow_mut().clear();
                 refresh_library_carousel(
                     &ui,
-                    &CarouselRefresh {
-                        library: &library,
-                        library_store: &library_store,
-                        covers: &covers,
-                        search: &search,
-                        selection: &selection,
-                        localizer: &localizer,
-                    },
+                    &carousel,
                     true,
                 );
                 // Show failure status if either save failed; success only when both
