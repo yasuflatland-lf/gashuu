@@ -19,7 +19,6 @@ use gashuu_core::Library;
 use std::cell::RefCell;
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
-use std::rc::Rc;
 use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
 use std::sync::{Arc, Mutex};
 
@@ -118,7 +117,7 @@ impl PageCountPrefetch {
     /// saves ONCE if any changed. Borrow discipline: each `borrow_mut` is confined
     /// to its own statement (dropped at the `;`); the final `borrow` for `save` is
     /// a separate statement — collapsing them would double-borrow-panic.
-    pub(crate) fn apply(&self, library: &Rc<RefCell<Library>>, library_store: &LibraryStoreHandle) {
+    pub(crate) fn apply(&self, library: &RefCell<Library>, library_store: &LibraryStoreHandle) {
         let drained: Vec<ResolvedCount> = {
             let mut queue = self
                 .pending
@@ -144,7 +143,7 @@ impl PageCountPrefetch {
     }
 
     /// Persist any still-pending prefetched page counts. Call once on shutdown.
-    pub(crate) fn flush(&self, library: &Rc<RefCell<Library>>, library_store: &LibraryStoreHandle) {
+    pub(crate) fn flush(&self, library: &RefCell<Library>, library_store: &LibraryStoreHandle) {
         self.apply(library, library_store);
     }
 }

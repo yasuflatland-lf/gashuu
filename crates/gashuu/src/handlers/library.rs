@@ -169,10 +169,10 @@ fn open_and_enter(
 /// Extracted from the `on_open_finalize` closure so the ordering is reachable
 /// without a live window; the borrow stays confined to the one statement.
 fn end_session_and_apply_probed(
-    dialog_session: &Rc<RefCell<DialogSession>>,
-    state: &Rc<RefCell<ViewerState>>,
-    viewport: &Rc<RefCell<ViewportState>>,
-    settings: &Rc<RefCell<Settings>>,
+    dialog_session: &RefCell<DialogSession>,
+    state: &RefCell<ViewerState>,
+    viewport: &RefCell<ViewportState>,
+    settings: &RefCell<Settings>,
     open_book: &open_book::OpenBookUseCase,
     path: &std::path::Path,
     probe: OpenProbeOutcome,
