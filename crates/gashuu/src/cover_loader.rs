@@ -43,7 +43,6 @@ use slint::{Model, VecModel};
 use std::cell::RefCell;
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
-use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering::Relaxed};
 use std::sync::{Arc, Mutex};
 
@@ -458,7 +457,7 @@ impl CoverController {
     /// Persist any still-pending prefetched page counts. Call once on shutdown
     /// (after the event loop ends) so counts resolved after the last `start`
     /// survive a restart instead of being recomputed by re-opening every archive.
-    pub fn flush_counts(&self, library: &Rc<RefCell<Library>>, library_store: &LibraryStoreHandle) {
+    pub fn flush_counts(&self, library: &RefCell<Library>, library_store: &LibraryStoreHandle) {
         self.prefetch.flush(library, library_store);
     }
 
@@ -584,7 +583,7 @@ impl CoverController {
                 c.insert(key, Arc::clone(&decoded));
             }
             // Post-generate cancel re-check before crossing to the UI thread
-            // (mirrors generate_thumbnails' second cancel poll).
+            // (mirrors the strip worker's second cancel poll in `thumbnail_strip::spawn_decode`).
             if cancel.load(Relaxed) {
                 return;
             }
@@ -612,7 +611,7 @@ impl CoverController {
     pub fn start(
         &self,
         ui_weak: slint::Weak<ViewerWindow>,
-        library: &Rc<RefCell<Library>>,
+        library: &RefCell<Library>,
         library_store: &LibraryStoreHandle,
         requests: Vec<CoverRequest>,
     ) {

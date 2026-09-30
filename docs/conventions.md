@@ -79,6 +79,10 @@ Two rules validated by extracting the open-a-book use case into `app::OpenBookUs
    split (new module ∥ caller edit) be written by parallel no-cargo agents against an exact API
    contract, then verified once by the gates.
 
+### Shared-handle parameters: take `&RefCell<T>` / `&T` unless the callee keeps the handle
+
+A fn that only reads or mutates a shared handle for the duration of the call takes the handle's contents — `&RefCell<T>` for an `Rc<RefCell<T>>` handle, `&T` for an `Rc<T>` handle — not `&Rc<…>`. Take `&Rc<…>` only when the body clones the handle (`Rc::clone`, to capture it in a `'static` Slint callback or store it in a field) or forwards it to a fn that takes `&Rc<…>`. Call sites do not change: `&Rc<RefCell<T>>` deref-coerces to `&RefCell<T>`. The signature then tells the reader whether the callee can retain the handle. Exempt: the `LibraryStoreHandle` / `SettingsStoreHandle` aliases (the alias name is the documentation) and fns inside `#[cfg(test)]` modules. Never narrow a param whose body calls `.clone()` or `.to_owned()` on it: on `&RefCell<T>` that still compiles, as a deep copy of `T` instead of a refcount bump.
+
 ### Fluent catalog message IDs
 
 The single Fluent catalog (`crates/gashuu/i18n/<lang>/gashuu.ftl`; ADR-0008) names every message
