@@ -131,11 +131,11 @@ impl LeavePointService {
 /// Stage the ADR-0007 view-mode sink mutation without performing I/O.
 fn stage_view_modes_to_sink(
     route: ViewModeRoute,
-    state: &Rc<RefCell<ViewerState>>,
-    viewport: &Rc<RefCell<ViewportState>>,
-    dialog_session: &Rc<RefCell<DialogSession>>,
-    settings: &Rc<RefCell<Settings>>,
-    library: &Rc<RefCell<Library>>,
+    state: &RefCell<ViewerState>,
+    viewport: &RefCell<ViewportState>,
+    dialog_session: &RefCell<DialogSession>,
+    settings: &RefCell<Settings>,
+    library: &RefCell<Library>,
 ) {
     match route {
         ViewModeRoute::DialogClosedOnLibrary => {
@@ -196,8 +196,8 @@ pub(crate) fn apply_runtime_view_to_settings(
 /// Borrow discipline: `state` and `viewport` are distinct `RefCell`s, so the
 /// two shared borrows never conflict; both drop on return.
 pub(crate) fn current_runtime_view(
-    state: &Rc<RefCell<ViewerState>>,
-    viewport: &Rc<RefCell<ViewportState>>,
+    state: &RefCell<ViewerState>,
+    viewport: &RefCell<ViewportState>,
 ) -> ResolvedView {
     let s = state.borrow();
     ResolvedView {
@@ -220,9 +220,9 @@ pub(crate) fn current_runtime_view(
 /// `viewport` are distinct `RefCell`s; one `borrow_mut()` per statement so no
 /// two mutable borrows of the same cell overlap.
 pub(crate) fn apply_global_view_to_runtime(
-    settings: &Rc<RefCell<Settings>>,
-    state: &Rc<RefCell<ViewerState>>,
-    viewport: &Rc<RefCell<ViewportState>>,
+    settings: &RefCell<Settings>,
+    state: &RefCell<ViewerState>,
+    viewport: &RefCell<ViewportState>,
 ) {
     let s = settings.borrow();
     state
@@ -248,7 +248,7 @@ pub(crate) fn apply_global_view_to_runtime(
 /// happens inside `gashuu_core::display_title`, which checks `is_dir()` live
 /// on the same real path. Borrow discipline: the single `state.borrow()` `Ref`
 /// is confined to this function and drops on return.
-pub(crate) fn current_book_name(state: &Rc<RefCell<ViewerState>>) -> String {
+pub(crate) fn current_book_name(state: &RefCell<ViewerState>) -> String {
     let s = state.borrow();
     match s.open_file() {
         Some(path) => gashuu_core::display_title(path),
@@ -279,7 +279,7 @@ fn position_to_write_back(open_file: Option<&Path>, page: usize) -> Option<(Path
 /// the end of the statement, before `library` is borrowed. Each statement's
 /// borrows drop before the next statement acquires a different borrow,
 /// following the one-statement rule in `docs/patterns.md`.
-fn stage_position_write_back(state: &Rc<RefCell<ViewerState>>, library: &Rc<RefCell<Library>>) {
+fn stage_position_write_back(state: &RefCell<ViewerState>, library: &RefCell<Library>) {
     // Extract the (path, page) tuple from the viewer state under one shared
     // borrow; the `Ref` drops at the `;` before `library` is borrowed.
     let Some((path, page)) = ({
@@ -333,11 +333,11 @@ fn view_override_to_write_back(
 /// each computed in one statement. All shared borrows drop before
 /// `library.borrow_mut()`.
 fn stage_view_override_write_back(
-    state: &Rc<RefCell<ViewerState>>,
-    viewport: &Rc<RefCell<ViewportState>>,
-    dialog_session: &Rc<RefCell<DialogSession>>,
-    settings: &Rc<RefCell<Settings>>,
-    library: &Rc<RefCell<Library>>,
+    state: &RefCell<ViewerState>,
+    viewport: &RefCell<ViewportState>,
+    dialog_session: &RefCell<DialogSession>,
+    settings: &RefCell<Settings>,
+    library: &RefCell<Library>,
 ) {
     let current = current_runtime_view(state, viewport);
     let inherit_pending = dialog_session.borrow().inherit_pending(current);

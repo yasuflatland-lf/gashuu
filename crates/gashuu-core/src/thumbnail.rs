@@ -1,4 +1,5 @@
-//! Parallel thumbnail generation over a [`PageSource`].
+//! Thumbnail generation over a [`PageSource`]: one strip page per call
+//! ([`generate_one_thumbnail`]) and the book cover ([`generate_cover`]).
 //!
 //! This module is headless: no slint, no tracing.
 
@@ -6,20 +7,18 @@ use crate::error::CoreError;
 use crate::image_ops::{decode_thumbnail, DecodedImage};
 use crate::page_source::PageSource;
 use crate::thumbnail_cache::{page_cache_key, source_mtime_secs, ThumbnailCache};
-use rayon::prelude::*;
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 /// Default longer-edge size for generated thumbnails.
 pub const DEFAULT_THUMB_MAX_SIDE: u32 = 160;
 
-/// The borrows [`generate_thumbnails`] needs to persist each page's strip
+/// The borrows [`generate_one_thumbnail`] needs to persist each page's strip
 /// thumbnail to the on-disk cache. `path` supplies the cache-key inputs the
 /// [`PageSource`] trait does not expose; `cache` is the shared on-disk store (the
 /// same directory as covers, with disjoint keys via [`page_cache_key`]). Both
 /// `&ThumbnailCache` and `&Path` are `Send`/`Sync`, so one context is shared
-/// across the rayon `par_iter` without per-page cloning.
+/// across the UI strip worker's rayon `par_iter` without per-page cloning.
 #[derive(Clone, Copy)]
 pub struct PageThumbContext<'a> {
     /// On-disk cache the page thumbnails are read from and written to.
@@ -54,56 +53,13 @@ fn page_thumbnail(
     Ok(img)
 }
 
-/// Generate a thumbnail for every page of `source` in parallel, invoking
-/// `on_ready(index, result)` as each page completes (in arbitrary order).
-///
-/// This function **blocks** until all pages finish or `cancelled` flips true.
-/// The caller is expected to run it on a background thread so that opening a
-/// book returns immediately in the UI.
-///
-/// `cancelled` is polled before the read AND before the callback so that a
-/// superseded generation (e.g. the user opened a different book) stops promptly
-/// and never delivers stale results to the previous callback.
-///
-/// A per-page read/decode failure is delivered as `Err` to `on_ready` — never
-/// a panic. The UI is expected to render a placeholder cell for that index.
-///
-/// When `cache_ctx` is `Some`, each page's thumbnail is read from / written to the
-/// shared on-disk cache (a second open of an unchanged book performs zero
-/// full-page decodes). `cache_ctx == None` behaves exactly as before — no caching.
-pub fn generate_thumbnails<F>(
-    source: Arc<dyn PageSource>,
-    max_side: u32,
-    cancelled: Arc<AtomicBool>,
-    cache_ctx: Option<PageThumbContext<'_>>,
-    on_ready: F,
-) where
-    F: Fn(usize, Result<DecodedImage, CoreError>) + Send + Sync,
-{
-    let n = source.list_pages().len();
-    // One stat for the whole strip: derive the mtime once when caching is active
-    // and reuse it as a per-page key input (the cover cache's convention).
-    let cache = cache_ctx.map(|ctx| (ctx, source_mtime_secs(ctx.path)));
-    (0..n).into_par_iter().for_each(|i| {
-        if cancelled.load(Ordering::Relaxed) {
-            return;
-        }
-        let res = page_thumbnail(&source, max_side, cache, i);
-        if cancelled.load(Ordering::Relaxed) {
-            return;
-        }
-        on_ready(i, res);
-    });
-}
-
 /// Produce a single page's thumbnail, consulting the on-disk cache when
 /// `cache_ctx` is set.
 ///
-/// This is the lazy, per-page counterpart to [`generate_thumbnails`]: the UI's
-/// strip controller drives it one visible page at a time so a freshly opened book
-/// decodes only the pages near the viewport instead of all `N`. It reuses the same
-/// `page_cache_key` + `decode_thumbnail` path as the all-pages generator, so a page
-/// persisted by either route is a cache hit for the other.
+/// The UI's strip controller drives it one visible page at a time, so a freshly
+/// opened book decodes only the pages near the viewport instead of all `N`. The
+/// cache key is `page_cache_key(path, mtime, max_side, page_index)`, so each page
+/// of an unchanged book is persisted once and served from disk afterwards.
 ///
 /// With a cache context a hit skips the full-page read+decode; a miss reads,
 /// decodes, then persists best-effort (the `put` `Result` is intentionally ignored
@@ -118,8 +74,7 @@ pub fn generate_one_thumbnail(
     page_index: usize,
     cache_ctx: Option<PageThumbContext<'_>>,
 ) -> Result<DecodedImage, CoreError> {
-    // Mirror the all-pages generator's key convention: stat once, here for a single
-    // page, and feed the mtime into the same per-page cache key.
+    // Stat the book once per call and feed its mtime into the per-page cache key.
     let cache = cache_ctx.map(|ctx| (ctx, source_mtime_secs(ctx.path)));
     page_thumbnail(source, max_side, cache, page_index)
 }
@@ -151,8 +106,8 @@ mod tests {
     use super::*;
     use crate::page_source::PageEntry;
     use std::io::Cursor;
-    use std::sync::atomic::AtomicBool;
-    use std::sync::{Arc, Mutex};
+    use std::sync::atomic::Ordering;
+    use std::sync::Arc;
 
     /// Encode a tiny solid-color PNG into bytes using the `image` crate.
     fn tiny_png(w: u32, h: u32) -> Vec<u8> {
@@ -210,201 +165,6 @@ mod tests {
             }
         }
         // skipped_count() default 0 is sufficient.
-    }
-
-    /// Every page index 0..N is delivered to `on_ready` exactly once.
-    #[test]
-    fn all_pages_delivered_exactly_once() {
-        const N: usize = 5;
-        let pages: Vec<Option<Vec<u8>>> = (0..N).map(|_| Some(tiny_png(8, 8))).collect();
-        let source: Arc<dyn PageSource> = Arc::new(CountingSource::new(pages));
-        let cancelled = Arc::new(AtomicBool::new(false));
-
-        // A slot per page: starts as false, set to true on first delivery.
-        let delivered: Arc<Mutex<Vec<bool>>> = Arc::new(Mutex::new(vec![false; N]));
-        let delivered_clone = Arc::clone(&delivered);
-
-        generate_thumbnails(
-            source,
-            DEFAULT_THUMB_MAX_SIDE,
-            cancelled,
-            None,
-            move |i, res| {
-                assert!(res.is_ok(), "page {i} should decode successfully");
-                let mut guard = delivered_clone.lock().unwrap();
-                assert!(!guard[i], "page {i} delivered more than once");
-                guard[i] = true;
-            },
-        );
-
-        let guard = delivered.lock().unwrap();
-        for (i, &seen) in guard.iter().enumerate() {
-            assert!(seen, "page {i} was never delivered");
-        }
-    }
-
-    /// When `cancelled` is already true before the call, `on_ready` is never invoked.
-    #[test]
-    fn cancelled_flag_suppresses_all_callbacks() {
-        const N: usize = 4;
-        let pages: Vec<Option<Vec<u8>>> = (0..N).map(|_| Some(tiny_png(4, 4))).collect();
-        let source: Arc<dyn PageSource> = Arc::new(CountingSource::new(pages));
-        let cancelled = Arc::new(AtomicBool::new(true)); // pre-cancelled
-
-        let call_count = Arc::new(Mutex::new(0usize));
-        let call_count_clone = Arc::clone(&call_count);
-
-        generate_thumbnails(
-            source,
-            DEFAULT_THUMB_MAX_SIDE,
-            cancelled,
-            None,
-            move |_, _| {
-                *call_count_clone.lock().unwrap() += 1;
-            },
-        );
-
-        assert_eq!(
-            *call_count.lock().unwrap(),
-            0,
-            "on_ready should not be called when cancelled"
-        );
-    }
-
-    /// A page whose bytes are invalid produces `Err` for that index; all valid
-    /// pages still produce `Ok`. No panic occurs.
-    #[test]
-    fn invalid_page_bytes_yield_err_others_yield_ok() {
-        const N: usize = 3;
-        const BAD: usize = 1; // index 1 has corrupt bytes
-        let pages: Vec<Option<Vec<u8>>> = (0..N)
-            .map(|i| {
-                if i == BAD {
-                    Some(b"not-a-valid-image".to_vec())
-                } else {
-                    Some(tiny_png(6, 6))
-                }
-            })
-            .collect();
-        let source: Arc<dyn PageSource> = Arc::new(CountingSource::new(pages));
-        let cancelled = Arc::new(AtomicBool::new(false));
-
-        // results[i] = Some(true) → Ok, Some(false) → Err, None → not delivered.
-        let results: Arc<Mutex<Vec<Option<bool>>>> = Arc::new(Mutex::new(vec![None; N]));
-        let results_clone = Arc::clone(&results);
-
-        generate_thumbnails(
-            source,
-            DEFAULT_THUMB_MAX_SIDE,
-            cancelled,
-            None,
-            move |i, res| {
-                let mut guard = results_clone.lock().unwrap();
-                guard[i] = Some(res.is_ok());
-            },
-        );
-
-        let guard = results.lock().unwrap();
-        for (i, &slot) in guard.iter().enumerate() {
-            let got_ok = slot.expect("page {i} was not delivered");
-            if i == BAD {
-                assert!(!got_ok, "page {BAD} (invalid bytes) should produce Err");
-            } else {
-                assert!(got_ok, "page {i} (valid bytes) should produce Ok");
-            }
-        }
-    }
-
-    /// A 0-page source: `on_ready` is never called and the function returns
-    /// without panic.
-    #[test]
-    fn zero_page_source_is_noop() {
-        let source: Arc<dyn PageSource> = Arc::new(CountingSource::new(vec![]));
-        let cancelled = Arc::new(AtomicBool::new(false));
-        let called = Arc::new(Mutex::new(false));
-        let called_clone = Arc::clone(&called);
-
-        generate_thumbnails(
-            source,
-            DEFAULT_THUMB_MAX_SIDE,
-            cancelled,
-            None,
-            move |_, _| {
-                *called_clone.lock().unwrap() = true;
-            },
-        );
-
-        assert!(
-            !*called.lock().unwrap(),
-            "on_ready must not be called for a 0-page source"
-        );
-    }
-
-    /// A single-page source whose `read_bytes` flips `cancelled` as a side effect.
-    /// This lets us exercise the SECOND cancel check (line 44, between decode and
-    /// `on_ready`) deterministically without any rayon races: the flag is still
-    /// `false` at the FIRST check (so we enter read+decode), then `read_bytes`
-    /// sets it to `true`, and by the time `generate_thumbnails` reaches the
-    /// post-decode check the flag is already set — suppressing the callback.
-    ///
-    /// Contrast with flipping the flag *inside* `on_ready`: with a multi-page
-    /// source other rayon workers may have already passed the second check, making
-    /// the suppression count non-deterministic. The read-side-effect approach
-    /// keeps the test single-page and fully deterministic.
-    struct CancelOnReadSource {
-        cancelled: Arc<AtomicBool>,
-        bytes: Vec<u8>,
-    }
-
-    impl PageSource for CancelOnReadSource {
-        fn list_pages(&self) -> Vec<PageEntry> {
-            vec![PageEntry {
-                name: "page0.png".to_string(),
-            }]
-        }
-
-        fn read_bytes(&self, _index: usize) -> Result<Vec<u8>, CoreError> {
-            // Flip the cancel flag so the post-decode check sees `true`.
-            self.cancelled.store(true, Ordering::Relaxed);
-            Ok(self.bytes.clone())
-        }
-        // skipped_count() default 0 is sufficient.
-    }
-
-    /// Guards the post-decode (second) cancel check in `generate_thumbnails`.
-    ///
-    /// Page 0 passes the first `cancelled` check (flag is still `false`),
-    /// `read_bytes` flips the flag to `true` as a side effect, decode completes,
-    /// then the second check suppresses `on_ready`. The callback count must be 0.
-    ///
-    /// If the second check (line 44) were deleted, decode would still succeed and
-    /// `on_ready` would be called once — making this test fail and exposing the gap.
-    #[test]
-    fn post_decode_cancel_check_suppresses_callback() {
-        let cancelled = Arc::new(AtomicBool::new(false));
-        let source: Arc<dyn PageSource> = Arc::new(CancelOnReadSource {
-            cancelled: Arc::clone(&cancelled),
-            bytes: tiny_png(4, 4),
-        });
-
-        let call_count = Arc::new(Mutex::new(0usize));
-        let call_count_clone = Arc::clone(&call_count);
-
-        generate_thumbnails(
-            source,
-            DEFAULT_THUMB_MAX_SIDE,
-            cancelled,
-            None,
-            move |_, _| {
-                *call_count_clone.lock().unwrap() += 1;
-            },
-        );
-
-        assert_eq!(
-            *call_count.lock().unwrap(),
-            0,
-            "on_ready must not be called when cancelled is set between decode and callback"
-        );
     }
 
     /// `generate_cover` returns a thumbnail of PAGE 0, downscaled within `max_side`,
@@ -476,8 +236,9 @@ mod tests {
             .count()
     }
 
-    /// Run `generate_thumbnails` over `pages` with the given cache context and
-    /// return the source so the caller can assert the `read_bytes` count.
+    /// Fetch every page of `pages` through `generate_one_thumbnail` with the given
+    /// cache context (one call per page, as the strip worker does) and return the
+    /// source so the caller can assert the `read_bytes` count.
     fn run_strip(
         pages: Vec<Option<Vec<u8>>>,
         cache: &ThumbnailCache,
@@ -485,14 +246,15 @@ mod tests {
     ) -> Arc<CountingSource> {
         let src = Arc::new(CountingSource::new(pages));
         let source: Arc<dyn PageSource> = src.clone();
-        let cancelled = Arc::new(AtomicBool::new(false));
-        generate_thumbnails(
-            source,
-            DEFAULT_THUMB_MAX_SIDE,
-            cancelled,
-            Some(PageThumbContext { cache, path }),
-            |i, res| assert!(res.is_ok(), "page {i} should decode successfully"),
-        );
+        for i in 0..source.list_pages().len() {
+            let res = generate_one_thumbnail(
+                &source,
+                DEFAULT_THUMB_MAX_SIDE,
+                i,
+                Some(PageThumbContext { cache, path }),
+            );
+            assert!(res.is_ok(), "page {i} should decode successfully");
+        }
         src
     }
 

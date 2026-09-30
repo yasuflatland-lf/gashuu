@@ -51,8 +51,7 @@ pub use spread::{
     SpreadContext, SpreadNavigation,
 };
 pub use thumbnail::{
-    generate_cover, generate_one_thumbnail, generate_thumbnails, PageThumbContext,
-    DEFAULT_THUMB_MAX_SIDE,
+    generate_cover, generate_one_thumbnail, PageThumbContext, DEFAULT_THUMB_MAX_SIDE,
 };
 pub use thumbnail_cache::{
     cache_key, page_cache_key, ClearCacheReport, PruneReport, ThumbnailCache,
