@@ -156,23 +156,28 @@ pub(crate) fn push_selection_toolbar_state(
     ui.set_carousel_has_selection(total > 0);
 }
 
-/// The shared collaborators a Library carousel refresh threads together
-/// (borrowed-collaborator bundle — same argument-count-cohesion intent as the
-/// docs/patterns.md cohesion-wrapper flavor (`SpreadContext`), but holding `&Rc`
-/// borrows rather than owned `Copy` values): the persisted `library`, the
-/// `covers` stream controller, the `search` projection, the bulk-`selection`
-/// state, and the `localizer` (for composing the selection-toolbar strings after
-/// the projection changes). They ALWAYS travel together for a carousel rebuild,
-/// so bundling them as borrows keeps `refresh_library_carousel` /
-/// `apply_add_report` under the argument-count limit and documents that
-/// they are one collaboration unit, not independent params.
-pub(crate) struct CarouselRefresh<'a> {
-    pub(crate) library: &'a Rc<RefCell<Library>>,
-    pub(crate) library_store: &'a LibraryStoreHandle,
-    pub(crate) covers: &'a cover_loader::CoverController,
-    pub(crate) search: &'a Rc<RefCell<LibrarySearchState>>,
-    pub(crate) selection: &'a Rc<RefCell<LibrarySelectionState>>,
-    pub(crate) localizer: &'a Rc<i18n::Localizer>,
+/// The shared collaborators a Library carousel refresh threads together: the
+/// persisted `library` and its `library_store`, the `covers` stream controller,
+/// the `search` projection, the bulk-`selection` state, and the `localizer` (for
+/// composing the selection-toolbar strings after the projection changes). They
+/// ALWAYS travel together for a carousel rebuild, so one bundle keeps
+/// `refresh_library_carousel` / `apply_add_report` under the argument-count
+/// limit and documents that they are one collaboration unit.
+///
+/// Owns its `Rc` handles (as `OpenBookUseCase` does) rather than borrowing them:
+/// a Slint callback closure must be `'static`, so a borrowed bundle could not be
+/// captured and every callback had to clone all six handles and re-assemble the
+/// bundle inside its body. Each `wire_*` fn builds ONE bundle from its explicit
+/// handle list and each callback captures one `carousel.clone()` (six refcount
+/// bumps, no allocation).
+#[derive(Clone)]
+pub(crate) struct CarouselRefresh {
+    pub(crate) library: Rc<RefCell<Library>>,
+    pub(crate) library_store: LibraryStoreHandle,
+    pub(crate) covers: Rc<cover_loader::CoverController>,
+    pub(crate) search: Rc<RefCell<LibrarySearchState>>,
+    pub(crate) selection: Rc<RefCell<LibrarySelectionState>>,
+    pub(crate) localizer: Rc<i18n::Localizer>,
 }
 
 /// Project the CURRENT (already-recomputed) search state into the carousel:
@@ -229,18 +234,18 @@ pub(crate) fn refresh_library_carousel(
     // add, boot), so the visible/all-selected counts may have moved.
     push_selection_toolbar_state(
         ui,
-        deps.localizer,
-        deps.selection,
-        deps.search,
-        deps.library,
+        &deps.localizer,
+        &deps.selection,
+        &deps.search,
+        &deps.library,
     );
     // Dispatch covers nearest the focused row first so a large library streams the visible
     // neighbourhood immediately. Read focus AFTER the reset above so reset-focus starts at row 0.
     let focus_row = ui.get_carousel_focused_index().max(0) as usize;
     deps.covers.start(
         ui.as_weak(),
-        deps.library,
-        deps.library_store,
+        &deps.library,
+        &deps.library_store,
         cover_loader::prioritize_by_focus(cover_reqs, focus_row),
     );
 }
@@ -314,10 +319,10 @@ pub(crate) fn finalize_remove(ui: &ViewerWindow, deps: &CarouselRefresh, outcome
             }
             push_selection_toolbar_state(
                 ui,
-                deps.localizer,
-                deps.selection,
-                deps.search,
-                deps.library,
+                &deps.localizer,
+                &deps.selection,
+                &deps.search,
+                &deps.library,
             );
             // Status LAST (status-last ordering): the deleted-books notice. `n`
             // already excludes stale not_found paths.
@@ -368,7 +373,7 @@ pub(crate) fn apply_add_report(
 ) {
     let (report, save_result) =
         apply_outcomes_and_save(&mut deps.library.borrow_mut(), outcomes, |library| {
-            save_library(deps.library_store, library)
+            save_library(&deps.library_store, library)
         });
     let AddReport {
         added: added_paths,

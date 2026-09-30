@@ -48,6 +48,15 @@ pub(crate) fn wire_open_handlers(
     let selection = Rc::clone(selection);
     let localizer = Rc::clone(localizer);
     let library_store = Rc::clone(library_store);
+    // One carousel-refresh bundle for this fn's callbacks; each callback captures a clone.
+    let carousel = CarouselRefresh {
+        library,
+        library_store,
+        covers,
+        search,
+        selection,
+        localizer: Rc::clone(&localizer),
+    };
 
     // Add Books: pick comic sources. macOS picks archives AND folders in one panel
     // (`pick_files_or_folders`); sources are probed off the UI thread (issue 206).
@@ -118,31 +127,14 @@ pub(crate) fn wire_open_handlers(
     {
         let ui_weak = ui.as_weak();
         let adder = Rc::clone(&adder);
-        let library = Rc::clone(&library);
-        let covers = Rc::clone(&covers);
-        let search = Rc::clone(&search);
-        let selection = Rc::clone(&selection);
         let localizer = Rc::clone(&localizer);
-        let library_store = Rc::clone(&library_store);
+        let carousel = carousel.clone();
         ui.on_add_finalize(move |epoch| {
             with_ui(&ui_weak, |ui| {
                 let Some((outcomes, op)) = adder.take_outcomes(epoch.max(0) as usize) else {
                     return;
                 };
-                apply_add_report(
-                    &ui,
-                    &CarouselRefresh {
-                        library: &library,
-                        library_store: &library_store,
-                        covers: &covers,
-                        search: &search,
-                        selection: &selection,
-                        localizer: &localizer,
-                    },
-                    outcomes,
-                    op,
-                    localizer.loader(),
-                );
+                apply_add_report(&ui, &carousel, outcomes, op, localizer.loader());
                 // This generation's add is complete — hide the progress hairline.
                 // (Superseded finalizes returned early above, so a newer in-flight
                 // add's bar is left running for its own finalize to retire.)
@@ -227,6 +219,15 @@ pub(crate) fn wire_carousel_handlers(
     let selection = Rc::clone(selection);
     let localizer = Rc::clone(localizer);
     let library_store = Rc::clone(library_store);
+    // One carousel-refresh bundle for this fn's callbacks; each callback captures a clone.
+    let carousel = CarouselRefresh {
+        library: Rc::clone(&library),
+        library_store,
+        covers,
+        search: Rc::clone(&search),
+        selection,
+        localizer: Rc::clone(&localizer),
+    };
 
     // Single-open finalize: drain only the current epoch, then run the complete
     // mutation/persistence/UI tail on the event-loop thread.
@@ -242,11 +243,8 @@ pub(crate) fn wire_carousel_handlers(
         let pages = Rc::clone(&pages);
         let thumbs = Rc::clone(&thumbs);
         let library = Rc::clone(&library);
-        let covers = Rc::clone(&covers);
-        let library_store = Rc::clone(&library_store);
-        let search = Rc::clone(&search);
-        let selection = Rc::clone(&selection);
         let localizer = Rc::clone(&localizer);
+        let carousel = carousel.clone();
         ui.on_open_finalize(move |epoch| {
             with_ui(&ui_weak, |ui| {
                 let Some((path, probe)) = open_ctrl.take_outcome(epoch.max(0) as usize) else {
@@ -271,22 +269,7 @@ pub(crate) fn wire_carousel_handlers(
                 // removed, and a failed open must keep the user on the Library screen.
                 let enter_viewer = matches!(outcome, open_book::OpenOutcome::Success { .. });
                 let open_failed = matches!(outcome, open_book::OpenOutcome::Error(_));
-                finalize_open(
-                    &ui,
-                    &state,
-                    &viewport,
-                    &pages,
-                    &thumbs,
-                    &CarouselRefresh {
-                        library: &library,
-                        library_store: &library_store,
-                        covers: &covers,
-                        search: &search,
-                        selection: &selection,
-                        localizer: &localizer,
-                    },
-                    outcome,
-                );
+                finalize_open(&ui, &state, &viewport, &pages, &thumbs, &carousel, outcome);
                 // The worker already performed the existence stat. Missing or
                 // unmounted paths get the same book-named replacement message.
                 if open_failed && path_exists == Some(false) {
@@ -308,11 +291,8 @@ pub(crate) fn wire_carousel_handlers(
     {
         let ui_weak = ui.as_weak();
         let library = Rc::clone(&library);
-        let covers = Rc::clone(&covers);
         let search = Rc::clone(&search);
-        let selection = Rc::clone(&selection);
-        let localizer = Rc::clone(&localizer);
-        let library_store = Rc::clone(&library_store);
+        let carousel = carousel.clone();
         ui.on_library_search_changed(move |query| {
             with_ui(&ui_weak, |ui| {
                 // `search` and `library` are distinct RefCells, so a mut borrow of one and a
@@ -322,18 +302,7 @@ pub(crate) fn wire_carousel_handlers(
                     .set_query(query.to_string(), &library.borrow());
                 // The selection (keyed by path) is ORTHOGONAL to the query: the rebuild
                 // re-applies it over the new visible rows, so a query change never drops a book.
-                refresh_library_carousel(
-                    &ui,
-                    &CarouselRefresh {
-                        library: &library,
-                        library_store: &library_store,
-                        covers: &covers,
-                        search: &search,
-                        selection: &selection,
-                        localizer: &localizer,
-                    },
-                    true,
-                );
+                refresh_library_carousel(&ui, &carousel, true);
             })
         });
     }
@@ -461,6 +430,15 @@ pub(crate) fn wire_selection_handlers(
     let selection = Rc::clone(selection);
     let localizer = Rc::clone(localizer);
     let library_store = Rc::clone(library_store);
+    // One carousel-refresh bundle for this fn's callbacks; each callback captures a clone.
+    let carousel = CarouselRefresh {
+        library: Rc::clone(&library),
+        library_store: Rc::clone(&library_store),
+        covers,
+        search: Rc::clone(&search),
+        selection: Rc::clone(&selection),
+        localizer: Rc::clone(&localizer),
+    };
 
     // Toggle the focused/clicked book's selection (VISIBLE index → path via the search
     // projection). Flips ONLY that row's `selected` flag, no model rebuild; desync = no-op.
@@ -626,12 +604,7 @@ pub(crate) fn wire_selection_handlers(
     // rollback, cover purge, close-if-open), then finalize the UI. Modal dismissed always.
     {
         let ui_weak = ui.as_weak();
-        let library = Rc::clone(&library);
-        let search = Rc::clone(&search);
-        let selection = Rc::clone(&selection);
-        let localizer = Rc::clone(&localizer);
-        let covers = Rc::clone(&covers);
-        let library_store = Rc::clone(&library_store);
+        let carousel = carousel.clone();
         let remove_books = remove_books::RemoveBooksUseCase::new(
             Rc::clone(&state),
             Rc::clone(&dialog_session),
@@ -646,18 +619,7 @@ pub(crate) fn wire_selection_handlers(
                 // Dismiss the modal in every outcome (its stale content props are
                 // rebuilt on the next open).
                 ui.set_show_confirm_delete(false);
-                finalize_remove(
-                    &ui,
-                    &CarouselRefresh {
-                        library: &library,
-                        library_store: &library_store,
-                        covers: &covers,
-                        search: &search,
-                        selection: &selection,
-                        localizer: &localizer,
-                    },
-                    outcome,
-                );
+                finalize_remove(&ui, &carousel, outcome);
             })
         });
     }
@@ -667,11 +629,8 @@ pub(crate) fn wire_selection_handlers(
     {
         let ui_weak = ui.as_weak();
         let library = Rc::clone(&library);
-        let covers = Rc::clone(&covers);
-        let search = Rc::clone(&search);
-        let selection = Rc::clone(&selection);
-        let localizer = Rc::clone(&localizer);
         let library_store = Rc::clone(&library_store);
+        let carousel = carousel.clone();
         ui.on_empty_book_detected(move |path_str| {
             with_ui(&ui_weak, |ui| {
                 let path = std::path::PathBuf::from(path_str.as_str());
@@ -680,18 +639,7 @@ pub(crate) fn wire_selection_handlers(
                 let removal = open_book::remove_empty_book(&library, &path, |library| {
                     save_library(&library_store, library)
                 });
-                finalize_empty_book_rejected(
-                    &ui,
-                    &CarouselRefresh {
-                        library: &library,
-                        library_store: &library_store,
-                        covers: &covers,
-                        search: &search,
-                        selection: &selection,
-                        localizer: &localizer,
-                    },
-                    &removal,
-                );
+                finalize_empty_book_rejected(&ui, &carousel, &removal);
             })
         });
     }
