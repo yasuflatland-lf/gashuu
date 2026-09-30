@@ -39,10 +39,11 @@ requires `dav1d >= 1.3.0` at BUILD time on all 3 OS** — resolved by the `dav1d
 build chain (pkg-config, or the `SYSTEM_DEPS_DAV1D_*` env overrides CI uses). This is the second
 knowing exception to the `zip` "no native toolchain" stance; the decoder choice and license
 rationale live in [ADR-0010](ADRs/0010-avif-decode-via-dav1d.md) (dav1d is BSD-2-Clause, recorded
-in [THIRD_PARTY_LICENSES.md](../THIRD_PARTY_LICENSES.md)). **Caveat:** `rav1e` (and its `paste` /
-RUSTSEC-2024-0436 advisory) still appears in `Cargo.lock` because Slint's build-time `.slint`
-compiler (`i-slint-compiler`) depends on `image` with its DEFAULT features — outside our control;
-trimming gashuu's own features does not remove it (see the ignore reason in `deny.toml`).
+in [THIRD_PARTY_LICENSES.md](../THIRD_PARTY_LICENSES.md)). **Note:** `rav1e` (and its `paste` /
+RUSTSEC-2024-0436 advisory) no longer appears in `Cargo.lock` as of Slint 1.18, whose build-time
+`.slint` compiler (`i-slint-compiler`) no longer enables `image`'s DEFAULT features (which include
+the avif encoder), so the `deny.toml` ignore for it was removed. Earlier Slint releases pulled it
+in regardless of gashuu's own feature trimming.
 
 Dev setup — **macOS**: `brew install dav1d` (verify: `pkg-config --modversion dav1d`).
 **Linux**: `sudo apt-get install -y libdav1d-dev` (Ubuntu 24.04 ships 1.4.1). **Windows**:
@@ -55,9 +56,9 @@ source per arch (meson/ninja/nasm) and lipo-merges one fat `libdav1d.a`; Windows
 static triplet. Both release jobs assert the result (`otool -L` / `dumpbin /dependents` show no
 dav1d dynamic reference). CI test jobs may link dynamically (brew/apt) — nothing ships from CI.
 
-### slint pinned to `=1.17.1` for the `unstable-winit-030` feature (drag-and-drop)
+### slint pinned to `=1.18.1` for the `unstable-winit-030` feature (drag-and-drop)
 
-**`slint` and `slint-build` are pinned to an EXACT version (`=1.17.1`), not `1`, because the UI crate enables the `unstable-winit-030` feature.** Slint has no stable file-drop API, so OS file/folder drag-and-drop (`handlers/drag_drop.rs`) reaches the winit backend's raw `WindowEvent` filter (`slint::winit_030::WinitWindowAccessor::on_winit_window_event`) to receive `HoveredFile`/`DroppedFile`. That module is gated behind `unstable-winit-030` and is documented as "may be removed or changed in future minor releases", so a slint minor bump must be a deliberate, tested step rather than an automatic `cargo update`. The two versions MUST stay in lockstep (the proc-macro and the runtime are one release). To upgrade slint: bump both pins together, re-verify drag-and-drop builds and the `winit_030` API still resolves, then run the three gates.
+**`slint` and `slint-build` are pinned to an EXACT version (`=1.18.1`), not `1`, because the UI crate enables the `unstable-winit-030` feature.** Slint has no stable file-drop API, so OS file/folder drag-and-drop (`handlers/drag_drop.rs`) reaches the winit backend's raw `WindowEvent` filter (`slint::winit_030::WinitWindowAccessor::on_winit_window_event`) to receive `HoveredFile`/`DroppedFile`. That module is gated behind `unstable-winit-030` and is documented as "may be removed or changed in future minor releases", so a slint minor bump must be a deliberate, tested step rather than an automatic `cargo update`. The two versions MUST stay in lockstep (the proc-macro and the runtime are one release). To upgrade slint: bump both pins together, re-verify drag-and-drop builds and the `winit_030` API still resolves, then run the three gates.
 
 ### Thumbnail strip added no new dependencies
 
