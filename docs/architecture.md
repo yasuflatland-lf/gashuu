@@ -135,11 +135,12 @@ See [ADR-0003](ADRs/0003-image-loading-and-caching.md) for image loading decisio
 
 ### thumbnail
 
-`thumbnail.rs`. `generate_thumbnails(source: Arc<dyn PageSource>, max_side, cancelled: Arc<AtomicBool>, on_ready: F)` —
-SYNCHRONOUS, rayon `par_iter` over all pages invoking `on_ready(index, Result<DecodedImage, CoreError>)`
-as each completes (arbitrary order), BLOCKING until done or `cancelled` flips (polled TWICE per
-page: before read AND before callback); per-page failure is delivered as `Err` (never panics);
-`DEFAULT_THUMB_MAX_SIDE`=160; headless (no slint/tracing), same "testable synchronous core; UI
+`thumbnail.rs`. `generate_one_thumbnail(source: &Arc<dyn PageSource>, max_side, page_index, cache_ctx: Option<PageThumbContext>) -> Result<DecodedImage, CoreError>` —
+SYNCHRONOUS single-page thumbnail. With a `PageThumbContext { cache, path }` it reads from / writes to
+the on-disk `ThumbnailCache` under `page_cache_key(path, mtime, max_side, page_index)` (a hit skips
+the full-page read+decode; the `put` result is ignored); failure is returned as `Err` (never panics).
+Parallelism and cancellation are the caller's: the UI's `thumbnail_strip` worker `par_iter`s the
+visible batch and polls its cancel flag before AND after each call. `DEFAULT_THUMB_MAX_SIDE`=160; headless (no slint/tracing), same "testable synchronous core; UI
 owns the fire-and-forget spawn" philosophy as `ImageCache`. The single-page sibling
 `generate_cover(source: Arc<dyn PageSource>, max_side) -> Result<DecodedImage, CoreError>` (a
 downscaled thumbnail of page index 0, the book's cover; `Err(IndexOutOfRange{index:0,len:0})` on a
