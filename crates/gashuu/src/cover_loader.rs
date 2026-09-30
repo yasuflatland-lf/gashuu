@@ -584,7 +584,7 @@ impl CoverController {
                 c.insert(key, Arc::clone(&decoded));
             }
             // Post-generate cancel re-check before crossing to the UI thread
-            // (mirrors generate_thumbnails' second cancel poll).
+            // (mirrors the strip worker's second cancel poll in `thumbnail_strip::spawn_decode`).
             if cancel.load(Relaxed) {
                 return;
             }
