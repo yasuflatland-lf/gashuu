@@ -92,7 +92,7 @@ fn restore_focus_after_dialog(ui: &ViewerWindow) {
 /// flag and the 24h throttle (used by the manual "Check now" button).
 pub(crate) fn start_update_check(
     ui: &ViewerWindow,
-    settings: &Rc<RefCell<Settings>>,
+    settings: &RefCell<Settings>,
     settings_store: &SettingsStoreHandle,
     force: bool,
 ) {
