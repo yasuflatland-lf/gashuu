@@ -329,18 +329,15 @@ fn main() -> color_eyre::Result<()> {
 
     // Seed the carousel from the persisted library so boot shows saved books. This is
     // the single build+bind+focus-reset+cover-start path; cover streaming starts once here.
-    refresh_library_carousel(
-        &ui,
-        &CarouselRefresh {
-            library: &library,
-            library_store: &library_store,
-            covers: &covers,
-            search: &search,
-            selection: &selection,
-            localizer: &localizer,
-        },
-        true,
-    );
+    let carousel = CarouselRefresh {
+        library: Rc::clone(&library),
+        library_store: Rc::clone(&library_store),
+        covers: Rc::clone(&covers),
+        search: Rc::clone(&search),
+        selection: Rc::clone(&selection),
+        localizer: Rc::clone(&localizer),
+    };
+    refresh_library_carousel(&ui, &carousel, true);
     // Continue reading: override the refresh's reset-to-0 with a one-shot snap to the
     // last-read book's visible row (resolved through the empty-query visible set).
     snap_carousel_focus_to_last_opened(&ui, &library, &search);
@@ -943,7 +940,7 @@ fn go_to_library(ui: &ViewerWindow, nav: &Rc<RefCell<NavState>>, deps: &Carousel
     // Rebuild so the model reflects the CURRENT `last_opened`, then override the
     // reset-to-0 with the continue-reading snap (reset_focus=true: entry owns focus).
     refresh_library_carousel(ui, deps, true);
-    snap_carousel_focus_to_last_opened(ui, deps.library, deps.search);
+    snap_carousel_focus_to_last_opened(ui, &deps.library, &deps.search);
     // Restore keyboard focus to the carousel so its key seams work immediately.
     ui.invoke_focus_carousel();
 }
