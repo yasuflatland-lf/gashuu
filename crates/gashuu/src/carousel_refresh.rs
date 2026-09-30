@@ -28,8 +28,8 @@ use std::rc::Rc;
 /// row). Returns `None` for an out-of-range index or a carousel/library desync.
 /// Borrows `library` and `search` only for the duration of the call.
 pub(crate) fn visible_index_to_path(
-    library: &Rc<RefCell<Library>>,
-    search: &Rc<RefCell<LibrarySearchState>>,
+    library: &RefCell<Library>,
+    search: &RefCell<LibrarySearchState>,
     index: i32,
 ) -> Option<std::path::PathBuf> {
     if index < 0 {
@@ -86,8 +86,8 @@ fn entry_focus_index(lib: &Library, visible_indices: &[usize]) -> i32 {
 /// confined to the snap computation and drops before the UI set.
 pub(crate) fn snap_carousel_focus_to_last_opened(
     ui: &ViewerWindow,
-    library: &Rc<RefCell<Library>>,
-    search: &Rc<RefCell<LibrarySearchState>>,
+    library: &RefCell<Library>,
+    search: &RefCell<LibrarySearchState>,
 ) {
     let focus = {
         let lib = library.borrow();
@@ -125,9 +125,9 @@ pub(crate) fn clamp_focused_index(old: i32, visible_count: usize) -> i32 {
 pub(crate) fn push_selection_toolbar_state(
     ui: &ViewerWindow,
     localizer: &i18n::Localizer,
-    selection: &Rc<RefCell<LibrarySelectionState>>,
-    search: &Rc<RefCell<LibrarySearchState>>,
-    library: &Rc<RefCell<Library>>,
+    selection: &RefCell<LibrarySelectionState>,
+    search: &RefCell<LibrarySearchState>,
+    library: &RefCell<Library>,
 ) {
     let loader = localizer.loader();
     // One shared-borrow group: `selection`/`search`/`library` are distinct RefCells, so

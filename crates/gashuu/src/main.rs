@@ -510,13 +510,13 @@ fn main() -> color_eyre::Result<()> {
 #[allow(clippy::too_many_arguments)]
 fn run_exit_persistence(
     ui: &ViewerWindow,
-    covers: &Rc<cover_loader::CoverController>,
-    state: &Rc<RefCell<ViewerState>>,
-    viewport: &Rc<RefCell<ViewportState>>,
-    dialog_session: &Rc<RefCell<DialogSession>>,
-    settings: &Rc<RefCell<Settings>>,
-    library: &Rc<RefCell<Library>>,
-    leave_point: &Rc<LeavePointService>,
+    covers: &cover_loader::CoverController,
+    state: &RefCell<ViewerState>,
+    viewport: &RefCell<ViewportState>,
+    dialog_session: &RefCell<DialogSession>,
+    settings: &RefCell<Settings>,
+    library: &RefCell<Library>,
+    leave_point: &LeavePointService,
     settings_store: &SettingsStoreHandle,
     library_store: &LibraryStoreHandle,
 ) {
@@ -554,14 +554,14 @@ fn run_exit_persistence(
 /// `AppExit` pin the global scratchpad onto the book (issue #556).
 #[allow(clippy::too_many_arguments)]
 fn stage_exit_state(
-    dialog_session: &Rc<RefCell<DialogSession>>,
-    covers: &Rc<cover_loader::CoverController>,
-    state: &Rc<RefCell<ViewerState>>,
-    viewport: &Rc<RefCell<ViewportState>>,
-    settings: &Rc<RefCell<Settings>>,
-    library: &Rc<RefCell<Library>>,
+    dialog_session: &RefCell<DialogSession>,
+    covers: &cover_loader::CoverController,
+    state: &RefCell<ViewerState>,
+    viewport: &RefCell<ViewportState>,
+    settings: &RefCell<Settings>,
+    library: &RefCell<Library>,
     library_store: &LibraryStoreHandle,
-    leave_point: &Rc<LeavePointService>,
+    leave_point: &LeavePointService,
     save: impl FnOnce(&Library) -> Result<(), CoreError>,
 ) {
     dialog_session.borrow_mut().end(state, viewport, settings);
@@ -632,7 +632,7 @@ fn with_ui(weak: &slint::Weak<ViewerWindow>, f: impl FnOnce(ViewerWindow)) {
     }
 }
 
-pub(crate) fn clear_page_view(ui: &ViewerWindow, viewport: &Rc<RefCell<ViewportState>>) {
+pub(crate) fn clear_page_view(ui: &ViewerWindow, viewport: &RefCell<ViewportState>) {
     ui.set_leading_loading(false);
     ui.set_trailing_loading(false);
     ui.set_leading_page(slint::Image::default());
@@ -660,7 +660,7 @@ pub(crate) fn apply_spread_images(
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn apply_spread_geometry(
     ui: &ViewerWindow,
-    viewport: &Rc<RefCell<ViewportState>>,
+    viewport: &RefCell<ViewportState>,
     loader: &i18n_embed::fluent::FluentLanguageLoader,
     content_w: f32,
     content_h: f32,
@@ -716,7 +716,7 @@ fn spread_request(slots: SpreadCacheState) -> SpreadDecodeRequest {
 pub(crate) fn refresh(
     ui: &ViewerWindow,
     state: &ViewerState,
-    viewport: &Rc<RefCell<ViewportState>>,
+    viewport: &RefCell<ViewportState>,
     loader: &i18n_embed::fluent::FluentLanguageLoader,
     pages: &PageController,
     #[cfg_attr(test, allow(unused_variables))] ui_weak: slint::Weak<ViewerWindow>,
@@ -837,10 +837,10 @@ pub(crate) fn empty_book_removed_status(
 /// share this UI wiring, so the `OpenOutcome` match lives in exactly one spot.
 fn finalize_open(
     ui: &ViewerWindow,
-    state: &Rc<RefCell<ViewerState>>,
-    viewport: &Rc<RefCell<ViewportState>>,
+    state: &RefCell<ViewerState>,
+    viewport: &RefCell<ViewportState>,
     pages: &PageController,
-    thumbs: &Rc<ThumbnailController>,
+    thumbs: &ThumbnailController,
     deps: &CarouselRefresh,
     outcome: open_book::OpenOutcome,
 ) {
@@ -934,7 +934,7 @@ fn apply_viewport(ui: &ViewerWindow, viewport: &ViewportState) {
 /// handled inside the chokepoint, so neither flashes nor drops. We then snap the
 /// carousel focus to the last-read book so Return resumes it. This is a ONE-SHOT
 /// set at the entry moment, NOT a binding — after entry the user owns focus.
-fn go_to_library(ui: &ViewerWindow, nav: &Rc<RefCell<NavState>>, deps: &CarouselRefresh) {
+fn go_to_library(ui: &ViewerWindow, nav: &RefCell<NavState>, deps: &CarouselRefresh) {
     nav.borrow_mut().to_library();
     ui.set_screen(screen_to_index(nav.borrow().screen()));
     // Clear status-text on entry: the Library strip renders it, so the Viewer's page
@@ -951,7 +951,7 @@ fn go_to_library(ui: &ViewerWindow, nav: &Rc<RefCell<NavState>>, deps: &Carousel
 /// Switch the app to the Viewer and sync the UI's `screen` property. The single
 /// chokepoint for "go to Viewer"; restores focus to the page area so keyboard
 /// navigation keeps working.
-fn go_to_viewer(ui: &ViewerWindow, nav: &Rc<RefCell<NavState>>) {
+fn go_to_viewer(ui: &ViewerWindow, nav: &RefCell<NavState>) {
     nav.borrow_mut().to_viewer();
     ui.set_screen(screen_to_index(nav.borrow().screen()));
     ui.invoke_focus_pages();
