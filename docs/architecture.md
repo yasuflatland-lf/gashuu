@@ -635,7 +635,7 @@ notice-plus-save-failure compose.
 `on_carousel_open` and `on_carousel_continue_reading` only DISPATCH
 (`handlers/library.rs::open_and_enter` → `OpenController::start`); the whole tail below runs in the
 `on_open_finalize` handler. It calls
-`finalize_open(&ui, &state, &viewport, &CarouselRefresh { … }, outcome)` after `apply_probed`
+`finalize_open(&ui, &state, &viewport, &pages, &thumbs, &carousel, outcome)` after `apply_probed`
 returns — the signature gained the full `CarouselRefresh` deps (was just `&localizer`) because the
 `EmptyBookRejected` arm may rebuild the carousel. That handler also calls `go_to_viewer`, but gates
 it on the POSITIVE outcome — `enter_viewer = matches!(outcome, OpenOutcome::Success(..))` (was
@@ -859,7 +859,7 @@ All four share a private `visible_paths(search, library)` join and are headlessl
 
 ### carousel refresh / projection (`carousel_refresh.rs`)
 
-`carousel_refresh.rs` (extracted from `main.rs`, mirroring the `view_sync.rs` split). Owns the carousel-refresh/projection cluster: `refresh_library_carousel` (the single chokepoint that rebuilds + binds the filtered carousel model, optionally resets focus, re-applies the path-keyed selection, and (re)starts focus-prioritized cover loading), the `CarouselRefresh` collaborator bundle it takes (`library` / `library_store` / `covers` / `search` / `selection` / `localizer`, all `pub(crate)`; `library_store` is the `LibraryStoreHandle` the add-path save routes through). The bundle OWNS its `Rc` handles and derives `Clone`: a Slint callback must be `'static`, so each `wire_*` fn that rebuilds the carousel assembles one bundle from its own parameters and every such callback captures `carousel.clone()`, the visible-index projection helpers (`visible_index_to_path`, `visible_focus_index_for_path`, `entry_focus_index` (private), `snap_carousel_focus_to_last_opened`, `clamp_focused_index`), and `push_selection_strings` (the selection-toolbar string chokepoint). UI-thread only; driven almost entirely from `handlers/library.rs` and `handlers/settings.rs`, with `go_to_library`/`go_to_viewer` (still in `main.rs`) routing their carousel work through it via the crate-root re-exports.
+`carousel_refresh.rs` (extracted from `main.rs`, mirroring the `view_sync.rs` split). Owns the carousel-refresh/projection cluster: `refresh_library_carousel` (the single chokepoint that rebuilds + binds the filtered carousel model, optionally resets focus, re-applies the path-keyed selection, and (re)starts focus-prioritized cover loading), the `CarouselRefresh` collaborator bundle it takes (`library` / `library_store` / `covers` / `search` / `selection` / `localizer`, all `pub(crate)`; `library_store` is the `LibraryStoreHandle` the add-path save routes through), the visible-index projection helpers (`visible_index_to_path`, `visible_focus_index_for_path`, `entry_focus_index` (private), `snap_carousel_focus_to_last_opened`, `clamp_focused_index`), and `push_selection_strings` (the selection-toolbar string chokepoint). The `CarouselRefresh` bundle OWNS its `Rc` handles and derives `Clone`: a Slint callback must be `'static`, so each `wire_*` fn whose callbacks rebuild the carousel assembles one bundle from its own parameters and every such callback captures `carousel.clone()`. UI-thread only; driven almost entirely from `handlers/library.rs` and `handlers/settings.rs`, with `go_to_library`/`go_to_viewer` (still in `main.rs`) routing their carousel work through it via the crate-root re-exports.
 
 ### page_count_prefetch
 
