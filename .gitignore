@@ -7,6 +7,9 @@ docs/specs/
 # Claude Code plans (local only)
 .claude/plans/
 
+# Removed stacking-branches skill (keep any local copy out of git)
+.claude/skills/stacking-branches/
+
 # OS files
 .DS_Store
 Thumbs.db
