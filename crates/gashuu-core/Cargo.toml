@@ -19,7 +19,7 @@ image = { version = "0.25", default-features = false, features = [
     "avif-native",
 ] }
 walkdir = "2"
-zip = { version = "8", default-features = false, features = ["deflate"] }
+zip = { version = "9", default-features = false, features = ["deflate"] }
 thiserror = "2"
 lru = "0.18"
 rayon = "1"
