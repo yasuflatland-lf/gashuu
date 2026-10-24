@@ -58,16 +58,16 @@ if [ ! -f "$renovate" ]; then
 else
   strategy=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1])).get('automergeStrategy','<unset>'))" "$renovate" 2>/dev/null || echo "<unparseable>")
   case "$strategy" in
-    merge)
-      ok "automergeStrategy = \"merge\"" ;;
+    merge-commit)
+      ok "automergeStrategy = \"merge-commit\"" ;;
     "<unset>")
       bad "automergeStrategy is unset — Renovate defaults to the platform default, which can squash"
-      info "fix: add  \"automergeStrategy\": \"merge\"  to renovate.json" ;;
+      info "fix: add  \"automergeStrategy\": \"merge-commit\"  to renovate.json" ;;
     *)
       bad "automergeStrategy = \"$strategy\" but the repo forbids that method"
       info "This is not cosmetic: Renovate's merge call is REJECTED by GitHub, so"
       info "automerge silently stops working and its PRs pile up open."
-      info "fix: set  \"automergeStrategy\": \"merge\"  in renovate.json" ;;
+      info "fix: set  \"automergeStrategy\": \"merge-commit\"  in renovate.json" ;;
   esac
 fi
 
