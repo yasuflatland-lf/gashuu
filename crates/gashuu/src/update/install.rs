@@ -25,7 +25,7 @@ pub(crate) fn extract_exe_from_zip(
         let mut entry = archive
             .by_index(i)
             .map_err(|e| UpdateError::Io(format!("cannot read zip entry {i}: {e}")))?;
-        let name = entry.name().to_string();
+        let name = String::from_utf8_lossy(entry.name_raw()).into_owned();
         if !name.to_ascii_lowercase().ends_with(".exe") {
             continue;
         }
