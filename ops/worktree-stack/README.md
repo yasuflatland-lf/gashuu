@@ -22,7 +22,7 @@ actor that can write to `main`, not just for the person running this harness:
 | # | actor | how it could collapse history | held by |
 | --- | --- | --- | --- |
 | 1 | GitHub merge button / `gh pr merge` | squash or rebase merge | repository settings: `allow_merge_commit=true`, `allow_squash_merge=false`, `allow_rebase_merge=false` |
-| 2 | Renovate automerge | `automergeStrategy` | `renovate.json` must ask for `"merge"` |
+| 2 | Renovate automerge | `automergeStrategy` | `renovate.json` must ask for `"merge-commit"` |
 | 3 | a local `git merge` that happens to fast-forward | no merge commit is created at all | `merge.ff=false` (and `pull.rebase=false`) |
 | 4 | this harness | `--squash` | `wt-merge.sh` only ever passes `--merge` |
 
