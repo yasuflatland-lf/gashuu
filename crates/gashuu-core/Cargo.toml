@@ -21,7 +21,7 @@ image = { version = "0.25", default-features = false, features = [
 walkdir = "2"
 zip = { version = "9", default-features = false, features = ["deflate"] }
 thiserror = "2"
-lru = "0.18"
+lru = "0.19"
 rayon = "1"
 # Enabled only via the `testing` feature so downstream crates (gashuu) can use the
 # generated MockPageSource in their tests without pulling mockall into release builds.
