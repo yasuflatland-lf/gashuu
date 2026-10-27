@@ -27,7 +27,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: jdx/mise-action@7a4e45a543138629540c9a1616d08632b893e492 # v5
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       # gashuu-core's `image` dep decodes AVIF through the dav1d C library
@@ -83,7 +83,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: jdx/mise-action@7a4e45a543138629540c9a1616d08632b893e492 # v5
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       # Slint's winit + femtovg backend links these system libraries on Linux;
