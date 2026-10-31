@@ -235,7 +235,7 @@ jobs:
     # and .deb link against an older glibc and therefore install on a wider
     # range of distros. CI feature-testing stays on ubuntu-latest; the older
     # runner is a release-only choice for binary portability.
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-26.04
     env:
       TAG: ${{ needs.preflight.outputs.tag }}
       # dav1d (AVIF decode) is linked STATICALLY here, as on macOS/Windows.
