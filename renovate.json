@@ -1,8 +1,6 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
-  "extends": [
-    "config:recommended"
-  ],
+  "extends": ["config:recommended"],
   "minimumReleaseAge": "7 days",
   "internalChecksFilter": "strict",
   "platformAutomerge": false,
@@ -15,34 +13,22 @@
   "packageRules": [
     {
       "description": "Supply-chain: only adopt releases that are at least 7 days old",
-      "matchManagers": [
-        "cargo",
-        "github-actions",
-        "mise",
-        "npm"
-      ],
+      "matchManagers": ["cargo", "github-actions", "mise", "npm"],
       "minimumReleaseAge": "7 days"
     },
     {
       "description": "Group Rust crates and the Rust toolchain / cargo tools",
-      "matchManagers": [
-        "cargo",
-        "mise"
-      ],
+      "matchManagers": ["cargo", "mise"],
       "groupName": "rust"
     },
     {
       "description": "Group CI dependencies (GitHub Actions)",
-      "matchManagers": [
-        "github-actions"
-      ],
+      "matchManagers": ["github-actions"],
       "groupName": "ci"
     },
     {
       "description": "Group TypeScript / npm dependencies",
-      "matchManagers": [
-        "npm"
-      ],
+      "matchManagers": ["npm"],
       "groupName": "typescript"
     },
     {
@@ -58,10 +44,14 @@
     },
     {
       "description": "Group all landing site (site/) updates: JS/TS deps, biome and the node/pnpm toolchain (overrides the rust/typescript/lint groups above)",
-      "matchFileNames": [
-        "site/**"
-      ],
+      "matchFileNames": ["site/**"],
       "groupName": "site"
+    },
+    {
+      "description": "Keep the release Linux build on ubuntu-22.04: it is deliberately the OLDEST supported runner so the AppImage and .deb link against an older glibc and install on a wider range of distros. scripts/check-release-linux-dist.sh asserts the pin. Raise it by hand, together with the README support matrix, never via Renovate.",
+      "matchFileNames": [".github/workflows/release.yml"],
+      "matchDepNames": ["ubuntu"],
+      "enabled": false
     },
     {
       "description": "Automerge non-major updates once every status check is green; major bumps stay manual",
