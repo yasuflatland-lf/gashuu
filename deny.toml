@@ -2,6 +2,10 @@
 version = 2
 ignore = [
   { id = "RUSTSEC-2026-0192", reason = "ttf-parser is unmaintained, pulled in transitively via Slint (usvg -> resvg -> fontdb) and winit (sctk-adwaita -> ab_glyph -> owned_ttf_parser); no safe upgrade is available. Remove once Slint and winit migrate off ttf-parser (e.g. to skrifa)." },
+  { id = "RUSTSEC-2026-0374", reason = "basic-toml is unmaintained, pulled in transitively via i18n-embed-fl/i18n-embed-impl (i18n-config) as a build-time proc-macro dependency; no safe upgrade is available. Remove once i18n-config migrates off basic-toml." },
+  { id = "RUSTSEC-2026-0371", reason = "zbus_names is unmaintained, pulled in transitively via Slint's winit backend (accesskit_unix -> atspi -> zbus); no safe upgrade is available. Remove once Slint/accesskit migrate off the zbus 5 line." },
+  { id = "RUSTSEC-2026-0370", reason = "zvariant is unmaintained, pulled in transitively via Slint's winit backend (accesskit_unix -> atspi -> zbus); no safe upgrade is available. Remove once Slint/accesskit migrate off the zbus 5 line." },
+  { id = "RUSTSEC-2026-0372", reason = "zvariant_derive is unmaintained, pulled in transitively via Slint's winit backend (accesskit_unix -> atspi -> zbus); no safe upgrade is available. Remove once Slint/accesskit migrate off the zbus 5 line." },
 ]
 
 [sources]

@@ -70,7 +70,7 @@ impl ZipSource {
             // `enclosed_name` == None => the name escapes the base dir (zip-slip),
             // is absolute, or otherwise unsafe to materialize as a path.
             let Some(safe) = entry.enclosed_name() else {
-                if has_image_ext(Path::new(entry.name())) {
+                if has_image_ext(Path::new(&*String::from_utf8_lossy(entry.name_raw()))) {
                     // Surface only image-looking malicious entries as skips; a
                     // stray unsafe non-image (e.g. metadata) is not user-visible.
                     skipped += 1;
