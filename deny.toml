@@ -6,6 +6,8 @@ ignore = [
   { id = "RUSTSEC-2026-0371", reason = "zbus_names is unmaintained, pulled in transitively via Slint's winit backend (accesskit_unix -> atspi -> zbus); no safe upgrade is available. Remove once Slint/accesskit migrate off the zbus 5 line." },
   { id = "RUSTSEC-2026-0370", reason = "zvariant is unmaintained, pulled in transitively via Slint's winit backend (accesskit_unix -> atspi -> zbus); no safe upgrade is available. Remove once Slint/accesskit migrate off the zbus 5 line." },
   { id = "RUSTSEC-2026-0372", reason = "zvariant_derive is unmaintained, pulled in transitively via Slint's winit backend (accesskit_unix -> atspi -> zbus); no safe upgrade is available. Remove once Slint/accesskit migrate off the zbus 5 line." },
+  { id = "RUSTSEC-2026-0441", reason = "pin-utils is unmaintained, pulled in transitively via Slint (slint-build/slint-macros -> spin_on) and its winit backend (i-slint-renderer-skia -> spin_on); no safe upgrade is available. Remove once these Slint dependencies migrate off pin-utils." },
+  { id = "RUSTSEC-2026-0543", reason = "chrono is unmaintained, pulled in transitively via Slint (i-slint-core); no safe upgrade is available. Remove once i-slint-core migrates off chrono." },
 ]
 
 [sources]
