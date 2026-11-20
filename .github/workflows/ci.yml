@@ -54,6 +54,14 @@ jobs:
           files: lcov.info
           flags: rust
           fail_ci_if_error: false
+      # cargo-llvm-cov redirects the target dir, so match the JUnit file by glob.
+      - uses: codecov/test-results-action@0fa95f0e1eeaafde2c782583b36b28ad0d8c77d3 # v1
+        if: ${{ !cancelled() }}
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: target/llvm-cov-target/nextest/ci/junit.xml,target/nextest/ci/junit.xml
+          flags: rust
+          fail_ci_if_error: false
 
   # Doc-structure harness: enforces the L1 (CLAUDE.md <=35 lines) + link integrity
   # invariants, plus the visual-token and macOS release packaging guards.
@@ -169,6 +177,13 @@ jobs:
       - if: matrix.os == 'ubuntu-latest'
         run: cargo clippy -p gashuu --all-targets -- -D warnings
       - run: cargo nextest run -p gashuu --profile ci
+      - uses: codecov/test-results-action@0fa95f0e1eeaafde2c782583b36b28ad0d8c77d3 # v1
+        if: ${{ !cancelled() }}
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: target/nextest/ci/junit.xml
+          flags: app-${{ matrix.os }}
+          fail_ci_if_error: false
 
   # The landing site (site/): a pnpm + Vite + React + TS app. node + pnpm are
   # pinned by site/mise.toml; the gate runs Biome, tsc, Knip and a production
