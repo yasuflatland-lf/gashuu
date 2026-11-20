@@ -4,3 +4,8 @@ failure-output = "immediate"
 [profile.ci]
 failure-output = "immediate-final"
 fail-fast = false
+
+# JUnit XML for Codecov Test Analytics (codecov/test-results-action in ci.yml).
+# Written to target/**/nextest/ci/junit.xml.
+[profile.ci.junit]
+path = "junit.xml"
