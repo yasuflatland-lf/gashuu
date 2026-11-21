@@ -77,7 +77,29 @@ pub(crate) fn open_error_str(loader: &FluentLanguageLoader, e_str: &str) -> Stri
 /// a volume that isn't mounted. Names the book and explains in plain language;
 /// the raw I/O error is logged in `OpenBookUseCase::apply_probed`, not surfaced here.
 pub(crate) fn open_inaccessible(loader: &FluentLanguageLoader, title: &str) -> String {
-    fl!(loader, "viewer-open-inaccessible", title = title)
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        fl!(loader, "viewer-open-inaccessible", title = title)
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        fl!(loader, "viewer-open-inaccessible-web", title = title)
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn web_picker_unavailable(loader: &FluentLanguageLoader) -> String {
+    fl!(loader, "notice-web-picker-unavailable")
+}
+
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn web_unsupported_files(loader: &FluentLanguageLoader, count: usize) -> String {
+    fl!(loader, "notice-web-picker-unsupported", count = count)
+}
+
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn web_unreadable_files(loader: &FluentLanguageLoader, count: usize) -> String {
+    fl!(loader, "notice-web-picker-unreadable", count = count)
 }
 
 /// Parenthesized marker for the trailing page of a spread that failed to decode.

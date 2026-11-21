@@ -256,6 +256,7 @@ viewer-direction-rtl = 右→左
 # Parameterized status/error strings
 viewer-open-error = エラー: { $error }
 viewer-open-inaccessible = 『{ $title }』を開けませんでした。ファイルが見つからないか、保存先のボリュームに接続できません。
+viewer-open-inaccessible-web = 『{ $title }』を開けませんでした。このセッションでファイルを追加してください。
 viewer-page-unavailable = （ページ { $page } は表示できません）
 viewer-decode-error = デコードエラー: { $error }
 
@@ -290,6 +291,9 @@ notice-added-books-skipped = { $n } 冊を追加しました（画像のない {
 notice-no-books-added-empty = 追加できる本はありません — 画像のない { $skipped } 件をスキップしました
 # UI スレッド外で各ソースを probe している間の一時的な進捗。{ $total } 件中 { $done } 件まで完了。
 notice-adding-progress = 追加中 ({ $done }/{ $total })…
+notice-web-picker-unavailable = ファイルを選択できませんでした。
+notice-web-picker-unsupported = 対応していないファイル（{ $count } 件）。CBZ または ZIP を選択してください。
+notice-web-picker-unreadable = ファイルを読み込めませんでした（{ $count } 件）。
 # 既存のライブラリエントリに画像がなくなったため自動削除された場合。
 notice-empty-book-removed = 「{ $title }」を削除しました — 画像が見つかりません
 

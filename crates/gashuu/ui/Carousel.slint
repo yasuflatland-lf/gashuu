@@ -231,11 +231,11 @@ export component Carousel inherits Rectangle {
     callback open(int);       // index — Return on the focused book, or a cover double-click
     callback move(int);       // delta (-1 / +1) — Left / Right
     callback back();          // Down — return to the currently-open book
-    callback add-books();     // opens the add picker (rfd); wired to on_add_books in handlers/library.rs
+    callback add-books();     // opens the platform picker
     callback add-folder();    // opens a folder picker (rfd); wired to on_add_folder in handlers/library.rs
-    // True when one native dialog picks files AND folders (macOS): the NavBar
-    // shows a single combined add capsule. Pushed once from Rust at boot.
+    // macOS and web use one add capsule. Only the macOS picker accepts folders.
     in property <bool> combined-add-picker;
+    in property <bool> add-picker-includes-folders;
 
     // ── Library search seams (issue 88) ───────────────────────────────────────
     // `library-book-count` is filter-INDEPENDENT so the empty-library CTA and no-results
@@ -373,7 +373,7 @@ export component Carousel inherits Rectangle {
                   PrimaryButton {
                       // Wording tracks the dialog flavor behind add-books():
                       // combined files+folders on macOS, files-only elsewhere.
-                      text: root.combined-add-picker
+                      text: root.add-picker-includes-folders
                           ? Strings.carousel-empty-cta
                           : Strings.carousel-empty-cta-files;
                       clicked => { root.add-books(); root.focus-self(); }
@@ -568,7 +568,7 @@ export component Carousel inherits Rectangle {
 
     // ── Top glass-pill nav (issue 83) ─────────────────────────────────────────
     // Drawn LAST so it paints on top (paint order == declaration order). Kept
-    // OUTSIDE the FocusScope; clicks fire the rfd picker then restore carousel focus.
+    // OUTSIDE the FocusScope; clicks open the picker then restore carousel focus.
     nav := NavBar {
         x: (parent.width - self.width) / 2;
         y: Theme.space-md;

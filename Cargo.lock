@@ -1760,6 +1760,7 @@ dependencies = [
  "tracing-wasm",
  "unic-langid",
  "ureq",
+ "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",
  "web-time",

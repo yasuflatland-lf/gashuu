@@ -33,10 +33,11 @@ use crate::carousel::update_carousel_row;
 use crate::page_count_prefetch::{self, PageCountPrefetch, ResolvedCount};
 use crate::to_slint_image;
 use crate::ui_marshal::marshal_to_ui;
-use crate::{CarouselItem, LibraryStoreHandle, ViewerWindow};
+use crate::{book_path, worker, CarouselItem, LibraryStoreHandle, ViewerWindow};
+#[cfg(not(target_arch = "wasm32"))]
+use gashuu_core::thumbnail_cache::source_mtime_secs;
 use gashuu_core::{
-    cache_key, generate_cover, thumbnail_cache::source_mtime_secs, ArchiveLoader, DecodedImage,
-    Library, ThumbnailCache,
+    cache_key, generate_cover, ArchivePolicy, DecodedImage, Library, ThumbnailCache,
 };
 use lru::LruCache;
 use slint::{Model, VecModel};
@@ -182,8 +183,9 @@ impl CoverMemCache {
 /// protected by core's staleness age guard, and a cover pruned mid-read is a
 /// plain cache miss that regenerates. Core stays log-free — the returned
 /// `PruneReport` is logged here.
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn spawn_cache_prune() {
-    rayon::spawn(|| {
+    worker::spawn(|| {
         // `start` already warned once about the no-cache-dir degraded state.
         let Ok(cache) = ThumbnailCache::new() else {
             return;
@@ -410,7 +412,7 @@ fn resolve_count_after_hit(
 ) {
     // TODO(#175-followup): use open_with_policy once ArchivePolicy is threaded
     // through CoverRequest / CarouselRefresh.
-    let open_result = ArchiveLoader::open(&path);
+    let open_result = book_path::open(&path, ArchivePolicy::default());
     match &open_result {
         Ok(source) => {
             let count = source.list_pages().len();
@@ -490,21 +492,21 @@ impl CoverController {
         let cancel = Arc::clone(cancel_flag);
         let pending = self.prefetch.queue();
         let mem = Arc::clone(&self.mem);
-        rayon::spawn(move || {
+        worker::spawn(move || {
             // Bail before the heavy work if a newer generation superseded us.
             if cancel.load(Relaxed) {
                 return;
             }
             // Reconstruct the cache on this thread: ThumbnailCache isn't Clone and holds only a
             // dir, so this is cheap and side-steps a !Send/!Clone capture.
-            let Ok(cache) = ThumbnailCache::new() else {
-                return;
+            #[cfg(not(target_arch = "wasm32"))]
+            let (disk_cache, mtime) = match ThumbnailCache::new() {
+                Ok(cache) => (Some(cache), source_mtime_secs(&req.path)),
+                Err(_) => return,
             };
-            let key = cache_key(
-                &req.path,
-                source_mtime_secs(&req.path),
-                CoverCachePolicy::DEFAULT.max_side,
-            );
+            #[cfg(target_arch = "wasm32")]
+            let (disk_cache, mtime): (Option<ThumbnailCache>, i64) = (None, 0);
+            let key = cache_key(&req.path, mtime, CoverCachePolicy::DEFAULT.max_side);
             // MEM HIT: cover decoded earlier this session — serve the shared Arc straight to the
             // row (no fs::read/decode). lock().ok() degrades a poisoned mutex to a disk read.
             let cached = mem.lock().ok().and_then(|mut c| c.get(&key));
@@ -521,7 +523,7 @@ impl CoverController {
             }
             // DISK HIT: read + decode on THIS worker, intern into the mem LRU so the next
             // carousel pass is a mem hit, then stream to the row first (the count open may be slow).
-            if let Some(decoded) = cache.get(&key) {
+            if let Some(decoded) = disk_cache.as_ref().and_then(|cache| cache.get(&key)) {
                 let decoded = Arc::new(decoded);
                 if let Ok(mut c) = mem.lock() {
                     c.insert(key.clone(), Arc::clone(&decoded));
@@ -540,7 +542,7 @@ impl CoverController {
             // permanent failure is distinct from a loading placeholder; cancel-recheck before crossing.
             // TODO(#175-followup): use open_with_policy once ArchivePolicy
             // is threaded through CoverRequest / CarouselRefresh.
-            let open_result = ArchiveLoader::open(&req.path);
+            let open_result = book_path::open(&req.path, ArchivePolicy::default());
             let source = match open_result {
                 Ok(s) => s,
                 Err(e) => {
@@ -573,7 +575,7 @@ impl CoverController {
             };
             // Store to the disk cache so the next launch is a hit. A cache write
             // failure is non-fatal (we already have the image to show).
-            if let Err(e) = cache.put(&key, &decoded) {
+            if let Some(Err(e)) = disk_cache.map(|cache| cache.put(&key, &decoded)) {
                 tracing::warn!(path = %req.path.display(), error = %e, "cover: cache put failed");
             }
             // Intern into the mem LRU so a later carousel pass over this row is a mem hit
@@ -626,6 +628,7 @@ impl CoverController {
 
         // Probe the disk cache once so the no-cache-dir degraded state is logged ONCE here,
         // not by every worker (workers rebuild their own handle — it only holds a dir path).
+        #[cfg(not(target_arch = "wasm32"))]
         if let Err(e) = ThumbnailCache::new() {
             tracing::warn!(error = %e, "no cover cache available; covers stay placeholders");
             return;

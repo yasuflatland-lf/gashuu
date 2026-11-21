@@ -104,6 +104,19 @@ pub struct ViewerState {
     open_file: Option<PathBuf>,
 }
 
+// A 1600x2400 RGBA page takes about 15 MB. The #651 Chrome spike reached
+// about 1.5 GB for a 348 MB book with a 50-page cache.
+const WEB_CACHE_CAPACITY: usize = 6;
+
+fn platform_cache_config(requested: CacheConfig, is_web: bool) -> CacheConfig {
+    if is_web {
+        CacheConfig::new(requested.capacity().min(WEB_CACHE_CAPACITY), 0)
+            .with_max_bytes(requested.max_bytes())
+    } else {
+        requested
+    }
+}
+
 impl ViewerState {
     pub fn new() -> Self {
         Self::with_cache_config(CacheConfig::default())
@@ -117,7 +130,7 @@ impl ViewerState {
             cache: None,
             source: None,
             nav: SpreadNavigation::new(SpreadMode::Single, CoverMode::Standalone),
-            cache_config,
+            cache_config: platform_cache_config(cache_config, cfg!(target_arch = "wasm32")),
             reading_direction: ReadingDirection::Ltr,
             language: Language::default(),
             last_open_skipped: 0,
@@ -133,7 +146,10 @@ impl ViewerState {
             cache: None,
             source: None,
             nav: SpreadNavigation::new(settings.spread_mode, settings.cover_mode),
-            cache_config: settings.cache_config(),
+            cache_config: platform_cache_config(
+                settings.cache_config(),
+                cfg!(target_arch = "wasm32"),
+            ),
             reading_direction: settings.reading_direction,
             language: settings.language,
             last_open_skipped: 0,
@@ -463,7 +479,7 @@ impl ViewerState {
     /// "applies to newly opened books" contract surfaced in the settings
     /// dialog. (Immediate runtime rebuild of the current cache is deferred.)
     pub fn set_cache_config(&mut self, cache_config: CacheConfig) {
-        self.cache_config = cache_config;
+        self.cache_config = platform_cache_config(cache_config, cfg!(target_arch = "wasm32"));
     }
 
     /// Set the reading direction to an exact value (vs. `toggle_reading_direction`'s

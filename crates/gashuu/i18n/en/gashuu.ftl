@@ -252,6 +252,7 @@ viewer-direction-rtl = RTL
 # Parameterized status/error strings
 viewer-open-error = Error: { $error }
 viewer-open-inaccessible = Couldn't open "{ $title }". The file is missing or its volume isn't connected.
+viewer-open-inaccessible-web = Couldn't open "{ $title }". Add its file again in this browser session.
 viewer-page-unavailable = (page { $page } unavailable)
 viewer-decode-error = Decode error: { $error }
 
@@ -285,6 +286,9 @@ notice-no-books-added-empty = No books added — { $skipped } item(s) had no ima
 # Transient progress while a bulk add probes each picked source off the UI
 # thread; { $done } sources of { $total } have been probed so far.
 notice-adding-progress = Adding… ({ $done }/{ $total })
+notice-web-picker-unavailable = Couldn't open the file picker.
+notice-web-picker-unsupported = Unsupported files ({ $count }). Choose CBZ or ZIP files.
+notice-web-picker-unreadable = Couldn't read selected files ({ $count }).
 # An existing library entry was auto-removed because its source has no images.
 notice-empty-book-removed = Removed "{ $title }" — no images found
 

@@ -24,40 +24,24 @@ use slint::ComponentHandle;
 use std::cell::RefCell;
 use std::rc::Rc;
 
-/// Ask the platform for comic sources to add. Desktop: rfd (macOS picks files
-/// AND folders in one panel, others pick files). Web: no picker yet.
+/// Ask rfd for comic sources to add. macOS picks files and folders in one panel.
+#[cfg(not(target_arch = "wasm32"))]
 fn pick_book_sources() -> Option<Vec<std::path::PathBuf>> {
-    #[cfg(not(target_arch = "wasm32"))]
+    let dialog = rfd::FileDialog::new().add_filter("Comic archive", &["cbz", "zip", "cbr", "rar"]);
+    #[cfg(target_os = "macos")]
     {
-        let dialog =
-            rfd::FileDialog::new().add_filter("Comic archive", &["cbz", "zip", "cbr", "rar"]);
-        #[cfg(target_os = "macos")]
-        {
-            dialog.pick_files_or_folders()
-        }
-        #[cfg(not(target_os = "macos"))]
-        {
-            dialog.pick_files()
-        }
+        dialog.pick_files_or_folders()
     }
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(not(target_os = "macos"))]
     {
-        // TODO(#660 ([19/23])): BookPicker port
-        None
+        dialog.pick_files()
     }
 }
 
-/// Ask the platform for one folder to add as a book. Web: no picker yet.
+/// Ask rfd for one folder to add as a book.
+#[cfg(not(target_arch = "wasm32"))]
 fn pick_book_folder() -> Option<std::path::PathBuf> {
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        rfd::FileDialog::new().pick_folder()
-    }
-    #[cfg(target_arch = "wasm32")]
-    {
-        // TODO(#660 ([19/23])): BookPicker port
-        None
-    }
+    rfd::FileDialog::new().pick_folder()
 }
 
 /// Registers the add-books/add-folder callbacks onto `ui`.
@@ -96,6 +80,7 @@ pub(crate) fn wire_open_handlers(
 
     // Add Books: pick comic sources. macOS picks archives AND folders in one panel
     // (`pick_files_or_folders`); sources are probed off the UI thread (issue 206).
+    #[cfg(not(target_arch = "wasm32"))]
     {
         let ui_weak = ui.as_weak();
         let settings = Rc::clone(&settings);
@@ -110,9 +95,12 @@ pub(crate) fn wire_open_handlers(
             })
         });
     }
+    #[cfg(target_arch = "wasm32")]
+    crate::web_picker::wire(ui, &settings, &adder, &localizer);
 
     // Add Folder: pick one folder, added as one book. Wraps it in a `vec![]` so it reuses
     // the same off-thread probe + `add-finalize` apply path as `on_add_books` (issue 206).
+    #[cfg(not(target_arch = "wasm32"))]
     {
         let ui_weak = ui.as_weak();
         let settings = Rc::clone(&settings);
@@ -165,6 +153,16 @@ pub(crate) fn wire_open_handlers(
                     return;
                 };
                 apply_add_report(&ui, &carousel, outcomes, op, localizer.loader());
+                #[cfg(target_arch = "wasm32")]
+                if let Some(notice) = adder.take_picker_notice() {
+                    let report = ui.get_add_toast_text();
+                    let text = if report.is_empty() {
+                        notice
+                    } else {
+                        format!("{report}\n{notice}")
+                    };
+                    ui.set_add_toast_text(text.into());
+                }
                 // This generation's add is complete — hide the progress hairline.
                 // (Superseded finalizes returned early above, so a newer in-flight
                 // add's bar is left running for its own finalize to retire.)

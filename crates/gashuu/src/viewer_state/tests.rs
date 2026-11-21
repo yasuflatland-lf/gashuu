@@ -114,6 +114,20 @@ fn with_cache_config_stores_values() {
 }
 
 #[test]
+fn platform_cache_config_caps_web_capacity_and_disables_prefetch() {
+    let requested = CacheConfig::new(50, 3).with_max_bytes(128 * 1024 * 1024);
+    let web = platform_cache_config(requested, true);
+    assert_eq!(web.capacity(), 6);
+    assert_eq!(web.radius(), 0);
+    assert_eq!(web.max_bytes(), requested.max_bytes());
+    assert_eq!(
+        platform_cache_config(CacheConfig::new(2, 5), true),
+        CacheConfig::new(2, 0)
+    );
+    assert_eq!(platform_cache_config(requested, false), requested);
+}
+
+#[test]
 fn with_cache_config_defaults_to_single_standalone_ltr() {
     let state = ViewerState::with_cache_config(CacheConfig::new(7, 1));
     assert_eq!(state.spread_mode(), SpreadMode::Single);

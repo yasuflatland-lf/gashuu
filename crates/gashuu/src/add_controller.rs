@@ -1,4 +1,4 @@
-//! Off-UI-thread bulk-add controller (issue 206).
+//! Bulk-add controller (issue 206).
 //!
 //! Bulk-adding sources used to freeze the event loop: `add_paths` opened every
 //! picked archive synchronously on the UI thread (`probe_page_count_with_policy`
@@ -6,11 +6,12 @@
 //! blocks on hydration), so the window was unresponsive until the whole batch
 //! was probed, saved, and the carousel rebuilt.
 //!
-//! This controller moves the per-source PROBE onto rayon workers — the same
+//! On desktop, this controller moves the per-source PROBE onto rayon workers — the same
 //! async harness covers (`cover_loader.rs`) and thumbnails (`thumbnail_strip.rs`)
 //! already use — while keeping the strict reject-before-add semantics and the
 //! exact "added N / skipped M" notice. The add still happens as ONE batch once
 //! probing finishes (the confirmed UX: books appear together, not optimistically).
+//! The browser probes and applies each batch inline after its files are read.
 //!
 //! Split:
 //! - the PROBE half ([`probe_path`]) is pure and `Send`: `(index, PathBuf,
@@ -34,14 +35,14 @@
 //! dropped, so a second add started mid-probe cleanly supersedes the first with
 //! no stale clobber.
 
-use crate::ui_marshal::{Generation, Ticket};
-use crate::ViewerWindow;
-use gashuu_core::{ArchiveLoader, ArchivePolicy, CoreError};
+use crate::ui_marshal::Generation;
+#[cfg(not(target_arch = "wasm32"))]
+use crate::ui_marshal::Ticket;
+use crate::{book_path, worker, ViewerWindow};
+use gashuu_core::{ArchivePolicy, CoreError};
 use std::cell::RefCell;
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
-use std::sync::Arc;
 
 /// How one probed source classified — the `Send` result of opening it on a
 /// worker, carrying just enough to run the UI-thread apply half. Mirrors the
@@ -78,7 +79,7 @@ pub(crate) struct ProbeOutcome {
 /// `FormatDisabled`, any other error → `Unreadable` — but logging is deferred to
 /// the apply half (which owns the same path + kind on the UI thread).
 pub(crate) fn probe_path(index: usize, path: PathBuf, policy: ArchivePolicy) -> ProbeOutcome {
-    let kind = match ArchiveLoader::probe_page_count_with_policy(&path, policy) {
+    let kind = match book_path::probe_page_count(&path, policy) {
         Ok(count) => ProbeKind::Counted(count),
         Err(CoreError::EmptyBook { .. }) => ProbeKind::Empty,
         Err(CoreError::FormatDisabled { format }) => ProbeKind::FormatDisabled { format },
@@ -110,6 +111,8 @@ pub(crate) struct AddController {
     /// The op tag ("add-books" / "add-folder") of the current generation, used
     /// only in the apply half's save-failure trace. Replaced on every `start`.
     op: RefCell<&'static str>,
+    #[cfg(target_arch = "wasm32")]
+    picker_notice: RefCell<Option<String>>,
 }
 
 impl AddController {
@@ -118,12 +121,31 @@ impl AddController {
         Self {
             generation: Generation::new(),
             op: RefCell::new("add"),
+            #[cfg(target_arch = "wasm32")]
+            picker_notice: RefCell::new(None),
         }
     }
 
-    /// Start probing `paths` for a bulk add off the UI thread. Bumps the epoch,
+    #[cfg(target_arch = "wasm32")]
+    pub(crate) fn start_from_picker(
+        &self,
+        ui_weak: slint::Weak<ViewerWindow>,
+        paths: Vec<PathBuf>,
+        policy: ArchivePolicy,
+        notice: Option<String>,
+    ) {
+        *self.picker_notice.borrow_mut() = notice;
+        self.start(ui_weak, paths, policy, "add-books");
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    pub(crate) fn take_picker_notice(&self) -> Option<String> {
+        self.picker_notice.borrow_mut().take()
+    }
+
+    /// Start probing `paths` for a bulk add. Bumps the epoch,
     /// installs a fresh accumulator, shows the initial `Adding… (0/N)` status,
-    /// then dispatches one rayon probe per path. Each worker pushes its
+    /// then on desktop dispatches one rayon probe per path. Each worker pushes its
     /// [`ProbeOutcome`], marshals an epoch-guarded progress tick, and the worker
     /// that drains the remaining counter to zero marshals `add-finalize`.
     ///
@@ -154,23 +176,43 @@ impl AddController {
         }
         ui.invoke_add_progress(0, total as i32);
 
-        let remaining = Arc::new(AtomicUsize::new(total));
-        for (index, path) in paths.into_iter().enumerate() {
-            let ticket = ticket.clone();
-            let remaining = Arc::clone(&remaining);
-            let weak = ui_weak.clone();
-            rayon::spawn(move || {
-                let outcome = probe_path(index, path, policy);
-                ticket.deliver(|acc| acc.push(outcome));
-                // fetch_sub returns the PRE-decrement value; `left` is what
-                // remains after this worker.
-                let left = remaining.fetch_sub(1, Relaxed) - 1;
-                let done = total - left;
-                marshal_progress(weak.clone(), &ticket, done, total);
-                if left == 0 {
-                    marshal_finalize(weak, &ticket);
+        #[cfg(target_arch = "wasm32")]
+        {
+            let id = ticket.id();
+            worker::spawn(move || {
+                for (index, path) in paths.into_iter().enumerate() {
+                    let outcome = probe_path(index, path, policy);
+                    if !matches!(outcome.kind, ProbeKind::Counted(_)) {
+                        crate::web_books::remove(&outcome.path);
+                    }
+                    ticket.deliver(|acc| acc.push(outcome));
                 }
             });
+            // Apply before a second picker read can complete and supersede this batch.
+            ui.invoke_add_finalize(id as i32);
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
+            use std::sync::Arc;
+
+            let remaining = Arc::new(AtomicUsize::new(total));
+            for (index, path) in paths.into_iter().enumerate() {
+                let ticket = ticket.clone();
+                let remaining = Arc::clone(&remaining);
+                let weak = ui_weak.clone();
+                worker::spawn(move || {
+                    let outcome = probe_path(index, path, policy);
+                    ticket.deliver(|acc| acc.push(outcome));
+                    // fetch_sub returns the count before the decrement.
+                    let left = remaining.fetch_sub(1, Relaxed) - 1;
+                    let done = total - left;
+                    marshal_progress(weak.clone(), &ticket, done, total);
+                    if left == 0 {
+                        marshal_finalize(weak, &ticket);
+                    }
+                });
+            }
         }
     }
 
@@ -196,6 +238,7 @@ impl AddController {
 /// "Adding… (k/N)" status. A tick from a superseded generation (epoch moved) is
 /// dropped rather than flashing a stale count. Mirrors `cover_loader`'s
 /// `marshal_*` helpers — only `Send` values cross the boundary.
+#[cfg(not(target_arch = "wasm32"))]
 fn marshal_progress(
     weak: slint::Weak<ViewerWindow>,
     ticket: &Ticket<Vec<ProbeOutcome>>,
@@ -211,6 +254,7 @@ fn marshal_progress(
 /// completes: the handler drains the outcomes (epoch-guarded inside
 /// `take_outcomes`) and runs the apply half. The epoch is carried through so a
 /// superseded batch's finalize is a no-op. Only `Send` values cross.
+#[cfg(not(target_arch = "wasm32"))]
 fn marshal_finalize(weak: slint::Weak<ViewerWindow>, ticket: &Ticket<Vec<ProbeOutcome>>) {
     let my_epoch = ticket.id();
     ticket.marshal(weak, "add-finalize", move |ui| {

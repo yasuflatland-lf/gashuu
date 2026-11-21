@@ -295,7 +295,7 @@ fn spawn_decode_spread(
     cache_dispatch: CacheDispatch,
     request: SpreadDecodeRequest,
 ) {
-    rayon::spawn(move || {
+    crate::worker::spawn(move || {
         let leading_idx = request.leading.index;
         let trailing_slot = request.trailing;
         let requested_single = request.single || trailing_slot.is_none();
@@ -320,11 +320,21 @@ fn spawn_decode_spread(
                 let (leading, trailing) = match t.decoded {
                     Some(trailing) => (cache_dispatch.decode_and_cache(leading_idx), Ok(trailing)),
                     None => {
-                        let trailing_dispatch = cache_dispatch.clone();
-                        rayon::join(
-                            || cache_dispatch.decode_and_cache(leading_idx),
-                            || trailing_dispatch.decode_and_cache(t.index),
-                        )
+                        #[cfg(not(target_arch = "wasm32"))]
+                        {
+                            let trailing_dispatch = cache_dispatch.clone();
+                            rayon::join(
+                                || cache_dispatch.decode_and_cache(leading_idx),
+                                || trailing_dispatch.decode_and_cache(t.index),
+                            )
+                        }
+                        #[cfg(target_arch = "wasm32")]
+                        {
+                            (
+                                cache_dispatch.decode_and_cache(leading_idx),
+                                cache_dispatch.decode_and_cache(t.index),
+                            )
+                        }
                     }
                 };
                 (leading, Some((t.index, trailing)))
