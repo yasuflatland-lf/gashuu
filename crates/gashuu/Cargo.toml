@@ -53,6 +53,11 @@ self-replace = "1"
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 gashuu-core = { path = "../gashuu-core", default-features = false }
+console_error_panic_hook = "=0.1.7"
+js-sys = "=0.3.107"
+wasm-bindgen = "=0.2.130"
+wasm-bindgen-futures = "=0.4.80"
+web-sys = { version = "=0.3.107", features = ["Window", "Location", "Response", "console"] }
 
 [build-dependencies]
 # Pinned to match the exact `slint` version above (they must stay in lockstep).

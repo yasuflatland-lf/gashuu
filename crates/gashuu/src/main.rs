@@ -32,6 +32,8 @@ mod update;
 mod view_sync;
 mod viewer_state;
 mod viewport;
+#[cfg(target_arch = "wasm32")]
+mod wasm_metrics;
 #[cfg(not(target_arch = "wasm32"))]
 mod window_state;
 
@@ -463,9 +465,139 @@ fn main() -> color_eyre::Result<()> {
     Ok(())
 }
 
-// TODO(#653 ([12/23])): web entry point
 #[cfg(target_arch = "wasm32")]
-fn main() {}
+fn main() {
+    use gashuu_core::{cache::DEFAULT_CAPACITY, CacheConfig, ZipSource};
+    use slint::ComponentHandle;
+    use std::sync::Arc;
+    use wasm_bindgen::{closure::Closure, JsCast, JsValue};
+
+    let boot_started = clock::now();
+    console_error_panic_hook::set_once();
+    let window = web_sys::window().expect("browser window");
+    let search = window.location().search().expect("browser query string");
+    let book = wasm_book_name(&search);
+    wasm_metrics::set_book(book.clone());
+
+    let ui = ViewerWindow::new().expect("create viewer");
+    let settings = Settings::default();
+    let localizer = Rc::new(i18n::Localizer::new(settings.language));
+    localizer.push_strings_to_ui(&ui);
+    let state = Rc::new(RefCell::new(ViewerState::with_cache_config(
+        CacheConfig::new(DEFAULT_CAPACITY, 0),
+    )));
+    let viewport = Rc::new(RefCell::new(ViewportState::from_settings(&settings)));
+    let pages = Rc::new(PageController::new());
+    let nav = Rc::new(RefCell::new(NavState::new()));
+    let library = Rc::new(RefCell::new(Library::new()));
+    let library_store: LibraryStoreHandle = Rc::new(None);
+    let leave_point = Rc::new(LeavePointService::new(
+        Rc::clone(&state),
+        Rc::clone(&viewport),
+        Rc::new(RefCell::new(DialogSession::new())),
+        Rc::new(RefCell::new(settings)),
+        Rc::clone(&library),
+        Rc::clone(&library_store),
+    ));
+
+    handlers::wire_viewer_input_handlers(&ui, &state, &viewport, &pages, &localizer);
+    handlers::wire_viewport_handlers(&ui, &viewport);
+    handlers::wire_nav_handlers(
+        &ui,
+        &state,
+        &viewport,
+        &library,
+        &leave_point,
+        &nav,
+        &Rc::new(cover_loader::CoverController::new()),
+        &pages,
+        &Rc::new(RefCell::new(LibrarySearchState::default())),
+        &Rc::new(RefCell::new(LibrarySelectionState::default())),
+        &localizer,
+        &library_store,
+    );
+    let weak = ui.as_weak();
+    let carousel_nav = Rc::clone(&nav);
+    ui.on_carousel_back(move || {
+        with_ui(&weak, |ui| go_to_viewer(&ui, &carousel_nav));
+    });
+
+    go_to_viewer(&ui, &nav);
+    ui.set_current_book_name(book.as_str().into());
+    ui.show().expect("show viewer");
+    wasm_metrics::log_duration("boot_ms", boot_started.elapsed());
+    wasm_metrics::install_heap_logger(&window);
+
+    // Start Winit from its own browser callback. Its event loop hands control
+    // to the browser by throwing, so it must run after this Rust entry returns.
+    let run = Closure::once_into_js(|| slint::run_event_loop().expect("run viewer"));
+    window.queue_microtask(run.unchecked_ref());
+
+    wasm_bindgen_futures::spawn_local(async move {
+        let result = async {
+            let bytes = wasm_fetch_book(&window, &book).await?;
+            let open_started = clock::now();
+            let source = ZipSource::from_read_at(Arc::new(bytes))
+                .map_err(|err| JsValue::from_str(&err.to_string()))?;
+            let source = wasm_metrics::TimedZipSource(source);
+            state.borrow_mut().set_source(Arc::new(source));
+            let opened = clock::now();
+            wasm_metrics::source_opened(opened);
+            wasm_metrics::log_duration("open_ms", opened - open_started);
+
+            ui.invoke_focus_pages();
+            refresh(
+                &ui,
+                &state.borrow(),
+                &viewport,
+                localizer.loader(),
+                &pages,
+                ui.as_weak(),
+            );
+            Ok::<(), JsValue>(())
+        }
+        .await;
+        if let Err(error) = result {
+            ui.set_status_text(format!("Could not open {book}: {error:?}").into());
+            web_sys::console::error_1(&error);
+        }
+    });
+}
+
+#[cfg(target_arch = "wasm32")]
+fn wasm_book_name(search: &str) -> String {
+    search
+        .trim_start_matches('?')
+        .split('&')
+        .find_map(|part| part.strip_prefix("book="))
+        .filter(|book| !book.is_empty())
+        .and_then(|book| js_sys::decode_uri_component(&book.replace('+', " ")).ok())
+        .map_or_else(|| "sample-50.cbz".to_owned(), String::from)
+}
+
+#[cfg(target_arch = "wasm32")]
+async fn wasm_fetch_book(
+    window: &web_sys::Window,
+    book: &str,
+) -> Result<std::sync::Arc<[u8]>, wasm_bindgen::JsValue> {
+    use wasm_bindgen::{JsCast, JsValue};
+    use wasm_bindgen_futures::JsFuture;
+
+    let path = format!("./{}", String::from(js_sys::encode_uri_component(book)));
+    let started = clock::now();
+    let response = JsFuture::from(window.fetch_with_str(&path)).await?;
+    let response = response.dyn_into::<web_sys::Response>()?;
+    if !response.ok() {
+        return Err(JsValue::from_str(&format!(
+            "Fetching {book} returned HTTP {}",
+            response.status()
+        )));
+    }
+    let buffer = JsFuture::from(response.array_buffer()?).await?;
+    let bytes = std::sync::Arc::from(js_sys::Uint8Array::new(&buffer).to_vec());
+    wasm_metrics::log_duration("fetch_ms", started.elapsed());
+    Ok(bytes)
+}
 
 /// The app's single exit-persistence sequence: flush resolved page counts, stage
 /// the position + view-mode write-back through `LeavePointService::persist_with(AppExit)`,
@@ -702,6 +834,8 @@ pub(crate) fn refresh(
             let leading_idx = slots.leading.0;
             let trailing_idx = slots.trailing.as_ref().map(|(index, _)| *index);
             pages.set_target(leading_idx, trailing_idx, slots.single);
+            #[cfg(target_arch = "wasm32")]
+            wasm_metrics::track_turn(pages.current_epoch());
 
             let leading_missing = slots.leading.1.is_none();
             let trailing_missing = slots
@@ -726,6 +860,8 @@ pub(crate) fn refresh(
                     trailing.map(|img| to_slint_image(img)),
                     slots.single,
                 );
+                #[cfg(target_arch = "wasm32")]
+                wasm_metrics::spread_applied(pages.current_epoch());
                 apply_spread_geometry(
                     ui,
                     viewport,

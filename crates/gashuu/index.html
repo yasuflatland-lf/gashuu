@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>gashuu</title>
+    <link data-trunk rel="rust" data-wasm-opt="z" />
+    <script>
+      // Winit signals that it has handed control to the browser after startup.
+      window.addEventListener("error", (event) => {
+        if (event.error?.message?.startsWith("Using exceptions for control flow,")) {
+          event.preventDefault();
+        }
+      });
+    </script>
+    <style>
+      body { margin: 0; }
+      canvas { display: block; width: 100vw; height: 100dvh; }
+    </style>
+  </head>
+  <body>
+    <canvas id="canvas" tabindex="0" autofocus></canvas>
+  </body>
+</html>

@@ -335,6 +335,7 @@ impl ThumbnailController {
     /// on-disk cache so a second open of the same unchanged book reads ~10-30 KB
     /// PNGs instead of re-decoding full-resolution pages. `None` (or a cache dir
     /// that cannot be built) degrades gracefully to no persistence.
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn start(
         &self,
         ui_weak: slint::Weak<ViewerWindow>,
@@ -374,6 +375,16 @@ impl ThumbnailController {
         });
         let initial: Vec<usize> = (0..INITIAL_VISIBLE_PAGES.min(page_count)).collect();
         self.inner.request_pages(ui_weak, initial);
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    pub fn start(
+        &self,
+        _ui_weak: slint::Weak<ViewerWindow>,
+        _source: Option<Arc<dyn PageSource>>,
+        _page_count: usize,
+        _path: Option<PathBuf>,
+    ) {
     }
 }
 
