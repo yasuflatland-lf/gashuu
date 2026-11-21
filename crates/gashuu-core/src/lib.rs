@@ -36,7 +36,7 @@ pub mod view_override;
 pub mod viewport;
 pub mod window_geometry;
 
-pub use archive_loader::{ArchiveLoader, ArchivePolicy};
+pub use archive_loader::{ArchiveKind, ArchiveLoader, ArchivePolicy};
 pub use atomic_write::write_atomic;
 pub use cache::{ImageCache, DEFAULT_CAPACITY, DEFAULT_PREFETCH_RADIUS};
 pub use cache_config::{CacheConfig, MAX_CACHE_CAPACITY, MAX_PREFETCH_RADIUS};
@@ -46,9 +46,11 @@ pub use library::{
     canonical_identity, display_title, Book, Library, OpenRegistration, RemovalReport,
 };
 pub use library_store::{LibraryStore, LIBRARY_VERSION};
+#[cfg(not(target_arch = "wasm32"))]
+pub use page_source::FileReadAt;
 #[cfg(feature = "rar")]
 pub use page_source::RarSource;
-pub use page_source::{FolderSource, PageEntry, PageSource, ZipSource};
+pub use page_source::{FolderSource, PageEntry, PageSource, ReadAt, ReadAtCursor, ZipSource};
 pub use persist::quarantine_file;
 pub use reading_progress::ReadingProgress;
 pub use search::book_matches;
