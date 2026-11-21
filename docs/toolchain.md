@@ -72,6 +72,7 @@ Trunk builds the `gashuu` binary for `wasm32-unknown-unknown` using
 binary's `main` at startup. Trunk fetches the matching wasm-bindgen CLI and
 wasm-opt. Slint's winit backend attaches to the element with ID `canvas`, and
 the page sizes `#canvas` to the viewport with CSS.
+The Slint window follows the browser viewport on load and resize.
 
 The Pages workflow publishes the Vite landing page at `/gashuu/` and the web
 app at `/gashuu/app/` in one deployment. Its Trunk build uses
@@ -84,8 +85,6 @@ startup, the app opens with defaults and an empty library, shows
 `storage (localStorage unavailable)`, and reports `NoConfigDir` or `NoDataDir`
 on save. Closing the tab skips exit persistence, including the final reading
 position and pending page counts. #664 ([23/23]) tracks the exit flush.
-Slint also writes inline pixel width and height on the canvas. These override
-the viewport CSS, so the page may scroll until a follow-up addresses resizing.
 
 Trunk copies the Japanese fallback font and its OFL license to `dist/fonts/`.
 The browser preloads the TTF while the wasm downloads. After startup, gashuu
