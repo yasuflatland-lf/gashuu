@@ -47,14 +47,28 @@ in regardless of gashuu's own feature trimming.
 
 Dev setup — **macOS**: `brew install dav1d` (verify: `pkg-config --modversion dav1d`).
 **Linux**: `sudo apt-get install -y libdav1d-dev` (Ubuntu 24.04 ships 1.4.1). **Windows**:
-`vcpkg install dav1d:x64-windows-static-md`, then set the `SYSTEM_DEPS_DAV1D_*` variables as in
-`.github/workflows/ci.yml`. Without dav1d the build fails loudly at `dav1d-sys` with a clear
+`vcpkg install dav1d:x64-windows-static-md` (Visual Studio 2026 / MSVC 14.52+ needs dav1d
+>= 1.5.5 — older releases fail in `compat/msvc/stdatomic.h`), then set the `SYSTEM_DEPS_DAV1D_*`
+variables as `.github/actions/build-dav1d-windows/action.yml` does. Without dav1d the build fails loudly at `dav1d-sys` with a clear
 "dav1d not found" probe error — intentional, since the dependency is not feature-gated.
 
-**End users still install nothing**: release builds link dav1d STATICALLY — macOS builds it from
-source per arch (meson/ninja/nasm) and lipo-merges one fat `libdav1d.a`; Windows uses the vcpkg
-static triplet. Both release jobs assert the result (`otool -L` / `dumpbin /dependents` show no
-dav1d dynamic reference). CI test jobs may link dynamically (brew/apt) — nothing ships from CI.
+**End users still install nothing**: release builds link dav1d STATICALLY, every OS from source
+at ONE pinned tag — the workflow-level `DAV1D_VERSION` in `release.yml` (mirrored in `ci.yml`;
+`scripts/check-dav1d-pin.sh` asserts they match and Renovate bumps both, never automerged).
+macOS builds per arch (meson/ninja/nasm) and lipo-merges one fat `libdav1d.a`; Linux builds on
+ubuntu-22.04; Windows builds with meson + MSVC through the composite action
+`.github/actions/build-dav1d-windows`, which `ci.yml` also runs, so CI compiles the exact Windows
+library the release links. Each release job asserts the result (`otool -L` / `ldd` /
+`dumpbin /dependents` show no dav1d dynamic reference). CI's macOS/Linux legs link brew/apt
+dav1d dynamically — nothing ships from CI.
+
+**Why Windows no longer uses vcpkg** (v1.3.0 incident): the runner image's preinstalled vcpkg
+decided both the dav1d version and, via the image's compiler, whether it built. When
+`windows-latest` moved to VS 2026 (MSVC 14.52), dav1d <= 1.5.4 stopped compiling, yet CI stayed
+green by restoring a frozen 1.5.3 install tree from cache — the tag build was the first cold
+build. The action's cache key now includes `ImageOS` + `ImageVersion` (no `restore-keys`), so an
+image update forces a cold build in CI first, and the AVIF decode tests run on the Windows leg
+against that static library.
 
 ### slint pinned to `=1.18.1` for the `unstable-winit-030` feature (drag-and-drop)
 
@@ -197,7 +211,7 @@ cd crates/gashuu && mise exec -- cargo bundle --release   # emits target/release
 
 ### Release builds (GitHub Actions)
 
-`.github/workflows/release.yml` builds the distributable executables and attaches them to the GitHub Release for a tag. Trigger: push a `v*` tag, or `workflow_dispatch` with a `tag` input (to re-attach to an existing tag). A `preflight` job asserts the tag matches `crates/gashuu/Cargo.toml` `version` before any build runs, so a mistyped tag fails fast. The GitHub Release must already exist — the workflow only uploads assets to it (`gh release upload --clobber`), it does not create it.
+`.github/workflows/release.yml` builds the distributable executables and attaches them to the GitHub Release for a tag. Trigger: push a `v*` tag, or `workflow_dispatch` with a `tag` input (to re-attach to an existing tag). **Dry run**: a PR touching `release.yml` or `.github/actions/**`, the weekly schedule, or a `workflow_dispatch` with an empty `tag` runs the same build jobs on the checked-out commit and skips `publish` (artifacts are named `v<version>-dryrun`). Before tagging, confirm the latest dry run on `main` is green, or dispatch one (`gh workflow run release.yml --ref main`). The steps come from the dispatching ref but the source and the local `.github/actions/` come from the tag, so a tag cut before a recipe fix cannot be rebuilt with it — re-tag instead. A `preflight` job asserts the tag matches `crates/gashuu/Cargo.toml` `version` before any build runs, so a mistyped tag fails fast. The GitHub Release must already exist — the workflow only uploads assets to it (`gh release upload --clobber`), it does not create it.
 
 - **macOS (universal)**: builds `aarch64-apple-darwin` + `x86_64-apple-darwin`, `lipo`-merges them into a fat binary, runs `cargo bundle --release` for the `.app` scaffold (cargo-bundle has no `--target universal` support, so the scaffold is built once and the fat binary is spliced into `Contents/MacOS/`), and zips with `ditto -c -k --keepParent` (preserves symlinks/permissions). cargo-bundle is `cargo install`ed on the runner — deliberately NOT added to `mise.toml`, so the CI `app` matrix stays lean. Asset: `gashuu-<tag>-macos-universal.zip`.
 - **Windows (x86_64)**: generates `app-icon.ico` from `app-icon.svg` with the runner's preinstalled `magick`, builds `--release` (`build.rs` embeds the icon via `winresource`), and zips the `.exe`. Asset: `gashuu-<tag>-windows-x64.zip`.

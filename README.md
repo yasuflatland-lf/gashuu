@@ -279,7 +279,7 @@ On macOS, install dav1d with Homebrew; on Windows, via vcpkg (see
 
 ```bash
 brew install dav1d                          # macOS
-vcpkg install dav1d:x64-windows-static-md   # Windows
+vcpkg install dav1d:x64-windows-static-md   # Windows (dav1d >= 1.5.5 for Visual Studio 2026)
 ```
 
 A C++ compiler is also required — the RAR/CBR backend bundles the C++ UnRAR sources and
