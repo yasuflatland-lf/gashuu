@@ -188,7 +188,7 @@ pub(crate) fn spawn_cache_prune() {
         let Ok(cache) = ThumbnailCache::new() else {
             return;
         };
-        let started = std::time::Instant::now();
+        let started = crate::clock::now();
         let report = cache.prune(CoverCachePolicy::DEFAULT.max_bytes);
         tracing::debug!(
             removed_files = report.removed_files,
@@ -638,7 +638,7 @@ impl CoverController {
 
         // 3. Dispatch. The elapsed log pins the UI-thread cost of `start` itself
         // (dispatch only — all per-book I/O happens on the workers).
-        let started = std::time::Instant::now();
+        let started = crate::clock::now();
         let dispatched = requests.len();
         for req in requests {
             self.spawn_load(&ui_weak, &cancel_flag, my_epoch, req);
