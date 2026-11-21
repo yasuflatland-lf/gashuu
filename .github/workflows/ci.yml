@@ -75,6 +75,8 @@ jobs:
   wasm:
     name: wasm (wasm32 check)
     runs-on: ubuntu-latest
+    env:
+      MISE_ENV: web
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: jdx/mise-action@7a4e45a543138629540c9a1616d08632b893e492 # v5
@@ -85,6 +87,8 @@ jobs:
       - run: rustup target add wasm32-unknown-unknown
       - run: mise run check-wasm-core
       - run: mise run check-wasm-ui
+      - run: mise run build-web
+      - run: test -f crates/gashuu/dist/index.html && ls crates/gashuu/dist/*.wasm
 
   # Doc-structure harness: enforces the L1 (CLAUDE.md <=35 lines) + link integrity
   # invariants, plus the visual-token and macOS release packaging guards.

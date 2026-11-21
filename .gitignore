@@ -21,6 +21,7 @@ Thumbs.db
 
 # Rust / Cargo (workspace target at repo root)
 /target/
+crates/gashuu/dist/
 
 # Coverage artifacts (lcov from cargo-llvm-cov; uploaded to Codecov in CI)
 /lcov.info

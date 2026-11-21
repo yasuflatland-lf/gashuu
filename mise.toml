@@ -36,6 +36,16 @@ run = "bash scripts/check-dav1d-pin.sh"
 description = "gashuu (UI) compiles for wasm32-unknown-unknown (desktop-only deps/modules gated)"
 run = "cargo check -p gashuu --target wasm32-unknown-unknown --target-dir target/wasm"
 
+[tasks.build-web]
+description = "Build the browser bundle with Trunk into crates/gashuu/dist (needs MISE_ENV=web)"
+dir = "crates/gashuu"
+run = "trunk build --release"
+
+[tasks.serve-web]
+description = "Serve the browser bundle locally with Trunk (needs MISE_ENV=web)"
+dir = "crates/gashuu"
+run = "trunk serve"
+
 # ---------------------------------------------------------------------------
 # Blocking quality gates — see docs/quality-gates.md.
 #
