@@ -26,10 +26,12 @@ mod remove_books;
 mod selection_projection;
 mod thumbnail_strip;
 mod ui_marshal;
+#[cfg(not(target_arch = "wasm32"))]
 mod update;
 mod view_sync;
 mod viewer_state;
 mod viewport;
+#[cfg(not(target_arch = "wasm32"))]
 mod window_state;
 
 pub(crate) use carousel_refresh::{
@@ -191,6 +193,7 @@ fn repair_settings_file_if_needed(
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn main() -> color_eyre::Result<()> {
     color_eyre::install()?;
     // ICU4X bundles no Japanese line-break dictionary, so Slint's text layout spams a
@@ -486,6 +489,10 @@ fn main() -> color_eyre::Result<()> {
     Ok(())
 }
 
+// TODO(#653 ([12/23])): web entry point
+#[cfg(target_arch = "wasm32")]
+fn main() {}
+
 /// The app's single exit-persistence sequence: flush resolved page counts, stage
 /// the position + view-mode write-back through `LeavePointService::persist_with(AppExit)`,
 /// snapshot the window geometry, and save `Settings` once.
@@ -523,6 +530,7 @@ fn run_exit_persistence(
         leave_point,
         |library| save_library(library_store, library),
     );
+    #[cfg(not(target_arch = "wasm32"))]
     // Record the final window geometry so the next launch restores it. Safe: the window
     // handle is still alive (`ui` in scope) and `settings` is unborrowed.
     window_state::capture_geometry(ui, &mut settings.borrow_mut());

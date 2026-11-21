@@ -84,6 +84,7 @@ jobs:
       # A mise cache hit can skip rustup target installation.
       - run: rustup target add wasm32-unknown-unknown
       - run: mise run check-wasm-core
+      - run: mise run check-wasm-ui
 
   # Doc-structure harness: enforces the L1 (CLAUDE.md <=35 lines) + link integrity
   # invariants, plus the visual-token and macOS release packaging guards.
