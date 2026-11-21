@@ -775,11 +775,15 @@ snapshot, the next leave point could write an override pinning the OLD global va
 [ADR-0007](ADRs/0007-per-book-view-overrides.md)'s Amendment and [patterns.md](patterns.md),
 "Per-book view overrides".
 
+### book_availability
+
+`book_availability.rs` supplies the desktop path-existence predicate; unavailable books remain in the library.
+
 ### library_model
 
 `library_model.rs`. PURE (Slint-free) `Library` → carousel display-row mapping: a plain
 `CarouselData` struct (`title`/`current`/`total`/`progress`/`available`) +
-`carousel_data_for_indices(library: &Library, indices: &[usize]) -> Vec<CarouselData>`, preserving
+`carousel_data_for_indices(library: &Library, indices: &[usize], is_available: &dyn Fn(&Book) -> bool) -> Vec<CarouselData>`, preserving
 the supplied
 library-index projection order and skipping out-of-range indices. The indices come from the
 natural-order `Library::books()` projection — no independent sort here; see `Library aggregate`
@@ -789,9 +793,7 @@ keeps the derivation table-testable without a display backend. Each row is built
 `progress = ReadingProgress::fraction()` (position-normalized over `total - 1`; an unknown or
 one-page total → `0.0`, final page and overshoot clamp to `1.0`);
 `total = ReadingProgress::total() -> Option<usize>`. The free derivation no longer lives in `library_model`
-— it is centralised in `ReadingProgress` (see core entry below). `available` via
-the free core function `book_is_available(&Book)`, deliberately not a `Library` method so the
-aggregate stays I/O-free. `bookmarked: bool` is a pure derivation computed in
+— it is centralised in `ReadingProgress` (see core entry below). `available` is derived by an injected predicate, keeping the availability decision outside core. `bookmarked: bool` is a pure derivation computed in
 `carousel_data_for_indices`: `book.path() == library.last_opened()` — true for at most one row
 (the last-opened book); the `BookmarkRibbon` atom in `CoverCard` shows when this is `true`.
 `carousel.rs`'s `to_carousel_item` adapter builds the `!Send`
@@ -856,7 +858,7 @@ All four share a private `visible_paths(search, library)` join and are headlessl
 
 ### carousel
 
-`carousel.rs`. UI-thread adapter layer between `library_model` and Slint: `to_carousel_item` (private) maps a `CarouselData` row to a `CarouselItem` (placeholder `slint::Image::default()` cover); `build_carousel_model(library: &Library, indices: &[usize])` (pub(crate)) is a HEADLESS builder — no `ViewerWindow` arg — returning the `Rc<VecModel<CarouselItem>>`; a separate `bind_carousel_model(ui, model)` performs the Slint bind (the build/bind split enables unit tests over visible-index order); `cover_requests(library: &Library, indices: &[usize])` (pub(crate)) derives the per-book `CoverRequest` list, re-basing each request's `row` to the enumerated position in the filtered `indices` slice (not the library index), so cover targets stay aligned with the filtered carousel model; `thumb_state_at` (pub(crate)) re-fetches a row's thumbnail state for the scrubber preview.
+`carousel.rs`. UI-thread adapter layer between `library_model` and Slint: `to_carousel_item` (private) maps a `CarouselData` row to a `CarouselItem` (placeholder `slint::Image::default()` cover); `build_carousel_model(library: &Library, indices: &[usize], is_available: &dyn Fn(&Book) -> bool)` (pub(crate)) is a HEADLESS builder — no `ViewerWindow` arg — returning the `Rc<VecModel<CarouselItem>>`; a separate `bind_carousel_model(ui, model)` performs the Slint bind (the build/bind split enables unit tests over visible-index order); `cover_requests(library: &Library, indices: &[usize])` (pub(crate)) derives the per-book `CoverRequest` list, re-basing each request's `row` to the enumerated position in the filtered `indices` slice (not the library index), so cover targets stay aligned with the filtered carousel model; `thumb_state_at` (pub(crate)) re-fetches a row's thumbnail state for the scrubber preview.
 
 ### carousel refresh / projection (`carousel_refresh.rs`)
 

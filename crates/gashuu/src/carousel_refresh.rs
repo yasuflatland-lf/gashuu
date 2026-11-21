@@ -206,7 +206,7 @@ pub(crate) fn refresh_library_carousel(
         let indices = deps.search.borrow().visible_indices().to_vec();
         (
             lib.books().len() as i32,
-            build_carousel_model(&lib, &indices),
+            build_carousel_model(&lib, &indices, &crate::book_availability::book_path_exists),
             cover_requests(&lib, &indices),
             indices,
         )

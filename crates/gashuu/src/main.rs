@@ -6,6 +6,7 @@ slint::include_modules!();
 
 mod add_books;
 mod add_controller;
+mod book_availability;
 mod carousel;
 mod carousel_refresh;
 mod cover_loader;
