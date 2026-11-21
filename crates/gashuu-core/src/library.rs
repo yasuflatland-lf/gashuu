@@ -618,18 +618,6 @@ impl Library {
     }
 }
 
-/// Derived availability: whether the book's path currently resolves on disk.
-///
-/// This performs filesystem I/O (`Path::exists`) and is deliberately a free
-/// function rather than a `Library` method: the `Library` aggregate is an
-/// in-memory ordered set over caller-supplied identities and stays I/O-free
-/// EXCEPT for [`Library::recanonicalize_and_merge`], the load-time self-heal the
-/// load path invokes explicitly. Availability is NOT stored - an unavailable book
-/// is kept (its reading position is preserved); removal is an explicit user action.
-pub fn book_is_available(book: &Book) -> bool {
-    book.path().exists()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1423,17 +1411,6 @@ mod tests {
             "fraction should be 3/9, got {}",
             p.fraction()
         );
-    }
-
-    #[test]
-    fn book_is_available_reflects_path_existence() {
-        let dir = tempfile::tempdir().unwrap();
-        let folder = dir.path().join("Series.1997");
-        std::fs::create_dir(&folder).unwrap();
-        let present = Book::from_path(folder.clone());
-        let missing = Book::from_path(PathBuf::from("/manga/missing.cbz"));
-        assert!(book_is_available(&present));
-        assert!(!book_is_available(&missing));
     }
 
     #[test]
