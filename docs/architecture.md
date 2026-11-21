@@ -37,12 +37,19 @@ Top-level directory walk with natural filename ordering (`max_depth(1)`, no recu
 
 ### ZipSource
 
-`page_source/zip.rs`. A `PageSource` over a ZIP/CBZ archive using the SYNCHRONOUS `zip`
-crate — flattens nested images (any image at any depth is a page, unlike `FolderSource`'s
-`max_depth(1)`). Lock-free: each `read_bytes` opens its OWN `File` + `::zip::ZipArchive` so rayon
-prefetch threads decompress fully in parallel with NO shared mutable state.
+`page_source/zip.rs` uses the synchronous `zip` crate and includes images at any archive depth.
+`ZipSource::from_read_at` parses the central directory once and indexes the image pages.
+Each `read_bytes` clones the parsed archive. The clone shares the directory metadata and has
+its own cursor, so rayon prefetch threads can read and decompress entries in parallel.
+
+`page_source/read_at.rs` provides `ReadAt`, a `Send + Sync` trait for reading bytes at an explicit
+offset. `ReadAtCursor` implements `Read + Seek` over a shared source and stores a separate
+position in each clone. Desktop `ZipSource::open` uses `FileReadAt` and holds one file handle for
+the lifetime of the source. The `Arc<[u8]>` implementation also works on wasm32.
 
 ### RarSource
+
+The default-on `rar` feature provides `RarSource`. Without it, opening a RAR/CBR returns `CoreError::FormatDisabled { format: "rar/cbr" }`.
 
 `page_source/rar.rs`. A `PageSource` over a RAR/CBR archive using the SYNCHRONOUS `unrar`
 crate (bundles C++ UnRAR built by `cc`; extraction ONLY — no Rust RAR encoder exists), flattening
@@ -95,23 +102,27 @@ helper in `entry_policy.rs` could not be reused across the crate.
 
 ### ArchiveLoader
 
-`archive_loader.rs`. `open(path) -> Arc<dyn PageSource>` dispatch — directory→`FolderSource`,
-else a `Kind {Zip, Rar}` enum resolved by `ext_kind` (no I/O; `.cbz`/`.zip`→Zip,
-`.cbr`/`.rar`→Rar, case-insensitive) preferred, else `magic_kind` sniff (`PK` ZIP
-signatures→`ZipSource`; `Rar!\x1A\x07`→`RarSource`), else `UnsupportedFormat` (returns `Arc` not
-`Box` to fit `set_source`). The reject-empty-books feature added the associated fn
-`probe_page_count(path) -> Result<NonZeroUsize, CoreError>`: it `open`s the source, counts
-`list_pages().len()`, and returns `Err(CoreError::EmptyBook { path })` on a clean open with zero
-pages — the SINGLE home of the domain rule "a valid book has >= 1 image page". I/O /
-`UnsupportedFormat` errors propagate unchanged ("empty" and "unreadable" are strictly distinct).
-See [ADR-0009](ADRs/0009-reject-empty-books.md) and [patterns.md](patterns.md) ("Lift a domain rule
-into ONE core type at the boundary").
+`archive_loader.rs` opens directories with `FolderSource` and dispatches archives by
+`ArchiveKind`. The case-insensitive extensions `.cbz` and `.zip` select `Zip`, and `.cbr` and
+`.rar` select `Rar`. For an unknown extension, a single read of up to six bytes checks the ZIP
+signatures and the RAR prefix `Rar!\x1A\x07`. Unrecognized files return `UnsupportedFormat`.
+`detect_kind(name, head)` applies the same extension and magic rules to supplied data.
 
-Both entry points have a policy-carrying twin — `open_with_policy(path, ArchivePolicy)` and
-`probe_page_count_with_policy(path, ArchivePolicy)`; `open`/`probe_page_count` are the
-`ArchivePolicy::default()` wrappers. `ArchivePolicy { allow_rar }` is the Safe Mode seam
-([ADR-0011](ADRs/0011-decoder-subprocess-isolation.md) phase 1): with `allow_rar: false` a
-RAR/CBR-resolved path returns `CoreError::FormatDisabled` instead of opening `RarSource`.
+`open_read_at(name, src, policy)` opens ZIP sources through `ReadAt` and returns
+`Arc<dyn PageSource>`. It returns `FormatDisabled { format: "rar/cbr" }` for RAR under either
+policy setting. `probe_page_count_read_at(name, src, policy)` and `probe_page_count(path)` share
+the check that a successfully opened book contains at least one image page. Both return
+`NonZeroUsize` or `CoreError::EmptyBook { label }`, and propagate open errors unchanged. The label
+in `EmptyBook` or `UnsupportedFormat` is the supplied name or the path's display string. See
+[ADR-0009](ADRs/0009-reject-empty-books.md) and [patterns.md](patterns.md).
+
+Without the `rar` feature, both extension and magic-byte detection still recognize RAR, and opening or probing it returns `CoreError::FormatDisabled { format: "rar/cbr" }` regardless of policy.
+
+The path entry points have policy-carrying twins `open_with_policy(path, ArchivePolicy)` and
+`probe_page_count_with_policy(path, ArchivePolicy)`. `open` and `probe_page_count` use
+`ArchivePolicy::default()`. Safe Mode sets `allow_rar: false`, so either path entry point
+returns `CoreError::FormatDisabled` for RAR/CBR. See
+[ADR-0011](ADRs/0011-decoder-subprocess-isolation.md) phase 1.
 
 `open_with_policy` also owns the admission gate: a path that is not valid UTF-8 is rejected with
 `CoreError::NonUtf8Path { path }` **before any dispatch** (before the `is_dir` branch, the extension
@@ -237,9 +248,9 @@ returns immediately when `stored_text` reports an absent blob. Core returns type
 - `NonUtf8Path { path }` — raised by `ArchiveLoader::open_with_policy` before any dispatch, so a
   path that cannot be serialized into `library.json` never becomes a `Book`
 - `ImageTooLarge`
-- `Zip(#[from] ::zip::result::ZipError)`, `EntryTooLarge { name, max }`, `UnsupportedFormat { path }`
+- `Zip(#[from] ::zip::result::ZipError)`, `EntryTooLarge { name, max }`, `UnsupportedFormat { label }`
 - `Rar(#[from] ::unrar::error::UnrarError)` (Display prefix `"rar archive error: "`)
-- `EmptyBook { path }` (Display `"no images found in {path}"`) — raised by `ArchiveLoader::probe_page_count` on a clean open with zero image pages, distinct from the unreadable-source errors above (the reject-empty-books feature)
+- `EmptyBook { label }` (Display `"no images found in {label}"`) — raised by the `ArchiveLoader` page-count probes on a clean open with zero image pages.
 
 Errors are typed with `thiserror` (`CoreError`, `#[non_exhaustive]`).
 
@@ -769,11 +780,15 @@ snapshot, the next leave point could write an override pinning the OLD global va
 [ADR-0007](ADRs/0007-per-book-view-overrides.md)'s Amendment and [patterns.md](patterns.md),
 "Per-book view overrides".
 
+### book_availability
+
+`book_availability.rs` supplies the desktop path-existence predicate; unavailable books remain in the library.
+
 ### library_model
 
 `library_model.rs`. PURE (Slint-free) `Library` → carousel display-row mapping: a plain
 `CarouselData` struct (`title`/`current`/`total`/`progress`/`available`) +
-`carousel_data_for_indices(library: &Library, indices: &[usize]) -> Vec<CarouselData>`, preserving
+`carousel_data_for_indices(library: &Library, indices: &[usize], is_available: &dyn Fn(&Book) -> bool) -> Vec<CarouselData>`, preserving
 the supplied
 library-index projection order and skipping out-of-range indices. The indices come from the
 natural-order `Library::books()` projection — no independent sort here; see `Library aggregate`
@@ -783,9 +798,7 @@ keeps the derivation table-testable without a display backend. Each row is built
 `progress = ReadingProgress::fraction()` (position-normalized over `total - 1`; an unknown or
 one-page total → `0.0`, final page and overshoot clamp to `1.0`);
 `total = ReadingProgress::total() -> Option<usize>`. The free derivation no longer lives in `library_model`
-— it is centralised in `ReadingProgress` (see core entry below). `available` via
-the free core function `book_is_available(&Book)`, deliberately not a `Library` method so the
-aggregate stays I/O-free. `bookmarked: bool` is a pure derivation computed in
+— it is centralised in `ReadingProgress` (see core entry below). `available` is derived by an injected predicate, keeping the availability decision outside core. `bookmarked: bool` is a pure derivation computed in
 `carousel_data_for_indices`: `book.path() == library.last_opened()` — true for at most one row
 (the last-opened book); the `BookmarkRibbon` atom in `CoverCard` shows when this is `true`.
 `carousel.rs`'s `to_carousel_item` adapter builds the `!Send`
@@ -850,7 +863,7 @@ All four share a private `visible_paths(search, library)` join and are headlessl
 
 ### carousel
 
-`carousel.rs`. UI-thread adapter layer between `library_model` and Slint: `to_carousel_item` (private) maps a `CarouselData` row to a `CarouselItem` (placeholder `slint::Image::default()` cover); `build_carousel_model(library: &Library, indices: &[usize])` (pub(crate)) is a HEADLESS builder — no `ViewerWindow` arg — returning the `Rc<VecModel<CarouselItem>>`; a separate `bind_carousel_model(ui, model)` performs the Slint bind (the build/bind split enables unit tests over visible-index order); `cover_requests(library: &Library, indices: &[usize])` (pub(crate)) derives the per-book `CoverRequest` list, re-basing each request's `row` to the enumerated position in the filtered `indices` slice (not the library index), so cover targets stay aligned with the filtered carousel model; `thumb_state_at` (pub(crate)) re-fetches a row's thumbnail state for the scrubber preview.
+`carousel.rs`. UI-thread adapter layer between `library_model` and Slint: `to_carousel_item` (private) maps a `CarouselData` row to a `CarouselItem` (placeholder `slint::Image::default()` cover); `build_carousel_model(library: &Library, indices: &[usize], is_available: &dyn Fn(&Book) -> bool)` (pub(crate)) is a HEADLESS builder — no `ViewerWindow` arg — returning the `Rc<VecModel<CarouselItem>>`; a separate `bind_carousel_model(ui, model)` performs the Slint bind (the build/bind split enables unit tests over visible-index order); `cover_requests(library: &Library, indices: &[usize])` (pub(crate)) derives the per-book `CoverRequest` list, re-basing each request's `row` to the enumerated position in the filtered `indices` slice (not the library index), so cover targets stay aligned with the filtered carousel model; `thumb_state_at` (pub(crate)) re-fetches a row's thumbnail state for the scrubber preview.
 
 ### carousel refresh / projection (`carousel_refresh.rs`)
 
@@ -952,15 +965,17 @@ handles individually and assembles the bundle in its own body; a callback keeps 
   reveal, scrubber preview/commit, thumbnail-strip toggle), `wire_viewport_handlers` (viewport
   size + pan/zoom callbacks), `wire_nav_handlers` (keyboard nav hub: page turns, mode toggles,
   GoToLibrary, window resize).
-- **`handlers/drag_drop.rs`**: `wire_drag_drop_handlers` (OS file/folder drag-and-drop onto the
-  Library screen). Installs the single `on_winit_window_event` filter that toggles the drop-zone
+- **`handlers/drag_drop.rs`** is desktop-only (`cfg(not(target_arch = "wasm32"))`).
+  `wire_drag_drop_handlers` enables OS file/folder drag-and-drop onto the Library screen.
+  It installs the single `on_winit_window_event` filter that toggles the drop-zone
   overlay on hover and debounces a drop's per-file `DroppedFile` burst into one batched
   `AddController::start` (the pure `drop_action_for` winit-event → `DropAction` mapping is the
   testable core). See the dedicated `### handlers/drag_drop` entry below.
-- **`handlers/update.rs`**: `wire_update_handlers` (the update dialog's Accept / Later / Skip /
-  Release-notes actions behind the in-progress gate, plus the Settings About-section callbacks) and
-  `start_update_check` (the startup + on-demand check entry point). See the `### update (gashuu)`
-  entry below.
+- **`handlers/update.rs`** is desktop-only (`cfg(not(target_arch = "wasm32"))`).
+  `wire_update_handlers` registers the update dialog's Accept / Later / Skip / Release-notes
+  actions behind the in-progress gate and the Settings About-section callbacks.
+  `start_update_check` is the startup and on-demand check entry point.
+  See the `### update (gashuu)` entry below.
 
 `fn main` = boot (tracing, settings/library load, Slint window, localizer, Rc construction, seed
 carousel, prune) + 10 `handlers::wire_*` calls + `handlers::start_update_check` + the crate-local
@@ -996,8 +1011,9 @@ state crosses a boundary here.
 
 ### update (gashuu)
 
-`update/{mod,net,install}.rs` + `handlers/update.rs`. The presentation-side half of the auto-updater;
-every DECISION it makes is delegated to `gashuu_core::update` (see the core `### update` entry).
+`update/{mod,net,install}.rs` + `handlers/update.rs` are desktop-only
+(`cfg(not(target_arch = "wasm32"))`). This presentation-side half of the auto-updater delegates
+every decision to `gashuu_core::update` (see the core `### update` entry).
 `mod.rs` holds `CURRENT_VERSION`, the `releases/latest` API + release-page URLs, `user_agent()` and
 the `UpdateError {Http, Io, Verify}` glue error.
 
@@ -1028,7 +1044,8 @@ See [ADR-0013](ADRs/0013-auto-update.md) and its Amendment, and [patterns.md](pa
 
 ### window_state
 
-`window_state.rs`. Persist and restore the OS window geometry (size + position) across launches.
+`window_state.rs` is desktop-only (`cfg(not(target_arch = "wasm32"))`). It persists and restores
+the OS window geometry (size + position) across launches.
 Geometry is read ONCE at exit and applied ONCE at startup — never tracked live — so this installs NO
 winit event handler and cannot collide with the single `on_winit_window_event` slot drag-drop owns.
 Everything is in physical pixels (matching `gashuu_core::WindowGeometry`). `restore_geometry(ui,

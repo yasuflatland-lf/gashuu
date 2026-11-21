@@ -24,6 +24,42 @@ use slint::ComponentHandle;
 use std::cell::RefCell;
 use std::rc::Rc;
 
+/// Ask the platform for comic sources to add. Desktop: rfd (macOS picks files
+/// AND folders in one panel, others pick files). Web: no picker yet.
+fn pick_book_sources() -> Option<Vec<std::path::PathBuf>> {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let dialog =
+            rfd::FileDialog::new().add_filter("Comic archive", &["cbz", "zip", "cbr", "rar"]);
+        #[cfg(target_os = "macos")]
+        {
+            dialog.pick_files_or_folders()
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            dialog.pick_files()
+        }
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        // TODO(#660 ([19/23])): BookPicker port
+        None
+    }
+}
+
+/// Ask the platform for one folder to add as a book. Web: no picker yet.
+fn pick_book_folder() -> Option<std::path::PathBuf> {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        rfd::FileDialog::new().pick_folder()
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        // TODO(#660 ([19/23])): BookPicker port
+        None
+    }
+}
+
 /// Registers the add-books/add-folder callbacks onto `ui`.
 /// Panel constraint (#151): explicit handle list IS the dependency list — no AppState bundle.
 #[allow(clippy::too_many_arguments)]
@@ -66,13 +102,7 @@ pub(crate) fn wire_open_handlers(
         let adder = Rc::clone(&adder);
         ui.on_add_books(move || {
             with_ui(&ui_weak, |ui| {
-                let dialog = rfd::FileDialog::new()
-                    .add_filter("Comic archive", &["cbz", "zip", "cbr", "rar"]);
-                #[cfg(target_os = "macos")]
-                let picked = dialog.pick_files_or_folders();
-                #[cfg(not(target_os = "macos"))]
-                let picked = dialog.pick_files();
-                let Some(paths) = picked else {
+                let Some(paths) = pick_book_sources() else {
                     return;
                 };
                 let policy = settings.borrow().archive_policy();
@@ -89,7 +119,7 @@ pub(crate) fn wire_open_handlers(
         let adder = Rc::clone(&adder);
         ui.on_add_folder(move || {
             with_ui(&ui_weak, |ui| {
-                let Some(folder) = rfd::FileDialog::new().pick_folder() else {
+                let Some(folder) = pick_book_folder() else {
                     return;
                 };
                 let policy = settings.borrow().archive_policy();

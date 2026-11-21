@@ -446,10 +446,17 @@ mod tests {
 
     // --- AVIF (avif-native / dav1d) ---
 
+    #[cfg(not(feature = "avif"))]
+    #[test]
+    fn decode_avif_without_feature_is_an_error_not_a_panic() {
+        assert!(matches!(decode(&avif_bytes()), Err(CoreError::Decode(_))));
+    }
+
     /// Load-bearing gate for the `avif-native` feature: without it,
     /// `decode` returns `Err(Decode(_))` for AVIF bytes and this test fails.
     /// AVIF is lossy, so only structural properties are asserted (dimensions
     /// and RGBA length), not pixel-exact values.
+    #[cfg(feature = "avif")]
     #[test]
     fn decode_avif_reports_dimensions_and_rgba_length() {
         let decoded = decode(&avif_bytes()).unwrap();
@@ -458,6 +465,7 @@ mod tests {
         assert_eq!(decoded.rgba().len(), 8 * 6 * 4);
     }
 
+    #[cfg(feature = "avif")]
     #[test]
     fn decode_thumbnail_avif_fits_max_side() {
         let thumb = decode_thumbnail(&avif_bytes(), 4).unwrap();

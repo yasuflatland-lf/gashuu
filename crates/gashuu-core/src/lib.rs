@@ -37,7 +37,7 @@ pub mod view_override;
 pub mod viewport;
 pub mod window_geometry;
 
-pub use archive_loader::{ArchiveLoader, ArchivePolicy};
+pub use archive_loader::{ArchiveKind, ArchiveLoader, ArchivePolicy};
 pub use atomic_write::write_atomic;
 #[cfg(not(target_arch = "wasm32"))]
 pub use blob_store::FsBlobStore;
@@ -47,11 +47,15 @@ pub use cache_config::{CacheConfig, MAX_CACHE_CAPACITY, MAX_PREFETCH_RADIUS};
 pub use error::CoreError;
 pub use image_ops::{check_pixel_limit, decode, decode_thumbnail, DecodedImage, MAX_PIXELS};
 pub use library::{
-    book_is_available, canonical_identity, display_title, Book, Library, OpenRegistration,
-    RemovalReport,
+    canonical_identity, display_title, Book, Library, OpenRegistration, RemovalReport,
 };
 pub use library_store::{LibraryStore, LIBRARY_VERSION};
-pub use page_source::{FolderSource, PageEntry, PageSource, RarSource, ZipSource};
+#[cfg(not(target_arch = "wasm32"))]
+pub use page_source::FileReadAt;
+#[cfg(feature = "rar")]
+pub use page_source::RarSource;
+pub use page_source::{FolderSource, PageEntry, PageSource, ReadAt, ReadAtCursor, ZipSource};
+pub use persist::quarantine_file;
 pub use reading_progress::ReadingProgress;
 pub use search::book_matches;
 pub use settings::{Settings, MAX_RECENT_SOURCES, SETTINGS_VERSION};

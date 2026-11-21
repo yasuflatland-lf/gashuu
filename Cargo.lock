@@ -1758,6 +1758,7 @@ version = "1.3.0"
 dependencies = [
  "base64",
  "directories",
+ "getrandom 0.4.3",
  "image",
  "insta",
  "lru",
