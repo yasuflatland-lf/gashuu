@@ -394,6 +394,8 @@ pub(crate) fn wire_nav_handlers(
                     KeyCommand::Turn(action) => {
                         let moved = state.borrow_mut().apply(action);
                         if moved {
+                            #[cfg(target_arch = "wasm32")]
+                            crate::wasm_metrics::begin_turn(started);
                             refresh(
                                 &ui,
                                 &state.borrow(),

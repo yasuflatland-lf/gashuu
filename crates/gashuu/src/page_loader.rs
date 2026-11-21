@@ -295,36 +295,44 @@ fn spawn_decode_spread(
     cache_dispatch: CacheDispatch,
     request: SpreadDecodeRequest,
 ) {
-    rayon::spawn(move || {
+    let decode_spread = move || {
         let leading_idx = request.leading.index;
         let trailing_slot = request.trailing;
         let requested_single = request.single || trailing_slot.is_none();
+        #[cfg(not(target_arch = "wasm32"))]
+        let decode_page = |index| cache_dispatch.decode_and_cache(index);
+        #[cfg(target_arch = "wasm32")]
+        let decode_page = |index| crate::wasm_metrics::decode_page(&cache_dispatch, index);
 
-        // Resolve each slot: a HIT wraps the cached image in Ok; a MISS decodes
-        // on this worker. When both are missing, rayon::join runs them in parallel.
+        // Resolve each slot from the cache or decode it. On desktop, two misses
+        // run in parallel inside the rayon job.
         let (leading_result, trailing_result) = match (request.leading.decoded, trailing_slot) {
             (leading_hit, None) => {
                 let leading = leading_hit
                     .map(Ok)
-                    .unwrap_or_else(|| cache_dispatch.decode_and_cache(leading_idx));
+                    .unwrap_or_else(|| decode_page(leading_idx));
                 (leading, None)
             }
             (Some(leading), Some(t)) => {
-                let trailing = t
-                    .decoded
-                    .map(Ok)
-                    .unwrap_or_else(|| cache_dispatch.decode_and_cache(t.index));
+                let trailing = t.decoded.map(Ok).unwrap_or_else(|| decode_page(t.index));
                 (Ok(leading), Some((t.index, trailing)))
             }
             (None, Some(t)) => {
                 let (leading, trailing) = match t.decoded {
-                    Some(trailing) => (cache_dispatch.decode_and_cache(leading_idx), Ok(trailing)),
+                    Some(trailing) => (decode_page(leading_idx), Ok(trailing)),
                     None => {
-                        let trailing_dispatch = cache_dispatch.clone();
-                        rayon::join(
-                            || cache_dispatch.decode_and_cache(leading_idx),
-                            || trailing_dispatch.decode_and_cache(t.index),
-                        )
+                        #[cfg(not(target_arch = "wasm32"))]
+                        {
+                            let trailing_dispatch = cache_dispatch.clone();
+                            rayon::join(
+                                || decode_page(leading_idx),
+                                || trailing_dispatch.decode_and_cache(t.index),
+                            )
+                        }
+                        #[cfg(target_arch = "wasm32")]
+                        {
+                            (decode_page(leading_idx), decode_page(t.index))
+                        }
                     }
                 };
                 (leading, Some((t.index, trailing)))
@@ -340,7 +348,11 @@ fn spawn_decode_spread(
             trailing_result,
             requested_single,
         );
-    });
+    };
+    #[cfg(not(target_arch = "wasm32"))]
+    rayon::spawn(decode_spread);
+    #[cfg(target_arch = "wasm32")]
+    decode_spread();
 }
 
 #[cfg(not(test))]
@@ -407,6 +419,8 @@ fn marshal_spread(
         let leading = to_slint_image(&leading);
         let trailing = trailing.as_deref().map(to_slint_image);
         apply_spread_images(ui, leading, trailing, single);
+        #[cfg(target_arch = "wasm32")]
+        crate::wasm_metrics::spread_applied(my_epoch);
         ui.invoke_spread_anchored(
             content_w,
             content_h,

@@ -43,3 +43,7 @@ ops/collect_images/output/
 # site (Node) build artifacts + deps
 site/node_modules/
 site/dist/
+
+# Browser spike artifacts
+dist/
+*.cbz
