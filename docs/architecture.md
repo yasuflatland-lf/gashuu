@@ -962,15 +962,17 @@ handles individually and assembles the bundle in its own body; a callback keeps 
   reveal, scrubber preview/commit, thumbnail-strip toggle), `wire_viewport_handlers` (viewport
   size + pan/zoom callbacks), `wire_nav_handlers` (keyboard nav hub: page turns, mode toggles,
   GoToLibrary, window resize).
-- **`handlers/drag_drop.rs`**: `wire_drag_drop_handlers` (OS file/folder drag-and-drop onto the
-  Library screen). Installs the single `on_winit_window_event` filter that toggles the drop-zone
+- **`handlers/drag_drop.rs`** is desktop-only (`cfg(not(target_arch = "wasm32"))`).
+  `wire_drag_drop_handlers` enables OS file/folder drag-and-drop onto the Library screen.
+  It installs the single `on_winit_window_event` filter that toggles the drop-zone
   overlay on hover and debounces a drop's per-file `DroppedFile` burst into one batched
   `AddController::start` (the pure `drop_action_for` winit-event → `DropAction` mapping is the
   testable core). See the dedicated `### handlers/drag_drop` entry below.
-- **`handlers/update.rs`**: `wire_update_handlers` (the update dialog's Accept / Later / Skip /
-  Release-notes actions behind the in-progress gate, plus the Settings About-section callbacks) and
-  `start_update_check` (the startup + on-demand check entry point). See the `### update (gashuu)`
-  entry below.
+- **`handlers/update.rs`** is desktop-only (`cfg(not(target_arch = "wasm32"))`).
+  `wire_update_handlers` registers the update dialog's Accept / Later / Skip / Release-notes
+  actions behind the in-progress gate and the Settings About-section callbacks.
+  `start_update_check` is the startup and on-demand check entry point.
+  See the `### update (gashuu)` entry below.
 
 `fn main` = boot (tracing, settings/library load, Slint window, localizer, Rc construction, seed
 carousel, prune) + 10 `handlers::wire_*` calls + `handlers::start_update_check` + the crate-local
@@ -1006,8 +1008,9 @@ state crosses a boundary here.
 
 ### update (gashuu)
 
-`update/{mod,net,install}.rs` + `handlers/update.rs`. The presentation-side half of the auto-updater;
-every DECISION it makes is delegated to `gashuu_core::update` (see the core `### update` entry).
+`update/{mod,net,install}.rs` + `handlers/update.rs` are desktop-only
+(`cfg(not(target_arch = "wasm32"))`). This presentation-side half of the auto-updater delegates
+every decision to `gashuu_core::update` (see the core `### update` entry).
 `mod.rs` holds `CURRENT_VERSION`, the `releases/latest` API + release-page URLs, `user_agent()` and
 the `UpdateError {Http, Io, Verify}` glue error.
 
@@ -1038,7 +1041,8 @@ See [ADR-0013](ADRs/0013-auto-update.md) and its Amendment, and [patterns.md](pa
 
 ### window_state
 
-`window_state.rs`. Persist and restore the OS window geometry (size + position) across launches.
+`window_state.rs` is desktop-only (`cfg(not(target_arch = "wasm32"))`). It persists and restores
+the OS window geometry (size + position) across launches.
 Geometry is read ONCE at exit and applied ONCE at startup — never tracked live — so this installs NO
 winit event handler and cannot collide with the single `on_winit_window_event` slot drag-drop owns.
 Everything is in physical pixels (matching `gashuu_core::WindowGeometry`). `restore_geometry(ui,

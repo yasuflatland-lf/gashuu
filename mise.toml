@@ -32,6 +32,10 @@ run = "bash scripts/check-release-macos-dist.sh"
 description = "Verify every from-source dav1d build uses the one pinned DAV1D_VERSION"
 run = "bash scripts/check-dav1d-pin.sh"
 
+[tasks.check-wasm-ui]
+description = "gashuu (UI) compiles for wasm32-unknown-unknown (desktop-only deps/modules gated)"
+run = "cargo check -p gashuu --target wasm32-unknown-unknown --target-dir target/wasm"
+
 # ---------------------------------------------------------------------------
 # Blocking quality gates — see docs/quality-gates.md.
 #

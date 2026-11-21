@@ -19,6 +19,43 @@ of this task. The blocking `wasm (wasm32 check)` CI job explicitly installs the 
 On this target, core enables the `wasm_js` feature of getrandom 0.4, which is also used by
 `zip`. The feature selects the browser backend by itself and requires no additional cfg flag.
 
+#### UI crate on wasm32
+
+`mise run check-wasm-ui` compile-checks the UI crate in `target/wasm`. The CI
+`wasm` job runs it after `check-wasm-core`.
+The check tolerates warnings while the wasm `main` is an empty placeholder for
+#653 ([12/23]).
+
+The UI crate declares these dependencies in
+`[target.'cfg(not(target_arch = "wasm32"))'.dependencies]`.
+
+| Dependency | Desktop use |
+| --- | --- |
+| `ureq` | Fetches release metadata and downloads self-update assets. Its rustls backend brings in `ring` and a `getrandom` version without a configured wasm backend. |
+| `self-replace` | Replaces the running Windows portable executable during self-update. |
+| `opener` | Opens release pages and reveals downloaded installers in the OS file manager. |
+| `rfd` | Opens native file and folder dialogs for the Add buttons. |
+| `color-eyre` | Installs the error reporter and provides the return type for desktop `main`. |
+| `tracing-subscriber` | Initializes desktop logging and its environment filter. |
+| `directories` | Resolves the Downloads folder through `UserDirs` for guided updates. |
+| `zip` | Extracts the Windows executable from the portable release archive. |
+
+Both targets use the same Slint version. The desktop table adds the winit API
+used by drag-and-drop and window geometry.
+
+```toml
+[dependencies]
+slint = { version = "=1.18.1" }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+slint = { version = "=1.18.1", features = ["unstable-winit-030"] }
+```
+
+The desktop table uses the default `gashuu-core` features for RAR and AVIF.
+The `[target.'cfg(target_arch = "wasm32")'.dependencies]` table sets
+`default-features = false` on `gashuu-core`. Cargo resolver 2 keeps the
+desktop defaults out of the wasm build.
+
 ### Fresh install: mise trust
 
 **A fresh `mise install` fails with "Config files are not trusted."** Run `mise trust` once, then `mise install`. CI's `jdx/mise-action` handles trust automatically.
@@ -84,7 +121,7 @@ against that static library.
 
 ### slint pinned to `=1.18.1` for the `unstable-winit-030` feature (drag-and-drop)
 
-**`slint` and `slint-build` are pinned to an EXACT version (`=1.18.1`), not `1`, because the UI crate enables the `unstable-winit-030` feature.** Slint has no stable file-drop API, so OS file/folder drag-and-drop (`handlers/drag_drop.rs`) reaches the winit backend's raw `WindowEvent` filter (`slint::winit_030::WinitWindowAccessor::on_winit_window_event`) to receive `HoveredFile`/`DroppedFile`. That module is gated behind `unstable-winit-030` and is documented as "may be removed or changed in future minor releases", so a slint minor bump must be a deliberate, tested step rather than an automatic `cargo update`. The two versions MUST stay in lockstep (the proc-macro and the runtime are one release). To upgrade slint: bump both pins together, re-verify drag-and-drop builds and the `winit_030` API still resolves, then run the three gates.
+**`slint` and `slint-build` are pinned to an EXACT version (`=1.18.1`), not `1`, because the UI crate enables the desktop-only `unstable-winit-030` feature.** Slint has no stable file-drop API, so OS file/folder drag-and-drop (`handlers/drag_drop.rs`) reaches the winit backend's raw `WindowEvent` filter (`slint::winit_030::WinitWindowAccessor::on_winit_window_event`) to receive `HoveredFile`/`DroppedFile`. That module is gated behind `unstable-winit-030` and is documented as "may be removed or changed in future minor releases", so a slint minor bump must be a deliberate, tested step rather than an automatic `cargo update`. The two versions MUST stay in lockstep (the proc-macro and the runtime are one release). To upgrade slint: bump both pins together, re-verify drag-and-drop builds and the `winit_030` API still resolves, then run the three gates.
 
 ### Thumbnail strip added no new dependencies
 
