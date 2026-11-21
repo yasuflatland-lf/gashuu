@@ -17,7 +17,9 @@
 //! Headless: this module uses only `serde_json` and `std::fs` (no `slint`, no
 //! `tracing`).
 
+#[cfg(not(target_arch = "wasm32"))]
 use crate::error::CoreError;
+#[cfg(not(target_arch = "wasm32"))]
 use std::path::{Path, PathBuf};
 
 /// Outcome of parsing a versioned-object document.
@@ -66,7 +68,8 @@ pub(crate) fn parse_versioned_object(
 /// `<name>.corrupt-<now_secs>` (same directory — the rename is atomic on one
 /// filesystem) so a later save cannot destroy recoverable data. Never reads or
 /// parses the file. The caller injects `now_secs` (core takes no clock).
-pub fn quarantine_file(path: &Path, now_secs: u64) -> Result<PathBuf, CoreError> {
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn quarantine_file(path: &Path, now_secs: u64) -> Result<PathBuf, CoreError> {
     let mut destination_name = path.file_name().unwrap_or_default().to_os_string();
     destination_name.push(format!(".corrupt-{now_secs}"));
     let destination = path.with_file_name(destination_name);
@@ -166,6 +169,7 @@ mod tests {
         assert!(!migrated.get(), "future documents must not be migrated");
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn quarantine_file_preserves_original_bytes_under_timestamped_name() {
         let dir = tempfile::tempdir().unwrap();
@@ -180,6 +184,7 @@ mod tests {
         assert_eq!(std::fs::read(&destination).unwrap(), b"future bytes");
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn quarantine_file_errors_for_missing_source_without_creating_destination() {
         let dir = tempfile::tempdir().unwrap();

@@ -1,9 +1,13 @@
 //! Dispatch a path to the right `PageSource`: directory -> FolderSource,
 //! CBZ/ZIP (by extension, else magic bytes) -> ZipSource,
 //! CBR/RAR (by extension, else magic bytes) -> RarSource.
+//! Opening RAR requires the `rar` feature. Without it, dispatch returns [`CoreError::FormatDisabled`].
 
 use crate::error::CoreError;
-use crate::page_source::{FolderSource, PageSource, RarSource, ZipSource};
+#[cfg(feature = "rar")]
+use crate::page_source::RarSource;
+use crate::page_source::{FolderSource, PageSource, ReadAt, ZipSource};
+use std::fmt::Display;
 use std::io::Read;
 use std::num::NonZeroUsize;
 use std::path::Path;
@@ -17,9 +21,9 @@ const ZIP_MAGICS: &[&[u8]] = &[b"PK\x03\x04", b"PK\x05\x06", b"PK\x07\x08"];
 /// is deliberately NOT tested — so this one constant matches both formats.
 const RAR_MAGIC: &[u8] = b"Rar!\x1A\x07";
 
-/// Discriminator returned by the extension and magic probes.
-#[cfg_attr(test, derive(Debug, PartialEq))]
-enum Kind {
+/// Archive format recognized by an extension or magic-byte probe.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ArchiveKind {
     Zip,
     Rar,
 }
@@ -28,7 +32,7 @@ enum Kind {
 ///
 /// The default (`allow_rar: true`) preserves backward-compatible behavior.
 /// Set `allow_rar: false` to reject RAR/CBR archives and return
-/// [`CoreError::FormatDisabled`] instead of opening [`RarSource`].
+/// [`CoreError::FormatDisabled`]. Without the `rar` feature, both policy settings return that error.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ArchivePolicy {
     /// When `false`, RAR/CBR paths are rejected with `CoreError::FormatDisabled`.
@@ -41,13 +45,19 @@ impl Default for ArchivePolicy {
     }
 }
 
-/// Opens any supported source by path, returning a type-erased `Arc<dyn PageSource>`.
+/// Opens page sources by path or from a positional byte source.
 ///
-/// Resolution order:
+/// Path resolution order:
 /// 1. If the path is a directory: [`FolderSource`].
-/// 2. Extension check (cheap, no I/O): `cbz`/`zip` → [`ZipSource`]; `cbr`/`rar` → [`RarSource`].
-/// 3. Magic-byte sniff (first bytes of the file): ZIP signatures → [`ZipSource`]; RAR prefix → [`RarSource`].
+/// 2. Extension check (cheap, no I/O): `cbz`/`zip` → [`ZipSource`]; `cbr`/`rar` → `RarSource`.
+/// 3. Magic-byte sniff (first bytes of the file): ZIP signatures → [`ZipSource`]; RAR prefix → `RarSource`.
 /// 4. Otherwise: [`CoreError::UnsupportedFormat`].
+///
+/// Opening RAR requires the `rar` feature. Without it, either detection path returns [`CoreError::FormatDisabled`].
+///
+/// [`ArchiveLoader::detect_kind`] detects an archive format from a name and leading bytes.
+/// [`ArchiveLoader::open_read_at`] and [`ArchiveLoader::probe_page_count_read_at`] accept
+/// a ZIP byte source through [`ReadAt`].
 pub struct ArchiveLoader;
 
 impl ArchiveLoader {
@@ -73,10 +83,7 @@ impl ArchiveLoader {
     ) -> Result<NonZeroUsize, CoreError> {
         let path = path.as_ref();
         let source = Self::open_with_policy(path, policy)?;
-        let count = source.list_pages().len();
-        NonZeroUsize::new(count).ok_or_else(|| CoreError::EmptyBook {
-            path: path.display().to_string(),
-        })
+        page_count(source.as_ref(), path.display())
     }
 
     /// Open `path` as the most appropriate [`PageSource`].
@@ -91,7 +98,7 @@ impl ArchiveLoader {
     /// Open `path` as the most appropriate [`PageSource`], respecting `policy`.
     ///
     /// When the resolved kind is RAR and `policy.allow_rar` is `false`, returns
-    /// `Err(CoreError::FormatDisabled)` instead of opening [`RarSource`].
+    /// `Err(CoreError::FormatDisabled)` instead of opening `RarSource`.
     pub fn open_with_policy(
         path: impl AsRef<Path>,
         policy: ArchivePolicy,
@@ -112,27 +119,89 @@ impl ArchiveLoader {
             None => magic_kind(path)?,
         };
         match kind {
-            Some(Kind::Zip) => Ok(Arc::new(ZipSource::open(path)?)),
-            Some(Kind::Rar) if !policy.allow_rar => {
+            #[cfg(not(target_arch = "wasm32"))]
+            Some(ArchiveKind::Zip) => Ok(Arc::new(ZipSource::open(path)?)),
+            #[cfg(target_arch = "wasm32")]
+            Some(ArchiveKind::Zip) => Err(std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                "operation not supported on this platform",
+            )
+            .into()),
+            Some(ArchiveKind::Rar) if !policy.allow_rar => {
                 Err(CoreError::FormatDisabled { format: "rar/cbr" })
             }
-            Some(Kind::Rar) => Ok(Arc::new(RarSource::open(path)?)),
+            #[cfg(feature = "rar")]
+            Some(ArchiveKind::Rar) => Ok(Arc::new(RarSource::open(path)?)),
+            #[cfg(not(feature = "rar"))]
+            Some(ArchiveKind::Rar) => Err(CoreError::FormatDisabled { format: "rar/cbr" }),
             None => Err(CoreError::UnsupportedFormat {
-                path: path.display().to_string(),
+                label: path.display().to_string(),
             }),
         }
     }
+
+    /// Detect by extension first (`cbz`/`zip` or `cbr`/`rar`, case-insensitive),
+    /// then by the magic bytes in `head`.
+    pub fn detect_kind(name: &str, head: &[u8]) -> Option<ArchiveKind> {
+        kind_from_name(name).or_else(|| kind_from_magic(head))
+    }
+
+    /// Open a ZIP page source from positional bytes, using `name` for detection and errors.
+    ///
+    /// RAR requires a filesystem path and always returns [`CoreError::FormatDisabled`] here.
+    pub fn open_read_at(
+        name: &str,
+        src: Arc<dyn ReadAt>,
+        _policy: ArchivePolicy,
+    ) -> Result<Arc<dyn PageSource>, CoreError> {
+        let kind = match kind_from_name(name) {
+            Some(kind) => Some(kind),
+            None => {
+                let mut head = [0u8; 6];
+                let n = src.read_at(0, &mut head)?;
+                kind_from_magic(&head[..n])
+            }
+        };
+        match kind {
+            Some(ArchiveKind::Zip) => Ok(Arc::new(ZipSource::from_read_at(src)?)),
+            Some(ArchiveKind::Rar) => Err(CoreError::FormatDisabled { format: "rar/cbr" }),
+            None => Err(CoreError::UnsupportedFormat {
+                label: name.to_owned(),
+            }),
+        }
+    }
+
+    /// Count image pages in a ZIP byte source, returning [`CoreError::EmptyBook`]
+    /// with `name` if the archive opens successfully and contains no image pages.
+    pub fn probe_page_count_read_at(
+        name: &str,
+        src: Arc<dyn ReadAt>,
+        policy: ArchivePolicy,
+    ) -> Result<NonZeroUsize, CoreError> {
+        let source = Self::open_read_at(name, src, policy)?;
+        page_count(source.as_ref(), name)
+    }
+}
+
+fn page_count(source: &dyn PageSource, label: impl Display) -> Result<NonZeroUsize, CoreError> {
+    NonZeroUsize::new(source.list_pages().len()).ok_or_else(|| CoreError::EmptyBook {
+        label: label.to_string(),
+    })
 }
 
 /// Classify `path` by its file extension alone (no I/O).
 ///
 /// Returns `None` when the extension is absent or not a recognised archive type.
-fn ext_kind(path: &Path) -> Option<Kind> {
-    let ext = path.extension().and_then(|e| e.to_str())?;
+fn ext_kind(path: &Path) -> Option<ArchiveKind> {
+    path.to_str().and_then(kind_from_name)
+}
+
+fn kind_from_name(name: &str) -> Option<ArchiveKind> {
+    let ext = Path::new(name).extension().and_then(|e| e.to_str())?;
     if ext.eq_ignore_ascii_case("cbz") || ext.eq_ignore_ascii_case("zip") {
-        Some(Kind::Zip)
+        Some(ArchiveKind::Zip)
     } else if ext.eq_ignore_ascii_case("cbr") || ext.eq_ignore_ascii_case("rar") {
-        Some(Kind::Rar)
+        Some(ArchiveKind::Rar)
     } else {
         None
     }
@@ -140,35 +209,28 @@ fn ext_kind(path: &Path) -> Option<Kind> {
 
 /// Classify `path` by reading its leading magic bytes (fallback when extension is unknown).
 ///
-/// Does ONE bounded `read` into a 6-byte buffer (`RAR_MAGIC` length, the longest
-/// magic tested). A file shorter than the buffer is NOT an error: a single
-/// `Read::read` returns `Ok(n)` with a small `n`, and the `filled.len() >= 4` /
-/// `>= RAR_MAGIC.len()` length guards below treat too-few-bytes as "no match"
-/// (`None`). Only a genuine I/O error propagates.
-///
-/// ZIP signatures are 4 bytes (`ZIP_MAGICS`); RAR uses the 6-byte `RAR_MAGIC` prefix.
-/// The buffer is sized to the larger of the two so a single read covers both checks.
-fn magic_kind(path: &Path) -> Result<Option<Kind>, CoreError> {
-    // Buffer sized to cover the longest magic we test (RAR_MAGIC = 6 bytes).
+/// A single bounded read covers the 4-byte ZIP and 6-byte RAR signatures.
+/// Short reads match only when they contain a complete signature.
+fn magic_kind(path: &Path) -> Result<Option<ArchiveKind>, CoreError> {
     let mut head = [0u8; 6];
     let mut f = std::fs::File::open(path)?;
-    // A single `read` never returns `UnexpectedEof` for a short file — it just
-    // yields a small `n`, which the length guards below treat as "no match".
     let n = f.read(&mut head)?;
-    let filled = &head[..n];
-    // ZIP: 4-byte signatures — check first.
-    if filled.len() >= 4 && ZIP_MAGICS.iter().any(|m| *m == &filled[..4]) {
-        return Ok(Some(Kind::Zip));
+    Ok(kind_from_magic(&head[..n]))
+}
+
+fn kind_from_magic(head: &[u8]) -> Option<ArchiveKind> {
+    if ZIP_MAGICS.iter().any(|magic| head.starts_with(magic)) {
+        Some(ArchiveKind::Zip)
+    } else if head.starts_with(RAR_MAGIC) {
+        Some(ArchiveKind::Rar)
+    } else {
+        None
     }
-    // RAR: 6-byte prefix (`Rar!\x1A\x07`).
-    if filled.len() >= RAR_MAGIC.len() && filled[..RAR_MAGIC.len()] == *RAR_MAGIC {
-        return Ok(Some(Kind::Rar));
-    }
-    Ok(None)
 }
 
 #[cfg(test)]
 mod tests {
+    use super::ArchiveKind as Kind;
     use super::*;
     use crate::test_fixtures::{write_cbr_with_suffix, SAMPLE_CBR_B64};
     use image::RgbaImage;
@@ -230,6 +292,67 @@ mod tests {
             zw.finish().expect("finish zip");
         }
         buf
+    }
+
+    #[test]
+    fn detect_kind_table() {
+        let cases: [(&str, &[u8], Option<ArchiveKind>); 7] = [
+            ("a.cbz", b"", Some(ArchiveKind::Zip)),
+            ("A.CBR", b"", Some(ArchiveKind::Rar)),
+            ("x.txt", b"PK\x03\x04", Some(ArchiveKind::Zip)),
+            ("x", b"Rar!\x1A\x07\x00", Some(ArchiveKind::Rar)),
+            ("x", b"PK", None),
+            ("x", b"", None),
+            ("x.cbz", b"Rar!\x1A\x07", Some(ArchiveKind::Zip)),
+        ];
+        for (name, head, expected) in cases {
+            assert_eq!(ArchiveLoader::detect_kind(name, head), expected);
+        }
+    }
+
+    #[test]
+    fn open_read_at_opens_zip_bytes() {
+        let bytes = Arc::<[u8]>::from(tiny_zip_bytes());
+        let policy = ArchivePolicy::default();
+        let source = ArchiveLoader::open_read_at("book.bin", Arc::new(bytes), policy)
+            .expect("open ZIP by magic");
+        let pages = source.list_pages();
+        assert_eq!(pages.len(), 1);
+        assert_eq!(pages[0].name, "page.png");
+        assert_eq!(source.read_bytes(0).unwrap(), tiny_png());
+    }
+
+    #[test]
+    fn open_read_at_rejects_rar_even_when_allowed() {
+        let bytes = Arc::<[u8]>::from(&b"Rar!\x1A\x07\x00"[..]);
+        assert!(matches!(
+            ArchiveLoader::open_read_at("book", Arc::new(bytes), ArchivePolicy::default()),
+            Err(CoreError::FormatDisabled { format: "rar/cbr" })
+        ));
+    }
+
+    #[test]
+    fn open_read_at_unsupported_carries_name_label() {
+        let bytes = Arc::<[u8]>::from(&b"PK"[..]);
+        assert!(matches!(
+            ArchiveLoader::open_read_at("notes.txt", Arc::new(bytes), ArchivePolicy::default()),
+            Err(CoreError::UnsupportedFormat { label }) if label == "notes.txt"
+        ));
+    }
+
+    #[test]
+    fn probe_page_count_read_at_empty_zip_is_empty_book_with_name_label() {
+        let mut eocd = [0u8; 22];
+        eocd[..4].copy_from_slice(b"PK\x05\x06");
+        let bytes = Arc::<[u8]>::from(eocd);
+        assert!(matches!(
+            ArchiveLoader::probe_page_count_read_at(
+                "empty.cbz",
+                Arc::new(bytes),
+                ArchivePolicy::default()
+            ),
+            Err(CoreError::EmptyBook { label }) if label == "empty.cbz"
+        ));
     }
 
     #[test]
@@ -461,6 +584,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "rar")]
     #[test]
     fn cbr_extension_opens_rar_source() {
         let cbr = write_cbr_with_suffix(SAMPLE_CBR_B64, ".cbr");
@@ -472,6 +596,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "rar")]
     #[test]
     fn rar_extension_opens_rar_source() {
         let cbr = write_cbr_with_suffix(SAMPLE_CBR_B64, ".rar");
@@ -483,6 +608,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "rar")]
     #[test]
     fn cbr_extension_uppercase_opens_rar_source() {
         let cbr = write_cbr_with_suffix(SAMPLE_CBR_B64, ".CBR");
@@ -494,6 +620,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "rar")]
     #[test]
     fn spoofed_txt_extension_with_rar_magic_opens_rar_source() {
         // A file named *.txt whose first bytes are the RAR magic must be
@@ -722,12 +849,43 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "rar")]
     #[test]
     fn probe_page_count_cbr_fixture_returns_real_count() {
         // SAMPLE_CBR_B64 contains 4 image pages (verified by cbr_extension_opens_rar_source).
         let cbr = write_cbr_with_suffix(SAMPLE_CBR_B64, ".cbr");
         let n = ArchiveLoader::probe_page_count(cbr.path()).expect("probe cbr ok");
         assert_eq!(n.get(), 4);
+    }
+
+    #[cfg(not(feature = "rar"))]
+    #[test]
+    fn cbr_extension_is_format_disabled_without_rar_feature() {
+        let cbr = write_cbr_with_suffix(SAMPLE_CBR_B64, ".cbr");
+        assert!(matches!(
+            ArchiveLoader::open_with_policy(cbr.path(), ArchivePolicy { allow_rar: true }),
+            Err(CoreError::FormatDisabled { format: "rar/cbr" })
+        ));
+    }
+
+    #[cfg(not(feature = "rar"))]
+    #[test]
+    fn rar_magic_is_format_disabled_without_rar_feature() {
+        let cbr = write_cbr_with_suffix(SAMPLE_CBR_B64, ".txt");
+        assert!(matches!(
+            ArchiveLoader::open_with_policy(cbr.path(), ArchivePolicy { allow_rar: true }),
+            Err(CoreError::FormatDisabled { format: "rar/cbr" })
+        ));
+    }
+
+    #[cfg(not(feature = "rar"))]
+    #[test]
+    fn probe_page_count_cbr_is_format_disabled_without_rar_feature() {
+        let cbr = write_cbr_with_suffix(SAMPLE_CBR_B64, ".cbr");
+        assert!(matches!(
+            ArchiveLoader::probe_page_count(cbr.path()),
+            Err(CoreError::FormatDisabled { format: "rar/cbr" })
+        ));
     }
 
     #[test]
@@ -793,6 +951,7 @@ mod tests {
         assert!(!src.list_pages().is_empty());
     }
 
+    #[cfg(feature = "rar")]
     #[test]
     fn open_still_permits_rar_backward_compat() {
         // ArchiveLoader::open uses ArchivePolicy::default() (allow_rar=true).

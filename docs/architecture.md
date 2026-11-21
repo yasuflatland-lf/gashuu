@@ -37,12 +37,19 @@ Top-level directory walk with natural filename ordering (`max_depth(1)`, no recu
 
 ### ZipSource
 
-`page_source/zip.rs`. A `PageSource` over a ZIP/CBZ archive using the SYNCHRONOUS `zip`
-crate — flattens nested images (any image at any depth is a page, unlike `FolderSource`'s
-`max_depth(1)`). Lock-free: each `read_bytes` opens its OWN `File` + `::zip::ZipArchive` so rayon
-prefetch threads decompress fully in parallel with NO shared mutable state.
+`page_source/zip.rs` uses the synchronous `zip` crate and includes images at any archive depth.
+`ZipSource::from_read_at` parses the central directory once and indexes the image pages.
+Each `read_bytes` clones the parsed archive. The clone shares the directory metadata and has
+its own cursor, so rayon prefetch threads can read and decompress entries in parallel.
+
+`page_source/read_at.rs` provides `ReadAt`, a `Send + Sync` trait for reading bytes at an explicit
+offset. `ReadAtCursor` implements `Read + Seek` over a shared source and stores a separate
+position in each clone. Desktop `ZipSource::open` uses `FileReadAt` and holds one file handle for
+the lifetime of the source. The `Arc<[u8]>` implementation also works on wasm32.
 
 ### RarSource
+
+The default-on `rar` feature provides `RarSource`. Without it, opening a RAR/CBR returns `CoreError::FormatDisabled { format: "rar/cbr" }`.
 
 `page_source/rar.rs`. A `PageSource` over a RAR/CBR archive using the SYNCHRONOUS `unrar`
 crate (bundles C++ UnRAR built by `cc`; extraction ONLY — no Rust RAR encoder exists), flattening
@@ -95,23 +102,27 @@ helper in `entry_policy.rs` could not be reused across the crate.
 
 ### ArchiveLoader
 
-`archive_loader.rs`. `open(path) -> Arc<dyn PageSource>` dispatch — directory→`FolderSource`,
-else a `Kind {Zip, Rar}` enum resolved by `ext_kind` (no I/O; `.cbz`/`.zip`→Zip,
-`.cbr`/`.rar`→Rar, case-insensitive) preferred, else `magic_kind` sniff (`PK` ZIP
-signatures→`ZipSource`; `Rar!\x1A\x07`→`RarSource`), else `UnsupportedFormat` (returns `Arc` not
-`Box` to fit `set_source`). The reject-empty-books feature added the associated fn
-`probe_page_count(path) -> Result<NonZeroUsize, CoreError>`: it `open`s the source, counts
-`list_pages().len()`, and returns `Err(CoreError::EmptyBook { path })` on a clean open with zero
-pages — the SINGLE home of the domain rule "a valid book has >= 1 image page". I/O /
-`UnsupportedFormat` errors propagate unchanged ("empty" and "unreadable" are strictly distinct).
-See [ADR-0009](ADRs/0009-reject-empty-books.md) and [patterns.md](patterns.md) ("Lift a domain rule
-into ONE core type at the boundary").
+`archive_loader.rs` opens directories with `FolderSource` and dispatches archives by
+`ArchiveKind`. The case-insensitive extensions `.cbz` and `.zip` select `Zip`, and `.cbr` and
+`.rar` select `Rar`. For an unknown extension, a single read of up to six bytes checks the ZIP
+signatures and the RAR prefix `Rar!\x1A\x07`. Unrecognized files return `UnsupportedFormat`.
+`detect_kind(name, head)` applies the same extension and magic rules to supplied data.
 
-Both entry points have a policy-carrying twin — `open_with_policy(path, ArchivePolicy)` and
-`probe_page_count_with_policy(path, ArchivePolicy)`; `open`/`probe_page_count` are the
-`ArchivePolicy::default()` wrappers. `ArchivePolicy { allow_rar }` is the Safe Mode seam
-([ADR-0011](ADRs/0011-decoder-subprocess-isolation.md) phase 1): with `allow_rar: false` a
-RAR/CBR-resolved path returns `CoreError::FormatDisabled` instead of opening `RarSource`.
+`open_read_at(name, src, policy)` opens ZIP sources through `ReadAt` and returns
+`Arc<dyn PageSource>`. It returns `FormatDisabled { format: "rar/cbr" }` for RAR under either
+policy setting. `probe_page_count_read_at(name, src, policy)` and `probe_page_count(path)` share
+the check that a successfully opened book contains at least one image page. Both return
+`NonZeroUsize` or `CoreError::EmptyBook { label }`, and propagate open errors unchanged. The label
+in `EmptyBook` or `UnsupportedFormat` is the supplied name or the path's display string. See
+[ADR-0009](ADRs/0009-reject-empty-books.md) and [patterns.md](patterns.md).
+
+Without the `rar` feature, both extension and magic-byte detection still recognize RAR, and opening or probing it returns `CoreError::FormatDisabled { format: "rar/cbr" }` regardless of policy.
+
+The path entry points have policy-carrying twins `open_with_policy(path, ArchivePolicy)` and
+`probe_page_count_with_policy(path, ArchivePolicy)`. `open` and `probe_page_count` use
+`ArchivePolicy::default()`. Safe Mode sets `allow_rar: false`, so either path entry point
+returns `CoreError::FormatDisabled` for RAR/CBR. See
+[ADR-0011](ADRs/0011-decoder-subprocess-isolation.md) phase 1.
 
 `open_with_policy` also owns the admission gate: a path that is not valid UTF-8 is rejected with
 `CoreError::NonUtf8Path { path }` **before any dispatch** (before the `is_dir` branch, the extension
@@ -216,9 +227,8 @@ pan clamping (`clamp_offset`/`centered_offset`), cursor-anchored zoom (`anchored
 
 ### Settings
 
-`settings.rs`. The persistent user-settings domain model and its JSON representation. The file
-location and the file I/O belong to `SettingsStore` (see below), so `Settings` itself never
-resolves an OS directory and never touches the filesystem. The view-mode vocabulary it persists
+`settings.rs`. The persistent user-settings domain model and its JSON representation.
+`SettingsStore` delegates storage to a `BlobStore` (see below). The view-mode vocabulary it persists
 (`reading_direction`/`spread_mode`/`cover_mode`/`fit_mode`/`language`/`key_bindings`) now lives in
 `view_modes.rs` (see below); `Settings` is just one consumer. `Settings::view_defaults()`
 projects its four global view modes into a `ResolvedView` for per-book override resolution.
@@ -227,14 +237,12 @@ projects its four global view modes into a `ResolvedView` for per-book override 
 
 **This is the first use of `serde` in core.** The headless boundary still holds (no
 slint/tracing). `Settings` keeps only the pure entry points `to_json` / `from_json` / `normalize`
-(plus `push_recent` / `cache_config` / `archive_policy` / `view_defaults`); `SettingsStore` owns
-`load` / `save`.
-Corrupt-file recovery lives in the UI (`main.rs`) and is
-**quarantine-then-fresh** for BOTH `settings.json` and `library.json`: a file this build cannot load
-is renamed aside as `<name>.corrupt-<now_secs>` (`gashuu_core::quarantine_file`), a notice is pushed
-onto the home screen, and the app starts from defaults — the user keeps their bytes and a newer
-build can still read them. `repair_settings_file_if_needed` is inert after a quarantine (its
-`!path.exists()` early return). Core still only returns typed `CoreError`:
+(plus `push_recent` / `cache_config` / `archive_policy` / `view_defaults`); `SettingsStore` owns `load` / `save`.
+In `main.rs`, both documents use `load_or_default` for startup recovery. After a failed load, the
+helper supplies the current timestamp to the repository's `quarantine` method, records a notice,
+and returns the default value. On desktop, a successful quarantine preserves the original file
+as `<name>.corrupt-<now_secs>` and the notice includes that name. The startup settings repair
+returns immediately when `stored_text` reports an absent blob. Core returns typed `CoreError`:
 
 - `Settings(#[from] serde_json::Error)` and `NoConfigDir`
 - `FutureSchema { what, found, supported }` — the stored schema `version` is GREATER than this
@@ -242,9 +250,9 @@ build can still read them. `repair_settings_file_if_needed` is inert after a qua
 - `NonUtf8Path { path }` — raised by `ArchiveLoader::open_with_policy` before any dispatch, so a
   path that cannot be serialized into `library.json` never becomes a `Book`
 - `ImageTooLarge`
-- `Zip(#[from] ::zip::result::ZipError)`, `EntryTooLarge { name, max }`, `UnsupportedFormat { path }`
+- `Zip(#[from] ::zip::result::ZipError)`, `EntryTooLarge { name, max }`, `UnsupportedFormat { label }`
 - `Rar(#[from] ::unrar::error::UnrarError)` (Display prefix `"rar archive error: "`)
-- `EmptyBook { path }` (Display `"no images found in {path}"`) — raised by `ArchiveLoader::probe_page_count` on a clean open with zero image pages, distinct from the unreadable-source errors above (the reject-empty-books feature)
+- `EmptyBook { label }` (Display `"no images found in {label}"`) — raised by the `ArchiveLoader` page-count probes on a clean open with zero image pages.
 
 Errors are typed with `thiserror` (`CoreError`, `#[non_exhaustive]`).
 
@@ -252,9 +260,8 @@ See [ADR-0005](ADRs/0005-settings-persistence.md) for the settings persistence d
 
 ### persist
 
-`persist.rs` (crate-private module; `quarantine_file` is re-exported at the crate root). The shared
-parse/migrate guard both versioned-object documents run, so `Settings::from_json` and
-`Library::from_json` cannot drift.
+`persist.rs` contains the parse and migration guard shared by `Settings::from_json` and
+`Library::from_json`.
 
 - `parse_versioned_object(json, current, migrate) -> Result<VersionedDocument, serde_json::Error>`
   returns `Ready(serde_json::Value)` (stored version ≤ `current`, already migrated when older) or
@@ -268,9 +275,9 @@ parse/migrate guard both versioned-object documents run, so `Settings::from_json
 - The non-object-root guard (which would otherwise panic inside `migrate`) and the checked
   `u32::try_from` version resolution still run FIRST, and the `> u32::MAX → treated as 0 → migrate`
   rule is UNCHANGED — a crafted huge version is "unknown", not "from the future".
-- `quarantine_file(path, now_secs) -> Result<PathBuf, CoreError>` lives here now (promoted from
-  `library_store.rs`); `LibraryStore::quarantine` is a thin delegating wrapper. It never
-  reads or parses the file, and takes the clock as a parameter (core owns no clock).
+- The crate-private `quarantine_file(path, now_secs) -> Result<PathBuf, CoreError>` renames the
+  file for `FsBlobStore` using the supplied timestamp. The adapter maps a rename's `NotFound`
+  error to `Ok(None)` and returns the destination file name on success.
 - `Settings::normalize` stamps `SETTINGS_VERSION` — the `version` field is a schema label owned by
   the binary, never echoed back from disk — restoring the symmetry `Library::to_json` already had
   via `LibraryDocument`. `LIBRARY_VERSION` and `SETTINGS_VERSION` both stay `1`.
@@ -280,30 +287,26 @@ Headless (`serde_json` + `std::fs` only). See
 
 ### library_store / settings_store (the two repositories)
 
-`library_store.rs` and `settings_store.rs`. One repository type per persisted document —
-`LibraryStore` for `library.json`, `SettingsStore` for `settings.json` — each a `{ path: PathBuf }`
-newtype that owns the storage LOCATION and the file I/O, and nothing else. The two aggregates
-(`Library`, `Settings`) are therefore pure in-memory domain types again: they keep only their
-serialization entry points (`Library::to_json`/`from_json`, `Settings::to_json`/`from_json`/
-`normalize`) and no longer resolve an OS directory or touch the filesystem, so the domain →
-infrastructure dependency arrow is gone (ADR-0002).
+`LibraryStore` and `SettingsStore` each hold an `Arc<dyn BlobStore>` and a key. The port in
+`blob_store.rs` reads, atomically replaces, and quarantines byte blobs by flat key. Reads and
+quarantines return `Ok(None)` for absent blobs. Both repositories offer `with_blob_store`, which
+uses the document's production key, `library.json` or `settings.json`.
 
-Identical surface on both:
+- `load` decodes UTF-8 and parses the document. An absent blob yields `Library::new()` or
+  `Settings::default()`. Invalid UTF-8 returns an I/O error of kind `InvalidData`.
+- `save` passes the existing JSON serialization to the adapter's atomic write.
+- `quarantine(now_secs)` passes the timestamp to the adapter and returns the destination label
+  if a blob was moved.
+- `SettingsStore::stored_text` supplies the raw text for startup repair.
 
-- `new(path: PathBuf)` — an explicit location; what tests (`tempfile`) and any alternate location use.
-- `default_location() -> Result<Self, CoreError>` — the `directories::ProjectDirs` resolution
-  (`library.json` under the data dir → `CoreError::NoDataDir`; `settings.json` under the config dir
-  → `CoreError::NoConfigDir`). Creates nothing.
-- `path(&self) -> &Path` — the file this store reads and writes (the UI needs it for the
-  exists-check + quarantine notice on a load failure).
-- `load(&self) -> Result<T, CoreError>` — a MISSING file is not an error (`Library::new()` /
-  `Settings::default()`, i.e. first run); anything else (I/O, malformed JSON, future schema) is.
-- `save(&self, value: &T) -> Result<(), CoreError>` — `write_atomic(&self.path,
-  value.to_json()?.as_bytes())`, parent directories included.
-
-`LibraryStore` additionally has `quarantine(&self, now_secs: u64) -> Result<PathBuf, CoreError>`,
-delegating to `persist::quarantine_file`. `directories::ProjectDirs` now appears in exactly three
-core modules: these two and `thumbnail_cache.rs` (a cache directory, deliberately out of scope).
+`FsBlobStore` is available on desktop. Each instance resolves keys relative to its root and
+writes through `atomic_write::write_atomic`, which creates missing parent directories. Desktop
+startup constructs two instances through the repositories' `default_location()` constructors.
+Settings use `FsBlobStore::config_dir()` and the library uses `FsBlobStore::data_dir()` from
+`ProjectDirs`. These constructors preserve the existing file locations and return
+`NoConfigDir` or `NoDataDir` if directory resolution fails. Desktop `new(path)` constructors
+use the parent directory as the adapter root and the file name as the key.
+`MemoryBlobStore` uses a mutex-protected map and is available on all targets.
 
 The UI crate holds each store once, behind `Rc`, and threads it as an explicit named parameter to
 every function that persists (`main.rs`'s `SettingsStoreHandle` / `LibraryStoreHandle` aliases and
@@ -311,9 +314,8 @@ their `save_settings` / `save_library` helpers). The handle is an `Option` becau
 `default_location()` can fail: that reproduces the pre-store behaviour exactly — the app still runs
 and each attempted save reports `NoConfigDir` / `NoDataDir` — without a panic path. The injected
 `save` seams (`LeavePointService::persist_with`, `remove_books_with_rollback`, `remove_empty_book_with`,
-`OpenBookUseCase`'s two boxed closures, `stage_exit_state`) are unchanged; production now passes a
-store save through them instead of an inherent `Library::save`. Headless (`serde_json` + `std::fs` +
-`directories`). See [ADR-0005](ADRs/0005-settings-persistence.md)'s 2026-08-15 Amendment.
+`OpenBookUseCase`'s two boxed closures, `stage_exit_state`) receive repository saves.
+See [ADR-0005](ADRs/0005-settings-persistence.md)'s 2026-08-15 Amendment.
 
 ### view-mode vocabulary (`view_modes.rs`)
 
@@ -329,10 +331,9 @@ paths (`gashuu_core::ReadingDirection`, …) are unchanged — `lib.rs` re-expor
 
 ### reading_progress
 
-`reading_progress.rs`. Transient, immutable core value object
-`ReadingProgress { last_viewed, total: Option<NonZeroUsize> }` (`Copy`) that NAMES the one durable
-fact — how far a reader got — and centralises its derivation in ONE place. `last_viewed` is the
-resume page index: normally the displayed spread's leading, but the final page INDEX when the
+`reading_progress.rs` defines the immutable, `Copy` value that each `Book` stores as
+`ReadingProgress { last_viewed, total: Option<NonZeroUsize> }`. The resume index is
+normally the displayed spread's leading, but the final page INDEX when the
 displayed spread contains the final page. Both values reopen onto the same spread because
 `ViewerState::jump_to` normalizes them.
 
@@ -347,8 +348,8 @@ The non-zero total type makes `Some(0)` unrepresentable. A stale constructor inp
 
 This is the single home of the fraction guard and 1-based offset that BOTH the carousel
 (`library_model::carousel_data_for_indices` via `Book::progress()`) and the open-time resume
-(`Library::register_opened`) consume. Derived / transient — never serialised; `library.json`
-stores only the bare `last_page` + `page_count` fields on `Book`. The persisted resume remains a
+(`Library::register_opened`) consume. A private `BookRecord` maps the stored progress to the flat
+`last_page` and `page_count` fields in `library.json`. The persisted resume remains a
 bare page index, so there is no library version bump or eager migration: resumes saved before the
 finished-aware write-back reach `100%` after the user revisits the final spread. Headless (no
 slint/tracing).
@@ -379,14 +380,14 @@ in this feature).
 { resume: ReadingProgress, count_changed: bool }` centralises the open-time domain rule that
 previously lived in `main.rs`'s open flow: idempotent add by canonical path
 (dedup); page-count back-fill applied only for `Some(_)` (an unknown total = `None` is skipped);
-resume lookup via `Book::progress()`. The positivity that was once enforced with a runtime guard is
-now a type fact — `set_page_count(_, count: NonZeroUsize)` makes `0` unrepresentable at the write
-boundary, repairs a stored resume past the new final index, and returns whether EITHER field
-changed; there is no `debug_assert` in core and no `page_count > 0` guard at the call site (#65).
-Identity merges (`merge_group`) likewise clamp the survivor after combining the max resume with the
-first known count, because those two values can come from different members.
-`Book::page_count_opt() -> Option<usize>` exposes the typed stored count to callers that
-need a plain value, while `Book::progress()` passes the `Option<NonZeroUsize>` field directly.
+resume lookup via `Book::progress()`. Both `set_resume_page` and `set_page_count` report whether
+the stored progress changed. They update it through `with_last_viewed` and `with_total`, which
+delegate to `ReadingProgress::new` for clamping. Identity merges construct the survivor's progress
+from the maximum resume index and the first known count in shelf order. Deserialization also
+constructs progress, so a stale index in a saved book is bounded as soon as it loads. The next
+ordinary save writes the corrected index.
+`Book::page_count_opt() -> Option<usize>` exposes the count, and `Book::progress()` returns the
+stored value by copy.
 `ViewerState::page_count_opt() -> Option<NonZeroUsize>` supplies the already-typed count;
 `OpenBookUseCase::run` passes it to `register_opened` and calls
 `jump_to(reg.resume.last_viewed())`. The reject-empty-books path bails out at
@@ -458,6 +459,8 @@ re-exported at the crate root. See [ADR-0013](ADRs/0013-auto-update.md).
 
 See [ADR-0001](ADRs/0001-gui-framework-slint.md) for the Slint framework decision and
 [ADR-0002](ADRs/0002-layered-two-crate-architecture.md) for the two-crate split rationale.
+
+`clock` supplies Unix timestamps and monotonic instants for UI code through `web-time`.
 
 ### ViewerState
 
@@ -778,11 +781,15 @@ snapshot, the next leave point could write an override pinning the OLD global va
 [ADR-0007](ADRs/0007-per-book-view-overrides.md)'s Amendment and [patterns.md](patterns.md),
 "Per-book view overrides".
 
+### book_availability
+
+`book_availability.rs` supplies the desktop path-existence predicate; unavailable books remain in the library.
+
 ### library_model
 
 `library_model.rs`. PURE (Slint-free) `Library` → carousel display-row mapping: a plain
 `CarouselData` struct (`title`/`current`/`total`/`progress`/`available`) +
-`carousel_data_for_indices(library: &Library, indices: &[usize]) -> Vec<CarouselData>`, preserving
+`carousel_data_for_indices(library: &Library, indices: &[usize], is_available: &dyn Fn(&Book) -> bool) -> Vec<CarouselData>`, preserving
 the supplied
 library-index projection order and skipping out-of-range indices. The indices come from the
 natural-order `Library::books()` projection — no independent sort here; see `Library aggregate`
@@ -792,9 +799,7 @@ keeps the derivation table-testable without a display backend. Each row is built
 `progress = ReadingProgress::fraction()` (position-normalized over `total - 1`; an unknown or
 one-page total → `0.0`, final page and overshoot clamp to `1.0`);
 `total = ReadingProgress::total() -> Option<usize>`. The free derivation no longer lives in `library_model`
-— it is centralised in `ReadingProgress` (see core entry below). `available` via
-the free core function `book_is_available(&Book)`, deliberately not a `Library` method so the
-aggregate stays I/O-free. `bookmarked: bool` is a pure derivation computed in
+— it is centralised in `ReadingProgress` (see core entry below). `available` is derived by an injected predicate, keeping the availability decision outside core. `bookmarked: bool` is a pure derivation computed in
 `carousel_data_for_indices`: `book.path() == library.last_opened()` — true for at most one row
 (the last-opened book); the `BookmarkRibbon` atom in `CoverCard` shows when this is `true`.
 `carousel.rs`'s `to_carousel_item` adapter builds the `!Send`
@@ -859,7 +864,7 @@ All four share a private `visible_paths(search, library)` join and are headlessl
 
 ### carousel
 
-`carousel.rs`. UI-thread adapter layer between `library_model` and Slint: `to_carousel_item` (private) maps a `CarouselData` row to a `CarouselItem` (placeholder `slint::Image::default()` cover); `build_carousel_model(library: &Library, indices: &[usize])` (pub(crate)) is a HEADLESS builder — no `ViewerWindow` arg — returning the `Rc<VecModel<CarouselItem>>`; a separate `bind_carousel_model(ui, model)` performs the Slint bind (the build/bind split enables unit tests over visible-index order); `cover_requests(library: &Library, indices: &[usize])` (pub(crate)) derives the per-book `CoverRequest` list, re-basing each request's `row` to the enumerated position in the filtered `indices` slice (not the library index), so cover targets stay aligned with the filtered carousel model; `thumb_state_at` (pub(crate)) re-fetches a row's thumbnail state for the scrubber preview.
+`carousel.rs`. UI-thread adapter layer between `library_model` and Slint: `to_carousel_item` (private) maps a `CarouselData` row to a `CarouselItem` (placeholder `slint::Image::default()` cover); `build_carousel_model(library: &Library, indices: &[usize], is_available: &dyn Fn(&Book) -> bool)` (pub(crate)) is a HEADLESS builder — no `ViewerWindow` arg — returning the `Rc<VecModel<CarouselItem>>`; a separate `bind_carousel_model(ui, model)` performs the Slint bind (the build/bind split enables unit tests over visible-index order); `cover_requests(library: &Library, indices: &[usize])` (pub(crate)) derives the per-book `CoverRequest` list, re-basing each request's `row` to the enumerated position in the filtered `indices` slice (not the library index), so cover targets stay aligned with the filtered carousel model; `thumb_state_at` (pub(crate)) re-fetches a row's thumbnail state for the scrubber preview.
 
 ### carousel refresh / projection (`carousel_refresh.rs`)
 
@@ -961,15 +966,17 @@ handles individually and assembles the bundle in its own body; a callback keeps 
   reveal, scrubber preview/commit, thumbnail-strip toggle), `wire_viewport_handlers` (viewport
   size + pan/zoom callbacks), `wire_nav_handlers` (keyboard nav hub: page turns, mode toggles,
   GoToLibrary, window resize).
-- **`handlers/drag_drop.rs`**: `wire_drag_drop_handlers` (OS file/folder drag-and-drop onto the
-  Library screen). Installs the single `on_winit_window_event` filter that toggles the drop-zone
+- **`handlers/drag_drop.rs`** is desktop-only (`cfg(not(target_arch = "wasm32"))`).
+  `wire_drag_drop_handlers` enables OS file/folder drag-and-drop onto the Library screen.
+  It installs the single `on_winit_window_event` filter that toggles the drop-zone
   overlay on hover and debounces a drop's per-file `DroppedFile` burst into one batched
   `AddController::start` (the pure `drop_action_for` winit-event → `DropAction` mapping is the
   testable core). See the dedicated `### handlers/drag_drop` entry below.
-- **`handlers/update.rs`**: `wire_update_handlers` (the update dialog's Accept / Later / Skip /
-  Release-notes actions behind the in-progress gate, plus the Settings About-section callbacks) and
-  `start_update_check` (the startup + on-demand check entry point). See the `### update (gashuu)`
-  entry below.
+- **`handlers/update.rs`** is desktop-only (`cfg(not(target_arch = "wasm32"))`).
+  `wire_update_handlers` registers the update dialog's Accept / Later / Skip / Release-notes
+  actions behind the in-progress gate and the Settings About-section callbacks.
+  `start_update_check` is the startup and on-demand check entry point.
+  See the `### update (gashuu)` entry below.
 
 `fn main` = boot (tracing, settings/library load, Slint window, localizer, Rc construction, seed
 carousel, prune) + 10 `handlers::wire_*` calls + `handlers::start_update_check` + the crate-local
@@ -1005,8 +1012,9 @@ state crosses a boundary here.
 
 ### update (gashuu)
 
-`update/{mod,net,install}.rs` + `handlers/update.rs`. The presentation-side half of the auto-updater;
-every DECISION it makes is delegated to `gashuu_core::update` (see the core `### update` entry).
+`update/{mod,net,install}.rs` + `handlers/update.rs` are desktop-only
+(`cfg(not(target_arch = "wasm32"))`). This presentation-side half of the auto-updater delegates
+every decision to `gashuu_core::update` (see the core `### update` entry).
 `mod.rs` holds `CURRENT_VERSION`, the `releases/latest` API + release-page URLs, `user_agent()` and
 the `UpdateError {Http, Io, Verify}` glue error.
 
@@ -1037,7 +1045,8 @@ See [ADR-0013](ADRs/0013-auto-update.md) and its Amendment, and [patterns.md](pa
 
 ### window_state
 
-`window_state.rs`. Persist and restore the OS window geometry (size + position) across launches.
+`window_state.rs` is desktop-only (`cfg(not(target_arch = "wasm32"))`). It persists and restores
+the OS window geometry (size + position) across launches.
 Geometry is read ONCE at exit and applied ONCE at startup — never tracked live — so this installs NO
 winit event handler and cannot collide with the single `on_winit_window_event` slot drag-drop owns.
 Everything is in physical pixels (matching `gashuu_core::WindowGeometry`). `restore_geometry(ui,

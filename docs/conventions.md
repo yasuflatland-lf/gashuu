@@ -12,6 +12,12 @@ Rust string literals use the `\u{2014}` escape for an em-dash, never a literal `
 
 TDD: keep the crate compiling at every save (write test + implementation so each saved state builds — important when several changes land together or in parallel).
 
+### Clock reads
+
+UI code reads the clock through `crate::clock`. Core reads the wall clock only in
+`thumbnail_cache::fs_clock_now` for filesystem timestamps. The `disallowed-methods`
+rules in `clippy.toml` enforce this because `std::time` clock reads panic on `wasm32-unknown-unknown`.
+
 ### PR size
 
 Keep a PR ≤ ~1000 production LOC.

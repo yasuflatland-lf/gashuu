@@ -15,7 +15,7 @@
 //! saturating, >= 1); `ReadingProgress::fraction()` guards `total == 0` to
 //! `0.0` (no NaN/inf); `ReadingProgress::total()` is the persisted page count.
 
-use gashuu_core::{book_is_available, book_matches, Book, Library};
+use gashuu_core::{book_matches, Book, Library};
 
 /// One carousel row's display data, derived from a `Book` in the `Library`.
 /// Plain data only (no `slint::Image`) so the derivation is unit-testable
@@ -36,8 +36,8 @@ pub struct CarouselData {
     /// Reading progress in `0.0..=1.0` = `ReadingProgress::fraction()` (`0.0` when
     /// `total == 0`, never NaN/inf). Ambient per-cover bar; accent fill, green when `>= 1.0`.
     pub progress: f32,
-    /// Derived availability (`book_is_available`): false when the book's
-    /// path no longer resolves. Unavailable books stay in the shelf, rendered
+    /// Derived by the caller-supplied availability predicate (desktop:
+    /// `book_availability::book_path_exists`). Unavailable books stay in the shelf, rendered
     /// grayed with a broken-cover placeholder.
     pub available: bool,
     /// True when this book is the last-opened book (`book.path() == library.last_opened()`).
@@ -58,7 +58,7 @@ pub struct CarouselData {
 /// the `carousel_data_for_indices` call site where the `Library` is available.
 /// This is the single construction site for a `CarouselData`, shared by both
 /// the full-library and filtered-index mappings.
-fn carousel_data_for_book(book: &Book, bookmarked: bool) -> CarouselData {
+fn carousel_data_for_book(book: &Book, bookmarked: bool, available: bool) -> CarouselData {
     let progress = book.progress();
     // 1-based display page; saturate the i32 cast for a pathological value.
     let current = clamp_to_i32(progress.current());
@@ -79,7 +79,7 @@ fn carousel_data_for_book(book: &Book, bookmarked: bool) -> CarouselData {
         current,
         total,
         progress: fraction,
-        available: book_is_available(book),
+        available,
         bookmarked,
     }
 }
@@ -108,14 +108,20 @@ pub(crate) fn matching_indices(library: &Library, query: &str) -> Vec<usize> {
 /// `bookmarked` for each row is derived here: `book.path() == library.last_opened()`.
 /// The `Library` is available at this call site, so the comparison is pure and
 /// avoids threading a per-row flag through `carousel_data_for_book`'s callers.
-pub fn carousel_data_for_indices(library: &Library, indices: &[usize]) -> Vec<CarouselData> {
+/// Availability is derived by the caller-supplied predicate for each book.
+pub fn carousel_data_for_indices(
+    library: &Library,
+    indices: &[usize],
+    is_available: &dyn Fn(&Book) -> bool,
+) -> Vec<CarouselData> {
     let last_opened = library.last_opened();
     indices
         .iter()
         .filter_map(|&index| library.books().get(index))
         .map(|book| {
             let bookmarked = last_opened.is_some_and(|p| p == book.path());
-            carousel_data_for_book(book, bookmarked)
+            let available = is_available(book);
+            carousel_data_for_book(book, bookmarked, available)
         })
         .collect()
 }
@@ -281,6 +287,7 @@ impl LibrarySelectionState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::book_availability::book_path_exists;
     use gashuu_core::Library;
     use std::num::NonZeroUsize;
     use std::path::{Path, PathBuf};
@@ -292,7 +299,19 @@ mod tests {
     /// so there is no production all-library mapping to call here.
     fn carousel_data(library: &Library) -> Vec<CarouselData> {
         let all: Vec<usize> = (0..library.books().len()).collect();
-        carousel_data_for_indices(library, &all)
+        carousel_data_for_indices(library, &all, &book_path_exists)
+    }
+
+    #[test]
+    fn carousel_data_uses_injected_availability_predicate() {
+        let mut lib = Library::new();
+        assert!(lib.add(PathBuf::from("/manga/a.cbz")).is_some());
+        assert!(lib.add(PathBuf::from("/manga/b.cbz")).is_some());
+
+        let rows =
+            carousel_data_for_indices(&lib, &[0, 1], &|b: &Book| b.path().ends_with("a.cbz"));
+        assert!(rows[0].available);
+        assert!(!rows[1].available);
     }
 
     #[test]
@@ -455,8 +474,7 @@ mod tests {
 
     #[test]
     fn carousel_row_current_never_exceeds_total() {
-        // `set_resume_page` has no trustworthy total, so it can still park a position
-        // past the count. The row must never read "41 / 5".
+        // The known count bounds the stored resume, so the row displays page 5 of 5.
         let dir = tempfile::tempdir().expect("tempdir");
         let mut lib = Library::new();
         assert!(lib
@@ -482,7 +500,7 @@ mod tests {
         let mut lib = Library::new();
         assert!(lib.add(PathBuf::from("/manga/alpha.cbz")).is_some());
 
-        let rows = carousel_data_for_indices(&lib, &[0, 99]);
+        let rows = carousel_data_for_indices(&lib, &[0, 99], &book_path_exists);
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].title, "alpha");
     }
@@ -604,7 +622,7 @@ mod tests {
         let path = PathBuf::from("/manga/alpha.cbz");
         lib.register_opened(&path, None);
 
-        let rows = carousel_data_for_indices(&lib, &[0]);
+        let rows = carousel_data_for_indices(&lib, &[0], &book_path_exists);
         assert_eq!(rows.len(), 1);
         assert!(
             rows[0].bookmarked,
@@ -622,7 +640,7 @@ mod tests {
         lib.register_opened(&alpha, None); // adds alpha + sets last_opened = alpha
         lib.add(beta); // adds beta (not last_opened)
 
-        let rows = carousel_data_for_indices(&lib, &[0, 1]);
+        let rows = carousel_data_for_indices(&lib, &[0, 1], &book_path_exists);
         assert_eq!(rows.len(), 2);
         assert!(rows[0].bookmarked, "alpha is the last-opened book");
         assert!(!rows[1].bookmarked, "beta is NOT last-opened");
@@ -646,7 +664,7 @@ mod tests {
             .expect("beta must be in the library");
 
         // Pass only beta's index — alpha (last_opened) is excluded.
-        let rows = carousel_data_for_indices(&lib, &[beta_idx]);
+        let rows = carousel_data_for_indices(&lib, &[beta_idx], &book_path_exists);
         assert_eq!(rows.len(), 1);
         assert!(
             !rows[0].bookmarked,
@@ -663,7 +681,7 @@ mod tests {
         assert!(lib.add(PathBuf::from("/manga/beta.cbz")).is_some());
         assert_eq!(lib.last_opened(), None, "no book opened yet");
 
-        let rows = carousel_data_for_indices(&lib, &[0, 1]);
+        let rows = carousel_data_for_indices(&lib, &[0, 1], &book_path_exists);
         assert!(
             rows.iter().all(|r| !r.bookmarked),
             "no row should be bookmarked when last_opened is None"

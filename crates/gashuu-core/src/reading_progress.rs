@@ -7,7 +7,8 @@ use std::num::NonZeroUsize;
 /// (`last_viewed`) and the known total page count (`total`; `None` = unknown /
 /// never opened). Bundles the `fraction` / `current` derivation that the carousel
 /// AND the resume logic both need, so the unknown/single-page guard and the
-/// 1-based display offset live in ONE place. Immutable value object.
+/// 1-based display offset live in ONE place. Each [`crate::Book`] stores this
+/// value and persists its components as the flat `last_page` and `page_count` fields.
 ///
 /// Semantics note (load-bearing): `last_viewed` stores the *leading page of the
 /// last-viewed spread*, except that a spread containing the final page stores the
@@ -18,7 +19,7 @@ use std::num::NonZeroUsize;
 /// an unknown total cannot provide a bound, so it leaves the position verbatim.
 /// For a stale input past the final index, `fraction()` still reports `1.0` and
 /// `is_finished()` still reports `true`, preserving their previous behaviour.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct ReadingProgress {
     last_viewed: usize,
     total: Option<NonZeroUsize>,
@@ -31,6 +32,18 @@ impl ReadingProgress {
     pub fn new(last_viewed: usize, total: Option<NonZeroUsize>) -> Self {
         let last_viewed = total.map_or(last_viewed, |t| last_viewed.min(t.get() - 1));
         Self { last_viewed, total }
+    }
+    /// Same position against a newly measured total (re-clamps).
+    pub fn with_total(self, total: NonZeroUsize) -> Self {
+        Self::new(self.last_viewed, Some(total))
+    }
+    /// New position against the same total (clamps when the total is known).
+    pub fn with_last_viewed(self, last_viewed: usize) -> Self {
+        Self::new(last_viewed, self.total)
+    }
+    /// The raw total for persistence and merging.
+    pub fn total_count(&self) -> Option<NonZeroUsize> {
+        self.total
     }
     /// Last-viewed resume page index (0-based; 0 = never opened).
     pub fn last_viewed(&self) -> usize {
@@ -82,6 +95,39 @@ mod tests {
 
     fn nz(value: usize) -> Option<NonZeroUsize> {
         NonZeroUsize::new(value)
+    }
+
+    #[test]
+    fn with_total_reclamps_position() {
+        let progress = ReadingProgress::new(9, nz(10)).with_total(nz(5).unwrap());
+        assert_eq!(progress.last_viewed(), 4);
+        assert_eq!(progress.total(), Some(5));
+    }
+
+    #[test]
+    fn with_last_viewed_clamps_against_known_total() {
+        let progress = ReadingProgress::new(2, nz(5)).with_last_viewed(9);
+        assert_eq!(progress.last_viewed(), 4);
+        assert_eq!(progress.total(), Some(5));
+    }
+
+    #[test]
+    fn with_last_viewed_is_verbatim_when_total_unknown() {
+        let progress = ReadingProgress::default().with_last_viewed(9);
+        assert_eq!(progress.last_viewed(), 9);
+        assert_eq!(progress.total(), None);
+    }
+
+    #[test]
+    fn default_is_unread_unknown_total() {
+        assert_eq!(ReadingProgress::default(), ReadingProgress::new(0, None));
+    }
+
+    #[test]
+    fn total_count_round_trips_the_field() {
+        for total in [None, nz(10)] {
+            assert_eq!(ReadingProgress::new(0, total).total_count(), total);
+        }
     }
 
     // --- fraction ---

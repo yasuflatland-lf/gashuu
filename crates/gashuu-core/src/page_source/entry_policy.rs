@@ -114,6 +114,7 @@ pub(crate) fn classify_entry(
 /// entry name is absolute, has a root/prefix component, or contains any `..`
 /// component (path traversal). Mirrors `zip::read::ZipFile::enclosed_name`
 /// semantics so RAR entries get the same zip-slip protection as ZIP entries.
+#[cfg(feature = "rar")]
 pub(crate) fn enclosed_name(path: &std::path::Path) -> Option<std::path::PathBuf> {
     use std::path::Component;
     if path.is_absolute() {
@@ -144,7 +145,7 @@ pub(crate) fn enclosed_name(path: &std::path::Path) -> Option<std::path::PathBuf
 /// Shared by the streaming readers: `FolderSource` file reads and `ZipSource`
 /// entry reads. `RarSource` cannot stream-cap (`unrar`'s `read()` materializes
 /// the whole entry with no `take`), so it re-validates declared
-/// `unpacked_size` before reading and calls [`reject_over_actual`] afterward.
+/// `unpacked_size` before reading and calls `reject_over_actual` afterward.
 pub(crate) fn cap_or_reject(
     src: impl Read,
     name: &str,
@@ -169,6 +170,7 @@ pub(crate) fn cap_or_reject(
 /// sits behind the private `ProcessMode` trait), so the buffer already exists
 /// by the time this runs. This BOUNDS the blast radius to one entry-sized
 /// allocation; it does not prevent it.
+#[cfg(feature = "rar")]
 pub(crate) fn reject_over_actual(
     data: Vec<u8>,
     name: &str,
@@ -279,7 +281,7 @@ mod macos_metadata_tests {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "rar"))]
 mod enclosed_name_tests {
     use super::enclosed_name;
     use std::path::{Path, PathBuf};
@@ -423,7 +425,7 @@ mod cap_or_reject_tests {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "rar"))]
 mod reject_over_actual_tests {
     use super::reject_over_actual;
     use crate::error::CoreError;

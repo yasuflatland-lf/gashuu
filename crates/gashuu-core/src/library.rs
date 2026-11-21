@@ -22,27 +22,51 @@ use std::path::{Path, PathBuf};
 /// is deliberately NOT persisted. Availability (whether the path still
 /// resolves) is derived at render time, never stored.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(from = "BookRecord", into = "BookRecord")]
 pub struct Book {
     path: PathBuf,
     title: String,
-    #[serde(default, rename = "last_page")]
-    resume_page: usize,
-    /// Total page count, cached at open time. The unknown state is expressed in
-    /// the type as `None` (rather than a magic `0`): the domain only ever holds a
-    /// positive count, so an absent measurement is `None`, never `Some(0)`. The
-    /// on-disk shape stays a bare `usize` for byte-compatibility — `0` encodes
-    /// `None` and any positive count encodes `Some(n)` — via [`page_count_serde`].
+    progress: ReadingProgress,
+    overrides: ViewOverride,
+}
+
+/// Version 1 book fields in their on-disk order.
+#[derive(Serialize, Deserialize)]
+struct BookRecord {
+    path: PathBuf,
+    title: String,
+    #[serde(default)]
+    last_page: usize,
     #[serde(default, with = "page_count_serde")]
     page_count: Option<NonZeroUsize>,
-    /// Per-book view preference overrides. `None` fields inherit the global
-    /// `Settings`. `skip_serializing_if` keeps an all-None override out of the
-    /// JSON entirely, so a book with no overrides serializes byte-identically to
-    /// the pre-feature shape (and `#[serde(default)]` loads old files as empty).
     #[serde(default, skip_serializing_if = "ViewOverride::is_empty")]
     overrides: ViewOverride,
 }
 
-/// Serde shim for [`Book::page_count`]: the in-memory `Option<NonZeroUsize>` is
+impl From<BookRecord> for Book {
+    fn from(record: BookRecord) -> Self {
+        Self {
+            path: record.path,
+            title: record.title,
+            progress: ReadingProgress::new(record.last_page, record.page_count),
+            overrides: record.overrides,
+        }
+    }
+}
+
+impl From<Book> for BookRecord {
+    fn from(book: Book) -> Self {
+        Self {
+            path: book.path,
+            title: book.title,
+            last_page: book.progress.last_viewed(),
+            page_count: book.progress.total_count(),
+            overrides: book.overrides,
+        }
+    }
+}
+
+/// Serde shim for [`BookRecord::page_count`]: the in-memory `Option<NonZeroUsize>` is
 /// persisted as a bare `usize` (the historical on-disk shape), with `0` standing
 /// for the unknown state (`None`) and any positive `n` for `Some(n)`. This keeps
 /// `library.json` byte-compatible while the domain type forbids the out-of-band
@@ -113,8 +137,7 @@ impl Book {
         Self {
             path,
             title,
-            resume_page: 0,
-            page_count: None,
+            progress: ReadingProgress::default(),
             overrides: ViewOverride::none(),
         }
     }
@@ -131,22 +154,17 @@ impl Book {
 
     /// Resume page index (0 when never opened).
     pub fn resume_page(&self) -> usize {
-        self.resume_page
+        self.progress.last_viewed()
     }
 
-    /// Total page count cached at open time, or `None` when unknown. The field is
-    /// already `Option<NonZeroUsize>`; this accessor just unwraps the inner count
-    /// to a plain `usize` for callers that don't need the non-zero guarantee.
+    /// Total page count cached at open time, or `None` when unknown.
     pub fn page_count_opt(&self) -> Option<usize> {
-        self.page_count.map(NonZeroUsize::get)
+        self.progress.total()
     }
 
-    /// This book's reading progress as a value object: the resume page index
-    /// together with the cached total page count (`None` when the total is
-    /// unknown). The `current` / `fraction` derivation lives on
-    /// `ReadingProgress`, not at the call sites.
+    /// This book's stored reading progress.
     pub fn progress(&self) -> ReadingProgress {
-        ReadingProgress::new(self.resume_page, self.page_count)
+        self.progress
     }
 
     /// This book's view preference overrides (all-None when it inherits global).
@@ -164,7 +182,7 @@ fn book_order(a: &Book, b: &Book) -> std::cmp::Ordering {
 /// survivor. The first member is the base — it keeps its `title` (the earliest-added
 /// identity) — and the rest fold in under the deterministic merge policy: `resume_page`
 /// takes the max, `page_count` the first `Some` in vec order, `overrides` the first
-/// non-empty in vec order. The survivor's resume is then clamped to its page count
+/// non-empty in vec order. The survivor's progress is constructed from both values
 /// because the max resume and first-`Some` count can come from different members.
 /// The survivor's `path` is finally set to `key`, which upgrades a now-resolvable
 /// raw path even for a group of one. `members` is non-empty by
@@ -174,19 +192,17 @@ fn merge_group(key: PathBuf, members: Vec<Book>) -> Book {
     let mut survivor = iter
         .next()
         .expect("a resolution group has at least one member");
+    let mut last_viewed = survivor.progress.last_viewed();
+    let mut total = survivor.progress.total_count();
     for member in iter {
-        survivor.resume_page = survivor.resume_page.max(member.resume_page);
-        if survivor.page_count.is_none() {
-            survivor.page_count = member.page_count;
-        }
+        last_viewed = last_viewed.max(member.progress.last_viewed());
+        total = total.or(member.progress.total_count());
         if survivor.overrides.is_empty() {
             survivor.overrides = member.overrides;
         }
     }
     survivor.path = key;
-    if let Some(count) = survivor.page_count {
-        survivor.resume_page = survivor.resume_page.min(count.get() - 1);
-    }
+    survivor.progress = ReadingProgress::new(last_viewed, total);
     survivor
 }
 
@@ -223,15 +239,13 @@ pub struct RemovalReport {
 }
 
 /// Outcome of [`Library::register_opened`]: where to resume reading and whether the
-/// stored page count changed (so the caller can decide whether to rebuild the
+/// stored reading progress changed (so the caller can decide whether to rebuild the
 /// carousel). A pure value — no I/O implied.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct OpenRegistration {
     /// The position to resume at (the book's recorded `ReadingProgress`).
     pub resume: ReadingProgress,
-    /// Whether the back-fill changed anything the carousel shows: the stored page
-    /// count itself, or a stale resume that [`Library::set_page_count`] repaired
-    /// against the new count. Both change the row, and both mean "save".
+    /// Whether the measured count changed the stored progress (total or resume index).
     pub count_changed: bool,
 }
 
@@ -381,7 +395,7 @@ impl Library {
     /// by key in first-seen (vec) order; each group collapses to one survivor
     /// whose `path` is set to the canonical key (upgrading a now-resolvable raw
     /// path even for a group of one). Cross-member field merge is deterministic:
-    /// `resume_page` = max, `page_count` = first `Some` in vec order,
+    /// progress combines the maximum resume with the first known count in vec order,
     /// `overrides` = first non-empty in vec order, `title` = the first member's
     /// title.
     /// `last_opened` is repointed from a merged-away / pre-upgrade spelling to the
@@ -527,37 +541,28 @@ impl Library {
         self.find_book(path).map(Book::resume_page).unwrap_or(0)
     }
 
-    /// Record `page` as the resume page index for `path`. Returns `false` when
-    /// the path is absent OR the value is unchanged (mirrors the `jump_to` "did
-    /// it actually move" convention, so callers can skip a save).
+    /// Record a resume index, clamped to the final page when the total is known.
+    /// Returns true only when the book exists and its stored progress changes.
     pub fn set_resume_page(&mut self, path: &Path, page: usize) -> bool {
-        match self.find_book_mut(path) {
-            Some(book) if book.resume_page != page => {
-                book.resume_page = page;
-                true
-            }
-            _ => false,
-        }
+        let Some(book) = self.find_book_mut(path) else {
+            return false;
+        };
+        let next = book.progress.with_last_viewed(page);
+        let changed = next != book.progress;
+        book.progress = next;
+        changed
     }
 
-    /// Record the total `count` of pages for `path`, also repairing a stale resume
-    /// past the new final index. Returns `false` when the path is absent OR both
-    /// the count and resume are unchanged (mirrors `set_resume_page`, so callers
-    /// can skip a save). `count` is a `NonZeroUsize`: the "must be positive"
-    /// invariant (a measured count is never `0`, the unknown encoding) is now a
-    /// type fact carried by the parameter, so no runtime guard is needed.
+    /// Record a measured total, clamping the resume index to the new final page.
+    /// Returns true only when the book exists and its stored progress changes.
     pub fn set_page_count(&mut self, path: &Path, count: NonZeroUsize) -> bool {
-        match self.find_book_mut(path) {
-            Some(book) => {
-                let count_changed = book.page_count != Some(count);
-                book.page_count = Some(count);
-                let resume_page = book.resume_page.min(count.get() - 1);
-                let resume_changed = book.resume_page != resume_page;
-                book.resume_page = resume_page;
-                count_changed || resume_changed
-            }
-            None => false,
-        }
+        let Some(book) = self.find_book_mut(path) else {
+            return false;
+        };
+        let next = book.progress.with_total(count);
+        let changed = next != book.progress;
+        book.progress = next;
+        changed
     }
 
     /// Record the view overrides for `path`. Returns `false` when the path is
@@ -616,18 +621,6 @@ impl Library {
             count_changed,
         }
     }
-}
-
-/// Derived availability: whether the book's path currently resolves on disk.
-///
-/// This performs filesystem I/O (`Path::exists`) and is deliberately a free
-/// function rather than a `Library` method: the `Library` aggregate is an
-/// in-memory ordered set over caller-supplied identities and stays I/O-free
-/// EXCEPT for [`Library::recanonicalize_and_merge`], the load-time self-heal the
-/// load path invokes explicitly. Availability is NOT stored - an unavailable book
-/// is kept (its reading position is preserved); removal is an explicit user action.
-pub fn book_is_available(book: &Book) -> bool {
-    book.path().exists()
 }
 
 #[cfg(test)]
@@ -1364,20 +1357,58 @@ mod tests {
     }
 
     #[test]
-    fn set_page_count_returns_true_when_only_the_resume_changed() {
-        // Second write with an UNCHANGED count: the count comparison alone would
-        // return false, but the stale resume still needs repairing and saving.
+    fn set_page_count_reports_a_resume_only_repair() {
+        let mut lib = Library::new();
+        let path = PathBuf::from("/manga/a.cbz");
+        let count = NonZeroUsize::new(5).unwrap();
+        assert!(lib.add(path.clone()).is_some());
+        assert!(lib.set_resume_page(&path, 9));
+        assert!(lib.set_page_count(&path, count));
+        assert_eq!(lib.resume_page(&path), 4);
+        assert!(!lib.set_page_count(&path, count));
+    }
+
+    #[test]
+    fn set_resume_page_clamps_into_a_known_total() {
         let mut lib = Library::new();
         let path = PathBuf::from("/manga/a.cbz");
         assert!(lib.add(path.clone()).is_some());
         assert!(lib.set_page_count(&path, NonZeroUsize::new(5).unwrap()));
         assert!(lib.set_resume_page(&path, 9));
-        assert!(
-            lib.set_page_count(&path, NonZeroUsize::new(5).unwrap()),
-            "count unchanged but the resume was repaired, so the caller must save"
-        );
-        assert_eq!(lib.books()[0].page_count_opt(), Some(5));
         assert_eq!(lib.resume_page(&path), 4);
+        assert!(!lib.set_resume_page(&path, 4));
+        assert!(!lib.set_resume_page(&path, 9));
+    }
+
+    #[test]
+    fn stale_pair_in_json_is_clamped_on_load() {
+        let json = r#"{"path":"a.cbz","title":"a","last_page":40,"page_count":5}"#;
+        let book: Book = serde_json::from_str(json).unwrap();
+        assert_eq!(book.resume_page(), 4);
+        assert_eq!(serde_json::to_value(book).unwrap()["last_page"], 4);
+    }
+
+    #[test]
+    fn book_json_shape_is_byte_identical() {
+        let mut lib = Library::new();
+        let path = PathBuf::from("a.cbz");
+        assert!(lib.add(path.clone()).is_some());
+        assert!(lib.set_resume_page(&path, 3));
+        let unknown = r#"{
+  "version": 1,
+  "books": [
+    {
+      "path": "a.cbz",
+      "title": "a",
+      "last_page": 3,
+      "page_count": 0
+    }
+  ]
+}"#;
+        assert_eq!(lib.to_json().unwrap(), unknown);
+        assert!(lib.set_page_count(&path, NonZeroUsize::new(10).unwrap()));
+        let known = unknown.replace(r#""page_count": 0"#, r#""page_count": 10"#);
+        assert_eq!(lib.to_json().unwrap(), known);
     }
 
     #[test]
@@ -1423,17 +1454,6 @@ mod tests {
             "fraction should be 3/9, got {}",
             p.fraction()
         );
-    }
-
-    #[test]
-    fn book_is_available_reflects_path_existence() {
-        let dir = tempfile::tempdir().unwrap();
-        let folder = dir.path().join("Series.1997");
-        std::fs::create_dir(&folder).unwrap();
-        let present = Book::from_path(folder.clone());
-        let missing = Book::from_path(PathBuf::from("/manga/missing.cbz"));
-        assert!(book_is_available(&present));
-        assert!(!book_is_available(&missing));
     }
 
     #[test]

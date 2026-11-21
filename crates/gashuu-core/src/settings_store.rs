@@ -1,50 +1,90 @@
 //! Persistent settings storage.
 
-use crate::{CoreError, Settings};
-use directories::ProjectDirs;
+#[cfg(not(target_arch = "wasm32"))]
+use crate::FsBlobStore;
+use crate::{BlobStore, CoreError, Settings, SETTINGS_KEY};
+use std::io;
+#[cfg(not(target_arch = "wasm32"))]
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
-/// Repository for `settings.json`: owns the file location and file I/O so
-/// `Settings` remains a pure in-memory domain type. Construct with an explicit
-/// path for tests or alternate locations, or resolve the OS config-dir default.
+/// Repository for a settings document stored as a JSON blob.
 #[derive(Debug)]
 pub struct SettingsStore {
-    path: PathBuf,
+    blobs: Arc<dyn BlobStore>,
+    key: String,
 }
 
 impl SettingsStore {
-    /// Construct a store for an explicit path.
-    pub fn new(path: PathBuf) -> Self {
-        Self { path }
-    }
-
-    /// Resolve `settings.json` in the OS config dir (creates nothing).
-    pub fn default_location() -> Result<Self, CoreError> {
-        let dirs = ProjectDirs::from("", "", "gashuu").ok_or(CoreError::NoConfigDir)?;
-        Ok(Self::new(dirs.config_dir().join("settings.json")))
-    }
-
-    /// The file this store reads and writes.
-    pub fn path(&self) -> &Path {
-        &self.path
-    }
-
-    /// Load settings. Missing files return defaults; other failures are errors.
-    pub fn load(&self) -> Result<Settings, CoreError> {
-        match std::fs::read_to_string(&self.path) {
-            Ok(json) => Settings::from_json(&json),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Settings::default()),
-            Err(e) => Err(CoreError::from(e)),
+    /// Use the settings key in the supplied blob store.
+    pub fn with_blob_store(blobs: Arc<dyn BlobStore>) -> Self {
+        Self {
+            blobs,
+            key: SETTINGS_KEY.to_owned(),
         }
     }
 
-    /// Atomically write `settings`, creating parent directories as needed.
+    /// Construct a store for an explicit path.
+    ///
+    /// # Panics
+    ///
+    /// The path must end in a UTF-8 file name.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn new(path: PathBuf) -> Self {
+        let dir = path.parent().unwrap_or_else(|| Path::new("")).to_path_buf();
+        let key = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .expect("path must end in a UTF-8 file name")
+            .to_owned();
+        Self {
+            blobs: Arc::new(FsBlobStore::new(dir)),
+            key,
+        }
+    }
+
+    /// Resolve `settings.json` in the OS config dir (creates nothing).
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn default_location() -> Result<Self, CoreError> {
+        Ok(Self::with_blob_store(Arc::new(FsBlobStore::config_dir()?)))
+    }
+
+    /// Load settings. An absent blob returns defaults.
+    pub fn load(&self) -> Result<Settings, CoreError> {
+        match self.stored_text()? {
+            Some(json) => Settings::from_json(&json),
+            None => Ok(Settings::default()),
+        }
+    }
+
+    /// Atomically write the settings document.
     pub fn save(&self, settings: &Settings) -> Result<(), CoreError> {
-        crate::atomic_write::write_atomic(&self.path, settings.to_json()?.as_bytes())
+        self.blobs
+            .write_atomic(&self.key, settings.to_json()?.as_bytes())
+    }
+
+    /// Move the settings blob aside and return its destination label if present.
+    pub fn quarantine(&self, now_secs: u64) -> Result<Option<String>, CoreError> {
+        self.blobs.quarantine(&self.key, now_secs)
+    }
+
+    /// Raw stored text for startup repair. An absent blob returns `Ok(None)`.
+    /// Invalid UTF-8 returns an I/O error of kind `InvalidData`.
+    pub fn stored_text(&self) -> Result<Option<String>, CoreError> {
+        let Some(bytes) = self.blobs.read(&self.key)? else {
+            return Ok(None);
+        };
+        let text = String::from_utf8(bytes).map_err(|_| {
+            CoreError::Io(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "stream did not contain valid UTF-8",
+            ))
+        })?;
+        Ok(Some(text))
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
     use crate::view_modes::{
@@ -80,16 +120,6 @@ mod tests {
             skipped_version: Some("v9.9.9".to_string()),
             last_update_check: Some(1_700_000_000),
         }
-    }
-
-    #[test]
-    fn store_default_location_resolves_under_project_dirs() {
-        let store = SettingsStore::default_location();
-
-        assert!(store.is_ok());
-        assert!(store
-            .as_ref()
-            .is_ok_and(|store| store.path().ends_with(Path::new("gashuu/settings.json"))));
     }
 
     #[test]

@@ -8,7 +8,7 @@
 use crate::cover_loader;
 use crate::library_model::{carousel_data_for_indices, CarouselData};
 use crate::{CarouselItem, ThumbnailItem, ViewerWindow};
-use gashuu_core::Library;
+use gashuu_core::{Book, Library};
 use slint::{ModelRc, VecModel};
 use std::rc::Rc;
 
@@ -50,8 +50,9 @@ fn to_carousel_item(data: &CarouselData) -> CarouselItem {
 pub(crate) fn build_carousel_model(
     library: &Library,
     indices: &[usize],
+    is_available: &dyn Fn(&Book) -> bool,
 ) -> Rc<VecModel<CarouselItem>> {
-    let items: Vec<CarouselItem> = carousel_data_for_indices(library, indices)
+    let items: Vec<CarouselItem> = carousel_data_for_indices(library, indices, is_available)
         .iter()
         .map(to_carousel_item)
         .collect();
@@ -296,7 +297,8 @@ mod tests {
             .add(std::path::PathBuf::from("/manga/beta.cbz"))
             .is_some());
 
-        let model = build_carousel_model(&lib, &[1, 0]);
+        let model =
+            build_carousel_model(&lib, &[1, 0], &crate::book_availability::book_path_exists);
 
         assert_eq!(model.row_count(), 2);
         assert_eq!(model.row_data(0).unwrap().title, "beta");
@@ -350,7 +352,7 @@ mod tests {
             .add(std::path::PathBuf::from("/manga/alpha.cbz"))
             .is_some());
 
-        let model = build_carousel_model(&lib, &[]);
+        let model = build_carousel_model(&lib, &[], &crate::book_availability::book_path_exists);
         assert_eq!(model.row_count(), 0);
     }
 
@@ -367,7 +369,8 @@ mod tests {
         lib.register_opened(&alpha, None); // adds alpha + marks it last_opened
         lib.add(beta); // adds beta (not last_opened)
 
-        let model = build_carousel_model(&lib, &[0, 1]);
+        let model =
+            build_carousel_model(&lib, &[0, 1], &crate::book_availability::book_path_exists);
         assert_eq!(model.row_count(), 2);
         assert!(
             model.row_data(0).unwrap().bookmarked,
@@ -395,7 +398,7 @@ mod tests {
         let path = std::path::PathBuf::from("/manga/gone.cbz");
         lib.register_opened(&path, None);
 
-        let model = build_carousel_model(&lib, &[0]);
+        let model = build_carousel_model(&lib, &[0], &crate::book_availability::book_path_exists);
         assert_eq!(model.row_count(), 1);
         let item = model.row_data(0).unwrap();
         assert!(!item.available, "non-existent path is unavailable");
@@ -420,7 +423,7 @@ mod tests {
             .add(std::path::PathBuf::from("/manga/alpha.cbz"))
             .is_some());
 
-        let model = build_carousel_model(&lib, &[0]);
+        let model = build_carousel_model(&lib, &[0], &crate::book_availability::book_path_exists);
         assert_eq!(model.row_count(), 1);
         let row = model.row_data(0).unwrap();
         assert!(

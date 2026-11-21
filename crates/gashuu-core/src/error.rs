@@ -64,9 +64,9 @@ pub enum CoreError {
     #[error("entry too large: {name} exceeds {max} bytes")]
     EntryTooLarge { name: String, max: u64 },
 
-    /// The path is neither a directory nor a recognized archive.
-    #[error("unsupported format: {path}")]
-    UnsupportedFormat { path: String },
+    /// The source is neither a directory nor a recognized archive.
+    #[error("unsupported format: {label}")]
+    UnsupportedFormat { label: String },
 
     /// The path is not valid UTF-8, so it cannot be stored in `library.json`
     /// (serde's `Serialize for Path` rejects it and the whole document would fail).
@@ -78,8 +78,8 @@ pub enum CoreError {
     FormatDisabled { format: &'static str },
 
     /// The source contains no displayable image pages.
-    #[error("no images found in {path}")]
-    EmptyBook { path: String },
+    #[error("no images found in {label}")]
+    EmptyBook { label: String },
 
     /// The image dimensions exceed the maximum allowed pixel count.
     #[error("image too large: {width}x{height} = {pixels} px exceeds {max}")]
@@ -91,6 +91,7 @@ pub enum CoreError {
     },
 
     /// The RAR backend failed to open the container or read an entry.
+    #[cfg(feature = "rar")]
     #[error("rar archive error: {0}")]
     Rar(#[from] ::unrar::error::UnrarError),
 }
@@ -165,7 +166,7 @@ mod tests {
     #[test]
     fn unsupported_format_displays_path() {
         let err = CoreError::UnsupportedFormat {
-            path: "/x.txt".into(),
+            label: "/x.txt".into(),
         };
         assert_eq!(err.to_string(), "unsupported format: /x.txt");
     }

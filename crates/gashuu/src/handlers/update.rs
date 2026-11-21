@@ -29,7 +29,6 @@ use slint::ComponentHandle;
 use std::cell::RefCell;
 use std::path::PathBuf;
 use std::rc::Rc;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 thread_local! {
     /// UI-thread-only stash for the most recently fetched release, so the
@@ -52,10 +51,7 @@ fn latest_release() -> Option<ReleaseInfo> {
 }
 
 fn now_unix() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0)
+    crate::clock::unix_now_secs() as i64
 }
 
 /// Restore keyboard focus after the update dialog is dismissed.

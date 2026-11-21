@@ -5,7 +5,23 @@ edition = "2021"
 license = "MIT"
 
 [dependencies]
+slint = { version = "=1.18.1" }
+rayon = "1"
+# Bounded in-memory decoded-cover LRU in `cover_loader.rs` (kept off the disk
+# cache read path). Same version core already resolves, so no new lockfile entry.
+lru = "0.19"
+tracing = "0.1"
+i18n-embed = { version = "0.16", features = ["fluent-system"] }
+i18n-embed-fl = "0.10"
+rust-embed = "8"
+unic-langid = { version = "0.9", features = ["macros"] }
+
+# Desktop-only: native OS integration (dialogs, HTTP self-update, window geometry,
+# drag-and-drop). wasm32 builds omit these; see docs/toolchain.md.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 gashuu-core = { path = "../gashuu-core" }
+# wasm-safe clock; std re-export on native
+web-time = "1"
 # `unstable-winit-030` exposes `slint::winit_030` (the winit backend's raw
 # `WindowEvent` filter), used by `handlers/drag_drop.rs` to receive OS file-drop
 # events Slint has no stable API for. That module is feature-gated and "may be
@@ -14,17 +30,8 @@ gashuu-core = { path = "../gashuu-core" }
 # deliberate, tested step. See docs/toolchain.md.
 slint = { version = "=1.18.1", features = ["unstable-winit-030"] }
 rfd = "0.18"
-rayon = "1"
-# Bounded in-memory decoded-cover LRU in `cover_loader.rs` (kept off the disk
-# cache read path). Same version core already resolves, so no new lockfile entry.
-lru = "0.19"
-tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 color-eyre = "0.6"
-i18n-embed = { version = "0.16", features = ["fluent-system"] }
-i18n-embed-fl = "0.10"
-rust-embed = "8"
-unic-langid = { version = "0.9", features = ["macros"] }
 # HTTP client for the update checker. Default features use rustls (no OpenSSL),
 # so the build stays cross-platform and self-contained. Runs on a rayon thread.
 ureq = "3"
@@ -43,6 +50,9 @@ zip = { version = "9", default-features = false, features = ["deflate"] }
 # rename-self restriction). Used for Windows-portable self-update; AppImage
 # replaces $APPIMAGE directly instead (running exe is a read-only squashfs).
 self-replace = "1"
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+gashuu-core = { path = "../gashuu-core", default-features = false }
 
 [build-dependencies]
 # Pinned to match the exact `slint` version above (they must stay in lockstep).
