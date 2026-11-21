@@ -456,6 +456,8 @@ re-exported at the crate root. See [ADR-0013](ADRs/0013-auto-update.md).
 See [ADR-0001](ADRs/0001-gui-framework-slint.md) for the Slint framework decision and
 [ADR-0002](ADRs/0002-layered-two-crate-architecture.md) for the two-crate split rationale.
 
+`clock` supplies Unix timestamps and monotonic instants for UI code through `web-time`.
+
 ### ViewerState
 
 Presentation state with two primary responsibilities: the active page source/cache and open-book

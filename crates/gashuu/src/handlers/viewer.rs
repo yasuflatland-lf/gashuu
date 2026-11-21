@@ -389,7 +389,7 @@ pub(crate) fn wire_nav_handlers(
                 let Some(cmd) = map_key(token.as_str(), dir) else {
                     return;
                 };
-                let started = std::time::Instant::now();
+                let started = crate::clock::now();
                 match cmd {
                     KeyCommand::Turn(action) => {
                         let moved = state.borrow_mut().apply(action);

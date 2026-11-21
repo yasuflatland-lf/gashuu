@@ -1,0 +1,4 @@
+disallowed-methods = [
+    { path = "std::time::SystemTime::now", reason = "panics on wasm32-unknown-unknown; UI: use crate::clock, core: thumbnail_cache::fs_clock_now (fs domain only)" },
+    { path = "std::time::Instant::now", reason = "panics on wasm32-unknown-unknown; UI: use crate::clock::now" },
+]

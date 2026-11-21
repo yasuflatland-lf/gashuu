@@ -8,6 +8,7 @@ mod add_books;
 mod add_controller;
 mod carousel;
 mod carousel_refresh;
+mod clock;
 mod cover_loader;
 mod dialog_session;
 mod enum_adapters;
@@ -113,10 +114,7 @@ fn load_or_default<'a, T: Default, S>(
             tracing::warn!(error = %e, "failed to load {label}; using defaults");
             let path = path_of(store);
             let notice = if path.exists() {
-                let unix_now_secs = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_secs();
+                let unix_now_secs = clock::unix_now_secs();
                 quarantine_load_failure(label, path, &e, unix_now_secs)
             } else {
                 format!("{label} ({e})")
@@ -225,10 +223,7 @@ fn main() -> color_eyre::Result<()> {
             Err(e) => {
                 tracing::warn!(error = %e, "failed to load library; using defaults");
                 let notice = if store.path().exists() {
-                    let unix_now_secs = std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .unwrap_or_default()
-                        .as_secs();
+                    let unix_now_secs = clock::unix_now_secs();
                     quarantine_load_failure("library", store.path(), &e, unix_now_secs)
                 } else {
                     format!("library ({e})")

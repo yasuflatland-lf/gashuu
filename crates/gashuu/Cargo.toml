@@ -6,6 +6,8 @@ license = "MIT"
 
 [dependencies]
 gashuu-core = { path = "../gashuu-core" }
+# wasm-safe clock; std re-export on native
+web-time = "1"
 # `unstable-winit-030` exposes `slint::winit_030` (the winit backend's raw
 # `WindowEvent` filter), used by `handlers/drag_drop.rs` to receive OS file-drop
 # events Slint has no stable API for. That module is feature-gated and "may be

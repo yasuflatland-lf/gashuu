@@ -5,6 +5,15 @@ use crate::image_ops::DecodedImage;
 use directories::ProjectDirs;
 use std::path::{Path, PathBuf};
 
+/// Wall clock for filesystem mtimes, which `std::fs` reads and writes as
+/// `std::time::SystemTime`. Callers have already opened a file or constructed a
+/// `ThumbnailCache`. On wasm32-unknown-unknown, `ThumbnailCache::new()` returns
+/// `NoDataDir` before the unsupported standard clock can be read.
+#[allow(clippy::disallowed_methods)]
+fn fs_clock_now() -> std::time::SystemTime {
+    std::time::SystemTime::now()
+}
+
 /// Filesystem mtime of `path` as whole seconds since the Unix epoch, or `0`
 /// when the file is missing / has no readable mtime. The ONLY implementation
 /// of the key-ingredient recipe — generation and purge must both use it.
@@ -114,7 +123,7 @@ impl ThumbnailCache {
         let _ = std::fs::File::options()
             .write(true)
             .open(&path)
-            .and_then(|f| f.set_modified(std::time::SystemTime::now()));
+            .and_then(|f| f.set_modified(fs_clock_now()));
         Some(img)
     }
 
@@ -242,7 +251,7 @@ impl ThumbnailCache {
             name: std::ffi::OsString,
         }
 
-        let now = std::time::SystemTime::now();
+        let now = fs_clock_now();
         let mut entries: Vec<CacheEntry> = Vec::new();
         for_each_cache_file(&self.dir, |entry, meta| {
             let name = entry.file_name();
@@ -399,7 +408,7 @@ mod tests {
     /// Back-date `path`'s mtime by `secs_ago` seconds, so a test controls the
     /// eviction order `prune` sees (and the age `get`'s touch must advance).
     fn back_date(path: &Path, secs_ago: u64) {
-        let target = std::time::SystemTime::now() - std::time::Duration::from_secs(secs_ago);
+        let target = super::fs_clock_now() - std::time::Duration::from_secs(secs_ago);
         set_mtime(path, target);
     }
 
@@ -922,7 +931,7 @@ mod tests {
         let cache = ThumbnailCache::with_dir(dir.path().to_path_buf());
         // ONE shared instant: per-file `now()` reads would differ by microseconds
         // and turn this into an mtime-order test instead of a tie-break test.
-        let shared = std::time::SystemTime::now() - std::time::Duration::from_secs(2000);
+        let shared = super::fs_clock_now() - std::time::Duration::from_secs(2000);
         for key in ["bbbb", "aaaa"] {
             cache.put(key, &tiny_decoded_image()).expect("seed");
             set_mtime(&dir.path().join(format!("{key}.qoi")), shared);
@@ -1013,7 +1022,7 @@ mod tests {
         std::fs::write(&future_tmp, b"clock-skewed crash leftover").unwrap();
         set_mtime(
             &future_tmp,
-            std::time::SystemTime::now() + std::time::Duration::from_secs(2 * 60 * 60),
+            super::fs_clock_now() + std::time::Duration::from_secs(2 * 60 * 60),
         );
 
         let report = cache.prune(u64::MAX);
@@ -1030,7 +1039,7 @@ mod tests {
         std::fs::write(&future_tmp, b"write with minor clock skew").unwrap();
         set_mtime(
             &future_tmp,
-            std::time::SystemTime::now() + std::time::Duration::from_secs(10),
+            super::fs_clock_now() + std::time::Duration::from_secs(10),
         );
 
         let report = cache.prune(0);

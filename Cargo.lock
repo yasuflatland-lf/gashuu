@@ -1747,6 +1747,7 @@ dependencies = [
  "tracing-subscriber",
  "unic-langid",
  "ureq",
+ "web-time",
  "winresource",
  "zip",
 ]
