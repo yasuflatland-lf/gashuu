@@ -32,8 +32,21 @@ fn log(name: &str, value: impl Display) {
     BOOK.with(|book| {
         let book = book.get().expect("book name set before logging");
         let line = format!("GASHUU_METRIC {name}={value} book={book}");
-        web_sys::console::log_1(&JsValue::from_str(&line));
+        log_line(&line);
     });
+}
+
+pub(crate) fn log_line(line: &str) {
+    let line = JsValue::from_str(line);
+    web_sys::console::log_1(&line);
+    let Some(window) = web_sys::window() else {
+        return;
+    };
+    let append = js_sys::Reflect::get(window.as_ref(), &JsValue::from_str("gashuuOverlayAppend"))
+        .and_then(|value| value.dyn_into::<js_sys::Function>());
+    if let Ok(append) = append {
+        let _ = append.call1(window.as_ref(), &line);
+    }
 }
 
 pub(crate) fn log_duration(name: &str, duration: Duration) {

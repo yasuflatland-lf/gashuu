@@ -479,6 +479,25 @@ fn main() {
     let book = wasm_book_name(&search);
     wasm_metrics::set_book(book.clone());
 
+    if search
+        .trim_start_matches('?')
+        .split('&')
+        .any(|part| part == "bench=1")
+    {
+        wasm_bindgen_futures::spawn_local(async move {
+            let result = async {
+                let bytes = wasm_fetch_book(&window, &book).await?;
+                wasm_run_bench(&window, bytes).await
+            }
+            .await;
+            if let Err(error) = result {
+                wasm_metrics::log_line(&format!("GASHUU_BENCH error: {error:?}"));
+                wasm_metrics::log_line("GASHUU_BENCH BENCH DONE");
+            }
+        });
+        return;
+    }
+
     let ui = ViewerWindow::new().expect("create viewer");
     let settings = Settings::default();
     let localizer = Rc::new(i18n::Localizer::new(settings.language));
@@ -562,6 +581,55 @@ fn main() {
             web_sys::console::error_1(&error);
         }
     });
+}
+
+#[cfg(target_arch = "wasm32")]
+async fn wasm_run_bench(
+    window: &web_sys::Window,
+    bytes: std::sync::Arc<[u8]>,
+) -> Result<(), wasm_bindgen::JsValue> {
+    use gashuu_core::{PageSource, ZipSource};
+    use std::sync::Arc;
+    use wasm_bindgen::{closure::Closure, JsCast, JsValue};
+    use wasm_bindgen_futures::JsFuture;
+
+    let page_bytes = {
+        let to_js_error = |error: CoreError| JsValue::from_str(&error.to_string());
+        let source = ZipSource::from_read_at(Arc::new(bytes)).map_err(to_js_error)?;
+        if source.list_pages().is_empty() {
+            return Err(JsValue::from_str("The book has no image pages"));
+        }
+        let page = source.read_bytes(0).map_err(to_js_error)?;
+        js_sys::Uint8Array::new_from_slice(&page)
+    };
+    let wasm_busy = Closure::wrap(Box::new(|iterations: u32| {
+        let mut value = 1_u32;
+        for _ in 0..iterations {
+            value = std::hint::black_box(value.wrapping_mul(1_664_525).wrapping_add(1_013_904_223));
+        }
+        value
+    }) as Box<dyn Fn(u32) -> u32>)
+    .into_js_value();
+    let wasm_decode = Closure::wrap(Box::new(|bytes: js_sys::Uint8Array| {
+        let image = gashuu_core::decode(&bytes.to_vec())
+            .map_err(|error| js_sys::Error::new(&error.to_string()))?;
+        Ok(f64::from(image.width()) * f64::from(image.height()))
+    })
+        as Box<dyn Fn(js_sys::Uint8Array) -> Result<f64, JsValue>>)
+    .into_js_value();
+
+    let bench = js_sys::Reflect::get(window.as_ref(), &JsValue::from_str("gashuuBench"))?
+        .dyn_into::<js_sys::Function>()?;
+    let promise = bench
+        .call3(
+            window.as_ref(),
+            page_bytes.as_ref(),
+            &wasm_busy,
+            &wasm_decode,
+        )?
+        .dyn_into::<js_sys::Promise>()?;
+    JsFuture::from(promise).await?;
+    Ok(())
 }
 
 #[cfg(target_arch = "wasm32")]

@@ -4,18 +4,207 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>gashuu</title>
-    <link data-trunk rel="rust" data-wasm-opt="z" />
     <script>
+      {
+        const lines = [];
+        let overlay;
+        window.gashuuOverlayAppend = (line) => {
+          lines.push(line);
+          if (lines.length > 25) lines.shift();
+          if (overlay) overlay.textContent = lines.join("\n");
+        };
+        document.addEventListener("DOMContentLoaded", () => {
+          overlay = document.createElement("pre");
+          overlay.id = "gashuu-metrics";
+          overlay.textContent = lines.join("\n");
+          (document.body ?? document.documentElement).append(overlay);
+        }, { once: true });
+      }
+
       // Winit signals that it has handed control to the browser after startup.
       window.addEventListener("error", (event) => {
         if (event.error?.message?.startsWith("Using exceptions for control flow,")) {
           event.preventDefault();
         }
       });
+
+      window.gashuuBench = async (pageBytes, wasmBusy, wasmDecode) => {
+        const print = (message) => {
+          const line = `GASHUU_BENCH ${message}`;
+          window.gashuuOverlayAppend(line);
+          console.log(line);
+        };
+        const errorMessage = (error) => error?.message ?? String(error);
+        const iterations = 50_000_000;
+
+        print(`userAgent=${navigator.userAgent}`);
+        print(`hardwareConcurrency=${navigator.hardwareConcurrency}`);
+        print(`crossOriginIsolated=${window.crossOriginIsolated}`);
+        print(`typeof OffscreenCanvas=${typeof OffscreenCanvas}`);
+        print(`page1_bytes=${pageBytes.byteLength}`);
+
+        function report(name, values, result) {
+          const sorted = [...values].sort((a, b) => a - b);
+          const ms = (value) => value.toFixed(3);
+          const stats = `median=${ms(sorted[2])} min=${ms(sorted[0])} max=${ms(sorted[4])} ms`;
+          const raw = values.map(ms).join(", ");
+          const suffix = result === undefined ? "" : ` result=${result}`;
+          print(`${name}: ${stats} raw=[${raw}]${suffix}`);
+        }
+
+        async function measure(name, run, extraTimings = {}) {
+          try {
+            const samples = [];
+            for (let i = 0; i < 5; i++) {
+              await new Promise((resolve) => setTimeout(resolve, 0));
+              samples.push(await run());
+            }
+            report(name, samples.map((sample) => sample.ms), samples[4].result);
+            for (const [label, field] of Object.entries(extraTimings)) {
+              report(label, samples.map((sample) => sample[field]));
+            }
+          } catch (error) {
+            print(`${name}: error: ${errorMessage(error)}`);
+          }
+        }
+
+        function timed(run) {
+          const started = performance.now();
+          const result = run();
+          return { ms: performance.now() - started, result };
+        }
+
+        function jsBusy(n) {
+          let value = 1;
+          for (let i = 0; i < n; i++) {
+            value = (Math.imul(value, 1_664_525) + 1_013_904_223) >>> 0;
+          }
+          return value;
+        }
+
+        // This function also runs inside the Blob worker.
+        async function decodePage(bytes) {
+          const started = performance.now();
+          const blob = new Blob([bytes]);
+          const cibStarted = performance.now();
+          const bmp = await createImageBitmap(blob);
+          const cibMs = performance.now() - cibStarted;
+          try {
+            const { width: w, height: h } = bmp;
+            const canvas = typeof OffscreenCanvas !== "undefined"
+              ? new OffscreenCanvas(w, h)
+              : Object.assign(document.createElement("canvas"), { width: w, height: h });
+            const context = canvas.getContext("2d");
+            if (!context) throw new Error("Could not get a 2D canvas context");
+            context.drawImage(bmp, 0, 0);
+            context.getImageData(0, 0, w, h).data;
+            return { ms: performance.now() - started, cibMs, w, h };
+          } finally {
+            bmp.close();
+          }
+        }
+
+        function workerMain() {
+          self.onmessage = async ({ data: { bytes } }) => {
+            if (bytes === undefined) {
+              const missing = [
+                typeof OffscreenCanvas === "undefined" && "OffscreenCanvas",
+                typeof createImageBitmap !== "function" && "createImageBitmap",
+              ].filter(Boolean);
+              self.postMessage({ unsupported: missing.join(" and ") });
+              return;
+            }
+            try {
+              self.postMessage(await decodePage(bytes));
+            } catch (error) {
+              self.postMessage({ error: error?.message ?? String(error) });
+            }
+          };
+        }
+
+        async function requestWorker(worker, message) {
+          let timeout;
+          try {
+            return await new Promise((resolve, reject) => {
+              timeout = setTimeout(() => reject(new Error("Worker timed out after 60 s")), 60_000);
+              worker.onmessage = ({ data }) => {
+                if (data.error !== undefined) reject(new Error(data.error));
+                else resolve(data);
+              };
+              worker.onerror = (event) => reject(new Error(event.message || "Worker error"));
+              worker.onmessageerror = () => reject(new Error("Could not read worker message"));
+              worker.postMessage(message);
+            });
+          } finally {
+            clearTimeout(timeout);
+            worker.onmessage = worker.onerror = worker.onmessageerror = null;
+          }
+        }
+
+        async function measureWorker() {
+          const name = "worker_native_decode_page1";
+          if (typeof Worker === "undefined") {
+            print(`${name}: unsupported (Worker unavailable)`);
+            return;
+          }
+          let url;
+          let worker;
+          try {
+            const source = `const decodePage = ${decodePage}; (${workerMain})();`;
+            url = URL.createObjectURL(new Blob([source], { type: "text/javascript" }));
+            worker = new Worker(url);
+            const { unsupported } = await requestWorker(worker, {});
+            if (unsupported) {
+              print(`${name}: unsupported (${unsupported} unavailable)`);
+              return;
+            }
+            await measure(name, async () => {
+              const started = performance.now();
+              // postMessage copies the bytes by structured clone.
+              const result = await requestWorker(worker, { bytes: pageBytes });
+              return { ...result, roundTripMs: performance.now() - started };
+            }, {
+              worker_native_cib_only: "cibMs",
+              worker_native_round_trip: "roundTripMs",
+            });
+          } catch (error) {
+            print(`${name}: error: ${errorMessage(error)}`);
+          } finally {
+            worker?.terminate();
+            if (url) URL.revokeObjectURL(url);
+          }
+        }
+
+        await measure("js_busy", () => timed(() => jsBusy(iterations)));
+        await measure("wasm_busy", () => timed(() => wasmBusy(iterations)));
+        await measure("wasm_decode_page1", () => timed(() => wasmDecode(pageBytes)));
+        await measure("native_decode_page1", () => decodePage(pageBytes), {
+          native_cib_only: "cibMs",
+        });
+        await measureWorker();
+        print("BENCH DONE");
+      };
     </script>
+    <link data-trunk rel="rust" data-wasm-opt="z" />
     <style>
       body { margin: 0; }
       canvas { display: block; width: 100vw; height: 100dvh; }
+      #gashuu-metrics {
+        position: fixed;
+        top: 0;
+        left: 0;
+        z-index: 2147483647;
+        font: 11px monospace;
+        color: #0f0;
+        background: rgba(0, 0, 0, 0.55);
+        pointer-events: none;
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+        box-sizing: border-box;
+        margin: 0;
+        max-width: 100vw;
+        padding: 4px 6px;
+      }
     </style>
   </head>
   <body>
