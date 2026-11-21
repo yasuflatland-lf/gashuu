@@ -478,6 +478,11 @@ creating the window. `web_font` registers it in Slint's shared Fontique
 collection as a fallback for Hiragana, Katakana, and Han. Loading runs on
 Slint's executor while startup continues. A failure logs a warning.
 
+### web_viewport
+
+On wasm32, `web_viewport` sets the Slint window to the browser's viewport size
+in logical pixels at startup and on each browser resize event.
+
 ### ViewerState
 
 Presentation state with two primary responsibilities: the active page source/cache and open-book

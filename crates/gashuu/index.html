@@ -7,6 +7,13 @@
     <link data-trunk rel="rust" data-bin="gashuu" data-wasm-opt="z" />
     <link data-trunk rel="copy-dir" href="web/fonts" />
     <link rel="preload" href="fonts/NotoSansJP-gashuu-subset.ttf" as="fetch" type="font/ttf" crossorigin>
+    <script>
+      window.addEventListener("error", (event) => {
+        if (event.error?.message?.startsWith("Using exceptions for control flow,")) {
+          event.preventDefault();
+        }
+      });
+    </script>
     <style>
       html,
       body {
@@ -19,6 +26,9 @@
         display: block;
         width: 100vw;
         height: 100vh;
+        /* Override the inline minimum window size on narrow or short viewports. */
+        min-width: 0 !important;
+        min-height: 0 !important;
         outline: none;
       }
     </style>
