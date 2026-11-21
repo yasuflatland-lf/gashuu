@@ -7,6 +7,7 @@ slint::include_modules!();
 mod add_books;
 mod add_controller;
 mod book_availability;
+mod book_path;
 mod carousel;
 mod carousel_refresh;
 mod clock;
@@ -25,6 +26,10 @@ mod page_jump;
 mod page_loader;
 mod remove_books;
 mod selection_projection;
+#[cfg(not(target_arch = "wasm32"))]
+mod thumbnail_strip;
+#[cfg(target_arch = "wasm32")]
+#[path = "thumbnail_strip/web.rs"]
 mod thumbnail_strip;
 mod ui_marshal;
 #[cfg(not(target_arch = "wasm32"))]
@@ -34,12 +39,17 @@ mod viewer_state;
 mod viewport;
 #[cfg(any(target_arch = "wasm32", test))]
 mod web_blob_store;
+#[cfg(any(target_arch = "wasm32", test))]
+mod web_books;
 #[cfg(target_arch = "wasm32")]
 mod web_font;
+#[cfg(target_arch = "wasm32")]
+mod web_picker;
 #[cfg(target_arch = "wasm32")]
 mod web_viewport;
 #[cfg(not(target_arch = "wasm32"))]
 mod window_state;
+mod worker;
 
 pub(crate) use carousel_refresh::{
     apply_add_report, finalize_empty_book_rejected, finalize_remove, push_selection_toolbar_state,
@@ -310,9 +320,9 @@ fn run_app(
     // every static string into the Strings global before the first paint.
     let localizer = Rc::new(i18n::Localizer::new(settings.language));
     localizer.push_strings_to_ui(&ui);
-    // macOS' NSOpenPanel picks files AND folders in one panel, so the NavBar collapses
-    // its two add capsules into one combined capsule. Compile-time constant.
-    ui.set_combined_add_picker(cfg!(target_os = "macos"));
+    // macOS picks files and folders in one panel. The web picker supports files only.
+    ui.set_combined_add_picker(cfg!(any(target_os = "macos", target_arch = "wasm32")));
+    ui.set_add_picker_includes_folders(cfg!(target_os = "macos"));
     let state = Rc::new(RefCell::new(ViewerState::from_settings(&settings)));
     let viewport = Rc::new(RefCell::new(ViewportState::from_settings(&settings)));
     let settings = Rc::new(RefCell::new(settings));

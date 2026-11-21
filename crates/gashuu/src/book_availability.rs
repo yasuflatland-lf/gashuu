@@ -1,11 +1,11 @@
 use gashuu_core::Book;
 
-/// Derived availability: whether the book's path currently resolves on disk.
+/// Derived availability: whether the book's path currently resolves to a source.
 ///
 /// Availability is not stored. An unavailable book is kept with its reading
 /// position preserved; removal is an explicit user action.
 pub(crate) fn book_path_exists(book: &Book) -> bool {
-    book.path().exists()
+    crate::book_path::exists(book.path())
 }
 
 #[cfg(test)]

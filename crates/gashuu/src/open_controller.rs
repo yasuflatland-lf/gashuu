@@ -10,8 +10,8 @@
 //! through its ticket, which also guards the finalize callback on the UI thread.
 
 use crate::ui_marshal::Generation;
-use crate::ViewerWindow;
-use gashuu_core::{canonical_identity, ArchiveLoader, ArchivePolicy, PageSource};
+use crate::{book_path, worker, ViewerWindow};
+use gashuu_core::{ArchivePolicy, PageSource};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -34,7 +34,7 @@ pub(crate) enum OpenProbeOutcome {
 /// Open and inspect one source without touching `ViewerState`, `Library`, or
 /// `Settings`. This is the complete worker-thread portion of a single open.
 pub(crate) fn probe_open(path: &Path, policy: ArchivePolicy) -> OpenProbeOutcome {
-    match ArchiveLoader::open_with_policy(path, policy) {
+    match book_path::open(path, policy) {
         Ok(source) => {
             let skipped = source.skipped_count();
             let truncated = source.listing_truncated();
@@ -53,13 +53,13 @@ pub(crate) fn probe_open(path: &Path, policy: ArchivePolicy) -> OpenProbeOutcome
                 truncated,
                 // Produce the persistable identity required by `Library::add`, including
                 // the fallback when canonicalization produces a non-UTF-8 path.
-                canonical: canonical_identity(path),
-                is_dir: path.is_dir(),
+                canonical: book_path::identity(path),
+                is_dir: book_path::is_dir(path),
             })
         }
         Err(error) => OpenProbeOutcome::Failed {
             error: error.to_string(),
-            path_exists: path.exists(),
+            path_exists: book_path::exists(path),
         },
     }
 }
@@ -86,7 +86,7 @@ impl OpenController {
         policy: ArchivePolicy,
     ) {
         let ticket = self.generation.begin();
-        rayon::spawn(move || {
+        worker::spawn(move || {
             let outcome = probe_open(&path, policy);
             ticket.deliver(|slot| *slot = Some((path, outcome)));
             let id = ticket.id();

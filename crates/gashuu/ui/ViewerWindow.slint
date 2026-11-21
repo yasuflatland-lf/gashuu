@@ -247,9 +247,9 @@ export component ViewerWindow inherits Window {
     // add-books dialog flavor (files+folders on macOS, files-only elsewhere).
     callback add-books();
     callback add-folder();
-    // True when one native dialog picks files AND folders (macOS): the Library
-    // NavBar collapses its two add capsules into one. Pushed once at boot.
+    // macOS and web use one add capsule. Only the macOS picker accepts folders.
     in property <bool> combined-add-picker;
+    in property <bool> add-picker-includes-folders;
     /// Web only: set by Rust after a Japanese fallback font is registered, to force a re-shape.
     /// Empty (the default) means "platform default", which is what desktop always uses.
     in property <string> web-font-family: "";
@@ -321,6 +321,7 @@ export component ViewerWindow inherits Window {
         search-query <=> root.library-search-query;
         library-book-count: root.library-book-count;
         combined-add-picker: root.combined-add-picker;
+        add-picker-includes-folders: root.add-picker-includes-folders;
         // Suppress the carousel's keyboard seams while a modal overlays the
         // Library — same condition the Viewer FocusScope uses (see `fs` below).
         modal-open: root.any-modal-open;

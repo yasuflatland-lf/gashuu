@@ -9,7 +9,8 @@
 //! The off-UI-thread PROBE half lives in `crate::add_controller`.
 
 use crate::add_controller;
-use gashuu_core::{canonical_identity, CoreError, Library};
+use crate::book_path;
+use gashuu_core::{CoreError, Library};
 use std::collections::HashMap;
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
@@ -37,7 +38,7 @@ pub(crate) struct AddReport {
 ///   as a book: skip, count in `skipped`, and log (the same level + detail the
 ///   old synchronous `add_paths` logged; logging is deferred to here so the probe
 ///   half stays pure).
-/// - `ProbeKind::Counted(count)` — derive the identity via [`canonical_identity`]
+/// - `ProbeKind::Counted(count)` — derive the identity via [`book_path::identity`]
 ///   and add the complete batch via [`Library::add_many`] (deduplicating and
 ///   re-sorting once). Each genuine insert's page count is looked up by identity
 ///   and recorded immediately so a freshly added book shows "1 / N" without
@@ -73,7 +74,7 @@ pub(crate) fn apply_outcomes(
                 tracing::warn!(%error, path = %path.display(), "skipping unreadable source");
             }
             ProbeKind::Counted(count) => {
-                let canonical = canonical_identity(&path);
+                let canonical = book_path::identity(&path);
                 // Record the first probed count for each new identity, matching repeated
                 // `add` behaviour when an input batch contains duplicates.
                 counts.entry(canonical.clone()).or_insert(count);

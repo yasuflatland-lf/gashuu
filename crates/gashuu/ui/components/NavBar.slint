@@ -145,8 +145,7 @@ export component NavBar inherits Rectangle {
     // False on an empty library — the capsule dims/faints instead of
     // disappearing, so the computed pill width never jumps.
     in property <bool> select-enabled: true;
-    // True when the platform's native panel picks files AND folders in one dialog
-    // (macOS): collapses the two add capsules into one. Pushed once from Rust at boot.
+    // macOS and web collapse the two add capsules into one.
     in property <bool> combined-add-picker;
     in-out property <string> search-query;
     // When true, a translucent veil recedes the NavBar behind foreground content;
@@ -167,7 +166,7 @@ export component NavBar inherits Rectangle {
     public function focus-search() { search.focus-self(); }
 
     // Width from tokens (not layout preferred-width) to avoid a binding loop.
-    //   combined (macOS): search + 4*capsule + divider + 5*gap + 2*pad
+    //   combined (macOS and web): search + 4*capsule + divider + 5*gap + 2*pad
     //   split (elsewhere): search + 5*capsule + divider + 6*gap + 2*pad
     height: Theme.nav-pill-height;
     width: Theme.nav-search-width

@@ -478,6 +478,30 @@ creating the window. `web_font` registers it in Slint's shared Fontique
 collection as a fallback for Hiragana, Katakana, and Han. Loading runs on
 Slint's executor while startup continues. A failure logs a warning.
 
+### Web demo book loading
+
+`web_picker` opens a multiple-file browser input from the Library's Add Books
+callback and reads each selected CBZ or ZIP asynchronously. Folder selection is
+hidden, and the picker rejects RAR/CBR, 7z/CB7, and PDF. `web_books` holds the
+selected bytes as `Arc<[u8]>` under unique UTF-8 paths scoped to the session.
+Library metadata can survive a reload. A restored key is unavailable when its
+bytes are missing, and opening it returns an error.
+
+`book_path` resolves filesystem paths on desktop and registry paths on wasm32.
+Add probes, cover loads, and opens use the same seam. Browser opens call
+`ArchiveLoader::open_read_at`, which opens a `ZipSource` over the shared bytes.
+Carousel opens and Continue Reading use the existing `OpenController` flow.
+
+`worker` dispatches through rayon on desktop and runs loader work inline on
+wasm32. The browser decodes spread pages sequentially, loads covers through the
+memory cache, and leaves thumbnail-strip generation disabled. `ViewerState`
+caps browser cache capacity at six decoded pages and sets the prefetch radius
+to zero at startup and after settings edits. A 1600 × 2400 RGBA page uses about
+15 MB. The #651 spike reached about 1.5 GB with a 50-page cache on Chrome.
+
+This is the install-free demo path. Issues #655 to #662 track Web Workers,
+OPFS, and `BookBackend` for daily reading.
+
 ### web_viewport
 
 On wasm32, `web_viewport` sets the Slint window to the browser's viewport size

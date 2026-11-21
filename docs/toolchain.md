@@ -78,10 +78,16 @@ The Pages workflow publishes the Vite landing page at `/gashuu/` and the web
 app at `/gashuu/app/` in one deployment. Its Trunk build uses
 `--public-url /gashuu/app/` and the deploy job adds the bundle to `site/dist/app`.
 
-The web shell starts on the Library screen. The Add buttons are inactive until
-#660 ([19/23]) adds the web picker. Action-time saves to `localStorage` preserve
-settings and library data across reloads. If `localStorage` is unavailable at
-startup, the app opens with defaults and an empty library, shows
+The web demo starts on the Library screen. Add Books opens a browser picker for
+one or more CBZ or ZIP files. Folders, RAR/CBR, 7z/CB7, and PDF are unsupported.
+The selected archives stay in memory for the browser session. The viewer decodes
+pages on the main thread, caches up to six decoded pages, and disables prefetch
+and the thumbnail strip. Issues #655 to #662 track the daily-reading path with
+Web Workers, OPFS, and `BookBackend`.
+
+Action-time saves to `localStorage` preserve settings and library metadata
+across reloads. Restored books appear unavailable because their bytes are gone.
+If `localStorage` is unavailable at startup, the app opens with defaults and an empty library, shows
 `storage (localStorage unavailable)`, and reports `NoConfigDir` or `NoDataDir`
 on save. Closing the tab skips exit persistence, including the final reading
 position and pending page counts. #664 ([23/23]) tracks the exit flush.
