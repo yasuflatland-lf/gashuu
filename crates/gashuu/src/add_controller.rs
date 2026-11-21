@@ -22,8 +22,8 @@
 //!
 //! Thread-boundary rule (identical to the cover loader): only `Send` values
 //! cross into the rayon jobs and the event-loop closures — the `slint::Weak`,
-//! the epoch `Arc`, the `Arc<Mutex<Vec<ProbeOutcome>>>` accumulator, the
-//! `Arc<AtomicUsize>` remaining counter, the `PathBuf`, the `ArchivePolicy`
+//! the generation ticket, the `Arc<AtomicUsize>` remaining counter, the
+//! `PathBuf`, the `ArchivePolicy`
 //! (`Copy`), and `usize`s. The `Rc<RefCell<Library>>` / `Settings` / `VecModel`
 //! (all `!Send`) are NEVER moved: every `Library` mutation runs in the
 //! `add-finalize` handler on the UI thread.
@@ -34,14 +34,14 @@
 //! dropped, so a second add started mid-probe cleanly supersedes the first with
 //! no stale clobber.
 
-use crate::ui_marshal::marshal_to_ui;
+use crate::ui_marshal::{Generation, Ticket};
 use crate::ViewerWindow;
 use gashuu_core::{ArchiveLoader, ArchivePolicy, CoreError};
 use std::cell::RefCell;
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 /// How one probed source classified — the `Send` result of opening it on a
 /// worker, carrying just enough to run the UI-thread apply half. Mirrors the
@@ -106,12 +106,7 @@ pub(crate) fn add_progress_ratio(done: usize, total: usize) -> f32 {
 /// `add-finalize` handler on the UI thread. Held in an `Rc` so the add handlers
 /// (`on_add_books` / `on_add_folder`) and the finalize handler share one.
 pub(crate) struct AddController {
-    epoch: Arc<AtomicUsize>,
-    /// The CURRENT generation's accumulator. Replaced by a fresh `Arc` on every
-    /// `start` (a superseded generation's workers keep pushing into their own
-    /// now-orphaned `Arc`, harmlessly). `RefCell` because the controller lives on
-    /// the UI thread; the inner `Arc<Mutex<_>>` is what crosses into the workers.
-    outcomes: RefCell<Arc<Mutex<Vec<ProbeOutcome>>>>,
+    generation: Generation<Vec<ProbeOutcome>>,
     /// The op tag ("add-books" / "add-folder") of the current generation, used
     /// only in the apply half's save-failure trace. Replaced on every `start`.
     op: RefCell<&'static str>,
@@ -121,8 +116,7 @@ impl AddController {
     /// Build the controller. Call once during UI setup.
     pub(crate) fn new() -> Self {
         Self {
-            epoch: Arc::new(AtomicUsize::new(0)),
-            outcomes: RefCell::new(Arc::new(Mutex::new(Vec::new()))),
+            generation: Generation::new(),
             op: RefCell::new("add"),
         }
     }
@@ -144,13 +138,9 @@ impl AddController {
         policy: ArchivePolicy,
         op: &'static str,
     ) {
-        let my_epoch = self.epoch.fetch_add(1, Relaxed) + 1;
+        let ticket = self.generation.begin();
         *self.op.borrow_mut() = op;
         let total = paths.len();
-
-        // Fresh accumulator for this generation; supersede the previous one.
-        let acc = Arc::new(Mutex::new(Vec::with_capacity(total)));
-        *self.outcomes.borrow_mut() = Arc::clone(&acc);
 
         // We are on the UI thread, so drive the first UI write directly.
         let Some(ui) = ui_weak.upgrade() else {
@@ -159,29 +149,26 @@ impl AddController {
         if total == 0 {
             // No sources to probe: run the apply half immediately so the
             // "already in library" notice still fires (parity with add_paths([])).
-            ui.invoke_add_finalize(my_epoch as i32);
+            ui.invoke_add_finalize(ticket.id() as i32);
             return;
         }
         ui.invoke_add_progress(0, total as i32);
 
         let remaining = Arc::new(AtomicUsize::new(total));
         for (index, path) in paths.into_iter().enumerate() {
-            let acc = Arc::clone(&acc);
+            let ticket = ticket.clone();
             let remaining = Arc::clone(&remaining);
-            let epoch = Arc::clone(&self.epoch);
             let weak = ui_weak.clone();
             rayon::spawn(move || {
                 let outcome = probe_path(index, path, policy);
-                acc.lock()
-                    .expect("add outcomes mutex poisoned")
-                    .push(outcome);
+                ticket.deliver(|acc| acc.push(outcome));
                 // fetch_sub returns the PRE-decrement value; `left` is what
                 // remains after this worker.
                 let left = remaining.fetch_sub(1, Relaxed) - 1;
                 let done = total - left;
-                marshal_progress(weak.clone(), Arc::clone(&epoch), my_epoch, done, total);
+                marshal_progress(weak.clone(), &ticket, done, total);
                 if left == 0 {
-                    marshal_finalize(weak, epoch, my_epoch);
+                    marshal_finalize(weak, &ticket);
                 }
             });
         }
@@ -196,14 +183,7 @@ impl AddController {
         &self,
         my_epoch: usize,
     ) -> Option<(Vec<ProbeOutcome>, &'static str)> {
-        if self.epoch.load(Relaxed) != my_epoch {
-            return None;
-        }
-        let mut outcomes = {
-            let acc = self.outcomes.borrow();
-            let mut guard = acc.lock().expect("add outcomes mutex poisoned");
-            std::mem::take(&mut *guard)
-        };
+        let mut outcomes = self.generation.take(my_epoch)?;
         // Probes complete out of order on parallel workers; restore input order so
         // the apply half adds books and reports skips deterministically.
         outcomes.sort_by_key(|o| o.index);
@@ -218,12 +198,11 @@ impl AddController {
 /// `marshal_*` helpers — only `Send` values cross the boundary.
 fn marshal_progress(
     weak: slint::Weak<ViewerWindow>,
-    epoch: Arc<AtomicUsize>,
-    my_epoch: usize,
+    ticket: &Ticket<Vec<ProbeOutcome>>,
     done: usize,
     total: usize,
 ) {
-    marshal_to_ui(weak, epoch, my_epoch, "add-progress", move |ui| {
+    ticket.marshal(weak, "add-progress", move |ui| {
         ui.invoke_add_progress(done as i32, total as i32);
     });
 }
@@ -232,8 +211,9 @@ fn marshal_progress(
 /// completes: the handler drains the outcomes (epoch-guarded inside
 /// `take_outcomes`) and runs the apply half. The epoch is carried through so a
 /// superseded batch's finalize is a no-op. Only `Send` values cross.
-fn marshal_finalize(weak: slint::Weak<ViewerWindow>, epoch: Arc<AtomicUsize>, my_epoch: usize) {
-    marshal_to_ui(weak, epoch, my_epoch, "add-finalize", move |ui| {
+fn marshal_finalize(weak: slint::Weak<ViewerWindow>, ticket: &Ticket<Vec<ProbeOutcome>>) {
+    let my_epoch = ticket.id();
+    ticket.marshal(weak, "add-finalize", move |ui| {
         ui.invoke_add_finalize(my_epoch as i32);
     });
 }
@@ -306,17 +286,15 @@ mod tests {
         assert!(matches!(outcome.kind, ProbeKind::FormatDisabled { .. }));
     }
 
-    /// Push an `Empty` outcome carrying `index` into the controller's CURRENT
-    /// accumulator, simulating one worker's completion (without a Slint event
-    /// loop). Same-module access to the private accumulator is the point — it
-    /// lets us exercise the input-order restoration in isolation.
-    fn push_outcome(ctrl: &AddController, index: usize) {
-        let acc = ctrl.outcomes.borrow();
-        acc.lock().expect("mutex").push(ProbeOutcome {
-            index,
-            path: PathBuf::from(format!("/p{index}")),
-            kind: ProbeKind::Empty,
-        });
+    /// Deliver one worker result without a Slint event loop.
+    fn push_outcome(ticket: &Ticket<Vec<ProbeOutcome>>, index: usize) {
+        assert!(ticket.deliver(|acc| {
+            acc.push(ProbeOutcome {
+                index,
+                path: PathBuf::from(format!("/p{index}")),
+                kind: ProbeKind::Empty,
+            });
+        }));
     }
 
     /// The PARALLEL concern: probes complete out of order on the workers, but
@@ -326,16 +304,17 @@ mod tests {
     #[test]
     fn take_outcomes_restores_input_order() {
         let ctrl = AddController::new();
+        let ticket = ctrl.generation.begin();
         for index in [2usize, 0, 1] {
-            push_outcome(&ctrl, index);
+            push_outcome(&ticket, index);
         }
-        // The epoch is still its initial value (no `start` bumped it), so the
-        // drain is accepted and the outcomes come back in input order.
-        let (outcomes, _op) = ctrl.take_outcomes(0).expect("current generation drains");
+        let (outcomes, _op) = ctrl
+            .take_outcomes(ticket.id())
+            .expect("current generation drains");
         let order: Vec<usize> = outcomes.iter().map(|o| o.index).collect();
         assert_eq!(order, vec![0, 1, 2], "outcomes restored to input order");
         // A second drain of the same generation yields nothing (already taken).
-        let (again, _) = ctrl.take_outcomes(0).expect("still current");
+        let (again, _) = ctrl.take_outcomes(ticket.id()).expect("still current");
         assert!(again.is_empty(), "outcomes drained exactly once");
     }
 
@@ -346,12 +325,11 @@ mod tests {
     #[test]
     fn take_outcomes_drops_superseded_generation() {
         let ctrl = AddController::new();
-        push_outcome(&ctrl, 0);
-        // A newer generation advanced the epoch since this batch (my_epoch = 0)
-        // was dispatched.
-        ctrl.epoch.store(5, Relaxed);
+        let first = ctrl.generation.begin();
+        push_outcome(&first, 0);
+        ctrl.generation.begin();
         assert!(
-            ctrl.take_outcomes(0).is_none(),
+            ctrl.take_outcomes(first.id()).is_none(),
             "a superseded generation's finalize drains nothing"
         );
     }
