@@ -462,6 +462,14 @@ See [ADR-0001](ADRs/0001-gui-framework-slint.md) for the Slint framework decisio
 
 `clock` supplies Unix timestamps and monotonic instants for UI code through `web-time`.
 
+### main.rs
+
+Desktop and wasm `main` both call `run_app` to build the window, wire handlers,
+and run Slint's event loop. The desktop-only blocks in `run_app` prune the
+cover disk cache, wire drag-and-drop and update handlers, wire persistence on
+self-update relaunch, start the update check, restore window geometry, and
+persist state after the event loop returns.
+
 ### ViewerState
 
 Presentation state with two primary responsibilities: the active page source/cache and open-book

@@ -1,0 +1,3 @@
+# Web-only tooling. Set MISE_ENV=web to install and use Trunk.
+[tools]
+"cargo:trunk" = "0.22.2"

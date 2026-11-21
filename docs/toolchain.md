@@ -22,9 +22,8 @@ On this target, core enables the `wasm_js` feature of getrandom 0.4, which is al
 #### UI crate on wasm32
 
 `mise run check-wasm-ui` compile-checks the UI crate in `target/wasm`. The CI
-`wasm` job runs it after `check-wasm-core`.
-The check tolerates warnings while the wasm `main` is an empty placeholder for
-#653 ([12/23]).
+`wasm` job runs it after `check-wasm-core`, then builds the browser bundle and
+checks for `index.html` and a `.wasm` file in `crates/gashuu/dist`.
 
 The UI crate declares these dependencies in
 `[target.'cfg(not(target_arch = "wasm32"))'.dependencies]`.
@@ -55,6 +54,36 @@ The desktop table uses the default `gashuu-core` features for RAR and AVIF.
 The `[target.'cfg(target_arch = "wasm32")'.dependencies]` table sets
 `default-features = false` on `gashuu-core`. Cargo resolver 2 keeps the
 desktop defaults out of the wasm build.
+
+### Web build (Trunk)
+
+`mise.web.toml` pins Trunk 0.22.2 and is active with `MISE_ENV=web`. Run these
+commands from the repository root to install the tools, build the release bundle
+into `crates/gashuu/dist`, or serve the app at `http://127.0.0.1:8080/`.
+
+```sh
+MISE_ENV=web mise install
+MISE_ENV=web mise run build-web
+MISE_ENV=web mise run serve-web
+```
+
+Trunk builds the `gashuu` binary for `wasm32-unknown-unknown` using
+`data-bin="gashuu"` in `crates/gashuu/index.html`. wasm-bindgen invokes the
+binary's `main` at startup. Trunk fetches the matching wasm-bindgen CLI and
+wasm-opt. Slint's winit backend attaches to the element with ID `canvas`, and
+the page sizes `#canvas` to the viewport with CSS.
+
+The Pages workflow publishes the Vite landing page at `/gashuu/` and the web
+app at `/gashuu/app/` in one deployment. Its Trunk build uses
+`--public-url /gashuu/app/` and the deploy job adds the bundle to `site/dist/app`.
+
+The web shell starts on the Library screen with an empty shelf. The Add buttons
+are inactive until #660 ([19/23]) adds the web picker. Settings and library data
+live in memory for the session and reset on reload until #654 ([13/23]) adds
+localStorage. Slint embeds only Inter on wasm, so Japanese glyphs are missing
+until #663 ([22/23]).
+Slint also writes inline pixel width and height on the canvas. These override
+the viewport CSS, so the page may scroll until a follow-up addresses resizing.
 
 ### Fresh install: mise trust
 

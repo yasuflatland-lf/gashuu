@@ -41,6 +41,8 @@ pub(crate) use carousel_refresh::{
     CarouselRefresh,
 };
 use dialog_session::DialogSession;
+#[cfg(target_arch = "wasm32")]
+use gashuu_core::{BlobStore, MemoryBlobStore};
 use gashuu_core::{
     CoreError, DecodedImage, Library, LibraryStore, ReadingDirection, Settings, SettingsStore,
 };
@@ -51,6 +53,8 @@ use page_loader::PageController;
 use page_loader::{PageSlot, SpreadDecodeRequest};
 use std::cell::RefCell;
 use std::rc::Rc;
+#[cfg(target_arch = "wasm32")]
+use std::sync::Arc;
 use thumbnail_strip::ThumbnailController;
 pub(crate) use view_sync::{current_book_name, LeavePointService, ViewModeRoute};
 #[cfg(not(test))]
@@ -219,6 +223,45 @@ fn main() -> color_eyre::Result<()> {
     let settings_store: SettingsStoreHandle = Rc::new(settings_store.ok());
     let library_store: LibraryStoreHandle = Rc::new(library_store.ok());
 
+    run_app(settings, library, settings_store, library_store, load_errs)?;
+    Ok(())
+}
+
+#[cfg(target_arch = "wasm32")]
+fn main() {
+    console_error_panic_hook::set_once();
+    tracing_wasm::set_as_global_default_with_config(
+        tracing_wasm::WASMLayerConfigBuilder::new()
+            .set_max_level(tracing::Level::INFO)
+            .build(),
+    );
+    // TODO(#654 ([13/23])): localStorage-backed stores. Until then saves land in memory and
+    // are lost on reload.
+    let blobs: Arc<dyn BlobStore> = Arc::new(MemoryBlobStore::new());
+    let settings_store: SettingsStoreHandle =
+        Rc::new(Some(SettingsStore::with_blob_store(Arc::clone(&blobs))));
+    let library_store: LibraryStoreHandle = Rc::new(Some(LibraryStore::with_blob_store(blobs)));
+    if let Err(e) = run_app(
+        Settings::default(),
+        Library::new(),
+        settings_store,
+        library_store,
+        Vec::new(),
+    ) {
+        tracing::error!(error = %e, "gashuu web shell failed to start");
+    }
+}
+
+/// Build the window, wire every cross-platform handler, and run the event loop.
+/// Desktop-only wiring sits in `#[cfg(not(target_arch = "wasm32"))]` blocks inside.
+/// On wasm32 `ui.run()` never returns (winit unwinds out of the start function).
+fn run_app(
+    settings: Settings,
+    library: Library,
+    settings_store: SettingsStoreHandle,
+    library_store: LibraryStoreHandle,
+    load_errs: Vec<String>,
+) -> Result<(), slint::PlatformError> {
     let ui = ViewerWindow::new()?;
     // Boot the Fluent localizer with the persisted language; `apply()` pushes
     // every static string into the Strings global before the first paint.
@@ -314,9 +357,12 @@ fn main() -> color_eyre::Result<()> {
     // last-read book's visible row (resolved through the empty-query visible set).
     snap_carousel_focus_to_last_opened(&ui, &library, &search);
 
-    // One startup sweep keeps the cover cache under its size cap + reclaims orphans
-    // (issue 143). Dispatched AFTER the initial stream so visible covers get workers first.
-    cover_loader::spawn_cache_prune();
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        // One startup sweep keeps the cover cache under its size cap + reclaims orphans
+        // (issue 143). Dispatched AFTER the initial stream so visible covers get workers first.
+        cover_loader::spawn_cache_prune();
+    }
 
     // Top-level screen state machine (boots to Library). `Rc<RefCell<…>>` so carousel
     // callbacks and the Viewer's GoToLibrary arm can flip it via the seam functions.
@@ -423,49 +469,63 @@ fn main() -> color_eyre::Result<()> {
         &localizer,
         &library_store,
     );
-    // File/folder drag-and-drop onto the Library screen, feeding the same bulk-add
-    // pipeline as the Add buttons (handlers/drag_drop.rs).
-    handlers::wire_drag_drop_handlers(&ui, &settings, &adder);
-    // GitHub Releases update checker: wire the dialog/settings callbacks, then kick off
-    // a throttled, non-forced background check. Reuses the shared settings cell.
-    handlers::wire_update_handlers(&ui, &settings, &settings_store);
-    wire_relaunch_persistence(
-        &ui,
-        &covers,
-        &state,
-        &viewport,
-        &dialog_session,
-        &settings,
-        &library,
-        &leave_point,
-        &settings_store,
-        &library_store,
-    );
-    handlers::start_update_check(&ui, &settings, &settings_store, false);
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        // File/folder drag-and-drop onto the Library screen, feeding the same bulk-add
+        // pipeline as the Add buttons (handlers/drag_drop.rs).
+        handlers::wire_drag_drop_handlers(&ui, &settings, &adder);
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        // GitHub Releases update checker: wire the dialog/settings callbacks, then kick off
+        // a throttled, non-forced background check. Reuses the shared settings cell.
+        handlers::wire_update_handlers(&ui, &settings, &settings_store);
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        wire_relaunch_persistence(
+            &ui,
+            &covers,
+            &state,
+            &viewport,
+            &dialog_session,
+            &settings,
+            &library,
+            &leave_point,
+            &settings_store,
+            &library_store,
+        );
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        handlers::start_update_check(&ui, &settings, &settings_store, false);
+    }
 
-    // Restore the last window size + position before the first paint. No-op on a
-    // fresh install; off-screen positions are dropped in favor of centering.
-    window_state::restore_geometry(&ui, &settings.borrow());
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        // Restore the last window size + position before the first paint. No-op on a
+        // fresh install; off-screen positions are dropped in favor of centering.
+        window_state::restore_geometry(&ui, &settings.borrow());
+    }
 
     ui.run()?;
-    run_exit_persistence(
-        &ui,
-        &covers,
-        &state,
-        &viewport,
-        &dialog_session,
-        &settings,
-        &library,
-        &leave_point,
-        &settings_store,
-        &library_store,
-    );
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        run_exit_persistence(
+            &ui,
+            &covers,
+            &state,
+            &viewport,
+            &dialog_session,
+            &settings,
+            &library,
+            &leave_point,
+            &settings_store,
+            &library_store,
+        );
+    }
     Ok(())
 }
-
-// TODO(#653 ([12/23])): web entry point
-#[cfg(target_arch = "wasm32")]
-fn main() {}
 
 /// The app's single exit-persistence sequence: flush resolved page counts, stage
 /// the position + view-mode write-back through `LeavePointService::persist_with(AppExit)`,
