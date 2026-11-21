@@ -32,10 +32,10 @@ mod update;
 mod view_sync;
 mod viewer_state;
 mod viewport;
-#[cfg(target_arch = "wasm32")]
-mod web_font;
 #[cfg(any(target_arch = "wasm32", test))]
 mod web_blob_store;
+#[cfg(target_arch = "wasm32")]
+mod web_font;
 #[cfg(not(target_arch = "wasm32"))]
 mod window_state;
 
