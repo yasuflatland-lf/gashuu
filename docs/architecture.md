@@ -329,10 +329,9 @@ paths (`gashuu_core::ReadingDirection`, …) are unchanged — `lib.rs` re-expor
 
 ### reading_progress
 
-`reading_progress.rs`. Transient, immutable core value object
-`ReadingProgress { last_viewed, total: Option<NonZeroUsize> }` (`Copy`) that NAMES the one durable
-fact — how far a reader got — and centralises its derivation in ONE place. `last_viewed` is the
-resume page index: normally the displayed spread's leading, but the final page INDEX when the
+`reading_progress.rs` defines the immutable, `Copy` value that each `Book` stores as
+`ReadingProgress { last_viewed, total: Option<NonZeroUsize> }`. The resume index is
+normally the displayed spread's leading, but the final page INDEX when the
 displayed spread contains the final page. Both values reopen onto the same spread because
 `ViewerState::jump_to` normalizes them.
 
@@ -347,8 +346,8 @@ The non-zero total type makes `Some(0)` unrepresentable. A stale constructor inp
 
 This is the single home of the fraction guard and 1-based offset that BOTH the carousel
 (`library_model::carousel_data_for_indices` via `Book::progress()`) and the open-time resume
-(`Library::register_opened`) consume. Derived / transient — never serialised; `library.json`
-stores only the bare `last_page` + `page_count` fields on `Book`. The persisted resume remains a
+(`Library::register_opened`) consume. A private `BookRecord` maps the stored progress to the flat
+`last_page` and `page_count` fields in `library.json`. The persisted resume remains a
 bare page index, so there is no library version bump or eager migration: resumes saved before the
 finished-aware write-back reach `100%` after the user revisits the final spread. Headless (no
 slint/tracing).
@@ -379,14 +378,14 @@ in this feature).
 { resume: ReadingProgress, count_changed: bool }` centralises the open-time domain rule that
 previously lived in `main.rs`'s open flow: idempotent add by canonical path
 (dedup); page-count back-fill applied only for `Some(_)` (an unknown total = `None` is skipped);
-resume lookup via `Book::progress()`. The positivity that was once enforced with a runtime guard is
-now a type fact — `set_page_count(_, count: NonZeroUsize)` makes `0` unrepresentable at the write
-boundary, repairs a stored resume past the new final index, and returns whether EITHER field
-changed; there is no `debug_assert` in core and no `page_count > 0` guard at the call site (#65).
-Identity merges (`merge_group`) likewise clamp the survivor after combining the max resume with the
-first known count, because those two values can come from different members.
-`Book::page_count_opt() -> Option<usize>` exposes the typed stored count to callers that
-need a plain value, while `Book::progress()` passes the `Option<NonZeroUsize>` field directly.
+resume lookup via `Book::progress()`. Both `set_resume_page` and `set_page_count` report whether
+the stored progress changed. They update it through `with_last_viewed` and `with_total`, which
+delegate to `ReadingProgress::new` for clamping. Identity merges construct the survivor's progress
+from the maximum resume index and the first known count in shelf order. Deserialization also
+constructs progress, so a stale index in a saved book is bounded as soon as it loads. The next
+ordinary save writes the corrected index.
+`Book::page_count_opt() -> Option<usize>` exposes the count, and `Book::progress()` returns the
+stored value by copy.
 `ViewerState::page_count_opt() -> Option<NonZeroUsize>` supplies the already-typed count;
 `OpenBookUseCase::run` passes it to `register_opened` and calls
 `jump_to(reg.resume.last_viewed())`. The reject-empty-books path bails out at

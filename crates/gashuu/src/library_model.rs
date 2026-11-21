@@ -474,8 +474,7 @@ mod tests {
 
     #[test]
     fn carousel_row_current_never_exceeds_total() {
-        // `set_resume_page` has no trustworthy total, so it can still park a position
-        // past the count. The row must never read "41 / 5".
+        // The known count bounds the stored resume, so the row displays page 5 of 5.
         let dir = tempfile::tempdir().expect("tempdir");
         let mut lib = Library::new();
         assert!(lib

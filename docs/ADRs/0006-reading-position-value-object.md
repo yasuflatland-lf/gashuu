@@ -156,10 +156,27 @@ whole Update (#65) type-system lift, are unaffected.
 | Costs, bullet 3 | "Persisted semantics remain mode-dependent … deferral" | resolved (final-page exception) |
 | Update (#65), bullet 1 | "`total` is now `Option<usize>`" | the FIELD is `Option<NonZeroUsize>`; the `total()` ACCESSOR still returns `Option<usize>` |
 | Update (#65), bullet 1 | "`fraction()` returns `0.0` … defensively for `Some(0)`" | `Some(0)` is unrepresentable (`NonZeroUsize`); the real guard is `t <= 1` |
-| Amendment, Accepted side effects, bullet 2 | "tolerated at read time, never rejected at construction" | construction clamps a known-total position; `set_page_count` and `merge_group` repair the persisted pair |
+| Amendment, Accepted side effects, bullet 2 | "tolerated at read time, never rejected at construction" | construction clamps a known-total position |
+| Decision 2 | "It is TRANSIENT" | Each `Book` stores a `ReadingProgress` and serializes its two components through `BookRecord`. |
+| Amendment, Accepted side effects, bullet 2 | "`Library::set_page_count` and `merge_group` also repair the persisted pair" | The constructor clamps on load, on mutation, and when combining progress from merged books. The next ordinary save persists the correction. |
 
 `Book::page_count_opt() -> Option<usize>` (Update #65, bullet 2) is UNCHANGED and still correct
 (`crates/gashuu-core/src/library.rs:120`).
 
 See [architecture.md](../architecture.md), "reading_progress", for the as-built module entry
 (already consistent with the formulas above).
+
+## Amendment: `Book` stores `ReadingProgress`
+
+Each `Book` holds its resume index and measured total in one `ReadingProgress`.
+`ReadingProgress::new` owns the resume clamp. Both setters delegate to it through
+`with_last_viewed` or `with_total`. With a known count, `set_resume_page` now stores at most
+the final index and reports a change only if the resulting position differs. With an unknown
+count, it keeps the requested index until a measurement supplies a bound. A merge constructs
+progress from the maximum stored index and the first known count in member order.
+
+The private `BookRecord` keeps the version 1 JSON field order and encoding. It writes
+`last_page` and `page_count` as integers, with zero for an unknown count, and omits empty
+overrides. `ReadingProgress` is never serialized as its own shape. `LIBRARY_VERSION` stays 1.
+Loading a stale record clamps the resume index in memory. The file receives the corrected
+index on the next ordinary save.
