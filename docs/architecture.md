@@ -307,12 +307,13 @@ Settings use `FsBlobStore::config_dir()` and the library uses `FsBlobStore::data
 `NoConfigDir` or `NoDataDir` if directory resolution fails. Desktop `new(path)` constructors
 use the parent directory as the adapter root and the file name as the key.
 `MemoryBlobStore` uses a mutex-protected map and is available on all targets.
+The web implementation is `KvBlobStore<LocalStorageKv>` in the UI crate.
 
 The UI crate holds each store once, behind `Rc`, and threads it as an explicit named parameter to
 every function that persists (`main.rs`'s `SettingsStoreHandle` / `LibraryStoreHandle` aliases and
-their `save_settings` / `save_library` helpers). The handle is an `Option` because
-`default_location()` can fail: that reproduces the pre-store behaviour exactly — the app still runs
-and each attempted save reports `NoConfigDir` / `NoDataDir` — without a panic path. The injected
+their `save_settings` / `save_library` helpers). The handle is an `Option` because desktop directory
+resolution and browser storage detection can fail. The app still runs and each attempted save
+reports `NoConfigDir` or `NoDataDir`. The injected
 `save` seams (`LeavePointService::persist_with`, `remove_books_with_rollback`, `remove_empty_book_with`,
 `OpenBookUseCase`'s two boxed closures, `stage_exit_state`) receive repository saves.
 See [ADR-0005](ADRs/0005-settings-persistence.md)'s 2026-08-15 Amendment.
@@ -1057,6 +1058,18 @@ the `UpdateError {Http, Io, Verify}` glue error.
 
 See [ADR-0013](ADRs/0013-auto-update.md) and its Amendment, and [patterns.md](patterns.md),
 "Self-update replaces the running binary DIFFERENTLY per packaging".
+
+### web_blob_store
+
+`web_blob_store.rs` adapts browser `localStorage` to `BlobStore`. It stores UTF-8 JSON text as
+strings under `gashuu/settings.json` and `gashuu/library.json` to avoid collisions on a shared
+origin. Quarantine copies the value to `gashuu/<key>.corrupt-<now_secs>` before removing the
+original and returns the unprefixed name for the startup notice. Desktop and web share
+`load_persisted` for startup loads, quarantine, and settings repair.
+
+If browser storage is unavailable at startup, the app opens with defaults and an empty library,
+logs a warning, and shows `storage (localStorage unavailable)`. Saves report `NoConfigDir` for
+settings and `NoDataDir` for the library.
 
 ### window_state
 

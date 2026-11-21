@@ -34,6 +34,8 @@ mod viewer_state;
 mod viewport;
 #[cfg(target_arch = "wasm32")]
 mod web_font;
+#[cfg(any(target_arch = "wasm32", test))]
+mod web_blob_store;
 #[cfg(not(target_arch = "wasm32"))]
 mod window_state;
 
@@ -44,7 +46,7 @@ pub(crate) use carousel_refresh::{
 };
 use dialog_session::DialogSession;
 #[cfg(target_arch = "wasm32")]
-use gashuu_core::{BlobStore, MemoryBlobStore};
+use gashuu_core::BlobStore;
 use gashuu_core::{
     CoreError, DecodedImage, Library, LibraryStore, ReadingDirection, Settings, SettingsStore,
 };
@@ -63,19 +65,19 @@ pub(crate) use view_sync::{current_book_name, LeavePointService, ViewModeRoute};
 use viewer_state::SpreadCacheState;
 use viewer_state::{StatusContent, ViewerState};
 use viewport::ViewportState;
+#[cfg(target_arch = "wasm32")]
+use web_blob_store::{KvBlobStore, LocalStorageKv};
 
-/// Shared handle to the settings store. `None` only when the OS config directory
-/// could not be resolved: `SettingsStore::default_location` has exactly one failure
-/// mode (`CoreError::NoConfigDir`), so [`save_settings`] reproduces it and every
-/// save reports what the removed domain-owned save reported. The app still runs.
+/// Shared handle to the settings store. `None` when the OS config directory
+/// or browser storage is unavailable. The app still runs, and [`save_settings`]
+/// reports `CoreError::NoConfigDir`.
 pub(crate) type SettingsStoreHandle = Rc<Option<SettingsStore>>;
 
 /// Shared handle to the library store; `None` mirrors [`SettingsStoreHandle`]
 /// with `CoreError::NoDataDir`.
 pub(crate) type LibraryStoreHandle = Rc<Option<LibraryStore>>;
 
-/// Save `settings` through the resolved store, or report the unresolvable OS config
-/// directory — the same error the removed domain-owned save raised.
+/// Save `settings` through the resolved store, or report `CoreError::NoConfigDir`.
 pub(crate) fn save_settings(
     store: &SettingsStoreHandle,
     settings: &Settings,
@@ -187,6 +189,61 @@ fn repair_settings_file_if_needed(
     }
 }
 
+/// Load settings and library through the resolved stores, quarantining corrupt
+/// documents and repairing settings on startup.
+fn load_persisted(
+    settings_store: Result<SettingsStore, CoreError>,
+    library_store: Result<LibraryStore, CoreError>,
+) -> (
+    Settings,
+    Library,
+    SettingsStoreHandle,
+    LibraryStoreHandle,
+    Vec<String>,
+) {
+    // Both web stores use one backend, so report its absence once.
+    #[cfg(target_arch = "wasm32")]
+    if matches!(
+        (&settings_store, &library_store),
+        (Err(CoreError::NoConfigDir), Err(CoreError::NoDataDir))
+    ) {
+        tracing::warn!("localStorage unavailable; using defaults");
+        return (
+            Settings::default(),
+            Library::new(),
+            Rc::new(None),
+            Rc::new(None),
+            vec!["storage (localStorage unavailable)".to_owned()],
+        );
+    }
+
+    // Load persisted state, collecting notices to surface AFTER the initial refresh,
+    // which overwrites status-text.
+    let mut load_errs: Vec<String> = Vec::new();
+    let settings = load_or_default(
+        "settings",
+        settings_store.as_ref(),
+        SettingsStore::load,
+        SettingsStore::quarantine,
+        &mut load_errs,
+    );
+    // Self-heal an invalid settings file: in-memory values are already sane, but the
+    // bad bytes persist. Rewrite at startup so a crash before clean exit can't lose it.
+    repair_settings_file_if_needed(settings_store.as_ref().ok(), &settings, &mut load_errs);
+    let library = load_or_default(
+        "library",
+        library_store.as_ref(),
+        LibraryStore::load,
+        LibraryStore::quarantine,
+        &mut load_errs,
+    );
+
+    let settings_store: SettingsStoreHandle = Rc::new(settings_store.ok());
+    let library_store: LibraryStoreHandle = Rc::new(library_store.ok());
+
+    (settings, library, settings_store, library_store, load_errs)
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 fn main() -> color_eyre::Result<()> {
     color_eyre::install()?;
@@ -199,32 +256,10 @@ fn main() -> color_eyre::Result<()> {
     );
     tracing_subscriber::fmt().with_env_filter(env_filter).init();
 
-    // Load persisted state, collecting notices to surface AFTER the initial refresh,
-    // which overwrites status-text.
-    let mut load_errs: Vec<String> = Vec::new();
-    let settings_store = SettingsStore::default_location();
-    let settings = load_or_default(
-        "settings",
-        settings_store.as_ref(),
-        SettingsStore::load,
-        SettingsStore::quarantine,
-        &mut load_errs,
+    let (settings, library, settings_store, library_store, load_errs) = load_persisted(
+        SettingsStore::default_location(),
+        LibraryStore::default_location(),
     );
-    // Self-heal an invalid settings file: in-memory values are already sane, but the
-    // bad bytes persist. Rewrite at startup so a crash before clean exit can't lose it.
-    repair_settings_file_if_needed(settings_store.as_ref().ok(), &settings, &mut load_errs);
-    let library_store = LibraryStore::default_location();
-    let library = load_or_default(
-        "library",
-        library_store.as_ref(),
-        LibraryStore::load,
-        LibraryStore::quarantine,
-        &mut load_errs,
-    );
-
-    let settings_store: SettingsStoreHandle = Rc::new(settings_store.ok());
-    let library_store: LibraryStoreHandle = Rc::new(library_store.ok());
-
     run_app(settings, library, settings_store, library_store, load_errs)?;
     Ok(())
 }
@@ -237,19 +272,19 @@ fn main() {
             .set_max_level(tracing::Level::INFO)
             .build(),
     );
-    // TODO(#654 ([13/23])): localStorage-backed stores. Until then saves land in memory and
-    // are lost on reload.
-    let blobs: Arc<dyn BlobStore> = Arc::new(MemoryBlobStore::new());
-    let settings_store: SettingsStoreHandle =
-        Rc::new(Some(SettingsStore::with_blob_store(Arc::clone(&blobs))));
-    let library_store: LibraryStoreHandle = Rc::new(Some(LibraryStore::with_blob_store(blobs)));
-    if let Err(e) = run_app(
-        Settings::default(),
-        Library::new(),
-        settings_store,
-        library_store,
-        Vec::new(),
-    ) {
+    let (settings_store, library_store) = match LocalStorageKv::detect() {
+        Some(kv) => {
+            let blobs: Arc<dyn BlobStore> = Arc::new(KvBlobStore::new(kv));
+            (
+                Ok(SettingsStore::with_blob_store(Arc::clone(&blobs))),
+                Ok(LibraryStore::with_blob_store(blobs)),
+            )
+        }
+        None => (Err(CoreError::NoConfigDir), Err(CoreError::NoDataDir)),
+    };
+    let (settings, library, settings_store, library_store, load_errs) =
+        load_persisted(settings_store, library_store);
+    if let Err(e) = run_app(settings, library, settings_store, library_store, load_errs) {
         tracing::error!(error = %e, "gashuu web shell failed to start");
     }
 }
