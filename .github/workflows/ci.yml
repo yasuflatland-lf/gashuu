@@ -23,7 +23,7 @@ concurrency:
 jobs:
   # The Slint-free pure crate: lint + test + coverage in one fast ubuntu job.
   # It never links Slint, so the quality gates return quickly instead of waiting
-  # on the GUI build, and gashuu-core is tested/measured exactly once.
+  # on the GUI build. Coverage uses the default archive and image features.
   core:
     name: core (rust, slint-free)
     runs-on: ubuntu-latest
@@ -55,6 +55,8 @@ jobs:
       # (the old `--workspace` runs got it via feature unification with gashuu's dev-dep).
       - run: cargo clippy -p gashuu-core --all-targets --features testing -- -D warnings
       - run: cargo llvm-cov nextest -p gashuu-core --features testing --profile ci --lcov --output-path lcov.info --ignore-filename-regex 'build\.rs'
+      - run: cargo clippy -p gashuu-core --all-targets --no-default-features -- -D warnings
+      - run: cargo nextest run -p gashuu-core --no-default-features --profile ci
       - uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
@@ -69,6 +71,19 @@ jobs:
           files: target/llvm-cov-target/nextest/ci/junit.xml,target/nextest/ci/junit.xml
           flags: rust
           fail_ci_if_error: false
+
+  wasm:
+    name: wasm (wasm32 check)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: jdx/mise-action@7a4e45a543138629540c9a1616d08632b893e492 # v5
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      # A mise cache hit can skip rustup target installation.
+      - run: rustup target add wasm32-unknown-unknown
+      - run: mise run check-wasm-core
 
   # Doc-structure harness: enforces the L1 (CLAUDE.md <=35 lines) + link integrity
   # invariants, plus the visual-token and macOS release packaging guards.

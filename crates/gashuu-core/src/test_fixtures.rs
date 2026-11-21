@@ -38,6 +38,7 @@ pub(crate) const SAMPLE_CBR_B64: &str = "UmFyIRoHAM+QcwAADQAAAAAAAACh8nQAgCUASQA
 /// (non-image → NOT counted). `unrar` preserves the `..` in `filename`, so
 /// `enclosed_name` rejects both. Through `RarSource`: pages == `["1.png"]`,
 /// `skipped_count() == 1`.
+#[cfg(feature = "rar")]
 pub(crate) const HOSTILE_CBR_B64: &str = "UmFyIRoHAM+QcwAADQAAAAAAAACrzHQAgCUASQAAAEkAAAADhbZecAAAoU4UMAUAIAAAADEucG5niVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAAEElEQVR42mP4z8AARAwQCgAf7gP9Y167WwAAAABJRU5ErkJgguHwdACAKwBJAAAASQAAAAOFtl5wAAChThQwCwAgAAAALi4vZXZpbC5wbmeJUE5HDQoaCgAAAA1JSERSAAAAAgAAAAIIAgAAAP3UmnMAAAAQSURBVHjaY/jPwABEDBAKAB/uA/1jXrtbAAAAAElFTkSuQmCCYxt0AIAtAAwAAAAMAAAAAy/dsscAAKFOFDANACAAAAAuLi9yZWFkbWUudHh0bm90IGFuIGltYWdlBLB7AAAHAA==";
 
 /// Fixture C (137 bytes): a valid `1.png`(2x2) followed by a corrupt trailing
@@ -47,6 +48,7 @@ pub(crate) const HOSTILE_CBR_B64: &str = "UmFyIRoHAM+QcwAADQAAAAAAAACrzHQAgCUASQ
 /// listing loop: pages == `["1.png"]`, `skipped_count() == 0`,
 /// `listing_truncated() == true`, and `read_bytes(0)` still decodes the good
 /// 2x2 page.
+#[cfg(feature = "rar")]
 pub(crate) const CORRUPT_TRAILING_CBR_B64: &str = "UmFyIRoHAM+QcwAADQAAAAAAAACrzHQAgCUASQAAAEkAAAADhbZecAAAoU4UMAUAIAAAADEucG5niVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAAEElEQVR42mP4z8AARAwQCgAf7gP9Y167WwAAAABJRU5ErkJggu++dAAABwA=";
 
 /// Fixture D (338 bytes): a macOS-metadata noise entry whose name carries an
@@ -56,15 +58,17 @@ pub(crate) const CORRUPT_TRAILING_CBR_B64: &str = "UmFyIRoHAM+QcwAADQAAAAAAAACrz
 /// dropped without counting as a skip), `Manga/001.jpg`(2x2), `Manga/002.jpg`(2x2).
 /// Through `RarSource`: pages == `["Manga/001.jpg", "Manga/002.jpg"]`,
 /// `skipped_count() == 0`, and page 0 is the real first page, not the resource fork.
+#[cfg(feature = "rar")]
 pub(crate) const MACOS_METADATA_CBR_B64: &str = "UmFyIRoHAM+QcwAADQAAAAAAAAA2MXQAgDgAEQAAABEAAAADzfqQj6vC0HMUMBgAIAAAAF9fTUFDT1NYL01hbmdhLy5fMDAxLmpwZ0FwcGxlRG91YmxlIG5vaXNlVJd0AIAtAEoAAABKAAAAA4E2aZ+rwtBzFDANACAAAABNYW5nYS8wMDEuanBniVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAEUlEQVR42mPgEpH7D8IMMAYAJowE7d8n2J0AAAAASUVORK5CYIKE7XQAgC0ASgAAAEoAAAADgTZpn6vC0HMUMA0AIAAAAE1hbmdhLzAwMi5qcGeJUE5HDQoaCgAAAA1JSERSAAAAAgAAAAIIBgAAAHK2DSQAAAARSURBVHjaY+ASkfsPwgwwBgAmjATt3yfYnQAAAABJRU5ErkJgggSwewAABwA=";
 
 /// Base64-decode `b64` and write the bytes to a `.cbr` tempfile. The returned
 /// `NamedTempFile` is kept alive by the caller so the path stays valid.
+#[cfg(feature = "rar")]
 pub(crate) fn write_cbr(b64: &str) -> NamedTempFile {
     write_cbr_with_suffix(b64, ".cbr")
 }
 
-/// Like [`write_cbr`] but lets the caller choose the filename `suffix` (e.g.
+/// Write a CBR fixture with the filename `suffix` (e.g.
 /// `.rar`, `.CBR`, `.txt`) so the `archive_loader` extension/magic tests can
 /// drive each dispatch branch from the same fixture bytes.
 pub(crate) fn write_cbr_with_suffix(b64: &str, suffix: &str) -> NamedTempFile {

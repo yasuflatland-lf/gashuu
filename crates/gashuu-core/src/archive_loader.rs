@@ -1,9 +1,12 @@
 //! Dispatch a path to the right `PageSource`: directory -> FolderSource,
 //! CBZ/ZIP (by extension, else magic bytes) -> ZipSource,
 //! CBR/RAR (by extension, else magic bytes) -> RarSource.
+//! Opening RAR requires the `rar` feature. Without it, dispatch returns [`CoreError::FormatDisabled`].
 
 use crate::error::CoreError;
-use crate::page_source::{FolderSource, PageSource, RarSource, ZipSource};
+#[cfg(feature = "rar")]
+use crate::page_source::RarSource;
+use crate::page_source::{FolderSource, PageSource, ZipSource};
 use std::io::Read;
 use std::num::NonZeroUsize;
 use std::path::Path;
@@ -28,7 +31,7 @@ enum Kind {
 ///
 /// The default (`allow_rar: true`) preserves backward-compatible behavior.
 /// Set `allow_rar: false` to reject RAR/CBR archives and return
-/// [`CoreError::FormatDisabled`] instead of opening [`RarSource`].
+/// [`CoreError::FormatDisabled`]. Without the `rar` feature, both policy settings return that error.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ArchivePolicy {
     /// When `false`, RAR/CBR paths are rejected with `CoreError::FormatDisabled`.
@@ -45,9 +48,11 @@ impl Default for ArchivePolicy {
 ///
 /// Resolution order:
 /// 1. If the path is a directory: [`FolderSource`].
-/// 2. Extension check (cheap, no I/O): `cbz`/`zip` → [`ZipSource`]; `cbr`/`rar` → [`RarSource`].
-/// 3. Magic-byte sniff (first bytes of the file): ZIP signatures → [`ZipSource`]; RAR prefix → [`RarSource`].
+/// 2. Extension check (cheap, no I/O): `cbz`/`zip` → [`ZipSource`]; `cbr`/`rar` → `RarSource`.
+/// 3. Magic-byte sniff (first bytes of the file): ZIP signatures → [`ZipSource`]; RAR prefix → `RarSource`.
 /// 4. Otherwise: [`CoreError::UnsupportedFormat`].
+///
+/// Opening RAR requires the `rar` feature. Without it, either detection path returns [`CoreError::FormatDisabled`].
 pub struct ArchiveLoader;
 
 impl ArchiveLoader {
@@ -91,7 +96,7 @@ impl ArchiveLoader {
     /// Open `path` as the most appropriate [`PageSource`], respecting `policy`.
     ///
     /// When the resolved kind is RAR and `policy.allow_rar` is `false`, returns
-    /// `Err(CoreError::FormatDisabled)` instead of opening [`RarSource`].
+    /// `Err(CoreError::FormatDisabled)` instead of opening `RarSource`.
     pub fn open_with_policy(
         path: impl AsRef<Path>,
         policy: ArchivePolicy,
@@ -116,7 +121,10 @@ impl ArchiveLoader {
             Some(Kind::Rar) if !policy.allow_rar => {
                 Err(CoreError::FormatDisabled { format: "rar/cbr" })
             }
+            #[cfg(feature = "rar")]
             Some(Kind::Rar) => Ok(Arc::new(RarSource::open(path)?)),
+            #[cfg(not(feature = "rar"))]
+            Some(Kind::Rar) => Err(CoreError::FormatDisabled { format: "rar/cbr" }),
             None => Err(CoreError::UnsupportedFormat {
                 path: path.display().to_string(),
             }),
@@ -461,6 +469,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "rar")]
     #[test]
     fn cbr_extension_opens_rar_source() {
         let cbr = write_cbr_with_suffix(SAMPLE_CBR_B64, ".cbr");
@@ -472,6 +481,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "rar")]
     #[test]
     fn rar_extension_opens_rar_source() {
         let cbr = write_cbr_with_suffix(SAMPLE_CBR_B64, ".rar");
@@ -483,6 +493,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "rar")]
     #[test]
     fn cbr_extension_uppercase_opens_rar_source() {
         let cbr = write_cbr_with_suffix(SAMPLE_CBR_B64, ".CBR");
@@ -494,6 +505,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "rar")]
     #[test]
     fn spoofed_txt_extension_with_rar_magic_opens_rar_source() {
         // A file named *.txt whose first bytes are the RAR magic must be
@@ -722,12 +734,43 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "rar")]
     #[test]
     fn probe_page_count_cbr_fixture_returns_real_count() {
         // SAMPLE_CBR_B64 contains 4 image pages (verified by cbr_extension_opens_rar_source).
         let cbr = write_cbr_with_suffix(SAMPLE_CBR_B64, ".cbr");
         let n = ArchiveLoader::probe_page_count(cbr.path()).expect("probe cbr ok");
         assert_eq!(n.get(), 4);
+    }
+
+    #[cfg(not(feature = "rar"))]
+    #[test]
+    fn cbr_extension_is_format_disabled_without_rar_feature() {
+        let cbr = write_cbr_with_suffix(SAMPLE_CBR_B64, ".cbr");
+        assert!(matches!(
+            ArchiveLoader::open_with_policy(cbr.path(), ArchivePolicy { allow_rar: true }),
+            Err(CoreError::FormatDisabled { format: "rar/cbr" })
+        ));
+    }
+
+    #[cfg(not(feature = "rar"))]
+    #[test]
+    fn rar_magic_is_format_disabled_without_rar_feature() {
+        let cbr = write_cbr_with_suffix(SAMPLE_CBR_B64, ".txt");
+        assert!(matches!(
+            ArchiveLoader::open_with_policy(cbr.path(), ArchivePolicy { allow_rar: true }),
+            Err(CoreError::FormatDisabled { format: "rar/cbr" })
+        ));
+    }
+
+    #[cfg(not(feature = "rar"))]
+    #[test]
+    fn probe_page_count_cbr_is_format_disabled_without_rar_feature() {
+        let cbr = write_cbr_with_suffix(SAMPLE_CBR_B64, ".cbr");
+        assert!(matches!(
+            ArchiveLoader::probe_page_count(cbr.path()),
+            Err(CoreError::FormatDisabled { format: "rar/cbr" })
+        ));
     }
 
     #[test]
@@ -793,6 +836,7 @@ mod tests {
         assert!(!src.list_pages().is_empty());
     }
 
+    #[cfg(feature = "rar")]
     #[test]
     fn open_still_permits_rar_backward_compat() {
         // ArchiveLoader::open uses ArchivePolicy::default() (allow_rar=true).

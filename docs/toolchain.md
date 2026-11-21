@@ -7,6 +7,18 @@ All technical details are preserved verbatim from that source of truth.
 
 Rust is pinned to **1.97.1** via `mise.toml`. Run every cargo command through the pin: `mise exec -- cargo <...>`.
 
+### wasm32 target (browser build)
+
+The Rust pin in `mise.toml` includes `wasm32-unknown-unknown`. Run `mise run check-wasm-core`
+to check the headless crate for that target. The task passes `--no-default-features` to omit
+the native UnRAR and dav1d decoders, and uses `--target-dir target/wasm` so host checks and
+tests can use their own build directories concurrently. The five local gates remain independent
+of this task. The blocking `wasm (wasm32 check)` CI job explicitly installs the target with
+`rustup target add wasm32-unknown-unknown` before running the task, including on mise cache hits.
+
+On this target, core enables the `wasm_js` feature of getrandom 0.4, which is also used by
+`zip`. The feature selects the browser backend by itself and requires no additional cfg flag.
+
 ### Fresh install: mise trust
 
 **A fresh `mise install` fails with "Config files are not trusted."** Run `mise trust` once, then `mise install`. CI's `jdx/mise-action` handles trust automatically.
@@ -25,16 +37,16 @@ Slint links system libraries on **Linux** only: `libfontconfig1-dev libfreetype6
 
 ### unrar dependency: C++ toolchain (knowing exception)
 
-**`unrar` is declared `unrar = "0.5"` (always-on, NO feature gate, per Issue #7) and DOES require a C++ compiler on all 3 OS** — it bundles C++ UnRAR built via `cc` (gcc/clang/MSVC, all standard on GitHub runners; macOS Apple clang suffices, no extra apt pkgs beyond the Slint set). This is a knowing exception to the `zip` "no native toolchain" stance: RAR has no pure-Rust decoder, so the C++ compile is unavoidable (build-time cost, cached by `rust-cache`). The non-free RARLAB license clause is recorded in [THIRD_PARTY_LICENSES.md](../THIRD_PARTY_LICENSES.md) (repo root, an acceptance requirement). `base64 = "0.22"` is a core dev-dep (decodes the base64 RAR fixtures). **Intentional deviation from the plan-design doc:** it specified `unrar` (fine) but the implementation uses the SYNCHRONOUS `unrar` over the existing rayon pool — sync `read_bytes` + CPU-bound decode fit rayon naturally; async would force a `block_on` bridge and infect every layer with tokio (same rationale as the sync `zip`).
+**The default-on `rar` feature of `gashuu-core` enables the optional `unrar` 0.5 dependency and requires a C++ compiler on all three desktop platforms** — it bundles C++ UnRAR built via `cc` (gcc/clang/MSVC, all standard on GitHub runners; macOS Apple clang suffices, no extra apt pkgs beyond the Slint set). This is a knowing exception to the `zip` "no native toolchain" stance: RAR has no pure-Rust decoder, so the C++ compile is unavoidable (build-time cost, cached by `rust-cache`). The non-free RARLAB license clause is recorded in [THIRD_PARTY_LICENSES.md](../THIRD_PARTY_LICENSES.md) (repo root, an acceptance requirement). `base64 = "0.22"` is a core dev-dep (decodes the base64 RAR fixtures). **Intentional deviation from the plan-design doc:** it specified `unrar` (fine) but the implementation uses the SYNCHRONOUS `unrar` over the existing rayon pool — sync `read_bytes` + CPU-bound decode fit rayon naturally; async would force a `block_on` bridge and infect every layer with tokio (same rationale as the sync `zip`).
 
 ### dav1d dependency: system C library for AVIF decode (knowing exception)
 
 **`image` is declared `{ version = "0.25", default-features = false, features = ["png", "jpeg",
-"qoi", "avif-native"] }`** — an explicit DECODE-oriented allowlist (defaults OFF, same stance as
+"qoi"] }`** — an explicit DECODE-oriented allowlist (defaults OFF, same stance as
 `zip`). gashuu only ever DECODES pages (`png`/`jpeg`/`avif`) and ENCODES only to `png`
 (cache/thumbnails) and `qoi` (thumbnail cache), so every other default format — and, crucially,
 the `avif` **encode** feature that pulls the whole `ravif` -> `rav1e` AV1 encoder — is excluded,
-keeping `rav1e` out of the shipped binary. **`avif-native` enables AVIF decode via dav1d and
+keeping `rav1e` out of the shipped binary. **The default-on core `avif` feature enables `image/avif-native` for decoding and
 requires `dav1d >= 1.3.0` at BUILD time on all 3 OS** — resolved by the `dav1d-sys`/`system-deps`
 build chain (pkg-config, or the `SYSTEM_DEPS_DAV1D_*` env overrides CI uses). This is the second
 knowing exception to the `zip` "no native toolchain" stance; the decoder choice and license
@@ -49,8 +61,8 @@ Dev setup — **macOS**: `brew install dav1d` (verify: `pkg-config --modversion 
 **Linux**: `sudo apt-get install -y libdav1d-dev` (Ubuntu 24.04 ships 1.4.1). **Windows**:
 `vcpkg install dav1d:x64-windows-static-md` (Visual Studio 2026 / MSVC 14.52+ needs dav1d
 >= 1.5.5 — older releases fail in `compat/msvc/stdatomic.h`), then set the `SYSTEM_DEPS_DAV1D_*`
-variables as `.github/actions/build-dav1d-windows/action.yml` does. Without dav1d the build fails loudly at `dav1d-sys` with a clear
-"dav1d not found" probe error — intentional, since the dependency is not feature-gated.
+variables as `.github/actions/build-dav1d-windows/action.yml` does. With `avif` enabled, a missing dav1d installation causes a
+"dav1d not found" probe error from `dav1d-sys`.
 
 **End users still install nothing**: release builds link dav1d STATICALLY, every OS from source
 at ONE pinned tag — the workflow-level `DAV1D_VERSION` in `release.yml` (mirrored in `ci.yml`;
