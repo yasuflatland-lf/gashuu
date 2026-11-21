@@ -45,6 +45,8 @@ mod web_books;
 mod web_font;
 #[cfg(target_arch = "wasm32")]
 mod web_picker;
+#[cfg(target_arch = "wasm32")]
+mod web_viewport;
 #[cfg(not(target_arch = "wasm32"))]
 mod window_state;
 mod worker;
@@ -312,6 +314,8 @@ fn run_app(
     let ui = ViewerWindow::new()?;
     #[cfg(target_arch = "wasm32")]
     web_font::load_japanese_fallback(ui.as_weak());
+    #[cfg(target_arch = "wasm32")]
+    web_viewport::follow_browser_viewport(&ui);
     // Boot the Fluent localizer with the persisted language; `apply()` pushes
     // every static string into the Strings global before the first paint.
     let localizer = Rc::new(i18n::Localizer::new(settings.language));

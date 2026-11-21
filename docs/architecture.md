@@ -502,6 +502,11 @@ to zero at startup and after settings edits. A 1600 × 2400 RGBA page uses about
 This is the install-free demo path. Issues #655 to #662 track Web Workers,
 OPFS, and `BookBackend` for daily reading.
 
+### web_viewport
+
+On wasm32, `web_viewport` sets the Slint window to the browser's viewport size
+in logical pixels at startup and on each browser resize event.
+
 ### ViewerState
 
 Presentation state with two primary responsibilities: the active page source/cache and open-book
