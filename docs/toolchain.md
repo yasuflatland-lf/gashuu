@@ -80,10 +80,31 @@ app at `/gashuu/app/` in one deployment. Its Trunk build uses
 The web shell starts on the Library screen with an empty shelf. The Add buttons
 are inactive until #660 ([19/23]) adds the web picker. Settings and library data
 live in memory for the session and reset on reload until #654 ([13/23]) adds
-localStorage. Slint embeds only Inter on wasm, so Japanese glyphs are missing
-until #663 ([22/23]).
+localStorage.
 Slint also writes inline pixel width and height on the canvas. These override
 the viewport CSS, so the page may scroll until a follow-up addresses resizing.
+
+Trunk copies the Japanese fallback font and its OFL license to `dist/fonts/`.
+The browser preloads the TTF while the wasm downloads. After startup, gashuu
+fetches it from a document-relative URL and registers it with Slint for
+Hiragana, Katakana, and Han. Slint reshapes existing text after registration
+and continues to use Inter for Latin glyphs. A load failure logs a warning and
+the app continues running. The TTF budget is 1.5 MiB raw, and the wasm growth
+budget is 30 KiB gzip compared with `main`. Regenerate the asset with
+`bash scripts/subset-web-font.sh`. Japanese glyphs use weight 400, including
+in UI elements that request heavier weights. Book titles can still show
+missing glyphs for characters outside the subset. The catalog's U+2328
+keyboard symbol is absent from both web fonts.
+
+### Web font (Noto Sans JP subset)
+
+- Upstream file `ofl/notosansjp/NotoSansJP[wght].ttf` at google/fonts commit
+  `66a36c8c94b1a5d992ee4e7f392fccfe4945767c`. [Upstream font directory](https://github.com/google/fonts/tree/66a36c8c94b1a5d992ee4e7f392fccfe4945767c/ofl/notosansjp)
+- Upstream TTF SHA-256 `c2f3b4d463500a2ddcd3849cded1fceeb9fd6d1c32e6cbecd568453ba50fc68f`.
+- `fonttools` 4.62.1 produces a static weight-400 TTF. The input codepoint list
+  is stored alongside the font in `subset-codepoints.txt`.
+- The upstream OFL copyright line is `Copyright 2014-2021 Adobe (http://www.adobe.com/), with Reserved Font Name 'Source'`.
+  The subset retains the `Noto Sans JP` family name. [Upstream OFL](https://github.com/google/fonts/blob/66a36c8c94b1a5d992ee4e7f392fccfe4945767c/ofl/notosansjp/OFL.txt)
 
 ### Fresh install: mise trust
 

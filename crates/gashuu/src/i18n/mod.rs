@@ -278,6 +278,44 @@ mod tests {
     use gashuu_core::Language;
     use std::collections::HashMap;
 
+    #[cfg(not(target_arch = "wasm32"))]
+    mod web_font_subset {
+        use std::collections::BTreeSet;
+
+        const SUBSET_CODEPOINTS: &str = include_str!("../../web/fonts/subset-codepoints.txt");
+
+        #[test]
+        fn ja_catalog_characters_are_in_web_font_subset() {
+            let catalog = include_str!("../../i18n/ja/gashuu.ftl");
+            let codepoints: BTreeSet<_> = SUBSET_CODEPOINTS.lines().collect();
+            let characters: BTreeSet<_> = catalog
+                .chars()
+                .filter(|character| !character.is_ascii())
+                .collect();
+            assert!(
+                !characters.is_empty(),
+                "Japanese catalog has no non-ASCII characters"
+            );
+            for character in characters {
+                let codepoint = format!("U+{:04X}", u32::from(character));
+                assert!(
+                    codepoints.contains(codepoint.as_str()),
+                    "Japanese catalog character {character:?} ({codepoint}) is missing from the web font subset. Run bash scripts/subset-web-font.sh."
+                );
+            }
+        }
+
+        #[test]
+        fn subset_codepoints_include_kana_and_cjk_punctuation() {
+            for codepoint in ["U+3042", "U+30A2", "U+3001", "U+300C", "U+FF10"] {
+                assert!(
+                    SUBSET_CODEPOINTS.lines().any(|line| line == codepoint),
+                    "web font subset is missing {codepoint}"
+                );
+            }
+        }
+    }
+
     // ---- helpers ------------------------------------------------------
 
     /// Resolve a no-arg message from the loader for the given language.
