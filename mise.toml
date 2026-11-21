@@ -28,6 +28,10 @@ run = "bash scripts/check-tokens.sh"
 description = "Verify the unsigned macOS release helper and distribution zip packaging guard"
 run = "bash scripts/check-release-macos-dist.sh"
 
+[tasks.check-dav1d-pin]
+description = "Verify every from-source dav1d build uses the one pinned DAV1D_VERSION"
+run = "bash scripts/check-dav1d-pin.sh"
+
 # ---------------------------------------------------------------------------
 # Blocking quality gates — see docs/quality-gates.md.
 #

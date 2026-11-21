@@ -1,0 +1,102 @@
+name: Build dav1d (Windows, static, pinned)
+description: >-
+  Build the pinned dav1d release from source as a static /MD library with MSVC
+  and meson, cache the install tree per (dav1d version, runner image), and point
+  dav1d-sys at it through SYSTEM_DEPS_DAV1D_*. Shared by ci.yml and release.yml
+  so CI compiles dav1d exactly the way the release does.
+
+# Why not vcpkg (the previous approach): the runner image's preinstalled vcpkg
+# decided BOTH the dav1d version and, via the image's compiler, whether it built
+# at all. When windows-latest moved to VS 2026 (MSVC 14.52), dav1d <= 1.5.4
+# stopped compiling (`__has_include_next` in compat/msvc/stdatomic.h; fixed
+# upstream in 1.5.5), and CI never noticed because it restored a frozen 1.5.3
+# install tree from cache. Here the version is pinned in-repo (the same tag the
+# macOS/Linux release jobs build) and the cache key carries the runner image
+# version, so an image update forces a real cold build on the next CI run
+# instead of on release day.
+
+inputs:
+  version:
+    description: dav1d git tag to build (e.g. 1.5.5) — the workflow's DAV1D_VERSION
+    required: true
+
+runs:
+  using: composite
+  steps:
+    # ImageOS / ImageVersion are set by the hosted runner image, not by the
+    # workflow, so they are invisible to `${{ env.* }}` until re-exported here.
+    - name: Resolve dav1d paths and cache key
+      shell: pwsh
+      env:
+        DAV1D_VERSION: ${{ inputs.version }}
+      run: |
+        @(
+          "DAV1D_PREFIX=$Env:RUNNER_TEMP\dav1d-$Env:DAV1D_VERSION",
+          "DAV1D_CACHE_KEY=dav1d-$Env:DAV1D_VERSION-windows-x64-static-md-$Env:ImageOS-$Env:ImageVersion"
+        ) | Out-File -FilePath $Env:GITHUB_ENV -Append
+    # Deliberately NO restore-keys: a stale tree from another image or version
+    # is exactly what hid the VS 2026 breakage. A miss means a cold build.
+    - name: Cache the dav1d install tree
+      id: cache
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+      with:
+        path: ${{ env.DAV1D_PREFIX }}
+        key: ${{ env.DAV1D_CACHE_KEY }}
+    - name: Install dav1d build tools (meson, ninja, nasm)
+      if: steps.cache.outputs.cache-hit != 'true'
+      shell: pwsh
+      env:
+        # renovate: datasource=pypi depName=meson
+        MESON_VERSION: "1.12.1"
+        # renovate: datasource=pypi depName=ninja
+        NINJA_VERSION: "1.13.2"
+        # renovate: datasource=nuget depName=nasm registryUrl=https://community.chocolatey.org/api/v2
+        NASM_VERSION: "3.2.0"
+      run: |
+        $ErrorActionPreference = 'Stop'
+        $PSNativeCommandUseErrorActionPreference = $true
+        python -m pip install --disable-pip-version-check "meson==$Env:MESON_VERSION" "ninja==$Env:NINJA_VERSION"
+        choco install nasm --version $Env:NASM_VERSION -y --no-progress
+        "$Env:ProgramFiles\NASM" | Out-File -FilePath $Env:GITHUB_PATH -Append
+    # --vsenv activates the newest Visual Studio's MSVC environment even though
+    # other compilers (Strawberry Perl's gcc, LLVM's clang) are on PATH; CC=cl
+    # makes meson pick MSVC itself rather than clang-cl. b_vscrt=md matches the
+    # /MD CRT Rust links against.
+    - name: Build dav1d static (meson + MSVC)
+      if: steps.cache.outputs.cache-hit != 'true'
+      shell: pwsh
+      env:
+        DAV1D_VERSION: ${{ inputs.version }}
+        CC: cl
+      run: |
+        $ErrorActionPreference = 'Stop'
+        $PSNativeCommandUseErrorActionPreference = $true
+        $src = "$Env:RUNNER_TEMP\dav1d-src"
+        $build = "$Env:RUNNER_TEMP\dav1d-build"
+        git clone --branch $Env:DAV1D_VERSION --depth 1 https://github.com/videolan/dav1d.git $src
+        meson setup $build $src --vsenv `
+          --default-library=static --buildtype=release -Db_vscrt=md --libdir=lib `
+          -Denable_tools=false -Denable_tests=false `
+          --prefix=$Env:DAV1D_PREFIX
+        meson compile -C $build
+        meson install -C $build
+        # meson names a static library libdav1d.a even under MSVC; rustc's
+        # `-l static=dav1d` looks for dav1d.lib (vcpkg renames it the same way).
+        $lib = "$Env:DAV1D_PREFIX\lib"
+        if (Test-Path "$lib\libdav1d.a") { Move-Item "$lib\libdav1d.a" "$lib\dav1d.lib" -Force }
+    # Runs on BOTH the hit and the miss path.
+    - name: Point dav1d-sys at the static library
+      shell: pwsh
+      run: |
+        $lib = "$Env:DAV1D_PREFIX\lib"
+        if (-not (Test-Path "$lib\dav1d.lib")) {
+          Write-Error "dav1d.lib not found under $lib"
+          exit 1
+        }
+        @(
+          "SYSTEM_DEPS_DAV1D_NO_PKG_CONFIG=1",
+          "SYSTEM_DEPS_DAV1D_LINK=static",
+          "SYSTEM_DEPS_DAV1D_LIB=dav1d",
+          "SYSTEM_DEPS_DAV1D_SEARCH_NATIVE=$lib",
+          "SYSTEM_DEPS_DAV1D_INCLUDE=$Env:DAV1D_PREFIX\include"
+        ) | Out-File -FilePath $Env:GITHUB_ENV -Append

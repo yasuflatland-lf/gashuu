@@ -5,22 +5,43 @@ name: Release
 # Release for the tag. The Release must already exist
 # (create it first via the GitHub UI or `gh release create <tag> ...`); this
 # workflow only uploads assets to it, it does not create the release.
+#
+# DRY RUN: every trigger other than a tag (a PR touching the release recipe, the
+# weekly schedule, or a workflow_dispatch with no `tag`) runs the SAME build jobs
+# against the checked-out commit and skips publish. That way the release-only
+# recipe (static dav1d per OS, cargo-bundle, cargo-deb, linuxdeploy) is proven
+# BEFORE tag day — the v1.3.0 tag once failed on Windows because nothing had
+# built the release recipe since the runner image moved to a new MSVC.
 on:
   push:
     tags:
       - 'v*'
+  pull_request:
+    paths:
+      - '.github/workflows/release.yml'
+      - '.github/actions/**'
+  schedule:
+    # Weekly, so a runner-image or toolchain drift is caught within a week.
+    - cron: '23 4 * * 1'
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Existing tag to build and attach assets to (e.g. v0.1.0)'
-        required: true
+        description: 'Existing tag to build and attach assets to (e.g. v0.1.0). Leave empty for a dry run of the dispatched ref.'
+        required: false
         type: string
 
 # Do NOT cancel an in-progress release — re-triggering mid-run could leave a
-# release with a partial set of assets.
+# release with a partial set of assets. Superseded PR dry runs may be cancelled.
 concurrency:
   group: release-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: false
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+# The dav1d release every job builds from source and links statically. One pin
+# for all three OSes, kept in sync with ci.yml's DAV1D_VERSION
+# (scripts/check-dav1d-pin.sh enforces it; Renovate bumps both together).
+env:
+  # renovate: datasource=github-tags depName=videolan/dav1d
+  DAV1D_VERSION: '1.5.5'
 
 # Default all release jobs to read-only; only publish needs write access.
 permissions:
@@ -28,12 +49,16 @@ permissions:
 
 jobs:
   # Fail fast (before any minutes are spent on the slow per-OS builds) if the
-  # tag does not match the crate version, so a mistyped tag never ships.
+  # tag does not match the crate version, so a mistyped tag never ships. Also
+  # decides release vs dry run: `ref` is what the build jobs check out, `tag`
+  # names the artifacts, and `publish` gates the upload job.
   preflight:
     name: preflight (version gate)
     runs-on: ubuntu-latest
     outputs:
       tag: ${{ steps.resolve.outputs.tag }}
+      ref: ${{ steps.resolve.outputs.ref }}
+      publish: ${{ steps.resolve.outputs.publish }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -45,7 +70,20 @@ jobs:
           # Pass interpolated values through env (never inline into the script).
           INPUT_TAG: ${{ inputs.tag }}
           REF_NAME: ${{ github.ref_name }}
+          REF_TYPE: ${{ github.ref_type }}
+          SHA: ${{ github.sha }}
         run: |
+          CARGO_VER=$(grep '^version' crates/gashuu/Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
+          if [ -z "$INPUT_TAG" ] && [ "$REF_TYPE" != "tag" ]; then
+            # Dry run: build the checked-out commit, publish nothing.
+            {
+              echo "tag=v${CARGO_VER}-dryrun"
+              echo "ref=$SHA"
+              echo "publish=false"
+            } >> "$GITHUB_OUTPUT"
+            echo "Dry run of $SHA (crate version $CARGO_VER); publish is skipped."
+            exit 0
+          fi
           TAG="${INPUT_TAG:-$REF_NAME}"
           # Require the `v` prefix so a bare `0.1.0` dispatch can't pass the gate
           # and then fail later at `gh release view v0.1.0`.
@@ -53,12 +91,15 @@ jobs:
             echo "::error::Tag must start with 'v' (got '$TAG')"
             exit 1
           fi
-          CARGO_VER=$(grep '^version' crates/gashuu/Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
           if [ "${TAG#v}" != "$CARGO_VER" ]; then
             echo "::error::Tag $TAG (=> ${TAG#v}) does not match crates/gashuu/Cargo.toml version $CARGO_VER"
             exit 1
           fi
-          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          {
+            echo "tag=$TAG"
+            echo "ref=$TAG"
+            echo "publish=true"
+          } >> "$GITHUB_OUTPUT"
           echo "Version gate OK: $TAG matches Cargo.toml $CARGO_VER"
 
   build-macos:
@@ -80,12 +121,14 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          ref: ${{ needs.preflight.outputs.tag }}
+          ref: ${{ needs.preflight.outputs.ref }}
       - uses: jdx/mise-action@7a4e45a543138629540c9a1616d08632b893e492 # v5
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           key: release-macos
-          save-if: 'true'
+          # Caches saved on a tag or PR ref are scoped to it and never reach the
+          # next release; the weekly scheduled run on main seeds the shared one.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       # Both arch slices are needed for the universal (fat) binary.
       - run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
       # cargo-bundle is not a CI tool (kept out of mise.toml so the CI app matrix
@@ -101,7 +144,7 @@ jobs:
         run: brew install meson ninja nasm
       - name: Build dav1d static (both arches) and lipo
         run: |
-          git clone --branch 1.5.3 --depth 1 https://github.com/videolan/dav1d.git /tmp/dav1d-src
+          git clone --branch "$DAV1D_VERSION" --depth 1 https://github.com/videolan/dav1d.git /tmp/dav1d-src
           # Native arm64 static build.
           meson setup /tmp/dav1d-build-arm64 /tmp/dav1d-src \
             --default-library=static --buildtype=release \
@@ -252,12 +295,14 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          ref: ${{ needs.preflight.outputs.tag }}
+          ref: ${{ needs.preflight.outputs.ref }}
       - uses: jdx/mise-action@7a4e45a543138629540c9a1616d08632b893e492 # v5
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           key: release-linux
-          save-if: 'true'
+          # Caches saved on a tag or PR ref are scoped to it and never reach the
+          # next release; the weekly scheduled run on main seeds the shared one.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       # Slint's winit + femtovg backend links these system libraries on Linux.
       # meson/ninja/nasm build dav1d from source (next step); `file` is required
       # by linuxdeploy/appimagetool; librsvg2-bin (rsvg-convert) rasterizes the
@@ -271,13 +316,13 @@ jobs:
             libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libxkbcommon-dev \
             meson ninja-build nasm file librsvg2-bin
       # Build a current dav1d as a STATIC archive (apt's 0.9.2 is too old, see the
-      # SYSTEM_DEPS_* note above). Pinned to the same 1.5.3 the macOS job uses so
-      # the AVIF decoder is identical across platforms. meson's default
+      # SYSTEM_DEPS_* note above). Pinned to the workflow-level DAV1D_VERSION
+      # every job uses so the AVIF decoder is identical across platforms. meson's default
       # b_staticpic=true yields a PIC archive that links into the PIE release
       # binary; --libdir=lib keeps the archive at the path SYSTEM_DEPS expects.
       - name: Build dav1d static (from source)
         run: |
-          git clone --branch 1.5.3 --depth 1 https://github.com/videolan/dav1d.git /tmp/dav1d-src
+          git clone --branch "$DAV1D_VERSION" --depth 1 https://github.com/videolan/dav1d.git /tmp/dav1d-src
           meson setup /tmp/dav1d-build /tmp/dav1d-src \
             --default-library=static --buildtype=release --libdir=lib \
             -Denable_tools=false -Denable_tests=false \
@@ -361,32 +406,22 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          ref: ${{ needs.preflight.outputs.tag }}
+          ref: ${{ needs.preflight.outputs.ref }}
       - uses: jdx/mise-action@7a4e45a543138629540c9a1616d08632b893e492 # v5
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           key: release-windows
-          save-if: 'true'
-      # dav1d (AVIF decode), built static by vcpkg (preinstalled on the runner)
-      # so gashuu.exe stays self-contained — no DLL ships beside the zipped exe.
-      # The archives cache turns the ~5-8 min cold source build into seconds.
-      - name: Cache vcpkg-built dav1d
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+          # Caches saved on a tag or PR ref are scoped to it and never reach the
+          # next release; the weekly scheduled run on main seeds the shared one.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      # dav1d (AVIF decode), built static from the pinned DAV1D_VERSION so
+      # gashuu.exe stays self-contained — no DLL ships beside the zipped exe. The
+      # SAME composite action runs in ci.yml, so CI has already compiled this
+      # exact build on the current runner image (see the action's header).
+      - name: Build dav1d (pinned source, static)
+        uses: ./.github/actions/build-dav1d-windows
         with:
-          path: ~\AppData\Local\vcpkg\archives
-          key: vcpkg-dav1d-x64-windows-static-md
-      - name: Install dav1d (vcpkg, static)
-        shell: pwsh
-        run: |
-          vcpkg install dav1d:x64-windows-static-md
-          $root = "$Env:VCPKG_INSTALLATION_ROOT\installed\x64-windows-static-md"
-          @(
-            "SYSTEM_DEPS_DAV1D_NO_PKG_CONFIG=1",
-            "SYSTEM_DEPS_DAV1D_LINK=static",
-            "SYSTEM_DEPS_DAV1D_LIB=dav1d",
-            "SYSTEM_DEPS_DAV1D_SEARCH_NATIVE=$root\lib",
-            "SYSTEM_DEPS_DAV1D_INCLUDE=$root\include"
-          ) | Out-File -FilePath $Env:GITHUB_ENV -Append
+          version: ${{ env.DAV1D_VERSION }}
       # ImageMagick (magick) is preinstalled on the windows-latest runner image
       # and rasterizes SVG via its bundled RSVG/MSVG delegate. Generate the .ico
       # from the committed SVG so build.rs (winresource) embeds it into gashuu.exe.
@@ -428,6 +463,8 @@ jobs:
 
   publish:
     name: publish (attach to release)
+    # Dry runs stop after the builds have proven the recipe.
+    if: needs.preflight.outputs.publish == 'true'
     permissions:
       contents: write
     needs: [preflight, build-macos, build-windows, build-linux]
@@ -438,7 +475,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          ref: ${{ needs.preflight.outputs.tag }}
+          ref: ${{ needs.preflight.outputs.ref }}
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           path: artifacts

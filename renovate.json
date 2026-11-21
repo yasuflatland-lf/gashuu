@@ -5,6 +5,16 @@
   "internalChecksFilter": "strict",
   "platformAutomerge": false,
   "automergeStrategy": "merge-commit",
+  "customManagers": [
+    {
+      "description": "Track the `# renovate:`-annotated version pins in workflows and composite actions: DAV1D_VERSION (github-tags videolan/dav1d) and the Windows dav1d build tools (meson/ninja on PyPI, nasm on Chocolatey).",
+      "customType": "regex",
+      "managerFilePatterns": ["/^\\.github/workflows/[^/]+\\.ya?ml$/", "/^\\.github/actions/.+\\.ya?ml$/"],
+      "matchStrings": [
+        "# renovate: datasource=(?<datasource>[a-z-]+) depName=(?<depName>\\S+)(?: registryUrl=(?<registryUrl>\\S+))?\\s+[A-Z0-9_]+: [\\\"'](?<currentValue>[^\\\"']+)[\\\"']"
+      ]
+    }
+  ],
   "lockFileMaintenance": {
     "description": "Refresh Cargo.lock (and other lockfiles) on a schedule so TRANSITIVE crates advance to newer compatible versions. Most of our advisory-ignore entries in deny.toml are unmaintained transitive deps (paste, ttf-parser, proc-macro-error2, quick-xml) that we cannot bump directly; keeping the lock fresh lets them drop out as their framework parents (Slint, winit, image, i18n-embed) migrate away, at which point cargo-deny's `--deny advisory-not-detected` flags the now-stale ignore for removal.",
     "enabled": true,
@@ -13,7 +23,7 @@
   "packageRules": [
     {
       "description": "Supply-chain: only adopt releases that are at least 7 days old",
-      "matchManagers": ["cargo", "github-actions", "mise", "npm"],
+      "matchManagers": ["cargo", "github-actions", "mise", "npm", "custom.regex"],
       "minimumReleaseAge": "7 days"
     },
     {
@@ -63,6 +73,13 @@
       "matchManagers": ["cargo"],
       "matchPackageNames": ["slint", "slint-build"],
       "groupName": "slint",
+      "automerge": false
+    },
+    {
+      "description": "dav1d is linked statically into every release artifact, and the macOS/Linux release recipes run only in release.yml (a dry run on the bump PR, not in CI). Group the pin and keep it out of automerge so a human confirms the release dry run before it lands. MUST stay after the automerge rule above — later rules win.",
+      "matchManagers": ["custom.regex"],
+      "matchDepNames": ["videolan/dav1d"],
+      "groupName": "dav1d",
       "automerge": false
     }
   ]
