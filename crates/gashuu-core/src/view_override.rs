@@ -5,13 +5,12 @@
 //! `Settings` default. `None` here means "inherit the global default" — an active
 //! choice, NOT "unknown" (contrast `ReadingProgress::total`). `ResolvedView` is the
 //! derived, transient form with every field concrete; it is produced by
-//! `ViewOverride::resolve(&Settings)` and never persisted. The merge rule and its
+//! `ViewOverride::resolve(ResolvedView)` and never persisted. The merge rule and its
 //! inverse live together in exactly one place (`resolve` and `differences_from`) so
 //! the per-field fallback and minimal write-back are each unit-tested once.
 //!
 //! Headless: no `slint`, no `tracing`.
 
-use crate::settings::Settings;
 use crate::view_modes::{CoverMode, FitMode, ReadingDirection, SpreadMode};
 use serde::{Deserialize, Serialize};
 
@@ -49,10 +48,10 @@ impl ViewOverride {
         *self == Self::default()
     }
 
-    /// Merge this override with `global`: a `Some` field wins, a `None` field
+    /// Merge this override with the global `ResolvedView`: a `Some` field wins, a `None` field
     /// falls back to the matching global value. The SINGLE definition of the
     /// per-field fallback rule.
-    pub fn resolve(&self, global: &Settings) -> ResolvedView {
+    pub fn resolve(&self, global: ResolvedView) -> ResolvedView {
         ResolvedView {
             reading_direction: self.reading_direction.unwrap_or(global.reading_direction),
             spread_mode: self.spread_mode.unwrap_or(global.spread_mode),
@@ -61,10 +60,10 @@ impl ViewOverride {
         }
     }
 
-    /// The minimal override that resolves back to `view` against `global`:
+    /// The minimal override that resolves back to `view` against the global `ResolvedView`:
     /// a field equal to its global counterpart is left `None` (inherit).
     /// Invariant: `differences_from(view, global).resolve(global) == view`.
-    pub fn differences_from(view: ResolvedView, global: &Settings) -> ViewOverride {
+    pub fn differences_from(view: ResolvedView, global: ResolvedView) -> ViewOverride {
         ViewOverride {
             reading_direction: (view.reading_direction != global.reading_direction)
                 .then_some(view.reading_direction),
@@ -91,15 +90,13 @@ pub struct ResolvedView {
 mod tests {
     use super::*;
 
-    fn global() -> Settings {
-        // A global with every view mode set to a NON-default value, so an
-        // inherited field is provably the global value (not a coincidental default).
-        Settings {
+    fn global() -> ResolvedView {
+        // Distinct global values exercise inheritance across the four view modes.
+        ResolvedView {
             reading_direction: ReadingDirection::Rtl,
             spread_mode: SpreadMode::Double,
             cover_mode: CoverMode::Paired,
             fit_mode: FitMode::Actual,
-            ..Settings::default()
         }
     }
 
@@ -118,8 +115,7 @@ mod tests {
                             cover_mode,
                             fit_mode,
                         };
-                        let resolved =
-                            ViewOverride::differences_from(view, &global).resolve(&global);
+                        let resolved = ViewOverride::differences_from(view, global).resolve(global);
                         if resolved != view {
                             failures.push(format!("view {view:?}: diff resolved to {resolved:?}"));
                         }
@@ -139,8 +135,8 @@ mod tests {
     #[test]
     fn differences_from_global_view_is_empty() {
         let global = global();
-        let view = ViewOverride::none().resolve(&global);
-        let diff = ViewOverride::differences_from(view, &global);
+        let view = ViewOverride::none().resolve(global);
+        let diff = ViewOverride::differences_from(view, global);
 
         assert_eq!(diff, ViewOverride::none());
         assert!(diff.is_empty());
@@ -151,11 +147,11 @@ mod tests {
         let global = global();
         let view = ResolvedView {
             reading_direction: ReadingDirection::Ltr,
-            ..ViewOverride::none().resolve(&global)
+            ..ViewOverride::none().resolve(global)
         };
 
         assert_eq!(
-            ViewOverride::differences_from(view, &global),
+            ViewOverride::differences_from(view, global),
             ViewOverride {
                 reading_direction: Some(ReadingDirection::Ltr),
                 spread_mode: None,
@@ -170,11 +166,11 @@ mod tests {
         let global = global();
         let view = ResolvedView {
             spread_mode: SpreadMode::Single,
-            ..ViewOverride::none().resolve(&global)
+            ..ViewOverride::none().resolve(global)
         };
 
         assert_eq!(
-            ViewOverride::differences_from(view, &global),
+            ViewOverride::differences_from(view, global),
             ViewOverride {
                 reading_direction: None,
                 spread_mode: Some(SpreadMode::Single),
@@ -189,11 +185,11 @@ mod tests {
         let global = global();
         let view = ResolvedView {
             cover_mode: CoverMode::Standalone,
-            ..ViewOverride::none().resolve(&global)
+            ..ViewOverride::none().resolve(global)
         };
 
         assert_eq!(
-            ViewOverride::differences_from(view, &global),
+            ViewOverride::differences_from(view, global),
             ViewOverride {
                 reading_direction: None,
                 spread_mode: None,
@@ -208,11 +204,11 @@ mod tests {
         let global = global();
         let view = ResolvedView {
             fit_mode: FitMode::Whole,
-            ..ViewOverride::none().resolve(&global)
+            ..ViewOverride::none().resolve(global)
         };
 
         assert_eq!(
-            ViewOverride::differences_from(view, &global),
+            ViewOverride::differences_from(view, global),
             ViewOverride {
                 reading_direction: None,
                 spread_mode: None,
@@ -225,15 +221,15 @@ mod tests {
     #[test]
     fn empty_diff_serializes_to_nothing() {
         let global = global();
-        let view = ViewOverride::none().resolve(&global);
-        let diff = ViewOverride::differences_from(view, &global);
+        let view = ViewOverride::none().resolve(global);
+        let diff = ViewOverride::differences_from(view, global);
 
         assert_eq!(serde_json::to_string(&diff).unwrap(), "{}");
     }
 
     #[test]
     fn empty_override_resolves_entirely_to_global() {
-        let resolved = ViewOverride::none().resolve(&global());
+        let resolved = ViewOverride::none().resolve(global());
         assert_eq!(resolved.reading_direction, ReadingDirection::Rtl);
         assert_eq!(resolved.spread_mode, SpreadMode::Double);
         assert_eq!(resolved.cover_mode, CoverMode::Paired);
@@ -246,7 +242,7 @@ mod tests {
             reading_direction: Some(ReadingDirection::Ltr),
             ..ViewOverride::none()
         };
-        let resolved = ov.resolve(&global());
+        let resolved = ov.resolve(global());
         // The set field wins...
         assert_eq!(resolved.reading_direction, ReadingDirection::Ltr);
         // ...the unset fields inherit the (non-default) global values.
@@ -261,7 +257,7 @@ mod tests {
             spread_mode: Some(SpreadMode::Single),
             ..ViewOverride::none()
         };
-        let resolved = ov.resolve(&global());
+        let resolved = ov.resolve(global());
         assert_eq!(resolved.spread_mode, SpreadMode::Single);
         assert_eq!(resolved.reading_direction, ReadingDirection::Rtl);
         assert_eq!(resolved.cover_mode, CoverMode::Paired);
@@ -274,7 +270,7 @@ mod tests {
             cover_mode: Some(CoverMode::Standalone),
             ..ViewOverride::none()
         };
-        let resolved = ov.resolve(&global());
+        let resolved = ov.resolve(global());
         assert_eq!(resolved.cover_mode, CoverMode::Standalone);
         assert_eq!(resolved.reading_direction, ReadingDirection::Rtl);
         assert_eq!(resolved.spread_mode, SpreadMode::Double);
@@ -287,7 +283,7 @@ mod tests {
             fit_mode: Some(FitMode::Whole),
             ..ViewOverride::none()
         };
-        let resolved = ov.resolve(&global());
+        let resolved = ov.resolve(global());
         assert_eq!(resolved.fit_mode, FitMode::Whole);
         assert_eq!(resolved.reading_direction, ReadingDirection::Rtl);
         assert_eq!(resolved.spread_mode, SpreadMode::Double);
@@ -302,7 +298,7 @@ mod tests {
             cover_mode: Some(CoverMode::Standalone),
             fit_mode: Some(FitMode::Whole),
         };
-        let resolved = ov.resolve(&global());
+        let resolved = ov.resolve(global());
         assert_eq!(resolved.reading_direction, ReadingDirection::Ltr);
         assert_eq!(resolved.spread_mode, SpreadMode::Single);
         assert_eq!(resolved.cover_mode, CoverMode::Standalone);

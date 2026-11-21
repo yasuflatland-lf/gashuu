@@ -135,13 +135,7 @@ mod tests {
     }
 
     fn global_view(settings: &Rc<RefCell<Settings>>) -> ResolvedView {
-        let settings = settings.borrow();
-        ResolvedView {
-            reading_direction: settings.reading_direction,
-            spread_mode: settings.spread_mode,
-            cover_mode: settings.cover_mode,
-            fit_mode: settings.fit_mode,
-        }
+        settings.borrow().view_defaults()
     }
 
     fn book_view() -> ResolvedView {

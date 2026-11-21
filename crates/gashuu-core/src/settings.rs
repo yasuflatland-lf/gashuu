@@ -5,6 +5,7 @@ use crate::cache::{DEFAULT_CAPACITY, DEFAULT_PREFETCH_RADIUS};
 use crate::cache_config::CacheConfig;
 use crate::error::CoreError;
 use crate::view_modes::{CoverMode, FitMode, KeyBindings, Language, ReadingDirection, SpreadMode};
+use crate::view_override::ResolvedView;
 use crate::window_geometry::WindowGeometry;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -112,6 +113,16 @@ impl Default for Settings {
 }
 
 impl Settings {
+    /// The global view-mode defaults a per-book `ViewOverride` inherits from.
+    pub fn view_defaults(&self) -> ResolvedView {
+        ResolvedView {
+            reading_direction: self.reading_direction,
+            spread_mode: self.spread_mode,
+            cover_mode: self.cover_mode,
+            fit_mode: self.fit_mode,
+        }
+    }
+
     /// Derive the archive-open policy from these settings.
     pub fn archive_policy(&self) -> ArchivePolicy {
         ArchivePolicy {
@@ -225,6 +236,26 @@ fn migrate(mut value: serde_json::Value, from: u32) -> serde_json::Value {
 mod tests {
     use super::*;
     use crate::window_geometry::{WindowGeometry, MIN_WINDOW_HEIGHT, MIN_WINDOW_WIDTH};
+
+    #[test]
+    fn view_defaults_copies_the_four_global_modes() {
+        let settings = Settings {
+            reading_direction: ReadingDirection::Ltr,
+            spread_mode: SpreadMode::Double,
+            cover_mode: CoverMode::Paired,
+            fit_mode: FitMode::Actual,
+            ..Settings::default()
+        };
+        assert_eq!(
+            settings.view_defaults(),
+            ResolvedView {
+                reading_direction: ReadingDirection::Ltr,
+                spread_mode: SpreadMode::Double,
+                cover_mode: CoverMode::Paired,
+                fit_mode: FitMode::Actual,
+            }
+        );
+    }
 
     #[test]
     fn default_settings_have_expected_values() {

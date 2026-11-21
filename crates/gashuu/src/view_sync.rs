@@ -308,7 +308,7 @@ fn stage_position_write_back(state: &RefCell<ViewerState>, library: &RefCell<Lib
 fn view_override_to_write_back(
     open_file: Option<&Path>,
     view: ResolvedView,
-    global: &Settings,
+    global: ResolvedView,
     inherit_pending: bool,
 ) -> Option<(PathBuf, ViewOverride)> {
     open_file.map(|p| {
@@ -343,7 +343,12 @@ fn stage_view_override_write_back(
     let inherit_pending = dialog_session.borrow().inherit_pending(current);
     let Some((path, overrides)) = ({
         let s = state.borrow();
-        view_override_to_write_back(s.open_file(), current, &settings.borrow(), inherit_pending)
+        view_override_to_write_back(
+            s.open_file(),
+            current,
+            settings.borrow().view_defaults(),
+            inherit_pending,
+        )
     }) else {
         return; // no book open — nothing to write back
     };
@@ -608,7 +613,7 @@ mod tests {
         let reopened = library
             .borrow()
             .overrides_for(&canonical)
-            .resolve(&settings.borrow());
+            .resolve(settings.borrow().view_defaults());
 
         assert_eq!(
             reopened,
@@ -672,7 +677,7 @@ mod tests {
         let reopened = library
             .borrow()
             .overrides_for(&canonical)
-            .resolve(&settings.borrow());
+            .resolve(settings.borrow().view_defaults());
 
         assert_eq!(
             reopened,
@@ -698,7 +703,7 @@ mod tests {
                     cover_mode: CoverMode::Paired,
                     fit_mode: FitMode::Actual,
                 },
-                &global,
+                global.view_defaults(),
                 false,
             )
             .is_none(),
@@ -724,7 +729,7 @@ mod tests {
                 cover_mode: CoverMode::Paired,
                 fit_mode: FitMode::Actual,
             },
-            &global,
+            global.view_defaults(),
             false,
         );
         let (p, ov) = result.expect("open file => write-back tuple");
@@ -753,7 +758,7 @@ mod tests {
                 cover_mode: CoverMode::Paired,
                 fit_mode: FitMode::Actual,
             },
-            &global,
+            global.view_defaults(),
             false,
         )
         .expect("open file => write-back tuple");
@@ -792,7 +797,7 @@ mod tests {
                 cover_mode: CoverMode::Paired,
                 fit_mode: FitMode::Actual,
             },
-            &global,
+            global.view_defaults(),
             true,
         );
         let (p, ov) = result.expect("open file => write-back tuple");
@@ -825,7 +830,7 @@ mod tests {
                 cover_mode: CoverMode::Standalone,
                 fit_mode: FitMode::Whole,
             },
-            &global,
+            global.view_defaults(),
             false,
         )
         .expect("open file => write-back tuple");

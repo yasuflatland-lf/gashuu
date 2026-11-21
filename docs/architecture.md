@@ -230,12 +230,14 @@ pan clamping (`clamp_offset`/`centered_offset`), cursor-anchored zoom (`anchored
 `settings.rs`. The persistent user-settings domain model and its JSON representation.
 `SettingsStore` delegates storage to a `BlobStore` (see below). The view-mode vocabulary it persists
 (`reading_direction`/`spread_mode`/`cover_mode`/`fit_mode`/`language`/`key_bindings`) now lives in
-`view_modes.rs` (see below); `Settings` is just one consumer. `recent_sources` is most-recent-first
-and capped on both write and load by `MAX_RECENT_SOURCES = 10`.
+`view_modes.rs` (see below); `Settings` is just one consumer. `Settings::view_defaults()`
+projects its four global view modes into a `ResolvedView` for per-book override resolution.
+`recent_sources` is most-recent-first and capped on both write and load by
+`MAX_RECENT_SOURCES = 10`.
 
 **This is the first use of `serde` in core.** The headless boundary still holds (no
 slint/tracing). `Settings` keeps only the pure entry points `to_json` / `from_json` / `normalize`
-(plus `push_recent` / `cache_config` / `archive_policy`); `SettingsStore` owns `load` / `save`.
+(plus `push_recent` / `cache_config` / `archive_policy` / `view_defaults`); `SettingsStore` owns `load` / `save`.
 In `main.rs`, both documents use `load_or_default` for startup recovery. After a failed load, the
 helper supplies the current timestamp to the repository's `quarantine` method, records a notice,
 and returns the default value. On desktop, a successful quarantine preserves the original file
@@ -359,10 +361,10 @@ PERSISTED, partial form `ViewOverride { reading_direction, spread_mode, cover_mo
 each an `Option<Enum>` where `None` means INHERIT the global default (an active choice, NOT
 "unknown"); `Copy`, immutable, `Default`/`none()` == all-`None`, `is_empty()` == all-`None` (the
 serde `skip_serializing_if` predicate on `Book::overrides`). The TRANSIENT, total form
-`ResolvedView` — every field concrete, never persisted, produced ONLY by
-`ViewOverride::resolve(&Settings) -> ResolvedView` (the single definition of the per-field
+`ResolvedView` — every field concrete, never persisted, produced by `Settings::view_defaults()`
+or `ViewOverride::resolve(ResolvedView) -> ResolvedView` (the single definition of the per-field
 `unwrap_or(global)` fallback). The public inverse
-`ViewOverride::differences_from(ResolvedView, &Settings) -> ViewOverride` produces the minimal
+`ViewOverride::differences_from(ResolvedView, ResolvedView) -> ViewOverride` produces the minimal
 write-back (`Some` only for fields that differ from global), with the round-trip invariant
 `differences_from(view, global).resolve(global) == view`. Re-exported from the crate root
 (`pub use view_override::{ResolvedView, ViewOverride}`).
