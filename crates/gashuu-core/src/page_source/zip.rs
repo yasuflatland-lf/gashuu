@@ -1,11 +1,9 @@
-//! A `PageSource` backed by a ZIP/CBZ archive. Lock-free across reads (each
-//! `read_bytes` opens its own file + `ZipArchive`), so rayon prefetch threads
-//! decompress entries fully in parallel.
+//! A `PageSource` backed by a ZIP/CBZ archive over positional reads. The central
+//! directory is parsed once. Each `read_bytes` clones the parsed archive,
+//! sharing metadata and advancing its own cursor during parallel prefetch.
 //!
-//! `ZipSource` holds NO archive-wide buffer: each `read_bytes` allocates only
-//! the one entry it reads. Under concurrent rayon prefetch, multiple reads can
-//! be in flight at once, each holding its own independent buffer (so resident
-//! memory is not bounded to a single page while prefetch is running).
+//! Each `read_bytes` allocates a buffer for its entry. Concurrent prefetch
+//! can hold multiple entry buffers in memory.
 //!
 //! The external `zip` crate is referenced as `::zip::` throughout because this
 //! local module is also named `zip`; an unqualified `zip::` would resolve to
@@ -14,11 +12,13 @@
 use super::entry_policy::{
     cap_or_reject, classify_entry, has_image_ext, initial_capacity, EntryClass, MAX_ENTRY_BYTES,
 };
-use super::{PageEntry, PageSource};
+#[cfg(not(target_arch = "wasm32"))]
+use super::FileReadAt;
+use super::{PageEntry, PageSource, ReadAt, ReadAtCursor};
 use crate::error::CoreError;
 use crate::ordering::natural_cmp;
-use std::io::BufReader;
-use std::path::{Path, PathBuf};
+use std::path::Path;
+use std::sync::Arc;
 
 /// Metadata for one image page resolved from the archive's central directory.
 struct EntryMeta {
@@ -30,31 +30,37 @@ struct EntryMeta {
     name: String,
 }
 
-/// A `PageSource` over a ZIP/CBZ file: the archive is scanned once at `open`
-/// to build a stable, naturally ordered list of image entries; each read
-/// re-opens the file so reads never contend on a shared handle.
+/// A `PageSource` over a ZIP/CBZ archive with a stable, naturally ordered page list.
+///
+/// The parsed archive is shared across reads. A file-backed archive holds its
+/// file handle for the lifetime of the source.
 // Intentionally does NOT derive `Debug` (tests rely on this; matches `FolderSource`).
 pub struct ZipSource {
-    path: PathBuf,
+    archive: ::zip::ZipArchive<ReadAtCursor>,
     entries: Vec<EntryMeta>,
     skipped: usize,
 }
 
 impl ZipSource {
     /// Open an archive and index its image pages with the default size ceiling.
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn open(path: impl AsRef<Path>) -> Result<Self, CoreError> {
-        Self::open_with_limit(path, MAX_ENTRY_BYTES)
+        Self::from_read_at(Arc::new(FileReadAt::open(path.as_ref())?))
     }
 
-    /// Open an archive, skipping entries whose declared uncompressed size
-    /// exceeds `max`.
-    ///
-    /// Test seam: a small `max` triggers skip+count deterministically without
-    /// synthesizing a 500 MB entry.
+    /// Open an archive from a positional byte source and index its image pages.
+    pub fn from_read_at(src: Arc<dyn ReadAt>) -> Result<Self, CoreError> {
+        Self::from_read_at_with_limit(src, MAX_ENTRY_BYTES)
+    }
+
+    #[cfg(all(test, not(target_arch = "wasm32")))]
     fn open_with_limit(path: impl AsRef<Path>, max: u64) -> Result<Self, CoreError> {
-        let path = path.as_ref().to_path_buf();
-        let file = std::fs::File::open(&path)?;
-        let mut archive = ::zip::ZipArchive::new(BufReader::new(file))?;
+        Self::from_read_at_with_limit(Arc::new(FileReadAt::open(path.as_ref())?), max)
+    }
+
+    /// Open an archive, skipping entries whose declared uncompressed size exceeds `max`.
+    fn from_read_at_with_limit(src: Arc<dyn ReadAt>, max: u64) -> Result<Self, CoreError> {
+        let mut archive = ::zip::ZipArchive::new(ReadAtCursor::new(src))?;
         let mut entries = Vec::new();
         let mut skipped = 0usize;
         for i in 0..archive.len() {
@@ -92,7 +98,7 @@ impl ZipSource {
         // `2.png` precedes `10.png`.
         entries.sort_by(|a, b| natural_cmp(&a.name, &b.name));
         Ok(Self {
-            path,
+            archive,
             entries,
             skipped,
         })
@@ -106,8 +112,7 @@ impl ZipSource {
             index,
             len: self.entries.len(),
         })?;
-        let file = std::fs::File::open(&self.path)?;
-        let mut archive = ::zip::ZipArchive::new(BufReader::new(file))?;
+        let mut archive = self.archive.clone();
         let entry = archive.by_index(meta.zip_index)?;
         // Pre-size from a BOUNDED hint, never from the entry's declared size: a hostile
         // header can claim MAX_ENTRY_BYTES from a KB-sized file and, under rayon prefetch
@@ -140,7 +145,7 @@ impl PageSource for ZipSource {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
     use crate::page_source::entry_policy::INITIAL_READ_CAPACITY;
@@ -185,8 +190,8 @@ mod tests {
     /// fixtures with exact byte counts (Stored compression). Mirrors
     /// `open_with_limit` but without the image-extension filter.
     fn open_all_entries(path: &Path) -> ZipSource {
-        let file = std::fs::File::open(path).unwrap();
-        let mut archive = ::zip::ZipArchive::new(BufReader::new(file)).unwrap();
+        let cursor = ReadAtCursor::new(Arc::new(FileReadAt::open(path).unwrap()));
+        let mut archive = ::zip::ZipArchive::new(cursor).unwrap();
         let mut entries = Vec::new();
         for i in 0..archive.len() {
             let entry = archive.by_index(i).unwrap();
@@ -203,10 +208,71 @@ mod tests {
         }
         entries.sort_by(|a, b| natural_cmp(&a.name, &b.name));
         ZipSource {
-            path: path.to_path_buf(),
+            archive,
             entries,
             skipped: 0,
         }
+    }
+
+    #[test]
+    fn from_read_at_matches_open() {
+        let cbz = write_cbz(&[
+            ("10.png", vec![10; 64]),
+            ("sub/2.png", vec![2; 128]),
+            ("1.png", vec![1; 256]),
+            ("notes.txt", b"ignored".to_vec()),
+        ]);
+        let bytes = Arc::<[u8]>::from(std::fs::read(cbz.path()).unwrap());
+        let file_source = ZipSource::open(cbz.path()).unwrap();
+        let memory_source = ZipSource::from_read_at(Arc::new(bytes)).unwrap();
+
+        let pages = file_source.list_pages();
+        assert_eq!(memory_source.list_pages(), pages);
+        for index in 0..pages.len() {
+            assert_eq!(
+                memory_source.read_bytes(index).unwrap(),
+                file_source.read_bytes(index).unwrap()
+            );
+        }
+    }
+
+    #[test]
+    fn concurrent_read_bytes_from_one_source() {
+        let cbz = write_cbz(&[
+            ("2.png", vec![2; 16_384]),
+            ("1.png", vec![1; 32_768]),
+            ("3.png", vec![3; 65_536]),
+        ]);
+        let bytes = Arc::<[u8]>::from(std::fs::read(cbz.path()).unwrap());
+        let source = ZipSource::from_read_at(Arc::new(bytes)).unwrap();
+        let expected: Vec<_> = (0..source.list_pages().len())
+            .map(|index| source.read_bytes(index).unwrap())
+            .collect();
+
+        let start = std::sync::Barrier::new(8);
+        std::thread::scope(|scope| {
+            let (source, expected, start) = (&source, &expected, &start);
+            for thread_index in 0..8 {
+                scope.spawn(move || {
+                    start.wait();
+                    for page in 0..expected.len() {
+                        let index = (page + thread_index) % expected.len();
+                        assert_eq!(source.read_bytes(index).unwrap(), expected[index]);
+                    }
+                });
+            }
+        });
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn read_bytes_does_not_reopen_the_path() {
+        let expected = tiny_png();
+        let cbz = write_cbz(&[("1.png", expected.clone())]);
+        let source = ZipSource::open(cbz.path()).unwrap();
+        cbz.close().unwrap();
+
+        assert_eq!(source.read_bytes(0).unwrap(), expected);
     }
 
     #[test]

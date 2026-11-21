@@ -2,10 +2,14 @@ mod entry_policy;
 mod folder;
 #[cfg(feature = "rar")]
 mod rar;
+mod read_at;
 mod zip;
 pub use folder::FolderSource;
 #[cfg(feature = "rar")]
 pub use rar::RarSource;
+#[cfg(not(target_arch = "wasm32"))]
+pub use read_at::FileReadAt;
+pub use read_at::{ReadAt, ReadAtCursor};
 pub use zip::ZipSource;
 
 use crate::error::CoreError;
@@ -27,7 +31,8 @@ pub struct PageEntry {
 ///
 /// The `Send + Sync` bound lets `ImageCache` share the source as `Arc<dyn PageSource>`
 /// with rayon worker threads during background prefetch. `read_bytes` may therefore
-/// be called concurrently from multiple threads and must be safe to do so.
+/// be called concurrently. [`ZipSource`] clones its parsed archive for each read,
+/// giving each thread an independent cursor over the shared bytes.
 #[cfg_attr(feature = "testing", mockall::automock)]
 pub trait PageSource: Send + Sync {
     /// All pages in display order.

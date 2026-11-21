@@ -37,10 +37,15 @@ Top-level directory walk with natural filename ordering (`max_depth(1)`, no recu
 
 ### ZipSource
 
-`page_source/zip.rs`. A `PageSource` over a ZIP/CBZ archive using the SYNCHRONOUS `zip`
-crate — flattens nested images (any image at any depth is a page, unlike `FolderSource`'s
-`max_depth(1)`). Lock-free: each `read_bytes` opens its OWN `File` + `::zip::ZipArchive` so rayon
-prefetch threads decompress fully in parallel with NO shared mutable state.
+`page_source/zip.rs` uses the synchronous `zip` crate and includes images at any archive depth.
+`ZipSource::from_read_at` parses the central directory once and indexes the image pages.
+Each `read_bytes` clones the parsed archive. The clone shares the directory metadata and has
+its own cursor, so rayon prefetch threads can read and decompress entries in parallel.
+
+`page_source/read_at.rs` provides `ReadAt`, a `Send + Sync` trait for reading bytes at an explicit
+offset. `ReadAtCursor` implements `Read + Seek` over a shared source and stores a separate
+position in each clone. Desktop `ZipSource::open` uses `FileReadAt` and holds one file handle for
+the lifetime of the source. The `Arc<[u8]>` implementation also works on wasm32.
 
 ### RarSource
 
@@ -97,25 +102,27 @@ helper in `entry_policy.rs` could not be reused across the crate.
 
 ### ArchiveLoader
 
-`archive_loader.rs`. `open(path) -> Arc<dyn PageSource>` dispatch — directory→`FolderSource`,
-else a `Kind {Zip, Rar}` enum resolved by `ext_kind` (no I/O; `.cbz`/`.zip`→Zip,
-`.cbr`/`.rar`→Rar, case-insensitive) preferred, else `magic_kind` sniff (`PK` ZIP
-signatures→`ZipSource`; `Rar!\x1A\x07`→`RarSource`), else `UnsupportedFormat` (returns `Arc` not
-`Box` to fit `set_source`). The reject-empty-books feature added the associated fn
-`probe_page_count(path) -> Result<NonZeroUsize, CoreError>`: it `open`s the source, counts
-`list_pages().len()`, and returns `Err(CoreError::EmptyBook { path })` on a clean open with zero
-pages — the SINGLE home of the domain rule "a valid book has >= 1 image page". I/O /
-`UnsupportedFormat` errors propagate unchanged ("empty" and "unreadable" are strictly distinct).
-See [ADR-0009](ADRs/0009-reject-empty-books.md) and [patterns.md](patterns.md) ("Lift a domain rule
-into ONE core type at the boundary").
+`archive_loader.rs` opens directories with `FolderSource` and dispatches archives by
+`ArchiveKind`. The case-insensitive extensions `.cbz` and `.zip` select `Zip`, and `.cbr` and
+`.rar` select `Rar`. For an unknown extension, a single read of up to six bytes checks the ZIP
+signatures and the RAR prefix `Rar!\x1A\x07`. Unrecognized files return `UnsupportedFormat`.
+`detect_kind(name, head)` applies the same extension and magic rules to supplied data.
+
+`open_read_at(name, src, policy)` opens ZIP sources through `ReadAt` and returns
+`Arc<dyn PageSource>`. It returns `FormatDisabled { format: "rar/cbr" }` for RAR under either
+policy setting. `probe_page_count_read_at(name, src, policy)` and `probe_page_count(path)` share
+the check that a successfully opened book contains at least one image page. Both return
+`NonZeroUsize` or `CoreError::EmptyBook { label }`, and propagate open errors unchanged. The label
+in `EmptyBook` or `UnsupportedFormat` is the supplied name or the path's display string. See
+[ADR-0009](ADRs/0009-reject-empty-books.md) and [patterns.md](patterns.md).
 
 Without the `rar` feature, both extension and magic-byte detection still recognize RAR, and opening or probing it returns `CoreError::FormatDisabled { format: "rar/cbr" }` regardless of policy.
 
-Both entry points have a policy-carrying twin — `open_with_policy(path, ArchivePolicy)` and
-`probe_page_count_with_policy(path, ArchivePolicy)`; `open`/`probe_page_count` are the
-`ArchivePolicy::default()` wrappers. `ArchivePolicy { allow_rar }` is the Safe Mode seam
-([ADR-0011](ADRs/0011-decoder-subprocess-isolation.md) phase 1): with `allow_rar: false` a
-RAR/CBR-resolved path returns `CoreError::FormatDisabled` instead of opening `RarSource`.
+The path entry points have policy-carrying twins `open_with_policy(path, ArchivePolicy)` and
+`probe_page_count_with_policy(path, ArchivePolicy)`. `open` and `probe_page_count` use
+`ArchivePolicy::default()`. Safe Mode sets `allow_rar: false`, so either path entry point
+returns `CoreError::FormatDisabled` for RAR/CBR. See
+[ADR-0011](ADRs/0011-decoder-subprocess-isolation.md) phase 1.
 
 `open_with_policy` also owns the admission gate: a path that is not valid UTF-8 is rejected with
 `CoreError::NonUtf8Path { path }` **before any dispatch** (before the `is_dir` branch, the extension
@@ -243,9 +250,9 @@ build can still read them. `repair_settings_file_if_needed` is inert after a qua
 - `NonUtf8Path { path }` — raised by `ArchiveLoader::open_with_policy` before any dispatch, so a
   path that cannot be serialized into `library.json` never becomes a `Book`
 - `ImageTooLarge`
-- `Zip(#[from] ::zip::result::ZipError)`, `EntryTooLarge { name, max }`, `UnsupportedFormat { path }`
+- `Zip(#[from] ::zip::result::ZipError)`, `EntryTooLarge { name, max }`, `UnsupportedFormat { label }`
 - `Rar(#[from] ::unrar::error::UnrarError)` (Display prefix `"rar archive error: "`)
-- `EmptyBook { path }` (Display `"no images found in {path}"`) — raised by `ArchiveLoader::probe_page_count` on a clean open with zero image pages, distinct from the unreadable-source errors above (the reject-empty-books feature)
+- `EmptyBook { label }` (Display `"no images found in {label}"`) — raised by the `ArchiveLoader` page-count probes on a clean open with zero image pages.
 
 Errors are typed with `thiserror` (`CoreError`, `#[non_exhaustive]`).
 
