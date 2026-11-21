@@ -6,17 +6,14 @@
 //! canonicalization, and path metadata. The `open-finalize` callback drains the
 //! result and runs every state mutation and persistence effect on the UI thread.
 //!
-//! Each start bumps an epoch on the UI thread and installs a fresh result slot.
-//! A late worker from an older generation writes only to its orphaned slot, and
-//! [`marshal_to_ui`] drops its stale callback before it can touch the UI.
+//! Each start begins a new [`Generation`]. The worker delivers the probe result
+//! through its ticket, which also guards the finalize callback on the UI thread.
 
-use crate::ui_marshal::marshal_to_ui;
+use crate::ui_marshal::Generation;
 use crate::ViewerWindow;
 use gashuu_core::{canonical_identity, ArchiveLoader, ArchivePolicy, PageSource};
-use std::cell::RefCell;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 /// A successfully opened source plus all filesystem metadata needed by the
 /// UI-thread apply half.
@@ -67,24 +64,16 @@ pub(crate) fn probe_open(path: &Path, policy: ArchivePolicy) -> OpenProbeOutcome
     }
 }
 
-type PendingOutcome = Option<(PathBuf, OpenProbeOutcome)>;
-
-/// Owns the single-open epoch and the current generation's worker result.
-///
-/// The outer `RefCell` is replaced only on the UI thread. The inner
-/// `Arc<Mutex<_>>` is the `Send` bridge used by the rayon worker; superseded
-/// workers retain only an orphaned slot.
+/// Holds the worker result for the current single-open operation.
 pub(crate) struct OpenController {
-    epoch: Arc<AtomicUsize>,
-    pending: RefCell<Arc<Mutex<PendingOutcome>>>,
+    generation: Generation<Option<(PathBuf, OpenProbeOutcome)>>,
 }
 
 impl OpenController {
     /// Build the controller once during UI setup.
     pub(crate) fn new() -> Self {
         Self {
-            epoch: Arc::new(AtomicUsize::new(0)),
-            pending: RefCell::new(Arc::new(Mutex::new(None))),
+            generation: Generation::new(),
         }
     }
 
@@ -96,16 +85,13 @@ impl OpenController {
         path: PathBuf,
         policy: ArchivePolicy,
     ) {
-        let my_epoch = self.epoch.fetch_add(1, Relaxed) + 1;
-        let pending = Arc::new(Mutex::new(None));
-        *self.pending.borrow_mut() = Arc::clone(&pending);
-        let epoch = Arc::clone(&self.epoch);
-
+        let ticket = self.generation.begin();
         rayon::spawn(move || {
             let outcome = probe_open(&path, policy);
-            *pending.lock().expect("open outcome mutex poisoned") = Some((path, outcome));
-            marshal_to_ui(ui_weak, epoch, my_epoch, "open-finalize", move |ui| {
-                ui.invoke_open_finalize(my_epoch as i32)
+            ticket.deliver(|slot| *slot = Some((path, outcome)));
+            let id = ticket.id();
+            ticket.marshal(ui_weak, "open-finalize", move |ui| {
+                ui.invoke_open_finalize(id as i32);
             });
         });
     }
@@ -113,25 +99,7 @@ impl OpenController {
     /// Drain the current generation's worker result exactly once. A stale
     /// finalize returns `None` without touching the live generation's slot.
     pub(crate) fn take_outcome(&self, my_epoch: usize) -> Option<(PathBuf, OpenProbeOutcome)> {
-        if self.epoch.load(Relaxed) != my_epoch {
-            return None;
-        }
-        self.pending
-            .borrow()
-            .lock()
-            .expect("open outcome mutex poisoned")
-            .take()
-    }
-
-    #[cfg(test)]
-    fn stash_for_test(&self, path: PathBuf, outcome: OpenProbeOutcome) {
-        *self.pending.borrow().lock().expect("mutex") = Some((path, outcome));
-    }
-
-    #[cfg(test)]
-    fn bump_for_test(&self) {
-        self.epoch.fetch_add(1, Relaxed);
-        *self.pending.borrow_mut() = Arc::new(Mutex::new(None));
+        self.generation.take(my_epoch).flatten()
     }
 }
 
@@ -202,26 +170,32 @@ mod tests {
     #[test]
     fn take_outcome_drops_superseded_and_drains_current_once() {
         let controller = OpenController::new();
-        controller.epoch.store(1, Relaxed);
-        controller.stash_for_test(
-            PathBuf::from("/old"),
-            OpenProbeOutcome::Failed {
-                error: "old".into(),
-                path_exists: false,
-            },
-        );
+        let old = controller.generation.begin();
+        old.deliver(|slot| {
+            *slot = Some((
+                PathBuf::from("/old"),
+                OpenProbeOutcome::Failed {
+                    error: "old".into(),
+                    path_exists: false,
+                },
+            ));
+        });
 
-        controller.bump_for_test();
-        assert!(controller.take_outcome(1).is_none());
+        let current = controller.generation.begin();
+        assert!(controller.take_outcome(old.id()).is_none());
 
-        controller.stash_for_test(
-            PathBuf::from("/new"),
-            OpenProbeOutcome::Failed {
-                error: "new".into(),
-                path_exists: true,
-            },
-        );
-        let (path, outcome) = controller.take_outcome(2).expect("current outcome");
+        current.deliver(|slot| {
+            *slot = Some((
+                PathBuf::from("/new"),
+                OpenProbeOutcome::Failed {
+                    error: "new".into(),
+                    path_exists: true,
+                },
+            ));
+        });
+        let (path, outcome) = controller
+            .take_outcome(current.id())
+            .expect("current outcome");
         assert_eq!(path, PathBuf::from("/new"));
         assert!(matches!(
             outcome,
@@ -230,6 +204,6 @@ mod tests {
                 ..
             }
         ));
-        assert!(controller.take_outcome(2).is_none());
+        assert!(controller.take_outcome(current.id()).is_none());
     }
 }

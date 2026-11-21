@@ -1216,12 +1216,12 @@ Slint callback", and [ADR-0009](ADRs/0009-reject-empty-books.md).
 
 **`add_controller.rs`** (`AddController`, issue 206): the SAME async harness applied to the bulk ADD, so opening
 several large/cloud-synced archives in the `+` picker never freezes the event loop (`probe_page_count` reads each
-ZIP's central directory; `File::open` can block on hydration). `start(ui_weak, paths, policy, op)` bumps an
-`AtomicUsize` epoch, installs a fresh `Arc<Mutex<Vec<ProbeOutcome>>>` accumulator, shows `Adding… (0/N)`, then
+ZIP's central directory; `File::open` can block on hydration). `start(ui_weak, paths, policy, op)` begins a batch
+with the shared `ui_marshal::Generation<Vec<ProbeOutcome>>`, shows `Adding… (0/N)`, then
 dispatches one `rayon::spawn` per path running the pure, `Send` `probe_path` (classifies into
 `ProbeKind::{Counted(NonZeroUsize), Empty, FormatDisabled, Unreadable}` — touching NO `Library`). Each worker
-pushes its `ProbeOutcome`, marshals an epoch-guarded `add-progress(done, total)` tick, and the worker that drains
-the `remaining` `AtomicUsize` to zero marshals `add-finalize(epoch)`. The finalize handler
+pushes its `ProbeOutcome` through a cloned ticket and marshals an epoch-guarded `add-progress(done, total)` tick. The worker
+that drains the `remaining` `AtomicUsize` to zero marshals `add-finalize(epoch)`. The finalize handler
 (`handlers/library.rs`) drains via `AddController::take_outcomes(epoch)` — epoch-guarded, so a second add started
 mid-probe supersedes the first with no stale clobber — re-sorts to INPUT order, then runs the APPLY half on the UI
 thread: `main.rs::apply_outcomes` (the old synchronous `add_paths` body, byte-identical behaviour, logging deferred
@@ -1237,8 +1237,9 @@ the archive/folder open, the skipped count, the listing-truncation flag, `canoni
 the `is_dir` / `exists` stats,
 returning `OpenProbeOutcome::{Opened(OpenProbe), Failed { error, path_exists }}` — touching no
 `ViewerState`, `Library`, or `Settings` (`PageSource` is `Send + Sync`, so the opened source itself
-crosses). `start(ui_weak, path, policy)` bumps an `AtomicUsize` epoch on the UI thread, installs a
-fresh `Arc<Mutex<Option<…>>>` slot, `rayon::spawn`s the probe, and marshals `open-finalize(epoch)`;
+crosses). `start(ui_weak, path, policy)` uses the shared `ui_marshal::Generation` to allocate
+a slot for one probe result. The rayon worker uses its ticket to deliver the result and marshal
+`open-finalize(epoch)`.
 `take_outcome(epoch)` drains it once and returns `None` when superseded, so double-clicking a second
 book mid-probe opens ONLY the second. Every state mutation and BOTH library saves (plus the optional
 settings save) stay on the UI thread in `OpenBookUseCase::apply_probed` — the synchronous-save
