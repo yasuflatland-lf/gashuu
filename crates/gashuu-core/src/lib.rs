@@ -55,7 +55,6 @@ pub use page_source::FileReadAt;
 #[cfg(feature = "rar")]
 pub use page_source::RarSource;
 pub use page_source::{FolderSource, PageEntry, PageSource, ReadAt, ReadAtCursor, ZipSource};
-pub use persist::quarantine_file;
 pub use reading_progress::ReadingProgress;
 pub use search::book_matches;
 pub use settings::{Settings, MAX_RECENT_SOURCES, SETTINGS_VERSION};
