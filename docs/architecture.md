@@ -471,6 +471,13 @@ cover disk cache, wire drag-and-drop and update handlers, wire persistence on
 self-update relaunch, start the update check, restore window geometry, and
 persist state after the event loop returns.
 
+### web_font
+
+On wasm32, `run_app` schedules a fetch of the Japanese TTF immediately after
+creating the window. `web_font` registers it in Slint's shared Fontique
+collection as a fallback for Hiragana, Katakana, and Han. Loading runs on
+Slint's executor while startup continues. A failure logs a warning.
+
 ### ViewerState
 
 Presentation state with two primary responsibilities: the active page source/cache and open-book
@@ -1082,6 +1089,10 @@ monitor (`is_position_visible`), else centers on the primary monitor (`center_in
 returning empty on a non-winit build so placement falls back to the OS.
 
 ### Slint UI files
+
+`ViewerWindow.web-font-family` drives `default-font-family`. Desktop uses
+the empty platform default, and wasm sets it to `Inter` after registering
+the Japanese fallback to invalidate cached text shaping.
 
 **`ui/components/`** (#71, NEW): shared single-purpose UI atoms/molecules, one `export`ed component
 per file — `ProgressBar` (accent/`success` reading-progress fill), `PrimaryButton` (the accent CTA),
