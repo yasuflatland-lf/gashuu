@@ -2,9 +2,15 @@
 
 use crate::error::CoreError;
 use crate::library::{Book, Library};
-use directories::ProjectDirs;
+#[cfg(not(target_arch = "wasm32"))]
+use crate::FsBlobStore;
+use crate::{BlobStore, LIBRARY_KEY};
 use serde::Serialize;
-use std::path::{Path, PathBuf};
+use std::io;
+use std::path::Path;
+#[cfg(not(target_arch = "wasm32"))]
+use std::path::PathBuf;
+use std::sync::Arc;
 
 /// On-disk library schema version.
 pub const LIBRARY_VERSION: u32 = 1;
@@ -21,53 +27,70 @@ struct LibraryDocument<'a> {
     last_opened: Option<&'a Path>,
 }
 
-/// Repository for `library.json`: owns the file location and the file I/O, so the
-/// `Library` aggregate stays a pure in-memory domain type (ADR-0002 — the domain
-/// no longer resolves an OS directory). Construct with an explicit path
-/// ([`LibraryStore::new`], the seam tests and alternate locations use) or with the
-/// OS data-dir default ([`LibraryStore::default_location`]).
+/// Repository for a library document stored as a JSON blob.
 #[derive(Debug)]
 pub struct LibraryStore {
-    path: PathBuf,
+    blobs: Arc<dyn BlobStore>,
+    key: String,
 }
 
 impl LibraryStore {
-    /// Construct a store for an explicit path.
-    pub fn new(path: PathBuf) -> Self {
-        Self { path }
-    }
-
-    /// Resolve `library.json` in the OS data dir (creates nothing).
-    pub fn default_location() -> Result<Self, CoreError> {
-        let dirs = ProjectDirs::from("", "", "gashuu").ok_or(CoreError::NoDataDir)?;
-        Ok(Self::new(dirs.data_dir().join("library.json")))
-    }
-
-    /// The file this store reads and writes.
-    pub fn path(&self) -> &Path {
-        &self.path
-    }
-
-    /// Load the library. Missing file returns an empty library.
-    pub fn load(&self) -> Result<Library, CoreError> {
-        match std::fs::read_to_string(&self.path) {
-            Ok(json) => Library::from_json(&json),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Library::new()),
-            Err(e) => Err(CoreError::from(e)),
+    /// Use the library key in the supplied blob store.
+    pub fn with_blob_store(blobs: Arc<dyn BlobStore>) -> Self {
+        Self {
+            blobs,
+            key: LIBRARY_KEY.to_owned(),
         }
     }
 
-    /// Atomically write `library`, creating parent directories as needed.
-    pub fn save(&self, library: &Library) -> Result<(), CoreError> {
-        crate::atomic_write::write_atomic(&self.path, library.to_json()?.as_bytes())
+    /// Construct a store for an explicit path.
+    ///
+    /// # Panics
+    ///
+    /// The path must end in a UTF-8 file name.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn new(path: PathBuf) -> Self {
+        let dir = path.parent().unwrap_or_else(|| Path::new("")).to_path_buf();
+        let key = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .expect("path must end in a UTF-8 file name")
+            .to_owned();
+        Self {
+            blobs: Arc::new(FsBlobStore::new(dir)),
+            key,
+        }
     }
 
-    /// Rename a corrupt library file aside as `library.json.corrupt-<now_secs>`
-    /// (same directory — the rename is atomic on one filesystem) so the next save
-    /// cannot destroy recoverable data. Never reads or parses the file. The caller
-    /// injects `now_secs` (core takes no clock).
-    pub fn quarantine(&self, now_secs: u64) -> Result<PathBuf, CoreError> {
-        crate::persist::quarantine_file(&self.path, now_secs)
+    /// Resolve `library.json` in the OS data dir (creates nothing).
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn default_location() -> Result<Self, CoreError> {
+        Ok(Self::with_blob_store(Arc::new(FsBlobStore::data_dir()?)))
+    }
+
+    /// Load the library. An absent blob returns an empty library.
+    pub fn load(&self) -> Result<Library, CoreError> {
+        let Some(bytes) = self.blobs.read(&self.key)? else {
+            return Ok(Library::new());
+        };
+        let json = String::from_utf8(bytes).map_err(|_| {
+            CoreError::Io(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "stream did not contain valid UTF-8",
+            ))
+        })?;
+        Library::from_json(&json)
+    }
+
+    /// Atomically write the library document.
+    pub fn save(&self, library: &Library) -> Result<(), CoreError> {
+        self.blobs
+            .write_atomic(&self.key, library.to_json()?.as_bytes())
+    }
+
+    /// Move the library blob aside and return its destination label if present.
+    pub fn quarantine(&self, now_secs: u64) -> Result<Option<String>, CoreError> {
+        self.blobs.quarantine(&self.key, now_secs)
     }
 }
 
@@ -125,21 +148,11 @@ fn migrate(mut value: serde_json::Value, from: u32) -> serde_json::Value {
     value
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
     use std::num::NonZeroUsize;
     use std::path::{Path, PathBuf};
-
-    #[test]
-    fn store_default_location_resolves_under_project_dirs() {
-        let store = LibraryStore::default_location();
-
-        assert!(store.is_ok());
-        assert!(store
-            .as_ref()
-            .is_ok_and(|store| store.path().ends_with(Path::new("gashuu/library.json"))));
-    }
 
     #[cfg(unix)]
     #[test]
@@ -421,18 +434,19 @@ mod tests {
             .quarantine(1_700_000_000)
             .unwrap();
 
-        assert_eq!(destination, expected);
+        assert_eq!(destination, Some("library.json.corrupt-1700000000".into()));
         assert!(!path.exists());
-        assert_eq!(std::fs::read(&destination).unwrap(), b"not json");
+        assert_eq!(std::fs::read(&expected).unwrap(), b"not json");
     }
 
     #[test]
-    fn quarantine_corrupt_file_errors_for_missing_source_without_creating_destination() {
+    fn quarantine_corrupt_file_returns_none_for_missing_source_without_creating_destination() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("library.json");
         let destination = dir.path().join("library.json.corrupt-1700000000");
 
-        assert!(LibraryStore::new(path).quarantine(1_700_000_000).is_err());
+        let result = LibraryStore::new(path).quarantine(1_700_000_000).unwrap();
+        assert_eq!(result, None);
         assert!(!destination.exists());
     }
 

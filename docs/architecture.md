@@ -227,9 +227,8 @@ pan clamping (`clamp_offset`/`centered_offset`), cursor-anchored zoom (`anchored
 
 ### Settings
 
-`settings.rs`. The persistent user-settings domain model and its JSON representation. The file
-location and the file I/O belong to `SettingsStore` (see below), so `Settings` itself never
-resolves an OS directory and never touches the filesystem. The view-mode vocabulary it persists
+`settings.rs`. The persistent user-settings domain model and its JSON representation.
+`SettingsStore` delegates storage to a `BlobStore` (see below). The view-mode vocabulary it persists
 (`reading_direction`/`spread_mode`/`cover_mode`/`fit_mode`/`language`/`key_bindings`) now lives in
 `view_modes.rs` (see below); `Settings` is just one consumer. `recent_sources` is most-recent-first
 and capped on both write and load by `MAX_RECENT_SOURCES = 10`.
@@ -237,12 +236,11 @@ and capped on both write and load by `MAX_RECENT_SOURCES = 10`.
 **This is the first use of `serde` in core.** The headless boundary still holds (no
 slint/tracing). `Settings` keeps only the pure entry points `to_json` / `from_json` / `normalize`
 (plus `push_recent` / `cache_config` / `archive_policy`); `SettingsStore` owns `load` / `save`.
-Corrupt-file recovery lives in the UI (`main.rs`) and is
-**quarantine-then-fresh** for BOTH `settings.json` and `library.json`: a file this build cannot load
-is renamed aside as `<name>.corrupt-<now_secs>` (`gashuu_core::quarantine_file`), a notice is pushed
-onto the home screen, and the app starts from defaults — the user keeps their bytes and a newer
-build can still read them. `repair_settings_file_if_needed` is inert after a quarantine (its
-`!path.exists()` early return). Core still only returns typed `CoreError`:
+In `main.rs`, both documents use `load_or_default` for startup recovery. After a failed load, the
+helper supplies the current timestamp to the repository's `quarantine` method, records a notice,
+and returns the default value. On desktop, a successful quarantine preserves the original file
+as `<name>.corrupt-<now_secs>` and the notice includes that name. The startup settings repair
+returns immediately when `stored_text` reports an absent blob. Core returns typed `CoreError`:
 
 - `Settings(#[from] serde_json::Error)` and `NoConfigDir`
 - `FutureSchema { what, found, supported }` — the stored schema `version` is GREATER than this
@@ -260,9 +258,8 @@ See [ADR-0005](ADRs/0005-settings-persistence.md) for the settings persistence d
 
 ### persist
 
-`persist.rs` (crate-private module; `quarantine_file` is re-exported at the crate root). The shared
-parse/migrate guard both versioned-object documents run, so `Settings::from_json` and
-`Library::from_json` cannot drift.
+`persist.rs` contains the parse and migration guard shared by `Settings::from_json` and
+`Library::from_json`.
 
 - `parse_versioned_object(json, current, migrate) -> Result<VersionedDocument, serde_json::Error>`
   returns `Ready(serde_json::Value)` (stored version ≤ `current`, already migrated when older) or
@@ -276,9 +273,9 @@ parse/migrate guard both versioned-object documents run, so `Settings::from_json
 - The non-object-root guard (which would otherwise panic inside `migrate`) and the checked
   `u32::try_from` version resolution still run FIRST, and the `> u32::MAX → treated as 0 → migrate`
   rule is UNCHANGED — a crafted huge version is "unknown", not "from the future".
-- `quarantine_file(path, now_secs) -> Result<PathBuf, CoreError>` lives here now (promoted from
-  `library_store.rs`); `LibraryStore::quarantine` is a thin delegating wrapper. It never
-  reads or parses the file, and takes the clock as a parameter (core owns no clock).
+- The crate-private `quarantine_file(path, now_secs) -> Result<PathBuf, CoreError>` renames the
+  file for `FsBlobStore` using the supplied timestamp. The adapter maps a rename's `NotFound`
+  error to `Ok(None)` and returns the destination file name on success.
 - `Settings::normalize` stamps `SETTINGS_VERSION` — the `version` field is a schema label owned by
   the binary, never echoed back from disk — restoring the symmetry `Library::to_json` already had
   via `LibraryDocument`. `LIBRARY_VERSION` and `SETTINGS_VERSION` both stay `1`.
@@ -288,30 +285,26 @@ Headless (`serde_json` + `std::fs` only). See
 
 ### library_store / settings_store (the two repositories)
 
-`library_store.rs` and `settings_store.rs`. One repository type per persisted document —
-`LibraryStore` for `library.json`, `SettingsStore` for `settings.json` — each a `{ path: PathBuf }`
-newtype that owns the storage LOCATION and the file I/O, and nothing else. The two aggregates
-(`Library`, `Settings`) are therefore pure in-memory domain types again: they keep only their
-serialization entry points (`Library::to_json`/`from_json`, `Settings::to_json`/`from_json`/
-`normalize`) and no longer resolve an OS directory or touch the filesystem, so the domain →
-infrastructure dependency arrow is gone (ADR-0002).
+`LibraryStore` and `SettingsStore` each hold an `Arc<dyn BlobStore>` and a key. The port in
+`blob_store.rs` reads, atomically replaces, and quarantines byte blobs by flat key. Reads and
+quarantines return `Ok(None)` for absent blobs. Both repositories offer `with_blob_store`, which
+uses the document's production key, `library.json` or `settings.json`.
 
-Identical surface on both:
+- `load` decodes UTF-8 and parses the document. An absent blob yields `Library::new()` or
+  `Settings::default()`. Invalid UTF-8 returns an I/O error of kind `InvalidData`.
+- `save` passes the existing JSON serialization to the adapter's atomic write.
+- `quarantine(now_secs)` passes the timestamp to the adapter and returns the destination label
+  if a blob was moved.
+- `SettingsStore::stored_text` supplies the raw text for startup repair.
 
-- `new(path: PathBuf)` — an explicit location; what tests (`tempfile`) and any alternate location use.
-- `default_location() -> Result<Self, CoreError>` — the `directories::ProjectDirs` resolution
-  (`library.json` under the data dir → `CoreError::NoDataDir`; `settings.json` under the config dir
-  → `CoreError::NoConfigDir`). Creates nothing.
-- `path(&self) -> &Path` — the file this store reads and writes (the UI needs it for the
-  exists-check + quarantine notice on a load failure).
-- `load(&self) -> Result<T, CoreError>` — a MISSING file is not an error (`Library::new()` /
-  `Settings::default()`, i.e. first run); anything else (I/O, malformed JSON, future schema) is.
-- `save(&self, value: &T) -> Result<(), CoreError>` — `write_atomic(&self.path,
-  value.to_json()?.as_bytes())`, parent directories included.
-
-`LibraryStore` additionally has `quarantine(&self, now_secs: u64) -> Result<PathBuf, CoreError>`,
-delegating to `persist::quarantine_file`. `directories::ProjectDirs` now appears in exactly three
-core modules: these two and `thumbnail_cache.rs` (a cache directory, deliberately out of scope).
+`FsBlobStore` is available on desktop. Each instance resolves keys relative to its root and
+writes through `atomic_write::write_atomic`, which creates missing parent directories. Desktop
+startup constructs two instances through the repositories' `default_location()` constructors.
+Settings use `FsBlobStore::config_dir()` and the library uses `FsBlobStore::data_dir()` from
+`ProjectDirs`. These constructors preserve the existing file locations and return
+`NoConfigDir` or `NoDataDir` if directory resolution fails. Desktop `new(path)` constructors
+use the parent directory as the adapter root and the file name as the key.
+`MemoryBlobStore` uses a mutex-protected map and is available on all targets.
 
 The UI crate holds each store once, behind `Rc`, and threads it as an explicit named parameter to
 every function that persists (`main.rs`'s `SettingsStoreHandle` / `LibraryStoreHandle` aliases and
@@ -319,9 +312,8 @@ their `save_settings` / `save_library` helpers). The handle is an `Option` becau
 `default_location()` can fail: that reproduces the pre-store behaviour exactly — the app still runs
 and each attempted save reports `NoConfigDir` / `NoDataDir` — without a panic path. The injected
 `save` seams (`LeavePointService::persist_with`, `remove_books_with_rollback`, `remove_empty_book_with`,
-`OpenBookUseCase`'s two boxed closures, `stage_exit_state`) are unchanged; production now passes a
-store save through them instead of an inherent `Library::save`. Headless (`serde_json` + `std::fs` +
-`directories`). See [ADR-0005](ADRs/0005-settings-persistence.md)'s 2026-08-15 Amendment.
+`OpenBookUseCase`'s two boxed closures, `stage_exit_state`) receive repository saves.
+See [ADR-0005](ADRs/0005-settings-persistence.md)'s 2026-08-15 Amendment.
 
 ### view-mode vocabulary (`view_modes.rs`)
 
