@@ -1,8 +1,10 @@
 mod entry_policy;
 mod folder;
+#[cfg(feature = "rar")]
 mod rar;
 mod zip;
 pub use folder::FolderSource;
+#[cfg(feature = "rar")]
 pub use rar::RarSource;
 pub use zip::ZipSource;
 
@@ -42,7 +44,7 @@ pub trait PageSource: Send + Sync {
     /// Whether the source's page listing was cut short by an error rather than
     /// completing normally. `false` for a complete listing (the default, and
     /// always false for `FolderSource`/`ZipSource`, whose walks are resumable).
-    /// `RarSource` returns `true` when a damaged header ended `unrar`'s
+    /// When the `rar` feature is on, `RarSource` returns `true` if a damaged header ended `unrar`'s
     /// non-resumable `List` iterator: the pages returned are a prefix of the
     /// archive and an unknown number of later pages are missing. Distinct from
     /// `skipped_count`, which counts individual entries dropped from an
@@ -92,6 +94,7 @@ mod send_sync_tests {
         // they can become `Arc<dyn PageSource>` shared with rayon.
         assert_send_sync::<FolderSource>();
         assert_send_sync::<ZipSource>();
+        #[cfg(feature = "rar")]
         assert_send_sync::<RarSource>();
         assert_send_sync::<MockPageSource>();
         // And the trait object itself must be Send + Sync.

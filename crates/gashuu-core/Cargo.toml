@@ -9,15 +9,10 @@ edition = "2021"
 # pulls the whole `ravif` -> `rav1e` AV1 encoder (and its `paste` /
 # RUSTSEC-2024-0436 advisory). gashuu only DECODES images; it encodes solely to
 # PNG (cache/thumbnails/tests) and QOI (thumbnail cache). Formats: `png`, `jpeg`,
-# `qoi` (thumbnail cache codec), and `avif-native` = AVIF DECODE via dav1d
+# and `qoi` (thumbnail cache codec). The core `avif` feature adds AVIF decode via dav1d
 # (BSD-2-Clause C library; the second native-toolchain exception after `unrar` —
 # see docs/toolchain.md and ADR-0010). AVIF ENCODE is intentionally absent.
-image = { version = "0.25", default-features = false, features = [
-    "png",
-    "jpeg",
-    "qoi",
-    "avif-native",
-] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "qoi"] }
 walkdir = "2"
 zip = { version = "9", default-features = false, features = ["deflate"] }
 thiserror = "2"
@@ -29,7 +24,7 @@ mockall = { version = "0.15", optional = true }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.150"
 directories = "6.0.0"
-unrar = "0.5"
+unrar = { version = "0.5", optional = true }
 # Atomic JSON persistence: write to a same-directory temp file, fsync, then rename
 # over the target so settings.json / library.json are never left truncated on crash.
 tempfile = "3"
@@ -38,9 +33,15 @@ semver = "1"
 # SHA-256 verification of downloaded release assets against SHA256SUMS.
 sha2 = "0.11"
 
+[target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
+getrandom = { version = "0.4", features = ["wasm_js"] }
+
 [dev-dependencies]
 insta = "1.47.2"
 base64 = "0.23"
 
 [features]
+default = ["rar", "avif"]
+rar = ["dep:unrar"]
+avif = ["image/avif-native"]
 testing = ["dep:mockall"]

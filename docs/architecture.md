@@ -44,6 +44,8 @@ prefetch threads decompress fully in parallel with NO shared mutable state.
 
 ### RarSource
 
+The default-on `rar` feature provides `RarSource`. Without it, opening a RAR/CBR returns `CoreError::FormatDisabled { format: "rar/cbr" }`.
+
 `page_source/rar.rs`. A `PageSource` over a RAR/CBR archive using the SYNCHRONOUS `unrar`
 crate (bundles C++ UnRAR built by `cc`; extraction ONLY — no Rust RAR encoder exists), flattening
 nested images like `ZipSource`. Lock-free via reopen + sequential-skip (RAR has NO random access):
@@ -106,6 +108,8 @@ pages — the SINGLE home of the domain rule "a valid book has >= 1 image page".
 `UnsupportedFormat` errors propagate unchanged ("empty" and "unreadable" are strictly distinct).
 See [ADR-0009](ADRs/0009-reject-empty-books.md) and [patterns.md](patterns.md) ("Lift a domain rule
 into ONE core type at the boundary").
+
+Without the `rar` feature, both extension and magic-byte detection still recognize RAR, and opening or probing it returns `CoreError::FormatDisabled { format: "rar/cbr" }` regardless of policy.
 
 Both entry points have a policy-carrying twin — `open_with_policy(path, ArchivePolicy)` and
 `probe_page_count_with_policy(path, ArchivePolicy)`; `open`/`probe_page_count` are the

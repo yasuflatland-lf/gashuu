@@ -9,7 +9,7 @@
 # llvm-tools-preview (needed only by cargo-llvm-cov) is intentionally omitted here so
 # the per-OS `app` jobs don't pull it; the coverage-only `core` CI job adds it via
 # `rustup component add` — see mise.coverage.toml.
-rust = { version = "1.100.0", components = "rustfmt,clippy" }
+rust = { version = "1.100.0", components = "rustfmt,clippy", targets = "wasm32-unknown-unknown" }
 "cargo:cargo-nextest" = "0.9.152"
 
 [settings]
@@ -69,6 +69,10 @@ run = "cargo clippy --workspace --all-targets --target-dir target/clippy -- -D w
 [tasks.check-tests]
 description = "Blocking gate: the whole workspace test suite via nextest, ci profile"
 run = "cargo nextest run --workspace --profile ci"
+
+[tasks.check-wasm-core]
+description = "gashuu-core compiles for wasm32-unknown-unknown with RAR/AVIF off"
+run = "cargo check -p gashuu-core --target wasm32-unknown-unknown --no-default-features --target-dir target/wasm"
 
 [tasks.gates]
 description = "Run all five blocking gates in parallel (fmt, clippy, nextest, check-tokens, check-docs)"

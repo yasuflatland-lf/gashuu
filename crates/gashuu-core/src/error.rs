@@ -91,6 +91,7 @@ pub enum CoreError {
     },
 
     /// The RAR backend failed to open the container or read an entry.
+    #[cfg(feature = "rar")]
     #[error("rar archive error: {0}")]
     Rar(#[from] ::unrar::error::UnrarError),
 }
