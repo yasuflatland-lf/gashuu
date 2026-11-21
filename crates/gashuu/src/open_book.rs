@@ -339,7 +339,7 @@ impl OpenBookUseCase {
             let overrides = canonical
                 .map(|c| self.library.borrow().overrides_for(c))
                 .unwrap_or_default();
-            overrides.resolve(&self.settings.borrow())
+            overrides.resolve(self.settings.borrow().view_defaults())
         };
         self.state
             .borrow_mut()
@@ -484,8 +484,8 @@ mod tests {
     use super::*;
     use crate::view_sync::current_runtime_view;
     use gashuu_core::{
-        ArchivePolicy, CoverMode, FitMode, LibraryStore, ReadingDirection, ResolvedView,
-        SettingsStore, SpreadMode, ViewOverride,
+        ArchivePolicy, CoverMode, FitMode, LibraryStore, ReadingDirection, SettingsStore,
+        SpreadMode, ViewOverride,
     };
     use std::cell::Cell;
     use std::path::PathBuf;
@@ -1762,12 +1762,7 @@ mod tests {
             fit_mode: FitMode::Actual,
             ..Settings::default()
         };
-        let global_view = ResolvedView {
-            reading_direction: settings.reading_direction,
-            spread_mode: settings.spread_mode,
-            cover_mode: settings.cover_mode,
-            fit_mode: settings.fit_mode,
-        };
+        let global_view = settings.view_defaults();
         // A's stored override differs from the globals in all four fields, so the
         // write-back that clears it at B's open cannot pass vacuously.
         let book_a_override = ViewOverride {

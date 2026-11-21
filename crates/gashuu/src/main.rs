@@ -1134,12 +1134,7 @@ mod tests {
             |_| Ok(()),
         );
 
-        let persisted_global = ResolvedView {
-            reading_direction: settings.borrow().reading_direction,
-            spread_mode: settings.borrow().spread_mode,
-            cover_mode: settings.borrow().cover_mode,
-            fit_mode: settings.borrow().fit_mode,
-        };
+        let persisted_global = settings.borrow().view_defaults();
         assert_eq!(
             persisted_global, edited_global_view,
             "the exit path must commit the dialog's global edit into Settings"
