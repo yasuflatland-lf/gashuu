@@ -15,13 +15,13 @@ i18n-embed = { version = "0.16", features = ["fluent-system"] }
 i18n-embed-fl = "0.10"
 rust-embed = "8"
 unic-langid = { version = "0.9", features = ["macros"] }
+# clock.rs uses the wasm-safe clock on every target.
+web-time = "1"
 
 # Desktop-only: native OS integration (dialogs, HTTP self-update, window geometry,
 # drag-and-drop). wasm32 builds omit these; see docs/toolchain.md.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 gashuu-core = { path = "../gashuu-core" }
-# wasm-safe clock; std re-export on native
-web-time = "1"
 # `unstable-winit-030` exposes `slint::winit_030` (the winit backend's raw
 # `WindowEvent` filter), used by `handlers/drag_drop.rs` to receive OS file-drop
 # events Slint has no stable API for. That module is feature-gated and "may be
