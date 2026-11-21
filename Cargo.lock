@@ -1759,6 +1759,7 @@ dependencies = [
  "tracing-wasm",
  "unic-langid",
  "ureq",
+ "web-sys",
  "web-time",
  "winresource",
  "zip",

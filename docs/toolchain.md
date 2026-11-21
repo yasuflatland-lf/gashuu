@@ -77,11 +77,16 @@ The Pages workflow publishes the Vite landing page at `/gashuu/` and the web
 app at `/gashuu/app/` in one deployment. Its Trunk build uses
 `--public-url /gashuu/app/` and the deploy job adds the bundle to `site/dist/app`.
 
-The web shell starts on the Library screen with an empty shelf. The Add buttons
-are inactive until #660 ([19/23]) adds the web picker. Settings and library data
-live in memory for the session and reset on reload until #654 ([13/23]) adds
-localStorage. Slint embeds only Inter on wasm, so Japanese glyphs are missing
-until #663 ([22/23]).
+The web shell starts on the Library screen. The Add buttons are inactive until
+#660 ([19/23]) adds the web picker. Action-time saves to `localStorage` preserve
+settings and library data across reloads. If `localStorage` is unavailable at
+startup, the app opens with defaults and an empty library, shows
+`storage (localStorage unavailable)`, and reports `NoConfigDir` or `NoDataDir`
+on save. Closing the tab skips exit persistence, including the final reading
+position and pending page counts. #664 ([23/23]) tracks the exit flush.
+
+Slint embeds only Inter on wasm, so Japanese glyphs are missing until
+#663 ([22/23]).
 Slint also writes inline pixel width and height on the canvas. These override
 the viewport CSS, so the page may scroll until a follow-up addresses resizing.
 
