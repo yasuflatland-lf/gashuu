@@ -3,6 +3,13 @@
 //! This crate never depends on `slint`; it returns raw RGBA bytes + dimensions
 //! so the presentation layer can convert them to `slint::Image`.
 
+// unrar_sys omits advapi32 for RegCloseKey, RegOpenKeyExW, RegQueryValueExW,
+// OpenProcessToken, CryptAcquireContextW, CryptReleaseContext, and CryptGenRandom.
+// Declare it here so core tests and downstream binaries inherit the Windows link.
+#[cfg(windows)]
+#[link(name = "advapi32")]
+extern "system" {}
+
 pub mod archive_loader;
 pub(crate) mod atomic_write;
 pub mod cache;

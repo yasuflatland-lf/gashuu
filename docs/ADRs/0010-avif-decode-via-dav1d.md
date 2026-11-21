@@ -102,3 +102,11 @@ keep the "end users install nothing" distribution promise on macOS (universal) a
   (and its forged-IHDR pin test) unchanged.
 - Otherwise no divergence: the production diff is exactly Decision items 1 and 2 plus the
   guard branch above.
+- **Windows static dav1d moved from vcpkg to a pinned meson source build (v1.3.0).** Decision
+  item 3's vcpkg triplet left the Windows dav1d version and its compiler to the runner image:
+  `windows-latest` moving to VS 2026 (MSVC 14.52) broke dav1d <= 1.5.4, and a cached 1.5.3
+  tree kept CI green until the tag build. All three release jobs now build one workflow-level
+  `DAV1D_VERSION` (1.5.5, which carries the upstream MSVC fix); Windows uses the composite action
+  `.github/actions/build-dav1d-windows`, shared with `ci.yml` and cached per runner image. The
+  vcpkg mentions in Decision item 3 and Costs describe the original decision, kept as written.
+  See docs/toolchain.md.
