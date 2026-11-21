@@ -47,7 +47,6 @@ use page_loader::PageController;
 #[cfg(not(test))]
 use page_loader::{PageSlot, SpreadDecodeRequest};
 use std::cell::RefCell;
-use std::path::Path;
 use std::rc::Rc;
 use thumbnail_strip::ThumbnailController;
 pub(crate) use view_sync::{current_book_name, LeavePointService, ViewModeRoute};
@@ -97,7 +96,7 @@ fn load_or_default<'a, T: Default, S>(
     label: &str,
     store: Result<&'a S, &CoreError>,
     load: impl FnOnce(&'a S) -> Result<T, CoreError>,
-    path_of: impl FnOnce(&'a S) -> &'a Path,
+    quarantine: impl FnOnce(&'a S, u64) -> Result<Option<String>, CoreError>,
     errs: &mut Vec<String>,
 ) -> T {
     let store = match store {
@@ -112,45 +111,33 @@ fn load_or_default<'a, T: Default, S>(
         Ok(value) => value,
         Err(e) => {
             tracing::warn!(error = %e, "failed to load {label}; using defaults");
-            let path = path_of(store);
-            let notice = if path.exists() {
-                let unix_now_secs = clock::unix_now_secs();
-                quarantine_load_failure(label, path, &e, unix_now_secs)
-            } else {
-                format!("{label} ({e})")
-            };
-            errs.push(notice);
+            let unix_now_secs = clock::unix_now_secs();
+            errs.push(quarantine_load_failure(
+                label,
+                quarantine(store, unix_now_secs),
+                &e,
+            ));
             T::default()
         }
     }
 }
 
-/// Keep a persisted file aside after a load failure and return the home-screen
-/// notice. The caller supplies the timestamp so tests and core remain clock-free.
+/// Turn a failed load and its quarantine outcome into a home-screen notice.
 fn quarantine_load_failure(
     label: &str,
-    path: &Path,
+    outcome: Result<Option<String>, CoreError>,
     load_error: &CoreError,
-    now_secs: u64,
 ) -> String {
-    match gashuu_core::quarantine_file(path, now_secs) {
-        Ok(destination) => {
-            tracing::warn!(
-                label,
-                path = %destination.display(),
-                "corrupt file kept aside"
-            );
-            let destination_name = destination
-                .file_name()
-                .unwrap_or_default()
-                .to_string_lossy();
-            format!("{label} ({load_error}); corrupt file kept as {destination_name}")
+    match outcome {
+        Ok(Some(destination)) => {
+            tracing::warn!(label, kept_as = %destination, "corrupt file kept aside");
+            format!("{label} ({load_error}); corrupt file kept as {destination}")
         }
+        Ok(None) => format!("{label} ({load_error})"),
         Err(quarantine_error) => {
             tracing::warn!(
                 error = %quarantine_error,
                 label,
-                path = %path.display(),
                 "failed to keep corrupt file aside"
             );
             format!("{label} ({load_error})")
@@ -174,11 +161,11 @@ fn repair_settings_file_if_needed(
     let Some(store) = store else {
         return;
     };
-    let path = store.path();
-    if !path.exists() {
-        return;
-    }
-    let on_disk = std::fs::read_to_string(path).unwrap_or_default();
+    let on_disk = match store.stored_text() {
+        Ok(Some(text)) => text,
+        Ok(None) => return,
+        Err(_) => String::new(),
+    };
     let Ok(canonical) = settings.to_json() else {
         return;
     };
@@ -210,34 +197,20 @@ fn main() -> color_eyre::Result<()> {
         "settings",
         settings_store.as_ref(),
         SettingsStore::load,
-        SettingsStore::path,
+        SettingsStore::quarantine,
         &mut load_errs,
     );
     // Self-heal an invalid settings file: in-memory values are already sane, but the
     // bad bytes persist. Rewrite at startup so a crash before clean exit can't lose it.
     repair_settings_file_if_needed(settings_store.as_ref().ok(), &settings, &mut load_errs);
     let library_store = LibraryStore::default_location();
-    let library = match &library_store {
-        Ok(store) => match store.load() {
-            Ok(library) => library,
-            Err(e) => {
-                tracing::warn!(error = %e, "failed to load library; using defaults");
-                let notice = if store.path().exists() {
-                    let unix_now_secs = clock::unix_now_secs();
-                    quarantine_load_failure("library", store.path(), &e, unix_now_secs)
-                } else {
-                    format!("library ({e})")
-                };
-                load_errs.push(notice);
-                Library::new()
-            }
-        },
-        Err(e) => {
-            tracing::warn!(error = %e, "failed to load library; using defaults");
-            load_errs.push(format!("library ({e})"));
-            Library::new()
-        }
-    };
+    let library = load_or_default(
+        "library",
+        library_store.as_ref(),
+        LibraryStore::load,
+        LibraryStore::quarantine,
+        &mut load_errs,
+    );
 
     let settings_store: SettingsStoreHandle = Rc::new(settings_store.ok());
     let library_store: LibraryStoreHandle = Rc::new(library_store.ok());
@@ -957,7 +930,7 @@ fn to_slint_image(decoded: &DecodedImage) -> slint::Image {
     slint::Image::from_rgba8(buffer)
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
     use dialog_session::DialogScope;
@@ -1159,7 +1132,7 @@ mod tests {
             "settings",
             Ok(&store),
             |_| Ok(42),
-            SettingsStore::path,
+            SettingsStore::quarantine,
             &mut errs,
         );
         assert_eq!(value, 42);
@@ -1174,7 +1147,7 @@ mod tests {
             "library",
             Err(&error),
             |_| Ok(42),
-            LibraryStore::path,
+            LibraryStore::quarantine,
             &mut errs,
         );
         assert_eq!(
@@ -1193,18 +1166,48 @@ mod tests {
         let path = dir.path().join("settings.json");
         let original = br#"{"version":99,"future_field":"keep me"}"#;
         std::fs::write(&path, original).unwrap();
-        let error = SettingsStore::new(path.clone()).load().unwrap_err();
+        let store = SettingsStore::new(path.clone());
+        let error = store.load().unwrap_err();
         let load_errs = [quarantine_load_failure(
             "settings",
-            &path,
+            store.quarantine(1_700_000_000),
             &error,
-            1_700_000_000,
         )];
 
         let destination = dir.path().join("settings.json.corrupt-1700000000");
         assert!(!path.exists());
         assert_eq!(std::fs::read(&destination).unwrap(), original);
         assert!(load_errs[0].contains("settings.json.corrupt-1700000000"));
+    }
+
+    #[test]
+    fn library_load_failure_quarantines_and_notes_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("library.json");
+        let original = b"not json";
+        std::fs::write(&path, original).unwrap();
+        let store = LibraryStore::new(path.clone());
+        let mut errs = Vec::new();
+
+        let library = load_or_default(
+            "library",
+            Ok(&store),
+            LibraryStore::load,
+            LibraryStore::quarantine,
+            &mut errs,
+        );
+
+        assert!(library.books().is_empty());
+        assert!(library.last_opened().is_none());
+        assert!(!path.exists());
+        let mut entries = std::fs::read_dir(dir.path()).unwrap();
+        let destination = entries.next().unwrap().unwrap().path();
+        assert!(entries.next().is_none());
+        let name = destination.file_name().unwrap().to_str().unwrap();
+        assert!(name.starts_with("library.json.corrupt-"));
+        assert_eq!(errs.len(), 1);
+        assert!(errs[0].contains(name));
+        assert_eq!(std::fs::read(&destination).unwrap(), original);
     }
 
     #[test]
@@ -1348,14 +1351,11 @@ mod tests {
 
     #[test]
     fn quarantine_failure_still_yields_a_plain_notice() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("settings.json");
-        let destination = dir.path().join("settings.json.corrupt-1700000000");
         let error = CoreError::NoConfigDir;
 
-        let notice = quarantine_load_failure("settings", &path, &error, 1_700_000_000);
-
-        assert_eq!(notice, format!("settings ({error})"));
-        assert!(!destination.exists());
+        for outcome in [Ok(None), Err(std::io::Error::other("rename failed").into())] {
+            let notice = quarantine_load_failure("settings", outcome, &error);
+            assert_eq!(notice, format!("settings ({error})"));
+        }
     }
 }

@@ -68,7 +68,11 @@ This guard, the version resolution, and the migrate dispatch are now single-home
 - **Never deserialize.** Every field is `#[serde(default)]`, so `serde_json::from_value` would happily drop every field this build does not know and return a plausible-looking value.
 - **Never save over.** The survivors would be re-saved. `settings.json` kept its FUTURE version label, which permanently inoculated the file against every later migration step (each fires only when `stored < target`); `library.json` was force-stamped honestly and was therefore silently DOWNGRADED instead. Neither is recoverable after the fact.
 
-Recovery is **quarantine-then-fresh** for both documents, reusing the pattern `library.json` already had: rename aside as `<name>.corrupt-<now_secs>` via `gashuu_core::quarantine_file` (never reads or parses the file; the caller injects the clock), surface a notice, start from defaults. Note the asymmetry this removes: before the change a failing `settings.json` was OVERWRITTEN with the defaults' canonical JSON by `repair_settings_file_if_needed`, destroying the user's bytes; that function is now inert after a quarantine (its `!path.exists()` early return).
+Recovery is **quarantine-then-fresh** for both documents. The UI supplies the timestamp to the
+repository's `quarantine` method, surfaces a notice, and starts from defaults. On desktop, the
+adapter renames the file as `<name>.corrupt-<now_secs>` without reading or parsing it. The startup
+settings repair returns immediately when `stored_text` reports that the blob is absent. Before
+quarantine was added, the startup repair could overwrite a file that failed to load with defaults.
 
 `Settings::normalize` stamps `SETTINGS_VERSION` on save — the `version` field is a schema label OWNED BY THE BINARY, never echoed back from disk — restoring the symmetry `Library::to_json` already had via `LibraryDocument`. `normalize ∘ normalize = normalize` still holds (an assignment is a projection). `SETTINGS_VERSION` and `LIBRARY_VERSION` both stay `1`; no migration step was added.
 
@@ -1010,7 +1014,9 @@ NUANCE (`stage_position_write_back`): to read MULTIPLE fields from one `RefCell`
 
 **Single owner of `create_dir_all`.** `write_atomic` owns parent-directory creation (module doc comment: `atomic_write.rs:15`). Call sites MUST NOT also call `create_dir_all` for the same parent; the invariant is held in one place.
 
-**Store `save` delegation.** Both `LibraryStore::save` (`library_store.rs`) and `SettingsStore::save` (`settings_store.rs`) are one-liners that call `write_atomic(&self.path, value.to_json()?.as_bytes())`. No other code in the crate writes these JSON files directly.
+**Store `save` delegation.** Both `LibraryStore::save` and `SettingsStore::save` pass the document's
+serialized bytes to `BlobStore::write_atomic`. On desktop, `FsBlobStore` resolves the path from the
+key and calls `atomic_write::write_atomic`.
 
 **`tempfile` in `[dependencies]`, not `[dev-dependencies]`** (`gashuu-core/Cargo.toml:24`). `write_atomic` is production code, so `tempfile` must be a regular dependency — placing it in `[dev-dependencies]` would make `NamedTempFile` unavailable at compile time in release builds.
 
