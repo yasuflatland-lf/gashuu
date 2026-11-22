@@ -10,6 +10,7 @@ struct SessionGuard {
     session: Option<SessionId>,
     orphans: Arc<Mutex<Vec<SessionId>>>,
 }
+
 impl Drop for SessionGuard {
     fn drop(&mut self) {
         if let Some(session) = self.session.take() {
@@ -22,10 +23,11 @@ impl Drop for SessionGuard {
 }
 
 pub(crate) struct PendingOpen {
-    pub(crate) request: BookId,
+    request: BookId,
     result: Result<OpenedBook, BackendError>,
     guard: SessionGuard,
 }
+
 impl PendingOpen {
     pub(crate) fn into_result(mut self) -> (BookId, Result<OpenedBook, BackendError>) {
         self.guard.session = None;
@@ -38,6 +40,7 @@ pub(crate) struct OpenController {
     generation: Generation<Option<PendingOpen>>,
     orphans: Arc<Mutex<Vec<SessionId>>>,
 }
+
 impl OpenController {
     pub(crate) fn new(backend: Rc<dyn BookBackend>) -> Self {
         Self {
@@ -46,12 +49,14 @@ impl OpenController {
             orphans: Arc::default(),
         }
     }
+
     fn close_orphans(&self) {
         let sessions = std::mem::take(&mut *self.orphans.lock().expect("orphan queue poisoned"));
         for session in sessions {
             self.backend.close(session);
         }
     }
+
     pub(crate) fn start(
         &self,
         weak: slint::Weak<ViewerWindow>,
@@ -85,6 +90,7 @@ impl OpenController {
             }),
         );
     }
+
     pub(crate) fn take_outcome(&self, epoch: usize) -> Option<PendingOpen> {
         self.close_orphans();
         self.generation.take(epoch).flatten()
@@ -141,6 +147,7 @@ mod tests {
             [Call::Close(old)]
         );
     }
+
     #[test]
     fn take_outcome_drops_superseded_and_drains_current_once() {
         let backend = FakeBackend::new();
@@ -197,7 +204,7 @@ mod tests {
             backend
                 .calls()
                 .iter()
-                .filter(|c| matches!(c,Call::Close(s) if *s==old))
+                .filter(|c| matches!(c, Call::Close(s) if *s == old))
                 .count(),
             1
         );

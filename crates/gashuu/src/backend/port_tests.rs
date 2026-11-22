@@ -21,6 +21,22 @@ fn backend_error_maps_core_variants_and_preserves_other_detail() {
     );
 }
 
+impl OpenedBook {
+    /// Read a real fixture synchronously. Only the metadata escapes this backend.
+    pub(crate) fn open_for_test(
+        id: &BookId,
+        policy: ArchivePolicy,
+        cache: CacheConfig,
+    ) -> Result<Self, BackendError> {
+        let backend = desktop::DesktopBackend::new();
+        let mut opened = backend.open_blocking(id, policy, cache)?;
+        backend.close(opened.session);
+        // The fixture's fake backend owns a distinct handle for the installed metadata.
+        opened.session = SessionId::allocate();
+        Ok(opened)
+    }
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn backend_error_for_open_distinguishes_corrupt_and_missing_file() {
@@ -103,20 +119,4 @@ fn deliver_cover_drops_count_callback_on_cover_error() {
     );
     assert_eq!(cover.try_recv().unwrap(), Err(BackendError::EmptyBook));
     assert_eq!(count.try_recv(), Err(TryRecvError::Disconnected));
-}
-
-impl OpenedBook {
-    /// Read a real fixture synchronously. Only the metadata escapes this backend.
-    pub(crate) fn open_for_test(
-        id: &BookId,
-        policy: ArchivePolicy,
-        cache: CacheConfig,
-    ) -> Result<Self, BackendError> {
-        let backend = desktop::DesktopBackend::new();
-        let mut opened = backend.open_blocking(id, policy, cache)?;
-        backend.close(opened.session);
-        // The fixture's fake backend owns a distinct handle for the installed metadata.
-        opened.session = SessionId::allocate();
-        Ok(opened)
-    }
 }
