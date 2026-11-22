@@ -333,15 +333,11 @@ impl Dispatcher {
         max_side: u32,
         want_count: bool,
     ) -> (WireResult<DecodedImage>, u32) {
-        let fp = self
+        let store = self
             .cover_store
             .as_ref()
-            .map(|s| s.fingerprint(&BookId::new(id)));
-        let mut cached = self
-            .cover_store
-            .as_ref()
-            .zip(fp)
-            .and_then(|(s, fp)| s.get(fp, ThumbSlot::Cover, max_side));
+            .map(|store| (store, store.fingerprint(&BookId::new(id))));
+        let mut cached = store.and_then(|(store, fp)| store.get(fp, ThumbSlot::Cover, max_side));
         if !want_count {
             if let Some(image) = cached.take() {
                 return (Ok(image), 0);
@@ -361,7 +357,7 @@ impl Dispatcher {
                     return (Ok(image), count);
                 }
                 let result = self.thumbnail(source.as_ref(), 0, max_side).await;
-                if let (Ok(image), Some(store), Some(fp)) = (&result, &self.cover_store, fp) {
+                if let (Ok(image), Some((store, fp))) = (&result, store) {
                     let _ = store.put(fp, ThumbSlot::Cover, max_side, image);
                 }
                 (result, count)

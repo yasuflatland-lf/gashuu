@@ -177,6 +177,7 @@ pub(crate) fn clear_covers() {
         backend.dispatch(|client| (client.clear_covers(), Vec::new()));
     }
 }
+
 pub(crate) fn prune_covers(max_bytes: u64) {
     if let Some(backend) = shared() {
         backend.dispatch(|client| (client.prune_covers(max_bytes), Vec::new()));
