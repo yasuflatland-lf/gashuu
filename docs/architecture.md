@@ -1208,7 +1208,7 @@ in focus order and asks for a count only for rows with an unknown total. A deskt
 uses one archive open for cover and count. A cache hit opens the book again only for a requested
 count. The 512 px size is part of the disk cache key and is independent of the strip's 160 px
 thumbnails. Web serializes page-zero decodes across refreshes and keeps up to 64 MiB of covers
-in memory. Reloading the web app clears that cache.
+in memory. Reloading clears that memory cache; OPFS retains QOI covers when available.
 
 Callers release their library borrow before issuing the refresh so the controller can apply
 pending counts. Resolved counts update the row immediately and enter a queue for persistence
@@ -1314,3 +1314,7 @@ Core stays headless and unit-testable (no display server); the UI is the only pl
 Slint, pixel buffers, and logging.
 
 See [ADR-0002](ADRs/0002-layered-two-crate-architecture.md) for the full rationale.
+
+### Web cover persistence
+
+The worker stores QOI covers at `covers/<cover_key>.qoi` in OPFS, alongside `books/`. A staged `ThumbStore` preloads bytes before synchronous dispatch and queues writes and removals for the asynchronous OPFS bridge. Reads and writes are best-effort; startup prunes oldest files to 64 MiB. Deleting a book purges its 512-pixel carousel cover.

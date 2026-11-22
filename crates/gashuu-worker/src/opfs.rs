@@ -304,3 +304,78 @@ fn storage_full() -> WireError {
         detail: STORAGE_FULL.into(),
     }
 }
+
+async fn covers_directory() -> Result<FileSystemDirectoryHandle, JsValue> {
+    let scope: DedicatedWorkerGlobalScope = js_sys::global().dyn_into()?;
+    let root: FileSystemDirectoryHandle =
+        resolve(scope.navigator().storage().get_directory()).await?;
+    create_dir(&root, "covers").await
+}
+
+pub async fn read_cover(name: &str) -> Option<Vec<u8>> {
+    let dir = covers_directory().await.ok()?;
+    let file: FileSystemFileHandle = resolve(dir.get_file_handle(name)).await.ok()?;
+    let handle: FileSystemSyncAccessHandle =
+        resolve(file.create_sync_access_handle()).await.ok()?;
+    let result = (|| {
+        let size = handle.get_size().ok()? as usize;
+        let mut bytes = vec![0; size];
+        let count = handle.read_with_u8_array(&mut bytes).ok()? as usize;
+        (count == size).then_some(bytes)
+    })();
+    handle.close();
+    result
+}
+
+pub async fn write_cover(name: &str, bytes: &[u8]) -> Result<(), JsValue> {
+    let dir = covers_directory().await?;
+    let handle = create_file(&dir, name).await?;
+    let result = (|| {
+        handle.truncate_with_u32(0)?;
+        let count = handle.write_with_u8_array(bytes)? as usize;
+        if count != bytes.len() {
+            return Err("short cover write".into());
+        }
+        handle.flush()
+    })();
+    handle.close();
+    result
+}
+
+pub async fn remove_cover(name: &str) -> Result<(), JsValue> {
+    let dir = covers_directory().await?;
+    JsFuture::from(dir.remove_entry(name)).await?;
+    Ok(())
+}
+
+pub async fn list_covers() -> Result<Vec<(String, u64, f64)>, JsValue> {
+    let dir = covers_directory().await?;
+    let values: js_sys::Function = Reflect::get(&dir, &"values".into())?.dyn_into()?;
+    let iterator = values.call0(&dir)?;
+    let next: js_sys::Function = Reflect::get(&iterator, &"next".into())?.dyn_into()?;
+    let mut files = Vec::new();
+    loop {
+        let promise: Promise = next.call0(&iterator)?.dyn_into()?;
+        let entry = JsFuture::from(promise).await?;
+        if Reflect::get(&entry, &"done".into())?
+            .as_bool()
+            .unwrap_or(false)
+        {
+            break;
+        }
+        let value = Reflect::get(&entry, &"value".into())?;
+        let Ok(handle) = value.dyn_into::<FileSystemFileHandle>() else {
+            continue;
+        };
+        let file: File = resolve(handle.get_file()).await?;
+        files.push((file.name(), file.size() as u64, file.last_modified()));
+    }
+    Ok(files)
+}
+
+pub async fn clear_covers() -> Result<(), JsValue> {
+    for (name, _, _) in list_covers().await? {
+        remove_cover(&name).await?;
+    }
+    Ok(())
+}

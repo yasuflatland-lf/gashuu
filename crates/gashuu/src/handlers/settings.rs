@@ -345,6 +345,8 @@ pub(crate) fn wire_settings_handlers(
         let localizer = Rc::clone(&localizer);
         ui.on_clear_cover_cache(move || {
             with_ui(&ui_weak, |ui| {
+                #[cfg(target_arch = "wasm32")]
+                crate::backend::web::clear_covers();
                 let report = thumbs.clear();
                 ui.set_data_action_status(
                     i18n::dynamic::cover_cache_cleared(

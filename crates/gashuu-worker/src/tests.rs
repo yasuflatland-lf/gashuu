@@ -99,6 +99,8 @@ fn all_requests_round_trip() {
         cover(SESSION, true),
         Request::CancelCovers { below: SESSION },
         probe(),
+        Request::ClearCovers,
+        Request::PruneCovers { max_bytes: 64 },
     ] {
         assert_eq!(decode::<Request>(&encode(&request)).unwrap(), request);
     }
@@ -909,4 +911,117 @@ fn import_rejects_a_rar_renamed_as_cbz() {
             format: "rar/cbr".into()
         })
     );
+}
+
+#[test]
+fn cover_prune_and_staged_store_contract() {
+    use crate::cover_store::{cover_file_name, plan_cover_prune, StagedCoverStore};
+    use gashuu_core::{BookFingerprint, BookId, ThumbSlot, ThumbStore};
+    let fp = BookFingerprint::of_id(&BookId::new(ID));
+    let name = cover_file_name(fp, 512);
+    assert_eq!(name, format!("{}.qoi", fp.cover_key(512)));
+    let files = vec![
+        ("b".into(), 5, 1.0),
+        ("a".into(), 5, 1.0),
+        ("c".into(), 4, 2.0),
+    ];
+    assert!(plan_cover_prune(&files, 15).is_empty());
+    assert!(plan_cover_prune(&files, 14).is_empty());
+    assert_eq!(plan_cover_prune(&files, 4), vec!["a", "b"]);
+    let store = StagedCoverStore::default();
+    let image = DecodedImage::new(vec![1, 2, 3, 255], 1, 1).unwrap();
+    assert!(store.get(fp, ThumbSlot::Cover, 512).is_none());
+    store.put(fp, ThumbSlot::Cover, 512, &image).unwrap();
+    let writes = store.take_writes();
+    assert_eq!(writes.len(), 1);
+    store.preload(writes[0].0.clone(), writes[0].1.clone());
+    assert_eq!(
+        store.get(fp, ThumbSlot::Cover, 512).unwrap().rgba(),
+        image.rgba()
+    );
+    assert_eq!(store.purge_cover(fp, &[512]), 1);
+    assert_eq!(store.take_removals(), vec![name]);
+    store.clear();
+    assert!(store.take_clear());
+    assert!(!store.take_clear());
+}
+
+#[test]
+fn cover_store_hit_skips_decode_and_still_counts() {
+    let store = Arc::new(crate::cover_store::StagedCoverStore::default());
+    let decoder = RecordingDecoder::new(Ok(fake_image()));
+    let mut worker = Dispatcher::new(decoder.clone(), Rc::new(ImageCratePageDecoder))
+        .with_cover_store(store.clone());
+    let first = run(worker.handle(cover(0, false), Some(Ok(book()))));
+    assert_eq!(first.len(), 1);
+    let writes = store.take_writes();
+    assert_eq!(writes.len(), 1);
+    store.preload(writes[0].0.clone(), writes[0].1.clone());
+    let second = run(worker.handle(cover(0, true), Some(Ok(book()))));
+    assert_eq!(decoder.seen.borrow().len(), 1);
+    assert_eq!(second[1].msg, Response::CoverCount { req: REQ, count: 2 });
+}
+
+#[test]
+fn staged_purge_only_removes_selected_book_and_bad_data_misses() {
+    use crate::cover_store::{cover_file_name, StagedCoverStore};
+    use gashuu_core::{BookId, ThumbSlot, ThumbStore};
+    let store = StagedCoverStore::default();
+    let first = store.fingerprint(&BookId::new("first"));
+    let second = store.fingerprint(&BookId::new("second"));
+    let image = fake_image();
+    store.put(first, ThumbSlot::Cover, 512, &image).unwrap();
+    store.put(second, ThumbSlot::Cover, 512, &image).unwrap();
+    assert_eq!(store.purge_cover(first, &[512]), 1);
+    assert_eq!(store.take_removals(), [cover_file_name(first, 512)]);
+    let writes = store.take_writes();
+    assert_eq!(writes.len(), 1);
+    assert_eq!(writes[0].0, cover_file_name(second, 512));
+    store.preload(cover_file_name(first, 512), vec![0, 1, 2]);
+    assert!(store.get(first, ThumbSlot::Cover, 512).is_none());
+    assert_eq!(store.purge_pages(first, &[512], 1), 0);
+    let _ = store.prune(0);
+}
+
+#[test]
+fn failed_cover_write_does_not_prevent_reply() {
+    use gashuu_core::{
+        BookFingerprint, BookId, ClearCacheReport, PruneReport, ThumbSlot, ThumbStore,
+    };
+    struct FailedStore;
+    impl ThumbStore for FailedStore {
+        fn fingerprint(&self, id: &BookId) -> BookFingerprint {
+            BookFingerprint::of_id(id)
+        }
+        fn get(&self, _: BookFingerprint, _: ThumbSlot, _: u32) -> Option<DecodedImage> {
+            None
+        }
+        fn put(
+            &self,
+            _: BookFingerprint,
+            _: ThumbSlot,
+            _: u32,
+            _: &DecodedImage,
+        ) -> Result<(), CoreError> {
+            Err(CoreError::Io(io::Error::other("storage failure")))
+        }
+        fn purge_cover(&self, _: BookFingerprint, _: &[u32]) -> usize {
+            0
+        }
+        fn purge_pages(&self, _: BookFingerprint, _: &[u32], _: usize) -> usize {
+            0
+        }
+        fn clear(&self) -> ClearCacheReport {
+            ClearCacheReport::default()
+        }
+        fn prune(&self, _: u64) -> PruneReport {
+            PruneReport::default()
+        }
+    }
+    let mut worker = dispatcher().with_cover_store(Arc::new(FailedStore));
+    let replies = run(worker.handle(cover(0, false), Some(Ok(book()))));
+    assert!(matches!(
+        replies[0].msg,
+        Response::Cover { result: Ok(_), .. }
+    ));
 }

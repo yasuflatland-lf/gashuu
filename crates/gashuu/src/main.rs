@@ -463,6 +463,9 @@ fn run_app(
         );
     }
 
+    #[cfg(target_arch = "wasm32")]
+    backend::web::prune_covers(64 * 1024 * 1024);
+
     // Top-level screen state machine (boots to Library). `Rc<RefCell<…>>` so carousel
     // callbacks and the Viewer's GoToLibrary arm can flip it via the seam functions.
     let nav = Rc::new(RefCell::new(NavState::new()));

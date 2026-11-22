@@ -319,7 +319,7 @@ fn for_each_cache_file(dir: &Path, mut visit: impl FnMut(&std::fs::DirEntry, &st
 /// the atomic-write/path concern in [`FsThumbStore::put`] so the encode is
 /// testable in isolation. Errors with `MalformedImage` if the RGBA buffer length
 /// does not match `width * height * 4`, or propagates an `image` encode failure.
-fn encode_qoi(img: &DecodedImage) -> Result<Vec<u8>, CoreError> {
+pub fn encode_qoi(img: &DecodedImage) -> Result<Vec<u8>, CoreError> {
     let raw = image::RgbaImage::from_raw(img.width(), img.height(), img.rgba().to_vec())
         .ok_or_else(|| CoreError::MalformedImage {
             expected: (img.width() as usize)
