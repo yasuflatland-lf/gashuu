@@ -190,6 +190,13 @@ export component ViewerWindow inherits Window {
 
     // Carousel navigation seams (Library screen). Forwarded to handlers/library.rs.
     callback storage-inventory-changed();
+    callback storage-notice-dismissed();
+    in property <string> storage-title;
+    in property <string> storage-usage-text;
+    in property <string> storage-protected;
+    in property <string> storage-notice-text;
+    in property <bool> storage-notice-visible;
+
     callback carousel-open(int);
     callback carousel-move(int);
     callback carousel-back();
@@ -355,6 +362,26 @@ export component ViewerWindow inherits Window {
         delete-label: root.carousel-delete-label;
         has-selection: root.carousel-has-selection;
         request-delete() => { root.carousel-request-delete(); }
+    }
+
+    if root.screen == 0 && root.storage-notice-visible : Rectangle {
+        x: Theme.space-lg;
+        y: Theme.space-md + Theme.nav-pill-height + Theme.space-sm;
+        width: root.width - 2 * Theme.space-lg;
+        height: notice-row.preferred-height + 2 * Theme.space-sm;
+        background: Theme.glass-fill;
+        border-radius: Theme.radius-pill;
+        notice-row := HorizontalLayout {
+            padding: Theme.space-sm;
+            spacing: Theme.space-sm;
+            Text { text: root.storage-notice-text; color: Theme.text; font-size: Theme.font-micro; overflow: elide; }
+            Rectangle {
+                width: Theme.nav-icon;
+                height: Theme.nav-icon;
+                Text { text: "✕"; color: Theme.text; font-size: Theme.font-label; horizontal-alignment: center; vertical-alignment: center; }
+                TouchArea { clicked => { root.storage-notice-dismissed(); } }
+            }
+        }
     }
 
     // ── Library-screen status notice ─────────────────────────────────────────
@@ -700,6 +727,9 @@ export component ViewerWindow inherits Window {
         track-recent <=> root.track-recent;
         allow-rar-archives <=> root.allow-rar-archives;
         data-action-status: root.data-action-status;
+        storage-title: root.storage-title;
+        storage-usage-text: root.storage-usage-text;
+        storage-protected: root.storage-protected;
         language-index <=> root.language-index;
         focus-epoch: root.settings-focus-epoch;
         show-reset-button: root.settings-per-book;

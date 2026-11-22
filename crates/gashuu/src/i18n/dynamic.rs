@@ -468,6 +468,52 @@ pub(crate) fn format_notices(
     notices
 }
 
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn storage_text(
+    loader: &FluentLanguageLoader,
+    status: &crate::storage_status::StorageStatus,
+    guidance: &crate::storage_status::Guidance,
+) -> (String, String, String, String) {
+    use crate::storage_status::{format_bytes, format_usage, Guidance};
+    let unknown = fl!(loader, "storage-unknown");
+    let (usage, percent) = status
+        .usage
+        .map(|usage| format_usage(usage, status.quota))
+        .unwrap_or_else(|| (unknown.clone(), None));
+    let quota = status.quota.map(format_bytes).unwrap_or(unknown);
+    let usage = match percent {
+        Some(percent) => fl!(
+            loader,
+            "storage-usage",
+            usage = usage.as_str(),
+            quota = quota.as_str(),
+            percent = i64::from(percent)
+        ),
+        None => fl!(
+            loader,
+            "storage-usage-without-percent",
+            usage = usage.as_str(),
+            quota = quota.as_str()
+        ),
+    };
+    let protected = match status.persisted {
+        Some(true) => fl!(loader, "storage-protected"),
+        Some(false) => fl!(loader, "storage-unprotected"),
+        None => fl!(loader, "storage-protection-unknown"),
+    };
+    let notice = match guidance {
+        Guidance::None => String::new(),
+        Guidance::AddToHomeScreen => fl!(loader, "storage-add-home"),
+        Guidance::PersistDenied => fl!(loader, "storage-denied"),
+        Guidance::NearQuota => fl!(loader, "storage-near-quota"),
+        Guidance::Evicted { count } => {
+            let count = *count as i64;
+            fl!(loader, "storage-evicted", count = count)
+        }
+    };
+    (fl!(loader, "storage-title"), usage, protected, notice)
+}
+
 // ---- Tests ----------------------------------------------------------------
 
 #[cfg(test)]

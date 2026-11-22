@@ -88,6 +88,9 @@ export component SettingsDialog inherits GlassModal {
     // Pre-composed feedback for the clear-history / clear-cache actions. Empty = no
     // message; Rust pushes a transient string, reset to empty on the next dialog open.
     in property <string> data-action-status;
+    in property <string> storage-title;
+    in property <string> storage-usage-text;
+    in property <string> storage-protected;
 
     // ── Callbacks fired when the user changes a setting ───────────────────────
     callback set-reading-direction(int);
@@ -487,6 +490,12 @@ export component SettingsDialog inherits GlassModal {
                             set-language(i) => {
                                 root.set-language(i);
                             }
+                        }
+                        if root.storage-title != "" : VerticalLayout {
+                            spacing: Theme.space-sm;
+                            Text { text: root.storage-title; color: Theme.text-dim; font-size: Theme.font-label; }
+                            Text { text: root.storage-usage-text; color: Theme.text; font-size: Theme.font-micro; }
+                            Text { text: root.storage-protected; color: Theme.text; font-size: Theme.font-micro; }
                         }
                         DataSettings {
                             show-title: true;

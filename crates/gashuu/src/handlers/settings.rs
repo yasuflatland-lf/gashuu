@@ -26,6 +26,7 @@ fn clear_storage_after_library_save(
     thumbs: &dyn ThumbStore,
     importer: Option<&dyn crate::backend::BookImporter>,
     adder: &AddController,
+    done: Box<dyn FnOnce() + Send>,
 ) -> bool {
     let cancelled_import = adder.cancel_import();
     if !library_save_succeeded {
@@ -41,6 +42,7 @@ fn clear_storage_after_library_save(
             Box::new(move |_report| {
                 #[cfg(any(test, target_arch = "wasm32"))]
                 inventory.replace(_report.present);
+                done();
             }),
         );
     }
@@ -335,7 +337,20 @@ pub(crate) fn wire_settings_handlers(
                 if let Some(ref e) = set_err {
                     tracing::error!(error = %e, "failed to persist settings while clearing reading history");
                 }
-                if clear_storage_after_library_save(lib_err.is_none(), thumbs.as_ref(), importer.as_deref(), &adder) {
+                #[cfg(target_arch = "wasm32")]
+                let sweep_ui = ui.as_weak();
+                if clear_storage_after_library_save(
+                    lib_err.is_none(),
+                    thumbs.as_ref(),
+                    importer.as_deref(),
+                    &adder,
+                    Box::new(move || {
+                        #[cfg(target_arch = "wasm32")]
+                        if let Some(ui) = sweep_ui.upgrade() {
+                            ui.invoke_storage_inventory_changed();
+                        }
+                    }),
+                ) {
                     ui.set_add_active(false);
                     ui.set_status_text("".into());
                 }
@@ -570,6 +585,8 @@ pub(crate) fn wire_view_mode_handlers(
                 // Push the loaded catalog into the Strings global so every Fluent label
                 // flips to the new language before the next paint.
                 localizer.push_strings_to_ui(&ui);
+                #[cfg(target_arch = "wasm32")]
+                ui.invoke_storage_inventory_changed();
                 ui.set_key_bindings_text(
                     crate::i18n::dynamic::shortcuts_help(localizer.loader()).into(),
                 );
@@ -656,7 +673,8 @@ mod tests {
             true,
             &thumbs,
             Some(importer.as_ref()),
-            &adder
+            &adder,
+            Box::new(|| {}),
         ));
         importer.complete_import(Ok(imported(2)));
         assert!(!inventory.contains(&imported(2).id));
@@ -696,7 +714,13 @@ mod tests {
             RecordingThumbStore::with_disk(FsThumbStore::with_dir(dir.path().to_path_buf()));
         let importer = crate::backend::fake::FakeBackend::new();
         let adder = AddController::new(importer.clone());
-        clear_storage_after_library_save(true, &thumbs, Some(importer.as_ref()), &adder);
+        clear_storage_after_library_save(
+            true,
+            &thumbs,
+            Some(importer.as_ref()),
+            &adder,
+            Box::new(|| {}),
+        );
         assert_eq!(
             importer.calls(),
             [crate::backend::fake::Call::Sweep(vec![], true)]
@@ -719,7 +743,13 @@ mod tests {
 
         let importer = crate::backend::fake::FakeBackend::new();
         let adder = AddController::new(importer.clone());
-        clear_storage_after_library_save(false, &thumbs, Some(importer.as_ref()), &adder);
+        clear_storage_after_library_save(
+            false,
+            &thumbs,
+            Some(importer.as_ref()),
+            &adder,
+            Box::new(|| {}),
+        );
         assert!(importer.calls().is_empty());
 
         assert!(

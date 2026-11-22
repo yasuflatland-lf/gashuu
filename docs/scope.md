@@ -25,7 +25,9 @@ picker supports files only. RAR/CBR and AVIF are unavailable. Browser-native
 image decoding uses a PNG/JPEG fallback.
 
 Repeated imports reuse a stored copy. Removing a library book releases its
-storage. Startup sweeps reclaim orphans and mark evicted books unavailable.
+storage. Startup sweeps reclaim orphans and mark evicted books unavailable. Settings
+shows estimated browser storage usage and protection; the Library offers dismissible
+guidance about eviction, quota and adding the app to the Home Screen.
 
 ### Cache and prefetch
 

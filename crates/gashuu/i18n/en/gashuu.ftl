@@ -322,3 +322,14 @@ selection-exit-a11y = Exit selection mode
 # DangerButton label in the SelectionToolbar; also the confirm-button label in
 # the bulk-delete ConfirmDialog (bound via Strings.selection-delete).
 selection-delete = Delete
+storage-title = Browser storage
+storage-usage = Estimated usage: { $usage } / { $quota } ({ $percent }%)
+storage-usage-without-percent = Estimated usage: { $usage } / { $quota }
+storage-unknown = Unknown
+storage-protected = Protected
+storage-unprotected = Not protected
+storage-protection-unknown = Protection unknown
+storage-add-home = Add this app to your Home Screen; the browser may remove saved books.
+storage-denied = Browser storage is not protected; the browser may remove saved books.
+storage-near-quota = Browser storage is nearly full.
+storage-evicted = { $count } saved books are unavailable; the browser may have removed them.

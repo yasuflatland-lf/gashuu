@@ -31,6 +31,8 @@ mod picker;
 mod recording_thumb_store;
 mod remove_books;
 mod selection_projection;
+#[cfg(any(test, target_arch = "wasm32"))]
+mod storage_status;
 #[cfg(not(target_arch = "wasm32"))]
 mod thumbnail_strip;
 #[cfg(target_arch = "wasm32")]
@@ -54,6 +56,8 @@ mod web_lifecycle;
 mod web_picker;
 #[cfg(any(target_arch = "wasm32", test))]
 mod web_pointer;
+#[cfg(target_arch = "wasm32")]
+mod web_storage;
 #[cfg(target_arch = "wasm32")]
 mod web_viewport;
 #[cfg(not(target_arch = "wasm32"))]
@@ -458,6 +462,8 @@ fn run_app(
         localizer: Rc::clone(&localizer),
     };
     #[cfg(target_arch = "wasm32")]
+    wire_storage_status(&ui, &carousel, &settings, &settings_store);
+    #[cfg(target_arch = "wasm32")]
     wire_startup_sweep(&ui, &carousel, importer.as_deref(), library_loaded);
     refresh_library_carousel(&ui, &carousel, true);
     // Continue reading: override the refresh's reset-to-0 with a one-shot snap to the
@@ -666,6 +672,93 @@ fn run_app(
     Ok(())
 }
 
+/// Wires notice dismissal and owns the single `storage_inventory_changed` handler.
+/// That handler re-reads `navigator.storage` status, recomputes guidance, and
+/// refreshes the carousel. The epoch drops stale async results.
+#[cfg(target_arch = "wasm32")]
+fn wire_storage_status(
+    ui: &ViewerWindow,
+    carousel: &CarouselRefresh,
+    settings: &Rc<RefCell<Settings>>,
+    settings_store: &SettingsStoreHandle,
+) {
+    let current_kind = Rc::new(RefCell::new(None::<String>));
+    let epoch = Rc::new(std::cell::Cell::new(0_u64));
+    ui.on_storage_notice_dismissed({
+        let weak = ui.as_weak();
+        let current_kind = Rc::clone(&current_kind);
+        let settings = Rc::clone(settings);
+        let store = Rc::clone(settings_store);
+        move || {
+            if let Some(kind) = current_kind.borrow().as_ref() {
+                let mut settings = settings.borrow_mut();
+                settings.web_guidance_dismissed.insert(kind.clone());
+                if let Err(error) = save_settings(&store, &settings) {
+                    tracing::warn!(%error, "failed to save storage notice dismissal");
+                }
+            }
+            if let Some(ui) = weak.upgrade() {
+                ui.set_storage_notice_visible(false);
+            }
+        }
+    });
+    ui.on_storage_inventory_changed({
+        let weak = ui.as_weak();
+        let carousel = carousel.clone();
+        let settings = Rc::clone(settings);
+        let store = Rc::clone(settings_store);
+        let current_kind = Rc::clone(&current_kind);
+        let epoch = Rc::clone(&epoch);
+        move || {
+            epoch.set(epoch.get() + 1);
+            let ticket = epoch.get();
+            let weak = weak.clone();
+            let carousel = carousel.clone();
+            let settings = Rc::clone(&settings);
+            let store = Rc::clone(&store);
+            let current_kind = Rc::clone(&current_kind);
+            let epoch = Rc::clone(&epoch);
+            wasm_bindgen_futures::spawn_local(async move {
+                let status = web_storage::read_status().await;
+                if ticket != epoch.get() {
+                    return;
+                }
+                let Some(ui) = weak.upgrade() else {
+                    return;
+                };
+                let inventory = book_availability::web_inventory();
+                let missing = carousel
+                    .library
+                    .borrow()
+                    .books()
+                    .iter()
+                    .filter(|book| !inventory.contains(book.id()))
+                    .count();
+                let guidance = storage_status::guidance(&status, missing);
+                *current_kind.borrow_mut() = guidance.kind().map(str::to_owned);
+                let mut settings = settings.borrow_mut();
+                let before = settings.web_guidance_dismissed.clone();
+                let visible =
+                    storage_status::notice_visible(&guidance, &mut settings.web_guidance_dismissed);
+                if before != settings.web_guidance_dismissed {
+                    if let Err(error) = save_settings(&store, &settings) {
+                        tracing::warn!(%error, "failed to reset storage notice dismissal");
+                    }
+                }
+                let (title, usage, protection, notice) =
+                    i18n::dynamic::storage_text(carousel.localizer.loader(), &status, &guidance);
+                ui.set_storage_title(title.into());
+                ui.set_storage_usage_text(usage.into());
+                ui.set_storage_protected(protection.into());
+                ui.set_storage_notice_text(notice.into());
+                ui.set_storage_notice_visible(visible);
+                refresh_library_carousel(&ui, &carousel, false);
+            });
+        }
+    });
+    ui.invoke_storage_inventory_changed();
+}
+
 #[cfg(target_arch = "wasm32")]
 fn wire_startup_sweep(
     ui: &ViewerWindow,
@@ -677,26 +770,6 @@ fn wire_startup_sweep(
         return;
     };
     let weak = ui.as_weak();
-    ui.on_storage_inventory_changed({
-        let weak = weak.clone();
-        let carousel = carousel.clone();
-        let inventory = book_availability::web_inventory();
-        move || {
-            if let Some(ui) = weak.upgrade() {
-                let missing = carousel
-                    .library
-                    .borrow()
-                    .books()
-                    .iter()
-                    .filter(|book| !inventory.contains(book.id()))
-                    .count();
-                if missing > 0 {
-                    tracing::warn!(missing, "books missing from browser storage");
-                }
-                refresh_library_carousel(&ui, &carousel, false);
-            }
-        }
-    });
     let inventory = book_availability::web_inventory();
     let ids: Vec<_> = carousel
         .library

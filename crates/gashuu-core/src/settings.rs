@@ -8,6 +8,7 @@ use crate::view_modes::{CoverMode, FitMode, KeyBindings, Language, ReadingDirect
 use crate::view_override::ResolvedView;
 use crate::window_geometry::WindowGeometry;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeSet;
 use std::path::PathBuf;
 
 /// On-disk schema version. Bump when the shape changes and add a `migrate` step.
@@ -71,6 +72,9 @@ pub struct Settings {
     /// UNIX seconds of the last automatic update check (for the 24h throttle).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_update_check: Option<i64>,
+    /// Browser storage guidance kinds dismissed by the user.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub web_guidance_dismissed: BTreeSet<String>,
 }
 
 fn default_version() -> u32 {
@@ -108,6 +112,7 @@ impl Default for Settings {
             auto_update_check: true,
             skipped_version: None,
             last_update_check: None,
+            web_guidance_dismissed: BTreeSet::new(),
         }
     }
 }
@@ -238,6 +243,17 @@ mod tests {
     use crate::window_geometry::{WindowGeometry, MIN_WINDOW_HEIGHT, MIN_WINDOW_WIDTH};
 
     #[test]
+    fn web_guidance_dismissals_round_trip_and_default() {
+        let mut settings = Settings::from_json("{}").unwrap();
+        assert!(settings.web_guidance_dismissed.is_empty());
+        settings.web_guidance_dismissed.insert("evicted".into());
+        assert_eq!(
+            Settings::from_json(&settings.to_json().unwrap()).unwrap(),
+            settings
+        );
+    }
+
+    #[test]
     fn view_defaults_copies_the_four_global_modes() {
         let settings = Settings {
             reading_direction: ReadingDirection::Ltr,
@@ -315,6 +331,7 @@ mod tests {
             auto_update_check: false,
             skipped_version: Some("v9.9.9".to_string()),
             last_update_check: Some(1_700_000_000),
+            web_guidance_dismissed: ["evicted".to_owned()].into_iter().collect(),
         }
     }
 

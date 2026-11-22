@@ -327,3 +327,14 @@ selection-exit-a11y = 選択モードを終了
 # DangerButton label in the SelectionToolbar; also the confirm-button label in
 # the bulk-delete ConfirmDialog (bound via Strings.selection-delete).
 selection-delete = 削除
+storage-title = ブラウザーのストレージ
+storage-usage = 推定使用量: { $usage } / { $quota } ({ $percent }%)
+storage-usage-without-percent = 推定使用量: { $usage } / { $quota }
+storage-unknown = 不明
+storage-protected = 保護されています
+storage-unprotected = 保護されていません
+storage-protection-unknown = 保護状態は不明です
+storage-add-home = ホーム画面に追加してください。ブラウザーが保存した本を削除する場合があります。
+storage-denied = ストレージは保護されていません。ブラウザーが保存した本を削除する場合があります。
+storage-near-quota = ブラウザーのストレージの空き容量が少なくなっています。
+storage-evicted = { $count } 冊の本を利用できません。ブラウザーが削除した可能性があります。
