@@ -239,19 +239,19 @@ fn migrate(mut value: serde_json::Value, from: u32) -> serde_json::Value {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+    use crate::window_geometry::{WindowGeometry, MIN_WINDOW_HEIGHT, MIN_WINDOW_WIDTH};
+
     #[test]
     fn web_guidance_dismissals_round_trip_and_default() {
-        let mut settings = super::Settings::from_json("{}").unwrap();
+        let mut settings = Settings::from_json("{}").unwrap();
         assert!(settings.web_guidance_dismissed.is_empty());
         settings.web_guidance_dismissed.insert("evicted".into());
         assert_eq!(
-            super::Settings::from_json(&settings.to_json().unwrap()).unwrap(),
+            Settings::from_json(&settings.to_json().unwrap()).unwrap(),
             settings
         );
     }
-
-    use super::*;
-    use crate::window_geometry::{WindowGeometry, MIN_WINDOW_HEIGHT, MIN_WINDOW_WIDTH};
 
     #[test]
     fn view_defaults_copies_the_four_global_modes() {

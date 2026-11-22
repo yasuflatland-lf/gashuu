@@ -47,17 +47,14 @@ pub(crate) fn guidance(s: &StorageStatus, missing_books: usize) -> Guidance {
     }
 }
 
-pub(crate) fn format_usage(usage: u64, quota: Option<u64>) -> (String, Option<u8>) {
+pub(crate) fn format_usage(bytes: u64) -> String {
     let unit = 1024_f64 * 1024.0;
-    let (value, suffix) = if usage >= 1024 * 1024 * 1024 {
-        (usage as f64 / (unit * 1024.0), "GB")
+    let (value, suffix) = if bytes >= 1024 * 1024 * 1024 {
+        (bytes as f64 / (unit * 1024.0), "GB")
     } else {
-        (usage as f64 / unit, "MB")
+        (bytes as f64 / unit, "MB")
     };
-    let percent = quota
-        .filter(|q| *q > 0)
-        .map(|q| ((usage as u128 * 100 / q as u128).min(100)) as u8);
-    (format!("{value:.1} {suffix}"), percent)
+    format!("{value:.1} {suffix}")
 }
 
 pub(crate) fn notice_visible(guidance: &Guidance, dismissed: &mut BTreeSet<String>) -> bool {
@@ -103,13 +100,9 @@ mod tests {
     }
 
     #[test]
-    fn usage_formats_binary_units_and_optional_percent() {
-        assert_eq!(format_usage(1_258_291, None), ("1.2 MB".into(), None));
-        assert_eq!(
-            format_usage(1_288_490_189, Some(2_147_483_648)),
-            ("1.2 GB".into(), Some(60))
-        );
-        assert_eq!(format_usage(1, Some(0)).1, None);
+    fn usage_formats_binary_units() {
+        assert_eq!(format_usage(1_258_291), "1.2 MB");
+        assert_eq!(format_usage(1_288_490_189), "1.2 GB");
     }
 
     #[test]

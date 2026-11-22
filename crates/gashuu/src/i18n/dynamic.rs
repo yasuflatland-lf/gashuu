@@ -468,6 +468,43 @@ pub(crate) fn format_notices(
     notices
 }
 
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn storage_text(
+    loader: &FluentLanguageLoader,
+    status: &crate::storage_status::StorageStatus,
+    guidance: &crate::storage_status::Guidance,
+) -> (String, String, String, String) {
+    use crate::storage_status::{format_usage, Guidance};
+    let unknown = fl!(loader, "storage-unknown");
+    let usage = status
+        .usage
+        .map(format_usage)
+        .unwrap_or_else(|| unknown.clone());
+    let quota = status.quota.map(format_usage).unwrap_or(unknown);
+    let usage = fl!(
+        loader,
+        "storage-usage",
+        usage = usage.as_str(),
+        quota = quota.as_str()
+    );
+    let protected = match status.persisted {
+        Some(true) => fl!(loader, "storage-protected"),
+        Some(false) => fl!(loader, "storage-unprotected"),
+        None => fl!(loader, "storage-protection-unknown"),
+    };
+    let notice = match guidance {
+        Guidance::None => String::new(),
+        Guidance::AddToHomeScreen => fl!(loader, "storage-add-home"),
+        Guidance::PersistDenied => fl!(loader, "storage-denied"),
+        Guidance::NearQuota => fl!(loader, "storage-near-quota"),
+        Guidance::Evicted { count } => {
+            let count = *count as i64;
+            fl!(loader, "storage-evicted", count = count)
+        }
+    };
+    (fl!(loader, "storage-title"), usage, protected, notice)
+}
+
 // ---- Tests ----------------------------------------------------------------
 
 #[cfg(test)]
@@ -1067,44 +1104,4 @@ mod tests {
             "empty_book_removed must differ between En and Ja"
         );
     }
-}
-
-#[cfg(target_arch = "wasm32")]
-pub(crate) fn storage_text(
-    loader: &FluentLanguageLoader,
-    status: &crate::storage_status::StorageStatus,
-    guidance: &crate::storage_status::Guidance,
-) -> (String, String, String, String) {
-    use crate::storage_status::{format_usage, Guidance};
-    let unknown = fl!(loader, "storage-unknown");
-    let usage = status
-        .usage
-        .map(|u| format_usage(u, status.quota).0)
-        .unwrap_or_else(|| unknown.clone());
-    let quota = status
-        .quota
-        .map(|q| format_usage(q, None).0)
-        .unwrap_or(unknown);
-    let usage = fl!(
-        loader,
-        "storage-usage",
-        usage = usage.as_str(),
-        quota = quota.as_str()
-    );
-    let protected = match status.persisted {
-        Some(true) => fl!(loader, "storage-protected"),
-        Some(false) => fl!(loader, "storage-unprotected"),
-        None => fl!(loader, "storage-protection-unknown"),
-    };
-    let notice = match guidance {
-        Guidance::None => String::new(),
-        Guidance::AddToHomeScreen => fl!(loader, "storage-add-home"),
-        Guidance::PersistDenied => fl!(loader, "storage-denied"),
-        Guidance::NearQuota => fl!(loader, "storage-near-quota"),
-        Guidance::Evicted { count } => {
-            let count = *count as i64;
-            fl!(loader, "storage-evicted", count = count)
-        }
-    };
-    (fl!(loader, "storage-title"), usage, protected, notice)
 }
