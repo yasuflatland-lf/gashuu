@@ -100,7 +100,7 @@ impl Pending {
             Self::Count(_, done) => Ready::new(target, done, Err(error)),
             Self::Sweep(_) => Ready(
                 target,
-                Box::new(move || tracing::warn!(%error,"opfs sweep failed")),
+                Box::new(move || tracing::warn!(%error, "opfs sweep failed")),
             ),
             Self::Import(done) => Ready::new(target, done, Err(error)),
         }
@@ -406,10 +406,9 @@ impl<F> WebClient<F> {
     }
 
     pub(super) fn after_delivery(&mut self) -> Vec<Outgoing<F>> {
-        if !self
-            .active_import
-            .is_some_and(|req| !self.pending.contains_key(&req.0))
-        {
+        let finished =
+            matches!(self.active_import, Some(req) if !self.pending.contains_key(&req.0));
+        if !finished {
             return vec![];
         }
         self.active_import = None;

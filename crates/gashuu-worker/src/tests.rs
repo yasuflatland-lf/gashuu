@@ -13,6 +13,7 @@ use gashuu_core::{
 use image::{ImageFormat, Rgba, RgbaImage};
 use std::{
     cell::{Cell, RefCell},
+    collections::HashSet,
     future::{ready, Future},
     io::{self, Cursor, Write},
     pin::pin,
@@ -946,17 +947,88 @@ fn upload_fingerprint_and_ranges() {
 }
 
 #[test]
+fn validates_content_key() {
+    use crate::lifecycle::is_content_key;
+
+    let key = "0123456789abcdef".repeat(4);
+    assert!(is_content_key(&key));
+    assert!(!is_content_key(&key.to_ascii_uppercase()));
+    assert!(!is_content_key(&key[..63]));
+    assert!(!is_content_key(&format!("{key}0")));
+}
+
+#[test]
+fn content_index_remains_usable_after_a_stored_key_error() {
+    use crate::lifecycle::index_stored_key;
+
+    let mut index = std::collections::HashMap::new();
+    for (id, key) in [
+        ("books/a/first.cbz", Ok("first".into())),
+        (
+            "books/b/locked.cbz",
+            Err(WireError::Other {
+                detail: "NoModificationAllowedError".into(),
+            }),
+        ),
+        (
+            "books/c/missing.cbz",
+            Err(WireError::Missing {
+                detail: "NotFoundError".into(),
+            }),
+        ),
+        ("books/d/last.cbz", Ok("last".into())),
+    ] {
+        index_stored_key(&mut index, id.into(), key);
+    }
+    assert_eq!(
+        index,
+        [
+            ("first".into(), "books/a/first.cbz".into()),
+            ("last".into(), "books/d/last.cbz".into())
+        ]
+        .into()
+    );
+}
+
+struct SweepPlan {
+    delete: Vec<String>,
+    present: Vec<String>,
+}
+
+fn plan_sweep(
+    dirs: &[(String, Option<String>, Option<f64>)],
+    keep: &HashSet<String>,
+    now_ms: Option<f64>,
+) -> (SweepPlan, u32) {
+    let mut inventory = crate::lifecycle::SweepInventory::default();
+    let mut delete = Vec::new();
+    for (uuid, name, modified) in dirs {
+        let id = name.as_ref().map(|name| format!("books/{uuid}/{name}"));
+        if inventory.should_delete(id.as_deref(), *modified, keep, now_ms) {
+            delete.push(uuid.clone());
+        }
+    }
+    (
+        SweepPlan {
+            delete,
+            present: inventory.present,
+        },
+        inventory.skipped_recent,
+    )
+}
+
+#[test]
 fn startup_and_clear_sweep() {
-    use crate::lifecycle::{is_recent, plan_sweep};
+    use crate::lifecycle::is_recent;
     let now = Some(3_600_000.);
     assert!(!is_recent(0., now));
     assert!(is_recent(1., now));
     assert!(!is_recent(1., None));
     let dirs = [
-        ("a".into(), Some("book".into()), 0.),
-        ("b".into(), Some("book".into()), 0.),
-        ("c".into(), Some("book".into()), 1.),
-        ("d".into(), None, 1.),
+        ("a".into(), Some("book".into()), Some(0.)),
+        ("b".into(), Some("book".into()), Some(0.)),
+        ("c".into(), Some("book".into()), Some(1.)),
+        ("d".into(), None, Some(0.)),
     ];
     let (plan, recent) = plan_sweep(&dirs, &["books/a/book".into()].into(), now);
     assert_eq!(recent, 1);
@@ -978,6 +1050,22 @@ fn startup_and_clear_sweep() {
 }
 
 #[test]
+fn startup_sweep_retains_fileless_directories_with_recent_or_unknown_age() {
+    let dirs = [
+        ("recent".into(), None, Some(1.)),
+        ("unknown".into(), None, None),
+    ];
+    let (startup, recent) = plan_sweep(&dirs, &HashSet::new(), Some(3_600_000.));
+    assert!(startup.delete.is_empty());
+    assert!(startup.present.is_empty());
+    assert_eq!(recent, 2);
+
+    let (clear, recent) = plan_sweep(&dirs, &HashSet::new(), None);
+    assert_eq!(clear.delete, ["recent", "unknown"]);
+    assert_eq!(recent, 0);
+}
+
+#[test]
 fn sweep_inventory_includes_locked_books_and_counts_empty_locked_directories() {
     let mut inventory = crate::lifecycle::SweepInventory::default();
     let keep = ["books/a/book".into()].into();
@@ -990,7 +1078,7 @@ fn sweep_inventory_includes_locked_books_and_counts_empty_locked_directories() {
         let id = format!("books/{uuid}/book");
         let candidate = inventory.should_delete(
             Some(&id),
-            if outcome == "recent" { 1. } else { 0. },
+            Some(if outcome == "recent" { 1. } else { 0. }),
             &keep,
             Some(3_600_000.),
         );

@@ -1,4 +1,5 @@
 use super::report_save_error;
+use crate::add_controller::AddController;
 use crate::dialog_session::{DialogScope, DialogSession};
 use crate::enum_adapters::{
     cover_mode_to_index, fit_mode_to_index, index_to_cover_mode, index_to_fit_mode,
@@ -24,21 +25,23 @@ fn clear_storage_after_library_save(
     library_save_succeeded: bool,
     thumbs: &dyn ThumbStore,
     importer: Option<&dyn crate::backend::BookImporter>,
+    adder: &AddController,
     done: Box<dyn FnOnce() + Send>,
-) {
+) -> bool {
+    let cancelled_import = adder.cancel_import();
     if !library_save_succeeded {
-        return;
+        return cancelled_import;
     }
 
     if let Some(importer) = importer {
+        #[cfg(any(test, target_arch = "wasm32"))]
+        let inventory = crate::book_availability::web_inventory();
         importer.sweep(
             vec![],
             true,
-            Box::new(move |report| {
-                #[cfg(target_arch = "wasm32")]
-                crate::book_availability::web_inventory().replace(report.present);
-                #[cfg(not(target_arch = "wasm32"))]
-                let _ = report;
+            Box::new(move |_report| {
+                #[cfg(any(test, target_arch = "wasm32"))]
+                inventory.replace(_report.present);
                 done();
             }),
         );
@@ -49,6 +52,7 @@ fn clear_storage_after_library_save(
         bytes = report.removed_bytes,
         "cleared thumbnail cache with reading history"
     );
+    cancelled_import
 }
 
 /// Registers the settings/shortcuts dialog lifecycle callbacks (open, close,
@@ -74,6 +78,7 @@ pub(crate) fn wire_settings_handlers(
     settings_store: &SettingsStoreHandle,
     library_store: &LibraryStoreHandle,
     importer: Option<Rc<dyn crate::backend::BookImporter>>,
+    adder: &Rc<AddController>,
     thumbs: Arc<dyn ThumbStore>,
 ) {
     let state = Rc::clone(state);
@@ -314,6 +319,7 @@ pub(crate) fn wire_settings_handlers(
         let settings_store = Rc::clone(&settings_store);
         let library_store = Rc::clone(&library_store);
         let carousel = carousel.clone();
+        let adder = Rc::clone(adder);
         let thumbs = Arc::clone(&thumbs);
         ui.on_clear_reading_history(move || {
             with_ui(&ui_weak, |ui| {
@@ -331,15 +337,23 @@ pub(crate) fn wire_settings_handlers(
                 if let Some(ref e) = set_err {
                     tracing::error!(error = %e, "failed to persist settings while clearing reading history");
                 }
+                #[cfg(target_arch = "wasm32")]
                 let sweep_ui = ui.as_weak();
-                clear_storage_after_library_save(lib_err.is_none(), thumbs.as_ref(), importer.as_deref(), Box::new(move || {
-                    #[cfg(target_arch = "wasm32")]
-                    {
-                        if let Some(ui) = sweep_ui.upgrade() { ui.invoke_storage_inventory_changed(); }
-                    }
-                    #[cfg(not(target_arch = "wasm32"))]
-                    let _ = sweep_ui;
-                }));
+                if clear_storage_after_library_save(
+                    lib_err.is_none(),
+                    thumbs.as_ref(),
+                    importer.as_deref(),
+                    &adder,
+                    Box::new(move || {
+                        #[cfg(target_arch = "wasm32")]
+                        if let Some(ui) = sweep_ui.upgrade() {
+                            ui.invoke_storage_inventory_changed();
+                        }
+                    }),
+                ) {
+                    ui.set_add_active(false);
+                    ui.set_status_text("".into());
+                }
                 // CoverMemCache is intentionally left alone: the carousel is rebuilt
                 // empty below, and stale decoded entries are harmless and LRU-evicted.
                 // Recompute the (now empty) search projection, drop the selection, and
@@ -607,6 +621,84 @@ mod tests {
     use gashuu_core::FsThumbStore;
 
     #[test]
+    fn clearing_history_discards_an_in_flight_import_batch() {
+        use crate::backend::{
+            fake::{Call as BackendCall, FakeBackend},
+            ImportedBook, SweepReport,
+        };
+        use crate::picker::UploadHandle;
+        use gashuu_core::{ArchivePolicy, BookId};
+        use std::num::NonZeroUsize;
+
+        let ui = crate::cover_loader::test_window();
+        let importer = FakeBackend::new();
+        let adder = Rc::new(AddController::new(importer.clone()));
+        let library = Rc::new(RefCell::new(Library::new()));
+        let inventory = crate::book_availability::web_inventory();
+        let retained = BookId::new("books/locked/locked.cbz");
+        inventory.replace(vec![]);
+        ui.on_add_finalize({
+            let adder = Rc::clone(&adder);
+            let library = Rc::clone(&library);
+            move |epoch| {
+                if let Some((outcomes, _)) = adder.take_outcomes(epoch as usize) {
+                    crate::add_books::apply_outcomes(&mut library.borrow_mut(), outcomes);
+                }
+            }
+        });
+        adder.start_import(
+            ui.as_weak(),
+            (1..=2)
+                .map(|key| UploadHandle {
+                    key,
+                    name: format!("{key}.cbz"),
+                    size: 1,
+                })
+                .collect(),
+            ArchivePolicy::default(),
+            "add-books",
+            None,
+            importer.as_ref(),
+        );
+        let imported = |number| ImportedBook {
+            duplicate: false,
+            id: BookId::new(format!("books/upload-{number}/{number}.cbz")),
+            title: format!("Book {number}"),
+            page_count: NonZeroUsize::MIN,
+        };
+        importer.complete_import(Ok(imported(1)));
+        assert!(inventory.contains(&imported(1).id));
+        let thumbs = RecordingThumbStore::default();
+        assert!(clear_storage_after_library_save(
+            true,
+            &thumbs,
+            Some(importer.as_ref()),
+            &adder,
+            Box::new(|| {}),
+        ));
+        importer.complete_import(Ok(imported(2)));
+        assert!(!inventory.contains(&imported(2).id));
+        assert_eq!(
+            importer.calls(),
+            [
+                BackendCall::Discard(imported(1).id),
+                BackendCall::Sweep(vec![], true),
+                BackendCall::Discard(imported(2).id)
+            ],
+        );
+        importer.complete_sweep(SweepReport {
+            removed: 1,
+            skipped_recent: 0,
+            skipped_locked: 1,
+            present: vec![retained.clone()],
+        });
+        assert!(library.borrow().books().is_empty());
+        assert!(!inventory.contains(&imported(1).id));
+        assert!(!inventory.contains(&imported(2).id));
+        assert!(inventory.contains(&retained));
+    }
+
+    #[test]
     fn successful_library_save_clears_thumbnail_cache() {
         let dir = tempfile::tempdir().expect("create thumbnail cache fixture");
         let cover = dir.path().join("cover.qoi");
@@ -621,7 +713,14 @@ mod tests {
         let thumbs =
             RecordingThumbStore::with_disk(FsThumbStore::with_dir(dir.path().to_path_buf()));
         let importer = crate::backend::fake::FakeBackend::new();
-        clear_storage_after_library_save(true, &thumbs, Some(importer.as_ref()), Box::new(|| {}));
+        let adder = AddController::new(importer.clone());
+        clear_storage_after_library_save(
+            true,
+            &thumbs,
+            Some(importer.as_ref()),
+            &adder,
+            Box::new(|| {}),
+        );
         assert_eq!(
             importer.calls(),
             [crate::backend::fake::Call::Sweep(vec![], true)]
@@ -643,7 +742,14 @@ mod tests {
             RecordingThumbStore::with_disk(FsThumbStore::with_dir(dir.path().to_path_buf()));
 
         let importer = crate::backend::fake::FakeBackend::new();
-        clear_storage_after_library_save(false, &thumbs, Some(importer.as_ref()), Box::new(|| {}));
+        let adder = AddController::new(importer.clone());
+        clear_storage_after_library_save(
+            false,
+            &thumbs,
+            Some(importer.as_ref()),
+            &adder,
+            Box::new(|| {}),
+        );
         assert!(importer.calls().is_empty());
 
         assert!(

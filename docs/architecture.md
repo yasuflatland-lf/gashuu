@@ -820,7 +820,11 @@ snapshot, the next leave point could write an override pinning the OLD global va
 
 ### book_availability
 
-`book_availability.rs` checks existence through `book_path::exists(&book_path::locate(book.id()))`. Unavailable books remain in the library.
+- **Desktop** checks existence through `book_path::exists(&book_path::locate(book.id()))`.
+- **Web** treats every book as available until the first successful sweep. Each sweep replaces
+  the `WebAvailability` set with `Swept.present`. Imports and removals update the set.
+
+Unavailable books remain in the library.
 
 ### library_model
 

@@ -325,7 +325,7 @@ fn main() {
     if let Some(library) = library.as_mut() {
         if remove_demo_entries(library) {
             if let Err(error) = save_library(&library_store, library) {
-                tracing::warn!(%error,"could not save library after removing session-only books");
+                tracing::warn!(%error, "could not save library after removing session-only books");
             }
         }
     }
@@ -543,26 +543,7 @@ fn run_app(
         }
     }
     #[cfg(target_arch = "wasm32")]
-    if let Some(importer) = importer.as_ref().filter(|_| library_loaded) {
-        let weak = ui.as_weak();
-        let inventory = book_availability::web_inventory();
-        let ids: Vec<_> = library
-            .borrow()
-            .books()
-            .iter()
-            .map(|book| book.id().clone())
-            .collect();
-        importer.sweep(
-            ids,
-            false,
-            Box::new(move |report| {
-                inventory.replace(report.present);
-                if let Some(ui) = weak.upgrade() {
-                    ui.invoke_storage_inventory_changed();
-                }
-            }),
-        );
-    }
+    wire_startup_sweep(&ui, &carousel, importer.as_deref(), library_loaded);
     refresh_library_carousel(&ui, &carousel, true);
     // Continue reading: override the refresh's reset-to-0 with a one-shot snap to the
     // last-read book's visible row (resolved through the empty-query visible set).
@@ -670,6 +651,7 @@ fn run_app(
         &settings_store,
         &library_store,
         importer,
+        &adder,
         thumb_store,
     );
     handlers::wire_view_mode_handlers(
@@ -746,6 +728,37 @@ fn run_app(
         );
     }
     Ok(())
+}
+
+#[cfg(target_arch = "wasm32")]
+fn wire_startup_sweep(
+    ui: &ViewerWindow,
+    carousel: &CarouselRefresh,
+    importer: Option<&dyn backend::BookImporter>,
+    library_loaded: bool,
+) {
+    let Some(importer) = importer.filter(|_| library_loaded) else {
+        return;
+    };
+    let weak = ui.as_weak();
+    let inventory = book_availability::web_inventory();
+    let ids: Vec<_> = carousel
+        .library
+        .borrow()
+        .books()
+        .iter()
+        .map(|book| book.id().clone())
+        .collect();
+    importer.sweep(
+        ids,
+        false,
+        Box::new(move |report| {
+            inventory.replace(report.present);
+            if let Some(ui) = weak.upgrade() {
+                ui.invoke_storage_inventory_changed();
+            }
+        }),
+    );
 }
 
 /// The app's single exit-persistence sequence: flush resolved page counts, stage
