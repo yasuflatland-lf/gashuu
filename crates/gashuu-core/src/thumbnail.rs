@@ -12,6 +12,9 @@ use std::sync::Arc;
 /// Default longer-edge size for generated thumbnails.
 pub const DEFAULT_THUMB_MAX_SIDE: u32 = 160;
 
+/// Longer-edge size for carousel covers, also used in their cache keys.
+pub const COVER_MAX_SIDE: u32 = 512;
+
 /// Storage and book version used for a strip thumbnail request.
 #[derive(Clone, Copy)]
 pub struct PageThumbContext<'a> {

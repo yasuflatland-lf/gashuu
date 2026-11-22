@@ -173,6 +173,18 @@ fn read_envelope(envelope: &JsValue) -> Result<(String, Vec<Vec<u8>>), String> {
     Ok((text, images))
 }
 
+pub(crate) fn clear_covers() {
+    if let Some(backend) = shared() {
+        backend.dispatch(|client| (client.clear_covers(), Vec::new()));
+    }
+}
+
+pub(crate) fn prune_covers(max_bytes: u64) {
+    if let Some(backend) = shared() {
+        backend.dispatch(|client| (client.prune_covers(max_bytes), Vec::new()));
+    }
+}
+
 fn js_error(error: JsValue) -> String {
     error.as_string().unwrap_or_else(|| format!("{error:?}"))
 }

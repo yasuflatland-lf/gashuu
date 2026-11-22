@@ -510,3 +510,118 @@ fn storage_full() -> WireError {
         detail: STORAGE_FULL.into(),
     }
 }
+
+async fn covers_directory() -> Result<FileSystemDirectoryHandle, JsValue> {
+    let scope: DedicatedWorkerGlobalScope = js_sys::global().dyn_into()?;
+    let root: FileSystemDirectoryHandle =
+        resolve(scope.navigator().storage().get_directory()).await?;
+    create_dir(&root, "covers").await
+}
+
+pub async fn read_cover(name: &str) -> Option<Vec<u8>> {
+    let dir = covers_directory().await.ok()?;
+    let file: FileSystemFileHandle = resolve(dir.get_file_handle(name)).await.ok()?;
+    let handle: FileSystemSyncAccessHandle =
+        resolve(file.create_sync_access_handle()).await.ok()?;
+    let result = (|| {
+        let size = handle.get_size().ok()? as usize;
+        let mut bytes = vec![0; size];
+        let count = handle.read_with_u8_array(&mut bytes).ok()? as usize;
+        (count == size).then_some(bytes)
+    })();
+    handle.close();
+    result
+}
+
+pub async fn write_cover(name: &str, bytes: &[u8]) -> Result<(), JsValue> {
+    let dir = covers_directory().await?;
+    let handle = create_file(&dir, name).await?;
+    let result = (|| {
+        handle.truncate_with_u32(0)?;
+        let count = handle.write_with_u8_array(bytes)? as usize;
+        if count != bytes.len() {
+            return Err("short cover write".into());
+        }
+        handle.flush()
+    })();
+    handle.close();
+    result
+}
+
+pub async fn remove_cover(name: &str) -> Result<(), JsValue> {
+    let dir = match covers_directory().await {
+        Err(error) if named(&error, "NotFoundError") => return Ok(()),
+        result => result?,
+    };
+    remove_cover_entry(&dir, name).await
+}
+
+async fn remove_cover_entry(dir: &FileSystemDirectoryHandle, name: &str) -> Result<(), JsValue> {
+    match JsFuture::from(dir.remove_entry(name)).await {
+        Err(error) if !named(&error, "NotFoundError") => Err(error),
+        _ => Ok(()),
+    }
+}
+
+async fn cover_handles(
+    dir: &FileSystemDirectoryHandle,
+) -> Result<(Vec<FileSystemFileHandle>, usize), JsValue> {
+    let values: js_sys::Function = Reflect::get(dir, &"values".into())?.dyn_into()?;
+    let iterator = values.call0(dir)?;
+    let next: js_sys::Function = Reflect::get(&iterator, &"next".into())?.dyn_into()?;
+    let mut handles = Vec::new();
+    let mut failures = 0;
+    loop {
+        let promise: Promise = next.call0(&iterator)?.dyn_into()?;
+        let entry = JsFuture::from(promise).await?;
+        match Reflect::get(&entry, &"done".into()) {
+            Ok(done) if done.as_bool() == Some(true) => break,
+            Ok(_) => {}
+            Err(error) => {
+                failures += usize::from(!named(&error, "NotFoundError"));
+                continue;
+            }
+        }
+        match Reflect::get(&entry, &"value".into()) {
+            Ok(value) => {
+                if let Ok(handle) = value.dyn_into::<FileSystemFileHandle>() {
+                    handles.push(handle);
+                }
+            }
+            Err(error) => failures += usize::from(!named(&error, "NotFoundError")),
+        }
+    }
+    Ok((handles, failures))
+}
+
+pub async fn list_covers() -> Result<Vec<(String, u64, f64)>, JsValue> {
+    let dir = covers_directory().await?;
+    let (handles, mut failures) = cover_handles(&dir).await?;
+    let mut files = Vec::with_capacity(handles.len());
+    for handle in handles {
+        match resolve::<File>(handle.get_file()).await {
+            Ok(file) => files.push((file.name(), file.size() as u64, file.last_modified())),
+            Err(error) => failures += usize::from(!named(&error, "NotFoundError")),
+        };
+    }
+    warn_cover_failures("list", failures);
+    Ok(files)
+}
+
+pub async fn clear_covers() -> Result<(), JsValue> {
+    let dir = covers_directory().await?;
+    let (handles, mut failures) = cover_handles(&dir).await?;
+    for handle in handles {
+        failures += usize::from(remove_cover_entry(&dir, &handle.name()).await.is_err());
+    }
+    warn_cover_failures("clear", failures);
+    Ok(())
+}
+
+fn warn_cover_failures(operation: &str, failures: usize) {
+    if failures > 0 {
+        web_sys::console::warn_1(
+            &format!("cover cache {operation} failed for {failures} entries").into(),
+        );
+    }
+}

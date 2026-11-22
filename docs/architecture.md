@@ -550,8 +550,9 @@ dispatch.
 
 `WorkerBackend` handles OPFS books. If the browser lacks OPFS or a Worker
 cannot be created, `UnavailableBackend` reports that the browser cannot store
-books. Web uses `NullThumbStore` for thumbnail cleanup and keeps covers in
-memory. Each open starts a session with the caller's cache configuration.
+books. Web uses `NullThumbStore` on the UI side. The worker manages the OPFS cover
+cache and the web backend keeps decoded covers in memory. Each open starts a
+session with the caller's cache configuration.
 `cached_page` only looks up decoded pages in memory.
 
 A `Done` runs at most once, on the Slint event-loop thread, after the request
@@ -1236,9 +1237,9 @@ pending deliveries, and the strip epoch guards against updates to a replacement 
 Starting without a session clears the strip. The web strip remains empty.
 
 **`cover_loader.rs`** owns the carousel's cover generation. Each refresh persists pending
-counts, calls `BookBackend::cancel_covers`, and advances the epoch. `prioritize_by_focus`
-sorts requests by distance from the focused row. The controller dispatches 512 px covers
-and requests a page count only for rows with an unknown total. Callers release their
+ counts, calls `BookBackend::cancel_covers`, and advances the epoch. `prioritize_by_focus`
+sorts requests by distance from the focused row. The controller dispatches covers at
+`COVER_MAX_SIDE` (512 px) and requests a page count only for rows with an unknown total. Callers release their
 library borrow before dispatch so pending counts can be applied. Counts are also flushed
 on desktop shutdown and on web suspend. Resolved counts update their rows immediately
 and enter a queue for persistence.
@@ -1248,7 +1249,8 @@ On a worker, the desktop backend checks decoded memory and then reads through
 the archive once for the cover and count. On a hit it queues the cover before opening
 the archive for a requested count. Cover size is part of the cache key and is
 independent of the strip's 160 px thumbnail size. The web backend serializes page-zero
-decodes across refreshes and keeps up to 64 MiB of covers in memory until the app reloads.
+decodes across refreshes and keeps up to 64 MiB of decoded covers in memory. Reloading
+clears the memory cache. OPFS retains QOI covers when available.
 
 Each `ui_done` completion checks the epoch and window before updating its row. An empty book
 reported by either callback raises `empty-book-detected` once with its ID. Other cover errors
@@ -1359,3 +1361,11 @@ the existing web availability inventory. The Library displays the notice and Set
 displays estimated usage and protection. Dismissed guidance kinds are stored in
 settings and reset when the active kind changes. Browser storage is refreshed at
 startup and after inventory changes; desktop does not construct this status.
+
+### Web cover persistence
+
+The worker stores QOI covers at `covers/<cover_key>.qoi` in OPFS alongside `books/`.
+The OPFS bridge preloads cover bytes before dispatch and applies the writes and removals
+queued by the staged `ThumbStore`. Reads and writes are best-effort. At startup, the
+worker prunes the oldest cover files to a 64 MiB budget. A `DeleteBook` request purges
+the carousel cover at `COVER_MAX_SIDE`, the same size the UI requests.

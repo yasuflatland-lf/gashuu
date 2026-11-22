@@ -17,7 +17,7 @@ pub(crate) mod fake;
 #[cfg(target_arch = "wasm32")]
 mod unavailable;
 #[cfg(target_arch = "wasm32")]
-mod web;
+pub(crate) mod web;
 #[cfg(any(test, target_arch = "wasm32"))]
 mod web_client;
 

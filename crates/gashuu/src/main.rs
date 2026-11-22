@@ -338,6 +338,11 @@ fn main() {
     }
 }
 
+/// OPFS cover-cache prune target on the web, smaller than desktop's
+/// `CoverCachePolicy::DEFAULT.max_bytes` because browser storage quota is shared.
+#[cfg(target_arch = "wasm32")]
+const WEB_COVER_CACHE_MAX_BYTES: u64 = 64 * 1024 * 1024;
+
 /// Build the window, wire every cross-platform handler, and run the event loop.
 /// Desktop-only wiring sits in `#[cfg(not(target_arch = "wasm32"))]` blocks inside.
 /// On wasm32 `ui.run()` never returns (winit unwinds out of the start function).
@@ -479,6 +484,9 @@ fn run_app(
             cover_loader::CoverCachePolicy::DEFAULT.max_bytes,
         );
     }
+
+    #[cfg(target_arch = "wasm32")]
+    backend::web::prune_covers(WEB_COVER_CACHE_MAX_BYTES);
 
     // Top-level screen state machine (boots to Library). `Rc<RefCell<…>>` so carousel
     // callbacks and the Viewer's GoToLibrary arm can flip it via the seam functions.

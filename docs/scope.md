@@ -293,3 +293,5 @@ first, then in-place self-replace for AppImage/Windows.
 - Linux release artifacts and a `.desktop` entry (macOS + Windows ship via `release.yml`; Linux's Slint system-library deps make a portable artifact heavier — deferred).
 - Code signing / notarization for release binaries (macOS Developer ID + notarytool, Windows Authenticode) — `release.yml` ships unsigned with documented `SIGNING SEAM` insertion points.
 - Auto-creating the GitHub Release (the release must pre-exist; `release.yml` only uploads assets to it).
+
+Web carousel covers persist as QOI files in OPFS. The worker prunes them to 64 MiB at startup and the cover-cache setting clears them. Browser eviction or storage failures cause covers to be regenerated.

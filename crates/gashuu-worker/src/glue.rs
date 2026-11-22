@@ -1,9 +1,12 @@
 //! Bridge worker messages to the portable dispatcher.
 
 use crate::opfs;
-use gashuu_core::{ArchivePolicy, ImageCratePageDecoder, ReadAt};
+use gashuu_core::{
+    ArchivePolicy, BookId, ImageCratePageDecoder, ReadAt, ThumbStore, COVER_MAX_SIDE,
+};
 use gashuu_web_decode::NativePageDecoder;
 use gashuu_worker::{
+    cover_store::{plan_cover_prune, StagedCoverStore},
     dispatcher::{Dispatcher, Lane, Reply},
     protocol::{self, ImportedMeta, WireResult, WorkerRequest, WorkerResponse},
     wire_error::WireError,
@@ -54,12 +57,15 @@ impl Inbox {
 struct Worker {
     dispatcher: Dispatcher,
     content_index: Option<HashMap<String, String>>,
+    cover_store: Arc<StagedCoverStore>,
 }
 
 pub fn start() {
     console_error_panic_hook::set_once();
     let scope: DedicatedWorkerGlobalScope = js_sys::global().unchecked_into();
+    let cover_store = Arc::new(StagedCoverStore::default());
     let dispatcher = Dispatcher::new(Rc::new(NativePageDecoder), Rc::new(ImageCratePageDecoder))
+        .with_cover_store(cover_store.clone())
         .with_fallback_hook(Rc::new(|error| {
             web_sys::console::warn_1(
                 &format!("native page decode failed, used wasm fallback: {error}").into(),
@@ -69,6 +75,7 @@ pub fn start() {
     let dispatcher = Rc::new(RefCell::new(Some(Worker {
         dispatcher,
         content_index: None,
+        cover_store,
     })));
     let inbox = Rc::new(RefCell::new(Inbox::default()));
     let callback = Closure::<dyn Fn(MessageEvent)>::new({
@@ -146,7 +153,23 @@ async fn drain(
                         index.retain(|_, stored| stored != &id);
                     }
                 }
+                // Covers are always requested at COVER_MAX_SIDE; purge that side.
+                let store = &worker.cover_store;
+                store.purge_cover(store.fingerprint(&BookId::new(&id)), &[COVER_MAX_SIDE]);
+                flush_covers(store).await;
             }
+            WorkerRequest::ClearCovers => {
+                worker.cover_store.clear();
+                flush_covers(&worker.cover_store).await;
+            }
+            WorkerRequest::PruneCovers { max_bytes } => match opfs::list_covers().await {
+                Ok(files) => {
+                    for name in plan_cover_prune(&files, max_bytes) {
+                        warn(opfs::remove_cover(&name).await);
+                    }
+                }
+                Err(error) => warn(Err(error)),
+            },
             WorkerRequest::Sweep { req, keep, now_ms } => {
                 let response = sweep(
                     &scope,
@@ -163,7 +186,9 @@ async fn drain(
                 });
                 post(&scope, Reply::metadata(response));
             }
-            request => serve(&scope, &mut worker.dispatcher, request).await,
+            request => {
+                serve(&scope, &mut worker.dispatcher, &worker.cover_store, request).await;
+            }
         }
         if lane == Lane::Background && inbox.borrow().only_background_pending() {
             next_turn(&scope).await;
@@ -183,10 +208,17 @@ async fn open_reader(worker: &Dispatcher, id: &str) -> WireResult<Arc<dyn ReadAt
 async fn serve(
     scope: &DedicatedWorkerGlobalScope,
     worker: &mut Dispatcher,
+    store: &StagedCoverStore,
     request: WorkerRequest,
 ) {
     if worker.is_obsolete(&request) {
         return;
+    }
+    let cover_name = worker.cover_file_for(&request);
+    if let Some(name) = &cover_name {
+        if let Some(bytes) = opfs::read_cover(name).await {
+            store.preload(name.clone(), bytes);
+        }
     }
     let reader = match Dispatcher::needs_reader(&request) {
         Some(id) => Some(open_reader(worker, id).await),
@@ -196,6 +228,10 @@ async fn serve(
     for reply in worker.handle(request, reader).await {
         post(scope, reply);
     }
+    if let Some(name) = cover_name {
+        store.forget(&name);
+    }
+    flush_covers(store).await;
 }
 
 async fn import(
@@ -214,7 +250,7 @@ async fn import(
         })?;
     let key = opfs::picked_key(&file, size)?;
     if worker.content_index.is_none() {
-        let index = build_index(scope, &mut worker.dispatcher, inbox).await?;
+        let index = build_index(scope, &mut worker.dispatcher, &worker.cover_store, inbox).await?;
         worker.content_index = Some(index);
     }
     let index = worker.content_index.as_mut().expect("initialized above");
@@ -241,7 +277,7 @@ async fn import(
     }
     let mut upload = opfs::begin_import(scope, name, size, file).await?;
     loop {
-        yield_to_readers(scope, &mut worker.dispatcher, inbox).await;
+        yield_to_readers(scope, &mut worker.dispatcher, &worker.cover_store, inbox).await;
         match upload.write_slice() {
             Ok(true) => {}
             Ok(false) => {
@@ -260,13 +296,14 @@ async fn import(
 async fn yield_to_readers(
     scope: &DedicatedWorkerGlobalScope,
     worker: &mut Dispatcher,
+    store: &StagedCoverStore,
     inbox: &RefCell<Inbox>,
 ) {
     next_turn(scope).await;
     loop {
         let request = inbox.borrow_mut().interactive.pop_front();
         let Some(request) = request else { break };
-        serve(scope, worker, request).await;
+        serve(scope, worker, store, request).await;
     }
     // Allow one queued cover per directory or upload slice. Storage mutations
     // stay in submission order, including imports queued behind a sweep.
@@ -279,13 +316,14 @@ async fn yield_to_readers(
         position.and_then(|i| inbox.background.remove(i))
     };
     if let Some((request, _)) = cover {
-        serve(scope, worker, request).await;
+        serve(scope, worker, store, request).await;
     }
 }
 
 async fn build_index(
     scope: &DedicatedWorkerGlobalScope,
     worker: &mut Dispatcher,
+    store: &StagedCoverStore,
     inbox: &RefCell<Inbox>,
 ) -> WireResult<HashMap<String, String>> {
     let mut index = HashMap::new();
@@ -299,7 +337,7 @@ async fn build_index(
                     gashuu_worker::lifecycle::index_stored_key(&mut index, id, key);
                 }
             }
-            yield_to_readers(scope, worker, inbox).await;
+            yield_to_readers(scope, worker, store, inbox).await;
         }
     }
     Ok(index)
@@ -318,7 +356,7 @@ async fn sweep(
     if let Some(dirs) = opfs::BookDirs::open(scope).await? {
         while let Some(dir) = dirs.next().await? {
             let dir = dir?;
-            yield_to_readers(scope, &mut worker.dispatcher, inbox).await;
+            yield_to_readers(scope, &mut worker.dispatcher, &worker.cover_store, inbox).await;
             let id = dir.id();
             let modified = if now_ms.is_some() && !id.as_ref().is_some_and(|id| keep.contains(id)) {
                 match dir.last_modified().await {
@@ -407,4 +445,22 @@ fn post(scope: &DedicatedWorkerGlobalScope, reply: Reply) {
         scope.post_message_with_transfer(&envelope, &transfer)
     };
     sent.expect("post worker response");
+}
+
+fn warn(result: Result<(), JsValue>) {
+    if let Err(error) = result {
+        web_sys::console::warn_2(&"cover cache operation failed".into(), &error);
+    }
+}
+
+async fn flush_covers(store: &StagedCoverStore) {
+    if store.take_clear() {
+        warn(opfs::clear_covers().await);
+    }
+    for name in store.take_removals() {
+        warn(opfs::remove_cover(&name).await);
+    }
+    for (name, bytes) in store.take_writes() {
+        warn(opfs::write_cover(&name, &bytes).await);
+    }
 }

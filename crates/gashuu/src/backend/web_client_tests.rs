@@ -786,6 +786,16 @@ fn import_payload_survives_startup_and_transport_failure_resolves_the_callback()
 }
 
 #[test]
+fn cover_cache_maintenance_posts_requests() {
+    let mut client = ready_client();
+    assert_eq!(request(client.clear_covers()), WorkerRequest::ClearCovers);
+    assert_eq!(
+        request(client.prune_covers(64)),
+        WorkerRequest::PruneCovers { max_bytes: 64 }
+    );
+}
+
+#[test]
 fn sweep_delivers_storage_inventory() {
     let mut client = ready_client();
     for now in [Some(22.), None] {

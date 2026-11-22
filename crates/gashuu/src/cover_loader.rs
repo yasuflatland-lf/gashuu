@@ -9,7 +9,7 @@ use crate::carousel::update_carousel_row;
 use crate::page_count_prefetch::PageCountPrefetch;
 use crate::ui_marshal::ui_done;
 use crate::{to_slint_image, CarouselItem, LibraryStoreHandle, ViewerWindow};
-use gashuu_core::{BookFingerprint, BookId, DecodedImage, Library, ThumbStore};
+use gashuu_core::{BookFingerprint, BookId, DecodedImage, Library, ThumbStore, COVER_MAX_SIDE};
 use slint::{Model, VecModel};
 use std::cell::RefCell;
 use std::path::PathBuf;
@@ -41,7 +41,7 @@ impl CoverCachePolicy {
     /// prune target.
     pub(crate) const DEFAULT: Self = Self {
         max_bytes: 256 * 1024 * 1024,
-        max_side: 512,
+        max_side: COVER_MAX_SIDE,
     };
 }
 

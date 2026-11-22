@@ -55,6 +55,10 @@ pub enum WorkerRequest {
         size: u64,
         allow_rar: bool,
     },
+    /// Clear persisted covers, with no response.
+    ClearCovers,
+    /// Prune persisted covers to a byte budget, with no response.
+    PruneCovers { max_bytes: u64 },
     /// Remove the book directory, with no response.
     DeleteBook { id: String },
     Sweep {

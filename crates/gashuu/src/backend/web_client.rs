@@ -383,6 +383,14 @@ impl<F> WebClient<F> {
         )
     }
 
+    pub(super) fn clear_covers(&mut self) -> Vec<Outgoing<F>> {
+        self.post(Request::ClearCovers)
+    }
+
+    pub(super) fn prune_covers(&mut self, max_bytes: u64) -> Vec<Outgoing<F>> {
+        self.post(Request::PruneCovers { max_bytes })
+    }
+
     pub(super) fn sweep(
         &mut self,
         keep: Vec<BookId>,

@@ -7,7 +7,8 @@ use crate::{
 };
 use gashuu_core::{
     image_ops::downscale_to_thumbnail, page_decode::decode_with_fallback, ArchiveLoader,
-    ArchivePolicy, CoreError, DecodedImage, PageDecoder, PageSource, ReadAt,
+    ArchivePolicy, BookId, CoreError, DecodedImage, PageDecoder, PageSource, ReadAt, ThumbSlot,
+    ThumbStore,
 };
 use std::{
     cell::RefCell,
@@ -82,6 +83,7 @@ pub struct Dispatcher {
     primary: Rc<dyn PageDecoder>,
     fallback: Rc<dyn PageDecoder>,
     on_fallback: Option<FallbackHook>,
+    cover_store: Option<Arc<dyn ThumbStore>>,
 }
 
 impl Dispatcher {
@@ -92,7 +94,24 @@ impl Dispatcher {
             primary,
             fallback,
             on_fallback: None,
+            cover_store: None,
         }
+    }
+
+    pub fn with_cover_store(mut self, store: Arc<dyn ThumbStore>) -> Self {
+        self.cover_store = Some(store);
+        self
+    }
+
+    pub fn cover_file_for(&self, request: &WorkerRequest) -> Option<String> {
+        let WorkerRequest::Cover { id, max_side, .. } = request else {
+            return None;
+        };
+        let store = self.cover_store.as_ref()?;
+        Some(crate::cover_store::cover_file_name(
+            store.fingerprint(&BookId::new(id)),
+            *max_side,
+        ))
     }
 
     /// Report the primary error when the fallback successfully decodes a page.
@@ -192,7 +211,7 @@ impl Dispatcher {
                 max_side,
                 want_count,
             } => {
-                let (result, count) = self.cover(&id, reader, max_side).await;
+                let (result, count) = self.cover(&id, reader, max_side, want_count).await;
                 if self.control.cover_cancelled(gen) {
                     return Vec::new();
                 }
@@ -224,6 +243,8 @@ impl Dispatcher {
             WorkerRequest::Import { .. }
             | WorkerRequest::Sweep { .. }
             | WorkerRequest::DeleteBook { .. }
+            | WorkerRequest::ClearCovers
+            | WorkerRequest::PruneCovers { .. }
             | WorkerRequest::Close { .. }
             | WorkerRequest::CancelCovers { .. } => Vec::new(),
         }
@@ -311,7 +332,18 @@ impl Dispatcher {
         id: &str,
         reader: Option<WireResult<Arc<dyn ReadAt>>>,
         max_side: u32,
+        want_count: bool,
     ) -> (WireResult<DecodedImage>, u32) {
+        let store = self
+            .cover_store
+            .as_ref()
+            .map(|store| (store, store.fingerprint(&BookId::new(id))));
+        let mut cached = store.and_then(|(store, fp)| store.get(fp, ThumbSlot::Cover, max_side));
+        if !want_count {
+            if let Some(image) = cached.take() {
+                return (Ok(image), 0);
+            }
+        }
         let source = self.archive_input(id, reader).and_then(|(name, reader)| {
             ArchiveLoader::open_read_at(&name, reader, ArchivePolicy::default())
                 .map_err(WireError::from)
@@ -322,7 +354,14 @@ impl Dispatcher {
                 if count == 0 {
                     return (Err(WireError::EmptyBook), 0);
                 }
-                (self.thumbnail(source.as_ref(), 0, max_side).await, count)
+                if let Some(image) = cached {
+                    return (Ok(image), count);
+                }
+                let result = self.thumbnail(source.as_ref(), 0, max_side).await;
+                if let (Ok(image), Some((store, fp))) = (&result, store) {
+                    let _ = store.put(fp, ThumbSlot::Cover, max_side, image);
+                }
+                (result, count)
             }
             Err(error) => (Err(error), 0),
         }

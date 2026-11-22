@@ -73,9 +73,12 @@ pub use spread::{
 };
 pub use thumb_store::{BookFingerprint, NullThumbStore, ThumbSlot, ThumbStore};
 pub use thumbnail::{
-    generate_cover, generate_one_thumbnail, PageThumbContext, DEFAULT_THUMB_MAX_SIDE,
+    generate_cover, generate_one_thumbnail, PageThumbContext, COVER_MAX_SIDE,
+    DEFAULT_THUMB_MAX_SIDE,
 };
-pub use thumbnail_cache::{cache_key, page_cache_key, ClearCacheReport, FsThumbStore, PruneReport};
+pub use thumbnail_cache::{
+    cache_key, encode_qoi, page_cache_key, ClearCacheReport, FsThumbStore, PruneReport,
+};
 pub use update::asset::select_asset;
 pub use update::check::{should_check, CHECK_INTERVAL_SECS};
 pub use update::dialog::{
