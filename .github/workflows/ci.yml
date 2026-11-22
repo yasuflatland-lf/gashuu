@@ -87,8 +87,14 @@ jobs:
       - run: rustup target add wasm32-unknown-unknown
       - run: mise run check-wasm-core
       - run: mise run check-wasm-ui
+      - run: mise run check-wasm-decode
+      - run: mise run check-wasm-worker
       - run: mise run build-web
-      - run: test -f crates/gashuu/dist/index.html && ls crates/gashuu/dist/*.wasm
+      - run: |
+          test -f crates/gashuu/dist/index.html
+          test -f crates/gashuu/dist/gashuu-worker_bg.wasm
+          test -f crates/gashuu/dist/gashuu-worker_loader.js
+          ls crates/gashuu/dist/*.wasm
 
   # Doc-structure harness: enforces the L1 (CLAUDE.md <=35 lines) + link integrity
   # invariants, plus the visual-token and macOS release packaging guards.
@@ -106,9 +112,8 @@ jobs:
       - run: bash scripts/check-release-linux-dist.sh
       - run: bash scripts/check-dav1d-pin.sh
 
-  # The Slint presentation crate, built and tested per OS. Only `-p gashuu` runs
-  # here (the core job already covers gashuu-core), and fmt/clippy are not repeated
-  # on every OS. clippy for the UI runs once on Linux.
+  # The Slint app and portable worker tests run per OS. The core job covers
+  # gashuu-core and formatting. Clippy for the app and worker runs on Linux.
   app:
     name: app (${{ matrix.os }})
     strategy:
@@ -158,13 +163,13 @@ jobs:
       - run: rustup component add clippy
       # UI lint once (Linux leg); add per-OS clippy only when cfg(os) code appears.
       - if: matrix.os == 'ubuntu-latest'
-        run: cargo clippy -p gashuu --all-targets -- -D warnings
+        run: cargo clippy -p gashuu -p gashuu-worker --all-targets -- -D warnings
       # Exercise AVIF decode against the Windows static dav1d: the core job only
       # covers apt's dav1d on Linux, and the release links this exact build.
       - if: runner.os == 'Windows'
         name: AVIF decode against the static dav1d
         run: cargo nextest run -p gashuu-core --features testing --profile ci -E 'test(/avif/)'
-      - run: cargo nextest run -p gashuu --profile ci
+      - run: cargo nextest run -p gashuu -p gashuu-worker --profile ci
       - uses: codecov/test-results-action@0fa95f0e1eeaafde2c782583b36b28ad0d8c77d3 # v1
         if: ${{ !cancelled() }}
         with:

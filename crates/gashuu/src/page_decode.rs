@@ -1,27 +1,10 @@
-//! Page decoding port for the presentation layer.
+//! Page cache and cover handling for the presentation layer.
 
-use gashuu_core::{cache::CacheDispatch, image_ops, CoreError, DecodedImage};
+use gashuu_core::{
+    cache::CacheDispatch, decode_with_fallback_if, CoreError, DecodedImage, PageDecoder,
+};
 use std::cell::Cell;
-use std::future::{ready, Future};
-use std::pin::Pin;
 use std::sync::Arc;
-
-/// A local decode future that can run on the UI thread.
-pub type DecodeFuture = Pin<Box<dyn Future<Output = Result<DecodedImage, CoreError>>>>;
-
-pub trait PageDecoder {
-    /// Decode one encoded page (JPEG/PNG/WebP/AVIF/GIF) to straight-alpha RGBA8 and dimensions.
-    fn decode(&self, bytes: Vec<u8>) -> DecodeFuture;
-}
-
-/// Synchronous image-crate decoder that returns an already-ready future.
-pub struct ImageCratePageDecoder;
-
-impl PageDecoder for ImageCratePageDecoder {
-    fn decode(&self, bytes: Vec<u8>) -> DecodeFuture {
-        Box::pin(ready(image_ops::decode(&bytes)))
-    }
-}
 
 /// Resolve a cache miss with the primary decoder, retrying with the fallback on error.
 pub async fn decode_page(
@@ -35,24 +18,22 @@ pub async fn decode_page(
         return Ok(hit);
     }
     let bytes = dispatch.read_raw(index)?;
-    let result = primary.decode(bytes.clone()).await;
-    if let Some(hit) = dispatch.cached(index) {
+    let mut cached = None;
+    let result = decode_with_fallback_if(bytes, primary, fallback, |error| {
+        cached = dispatch.cached(index);
+        if cached.is_some() {
+            return false;
+        }
+        if !warned.replace(true) {
+            tracing::warn!(index, %error, "primary page decode failed, retrying with fallback");
+        }
+        true
+    })
+    .await;
+    if let Some(hit) = cached.or_else(|| dispatch.cached(index)) {
         return Ok(hit);
     }
-    let decoded = match result {
-        Ok(decoded) => decoded,
-        Err(error) => {
-            if !warned.replace(true) {
-                tracing::warn!(index, %error, "primary page decode failed, retrying with fallback");
-            }
-            let result = fallback.decode(bytes).await;
-            if let Some(hit) = dispatch.cached(index) {
-                return Ok(hit);
-            }
-            result?
-        }
-    };
-    Ok(dispatch.insert_decoded(index, decoded))
+    Ok(dispatch.insert_decoded(index, result?.image))
 }
 
 /// Read the first page of an already-opened book for its carousel cover.
@@ -63,31 +44,19 @@ pub(crate) async fn decode_cover(
     fallback: &dyn PageDecoder,
     max_side: u32,
 ) -> Result<DecodedImage, CoreError> {
-    decode_cover_bytes(source.read_bytes(0)?, primary, fallback, max_side).await
-}
-
-#[cfg(any(target_arch = "wasm32", test))]
-async fn decode_cover_bytes(
-    bytes: Vec<u8>,
-    primary: &dyn PageDecoder,
-    fallback: &dyn PageDecoder,
-    max_side: u32,
-) -> Result<DecodedImage, CoreError> {
-    let decoded = match primary.decode(bytes.clone()).await {
-        Ok(decoded) => decoded,
-        Err(error) => {
-            tracing::warn!(%error, "primary cover decode failed, retrying with fallback");
-            fallback.decode(bytes).await?
-        }
-    };
-    image_ops::downscale_to_thumbnail(&decoded, max_side)
+    let decoded = decode_with_fallback_if(source.read_bytes(0)?, primary, fallback, |error| {
+        tracing::warn!(%error, "primary cover decode failed, retrying with fallback");
+        true
+    })
+    .await?;
+    gashuu_core::image_ops::downscale_to_thumbnail(&decoded.image, max_side)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gashuu_core::{CacheConfig, ImageCache, MockPageSource, PageEntry};
-    use std::io::Cursor;
+    use gashuu_core::{CacheConfig, DecodeFuture, ImageCache, MockPageSource, PageEntry};
+    use std::future::{ready, Future};
     use std::task::{Context, Poll, Waker};
 
     fn resolve<F: Future>(future: F) -> F::Output {
@@ -95,29 +64,6 @@ mod tests {
             Poll::Ready(result) => result,
             Poll::Pending => panic!("expected an immediately ready decode"),
         }
-    }
-
-    fn poll_decode(bytes: Vec<u8>) -> Result<DecodedImage, CoreError> {
-        let decoder: &dyn PageDecoder = &ImageCratePageDecoder;
-        resolve(decoder.decode(bytes))
-    }
-
-    #[test]
-    fn decodes_png_to_the_same_rgba_and_dimensions_as_core() {
-        let img = image::RgbaImage::from_fn(2, 3, |x, y| image::Rgba([12, x as u8, y as u8, 64]));
-        let mut bytes = Vec::new();
-        img.write_to(&mut Cursor::new(&mut bytes), image::ImageFormat::Png)
-            .unwrap();
-        let expected = gashuu_core::image_ops::decode(&bytes).unwrap();
-        assert_eq!(poll_decode(bytes).unwrap(), expected);
-    }
-
-    #[test]
-    fn invalid_bytes_return_decode_error() {
-        assert!(matches!(
-            poll_decode(vec![1, 2, 3]),
-            Err(CoreError::Decode(_))
-        ));
     }
 
     struct FakeDecoder<F>(F);
