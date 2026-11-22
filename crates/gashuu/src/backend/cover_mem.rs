@@ -37,16 +37,11 @@ pub(crate) struct CoverMemCache {
 impl CoverMemCache {
     /// Build an empty cache with the default [`COVER_MEM_BUDGET_BYTES`] budget.
     pub(crate) fn new() -> Self {
-        Self {
-            lru: LruCache::unbounded(),
-            total_bytes: 0,
-            budget: COVER_MEM_BUDGET_BYTES,
-        }
+        Self::with_budget(COVER_MEM_BUDGET_BYTES)
     }
 
-    /// Build an empty cache with an explicit byte budget. Test-only so unit tests
-    /// can exercise eviction with tiny buffers instead of allocating 64 MiB.
-    #[cfg(test)]
+    /// Build an empty cache with an explicit byte budget. Tests use this to
+    /// exercise eviction with tiny buffers instead of allocating 64 MiB.
     fn with_budget(budget: u64) -> Self {
         Self {
             lru: LruCache::unbounded(),
