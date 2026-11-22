@@ -730,24 +730,9 @@ mod tests {
     fn add_orders_books_by_natural_title() {
         // Non-existent paths are already their caller-supplied identities.
         let mut lib = Library::new();
-        assert!(lib
-            .add(
-                BookId::new("/manga/vol 10.cbz"),
-                display_title(Path::new(&"/manga/vol 10.cbz"), false)
-            )
-            .is_some());
-        assert!(lib
-            .add(
-                BookId::new("/manga/vol 1.cbz"),
-                display_title(Path::new(&"/manga/vol 1.cbz"), false)
-            )
-            .is_some());
-        assert!(lib
-            .add(
-                BookId::new("/manga/vol 2.cbz"),
-                display_title(Path::new(&"/manga/vol 2.cbz"), false)
-            )
-            .is_some());
+        add(&mut lib, "/manga/vol 10.cbz");
+        add(&mut lib, "/manga/vol 1.cbz");
+        add(&mut lib, "/manga/vol 2.cbz");
         let titles: Vec<&str> = lib.books().iter().map(|b| b.title()).collect();
         assert_eq!(
             titles,
@@ -781,18 +766,10 @@ mod tests {
     #[test]
     fn add_dedups_by_path_and_returns_false() {
         let mut lib = Library::new();
-        assert!(lib
-            .add(
-                BookId::new("/manga/a.cbz"),
-                display_title(Path::new(&"/manga/a.cbz"), false)
-            )
-            .is_some());
+        add(&mut lib, "/manga/a.cbz");
+        let id = BookId::new("/manga/a.cbz");
         assert!(
-            lib.add(
-                BookId::new("/manga/a.cbz"),
-                display_title(Path::new(&"/manga/a.cbz"), false)
-            )
-            .is_none(),
+            lib.add(id.clone(), title(&id)).is_none(),
             "adding an existing path must be a no-op returning None"
         );
         assert_eq!(lib.books().len(), 1);
@@ -967,12 +944,7 @@ mod tests {
     fn remove_many_removes_multiple_and_reports_them() {
         let mut lib = Library::new();
         for name in ["a.cbz", "b.cbz", "c.cbz"] {
-            assert!(lib
-                .add(
-                    BookId::new(format!("/manga/{name}")),
-                    display_title(Path::new(&format!("/manga/{name}")), false)
-                )
-                .is_some());
+            add(&mut lib, &format!("/manga/{name}"));
         }
         let report = lib.remove_many(&[BookId::new("/manga/a.cbz"), BookId::new("/manga/c.cbz")]);
         assert_eq!(
@@ -990,12 +962,7 @@ mod tests {
         // retain keeps relative order, so no re-sort is needed).
         let mut lib = Library::new();
         for name in ["vol 1.cbz", "vol 2.cbz", "vol 10.cbz", "vol 11.cbz"] {
-            assert!(lib
-                .add(
-                    BookId::new(format!("/manga/{name}")),
-                    display_title(Path::new(&format!("/manga/{name}")), false)
-                )
-                .is_some());
+            add(&mut lib, &format!("/manga/{name}"));
         }
         // Remove the two middle volumes; vol 1 and vol 11 must remain in order.
         let report = lib.remove_many(&[
@@ -1014,12 +981,7 @@ mod tests {
     #[test]
     fn remove_many_splits_not_found() {
         let mut lib = Library::new();
-        assert!(lib
-            .add(
-                BookId::new("/manga/a.cbz"),
-                display_title(Path::new(&"/manga/a.cbz"), false)
-            )
-            .is_some());
+        add(&mut lib, "/manga/a.cbz");
         let report = lib.remove_many(&[
             BookId::new("/manga/a.cbz"),
             BookId::new("/manga/missing.cbz"),
@@ -1055,12 +1017,7 @@ mod tests {
     #[test]
     fn remove_many_counts_duplicate_input_once() {
         let mut lib = Library::new();
-        assert!(lib
-            .add(
-                BookId::new("/manga/a.cbz"),
-                display_title(Path::new(&"/manga/a.cbz"), false)
-            )
-            .is_some());
+        add(&mut lib, "/manga/a.cbz");
         // The same path passed twice must be removed once and reported once.
         let report = lib.remove_many(&[BookId::new("/manga/a.cbz"), BookId::new("/manga/a.cbz")]);
         assert_eq!(
@@ -1078,12 +1035,7 @@ mod tests {
         // WHOLE books (carrying resume_page/page_count/overrides) and re-sort.
         let mut lib = Library::new();
         for name in ["vol 1.cbz", "vol 2.cbz", "vol 10.cbz"] {
-            assert!(lib
-                .add(
-                    BookId::new(format!("/manga/{name}")),
-                    display_title(Path::new(&format!("/manga/{name}")), false)
-                )
-                .is_some());
+            add(&mut lib, &format!("/manga/{name}"));
         }
         // Give the middle volume a non-default reading position before removal.
         assert!(lib.set_resume_page(&BookId::new("/manga/vol 2.cbz"), 7));
@@ -1174,12 +1126,7 @@ mod tests {
     #[test]
     fn restore_empty_input_is_noop() {
         let mut lib = Library::new();
-        assert!(lib
-            .add(
-                BookId::new("/manga/a.cbz"),
-                display_title(Path::new(&"/manga/a.cbz"), false)
-            )
-            .is_some());
+        add(&mut lib, "/manga/a.cbz");
         lib.restore(Vec::new(), None);
         assert_eq!(lib.books().len(), 1, "empty restore changes nothing");
     }
@@ -1190,12 +1137,7 @@ mod tests {
         // JSON. A non-default override keeps the `overrides` comparison non-vacuous.
         let mut lib = Library::new();
         for name in ["a.cbz", "b.cbz", "c.cbz"] {
-            assert!(lib
-                .add(
-                    BookId::new(format!("/manga/{name}")),
-                    display_title(Path::new(&format!("/manga/{name}")), false)
-                )
-                .is_some());
+            add(&mut lib, &format!("/manga/{name}"));
         }
         assert!(lib.set_resume_page(&BookId::new("/manga/b.cbz"), 9));
         assert!(lib.set_page_count(&BookId::new("/manga/b.cbz"), NonZeroUsize::new(50).unwrap()));
@@ -1228,12 +1170,7 @@ mod tests {
         // hand the bookmark back so the "continue reading" target is not silently lost.
         let mut lib = Library::new();
         for name in ["a.cbz", "b.cbz"] {
-            assert!(lib
-                .add(
-                    BookId::new(format!("/manga/{name}")),
-                    display_title(Path::new(&format!("/manga/{name}")), false)
-                )
-                .is_some());
+            add(&mut lib, &format!("/manga/{name}"));
         }
         let b = BookId::new("/manga/b.cbz");
         lib.register_opened(&b, &title(&b), None);
@@ -1741,12 +1678,7 @@ mod tests {
     fn bookmark_is_none_when_last_opened_is_none() {
         let mut lib = Library::new();
         // A shelved book but nothing opened yet: no resume target.
-        assert!(lib
-            .add(
-                BookId::new("/manga/a.cbz"),
-                display_title(Path::new(&"/manga/a.cbz"), false)
-            )
-            .is_some());
+        add(&mut lib, "/manga/a.cbz");
         assert_eq!(lib.last_opened(), None);
         assert_eq!(lib.bookmark(), None, "no last_opened means no bookmark");
     }
