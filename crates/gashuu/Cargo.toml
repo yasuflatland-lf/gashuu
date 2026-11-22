@@ -54,12 +54,13 @@ self-replace = "1"
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 gashuu-core = { path = "../gashuu-core", default-features = false }
 gashuu-web-decode = { path = "../gashuu-web-decode" }
+gashuu-worker = { path = "../gashuu-worker" }
 console_error_panic_hook = "0.1"
 tracing-wasm = "0.2"
 slint = { version = "=1.18.1", features = ["unstable-fontique-011"] }
 web-sys = { version = "0.3", features = [
     "Window", "MediaQueryList", "Navigator", "Storage", "Request", "RequestInit", "Response", "Document", "HtmlInputElement", "File", "FileList",
-    "Blob",
+    "Blob", "Worker", "WorkerOptions", "WorkerType", "MessageEvent", "ErrorEvent", "Url",
 ] }
 js-sys = "0.3"
 wasm-bindgen = "0.2"
@@ -75,6 +76,7 @@ slint-build = "=1.18.1"
 winresource = "0.1"
 
 [dev-dependencies]
+gashuu-worker = { path = "../gashuu-worker" }
 # `testing` feature exposes MockPageSource for ViewerState unit tests;
 # image is used to synthesize tiny PNG bytes in tests (no committed binary fixtures).
 # `default-features = false` + `png` keeps the `ravif`/`rav1e` AVIF encoder (and

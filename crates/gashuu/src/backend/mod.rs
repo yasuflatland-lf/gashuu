@@ -15,6 +15,10 @@ mod desktop;
 pub(crate) mod fake;
 #[cfg(any(test, target_arch = "wasm32"))]
 mod local_web;
+#[cfg(target_arch = "wasm32")]
+mod web;
+#[cfg(any(test, target_arch = "wasm32"))]
+mod web_client;
 
 /// Every `Done` passed to a backend is:
 /// - invoked **at most once**;
@@ -185,7 +189,9 @@ pub(crate) fn platform_backend() -> Rc<dyn BookBackend> {
     #[cfg(not(target_arch = "wasm32"))]
     return Rc::new(desktop::DesktopBackend::new());
     #[cfg(target_arch = "wasm32")]
-    return Rc::new(local_web::LocalWebBackend::new());
+    return web::shared()
+        .map(|backend| backend as Rc<dyn BookBackend>)
+        .unwrap_or_else(|| Rc::new(local_web::LocalWebBackend::new()));
 }
 
 #[cfg(test)]

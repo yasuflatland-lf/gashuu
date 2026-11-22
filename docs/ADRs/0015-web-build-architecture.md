@@ -83,3 +83,12 @@ Reading those books needs bounded memory and responsive page turns.
   the GitHub Pages deployment does not supply.
 - Moving wasm `image` decoding to the Worker would still cost about 2.9 seconds
   per page on the iPad.
+
+## Worker transport
+
+The UI and Worker exchange JSON metadata in the `m` field of each message.
+Image replies carry RGBA buffers in `b` and transfer ownership of their
+backing buffers via the transfer list. The UI copies pixels into Rust and
+keeps decoded pages in its session-keyed LRU. The Worker prioritizes opens
+and spread decodes in its interactive lane. Thumbnails, covers, and count
+probes use the background lane.
