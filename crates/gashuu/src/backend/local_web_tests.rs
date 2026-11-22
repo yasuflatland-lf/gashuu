@@ -2,6 +2,7 @@ use super::*;
 use crate::book_path::request_id;
 use gashuu_core::{CoreError, DecodeFuture, ImageCratePageDecoder};
 use std::future::{poll_fn, ready};
+use std::sync::mpsc::TryRecvError;
 use std::task::{Context, Poll, Waker};
 
 #[derive(Default)]
@@ -76,6 +77,14 @@ impl Harness {
         assert!(self.queue.pump());
         result.try_recv().unwrap()
     }
+
+    fn cover_without_count(&self) -> Arc<DecodedImage> {
+        let (done, result) = super::super::test_callback();
+        self.backend.cover(&self.id, 512, done, None);
+        assert_eq!(result.try_recv(), Err(TryRecvError::Empty));
+        assert!(self.queue.pump());
+        result.try_recv().unwrap().unwrap()
+    }
 }
 
 #[test]
@@ -111,6 +120,19 @@ fn local_decode_spread_delivers_both_slots_together() {
     let (index, page) = spread.trailing.unwrap();
     assert_eq!(index, 1);
     assert!(page.is_ok());
+}
+
+#[test]
+fn decode_spread_trailing_error_keeps_leading() {
+    let h = Harness::png(1);
+    let session = h.open().session;
+    let spread = h.spread(session, 0, Some(1));
+    assert_eq!(spread.leading.0, 0);
+    assert!(spread.leading.1.is_ok());
+    assert!(matches!(
+        spread.trailing,
+        Some((1, Err(BackendError::Other { .. })))
+    ));
 }
 
 struct FailingDecoder(Cell<usize>);
@@ -152,6 +174,94 @@ impl PageDecoder for GatedDecoder {
             }
         }))
     }
+}
+
+#[test]
+fn decode_spread_closed_before_trailing_drops_done() {
+    let decoder = Rc::new(GatedDecoder::default());
+    let h = Harness::new(2, decoder.clone());
+    let session = h.open().session;
+    let (done, result) = super::super::test_callback();
+    h.backend.decode_spread(session, 0, Some(1), done);
+    assert!(!h.queue.pump());
+    assert_eq!(decoder.started.get(), 1);
+
+    h.backend.close(session);
+    decoder.ready.set(true);
+    assert!(h.queue.pump());
+    assert_eq!(decoder.started.get(), 1);
+    assert!(matches!(result.try_recv(), Err(TryRecvError::Disconnected)));
+}
+
+#[test]
+fn local_cover_mem_reuses_decoded_cover_without_count() {
+    let decoder = Rc::new(GatedDecoder::default());
+    decoder.ready.set(true);
+    let h = Harness::new(1, decoder.clone());
+    let cached = h.cover_without_count();
+    assert_eq!(decoder.started.get(), 1);
+
+    let hit = h.cover_without_count();
+    assert!(Arc::ptr_eq(&cached, &hit));
+    assert_eq!(decoder.started.get(), 1);
+
+    std::fs::remove_dir_all(book_path::locate(&h.id)).unwrap();
+    assert!(Arc::ptr_eq(&cached, &h.cover_without_count()));
+}
+
+#[test]
+fn local_cover_mem_hit_with_count_reopens_book() {
+    let h = Harness::png(1);
+    let cached = h.cover_without_count();
+    let path = book_path::locate(&h.id);
+    std::fs::copy(path.join("000.png"), path.join("001.png")).unwrap();
+
+    let (on_cover, cover) = super::super::test_callback();
+    let (on_count, count) = super::super::test_callback();
+    h.backend.cover(&h.id, 512, on_cover, Some(on_count));
+    assert!(h.queue.pump());
+    assert!(Arc::ptr_eq(&cached, &cover.try_recv().unwrap().unwrap()));
+    assert_eq!(count.try_recv().unwrap().unwrap().get(), 2);
+}
+
+#[test]
+fn local_cover_mem_hit_reports_empty_only_through_count() {
+    let h = Harness::png(1);
+    let cached = h.cover_without_count();
+    std::fs::remove_file(book_path::locate(&h.id).join("000.png")).unwrap();
+
+    let (on_cover, cover) = super::super::test_callback();
+    let (on_count, count) = super::super::test_callback();
+    h.backend.cover(&h.id, 512, on_cover, Some(on_count));
+    assert!(h.queue.pump());
+    assert!(Arc::ptr_eq(&cached, &cover.try_recv().unwrap().unwrap()));
+    assert_eq!(count.try_recv().unwrap(), Err(BackendError::EmptyBook));
+}
+
+#[test]
+fn local_cover_empty_miss_drops_count() {
+    let h = Harness::png(0);
+    let (on_cover, cover) = super::super::test_callback();
+    let (on_count, count) = super::super::test_callback();
+    h.backend.cover(&h.id, 512, on_cover, Some(on_count));
+    assert!(h.queue.pump());
+    assert_eq!(cover.try_recv().unwrap(), Err(BackendError::EmptyBook));
+    assert_eq!(count.try_recv(), Err(TryRecvError::Disconnected));
+}
+
+#[test]
+fn local_cover_unreadable_miss_drops_count() {
+    let h = Harness::png(0);
+    let id = request_id(&h.dir.path().join("missing")).unwrap();
+    let (on_cover, cover) = super::super::test_callback();
+    let (on_count, count) = super::super::test_callback();
+    h.backend.cover(&id, 512, on_cover, Some(on_count));
+    assert!(h.queue.pump());
+    assert!(matches!(
+        cover.try_recv().unwrap(),
+        Err(BackendError::Missing { .. })
+    ));
+    assert_eq!(count.try_recv(), Err(TryRecvError::Disconnected));
 }
 
 #[test]
@@ -227,6 +337,59 @@ fn local_close_drops_pending_callbacks() {
     decoder.ready.set(true);
     assert!(h.queue.pump());
     assert!(result.try_recv().is_err());
+}
+
+#[test]
+fn thumbnail_returns_unavailable_then_drops_after_close() {
+    let h = Harness::png(1);
+    let session = h.open().session;
+    let (done, result) = super::super::test_callback();
+    h.backend.thumbnail(session, 0, 512, done);
+    assert_eq!(result.try_recv(), Err(TryRecvError::Empty));
+    assert!(h.queue.pump());
+    assert_eq!(
+        result.try_recv().unwrap(),
+        Err(BackendError::Other {
+            detail: "thumbnails are unavailable on this build".into()
+        })
+    );
+
+    let (done, result) = super::super::test_callback();
+    h.backend.thumbnail(session, 0, 512, done);
+    h.backend.close(session);
+    assert!(h.queue.pump());
+    assert_eq!(result.try_recv(), Err(TryRecvError::Disconnected));
+}
+
+#[test]
+fn probe_page_count_classifies() {
+    let h = Harness::png(2);
+    let empty = h.dir.path().join("empty");
+    std::fs::create_dir(&empty).unwrap();
+    let disabled = h.dir.path().join("disabled.cbr");
+    std::fs::write(&disabled, []).unwrap();
+    let missing = h.dir.path().join("missing");
+
+    let probe = |id: &BookId| {
+        let (done, result) = super::super::test_callback();
+        h.backend
+            .probe_page_count(id, ArchivePolicy { allow_rar: false }, done);
+        assert!(h.queue.pump());
+        result.try_recv().unwrap()
+    };
+    assert_eq!(probe(&h.id).unwrap().get(), 2);
+    assert_eq!(
+        probe(&request_id(&empty).unwrap()),
+        Err(BackendError::EmptyBook)
+    );
+    assert!(matches!(
+        probe(&request_id(&disabled).unwrap()),
+        Err(BackendError::FormatDisabled { .. })
+    ));
+    assert!(matches!(
+        probe(&request_id(&missing).unwrap()),
+        Err(BackendError::Other { .. })
+    ));
 }
 
 #[test]

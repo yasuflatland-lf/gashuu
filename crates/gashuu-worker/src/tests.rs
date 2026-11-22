@@ -2,7 +2,7 @@ use crate::{
     book_path::{parse, BookPath},
     dispatcher::{Dispatcher, Lane, Reply},
     protocol::{
-        decode, encode, ImageMeta, OpenedMeta, ReqId, WorkerRequest as Request,
+        decode, encode, ImageMeta, OpenedMeta, ReqId, WireResult, WorkerRequest as Request,
         WorkerResponse as Response,
     },
     wire_error::WireError,
@@ -12,7 +12,7 @@ use gashuu_core::{
 };
 use image::{ImageFormat, Rgba, RgbaImage};
 use std::{
-    cell::RefCell,
+    cell::{Cell, RefCell},
     future::{ready, Future},
     io::{self, Cursor, Write},
     pin::pin,
@@ -379,12 +379,33 @@ fn fake_image() -> DecodedImage {
 fn primary_failure_retries_the_same_bytes_with_the_fallback() {
     let primary = RecordingDecoder::new(Err("primary failed"));
     let fallback = RecordingDecoder::new(Ok(fake_image()));
-    let mut worker = Dispatcher::new(primary.clone(), fallback.clone());
+    let errors = Rc::new(RefCell::new(Vec::new()));
+    let mut worker =
+        Dispatcher::new(primary.clone(), fallback.clone()).with_fallback_hook(Rc::new({
+            let errors = errors.clone();
+            move |error| {
+                let CoreError::Io(error) = error else {
+                    panic!("expected the primary I/O error, got {error}");
+                };
+                errors.borrow_mut().push(error.to_string());
+            }
+        }));
     opened(&mut worker, SESSION, book());
     let replies = run(worker.handle(spread(None), None));
     assert_eq!(*primary.seen.borrow(), [png(4, 2, [255, 0, 0, 255])]);
     assert_eq!(*fallback.seen.borrow(), *primary.seen.borrow());
     assert_eq!(replies[0].images, [fake_image().rgba().to_vec()]);
+    assert_eq!(*errors.borrow(), ["primary failed"]);
+}
+
+#[test]
+fn primary_success_does_not_call_the_fallback_hook() {
+    let mut worker = dispatcher().with_fallback_hook(Rc::new(|error| {
+        panic!("unexpected fallback hook call: {error}");
+    }));
+    opened(&mut worker, SESSION, book());
+    let replies = run(worker.handle(spread(None), None));
+    assert_eq!(replies[0].images, [[255, 0, 0, 255].repeat(8)]);
 }
 
 #[test]
@@ -478,6 +499,15 @@ fn close_is_out_of_band() {
 }
 
 #[test]
+fn closed_session_discards_open_and_marks_thumbnail_obsolete() {
+    let mut worker = dispatcher();
+    assert!(!worker.is_obsolete(&thumbnail()));
+    assert!(worker.apply_control(&close(SESSION)));
+    assert!(worker.is_obsolete(&thumbnail()));
+    assert!(run(worker.handle(open_request(SESSION), Some(Ok(book())))).is_empty());
+}
+
+#[test]
 fn close_unknown_session_is_noop() {
     let mut worker = dispatcher();
     opened(&mut worker, SESSION, book());
@@ -556,6 +586,94 @@ fn probe_page_count_of_empty_zip_is_empty_book() {
     );
 }
 
+fn assert_metadata_reply(replies: Vec<Reply>, expected: Response) {
+    assert_eq!(replies.len(), 1);
+    assert_eq!(replies[0].msg, expected);
+    assert!(replies[0].images.is_empty());
+}
+
+fn assert_archive_failure(id: &str, reader: Option<WireResult<Arc<dyn ReadAt>>>, error: WireError) {
+    let mut worker = dispatcher();
+    assert_metadata_reply(
+        run(worker.handle(
+            Request::Open {
+                req: REQ,
+                session: SESSION,
+                id: id.into(),
+                allow_rar: false,
+            },
+            reader.clone(),
+        )),
+        Response::Opened {
+            req: REQ,
+            result: Err(error.clone()),
+        },
+    );
+    assert_unknown_session(run(worker.handle(spread(None), None)));
+    assert_metadata_reply(
+        run(worker.handle(
+            Request::Cover {
+                req: REQ,
+                gen: 0,
+                id: id.into(),
+                max_side: 2,
+                want_count: true,
+            },
+            reader.clone(),
+        )),
+        Response::Cover {
+            req: REQ,
+            result: Err(error.clone()),
+        },
+    );
+    assert_metadata_reply(
+        run(worker.handle(
+            Request::ProbePageCount {
+                req: REQ,
+                id: id.into(),
+                allow_rar: false,
+            },
+            reader,
+        )),
+        Response::PageCount {
+            req: REQ,
+            result: Err(error),
+        },
+    );
+}
+
+#[test]
+fn archive_requests_reject_invalid_ids() {
+    for id in ["../x", "books/a"] {
+        assert_archive_failure(
+            id,
+            Some(Ok(book())),
+            WireError::Missing { detail: id.into() },
+        );
+    }
+}
+
+#[test]
+fn archive_requests_require_a_reader() {
+    assert_archive_failure(ID, None, other("book reader unavailable"));
+}
+
+#[test]
+fn archive_requests_preserve_a_missing_reader_error() {
+    let missing = WireError::Missing { detail: ID.into() };
+    assert_archive_failure(ID, Some(Err(missing.clone())), missing);
+}
+
+#[test]
+fn archive_requests_report_a_corrupt_zip() {
+    let bytes: Arc<[u8]> = Arc::from(&b"This byte sequence is not a ZIP archive"[..]);
+    assert_archive_failure(
+        ID,
+        Some(Ok(Arc::new(bytes))),
+        other("archive error: invalid Zip archive: Could not find EOCD"),
+    );
+}
+
 struct CountingReader {
     bytes: Arc<[u8]>,
     drops: Arc<AtomicUsize>,
@@ -599,25 +717,45 @@ fn reader_is_shared_and_released_when_last_session_closes() {
 
 #[test]
 fn unknown_session_is_rejected() {
-    let replies = run(dispatcher().handle(spread(None), None));
-    assert_eq!(replies.len(), 1);
-    assert_eq!(
-        replies[0].msg,
-        Response::Rejected {
-            req: Some(REQ),
-            error: other("unknown session")
-        }
-    );
-    assert!(replies[0].images.is_empty());
+    assert_unknown_session(run(dispatcher().handle(spread(None), None)));
 }
 
-struct YieldingDecoder;
+#[test]
+fn thumbnail_for_unknown_session_is_rejected() {
+    assert_unknown_session(run(dispatcher().handle(thumbnail(), None)));
+}
+
+fn assert_unknown_session(replies: Vec<Reply>) {
+    assert_metadata_reply(
+        replies,
+        Response::Rejected {
+            req: Some(REQ),
+            error: other("unknown session"),
+        },
+    );
+}
+
+struct YieldingDecoder {
+    calls: Cell<usize>,
+    yield_on_call: usize,
+}
+
+impl YieldingDecoder {
+    fn new(yield_on_call: usize) -> Self {
+        Self {
+            calls: Cell::new(0),
+            yield_on_call,
+        }
+    }
+}
 
 impl PageDecoder for YieldingDecoder {
     fn decode(&self, _bytes: Vec<u8>) -> DecodeFuture {
-        let mut first_poll = true;
+        let call = self.calls.get() + 1;
+        self.calls.set(call);
+        let mut should_yield = call == self.yield_on_call;
         Box::pin(std::future::poll_fn(move |context| {
-            if std::mem::take(&mut first_poll) {
+            if std::mem::take(&mut should_yield) {
                 context.waker().wake_by_ref();
                 return Poll::Pending;
             }
@@ -628,7 +766,10 @@ impl PageDecoder for YieldingDecoder {
 
 #[test]
 fn closing_during_decode_discards_the_pending_reply() {
-    let mut worker = Dispatcher::new(Rc::new(YieldingDecoder), Rc::new(ImageCratePageDecoder));
+    let mut worker = Dispatcher::new(
+        Rc::new(YieldingDecoder::new(1)),
+        Rc::new(ImageCratePageDecoder),
+    );
     opened(&mut worker, SESSION, book());
     let control = worker.control();
     let mut pending = pin!(worker.handle(spread(Some(1)), None));
@@ -639,8 +780,40 @@ fn closing_during_decode_discards_the_pending_reply() {
 }
 
 #[test]
+fn closing_during_thumbnail_decode_discards_the_pending_reply() {
+    let mut worker = Dispatcher::new(
+        Rc::new(YieldingDecoder::new(1)),
+        Rc::new(ImageCratePageDecoder),
+    );
+    opened(&mut worker, SESSION, book());
+    let control = worker.control();
+    let mut pending = pin!(worker.handle(thumbnail(), None));
+    let mut context = Context::from_waker(Waker::noop());
+    assert!(pending.as_mut().poll(&mut context).is_pending());
+    assert!(control.apply_control(&close(SESSION)));
+    assert!(matches!(pending.poll(&mut context), Poll::Ready(replies) if replies.is_empty()));
+}
+
+#[test]
+fn closing_during_trailing_decode_discards_the_pending_spread() {
+    let decoder = Rc::new(YieldingDecoder::new(2));
+    let mut worker = Dispatcher::new(decoder.clone(), Rc::new(ImageCratePageDecoder));
+    opened(&mut worker, SESSION, book());
+    let control = worker.control();
+    let mut pending = pin!(worker.handle(spread(Some(1)), None));
+    let mut context = Context::from_waker(Waker::noop());
+    assert!(pending.as_mut().poll(&mut context).is_pending());
+    assert_eq!(decoder.calls.get(), 2);
+    assert!(control.apply_control(&close(SESSION)));
+    assert!(matches!(pending.poll(&mut context), Poll::Ready(replies) if replies.is_empty()));
+}
+
+#[test]
 fn cancelling_during_cover_decode_discards_pixels_and_count() {
-    let mut worker = Dispatcher::new(Rc::new(YieldingDecoder), Rc::new(ImageCratePageDecoder));
+    let mut worker = Dispatcher::new(
+        Rc::new(YieldingDecoder::new(1)),
+        Rc::new(ImageCratePageDecoder),
+    );
     let control = worker.control();
     let mut pending = pin!(worker.handle(cover(1, true), Some(Ok(book()))));
     let mut context = Context::from_waker(Waker::noop());

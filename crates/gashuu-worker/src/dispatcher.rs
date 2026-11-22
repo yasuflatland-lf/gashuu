@@ -7,7 +7,7 @@ use crate::{
 };
 use gashuu_core::{
     image_ops::downscale_to_thumbnail, page_decode::decode_with_fallback, ArchiveLoader,
-    ArchivePolicy, DecodedImage, PageDecoder, PageSource, ReadAt,
+    ArchivePolicy, CoreError, DecodedImage, PageDecoder, PageSource, ReadAt,
 };
 use std::{
     cell::RefCell,
@@ -74,11 +74,14 @@ impl Control {
     }
 }
 
+type FallbackHook = Rc<dyn Fn(&CoreError)>;
+
 pub struct Dispatcher {
     control: Control,
     handles: HashMap<String, Weak<dyn ReadAt>>,
     primary: Rc<dyn PageDecoder>,
     fallback: Rc<dyn PageDecoder>,
+    on_fallback: Option<FallbackHook>,
 }
 
 impl Dispatcher {
@@ -88,7 +91,14 @@ impl Dispatcher {
             handles: HashMap::new(),
             primary,
             fallback,
+            on_fallback: None,
         }
+    }
+
+    /// Report the primary error when the fallback successfully decodes a page.
+    pub fn with_fallback_hook(mut self, hook: Rc<dyn Fn(&CoreError)>) -> Self {
+        self.on_fallback = Some(hook);
+        self
     }
 
     pub fn control(&self) -> Control {
@@ -315,10 +325,13 @@ impl Dispatcher {
 
     async fn decode_page(&self, source: &dyn PageSource, index: u32) -> WireResult<DecodedImage> {
         let bytes = source.read_bytes(index as usize).map_err(WireError::from)?;
-        decode_with_fallback(bytes, self.primary.as_ref(), self.fallback.as_ref())
+        let decoded = decode_with_fallback(bytes, self.primary.as_ref(), self.fallback.as_ref())
             .await
-            .map(|decoded| decoded.image)
-            .map_err(WireError::from)
+            .map_err(WireError::from)?;
+        if let (Some(error), Some(hook)) = (&decoded.primary_error, &self.on_fallback) {
+            hook(error);
+        }
+        Ok(decoded.image)
     }
 
     async fn thumbnail(
