@@ -165,6 +165,12 @@ mod tests {
         ));
     }
 
+    fn add(lib: &mut Library, raw: &str) -> BookId {
+        let id = BookId::new(raw);
+        let title = title(&id);
+        lib.add(id, title).unwrap().clone()
+    }
+
     fn title(id: &BookId) -> String {
         crate::display_title(Path::new(id.as_str()), false)
     }
@@ -209,10 +215,8 @@ mod tests {
     #[test]
     fn to_json_then_from_json_round_trips() {
         let mut lib = Library::new();
-        let first = BookId::new("/manga/a.cbz");
-        let second = BookId::new("/manga/b.cbz");
-        assert!(lib.add(first.clone(), title(&first)).is_some());
-        assert!(lib.add(second.clone(), title(&second)).is_some());
+        add(&mut lib, "/manga/a.cbz");
+        let second = add(&mut lib, "/manga/b.cbz");
         assert!(lib.set_resume_page(&second, 42));
 
         let json = lib.to_json().unwrap();
@@ -230,12 +234,7 @@ mod tests {
     #[test]
     fn to_json_emits_version_and_books() {
         let mut lib = Library::new();
-        assert!(lib
-            .add(
-                BookId::new("/manga/a.cbz"),
-                crate::display_title(Path::new("/manga/a.cbz"), false)
-            )
-            .is_some());
+        add(&mut lib, "/manga/a.cbz");
 
         let value: serde_json::Value = serde_json::from_str(&lib.to_json().unwrap()).unwrap();
 
@@ -252,8 +251,7 @@ mod tests {
         // Pins the `Some(n)` direction of the serde shim: a known count serializes as the
         // bare integer `n`, keeping the on-disk shape byte-compatible (`None` emits as `0`).
         let mut lib = Library::new();
-        let book = BookId::new("/manga/a.cbz");
-        assert!(lib.add(book.clone(), title(&book)).is_some());
+        let book = add(&mut lib, "/manga/a.cbz");
         assert!(lib.set_page_count(&book, NonZeroUsize::new(123).unwrap()));
 
         let value: serde_json::Value = serde_json::from_str(&lib.to_json().unwrap()).unwrap();
@@ -364,9 +362,8 @@ mod tests {
     fn save_to_then_load_from_round_trips() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("nested").join("library.json");
-        let book = BookId::new("/manga/a.cbz");
         let mut original = Library::new();
-        assert!(original.add(book.clone(), title(&book)).is_some());
+        let book = add(&mut original, "/manga/a.cbz");
         assert!(original.set_resume_page(&book, 7));
 
         let store = LibraryStore::new(path);
@@ -400,18 +397,8 @@ mod tests {
 
         // First save: two books (a longer document).
         let mut original = Library::new();
-        assert!(original
-            .add(
-                BookId::new("/manga/a.cbz"),
-                crate::display_title(Path::new("/manga/a.cbz"), false)
-            )
-            .is_some());
-        assert!(original
-            .add(
-                BookId::new("/manga/b.cbz"),
-                crate::display_title(Path::new("/manga/b.cbz"), false)
-            )
-            .is_some());
+        add(&mut original, "/manga/a.cbz");
+        add(&mut original, "/manga/b.cbz");
         let store = LibraryStore::new(path.clone());
         store.save(&original).unwrap();
 
@@ -443,9 +430,8 @@ mod tests {
     fn page_count_persists_across_save_and_load() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("nested").join("library.json");
-        let book = BookId::new("/manga/a.cbz");
         let mut original = Library::new();
-        assert!(original.add(book.clone(), title(&book)).is_some());
+        let book = add(&mut original, "/manga/a.cbz");
         assert!(original.set_page_count(&book, NonZeroUsize::new(42).unwrap()));
 
         let store = LibraryStore::new(path);
@@ -509,12 +495,7 @@ mod tests {
         // skip_serializing_if: a book with no overrides must NOT emit an
         // "overrides" key, so the on-disk shape is unchanged for existing books.
         let mut lib = Library::new();
-        assert!(lib
-            .add(
-                BookId::new("/manga/a.cbz"),
-                crate::display_title(Path::new("/manga/a.cbz"), false)
-            )
-            .is_some());
+        add(&mut lib, "/manga/a.cbz");
         let value: serde_json::Value = serde_json::from_str(&lib.to_json().unwrap()).unwrap();
         assert!(value["books"][0].get("overrides").is_none());
     }
@@ -522,8 +503,7 @@ mod tests {
     #[test]
     fn non_empty_overrides_round_trip() {
         let mut lib = Library::new();
-        let p = BookId::new("/manga/a.cbz");
-        assert!(lib.add(p.clone(), title(&p)).is_some());
+        let p = add(&mut lib, "/manga/a.cbz");
         let ov = crate::view_override::ViewOverride {
             reading_direction: Some(crate::view_modes::ReadingDirection::Rtl),
             spread_mode: Some(crate::view_modes::SpreadMode::Double),
@@ -542,8 +522,7 @@ mod tests {
     #[test]
     fn reading_progress_is_not_persisted() {
         let mut lib = Library::new();
-        let p = BookId::new("/manga/a.cbz");
-        assert!(lib.add(p.clone(), title(&p)).is_some());
+        let p = add(&mut lib, "/manga/a.cbz");
         assert!(lib.set_resume_page(&p, 3));
         assert!(lib.set_page_count(&p, NonZeroUsize::new(10).unwrap()));
 
@@ -658,9 +637,8 @@ mod tests {
         // Verify that last_opened survives a full store save → load round-trip.
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("library.json");
-        let book = BookId::new("/manga/vol1.cbz");
         let mut lib = Library::new();
-        assert!(lib.add(book.clone(), title(&book)).is_some());
+        let book = add(&mut lib, "/manga/vol1.cbz");
         lib.register_opened(&book, &title(&book), None);
         // last_opened is set before saving.
         assert_eq!(lib.last_opened(), Some(&BookId::new("/manga/vol1.cbz")));
