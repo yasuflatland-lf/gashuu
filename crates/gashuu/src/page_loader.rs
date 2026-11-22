@@ -1,15 +1,15 @@
 //! Viewer async page-decode controller.
 //!
-//! This is the viewer's async-decode arm, kept as a presentation controller
-//! rather than folded into `ViewerState` so it follows the same mental model as
-//! `cover_loader.rs`: UI-thread bookkeeping here, heavy decode on rayon workers,
-//! and scalar-only Slint callbacks back into the handlers that own `Rc`
-//! viewport/localizer state.
+//! The controller tracks in-flight pages on the UI thread. Desktop spreads
+//! decode on rayon workers and wasm32 spreads decode in a local async task.
+//! Both deliver the finished spread through epoch-guarded Slint callbacks.
 //!
 //! Thread-boundary rule: only `Send` values cross into the rayon job and the
 //! event-loop closure. `slint::Image` is built inside the UI-thread closure, and
 //! `Rc`, `VecModel`, viewport state, and the localizer are never captured.
 
+#[cfg(target_arch = "wasm32")]
+use crate::page_decode::{ImageCratePageDecoder, PageDecoder};
 #[cfg(not(test))]
 use crate::ui_marshal::marshal_to_ui;
 #[cfg(not(test))]
@@ -18,8 +18,11 @@ use crate::{apply_spread_images, to_slint_image, ViewerWindow};
 use gashuu_core::DecodedImage;
 #[cfg(not(test))]
 use gashuu_core::{cache::CacheDispatch, CoreError};
+#[cfg(target_arch = "wasm32")]
+use std::cell::Cell;
 use std::cell::RefCell;
 use std::collections::HashSet;
+#[cfg(not(target_arch = "wasm32"))]
 use std::marker::PhantomData;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
@@ -29,13 +32,24 @@ use std::sync::Arc;
 ///
 /// `dispatched` is deliberately UI-thread-only state: it prevents duplicate
 /// decode dispatches for a page while a result is in flight, and handlers clear
-/// it when the corresponding scalar callback is applied. The `Rc` marker makes
-/// the controller `!Send`/`!Sync`, matching that ownership rule.
+/// it when the corresponding scalar callback is applied.
+#[cfg_attr(not(target_arch = "wasm32"), derive(Default))]
 pub struct PageController {
     epoch: Arc<AtomicUsize>,
     dispatched: RefCell<HashSet<usize>>,
     target: RefCell<Option<SpreadTarget>>,
+    #[cfg(not(target_arch = "wasm32"))]
     _ui_thread: PhantomData<Rc<()>>,
+    #[cfg(target_arch = "wasm32")]
+    decoders: PageDecoders,
+}
+
+#[cfg(target_arch = "wasm32")]
+#[derive(Clone)]
+struct PageDecoders {
+    primary: Rc<dyn PageDecoder>,
+    fallback: Rc<dyn PageDecoder>,
+    warned: Rc<Cell<bool>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -45,6 +59,7 @@ struct SpreadTarget {
     single: bool,
 }
 
+#[cfg(target_arch = "wasm32")]
 impl Default for PageController {
     fn default() -> Self {
         Self::new()
@@ -54,11 +69,30 @@ impl Default for PageController {
 impl PageController {
     /// Build the controller. Call once during UI setup.
     pub fn new() -> Self {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            Self::default()
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            Self::with_decoders(
+                Rc::new(ImageCratePageDecoder),
+                Rc::new(ImageCratePageDecoder),
+            )
+        }
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    pub fn with_decoders(primary: Rc<dyn PageDecoder>, fallback: Rc<dyn PageDecoder>) -> Self {
         Self {
             epoch: Arc::new(AtomicUsize::new(0)),
             dispatched: RefCell::new(HashSet::new()),
             target: RefCell::new(None),
-            _ui_thread: PhantomData,
+            decoders: PageDecoders {
+                primary,
+                fallback,
+                warned: Rc::new(Cell::new(false)),
+            },
         }
     }
 
@@ -176,11 +210,8 @@ impl PageController {
     /// Dispatch an atomic spread decode for any cache-missing slots.
     ///
     /// The request carries already-decoded HIT slots as `Arc<DecodedImage>` and
-    /// marks MISS slots with `None`. If every MISS in this request is newly
-    /// reserved, one rayon job is spawned; when both leading and trailing are
-    /// missing, that job uses `rayon::join` so the two decodes run in parallel.
-    /// If any requested MISS is already in flight, this returns
-    /// `blocked_by_in_flight = true` and leaves completion to the earlier worker.
+    /// marks MISS slots with `None`. A new reservation starts a rayon job on
+    /// desktop or a local task on wasm32.
     #[cfg(not(test))]
     pub fn dispatch_spread(
         &self,
@@ -209,6 +240,8 @@ impl PageController {
             self.current_epoch(),
             cache_dispatch,
             request,
+            #[cfg(target_arch = "wasm32")]
+            self.decoders.clone(),
         );
         status
     }
@@ -287,7 +320,7 @@ impl DispatchStatus {
     }
 }
 
-#[cfg(not(test))]
+#[cfg(all(not(test), not(target_arch = "wasm32")))]
 fn spawn_decode_spread(
     weak: slint::Weak<ViewerWindow>,
     epoch: Arc<AtomicUsize>,
@@ -320,21 +353,11 @@ fn spawn_decode_spread(
                 let (leading, trailing) = match t.decoded {
                     Some(trailing) => (cache_dispatch.decode_and_cache(leading_idx), Ok(trailing)),
                     None => {
-                        #[cfg(not(target_arch = "wasm32"))]
-                        {
-                            let trailing_dispatch = cache_dispatch.clone();
-                            rayon::join(
-                                || cache_dispatch.decode_and_cache(leading_idx),
-                                || trailing_dispatch.decode_and_cache(t.index),
-                            )
-                        }
-                        #[cfg(target_arch = "wasm32")]
-                        {
-                            (
-                                cache_dispatch.decode_and_cache(leading_idx),
-                                cache_dispatch.decode_and_cache(t.index),
-                            )
-                        }
+                        let trailing_dispatch = cache_dispatch.clone();
+                        rayon::join(
+                            || cache_dispatch.decode_and_cache(leading_idx),
+                            || trailing_dispatch.decode_and_cache(t.index),
+                        )
                     }
                 };
                 (leading, Some((t.index, trailing)))
@@ -348,6 +371,55 @@ fn spawn_decode_spread(
             leading_idx,
             leading_result,
             trailing_result,
+            requested_single,
+        );
+    });
+}
+
+#[cfg(all(not(test), target_arch = "wasm32"))]
+fn spawn_decode_spread(
+    weak: slint::Weak<ViewerWindow>,
+    epoch: Arc<AtomicUsize>,
+    my_epoch: usize,
+    cache_dispatch: CacheDispatch,
+    request: SpreadDecodeRequest,
+    decoders: PageDecoders,
+) {
+    wasm_bindgen_futures::spawn_local(async move {
+        let resolve = async |slot: PageSlot| {
+            if let Some(hit) = slot.decoded {
+                return Ok(hit);
+            }
+            let started = crate::clock::now();
+            let result = crate::page_decode::decode_page(
+                &cache_dispatch,
+                slot.index,
+                decoders.primary.as_ref(),
+                decoders.fallback.as_ref(),
+                &decoders.warned,
+            )
+            .await;
+            tracing::debug!(
+                index = slot.index,
+                elapsed_ms = started.elapsed().as_secs_f64() * 1000.0,
+                "page decode finished"
+            );
+            result
+        };
+        let leading_idx = request.leading.index;
+        let leading = resolve(request.leading).await;
+        let trailing = match request.trailing {
+            Some(slot) => Some((slot.index, resolve(slot).await)),
+            None => None,
+        };
+        let requested_single = request.single || trailing.is_none();
+        finish_decode_spread(
+            weak,
+            epoch,
+            my_epoch,
+            leading_idx,
+            leading,
+            trailing,
             requested_single,
         );
     });
