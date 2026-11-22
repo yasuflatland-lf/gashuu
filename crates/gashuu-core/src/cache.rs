@@ -278,23 +278,37 @@ impl ImageCache {
 }
 
 impl CacheDispatch {
+    /// Look up a page and promote a hit in the LRU without reading or prefetching.
+    pub fn cached(&self, index: usize) -> Option<Arc<DecodedImage>> {
+        self.inner.cached(index)
+    }
+
+    /// Read the encoded page bytes directly from the source.
+    pub fn read_raw(&self, index: usize) -> Result<Vec<u8>, CoreError> {
+        self.inner.source.read_bytes(index)
+    }
+
+    /// Cache a decoded page, returning the existing handle if another reader won the race.
+    pub fn insert_decoded(&self, index: usize, decoded: DecodedImage) -> Arc<DecodedImage> {
+        self.inner.cache_decoded(index, Arc::new(decoded))
+    }
+
     /// Read + decode page `index` on the calling thread, insert it into the
     /// shared cache, and warm neighbouring pages.
     pub fn decode_and_cache(&self, index: usize) -> Result<Arc<DecodedImage>, CoreError> {
-        if let Some(img) = self.inner.cached(index) {
+        if let Some(img) = self.cached(index) {
             self.inner.spawn_prefetch(index, self.radius);
             return Ok(img);
         }
 
-        let bytes = self.inner.source.read_bytes(index)?;
+        let bytes = self.read_raw(index)?;
 
-        if let Some(img) = self.inner.cached(index) {
+        if let Some(img) = self.cached(index) {
             self.inner.spawn_prefetch(index, self.radius);
             return Ok(img);
         }
 
-        let decoded = Arc::new(decode(&bytes)?);
-        let img = self.inner.cache_decoded(index, decoded);
+        let img = self.insert_decoded(index, decode(&bytes)?);
         self.inner.spawn_prefetch(index, self.radius);
         Ok(img)
     }
@@ -388,6 +402,36 @@ mod tests {
     }
 
     // ---- cache semantics (radius 0 ⇒ background tasks are inert) ----
+
+    #[test]
+    fn read_raw_returns_source_bytes_without_populating_cache() {
+        let (src, _) = counting(1);
+        let dispatch = ImageCache::new(src, CacheConfig::new(1, 0)).dispatch_handle();
+        assert_eq!(dispatch.read_raw(0).unwrap(), tiny_png());
+        assert!(dispatch.cached(0).is_none());
+    }
+
+    #[test]
+    fn read_raw_propagates_source_index_error() {
+        let (src, _) = counting(1);
+        let dispatch = ImageCache::new(src, CacheConfig::new(1, 0)).dispatch_handle();
+        assert!(matches!(
+            dispatch.read_raw(2),
+            Err(CoreError::IndexOutOfRange { index: 2, len: 1 })
+        ));
+    }
+
+    #[test]
+    fn insert_decoded_shares_the_cached_arc_and_keeps_the_first_insert() {
+        let (src, reads) = counting(1);
+        let dispatch = ImageCache::new(src, CacheConfig::new(1, 0)).dispatch_handle();
+        let page = DecodedImage::new(vec![1, 2, 3, 4], 1, 1).unwrap();
+        let first = dispatch.insert_decoded(0, page.clone());
+        let second = dispatch.insert_decoded(0, page);
+        assert!(Arc::ptr_eq(&first, &second));
+        assert!(Arc::ptr_eq(&first, &dispatch.cached(0).unwrap()));
+        assert_eq!(reads.load(Ordering::SeqCst), 0);
+    }
 
     #[test]
     fn hit_returns_same_arc_without_rereading() {
