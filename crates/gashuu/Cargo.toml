@@ -59,7 +59,7 @@ console_error_panic_hook = "0.1"
 tracing-wasm = "0.2"
 slint = { version = "=1.18.1", features = ["unstable-fontique-011"] }
 web-sys = { version = "0.3", features = [
-    "Window", "MediaQueryList", "Navigator", "Storage", "Request", "RequestInit", "Response", "Document", "HtmlInputElement", "File", "FileList",
+    "Window", "EventTarget", "VisibilityState", "MediaQueryList", "Navigator", "Storage", "Request", "RequestInit", "Response", "Document", "HtmlInputElement", "File", "FileList",
     "Blob", "StorageManager", "Worker", "WorkerOptions", "MessageEvent", "ErrorEvent", "Url",
 ] }
 js-sys = "0.3"
