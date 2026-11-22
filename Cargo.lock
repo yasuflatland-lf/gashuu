@@ -1743,6 +1743,7 @@ dependencies = [
  "fluent-syntax",
  "gashuu-core",
  "gashuu-web-decode",
+ "gashuu-worker",
  "i18n-embed",
  "i18n-embed-fl",
  "image",
