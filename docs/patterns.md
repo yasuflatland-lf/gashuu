@@ -570,9 +570,9 @@ that epoch and upgrades the weak window before converting the image and updating
 Its `ui_done` callbacks also check the epoch for cover and count results. The controller
 fetches the model and builds the `slint::Image` on the UI thread.
 
-The desktop backend handles cover cache hits and misses on a worker. Reading metadata,
-loading the cache file and decoding it inline can stall the event loop when a library
-has hundreds of books.
+The desktop backend resolves the book fingerprint and checks decoded memory and
+`ThumbStore` on a worker. Reading source metadata and loading cached covers inline
+can stall the event loop when a library has hundreds of books.
 
 ### Worker → UI ACTION (not just a model write) via a Slint callback on the root window (reject-empty-books)
 
@@ -1068,13 +1068,18 @@ Each `apply_runtime_view_to_settings(&state.borrow(), &viewport.borrow(), &mut s
 
 NUANCE (`stage_position_write_back`): to read MULTIPLE fields from one `RefCell` in a single expression, take ONE `let s = state.borrow();` block and read all fields from it (e.g. `position_to_write_back(s.open_file(), s.index())`) rather than `state.borrow()` twice in the same expression; let that `Ref` drop at the `;` before the later `borrow_mut()` (e.g. `set_last_page`) — and keep that `borrow_mut()` in its own statement, never held across a following `borrow()` (e.g. the subsequent `save()`).
 
-### Persistent cache keys must use a version-stable hash, not `DefaultHasher`
+### Preserve the thumbnail filename recipe
 
-`std::hash::DefaultHasher` (and the `Hash` derive feeding it) is documented as NOT stable across Rust versions or platforms. Using it to name on-disk cache entries means a routine toolchain bump silently changes every key, orphaning the whole cache — no error, just a cold cache and wasted regeneration. `thumbnail_cache::cache_key` therefore hashes with a hand-written FNV-1a 64-bit (`FNV_OFFSET_BASIS`/`FNV_PRIME`, xor-then-multiply) over the path's `OsStr` bytes + `mtime.to_le_bytes()` + `max_side.to_le_bytes()`, formatted as 16 hex chars. FNV-1a is a fixed algorithm, so identical inputs map to the same filename across builds. Path bytes are platform-native (`OsStr::as_encoded_bytes`), which is fine because the cache is per-machine. Rule: any hash that NAMES a persisted artifact must come from a fixed algorithm, never `DefaultHasher`.
+Changing the FNV-1a fold order or integer widths silently orphans existing cache files.
+`BookFingerprint` folds the path's platform-encoded bytes and the little-endian
+`i64` mtime. Both keys continue with the little-endian `u32` maximum side.
+Strip keys also fold the little-endian **`usize`** page index, including page zero.
+The filename uses 16 lowercase hex digits followed by `.qoi`.
+The golden test pins one cover and one strip filename from v1.3.0.
 
 ### Durable cache writes are temp-file-then-rename for reader atomicity
 
-`ThumbnailCache::put` QOI-encodes to memory and delegates to `write_atomic`, which creates a random same-directory `NamedTempFile` (`.tmpXXXXXX`), syncs it, and persists it over `<dir>/{key}.qoi`. The rename is atomic on POSIX, so a concurrent `get` (e.g. the background cover rayon fill racing a read) never observes a torn QOI — it sees either the old file or the complete new one. Random temp names also keep concurrent same-key writers from clobbering a shared deterministic temp path; the last successful rename wins with a complete file. A process interrupted before rename may strand a `.tmp*` file, which the cache ownership and pruning rules recognize. Correspondingly, `get` reads only the current `.qoi` path and treats every missing/unreadable/corrupt file as `None` (a cache miss), never an error, and never panics.
+`FsThumbStore::put` QOI-encodes to memory and delegates to `write_atomic`, which creates a random same-directory `NamedTempFile` (`.tmpXXXXXX`), syncs it, and persists it over `<dir>/{key}.qoi`. The rename is atomic on POSIX, so a concurrent `get` (e.g. the background cover rayon fill racing a read) never observes a torn QOI — it sees either the old file or the complete new one. Random temp names also keep concurrent same-key writers from clobbering a shared deterministic temp path; the last successful rename wins with a complete file. A process interrupted before rename may strand a `.tmp*` file, which the cache ownership and pruning rules recognize. Correspondingly, `get` reads only the current `.qoi` path and treats every missing/unreadable/corrupt file as `None` (a cache miss), never an error, and never panics.
 
 ### Atomic persistence for primary JSON stores (`settings.json` / `library.json`) (issue #181)
 
@@ -1135,7 +1140,7 @@ GENERAL PRINCIPLE: when an invariant is expressible as a type (`NonZeroUsize`, `
 
 ### Make the save path fallible end-to-end — never `unwrap_or` a serialize step
 
-`Library::to_json -> Result<String, CoreError>` (symmetric with `from_json`), and `LibraryStore::save` propagates it via `?`. A serialize step must NOT fall back (`serde_json::to_value(...).unwrap_or(Null)` / `to_string_pretty(...).unwrap_or("{}")`): that writes a TRUNCATED file to disk while the UI reports the save succeeded — silent data loss. Map each step to `CoreError::Library` and bubble it. (`ThumbnailCache::get` swallowing a corrupt read to `None` is the deliberate OPPOSITE and correct there — a cache miss is recoverable; a primary-store save is not.)
+`Library::to_json -> Result<String, CoreError>` (symmetric with `from_json`), and `LibraryStore::save` propagates it via `?`. A serialize step must NOT fall back (`serde_json::to_value(...).unwrap_or(Null)` / `to_string_pretty(...).unwrap_or("{}")`): that writes a TRUNCATED file to disk while the UI reports the save succeeded — silent data loss. Map each step to `CoreError::Library` and bubble it. (`FsThumbStore::get` swallowing a corrupt read to `None` is the deliberate OPPOSITE and correct there — a cache miss is recoverable; a primary-store save is not.)
 
 ### `CoreError` and `Library` are NOT `Clone` — use `match` to both keep a fallback AND surface the error
 
@@ -1401,7 +1406,7 @@ Two glass-pill components now demonstrate the two valid escapes from Slint's pre
 
 **Why `restore` and NOT `add()`.** `Library::add(path)` derives a FRESH `Book` from the path: `last_page` = 0, `page_count` = 0, `overrides` = none. A `restore` after a rolled-back add would silently reset reading progress and per-book view modes. The byte-identical `to_json` test (`restore_round_trips_to_byte_identical_json`) pins this contract.
 
-**Purge is best-effort warn-only (step 3 in `RemoveBooksUseCase::run`).** The persistent cover is keyed by `path + mtime + max_side`. An mtime drift (the file moved or was overwritten between cover-generation and removal) means `ThumbnailCache::purge_for` finds zero entries and logs `tracing::warn!` — a harmless orphan the startup `prune` sweep reclaims later (issue #143: orphans are never `get`-touched, so they age to the front of the eviction order). This is never surfaced to the user. A `ThumbnailCache::new()` failure skips the purge entirely (same warn-only policy). The worst-case failure mode from reversing the order (purge BEFORE save) is: the library registration survives (save failed, shelf rolled back) but the cover is gone — a broken-cover placeholder for a book the user never asked to delete.
+**Purge is best-effort warn-only (step 3 in `RemoveBooksUseCase::run`).** The persistent cover is keyed by `path + mtime + max_side`. An mtime drift (the file moved or was overwritten between cover-generation and removal) means the store finds zero entries and the UI logs `tracing::warn!` — a harmless orphan the startup `prune` sweep reclaims later (issue #143: orphans are never `get`-touched, so they age to the front of the eviction order). This is never surfaced to the user. The worst-case failure mode from reversing the order (purge BEFORE save) is: the library registration survives (save failed, shelf rolled back) but the cover is gone — a broken-cover placeholder for a book the user never asked to delete.
 
 **On `SaveFailed` the selection is PRESERVED** — `RemoveBooksUseCase::run` returns `RemoveOutcome::SaveFailed` without clearing the selection, so the user can retry without rebuilding the selection from scratch.
 
@@ -1419,7 +1424,7 @@ The two "Clear reading history" and "Clear cover cache" buttons (`SettingsDialog
 
 **`Library::clear` empties the whole shelf** (`library.rs:181`): it clears `books` AND `last_opened` and returns a `changed` bool (`true` when either was non-empty). In gashuu the library IS the reading history — a book is added to the `Library` on its first successful open — so "clear reading history" means forgetting every book, not just a separate recents log. The `on_clear_reading_history` handler (`handlers/settings.rs:265`) ignores the returned bool: it always saves, recomputes the search projection, clears the bulk selection, and rebuilds the carousel. The bool is informational (a caller MAY skip a save for an already-empty library); the handler does not.
 
-**`ThumbnailCache::clear` is best-effort, mirroring `prune`** (`thumbnail_cache.rs:142`). It returns a `ClearCacheReport { removed_files: usize, removed_bytes: u64 }` (`thumbnail_cache.rs:257`) — NOT a `Result`. It is non-recursive (one `read_dir`, no descent), uses `symlink_metadata` so it never follows a symlink, and unlinks only files whose names match `is_owned_cache_file_name`: current `*.qoi` thumbnails, legacy `*.png` entries (reclaim-only, never read), and `.tmp*` interrupted-write temps. Both sweeps share one scaffold, the private `for_each_cache_file(dir, visit)` helper (read_dir → regular-file filter → per-entry visit); each supplies its own policy as the closure (`clear` = owned-name filter + unlink; `prune` = tmp age-guard + size-cap collection). A missing or unreadable directory makes the scaffold yield nothing, leaving the default zero report, exactly like `prune`. The handler (`handlers/settings.rs:322`) calls `clear()` ONLY inside the `Ok` arm of `ThumbnailCache::new()`; a `new()` failure (e.g. `NoDataDir`) shows the failure status and never touches disk.
+**`ThumbStore::clear` is best-effort, mirroring `prune`**. It returns a `ClearCacheReport { removed_files: usize, removed_bytes: u64 }` — NOT a `Result`. It is non-recursive (one `read_dir`, no descent), uses `symlink_metadata` so it never follows a symlink, and unlinks only files whose names match `is_owned_cache_file_name`: current `*.qoi` thumbnails, legacy `*.png` entries (reclaim-only, never read), and `.tmp*` interrupted-write temps. Both sweeps share one scaffold, the private `for_each_cache_file(dir, visit)` helper (read_dir → regular-file filter → per-entry visit); each supplies its own policy as the closure (`clear` = owned-name filter + unlink; `prune` = tmp age-guard + size-cap collection). A missing or unreadable directory makes the scaffold yield nothing, leaving the default zero report, exactly like `prune`. The handler calls the injected store. With `NullThumbStore`, clearing reports zero files and zero bytes.
 
 **Two saves, reported independently (`on_clear_reading_history`).** After `library.borrow_mut().clear()` + `settings.borrow_mut().recent_files.clear()`, the library and settings are saved as SEPARATE `.err()` calls (`handlers/settings.rs:275-276`), each with its own `tracing::error!` line, so a partial success (library persisted, settings save failed, or vice-versa) is diagnosed distinctly. Success status is shown ONLY when BOTH saved (`if lib_err.is_some() || set_err.is_some()` → `reading_history_clear_failed`, else `reading_history_cleared`, `handlers/settings.rs:305`). Regardless of save outcome the UI ALWAYS rebuilds the carousel, recomputes the search projection, and clears the selection — the in-memory state is already cleared, so there is no early-return; the UI must reflect it. The in-session open book is NOT touched: a book open in the viewer stays open (only the persisted history + the library carousel are cleared).
 

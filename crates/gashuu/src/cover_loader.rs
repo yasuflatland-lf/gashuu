@@ -9,7 +9,7 @@ use crate::carousel::update_carousel_row;
 use crate::page_count_prefetch::PageCountPrefetch;
 use crate::ui_marshal::ui_done;
 use crate::{to_slint_image, CarouselItem, LibraryStoreHandle, ViewerWindow};
-use gashuu_core::{BookId, DecodedImage, Library, ThumbnailCache};
+use gashuu_core::{BookFingerprint, BookId, DecodedImage, Library, ThumbStore};
 use slint::{Model, VecModel};
 use std::cell::RefCell;
 use std::path::PathBuf;
@@ -17,29 +17,12 @@ use std::rc::Rc;
 use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
 use std::sync::Arc;
 
-/// Immutable cover-cache retention policy: how big the on-disk cover cache may
-/// grow (`max_bytes`) and the longer-edge size of generated covers (`max_side`).
-/// Both decisions are I/O retention policy, so they live together in one value
-/// object instead of as scattered bare `const`s next to the dispatch code
-/// — the invariant-owner pattern of core's `CacheConfig`. The single
-/// canonical instance is [`CoverCachePolicy::DEFAULT`]; the dispatch helpers
-/// (`spawn_cache_prune`, `request_cover`, `purge_cover`) read its fields rather
-/// than free-standing constants.
-///
-/// `max_side` is also a `cache_key` / `purge_cover_for` ingredient, so its value must
-/// stay 512 to keep compatibility with the existing on-disk cache — raising it
-/// would transparently invalidate and regenerate every stale cover on the next
-/// run.
+/// Cover generation and removal share `max_side` because it is part of the
+/// persistent cache key. Desktop startup uses `max_bytes` for pruning.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct CoverCachePolicy {
-    /// Size cap, in bytes, for the on-disk cover cache; the startup sweep prunes
-    /// down to this. 256 MiB holds roughly 650-1700 covers at `max_side` 512
-    /// (PNG covers run ~150-400 KB each), far beyond a typical library, so
-    /// eviction only ever bites on key-orphaned covers (source mtime drifted,
-    /// see core `purge_cover_for`) and very large collections. The cap POLICY lives
-    /// here in the app layer; core's `ThumbnailCache::prune` is only the
-    /// mechanism (issue 143's ownership split).
-    max_bytes: u64,
+    /// Bytes the startup sweep can retain across covers and strip thumbnails.
+    pub(crate) max_bytes: u64,
     /// Longer-edge size, in pixels, for generated carousel covers. Decoupled
     /// from the page strip's `DEFAULT_THUMB_MAX_SIDE` (160 px): a focused cover
     /// slot is up to 240×336 logical px, which is 480×672 PHYSICAL px on a 2×
@@ -53,43 +36,13 @@ pub(crate) struct CoverCachePolicy {
 
 impl CoverCachePolicy {
     /// The single canonical cover-cache policy. The values are load-bearing:
-    /// `max_side` (512) is a `cache_key`/`purge_cover_for` ingredient, so changing it
+    /// `max_side` (512) is a cover-key ingredient, so changing it
     /// invalidates the existing on-disk cache; `max_bytes` (256 MiB) is the
     /// prune target.
     pub(crate) const DEFAULT: Self = Self {
         max_bytes: 256 * 1024 * 1024,
         max_side: 512,
     };
-}
-
-/// Sweep the cover cache down to the policy's `max_bytes` on a background worker.
-/// Fire-and-forget, called ONCE at startup right after the initial cover
-/// dispatch — visible covers grab workers first, and the sweep's per-entry
-/// stat/unlink I/O never touches the UI thread. Cap overflow created later in
-/// the session is reclaimed on the next launch (issue 143 keep-it-simple).
-///
-/// Safe against the concurrent cover workers by construction: a just-written
-/// PNG is the newest entry (last in eviction order), an in-flight `.tmp` is
-/// protected by core's staleness age guard, and a cover pruned mid-read is a
-/// plain cache miss that regenerates. Core stays log-free — the returned
-/// `PruneReport` is logged here.
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn spawn_cache_prune() {
-    rayon::spawn(|| {
-        // The backend already warned once about the no-cache-dir degraded state.
-        let Ok(cache) = ThumbnailCache::new() else {
-            return;
-        };
-        let started = crate::clock::now();
-        let report = cache.prune(CoverCachePolicy::DEFAULT.max_bytes);
-        tracing::debug!(
-            removed_files = report.removed_files,
-            removed_bytes = report.removed_bytes,
-            retained_bytes = report.retained_bytes,
-            elapsed_ms = started.elapsed().as_millis() as u64,
-            "cover cache pruned"
-        );
-    });
 }
 
 /// One carousel row, its backend request ID and its location for diagnostics.
@@ -125,20 +78,19 @@ pub struct CoverController {
     prefetch: PageCountPrefetch,
 }
 
-/// Best-effort removal of `path`'s persistent cover — the single home of the
-/// app's cover purge policy (`purge_cover_for(path,
-/// &[CoverCachePolicy::DEFAULT.max_side])`). Core owns the mtime recipe, so the key
-/// ingredients never leak to callers. A zero purge count is EXPECTED (missing
-/// file, mtime drift, unwritable cache entry) and only warned: the orphan is
-/// harmless and the startup prune sweep reclaims it later (issue 143).
-pub(crate) fn purge_cover(cache: &ThumbnailCache, path: &std::path::Path) {
-    let removed = cache.purge_cover_for(path, &[CoverCachePolicy::DEFAULT.max_side]);
+/// Purge the current cover and return its fingerprint for any strip cleanup.
+/// A missing cover or mtime drift can leave zero matches. The startup sweep
+/// reclaims orphaned files when the cache exceeds its budget.
+pub(crate) fn purge_cover(thumbs: &dyn ThumbStore, id: &BookId) -> BookFingerprint {
+    let fp = thumbs.fingerprint(id);
+    let removed = thumbs.purge_cover(fp, &[CoverCachePolicy::DEFAULT.max_side]);
     if removed == 0 {
         tracing::warn!(
-            path = %path.display(),
+            path = %id,
             "no persistent cover purged for removed book (missing, mtime drift, or unwritable cache)"
         );
     }
+    fp
 }
 
 /// Apply a freshly loaded `cover` image to carousel row `row`, on the UI thread.
@@ -292,7 +244,7 @@ mod tests {
     use std::num::NonZeroUsize;
 
     /// The cover-cache policy values are load-bearing for on-disk compatibility:
-    /// `max_side` (512) is a `cache_key` / `purge_cover_for` ingredient, so the
+    /// `max_side` (512) is a cover-key ingredient, so the
     /// refactor must NOT change it (a different value silently invalidates every
     /// existing cached cover). `max_bytes` (256 MiB) is the prune target. Pin
     /// both so a future edit that drifts them fails loudly here.

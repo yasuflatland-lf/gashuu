@@ -5,14 +5,15 @@ use std::cell::RefCell;
 use std::num::NonZeroUsize;
 use std::path::Path;
 use std::rc::Rc;
+use std::sync::Arc;
 
-use gashuu_core::{BookId, CoreError, Library, Settings};
+use gashuu_core::{BookId, CoreError, Library, Settings, ThumbStore};
 
 use crate::backend::{BackendError, BookBackend, OpenedBook};
 #[cfg(test)]
 use crate::book_path;
+use crate::cover_loader::purge_cover;
 use crate::dialog_session::DialogSession;
-use crate::remove_books::purge_empty_cover;
 
 use crate::view_sync::LeavePointService;
 use crate::viewer_state::ViewerState;
@@ -105,6 +106,7 @@ pub(crate) struct OpenBookUseCase {
     save_library: SaveLibrary,
     save_settings: SaveSettings,
     backend: Rc<dyn BookBackend>,
+    thumbs: Arc<dyn ThumbStore>,
 }
 
 impl OpenBookUseCase {
@@ -124,6 +126,7 @@ impl OpenBookUseCase {
         save_library: SaveLibrary,
         save_settings: SaveSettings,
         backend: Rc<dyn BookBackend>,
+        thumbs: Arc<dyn ThumbStore>,
     ) -> Self {
         Self {
             state,
@@ -135,6 +138,7 @@ impl OpenBookUseCase {
             save_library,
             save_settings,
             backend,
+            thumbs,
         }
     }
 
@@ -263,9 +267,13 @@ impl OpenBookUseCase {
     /// [`Self::persist_outgoing`], so closing here loses nothing.
     fn reject_empty(&self, id: &BookId) -> OpenOutcome {
         let fallback = self.state.borrow().open_title().map(str::to_owned);
-        let removal = remove_empty_book(&self.library, id, fallback, |library| {
-            (self.save_library)(library)
-        });
+        let removal = remove_empty_book(
+            &self.library,
+            id,
+            fallback,
+            self.thumbs.as_ref(),
+            |library| (self.save_library)(library),
+        );
         if let Some(session) = self.state.borrow_mut().close() {
             self.backend.close(session);
         }
@@ -421,14 +429,13 @@ pub(crate) fn remove_empty_book(
     library: &RefCell<Library>,
     id: &BookId,
     fallback: Option<String>,
+    thumbs: &dyn ThumbStore,
     save: impl FnOnce(&Library) -> Result<(), CoreError>,
 ) -> EmptyBookOutcome {
     // The `borrow_mut` is confined to this statement and drops at the `;`.
     let removal = remove_empty_book_with(&mut library.borrow_mut(), id, fallback, save);
-    // Best-effort purge OUTSIDE the seam so the transaction stays headless-testable.
-    // mtime drift / missing file is expected (only warned); cache-construction failure skips it.
     if removal.removed {
-        purge_empty_cover(id);
+        purge_cover(thumbs, id);
     }
     removal
 }
@@ -697,6 +704,25 @@ mod tests {
     // ---- remove_empty_book_with (the empty-book removal transaction) -------
 
     #[test]
+    fn remove_empty_book_purges_only_the_removed_book() {
+        use crate::recording_thumb_store::{Call, RecordingThumbStore};
+        let store = RecordingThumbStore::default();
+        let id = BookId::new("/manga/empty.cbz");
+        let library = RefCell::new(Library::new());
+        library.borrow_mut().add(id.clone(), "Empty".into());
+
+        remove_empty_book(&library, &id, None, &store, |_| Ok(()));
+        remove_empty_book(&library, &id, None, &store, |_| Ok(()));
+        assert_eq!(
+            store.take_calls(),
+            [Call::PurgeCover(
+                gashuu_core::BookFingerprint::of_id(&id),
+                vec![512]
+            )]
+        );
+    }
+
+    #[test]
     fn remove_empty_book_removes_saves_and_reports_stored_title() {
         let mut lib = Library::new();
         let path = BookId::new("/manga/Empty Vol.cbz");
@@ -867,6 +893,7 @@ mod tests {
             Box::new(save_library),
             Box::new(save_settings),
             crate::backend::fake::FakeBackend::new(),
+            Arc::new(gashuu_core::NullThumbStore),
         );
         UseCaseParts {
             use_case,

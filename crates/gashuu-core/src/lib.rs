@@ -31,6 +31,7 @@ pub mod settings_store;
 pub mod spread;
 #[cfg(test)]
 mod test_fixtures;
+pub mod thumb_store;
 pub mod thumbnail;
 pub mod thumbnail_cache;
 pub mod update;
@@ -70,12 +71,11 @@ pub use spread::{
     next_leading, normalize_leading, prev_leading, scrub_fraction_to_page, spread_at, Spread,
     SpreadContext, SpreadNavigation,
 };
+pub use thumb_store::{BookFingerprint, NullThumbStore, ThumbSlot, ThumbStore};
 pub use thumbnail::{
     generate_cover, generate_one_thumbnail, PageThumbContext, DEFAULT_THUMB_MAX_SIDE,
 };
-pub use thumbnail_cache::{
-    cache_key, page_cache_key, ClearCacheReport, PruneReport, ThumbnailCache,
-};
+pub use thumbnail_cache::{cache_key, page_cache_key, ClearCacheReport, FsThumbStore, PruneReport};
 pub use update::asset::select_asset;
 pub use update::check::{should_check, CHECK_INTERVAL_SECS};
 pub use update::dialog::{

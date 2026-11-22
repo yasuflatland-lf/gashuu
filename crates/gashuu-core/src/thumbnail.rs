@@ -6,64 +6,28 @@
 use crate::error::CoreError;
 use crate::image_ops::{decode_thumbnail, DecodedImage};
 use crate::page_source::PageSource;
-use crate::thumbnail_cache::{page_cache_key, source_mtime_secs, ThumbnailCache};
-use std::path::Path;
+use crate::{BookFingerprint, ThumbSlot, ThumbStore};
 use std::sync::Arc;
 
 /// Default longer-edge size for generated thumbnails.
 pub const DEFAULT_THUMB_MAX_SIDE: u32 = 160;
 
-/// The borrows [`generate_one_thumbnail`] needs to persist each page's strip
-/// thumbnail to the on-disk cache. `path` supplies the cache-key inputs the
-/// [`PageSource`] trait does not expose; `cache` is the shared on-disk store (the
-/// same directory as covers, with disjoint keys via [`page_cache_key`]). Both
-/// `&ThumbnailCache` and `&Path` are `Send`/`Sync`, so one context is shared
-/// across the UI strip worker's rayon `par_iter` without per-page cloning.
+/// Storage and book version used for a strip thumbnail request.
 #[derive(Clone, Copy)]
 pub struct PageThumbContext<'a> {
-    /// On-disk cache the page thumbnails are read from and written to.
-    pub cache: &'a ThumbnailCache,
-    /// Canonical book path that anchors each page's cache key.
-    pub path: &'a Path,
+    pub store: &'a dyn ThumbStore,
+    pub fingerprint: BookFingerprint,
 }
 
-/// Produce page `i`'s thumbnail, consulting the on-disk cache when `cache` is set.
+/// Produce a thumbnail for one page. The strip controller requests visible pages
+/// individually, so opening a book decodes only pages near the viewport.
 ///
-/// With no cache context this is byte-for-byte the original behavior: read the
-/// page bytes and decode them. With a context, a cache hit skips the full-page
-/// read+decode entirely; a miss reads, decodes, then persists best-effort (core
-/// stays log-free, so the `put` `Result` is intentionally ignored).
-fn page_thumbnail(
-    source: &Arc<dyn PageSource>,
-    max_side: u32,
-    cache: Option<(PageThumbContext<'_>, i64)>,
-    i: usize,
-) -> Result<DecodedImage, CoreError> {
-    let Some((ctx, mtime)) = cache else {
-        let bytes = source.read_bytes(i)?;
-        return decode_thumbnail(&bytes, max_side);
-    };
-    let key = page_cache_key(ctx.path, mtime, max_side, i);
-    if let Some(img) = ctx.cache.get(&key) {
-        return Ok(img);
-    }
-    let bytes = source.read_bytes(i)?;
-    let img = decode_thumbnail(&bytes, max_side)?;
-    let _ = ctx.cache.put(&key, &img);
-    Ok(img)
-}
-
-/// Produce a single page's thumbnail, consulting the on-disk cache when
-/// `cache_ctx` is set.
-///
-/// The UI's strip controller drives it one visible page at a time, so a freshly
-/// opened book decodes only the pages near the viewport instead of all `N`. The
-/// cache key is `page_cache_key(path, mtime, max_side, page_index)`, so each page
-/// of an unchanged book is persisted once and served from disk afterwards.
-///
-/// With a cache context a hit skips the full-page read+decode; a miss reads,
-/// decodes, then persists best-effort (the `put` `Result` is intentionally ignored
-/// — core stays log-free). `cache_ctx == None` always reads + decodes, no caching.
+/// The context's `ThumbStore` stores the thumbnail under `ThumbSlot::Page(page_index)`
+/// for its `BookFingerprint`. Each page of an unchanged book is persisted once per
+/// size and served from the store afterwards. A hit skips the page read and decode.
+/// On a miss, read and decode the page, then try to store it. Core is log-free
+/// and intentionally ignores the best-effort `put` result. With `cache_ctx` set
+/// to `None`, read and decode the page without caching.
 ///
 /// Cancellation is the caller's concern: the controller checks its cancel flag
 /// immediately before and after this call, so a superseded generation neither
@@ -74,9 +38,18 @@ pub fn generate_one_thumbnail(
     page_index: usize,
     cache_ctx: Option<PageThumbContext<'_>>,
 ) -> Result<DecodedImage, CoreError> {
-    // Stat the book once per call and feed its mtime into the per-page cache key.
-    let cache = cache_ctx.map(|ctx| (ctx, source_mtime_secs(ctx.path)));
-    page_thumbnail(source, max_side, cache, page_index)
+    let Some(ctx) = cache_ctx else {
+        let bytes = source.read_bytes(page_index)?;
+        return decode_thumbnail(&bytes, max_side);
+    };
+    let slot = ThumbSlot::Page(page_index);
+    if let Some(img) = ctx.store.get(ctx.fingerprint, slot, max_side) {
+        return Ok(img);
+    }
+    let bytes = source.read_bytes(page_index)?;
+    let img = decode_thumbnail(&bytes, max_side)?;
+    let _ = ctx.store.put(ctx.fingerprint, slot, max_side, &img);
+    Ok(img)
 }
 
 /// Generate the cover thumbnail for `source`: a thumbnail of page index 0 whose
@@ -225,7 +198,7 @@ mod tests {
         );
     }
 
-    use crate::thumbnail_cache::ThumbnailCache;
+    use crate::{BookId, FsThumbStore};
 
     /// Count the `*.qoi` cache entries written directly in `dir` (non-recursive).
     fn qoi_count(dir: &std::path::Path) -> usize {
@@ -241,17 +214,21 @@ mod tests {
     /// source so the caller can assert the `read_bytes` count.
     fn run_strip(
         pages: Vec<Option<Vec<u8>>>,
-        cache: &ThumbnailCache,
+        cache: &FsThumbStore,
         path: &std::path::Path,
     ) -> Arc<CountingSource> {
         let src = Arc::new(CountingSource::new(pages));
         let source: Arc<dyn PageSource> = src.clone();
+        let fingerprint = cache.fingerprint(&BookId::from_canonical_path(path).unwrap());
         for i in 0..source.list_pages().len() {
             let res = generate_one_thumbnail(
                 &source,
                 DEFAULT_THUMB_MAX_SIDE,
                 i,
-                Some(PageThumbContext { cache, path }),
+                Some(PageThumbContext {
+                    store: cache,
+                    fingerprint,
+                }),
             );
             assert!(res.is_ok(), "page {i} should decode successfully");
         }
@@ -264,7 +241,7 @@ mod tests {
     fn cache_ctx_persists_then_serves_from_cache() {
         const N: usize = 3;
         let dir = tempfile::tempdir().unwrap();
-        let cache = ThumbnailCache::with_dir(dir.path().to_path_buf());
+        let cache = FsThumbStore::with_dir(dir.path().to_path_buf());
         // A path that does not exist resolves to mtime 0 — stable across both runs.
         let path = std::path::Path::new("/manga/book.cbz");
         let pages: Vec<Option<Vec<u8>>> = (0..N).map(|_| Some(tiny_png(8, 8))).collect();
@@ -290,7 +267,7 @@ mod tests {
     #[test]
     fn cache_ctx_regenerates_after_mtime_drift() {
         let dir = tempfile::tempdir().unwrap();
-        let cache = ThumbnailCache::with_dir(dir.path().to_path_buf());
+        let cache = FsThumbStore::with_dir(dir.path().to_path_buf());
         // A real file so its mtime is readable; drift it between the two runs.
         let book = tempfile::NamedTempFile::new().unwrap();
         let path = book.path();
@@ -334,24 +311,20 @@ mod tests {
     #[test]
     fn one_thumbnail_cache_miss_then_hit() {
         let dir = tempfile::tempdir().unwrap();
-        let cache = ThumbnailCache::with_dir(dir.path().to_path_buf());
+        let cache = FsThumbStore::with_dir(dir.path().to_path_buf());
         let path = std::path::Path::new("/manga/book.cbz");
+        let ctx = PageThumbContext {
+            store: &cache,
+            fingerprint: cache.fingerprint(&BookId::from_canonical_path(path).unwrap()),
+        };
         let src = Arc::new(CountingSource::new(vec![
             Some(tiny_png(8, 8)),
             Some(tiny_png(8, 8)),
         ]));
         let source: Arc<dyn PageSource> = src.clone();
 
-        generate_one_thumbnail(
-            &source,
-            DEFAULT_THUMB_MAX_SIDE,
-            1,
-            Some(PageThumbContext {
-                cache: &cache,
-                path,
-            }),
-        )
-        .expect("miss decodes");
+        generate_one_thumbnail(&source, DEFAULT_THUMB_MAX_SIDE, 1, Some(ctx))
+            .expect("miss decodes");
         assert_eq!(src.reads(), 1, "miss reads the page once");
         // Count cache entries codec-agnostically (on-disk codec may be PNG or QOI
         // depending on which sibling changes landed); the page is persisted regardless.
@@ -366,16 +339,8 @@ mod tests {
             .count();
         assert_eq!(persisted, 1, "miss persists one cache entry");
 
-        generate_one_thumbnail(
-            &source,
-            DEFAULT_THUMB_MAX_SIDE,
-            1,
-            Some(PageThumbContext {
-                cache: &cache,
-                path,
-            }),
-        )
-        .expect("hit serves from cache");
+        generate_one_thumbnail(&source, DEFAULT_THUMB_MAX_SIDE, 1, Some(ctx))
+            .expect("hit serves from cache");
         assert_eq!(src.reads(), 1, "hit performs no further read");
     }
 

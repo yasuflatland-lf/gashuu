@@ -1,5 +1,4 @@
-//! Blocking HTTP for the update checker. Always call from a background thread
-//! (`rayon::spawn`), never the UI thread.
+//! Blocking HTTP for the update checker. Call from the update handler's background worker.
 //! Every call is bounded by agent timeouts; ureq v3 would otherwise wait forever.
 
 use super::{user_agent, UpdateError, RELEASES_LATEST_API};

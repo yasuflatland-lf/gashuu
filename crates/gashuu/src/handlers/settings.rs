@@ -14,33 +14,23 @@ use crate::{
     save_library, save_settings, with_ui, CarouselRefresh, LeavePointService, LibraryStoreHandle,
     SettingsStoreHandle, ViewModeRoute, ViewerWindow,
 };
-use gashuu_core::{CacheConfig, Library, Settings, ThumbnailCache, ViewOverride};
+use gashuu_core::{CacheConfig, Library, Settings, ThumbStore, ViewOverride};
 use slint::ComponentHandle;
 use std::cell::RefCell;
 use std::rc::Rc;
+use std::sync::Arc;
 
-fn clear_thumbnail_cache_after_library_save(
-    library_save_succeeded: bool,
-    open_cache: impl FnOnce() -> Result<ThumbnailCache, gashuu_core::CoreError>,
-) {
+fn clear_thumbnail_cache_after_library_save(library_save_succeeded: bool, thumbs: &dyn ThumbStore) {
     if !library_save_succeeded {
         return;
     }
 
-    match open_cache() {
-        Ok(cache) => {
-            let report = cache.clear();
-            tracing::info!(
-                files = report.removed_files,
-                bytes = report.removed_bytes,
-                "cleared thumbnail cache with reading history"
-            );
-        }
-        Err(e) => tracing::warn!(
-            error = %e,
-            "thumbnail cache unavailable; skipping purge on clear-history"
-        ),
-    }
+    let report = thumbs.clear();
+    tracing::info!(
+        files = report.removed_files,
+        bytes = report.removed_bytes,
+        "cleared thumbnail cache with reading history"
+    );
 }
 
 /// Registers the settings/shortcuts dialog lifecycle callbacks (open, close,
@@ -65,6 +55,7 @@ pub(crate) fn wire_settings_handlers(
     localizer: &Rc<i18n::Localizer>,
     settings_store: &SettingsStoreHandle,
     library_store: &LibraryStoreHandle,
+    thumbs: Arc<dyn ThumbStore>,
 ) {
     let state = Rc::clone(state);
     let viewport = Rc::clone(viewport);
@@ -304,6 +295,7 @@ pub(crate) fn wire_settings_handlers(
         let settings_store = Rc::clone(&settings_store);
         let library_store = Rc::clone(&library_store);
         let carousel = carousel.clone();
+        let thumbs = Arc::clone(&thumbs);
         ui.on_clear_reading_history(move || {
             with_ui(&ui_weak, |ui| {
                 // Mutate then save under tight borrow scopes that drop before the
@@ -320,7 +312,7 @@ pub(crate) fn wire_settings_handlers(
                 if let Some(ref e) = set_err {
                     tracing::error!(error = %e, "failed to persist settings while clearing reading history");
                 }
-                clear_thumbnail_cache_after_library_save(lib_err.is_none(), ThumbnailCache::new);
+                clear_thumbnail_cache_after_library_save(lib_err.is_none(), thumbs.as_ref());
                 // CoverMemCache is intentionally left alone: the carousel is rebuilt
                 // empty below, and stale decoded entries are harmless and LRU-evicted.
                 // Recompute the (now empty) search projection, drop the selection, and
@@ -352,24 +344,16 @@ pub(crate) fn wire_settings_handlers(
         let ui_weak = ui.as_weak();
         let localizer = Rc::clone(&localizer);
         ui.on_clear_cover_cache(move || {
-            with_ui(&ui_weak, |ui| match ThumbnailCache::new() {
-                Ok(cache) => {
-                    let report = cache.clear();
-                    ui.set_data_action_status(
-                        i18n::dynamic::cover_cache_cleared(
-                            localizer.loader(),
-                            report.removed_files,
-                            report.removed_bytes,
-                        )
-                        .into(),
-                    );
-                }
-                Err(e) => {
-                    tracing::error!(error = %e, "failed to open thumbnail cache for clearing");
-                    ui.set_data_action_status(
-                        i18n::dynamic::cover_cache_clear_failed(localizer.loader()).into(),
-                    );
-                }
+            with_ui(&ui_weak, |ui| {
+                let report = thumbs.clear();
+                ui.set_data_action_status(
+                    i18n::dynamic::cover_cache_cleared(
+                        localizer.loader(),
+                        report.removed_files,
+                        report.removed_bytes,
+                    )
+                    .into(),
+                );
             })
         });
     }
@@ -590,7 +574,8 @@ pub(crate) fn wire_view_mode_handlers(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::cell::Cell;
+    use crate::recording_thumb_store::{Call, RecordingThumbStore};
+    use gashuu_core::FsThumbStore;
 
     #[test]
     fn successful_library_save_clears_thumbnail_cache() {
@@ -604,9 +589,10 @@ mod tests {
         std::fs::write(&stale_tmp, b"temp").expect("write temp fixture");
         std::fs::write(&unrelated, b"keep").expect("write unrelated fixture");
 
-        clear_thumbnail_cache_after_library_save(true, || {
-            Ok(ThumbnailCache::with_dir(dir.path().to_path_buf()))
-        });
+        let thumbs =
+            RecordingThumbStore::with_disk(FsThumbStore::with_dir(dir.path().to_path_buf()));
+        clear_thumbnail_cache_after_library_save(true, &thumbs);
+        assert_eq!(thumbs.take_calls(), [Call::Clear]);
 
         assert!(!cover.exists(), "cover must be purged");
         assert!(!strip.exists(), "strip thumbnail must be purged");
@@ -615,18 +601,19 @@ mod tests {
     }
 
     #[test]
-    fn failed_library_save_does_not_open_or_clear_thumbnail_cache() {
+    fn failed_library_save_does_not_clear_thumbnail_cache() {
         let dir = tempfile::tempdir().expect("create thumbnail cache fixture");
         let cover = dir.path().join("cover.qoi");
         std::fs::write(&cover, b"cover").expect("write cover fixture");
-        let cache_opened = Cell::new(false);
+        let thumbs =
+            RecordingThumbStore::with_disk(FsThumbStore::with_dir(dir.path().to_path_buf()));
 
-        clear_thumbnail_cache_after_library_save(false, || {
-            cache_opened.set(true);
-            Ok(ThumbnailCache::with_dir(dir.path().to_path_buf()))
-        });
+        clear_thumbnail_cache_after_library_save(false, &thumbs);
 
-        assert!(!cache_opened.get(), "failed save must skip cache creation");
+        assert!(
+            thumbs.take_calls().is_empty(),
+            "failed save must skip the cache"
+        );
         assert!(cover.exists(), "failed save must preserve cached covers");
     }
 }

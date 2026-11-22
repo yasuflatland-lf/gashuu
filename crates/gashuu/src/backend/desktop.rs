@@ -4,13 +4,13 @@ use super::{
 };
 use crate::book_path::locate;
 use gashuu_core::{
-    cache_key, canonical_identity, generate_cover, generate_one_thumbnail,
-    thumbnail_cache::source_mtime_secs, ArchiveLoader, ArchivePolicy, BookId, CacheConfig,
-    DecodedImage, ImageCache, PageSource, PageThumbContext, ThumbnailCache,
+    canonical_identity, generate_cover, generate_one_thumbnail, ArchiveLoader, ArchivePolicy,
+    BookFingerprint, BookId, CacheConfig, DecodedImage, ImageCache, PageSource, PageThumbContext,
+    ThumbSlot, ThumbStore,
 };
 use std::collections::HashMap;
 use std::num::NonZeroUsize;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
 use std::sync::{Arc, Mutex};
 
@@ -27,37 +27,34 @@ struct Inner {
     sessions: Mutex<HashMap<SessionId, Arc<Session>>>,
     cover_generation: AtomicU64,
     cover_mem: Mutex<CoverMemCache>,
-    thumb_cache: Option<ThumbnailCache>,
+    thumbs: Arc<dyn ThumbStore>,
 }
 
 #[allow(dead_code)] // TODO(wasm-backend): remove when #656 ([6/13]) and #657 ([7/13]) have both merged
 struct Session {
-    path: PathBuf,
+    id: BookId,
     source: Arc<dyn PageSource>,
     cache: ImageCache,
 }
 
 impl DesktopBackend {
-    pub(crate) fn new() -> Self {
+    pub(crate) fn new(thumbs: Arc<dyn ThumbStore>) -> Self {
         let post = Arc::new(|f| {
             if let Err(error) = slint::invoke_from_event_loop(f) {
                 tracing::debug!(%error, "dropped backend result; event loop gone");
             }
         });
-        let thumb_cache = ThumbnailCache::new()
-            .inspect_err(|error| tracing::warn!(%error, "thumbnail cache unavailable"))
-            .ok();
-        Self::with_parts(post, thumb_cache)
+        Self::with_parts(post, thumbs)
     }
 
-    pub(crate) fn with_parts(post: Poster, thumb_cache: Option<ThumbnailCache>) -> Self {
+    pub(crate) fn with_parts(post: Poster, thumbs: Arc<dyn ThumbStore>) -> Self {
         Self {
             inner: Arc::new(Inner {
                 post,
                 sessions: Mutex::default(),
                 cover_generation: AtomicU64::new(0),
                 cover_mem: Mutex::new(CoverMemCache::new()),
-                thumb_cache,
+                thumbs,
             }),
         }
     }
@@ -71,6 +68,21 @@ impl DesktopBackend {
     ) -> Result<OpenedBook, BackendError> {
         self.inner.open_session(id, policy, cache)
     }
+}
+
+/// Sweep the persistent cache on a worker after dispatching the startup covers.
+pub(crate) fn spawn_thumb_prune(thumbs: Arc<dyn ThumbStore>, max_bytes: u64) {
+    rayon::spawn(move || {
+        let started = crate::clock::now();
+        let report = thumbs.prune(max_bytes);
+        tracing::debug!(
+            removed_files = report.removed_files,
+            removed_bytes = report.removed_bytes,
+            retained_bytes = report.retained_bytes,
+            elapsed_ms = started.elapsed().as_millis() as u64,
+            "cover cache pruned"
+        );
+    });
 }
 
 fn cover_open(path: &Path) -> Result<(Arc<dyn PageSource>, NonZeroUsize), BackendError> {
@@ -125,7 +137,7 @@ impl Inner {
         let session = SessionId::allocate();
         let opened = OpenedBook {
             session,
-            id,
+            id: id.clone(),
             page_count: source.list_pages().len(),
             skipped,
             listing_truncated,
@@ -135,14 +147,7 @@ impl Inner {
         self.sessions
             .lock()
             .expect("sessions mutex poisoned")
-            .insert(
-                session,
-                Arc::new(Session {
-                    path: canonical,
-                    source,
-                    cache,
-                }),
-            );
+            .insert(session, Arc::new(Session { id, source, cache }));
         Ok(opened)
     }
 
@@ -158,12 +163,16 @@ impl Inner {
         image
     }
 
-    fn cached_cover(&self, key: &str) -> Option<Arc<DecodedImage>> {
+    fn cached_cover(
+        &self,
+        fp: BookFingerprint,
+        max_side: u32,
+        key: &str,
+    ) -> Option<Arc<DecodedImage>> {
         let cached = self.cover_mem.lock().ok().and_then(|mut mem| mem.get(key));
         cached.or_else(|| {
-            self.thumb_cache
-                .as_ref()?
-                .get(key)
+            self.thumbs
+                .get(fp, ThumbSlot::Cover, max_side)
                 .map(|image| self.cache_cover(key.to_owned(), image))
         })
     }
@@ -185,6 +194,7 @@ impl Inner {
     fn generate_cover(
         &self,
         path: &Path,
+        fp: BookFingerprint,
         key: String,
         max_side: u32,
     ) -> Result<(Arc<DecodedImage>, NonZeroUsize), BackendError> {
@@ -194,10 +204,8 @@ impl Inner {
         });
         generated
             .map(|image| {
-                if let Some(disk) = self.thumb_cache.as_ref() {
-                    if let Err(error) = disk.put(&key, &image) {
-                        tracing::warn!(path = %path.display(), %error, "cover: cache put failed");
-                    }
+                if let Err(error) = self.thumbs.put(fp, ThumbSlot::Cover, max_side, &image) {
+                    tracing::warn!(path = %path.display(), %error, "cover: cache put failed");
                 }
                 (self.cache_cover(key, image), count)
             })
@@ -275,11 +283,11 @@ impl BookBackend for DesktopBackend {
             let Some(opened) = inner.session(session) else {
                 return;
             };
-            let ctx = inner.thumb_cache.as_ref().map(|cache| PageThumbContext {
-                cache,
-                path: &opened.path,
-            });
-            let result = generate_one_thumbnail(&opened.source, max_side, index, ctx)
+            let ctx = PageThumbContext {
+                store: &*inner.thumbs,
+                fingerprint: inner.thumbs.fingerprint(&opened.id),
+            };
+            let result = generate_one_thumbnail(&opened.source, max_side, index, Some(ctx))
                 .map(Arc::new)
                 .map_err(|error| BackendError::from_core(&error));
             inner.deliver(Some(session), move || done(result));
@@ -301,8 +309,9 @@ impl BookBackend for DesktopBackend {
                 return;
             }
             let path = locate(&id);
-            let key = cache_key(&path, source_mtime_secs(&path), max_side);
-            if let Some(image) = inner.cached_cover(&key) {
+            let fp = inner.thumbs.fingerprint(&id);
+            let key = fp.cover_key(max_side);
+            if let Some(image) = inner.cached_cover(fp, max_side, &key) {
                 inner.deliver_cover_result(generation, on_cover, Ok(image));
                 if let Some(on_count) = on_count.filter(|_| inner.cover_is_current(generation)) {
                     let count = cover_open(&path).map(|(_, count)| count);
@@ -310,7 +319,7 @@ impl BookBackend for DesktopBackend {
                 }
                 return;
             }
-            match inner.generate_cover(&path, key, max_side) {
+            match inner.generate_cover(&path, fp, key, max_side) {
                 Ok((image, count)) => {
                     inner.deliver_cover_result(generation, on_cover, Ok(image));
                     if let Some(on_count) = on_count {
