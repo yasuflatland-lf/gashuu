@@ -19,43 +19,15 @@ pub struct PageThumbContext<'a> {
     pub fingerprint: BookFingerprint,
 }
 
-/// Produce page `i`'s thumbnail, consulting the on-disk cache when `cache` is set.
+/// Produce a thumbnail for one page. The strip controller requests visible pages
+/// individually, so opening a book decodes only pages near the viewport.
 ///
-/// With no cache context this is byte-for-byte the original behavior: read the
-/// page bytes and decode them. With a context, a cache hit skips the full-page
-/// read+decode entirely; a miss reads, decodes, then persists best-effort (core
-/// stays log-free, so the `put` `Result` is intentionally ignored).
-fn page_thumbnail(
-    source: &Arc<dyn PageSource>,
-    max_side: u32,
-    cache: Option<PageThumbContext<'_>>,
-    i: usize,
-) -> Result<DecodedImage, CoreError> {
-    let Some(ctx) = cache else {
-        let bytes = source.read_bytes(i)?;
-        return decode_thumbnail(&bytes, max_side);
-    };
-    let slot = ThumbSlot::Page(i);
-    if let Some(img) = ctx.store.get(ctx.fingerprint, slot, max_side) {
-        return Ok(img);
-    }
-    let bytes = source.read_bytes(i)?;
-    let img = decode_thumbnail(&bytes, max_side)?;
-    let _ = ctx.store.put(ctx.fingerprint, slot, max_side, &img);
-    Ok(img)
-}
-
-/// Produce a single page's thumbnail, consulting the on-disk cache when
-/// `cache_ctx` is set.
-///
-/// The UI's strip controller drives it one visible page at a time, so a freshly
-/// opened book decodes only the pages near the viewport instead of all `N`. The
-/// cache key is `page_cache_key(path, mtime, max_side, page_index)`, so each page
-/// of an unchanged book is persisted once and served from disk afterwards.
-///
-/// With a cache context a hit skips the full-page read+decode; a miss reads,
-/// decodes, then persists best-effort (the `put` `Result` is intentionally ignored
-/// — core stays log-free). `cache_ctx == None` always reads + decodes, no caching.
+/// The context's `ThumbStore` stores the thumbnail under `ThumbSlot::Page(page_index)`
+/// for its `BookFingerprint`. Each page of an unchanged book is persisted once per
+/// size and served from the store afterwards. A hit skips the page read and decode.
+/// On a miss, read and decode the page, then try to store it. Core is log-free
+/// and intentionally ignores the best-effort `put` result. With `cache_ctx` set
+/// to `None`, read and decode the page without caching.
 ///
 /// Cancellation is the caller's concern: the controller checks its cancel flag
 /// immediately before and after this call, so a superseded generation neither
@@ -66,7 +38,18 @@ pub fn generate_one_thumbnail(
     page_index: usize,
     cache_ctx: Option<PageThumbContext<'_>>,
 ) -> Result<DecodedImage, CoreError> {
-    page_thumbnail(source, max_side, cache_ctx, page_index)
+    let Some(ctx) = cache_ctx else {
+        let bytes = source.read_bytes(page_index)?;
+        return decode_thumbnail(&bytes, max_side);
+    };
+    let slot = ThumbSlot::Page(page_index);
+    if let Some(img) = ctx.store.get(ctx.fingerprint, slot, max_side) {
+        return Ok(img);
+    }
+    let bytes = source.read_bytes(page_index)?;
+    let img = decode_thumbnail(&bytes, max_side)?;
+    let _ = ctx.store.put(ctx.fingerprint, slot, max_side, &img);
+    Ok(img)
 }
 
 /// Generate the cover thumbnail for `source`: a thumbnail of page index 0 whose

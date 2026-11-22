@@ -25,6 +25,10 @@ impl RecordingThumbStore {
         }
     }
 
+    fn record(&self, call: Call) {
+        self.calls.lock().unwrap().push(call);
+    }
+
     pub(crate) fn take_calls(&self) -> Vec<Call> {
         std::mem::take(&mut *self.calls.lock().unwrap())
     }
@@ -50,23 +54,17 @@ impl ThumbStore for RecordingThumbStore {
     }
 
     fn purge_cover(&self, fp: BookFingerprint, sides: &[u32]) -> usize {
-        self.calls
-            .lock()
-            .unwrap()
-            .push(Call::PurgeCover(fp, sides.to_vec()));
+        self.record(Call::PurgeCover(fp, sides.to_vec()));
         0
     }
 
     fn purge_pages(&self, fp: BookFingerprint, sides: &[u32], count: usize) -> usize {
-        self.calls
-            .lock()
-            .unwrap()
-            .push(Call::PurgePages(fp, sides.to_vec(), count));
+        self.record(Call::PurgePages(fp, sides.to_vec(), count));
         0
     }
 
     fn clear(&self) -> ClearCacheReport {
-        self.calls.lock().unwrap().push(Call::Clear);
+        self.record(Call::Clear);
         self.disk
             .as_ref()
             .map(ThumbStore::clear)

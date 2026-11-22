@@ -82,6 +82,10 @@ impl FsThumbStore {
         Self { dir }
     }
 
+    fn entry_path(&self, key: &str) -> PathBuf {
+        self.dir.join(format!("{key}.qoi"))
+    }
+
     /// Look up a thumbnail in the cache, WRITING a hit's file mtime as a side
     /// effect (touch-on-get; detailed below).
     ///
@@ -98,7 +102,7 @@ impl FsThumbStore {
     /// age out) and is best-effort — a failure (entry pruned mid-read, read-only
     /// fs) costs nothing but eviction-order precision.
     fn get_by_key(&self, key: &str) -> Option<DecodedImage> {
-        let path = self.dir.join(format!("{key}.qoi"));
+        let path = self.entry_path(key);
         let bytes = std::fs::read(&path).ok()?;
         let img = crate::image_ops::decode(&bytes).ok()?;
         let _ = std::fs::File::options()
@@ -119,7 +123,7 @@ impl FsThumbStore {
     /// the same key never collide on a fixed temp path.
     fn put_by_key(&self, key: &str, img: &DecodedImage) -> Result<(), CoreError> {
         let qoi_bytes = encode_qoi(img)?;
-        let target = self.dir.join(format!("{key}.qoi"));
+        let target = self.entry_path(key);
         crate::atomic_write::write_atomic(&target, &qoi_bytes)?;
         Ok(())
     }
@@ -150,7 +154,7 @@ impl ThumbStore for FsThumbStore {
             .iter()
             .filter(|&&max_side| {
                 let key = fp.cover_key(max_side);
-                let target = self.dir.join(format!("{key}.qoi"));
+                let target = self.entry_path(&key);
                 std::fs::remove_file(&target).is_ok()
             })
             .count()
@@ -161,7 +165,7 @@ impl ThumbStore for FsThumbStore {
         for &max_side in max_sides {
             for i in 0..page_count {
                 let key = fp.page_key(max_side, i);
-                let target = self.dir.join(format!("{key}.qoi"));
+                let target = self.entry_path(&key);
                 if std::fs::remove_file(&target).is_ok() {
                     removed += 1;
                 }
