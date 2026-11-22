@@ -1,7 +1,7 @@
-use crate::backend::{BackendError, BookBackend, BookImporter, OpenedBook, STORAGE_UNAVAILABLE};
+use crate::backend::{BackendError, BookBackend, BookImporter, OpenedBook};
 use crate::book_path::{locate, request_id};
 use crate::dialog_session::DialogSession;
-use crate::picker::{forget_uploads, BookPicker, PickedBook};
+use crate::picker::{forget_uploads, BookPicker, PickedBook, UploadHandle};
 use crate::{
     add_controller,
     carousel::{apply_selection_flags, set_carousel_selected},
@@ -25,10 +25,15 @@ use gashuu_core::BookId;
 use gashuu_core::{Library, Settings, ThumbStore};
 use slint::ComponentHandle;
 use std::cell::{Cell, RefCell};
+use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
 type PickedSlot = Arc<Mutex<Vec<PickedBook>>>;
+
+fn lock_picks(slot: &PickedSlot) -> std::sync::MutexGuard<'_, Vec<PickedBook>> {
+    slot.lock().expect("picked slot mutex poisoned")
+}
 
 fn deliver_picks(
     weak: &slint::Weak<ViewerWindow>,
@@ -44,23 +49,19 @@ fn deliver_picks(
     if picks.is_empty() && !has_notice {
         return;
     }
-    if let Some(ui) = weak.upgrade() {
-        let old = std::mem::replace(
-            &mut *slot.lock().expect("picked slot mutex poisoned"),
-            picks,
-        );
-        let (_, uploads) = partition_picks(old);
-        forget_uploads(&uploads);
-        ui.invoke_add_picked(folder);
+    let ui = weak.upgrade();
+    let stale = if ui.is_some() {
+        std::mem::replace(&mut *lock_picks(slot), picks)
     } else {
-        let (_, uploads) = partition_picks(picks);
-        forget_uploads(&uploads);
+        picks
+    };
+    forget_uploads(&partition_picks(stale).1);
+    if let Some(ui) = ui {
+        ui.invoke_add_picked(folder);
     }
 }
 
-fn partition_picks(
-    picks: Vec<PickedBook>,
-) -> (Vec<std::path::PathBuf>, Vec<crate::picker::UploadHandle>) {
+fn partition_picks(picks: Vec<PickedBook>) -> (Vec<PathBuf>, Vec<UploadHandle>) {
     let mut paths = Vec::new();
     let mut uploads = Vec::new();
     for pick in picks {
@@ -144,8 +145,7 @@ pub(crate) fn wire_open_handlers(
         let localizer = localizer.clone();
         ui.on_add_picked(move |folder| {
             pending_folder.take();
-            let picks =
-                std::mem::take(&mut *picked_slot.lock().expect("picked slot mutex poisoned"));
+            let picks = std::mem::take(&mut *lock_picks(&picked_slot));
             let (paths, uploads) = partition_picks(picks);
             let op = if folder { "add-folder" } else { "add-books" };
             let policy = settings.borrow().archive_policy();
@@ -153,7 +153,7 @@ pub(crate) fn wire_open_handlers(
                 if !uploads.is_empty() {
                     // A mixed selection is impossible for platform pickers. In release,
                     // finish the path batch before starting the uploads.
-                    *picked_slot.lock().expect("picked slot mutex poisoned") =
+                    *lock_picks(&picked_slot) =
                         uploads.into_iter().map(PickedBook::Upload).collect();
                     pending_folder.set(Some(folder));
                 }
@@ -172,7 +172,14 @@ pub(crate) fn wire_open_handlers(
                 }
                 forget_uploads(&uploads);
                 if let Some(ui) = weak.upgrade() {
-                    ui.set_add_toast_text(append_notice(STORAGE_UNAVAILABLE.into(), notice).into());
+                    #[cfg(target_arch = "wasm32")]
+                    ui.set_add_toast_text(
+                        append_notice(
+                            i18n::dynamic::web_storage_unavailable(localizer.loader()),
+                            notice,
+                        )
+                        .into(),
+                    );
                     ui.invoke_focus_carousel();
                 }
             } else if let (Some(ui), Some(notice)) = (weak.upgrade(), notice) {
@@ -250,10 +257,13 @@ fn import_failure_notice(
     outcomes: &[add_controller::ProbeOutcome],
     localizer: &i18n::Localizer,
 ) -> Option<String> {
+    use crate::backend::STORAGE_UNAVAILABLE;
     use add_controller::{ProbeKind, ProbeSubject};
     use gashuu_worker::import::{STORAGE_FULL, UNREADABLE_UPLOAD};
 
     let mut notices = Vec::new();
+    let mut storage_failures = std::collections::HashSet::new();
+    let loader = localizer.loader();
     let mut unreadable = 0;
     for outcome in outcomes {
         if let (ProbeSubject::Upload(_), ProbeKind::Unreadable { error }) =
@@ -261,20 +271,18 @@ fn import_failure_notice(
         {
             match error.as_str() {
                 UNREADABLE_UPLOAD => unreadable += 1,
-                reason @ (STORAGE_UNAVAILABLE | STORAGE_FULL)
-                    if !notices.iter().any(|notice| notice == reason) =>
-                {
-                    notices.push(reason.to_owned())
+                STORAGE_UNAVAILABLE if storage_failures.insert(STORAGE_UNAVAILABLE) => {
+                    notices.push(i18n::dynamic::web_storage_unavailable(loader));
+                }
+                STORAGE_FULL if storage_failures.insert(STORAGE_FULL) => {
+                    notices.push(i18n::dynamic::web_storage_full(loader));
                 }
                 _ => {}
             }
         }
     }
     if unreadable > 0 {
-        notices.push(i18n::dynamic::web_unreadable_files(
-            localizer.loader(),
-            unreadable,
-        ));
+        notices.push(i18n::dynamic::web_unreadable_files(loader, unreadable));
     }
     (!notices.is_empty()).then(|| notices.join("\n"))
 }

@@ -239,6 +239,7 @@ pub(crate) fn platform_importer() -> Option<Rc<dyn BookImporter>> {
     return None;
 }
 
+#[cfg(any(test, target_arch = "wasm32"))]
 pub(crate) const STORAGE_UNAVAILABLE: &str = "this browser cannot store books";
 
 #[cfg(test)]

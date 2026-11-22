@@ -2,17 +2,13 @@
 //! input order. Each UI-thread completion records one outcome and advances
 //! progress. Only the current generation can finalize and update the library.
 
-use crate::backend::{BackendError, BookBackend};
+use crate::backend::{BackendError, BookBackend, BookImporter, DiscardUpload, ImportedBook};
 use crate::book_path as location;
+use crate::picker::{forget_uploads, UploadHandle};
 use crate::ui_marshal::{Generation, Ticket};
 use crate::ViewerWindow;
-use crate::{
-    backend::{BookImporter, DiscardUpload, ImportedBook},
-    picker::{forget_uploads, UploadHandle},
-};
-use gashuu_core::ArchivePolicy;
-use gashuu_core::BookId;
-use std::cell::Cell;
+use gashuu_core::{ArchivePolicy, BookId};
+use std::cell::{Cell, RefCell};
 use std::fmt;
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
@@ -22,6 +18,7 @@ use std::rc::Rc;
 pub(crate) enum ProbeKind {
     /// Opened cleanly with `n` image pages — add it and record the count.
     Counted(NonZeroUsize),
+    /// Imported into browser storage with the worker-supplied id, title, and page count.
     Imported {
         id: BookId,
         title: String,
@@ -37,9 +34,9 @@ pub(crate) enum ProbeKind {
 
 /// One probed source awaiting the UI-thread apply: its INPUT-order `index` (so
 /// the apply half can restore input order regardless of probe completion order),
-/// its selected `path`, and its classified `kind`. All fields `Send`.
+/// its `subject` (a picked path or an uploaded file name), and its classified `kind`. All fields `Send`.
 pub(crate) struct ProbeOutcome {
-    /// Position in the picked-paths input, used to re-sort to input order before
+    /// Position in the picked input, used to re-sort to input order before
     /// applying (probes complete out of order on parallel workers).
     pub index: usize,
     pub subject: ProbeSubject,
@@ -106,7 +103,9 @@ pub(crate) struct AddController {
     /// The op tag ("add-books" / "add-folder") of the current generation, used
     /// only in the apply half's save-failure trace. Replaced on every `start`.
     op: Cell<&'static str>,
-    import_batch: std::cell::RefCell<Option<(usize, DiscardUpload)>>,
+    /// Current upload batch epoch and callback for discarding imported files when superseded.
+    import_batch: RefCell<Option<(usize, DiscardUpload)>>,
+    /// Picker notice shown after the current import batch finalizes.
     picker_notice: Cell<Option<String>>,
 }
 
@@ -117,7 +116,7 @@ impl AddController {
             backend,
             generation: Generation::new(),
             op: Cell::new("add"),
-            import_batch: Default::default(),
+            import_batch: RefCell::new(None),
             picker_notice: Cell::new(None),
         }
     }
@@ -127,13 +126,11 @@ impl AddController {
     }
 
     fn begin(&self, op: &'static str) -> Ticket<Vec<ProbeOutcome>> {
-        {
-            self.picker_notice.take();
-            if let Some((epoch, discard)) = self.import_batch.take() {
-                for outcome in self.generation.take(epoch).unwrap_or_default() {
-                    if let ProbeKind::Imported { id, .. } = outcome.kind {
-                        discard(&id);
-                    }
+        self.picker_notice.take();
+        if let Some((epoch, discard)) = self.import_batch.take() {
+            for outcome in self.generation.take(epoch).unwrap_or_default() {
+                if let ProbeKind::Imported { id, .. } = outcome.kind {
+                    discard(&id);
                 }
             }
         }
