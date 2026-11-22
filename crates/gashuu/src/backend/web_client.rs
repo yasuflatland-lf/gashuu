@@ -7,6 +7,7 @@ use gashuu_worker::protocol::{
     self, ImageMeta, ReqId, WireResult, WorkerRequest as Request, WorkerResponse as Response,
 };
 use gashuu_worker::wire_error::WireError;
+use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
 use std::num::NonZeroUsize;
 use std::sync::Arc;
@@ -131,7 +132,7 @@ impl WebClient {
         loop {
             let id = self.next_req;
             self.next_req = id.wrapping_add(1);
-            if let std::collections::hash_map::Entry::Vacant(entry) = self.pending.entry(id) {
+            if let Entry::Vacant(entry) = self.pending.entry(id) {
                 entry.insert(pending);
                 return (self.post(request(ReqId(id))), Vec::new());
             }
