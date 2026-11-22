@@ -40,6 +40,10 @@ run = "cargo check -p gashuu --target wasm32-unknown-unknown --target-dir target
 description = "Browser-native decoder compiles for wasm32-unknown-unknown"
 run = "cargo check -p gashuu-web-decode --target wasm32-unknown-unknown --target-dir target/wasm"
 
+[tasks.check-wasm-worker]
+description = "Dedicated Web Worker compiles for wasm32-unknown-unknown"
+run = "cargo check -p gashuu-worker --target wasm32-unknown-unknown --target-dir target/wasm"
+
 [tasks.build-web]
 description = "Build the browser bundle with Trunk into crates/gashuu/dist (needs MISE_ENV=web)"
 dir = "crates/gashuu"

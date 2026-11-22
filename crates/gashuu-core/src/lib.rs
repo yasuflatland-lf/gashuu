@@ -45,7 +45,7 @@ pub use atomic_write::write_atomic;
 pub use blob_store::FsBlobStore;
 pub use blob_store::{BlobStore, MemoryBlobStore, LIBRARY_KEY, SETTINGS_KEY};
 pub use book_id::BookId;
-pub use cache::{ImageCache, DEFAULT_CAPACITY, DEFAULT_PREFETCH_RADIUS};
+pub use cache::{DecodedLru, ImageCache, DEFAULT_CAPACITY, DEFAULT_PREFETCH_RADIUS};
 pub use cache_config::{CacheConfig, MAX_CACHE_CAPACITY, MAX_PREFETCH_RADIUS};
 pub use error::CoreError;
 pub use image_ops::{check_pixel_limit, decode, decode_thumbnail, DecodedImage, MAX_PIXELS};
