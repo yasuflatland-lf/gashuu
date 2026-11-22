@@ -12,6 +12,14 @@ inventory: what exists, where it lives, and what it does.
 Slint-independent domain + I/O layer. See [ADR-0002](ADRs/0002-layered-two-crate-architecture.md)
 for the rationale behind the two-crate split. Keep the layer boundary strict.
 
+### page_decode
+
+`PageDecoder` takes owned encoded bytes and returns a local `DecodeFuture` that resolves
+to straight-alpha RGBA8 and dimensions. `ImageCratePageDecoder` wraps `image_ops::decode`
+in a ready future. `decode_with_fallback` retries the same bytes after a primary failure.
+A successful retry returns the image and the primary error. If both attempts fail, the
+caller receives the fallback error.
+
 ### PageSource trait
 
 Requires `Send + Sync` so `Arc<dyn PageSource>` can be shared with rayon worker threads during
@@ -195,6 +203,10 @@ source bytes or the source error. `insert_decoded(index, decoded)` applies the c
 byte limits and returns the shared `Arc`, reusing an existing entry if a concurrent reader
 already populated the slot. The synchronous `decode_and_cache` checks the cache before and after
 the read, decodes on a miss, and starts neighbour prefetch on success.
+
+`DecodedLru<K>` stores the decoded pages and enforces the count and byte limits.
+It supports removing entries by key or predicate and subtracts their decoded
+bytes from the total. `ImageCache` keys it by page index.
 
 See [ADR-0003](ADRs/0003-image-loading-and-caching.md) for the LRU/prefetch decision.
 
@@ -462,6 +474,38 @@ re-exported at the crate root. See [ADR-0013](ADRs/0013-auto-update.md).
 
 ---
 
+## crates/gashuu-web-decode (wasm32)
+
+`NativePageDecoder` calls `createImageBitmap` on the current `Window` or
+`WorkerGlobalScope`. It checks the pixel limit before allocating an `OffscreenCanvas`
+and falls back to an HTML canvas on windows without offscreen support. It requests
+straight alpha, no color-space conversion, and original pixel orientation. Canvas
+readback can round partially transparent RGB values.
+
+## crates/gashuu-worker (wasm32 worker)
+
+The portable library defines the worker protocol, validates book ids, and
+dispatches requests using injected decoders. The wasm binary installs the
+dedicated worker message handler and posts `Ready` after setup.
+Each message carries JSON text in `m` to preserve exact 64-bit ids. Responses
+with images carry transferable RGBA8 buffers in `b`, in metadata order.
+
+One request runs at a time. The interactive lane handles opens and spreads
+ahead of background thumbnails, covers, and page counts. Each lane is FIFO.
+Between queued background jobs, the loop gives the browser a chance to deliver
+new interactive requests.
+Close and cover cancellation run in the message handler and discard outdated
+queued work and replies. Each session retains its page source. Pages are
+decoded on demand with the browser-native decoder and an image-crate fallback
+(PNG and JPEG for books on web). Covers and thumbnails downscale the decoded
+image. Both slots of a spread arrive in one reply.
+
+An OPFS book id is its relative path, `books/<uuid>/<sanitised file name>`.
+The worker validates it before looking up the file and uses a
+`FileSystemSyncAccessHandle` to read at explicit offsets. A weak reader map
+lets sessions, cover requests, and page count probes share one handle per
+book. Dropping the last reader closes the handle and releases its lock.
+
 ## crates/gashuu (Slint presentation layer)
 
 See [ADR-0001](ADRs/0001-gui-framework-slint.md) for the Slint framework decision and
@@ -502,27 +546,14 @@ The controller migrations use these methods:
 
 ### page_decode
 
-`page_decode.rs` defines the port. `PageDecoder::decode` takes owned encoded bytes and returns a local `DecodeFuture` resolving to
-a straight-alpha RGBA8 `DecodedImage` or `CoreError`. `ImageCratePageDecoder` runs
-`gashuu_core::image_ops::decode` synchronously and returns an already-ready future. The port is
-available on all targets. On a cache miss, `decode_page` reads the encoded bytes once and
-awaits the primary decoder. If it fails, the orchestrator warns once per controller and retries
-with the fallback. A page cached during either await takes precedence. Otherwise a successful
-decode populates the cache, or the fallback error reaches the loader.
+`decode_page` returns cached pages immediately. On a miss it reads the encoded page
+once and uses core's fallback orchestration. A page cached during either decode takes
+precedence. A primary failure triggers one warning per controller when a retry is needed.
 
-On wasm32, the composition root supplies `NativePageDecoder` as primary and
-`ImageCratePageDecoder` as fallback. Desktop uses the image crate only. The port
-and its local `!Send` futures live in `gashuu`, keeping browser bindings out of
-core. Web covers use the same pair, then `image_ops::downscale_to_thumbnail`;
-cover requests run sequentially, including across refreshes. The web thumbnail
-strip remains a no-op. See [ADR-0014](ADRs/0014-web-decodes-pages-with-the-browser-native-decoder.md).
-
-### web_decode
-
-`web_decode.rs` implements `NativePageDecoder` on the browser main thread with
-`createImageBitmap` and canvas readback. It checks the pixel limit before canvas
-allocation and requests straight alpha, no color-space conversion, and original
-pixel orientation. Canvas readback can round partially transparent RGB values.
+On wasm32 the composition root supplies `gashuu_web_decode::NativePageDecoder` as
+primary and `ImageCratePageDecoder` as fallback. `decode_cover` uses the same pair on
+page zero, then downscales the result. Covers load sequentially across refreshes.
+Desktop uses the image crate only. See [ADR-0014](ADRs/0014-web-decodes-pages-with-the-browser-native-decoder.md).
 
 ### web_font
 

@@ -3,6 +3,14 @@
 This is the L2/L3 reference doc migrated from the CLAUDE.md "Patterns & gotchas" section.
 An agent should read the relevant entry BEFORE editing the corresponding code area.
 
+### OPFS access handles require single-threaded wasm
+
+`OpfsReadAt` implements the core `ReadAt` trait for the dedicated Web Worker.
+Its `unsafe impl Send` and `unsafe impl Sync` are sound only on wasm32 without
+the `atomics` target feature. Keep both implementations under that guard with
+their safety comments. The worker rejects builds with wasm atomics because a
+JavaScript access handle is confined to its owning thread.
+
 ### Cross-crate mocking via a `testing` feature
 
 `gashuu-core` gates `mockall::automock` on `PageSource` behind `[features] testing = ["dep:mockall"]`; `gashuu`'s dev-dependency enables it, so `ViewerState` tests use `MockPageSource` without pulling `mockall` into release builds.

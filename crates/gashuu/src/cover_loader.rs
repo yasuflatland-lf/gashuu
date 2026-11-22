@@ -24,12 +24,14 @@ use crate::backend::{cover_mem::CoverMemCache, BookBackend};
 use crate::carousel::update_carousel_row;
 use crate::page_count_prefetch::{self, PageCountPrefetch, ResolvedCount};
 #[cfg(target_arch = "wasm32")]
-use crate::page_decode::{decode_cover, PageDecoder};
+use crate::page_decode::decode_cover;
 use crate::to_slint_image;
 use crate::ui_marshal::marshal_to_ui;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::worker;
 use crate::{book_path, CarouselItem, LibraryStoreHandle, ViewerWindow};
+#[cfg(target_arch = "wasm32")]
+use gashuu_core::PageDecoder;
 use gashuu_core::{
     cache_key, ArchivePolicy, BookId, CoreError, DecodedImage, Library, PageSource, ThumbnailCache,
 };

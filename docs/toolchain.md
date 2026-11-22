@@ -21,8 +21,11 @@ On this target, core enables the `wasm_js` feature of getrandom 0.4, which is al
 
 #### UI crate on wasm32
 
-`mise run check-wasm-ui` compile-checks the UI crate in `target/wasm`. The CI
-`wasm` job runs it after `check-wasm-core`, then builds the browser bundle and
+`mise run check-wasm-ui` compile-checks the UI crate in `target/wasm`. The UI's
+wasm32 dependencies include `gashuu-web-decode`, which implements browser-native
+decoding for windows and workers and uses `gashuu-core` with default features disabled.
+`mise run check-wasm-decode` checks the adapter independently in the same target directory.
+The CI `wasm` job runs all three wasm checks, then builds the browser bundle and
 checks for `index.html` and a `.wasm` file in `crates/gashuu/dist`.
 
 The UI crate declares these dependencies in
@@ -58,8 +61,8 @@ desktop defaults out of the wasm build.
 ### Web decoding
 
 The wasm32 composition root uses `NativePageDecoder` as the primary decoder and
-`ImageCratePageDecoder` as the fallback. The native adapter uses
-`createImageBitmap` and canvas readback on the main thread; it checks dimensions
+`ImageCratePageDecoder` as the fallback. The adapter in `gashuu-web-decode` uses
+`createImageBitmap` and canvas readback in either a window or a worker. It checks dimensions
 against the core pixel limit before allocating the canvas. It requests straight
 alpha, no color-space conversion, and the original pixel orientation. Canvas
 readback can round partially transparent RGB values. Covers use the same decoders
@@ -87,6 +90,16 @@ the page sizes `#canvas` to the viewport with CSS.
 The page and canvas set `touch-action: none` and a non-scalable viewport so iPad
 Safari does not consume double-taps or pinch gestures for page zoom and touch reaches the app.
 The Slint window follows the browser viewport on load and resize.
+
+The worker link in `crates/gashuu/index.html` points Trunk at
+`../gashuu-worker/Cargo.toml` and selects the `gashuu-worker` binary.
+Trunk emits `gashuu-worker.js`, `gashuu-worker_bg.wasm`, and
+`gashuu-worker_loader.js` in `crates/gashuu/dist`. The loader uses
+`importScripts` to load the worker glue and initializes the wasm binary.
+Run `mise run check-wasm-worker` to check the worker crate on its own.
+The OPFS reader uses synchronous `getSize()` and `close()` methods, available
+as synchronous calls starting in Safari and iPadOS 16.4.
+[WebKit release notes](https://webkit.org/blog/13966/webkit-features-in-safari-16-4/).
 
 The Pages workflow publishes the Vite landing page at `/gashuu/` and the web
 app at `/gashuu/app/` in one deployment. Its Trunk build uses

@@ -53,13 +53,13 @@ self-replace = "1"
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 gashuu-core = { path = "../gashuu-core", default-features = false }
+gashuu-web-decode = { path = "../gashuu-web-decode" }
 console_error_panic_hook = "0.1"
 tracing-wasm = "0.2"
 slint = { version = "=1.18.1", features = ["unstable-fontique-011"] }
 web-sys = { version = "0.3", features = [
     "Window", "MediaQueryList", "Navigator", "Storage", "Request", "RequestInit", "Response", "Document", "HtmlInputElement", "File", "FileList",
-    "Blob", "ImageBitmap", "ImageBitmapOptions", "PremultiplyAlpha", "ColorSpaceConversion",
-    "OffscreenCanvas", "OffscreenCanvasRenderingContext2d", "HtmlCanvasElement", "CanvasRenderingContext2d", "ImageData",
+    "Blob",
 ] }
 js-sys = "0.3"
 wasm-bindgen = "0.2"
