@@ -1,6 +1,10 @@
 use super::*;
 use crate::book_path::request_id;
-use gashuu_core::{MockPageSource, PageEntry};
+use gashuu_core::{
+    cache_key, thumbnail_cache::source_mtime_secs, FsThumbStore, MockPageSource, NullThumbStore,
+    PageEntry,
+};
+use std::path::PathBuf;
 use std::sync::atomic::AtomicUsize;
 use std::sync::mpsc::{self, Receiver};
 use std::time::Duration;
@@ -14,12 +18,16 @@ struct Harness {
 impl Harness {
     fn new() -> Self {
         let root = tempfile::tempdir().unwrap();
+        let store = Arc::new(FsThumbStore::with_dir(root.path().join("cache")));
+        Self::with_store(root, store)
+    }
+
+    fn with_store(root: tempfile::TempDir, thumbs: Arc<dyn ThumbStore>) -> Self {
         let (tx, posted) = mpsc::channel();
         let post = Arc::new(move |f| tx.send(f).unwrap());
-        let cache = ThumbnailCache::with_dir(root.path().join("cache"));
         Self {
             root,
-            backend: DesktopBackend::with_parts(post, Some(cache)),
+            backend: DesktopBackend::with_parts(post, thumbs),
             posted,
         }
     }
@@ -54,7 +62,7 @@ impl Harness {
         self.backend.inner.sessions.lock().unwrap().insert(
             id,
             Arc::new(Session {
-                path,
+                id: request_id(&path).unwrap(),
                 source,
                 cache,
             }),
@@ -280,6 +288,17 @@ fn thumbnail_respects_max_side_and_persists() {
     source.expect_read_bytes().never();
     let session = h.mock_session(path, source);
     assert_eq!(h.thumbnail(session), image);
+}
+
+#[test]
+fn null_store_backend_still_generates_covers_and_thumbnails() {
+    let h = Harness::with_store(tempfile::tempdir().unwrap(), Arc::new(NullThumbStore));
+    let path = h.book(1);
+    let cover = h.check_cover(&path, Some(1)).unwrap();
+    assert_eq!((cover.width(), cover.height()), (4, 2));
+    let session = h.open(&path, ArchivePolicy::default()).unwrap().session;
+    let thumb = h.thumbnail(session);
+    assert_eq!((thumb.width(), thumb.height()), (2, 1));
 }
 
 #[test]

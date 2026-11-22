@@ -10,12 +10,12 @@
 //! UI tail lives in
 //! [`finalize_remove`](crate::carousel_refresh::finalize_remove).
 
-use crate::book_path::locate;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
+use std::sync::Arc;
 
-use gashuu_core::{Book, BookId, CoreError, Library, RemovalReport, ThumbnailCache};
+use gashuu_core::{Book, BookId, CoreError, Library, RemovalReport, ThumbStore};
 use i18n_embed::fluent::FluentLanguageLoader;
 
 use crate::cover_loader::purge_cover;
@@ -28,16 +28,6 @@ use crate::{save_library, LibraryStoreHandle};
 /// dialog body before the list is truncated with an "…and M more" line. Beyond
 /// this the dialog would grow unboundedly for a large bulk selection.
 const CONFIRM_DELETE_LIST_CAP: usize = 10;
-
-/// Remove the cached cover of a rejected empty book.
-pub(crate) fn purge_empty_cover(id: &BookId) {
-    match ThumbnailCache::new() {
-        Ok(cache) => purge_cover(&cache, &locate(id)),
-        Err(e) => {
-            tracing::warn!(error = %e, "cover cache unavailable; skipping cover purge on empty-book removal");
-        }
-    }
-}
 
 /// Result of [`RemoveBooksUseCase::run`]. Carries enough for `main.rs` to
 /// finalize the UI (status line / carousel rebuild) without any i18n logic here.
@@ -127,9 +117,11 @@ pub(crate) struct RemoveBooksUseCase {
     search: Rc<RefCell<LibrarySearchState>>,
     selection: Rc<RefCell<LibrarySelectionState>>,
     library_store: LibraryStoreHandle,
+    thumbs: Arc<dyn ThumbStore>,
 }
 
 impl RemoveBooksUseCase {
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         state: Rc<RefCell<ViewerState>>,
         dialog_session: Rc<RefCell<DialogSession>>,
@@ -138,6 +130,7 @@ impl RemoveBooksUseCase {
         selection: Rc<RefCell<LibrarySelectionState>>,
         library_store: LibraryStoreHandle,
         backend: Rc<dyn crate::backend::BookBackend>,
+        thumbs: Arc<dyn ThumbStore>,
     ) -> Self {
         Self {
             state,
@@ -147,6 +140,7 @@ impl RemoveBooksUseCase {
             selection,
             library_store,
             backend,
+            thumbs,
         }
     }
 
@@ -203,27 +197,12 @@ impl RemoveBooksUseCase {
             }
         };
 
-        // 3. Best-effort purge of each removed book's cover AND its per-page strip
-        //    thumbnails; a cache-construction failure skips both purges wholesale.
-        match ThumbnailCache::new() {
-            Ok(cache) => {
-                for id in &report.removed {
-                    purge_cover(&cache, &locate(id));
-                }
-                // Strips are keyed PER PAGE, so `purge_cover` (cover key only) orphans
-                // them (issue #361); core derives the shared mtime recipe internally.
-                for id in &report.removed {
-                    if let Some(&n) = page_counts.get(id) {
-                        cache.purge_pages_for(
-                            &locate(id),
-                            &[gashuu_core::DEFAULT_THUMB_MAX_SIDE],
-                            n,
-                        );
-                    }
-                }
-            }
-            Err(e) => {
-                tracing::warn!(error = %e, "cover cache unavailable; skipping cover purge on remove");
+        // 3. Purge the cover and known strip pages under the same current fingerprint.
+        for id in &report.removed {
+            let fp = purge_cover(self.thumbs.as_ref(), id);
+            if let Some(&count) = page_counts.get(id) {
+                self.thumbs
+                    .purge_pages(fp, &[gashuu_core::DEFAULT_THUMB_MAX_SIDE], count);
             }
         }
 
@@ -736,6 +715,52 @@ mod tests {
         );
     }
 
+    #[test]
+    fn remove_books_purges_covers_and_known_pages_for_removed_books_only() {
+        use crate::recording_thumb_store::{Call, RecordingThumbStore};
+        use gashuu_core::BookFingerprint;
+
+        let dir = tempfile::tempdir().unwrap();
+        let mut library = lib_with_three();
+        let a = BookId::new("/manga/a.cbz");
+        let b = BookId::new("/manga/b.cbz");
+        library.set_page_count(&a, NonZeroUsize::new(3).unwrap());
+        let mut selection = LibrarySelectionState::default();
+        for id in [&a, &b, &BookId::new("/manga/absent.cbz")] {
+            selection.insert(id.clone());
+        }
+        let thumbs = std::sync::Arc::new(RecordingThumbStore::default());
+        let use_case = RemoveBooksUseCase::new(
+            Rc::new(RefCell::new(ViewerState::from_settings(
+                &Settings::default(),
+            ))),
+            Rc::new(RefCell::new(DialogSession::new())),
+            Rc::new(RefCell::new(library)),
+            Rc::new(RefCell::new(LibrarySearchState::default())),
+            Rc::new(RefCell::new(selection)),
+            Rc::new(Some(gashuu_core::LibraryStore::new(
+                dir.path().join("library.json"),
+            ))),
+            crate::backend::fake::FakeBackend::new(),
+            thumbs.clone(),
+        );
+
+        assert_eq!(
+            use_case.run(),
+            RemoveOutcome::Removed {
+                n: 2,
+                closed_open_book: false
+            }
+        );
+        let calls = thumbs.take_calls();
+        assert_eq!(calls.len(), 4);
+        for (id, count) in [(a, 3), (b, 80)] {
+            let fp = BookFingerprint::of_id(&id);
+            assert!(calls.contains(&Call::PurgeCover(fp, vec![512])));
+            assert!(calls.contains(&Call::PurgePages(fp, vec![160], count)));
+        }
+    }
+
     // ---- the pending-inherit discard on remove (#540, scope item 6) --------
 
     /// Deleting the OPEN book must discard that book's pending "reset to global"
@@ -809,6 +834,7 @@ mod tests {
                 store_dir.path().join("library.json"),
             ))),
             backend.clone(),
+            Arc::new(gashuu_core::NullThumbStore),
         );
 
         assert_eq!(

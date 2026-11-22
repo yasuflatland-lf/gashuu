@@ -26,6 +26,8 @@ mod page_count_prefetch;
 pub mod page_decode;
 mod page_jump;
 mod page_loader;
+#[cfg(test)]
+mod recording_thumb_store;
 mod remove_books;
 mod selection_projection;
 #[cfg(not(target_arch = "wasm32"))]
@@ -57,7 +59,6 @@ mod web_pointer;
 mod web_viewport;
 #[cfg(not(target_arch = "wasm32"))]
 mod window_state;
-mod worker;
 
 pub(crate) use carousel_refresh::{
     apply_add_report, finalize_empty_book_rejected, finalize_remove, push_selection_toolbar_state,
@@ -76,7 +77,6 @@ use page_loader::PageController;
 use page_loader::{PageSlot, SpreadDecodeRequest};
 use std::cell::RefCell;
 use std::rc::Rc;
-#[cfg(target_arch = "wasm32")]
 use std::sync::Arc;
 use thumbnail_strip::ThumbnailController;
 pub(crate) use view_sync::{current_book_name, LeavePointService, ViewModeRoute};
@@ -340,7 +340,17 @@ fn run_app(
     // clamp, and later PR-L's add / PR-R's position write-back can all reach it.
     let library = Rc::new(RefCell::new(library));
 
-    let backend = backend::platform_backend();
+    #[cfg(not(target_arch = "wasm32"))]
+    let thumb_store: Arc<dyn gashuu_core::ThumbStore> = match gashuu_core::FsThumbStore::new() {
+        Ok(store) => Arc::new(store),
+        Err(error) => {
+            tracing::warn!(%error, "no thumbnail cache directory; thumbnails will not be persisted");
+            Arc::new(gashuu_core::NullThumbStore)
+        }
+    };
+    #[cfg(target_arch = "wasm32")]
+    let thumb_store: Arc<dyn gashuu_core::ThumbStore> = Arc::new(gashuu_core::NullThumbStore);
+    let backend = backend::platform_backend(Arc::clone(&thumb_store));
 
     let thumbs = Rc::new(ThumbnailController::new(&ui, Rc::clone(&backend)));
 
@@ -402,6 +412,7 @@ fn run_app(
             move |settings| save_settings(&store, settings)
         }),
         backend.clone(),
+        Arc::clone(&thumb_store),
     ));
 
     // Seed the carousel from the persisted library so boot shows saved books. This is
@@ -423,7 +434,10 @@ fn run_app(
     {
         // One startup sweep keeps the cover cache under its size cap + reclaims orphans
         // (issue 143). Dispatched AFTER the initial stream so visible covers get workers first.
-        cover_loader::spawn_cache_prune();
+        backend::desktop::spawn_thumb_prune(
+            Arc::clone(&thumb_store),
+            cover_loader::CoverCachePolicy::DEFAULT.max_bytes,
+        );
     }
 
     // Top-level screen state machine (boots to Library). `Rc<RefCell<…>>` so carousel
@@ -496,6 +510,7 @@ fn run_app(
         &localizer,
         &library_store,
         backend,
+        Arc::clone(&thumb_store),
     );
     handlers::wire_viewer_input_handlers(&ui, &state, &viewport, &pages, &localizer);
     handlers::wire_settings_handlers(
@@ -513,6 +528,7 @@ fn run_app(
         &localizer,
         &settings_store,
         &library_store,
+        thumb_store,
     );
     handlers::wire_view_mode_handlers(
         &ui, &state, &viewport, &settings, &library, &pages, &search, &selection, &localizer,

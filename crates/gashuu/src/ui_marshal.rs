@@ -13,41 +13,6 @@ use std::cell::RefCell;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering::Relaxed};
 use std::sync::{Arc, Mutex};
 
-/// Marshal `body` onto the Slint event loop for one background result, applying
-/// the epoch-guard + weak-upgrade preamble shared by every worker → UI handoff.
-///
-/// `body` runs on the UI thread, so a `!Send` value (a `slint::Image`, a
-/// `SharedString`) is still built INSIDE it — only the captured inputs must be
-/// `Send`. The result of a SUPERSEDED generation is dropped: if `my_epoch` no
-/// longer matches the live `epoch` (a library refresh / re-open bumped it since
-/// this result was dispatched), the closure returns without touching the UI, so a
-/// late delivery can never overwrite a fresh frame. A dead `Weak` (the window
-/// closed) is likewise dropped. `what` tags the debug trace on the
-/// event-loop-gone path so each call site stays identifiable. This is the ONE
-/// spelling of the stale-generation guard (previously inline `epoch.load(Relaxed)
-/// != my_epoch` at eight sites and the `is_current` helper at a ninth).
-#[allow(dead_code)] // TODO(wasm-backend): remove when #656 ([6/13]) and #657 ([7/13]) have both merged
-pub(crate) fn marshal_to_ui(
-    weak: slint::Weak<ViewerWindow>,
-    epoch: Arc<AtomicUsize>,
-    my_epoch: usize,
-    what: &'static str,
-    body: impl FnOnce(&ViewerWindow) + Send + 'static,
-) {
-    if let Err(e) = slint::invoke_from_event_loop(move || {
-        // Drop results from a superseded generation (library refreshed since).
-        if epoch.load(Relaxed) != my_epoch {
-            return;
-        }
-        let Some(ui) = weak.upgrade() else {
-            return;
-        };
-        body(&ui);
-    }) {
-        tracing::debug!(what, error = %e, "dropped UI update; event loop gone");
-    }
-}
-
 /// Build a completion that checks the current UI epoch and the window lifetime.
 #[allow(dead_code)] // TODO(wasm-backend): remove when #656 ([6/13]) and #657 ([7/13]) have both merged
 pub(crate) fn ui_done<T: Send + 'static>(
@@ -147,15 +112,6 @@ impl<T> Ticket<T> {
         // If begin races this lock, the ticket still holds only its original slot.
         f(&mut self.slot.lock().expect("generation slot mutex poisoned"));
         true
-    }
-
-    pub(crate) fn marshal(
-        &self,
-        weak: slint::Weak<ViewerWindow>,
-        what: &'static str,
-        body: impl FnOnce(&ViewerWindow) + Send + 'static,
-    ) {
-        marshal_to_ui(weak, Arc::clone(&self.epoch), self.id, what, body);
     }
 }
 

@@ -112,7 +112,7 @@ impl OpenedBook {
         policy: ArchivePolicy,
         cache: CacheConfig,
     ) -> Result<Self, BackendError> {
-        let backend = desktop::DesktopBackend::new();
+        let backend = desktop::DesktopBackend::new(Arc::new(gashuu_core::NullThumbStore));
         let mut opened = backend.open_blocking(id, policy, cache)?;
         backend.close(opened.session);
         // The fixture's fake backend owns a distinct handle for the installed metadata.

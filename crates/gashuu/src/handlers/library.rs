@@ -21,10 +21,11 @@ use crate::{
 };
 use crate::{viewer_state::ViewerState, viewport::ViewportState};
 use gashuu_core::BookId;
-use gashuu_core::{Library, Settings};
+use gashuu_core::{Library, Settings, ThumbStore};
 use slint::ComponentHandle;
 use std::cell::RefCell;
 use std::rc::Rc;
+use std::sync::Arc;
 
 /// Ask rfd for comic sources to add. macOS picks files and folders in one panel.
 #[cfg(not(target_arch = "wasm32"))]
@@ -468,6 +469,7 @@ pub(crate) fn wire_selection_handlers(
     localizer: &Rc<i18n::Localizer>,
     library_store: &LibraryStoreHandle,
     backend: Rc<dyn BookBackend>,
+    thumbs: Arc<dyn ThumbStore>,
 ) {
     // Rebind the `&Rc<_>` params to owned `Rc` locals so each closure's `Rc::clone(&handle)`
     // prelude stays byte-identical to its pre-extraction form in `main`.
@@ -662,6 +664,7 @@ pub(crate) fn wire_selection_handlers(
             Rc::clone(&selection),
             Rc::clone(&library_store),
             backend,
+            Arc::clone(&thumbs),
         );
         ui.on_confirm_delete_accepted(move || {
             with_ui(&ui_weak, |ui| {
@@ -686,9 +689,10 @@ pub(crate) fn wire_selection_handlers(
                 let id = BookId::new(id_str.as_str());
                 // The shared transaction (single home in open_book): title capture
                 // BEFORE removal -> Library::remove -> save -> best-effort cover purge.
-                let removal = open_book::remove_empty_book(&library, &id, None, |library| {
-                    save_library(&library_store, library)
-                });
+                let removal =
+                    open_book::remove_empty_book(&library, &id, None, thumbs.as_ref(), |library| {
+                        save_library(&library_store, library)
+                    });
                 finalize_empty_book_rejected(&ui, &carousel, &removal);
             })
         });
@@ -795,6 +799,7 @@ mod tests {
             Box::new(|_| Ok(())),
             Box::new(|_| Ok(())),
             crate::backend::fake::FakeBackend::new(),
+            Arc::new(gashuu_core::NullThumbStore),
         );
         // The Library-screen dialog seeds the runtime with G, then the in-flight
         // open of the SECOND book lands.
@@ -908,6 +913,7 @@ mod tests {
             Box::new(|_| Ok(())),
             Box::new(|_| Ok(())),
             crate::backend::fake::FakeBackend::new(),
+            Arc::new(gashuu_core::NullThumbStore),
         );
 
         dialog_session

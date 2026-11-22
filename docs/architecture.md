@@ -150,35 +150,30 @@ See [ADR-0003](ADRs/0003-image-loading-and-caching.md) for image loading decisio
 
 ### thumbnail
 
-`thumbnail.rs`. `generate_one_thumbnail(source: &Arc<dyn PageSource>, max_side, page_index, cache_ctx: Option<PageThumbContext>) -> Result<DecodedImage, CoreError>` —
-SYNCHRONOUS single-page thumbnail. With a `PageThumbContext { cache, path }` it reads from / writes to
-the on-disk `ThumbnailCache` under `page_cache_key(path, mtime, max_side, page_index)` (a hit skips
-the full-page read+decode; the `put` result is ignored); failure is returned as `Err` (never panics).
-The desktop backend calls this function for each requested page and checks that the session
-is still open before delivering the result. The strip uses `DEFAULT_THUMB_MAX_SIDE` (160 px).
-The sibling `generate_cover(source, max_side)` downsizes page zero for the
-desktop backend and propagates read and decode errors.
+The desktop backend passes a `PageThumbContext { store, fingerprint }` to
+`generate_one_thumbnail` for each requested strip page. A hit for
+`ThumbSlot::Page(page_index)` skips the source read and decode. On a miss, core
+decodes the page and returns the image even if storing it fails. The strip uses
+`DEFAULT_THUMB_MAX_SIDE` (160 px). The backend checks that the session is still
+open before delivering the result. `generate_cover` downsizes page zero and
+propagates read and decode errors.
 
 ### thumbnail_cache
 
-`thumbnail_cache.rs`. On-disk QOI cache for page/cover thumbnails under the OS cache dir
-(`ProjectDirs("", "", "gashuu").cache_dir()/covers`); `with_dir(PathBuf)` is the tempfile-testable
-seam. `put(key, &DecodedImage)` QOI-encodes the RGBA at exact dimensions and writes atomically
-(temp-file-then-rename); `get(key) -> Option<DecodedImage>` reads `<dir>/<key>.qoi` and decodes,
-returning `None` on any missing/unreadable/corrupt file (a cache miss, never panics). `cache_key(path,
-mtime_secs, max_side)` derives a stable 16-hex-char filename via FNV-1a (NOT `DefaultHasher`; see
-docs/patterns.md). Headless (no slint/tracing). `DesktopBackend::cover` uses this cache after checking its decoded-cover memory cache.
+`thumb_store.rs` defines the headless `ThumbStore` port. Its filesystem
+implementation, `FsThumbStore` in `thumbnail_cache.rs`, fingerprints the
+canonical path in a desktop book ID and the current source mtime. The resulting
+`BookFingerprint` is the FNV-1a state shared by that book's cover and page
+keys. `cache_key` and `page_cache_key` preserve the existing filename recipe.
+`NullThumbStore` fingerprints the ID's UTF-8 bytes, always misses and reports
+zero removals.
 
-Issue 143 adds the GC half: `prune(max_bytes) -> PruneReport` sweeps the directory down to
-`max_bytes` of `*.qoi` payload in ascending `(mtime, file name)` order, and reclaims stale
-`.tmpXXXXXX` crash leftovers (older than an hour) regardless of the cap. `get` refreshes a hit's
-mtime (touch-on-get, only after a successful decode), which makes the eviction order near-LRU —
-key-orphaned covers (source mtime drifted past `purge_for`) are never read again, age to the
-front, and disappear once the cap bites. Best-effort throughout (missing dir → zero report,
-failed unlink skipped, foreign files never touched); the caller logs the returned `PruneReport`
-(core stays log-free). The cap POLICY is the app layer's: `cover_loader.rs` owns
-`CoverCachePolicy::DEFAULT.max_bytes` (256 MiB) and `spawn_cache_prune()`, dispatched once at startup on a
-rayon worker right after the initial cover stream.
+`FsThumbStore` stores files under the platform cache directory in `thumbnails/`.
+It writes QOI images atomically to `<key>.qoi`. A successful read refreshes the
+file's mtime. `prune(max_bytes)` evicts images in ascending (mtime, filename)
+order and reclaims legacy PNGs and stale temporary files. Both `clear` and
+`prune` report the bytes and files actually removed. The UI owns the retention
+limit of 256 MiB in `CoverCachePolicy::DEFAULT`.
 
 ### cache::ImageCache
 
@@ -476,7 +471,13 @@ persist state after the event loop returns.
 ### backend (BookBackend port)
 
 `BookBackend` gives the UI an asynchronous book interface over the synchronous
-core. Desktop uses rayon and the existing archive, page and thumbnail caches.
+core. At startup, `main` passes one `Arc<dyn ThumbStore>` to the backend,
+removal use cases and settings handlers. Desktop uses `FsThumbStore` when
+the cache directory is available and falls back to `NullThumbStore`. Its rayon
+jobs resolve the current fingerprint before looking up a strip thumbnail or
+cover. The cover lookup checks decoded memory first, then disk.
+`backend::desktop::spawn_thumb_prune` schedules one sweep after initial cover
+dispatch. Web uses `NullThumbStore` for cleanup and keeps covers in memory.
 `LocalWebBackend` uses the browser session registry and the existing local
 decoders while the Worker is under development. Each open starts a session
 with the caller's cache configuration. `cached_page` only looks up decoded
@@ -637,7 +638,7 @@ data and touches no Slint; the UI tail lives in `carousel_refresh::finalize_remo
   as `Rc<RefCell<…>>` fields: `ViewerState`, `DialogSession`, `Library`, `LibrarySearchState`, and
   `LibrarySelectionState`. `run(&self) -> RemoveOutcome` (no `ui` arg — headless) executes the full
   destructive transaction in the non-negotiable order: snapshot selected IDs → mutate+save with
-  rollback (via `remove_books_with_rollback`) → resolve locations with `book_path::locate` and purge
+  rollback (via `remove_books_with_rollback`) → fingerprint the removed IDs and purge
   their covers and page thumbnails → clear the viewer via `ViewerState::close()` and
   its pending intent via `DialogSession::clear_pending_inherit()` when the open book was deleted,
   recording `closed_open_book` in the outcome
