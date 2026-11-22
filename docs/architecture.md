@@ -154,9 +154,9 @@ See [ADR-0003](ADRs/0003-image-loading-and-caching.md) for image loading decisio
 SYNCHRONOUS single-page thumbnail. With a `PageThumbContext { cache, path }` it reads from / writes to
 the on-disk `ThumbnailCache` under `page_cache_key(path, mtime, max_side, page_index)` (a hit skips
 the full-page read+decode; the `put` result is ignored); failure is returned as `Err` (never panics).
-Parallelism and cancellation are the caller's: the UI's `thumbnail_strip` worker `par_iter`s the
-visible batch and polls its cancel flag before AND after each call. `DEFAULT_THUMB_MAX_SIDE`=160; headless (no slint/tracing), same "testable synchronous core; UI
-owns the fire-and-forget spawn" philosophy as `ImageCache`. The single-page sibling
+The desktop backend calls this function for each requested page and checks that the session
+is still open before delivering the result. The strip uses `DEFAULT_THUMB_MAX_SIDE` (160 px).
+The single-page sibling
 `generate_cover(source: Arc<dyn PageSource>, max_side) -> Result<DecodedImage, CoreError>` (a
 downscaled thumbnail of page index 0, the book's cover; `Err(IndexOutOfRange{index:0,len:0})` on a
 0-page source, decode errors propagated); re-exported from the crate root and consumed by the UI's
@@ -1142,21 +1142,21 @@ vertical-only — over `struct ThumbnailItem { image, page, loaded, failed }`. #
 per-cell markup with the shared `ThumbnailCell` component (border ring / background / radius /
 loaded-loading-failed-highlighted states now live there).
 
-**`thumbnail_strip.rs`** owns the desktop strip model. In #656 part 1 the viewer supplies
-the page count and an empty source, so the strip displays one placeholder per page.
-Session-backed lazy decoding is deferred to part 2. The web strip remains empty.
+**`thumbnail_strip.rs`** owns the desktop strip model. On open it creates one placeholder per
+page and requests the first 16 pages (or the whole book if shorter) via `BookBackend::thumbnail`.
+Scrolling or resizing requests fresh pages in the viewport and its three-page margin on either side.
+Each UI-thread completion updates its row to loaded or failed. Closing the session suppresses
+pending deliveries, and the strip epoch guards against updates to a replacement model.
+Starting without a session clears the strip. The web strip remains empty.
 
-**`cover_loader.rs`** (`CoverController`): a structural
-TWIN of `ThumbnailController` for the Library carousel. Streams each book's real cover into the shared
+**`cover_loader.rs`** (`CoverController`): Streams each book's real cover into the shared
 `VecModel<CarouselItem>`. `start` is DISPATCH-ONLY on the UI thread: every `CoverRequest` becomes one
 `rayon::spawn` worker (`spawn_load`), and the worker does ALL the per-book I/O — derive
 `cache_key(path, mtime, max_side)` (the mtime `fs::metadata` happens on the worker), try
 `ThumbnailCache::get` (a HIT reads + decodes the cached QOI on the worker), or on a MISS open via
 `ArchiveLoader`, call core `generate_cover`, `ThumbnailCache::put` — then `invoke_from_event_loop` to
 set the row. Hit and miss share this one worker path (a warm 500-book start used to decode 500 QOIs
-inline on the event loop), under the SAME epoch + cancel double-guard and Send/!Send discipline as the
-thumbnail strip (see [patterns.md](patterns.md)). The cancel-rotation lives in a shared-shape private
-`rotate_cancel(&self) -> Arc<AtomicBool>` helper kept IDENTICAL in both controllers. Requests are
+inline on the event loop). Requests are
 dispatched focus-first: `prioritize_by_focus(requests, focus_row)` (pure, unit-tested) sorts by
 `abs_diff` from the carousel's focused row so the visible neighbourhood streams in before off-screen
 rows. Covers render at `COVER_MAX_SIDE = 512` px — DECOUPLED from the strip's

@@ -342,9 +342,7 @@ fn run_app(
 
     let backend = backend::platform_backend();
 
-    // Thumbnail-strip controller: owns the backing model + generation bookkeeping
-    // (epoch + cancel guard). `Rc` so both open handlers share one controller.
-    let thumbs = Rc::new(ThumbnailController::new(&ui));
+    let thumbs = Rc::new(ThumbnailController::new(&ui, Rc::clone(&backend)));
 
     // Cover controller for the carousel (epoch + cancel guard). `start` runs after the
     // model is (re)built so a refresh supersedes covers still streaming from the prior view.
@@ -976,8 +974,11 @@ fn finalize_open(
                 // focused index (matches the old open-coded path).
                 refresh_library_carousel(ui, deps, false);
             }
-            // Part 1 of #656 keeps the strip as placeholders until it accepts sessions.
-            thumbs.start(ui.as_weak(), None, state.borrow().page_count(), None);
+            thumbs.start(
+                ui.as_weak(),
+                state.borrow().session(),
+                state.borrow().page_count(),
+            );
             for detail in crate::i18n::dynamic::format_notices(loader, &notices) {
                 let base = ui.get_status_text().to_string();
                 ui.set_status_text(format!("{base} \u{2014} {detail}").into());
