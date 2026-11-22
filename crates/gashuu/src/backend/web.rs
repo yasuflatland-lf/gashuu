@@ -1,22 +1,22 @@
-use super::local_web::LocalWebBackend;
 use super::web_client::{Delivery, Effects, Outgoing, Ready, WebClient};
 use super::{
-    BackendError, BookBackend, CountResult, Done, ImageResult, OpenedBook, SessionId, SpreadPages,
+    BackendError, BookBackend, BookImporter, CountResult, DiscardUpload, Done, ImageResult,
+    ImportedBook, OpenedBook, SessionId, SpreadPages,
 };
+use crate::picker::{web::take_file, UploadHandle};
 use gashuu_core::{ArchivePolicy, BookId, CacheConfig, DecodedImage};
 use js_sys::{Array, Object, Reflect, Uint8Array};
 use std::cell::{OnceCell, RefCell};
 use std::rc::{Rc, Weak};
 use std::sync::Arc;
 use wasm_bindgen::{closure::Closure, JsCast, JsValue};
-use web_sys::{ErrorEvent, MessageEvent, Url, Worker, WorkerOptions};
+use web_sys::{ErrorEvent, File, MessageEvent, Url, Worker, WorkerOptions};
 
 const LOADER: &str = "gashuu-worker_loader.js";
 const STARTUP_TIMEOUT_MS: i32 = 15_000;
 
 pub(super) struct WorkerBackend {
-    local: LocalWebBackend,
-    client: RefCell<WebClient>,
+    client: RefCell<WebClient<File>>,
     worker: Worker,
     _onmessage: Closure<dyn Fn(MessageEvent)>,
     _onerror: Closure<dyn Fn(ErrorEvent)>,
@@ -25,6 +25,11 @@ pub(super) struct WorkerBackend {
 impl WorkerBackend {
     fn new() -> Result<Rc<Self>, String> {
         let window = web_sys::window().ok_or("window unavailable")?;
+        let storage = window.navigator().storage();
+        if !Reflect::get(&storage, &"getDirectory".into()).is_ok_and(|method| method.is_function())
+        {
+            return Err(super::STORAGE_UNAVAILABLE.into());
+        }
         let document = window.document().ok_or("document unavailable")?;
         let base = document
             .base_uri()
@@ -56,7 +61,6 @@ impl WorkerBackend {
             worker.set_onmessage(Some(onmessage.as_ref().unchecked_ref()));
             worker.set_onerror(Some(onerror.as_ref().unchecked_ref()));
             Self {
-                local: LocalWebBackend::new(),
                 client: RefCell::new(WebClient::new()),
                 worker,
                 _onmessage: onmessage,
@@ -85,12 +89,15 @@ impl WorkerBackend {
         Ok(backend)
     }
 
-    fn dispatch(&self, f: impl FnOnce(&mut WebClient) -> Effects) {
+    fn dispatch(&self, f: impl FnOnce(&mut WebClient<File>) -> Effects<File>) {
         let (outgoing, deliveries) = f(&mut self.client.borrow_mut());
-        for Outgoing(text) in outgoing {
+        for Outgoing(text, file) in outgoing {
             let envelope = Object::new();
             // A fresh object accepts the field and carries no pixel buffers on requests.
             Reflect::set(&envelope, &"m".into(), &text.into()).expect("set worker metadata");
+            if let Some(file) = file {
+                Reflect::set(&envelope, &"f".into(), &file).expect("set worker upload");
+            }
             if let Err(error) = self.worker.post_message(&envelope) {
                 self.failed(&js_error(error));
                 break;
@@ -169,10 +176,6 @@ fn js_error(error: JsValue) -> String {
     error.as_string().unwrap_or_else(|| format!("{error:?}"))
 }
 
-fn is_session_book(id: &BookId) -> bool {
-    std::path::Path::new(id.as_str()).starts_with(crate::web_books::SESSION_ROOT)
-}
-
 pub(super) fn shared() -> Option<Rc<WorkerBackend>> {
     thread_local! {
         static BACKEND: OnceCell<Option<Rc<WorkerBackend>>> = const { OnceCell::new() };
@@ -198,27 +201,15 @@ impl BookBackend for WorkerBackend {
         cache: CacheConfig,
         done: Done<Result<OpenedBook, BackendError>>,
     ) {
-        if is_session_book(id) {
-            self.local.open(id, policy, cache, done);
-        } else {
-            self.dispatch(|client| client.open(id, policy, cache, done));
-        }
+        self.dispatch(|client| client.open(id, policy, cache, done));
     }
 
     fn close(&self, session: SessionId) {
-        if self.local.has_session(session) {
-            self.local.close(session);
-        } else {
-            self.dispatch(|client| (client.close(session), Vec::new()));
-        }
+        self.dispatch(|client| (client.close(session), Vec::new()));
     }
 
     fn cached_page(&self, session: SessionId, index: usize) -> Option<Arc<DecodedImage>> {
-        if self.local.has_session(session) {
-            self.local.cached_page(session, index)
-        } else {
-            self.client.borrow_mut().cached_page(session, index)
-        }
+        self.client.borrow_mut().cached_page(session, index)
     }
 
     fn decode_spread(
@@ -228,19 +219,11 @@ impl BookBackend for WorkerBackend {
         trailing: Option<usize>,
         done: Done<SpreadPages>,
     ) {
-        if self.local.has_session(session) {
-            self.local.decode_spread(session, leading, trailing, done);
-        } else {
-            self.dispatch(|client| client.decode_spread(session, leading, trailing, done));
-        }
+        self.dispatch(|client| client.decode_spread(session, leading, trailing, done));
     }
 
     fn thumbnail(&self, session: SessionId, index: usize, max_side: u32, done: Done<ImageResult>) {
-        if self.local.has_session(session) {
-            self.local.thumbnail(session, index, max_side, done);
-        } else {
-            self.dispatch(|client| client.thumbnail(session, index, max_side, done));
-        }
+        self.dispatch(|client| client.thumbnail(session, index, max_side, done));
     }
 
     fn cover(
@@ -250,23 +233,38 @@ impl BookBackend for WorkerBackend {
         on_cover: Done<ImageResult>,
         on_count: Option<Done<CountResult>>,
     ) {
-        if is_session_book(id) {
-            self.local.cover(id, max_side, on_cover, on_count);
-        } else {
-            self.dispatch(|client| client.cover(id, max_side, on_cover, on_count));
-        }
+        self.dispatch(|client| client.cover(id, max_side, on_cover, on_count));
     }
 
     fn cancel_covers(&self) {
-        self.local.cancel_covers();
         self.dispatch(|client| (client.cancel_covers(), Vec::new()));
     }
 
     fn probe_page_count(&self, id: &BookId, policy: ArchivePolicy, done: Done<CountResult>) {
-        if is_session_book(id) {
-            self.local.probe_page_count(id, policy, done);
-        } else {
-            self.dispatch(|client| client.probe_page_count(id, policy, done));
-        }
+        self.dispatch(|client| client.probe_page_count(id, policy, done));
+    }
+}
+
+impl BookImporter for WorkerBackend {
+    fn import(
+        &self,
+        file: UploadHandle,
+        policy: ArchivePolicy,
+        done: Done<Result<ImportedBook, BackendError>>,
+    ) {
+        let browser_file = take_file(file.key);
+        self.dispatch(|client| client.import(&file, browser_file, policy, done));
+    }
+
+    fn discard(&self, id: &BookId) {
+        self.dispatch(|client| (client.discard(id), Vec::new()));
+    }
+
+    fn discarder(&self) -> DiscardUpload {
+        Arc::new(|id| {
+            if let Some(backend) = shared() {
+                backend.discard(id);
+            }
+        })
     }
 }

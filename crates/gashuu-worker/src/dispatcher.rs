@@ -220,7 +220,11 @@ impl Dispatcher {
                 });
                 vec![Reply::metadata(WorkerResponse::PageCount { req, result })]
             }
-            WorkerRequest::Close { .. } | WorkerRequest::CancelCovers { .. } => Vec::new(),
+            // Import and deletion are executed by the browser glue, which owns OPFS.
+            WorkerRequest::Import { .. }
+            | WorkerRequest::DeleteBook { .. }
+            | WorkerRequest::Close { .. }
+            | WorkerRequest::CancelCovers { .. } => Vec::new(),
         }
     }
 

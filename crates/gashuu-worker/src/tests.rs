@@ -821,3 +821,92 @@ fn cancelling_during_cover_decode_discards_pixels_and_count() {
     assert!(control.apply_control(&Request::CancelCovers { below: 2 }));
     assert!(matches!(pending.poll(&mut context), Poll::Ready(replies) if replies.is_empty()));
 }
+
+#[test]
+fn import_names_are_safe_and_keep_the_archive_extension() {
+    use crate::import::sanitise_upload_name;
+    for (raw, expected) in [
+        ("a/b/../c.cbz", "c.cbz"),
+        (r"C:\x\y.zip", "y.zip"),
+        (" . .\u{7}book.cbz ", "book.cbz"),
+        ("", "book.cbz"),
+        (" ... ", "book.cbz"),
+    ] {
+        assert_eq!(sanitise_upload_name(raw), expected);
+    }
+    let long = format!("{}.cbz", "本".repeat(100));
+    assert_eq!(
+        sanitise_upload_name(&long),
+        format!("{}.cbz", "本".repeat(38))
+    );
+}
+
+#[test]
+fn upload_titles_follow_the_desktop_file_rule() {
+    use crate::import::upload_title;
+    assert_eq!(upload_title("One Piece 01.cbz"), "One Piece 01");
+    for name in ["", ".", ".cbz", "book", "book.tar.zip", "本.cbz"] {
+        assert_eq!(
+            upload_title(name),
+            gashuu_core::display_title(std::path::Path::new(name), false)
+        );
+    }
+}
+
+#[test]
+fn quota_preflight_accounts_for_usage_and_unknown_estimates() {
+    use crate::import::fits_in_quota;
+    assert!(fits_in_quota(7, Some(1), Some(10)));
+    assert!(fits_in_quota(9, Some(1), Some(10)));
+    assert!(!fits_in_quota(10, Some(1), Some(10)));
+    assert!(!fits_in_quota(1, Some(11), Some(10)));
+    assert!(fits_in_quota(10, None, Some(1)));
+    assert!(fits_in_quota(10, Some(1), None));
+}
+
+#[test]
+fn import_protocol_round_trips_metadata_without_file_bytes() {
+    use crate::protocol::ImportedMeta;
+    let id = "books/uuid/本.cbz".to_string();
+    for request in [
+        Request::Import {
+            req: ReqId(4),
+            name: "本.cbz".into(),
+            size: 348_000_000,
+            allow_rar: false,
+        },
+        Request::DeleteBook { id: id.clone() },
+    ] {
+        assert_eq!(Dispatcher::lane(&request), Lane::Background);
+        assert_eq!(decode::<Request>(&encode(&request)).unwrap(), request);
+    }
+    for result in [
+        Ok(ImportedMeta {
+            id,
+            title: "本".into(),
+            page_count: 42,
+        }),
+        Err(WireError::EmptyBook),
+    ] {
+        let response = Response::Imported {
+            req: ReqId(4),
+            result,
+        };
+        assert_eq!(decode::<Response>(&encode(&response)).unwrap(), response);
+    }
+}
+
+#[test]
+fn import_rejects_a_rar_renamed_as_cbz() {
+    let rar: Arc<[u8]> = Arc::from(&b"Rar!\x1a\x07\x00"[..]);
+    assert_eq!(
+        crate::import::probe_upload(
+            "renamed.cbz",
+            Arc::new(rar),
+            gashuu_core::ArchivePolicy::default()
+        ),
+        Err(WireError::FormatDisabled {
+            format: "rar/cbr".into()
+        })
+    );
+}

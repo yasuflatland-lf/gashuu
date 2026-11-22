@@ -542,6 +542,22 @@ Controller tests can inject `FakeBackend`, inspect the recorded calls and use
 requests out of order to exercise epoch checks, or complete after closing the
 session or cancelling covers to verify that the callback is dropped.
 
+### Browser picking and streaming imports
+
+Call the HTML input's click method during the Add Books gesture. Start the
+one-time storage persistence request in the same callback. Deliver the picks
+on the later change or cancel event. Keep File objects on the UI thread and
+pass Send metadata through the result slot before invoking `add-picked`.
+The UI handler owns the application handles and can start a batch directly.
+
+Send the File to the dedicated worker by structured clone. Use the worker's
+synchronous OPFS access handle and an 8 MiB JavaScript typed array for each
+write. Release each array before yielding the worker event loop and serving
+interactive requests. One import holds its handle until it flushes and probes.
+On failure, close the handle before removing the directory. On supersession,
+discard both already-completed and late successful imports that the library
+cannot apply.
+
 ### Session lifetime and thumbnail generations
 
 Closing a backend session suppresses pending thumbnail deliveries, including results already

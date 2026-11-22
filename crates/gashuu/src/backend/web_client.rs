@@ -1,7 +1,10 @@
 //! Main-thread Worker protocol state, independent of JavaScript and Slint.
 
 use super::cover_mem::CoverMemCache;
-use super::{BackendError, CountResult, Done, ImageResult, OpenedBook, SessionId, SpreadPages};
+use super::{
+    BackendError, CountResult, Done, ImageResult, ImportedBook, OpenedBook, SessionId, SpreadPages,
+};
+use crate::picker::UploadHandle;
 use gashuu_core::{ArchivePolicy, BookId, CacheConfig, DecodedImage, DecodedLru};
 use gashuu_worker::protocol::{
     self, ImageMeta, ReqId, WireResult, WorkerRequest as Request, WorkerResponse as Response,
@@ -12,8 +15,8 @@ use std::collections::{HashMap, HashSet};
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 
-pub(super) struct Outgoing(pub String);
-pub(super) type Effects = (Vec<Outgoing>, Vec<Delivery>);
+pub(super) struct Outgoing<F = ()>(pub String, pub Option<F>);
+pub(super) type Effects<F = ()> = (Vec<Outgoing<F>>, Vec<Delivery>);
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum LiveCheck {
@@ -30,7 +33,10 @@ impl Ready {
     }
 
     /// Take the callback while checking liveness, then run it outside the client borrow.
-    pub(super) fn into_callback(self, client: &WebClient) -> Option<Box<dyn FnOnce() + Send>> {
+    pub(super) fn into_callback<F>(
+        self,
+        client: &WebClient<F>,
+    ) -> Option<Box<dyn FnOnce() + Send>> {
         client.is_live(self.0).then_some(self.1)
     }
 }
@@ -50,6 +56,7 @@ enum Pending {
     Thumbnail(SessionId, Done<ImageResult>),
     Cover(u64, String, Done<ImageResult>, Option<Done<CountResult>>),
     Count(LiveCheck, Done<CountResult>),
+    Import(Done<Result<ImportedBook, BackendError>>),
 }
 
 impl Pending {
@@ -60,7 +67,18 @@ impl Pending {
             }
             Self::Cover(gen, ..) => LiveCheck::CoverGen(gen),
             Self::Count(target, _) => target,
+            Self::Import(_) => LiveCheck::Always,
         }
+    }
+
+    fn fail_unavailable(self) -> Ready {
+        let error = match self {
+            Self::Import(_) => BackendError::Other {
+                detail: super::STORAGE_UNAVAILABLE.into(),
+            },
+            _ => unavailable(),
+        };
+        self.fail(error)
     }
 
     fn fail(self, error: BackendError) -> Ready {
@@ -79,6 +97,7 @@ impl Pending {
                 Ready::new(target, done, Err(error))
             }
             Self::Count(_, done) => Ready::new(target, done, Err(error)),
+            Self::Import(done) => Ready::new(target, done, Err(error)),
         }
     }
 }
@@ -90,10 +109,10 @@ enum Connection {
     Failed,
 }
 
-pub(super) struct WebClient {
+pub(super) struct WebClient<F = ()> {
     connection: Connection,
     next_req: u32,
-    outbox: Vec<Outgoing>,
+    outbox: Vec<Outgoing<F>>,
     pending: HashMap<u32, Pending>,
     sessions: HashSet<SessionId>,
     pages: Option<(CacheConfig, DecodedLru<(SessionId, usize)>)>,
@@ -101,7 +120,7 @@ pub(super) struct WebClient {
     cover_gen: u64,
 }
 
-impl WebClient {
+impl<F> WebClient<F> {
     pub(super) fn new() -> Self {
         Self {
             connection: Connection::Starting,
@@ -119,8 +138,12 @@ impl WebClient {
         self.connection == Connection::Ready
     }
 
-    fn post(&mut self, request: Request) -> Vec<Outgoing> {
-        let outgoing = || Outgoing(protocol::encode(&request));
+    fn post(&mut self, request: Request) -> Vec<Outgoing<F>> {
+        self.post_with_file(request, None)
+    }
+
+    fn post_with_file(&mut self, request: Request, file: Option<F>) -> Vec<Outgoing<F>> {
+        let outgoing = || Outgoing(protocol::encode(&request), file);
         if self.is_ready() {
             return vec![outgoing()];
         }
@@ -130,16 +153,25 @@ impl WebClient {
         Vec::new()
     }
 
-    fn queue(&mut self, pending: Pending, request: impl FnOnce(ReqId) -> Request) -> Effects {
+    fn queue(&mut self, pending: Pending, request: impl FnOnce(ReqId) -> Request) -> Effects<F> {
+        self.queue_with_file(pending, request, None)
+    }
+
+    fn queue_with_file(
+        &mut self,
+        pending: Pending,
+        request: impl FnOnce(ReqId) -> Request,
+        file: Option<F>,
+    ) -> Effects<F> {
         if self.connection == Connection::Failed {
-            return deferred(pending.fail(unavailable()));
+            return deferred(pending.fail_unavailable());
         }
         loop {
             let id = self.next_req;
             self.next_req = id.wrapping_add(1);
             if let Entry::Vacant(entry) = self.pending.entry(id) {
                 entry.insert(pending);
-                return (self.post(request(ReqId(id))), Vec::new());
+                return (self.post_with_file(request(ReqId(id)), file), Vec::new());
             }
         }
     }
@@ -150,7 +182,7 @@ impl WebClient {
         policy: ArchivePolicy,
         cache: CacheConfig,
         done: Done<Result<OpenedBook, BackendError>>,
-    ) -> Effects {
+    ) -> Effects<F> {
         let session = SessionId::allocate();
         self.queue(Pending::Open(session, cache, done), |req| Request::Open {
             req,
@@ -160,7 +192,7 @@ impl WebClient {
         })
     }
 
-    pub(super) fn close(&mut self, session: SessionId) -> Vec<Outgoing> {
+    pub(super) fn close(&mut self, session: SessionId) -> Vec<Outgoing<F>> {
         let opened = self.sessions.remove(&session);
         let pending = self.pending.len();
         self.pending
@@ -188,7 +220,7 @@ impl WebClient {
         leading: usize,
         trailing: Option<usize>,
         done: Done<SpreadPages>,
-    ) -> Effects {
+    ) -> Effects<F> {
         let target = LiveCheck::Session(session);
         if !self.is_live(target) {
             return Effects::default();
@@ -221,7 +253,7 @@ impl WebClient {
         index: usize,
         max_side: u32,
         done: Done<ImageResult>,
-    ) -> Effects {
+    ) -> Effects<F> {
         if !self.is_live(LiveCheck::Session(session)) {
             return Effects::default();
         }
@@ -241,7 +273,7 @@ impl WebClient {
         max_side: u32,
         on_cover: Done<ImageResult>,
         on_count: Option<Done<CountResult>>,
-    ) -> Effects {
+    ) -> Effects<F> {
         let gen = self.cover_gen;
         let key = format!("{id}#{max_side}");
         if self.connection != Connection::Failed {
@@ -266,7 +298,7 @@ impl WebClient {
         })
     }
 
-    pub(super) fn cancel_covers(&mut self) -> Vec<Outgoing> {
+    pub(super) fn cancel_covers(&mut self) -> Vec<Outgoing<F>> {
         self.cover_gen += 1;
         self.pending
             .retain(|_, p| !matches!(p.target(), LiveCheck::CoverGen(_)));
@@ -280,7 +312,7 @@ impl WebClient {
         id: &BookId,
         policy: ArchivePolicy,
         done: Done<CountResult>,
-    ) -> Effects {
+    ) -> Effects<F> {
         self.probe(id, policy, LiveCheck::Always, done)
     }
 
@@ -290,7 +322,7 @@ impl WebClient {
         policy: ArchivePolicy,
         target: LiveCheck,
         done: Done<CountResult>,
-    ) -> Effects {
+    ) -> Effects<F> {
         self.queue(Pending::Count(target, done), |req| {
             Request::ProbePageCount {
                 req,
@@ -300,7 +332,35 @@ impl WebClient {
         })
     }
 
-    pub(super) fn on_message(&mut self, text: &str, images: Vec<Vec<u8>>) -> Effects {
+    pub(super) fn import(
+        &mut self,
+        handle: &UploadHandle,
+        file: Option<F>,
+        policy: ArchivePolicy,
+        done: Done<Result<ImportedBook, BackendError>>,
+    ) -> Effects<F> {
+        let Some(file) = file else {
+            return deferred(Pending::Import(done).fail(BackendError::Other {
+                detail: "selected file is no longer available".into(),
+            }));
+        };
+        self.queue_with_file(
+            Pending::Import(done),
+            |req| Request::Import {
+                req,
+                name: handle.name.clone(),
+                size: handle.size,
+                allow_rar: policy.allow_rar,
+            },
+            Some(file),
+        )
+    }
+
+    pub(super) fn discard(&mut self, id: &BookId) -> Vec<Outgoing<F>> {
+        self.post(Request::DeleteBook { id: id.to_string() })
+    }
+
+    pub(super) fn on_message(&mut self, text: &str, images: Vec<Vec<u8>>) -> Effects<F> {
         if self.connection == Connection::Failed {
             return Effects::default();
         }
@@ -328,6 +388,7 @@ impl WebClient {
             | Response::Cover { req, .. }
             | Response::CoverCount { req, .. }
             | Response::PageCount { req, .. }
+            | Response::Imported { req, .. }
             | Response::Rejected { req: Some(req), .. } => req,
         };
         let Some(pending) = self.pending.remove(&req.0) else {
@@ -407,6 +468,18 @@ impl WebClient {
                 done,
                 NonZeroUsize::new(count as usize).ok_or(BackendError::EmptyBook),
             ),
+            (Pending::Import(done), Response::Imported { result, .. }) => {
+                let result = result.map_err(backend_error).and_then(|meta| {
+                    let page_count = NonZeroUsize::new(meta.page_count as usize)
+                        .ok_or(BackendError::EmptyBook)?;
+                    Ok(ImportedBook {
+                        id: BookId::new(meta.id),
+                        title: meta.title,
+                        page_count,
+                    })
+                });
+                Ready::new(target, done, result)
+            }
             (
                 pending,
                 Response::Rejected { error, .. }
@@ -437,7 +510,7 @@ impl WebClient {
         self.outbox.clear();
         self.pending
             .drain()
-            .map(|(_, p)| Delivery::Deferred(p.fail(unavailable())))
+            .map(|(_, p)| Delivery::Deferred(p.fail_unavailable()))
             .collect()
     }
 
@@ -450,7 +523,7 @@ impl WebClient {
     }
 }
 
-fn deferred(ready: Ready) -> Effects {
+fn deferred<F>(ready: Ready) -> Effects<F> {
     (Vec::new(), vec![Delivery::Deferred(ready)])
 }
 

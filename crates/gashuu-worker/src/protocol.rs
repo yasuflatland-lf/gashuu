@@ -48,6 +48,15 @@ pub enum WorkerRequest {
     },
     /// Discard covers with generations below this value, with no response.
     CancelCovers { below: u64 },
+    /// The structured clone envelope carries the selected File in field f.
+    Import {
+        req: ReqId,
+        name: String,
+        size: u64,
+        allow_rar: bool,
+    },
+    /// Remove the book directory, with no response.
+    DeleteBook { id: String },
     ProbePageCount {
         req: ReqId,
         id: String,
@@ -86,6 +95,10 @@ pub enum WorkerResponse {
         req: ReqId,
         result: WireResult<u32>,
     },
+    Imported {
+        req: ReqId,
+        result: WireResult<ImportedMeta>,
+    },
     /// Malformed metadata or a request for an unknown session.
     Rejected {
         req: Option<ReqId>,
@@ -99,6 +112,13 @@ pub struct OpenedMeta {
     pub page_count: u32,
     pub skipped: u32,
     pub listing_truncated: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ImportedMeta {
+    pub id: String,
+    pub title: String,
+    pub page_count: u32,
 }
 
 pub fn encode<T: Serialize>(msg: &T) -> String {

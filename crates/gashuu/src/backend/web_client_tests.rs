@@ -7,7 +7,7 @@ fn receive(client: &mut WebClient, response: WorkerResponse, images: Vec<Vec<u8>
 }
 
 fn request(out: Vec<Outgoing>) -> WorkerRequest {
-    let [Outgoing(text)] = out.try_into().ok().expect("one outgoing request");
+    let [Outgoing(text, _)] = out.try_into().ok().expect("one outgoing request");
     protocol::decode(&text).unwrap()
 }
 
@@ -149,7 +149,7 @@ fn requests_before_ready_are_buffered_and_flushed_in_order() {
     assert!(deliveries.is_empty());
     let requests: Vec<_> = out
         .into_iter()
-        .map(|Outgoing(text)| protocol::decode(&text).unwrap())
+        .map(|Outgoing(text, _)| protocol::decode(&text).unwrap())
         .collect();
     assert!(matches!(
         requests.as_slice(),
@@ -680,4 +680,104 @@ fn lru_capacity_equals_the_passed_web_clamped_config() {
     for index in 1..7 {
         assert!(client.cached_page(session, index).is_some());
     }
+}
+
+#[test]
+fn imports_route_success_failure_and_discard() {
+    let mut client = ready_client();
+    let handle = crate::picker::UploadHandle {
+        key: 7,
+        name: "本.cbz".into(),
+        size: 20,
+    };
+    for result in [
+        Ok(gashuu_worker::protocol::ImportedMeta {
+            id: book_id().to_string(),
+            title: "本".into(),
+            page_count: 2,
+        }),
+        Err(WireError::EmptyBook),
+    ] {
+        let (done, received) = test_callback();
+        let (out, deliveries) =
+            client.import(&handle, Some(()), ArchivePolicy { allow_rar: false }, done);
+        assert!(deliveries.is_empty());
+        assert_eq!(out[0].1, Some(()));
+        let WorkerRequest::Import {
+            req,
+            name,
+            size,
+            allow_rar,
+        } = request(out)
+        else {
+            panic!("expected Import");
+        };
+        assert_eq!((name, size, allow_rar), (handle.name.clone(), 20, false));
+        let succeeded = result.is_ok();
+        let (_, deliveries) = receive(
+            &mut client,
+            WorkerResponse::Imported { req, result },
+            vec![],
+        );
+        deliver(&client, deliveries, false);
+        let response = received.try_recv().unwrap();
+        if succeeded {
+            let imported = response.unwrap();
+            assert_eq!(imported.id, book_id());
+            assert_eq!(imported.title, "本");
+            assert_eq!(imported.page_count.get(), 2);
+        } else {
+            assert_eq!(response.unwrap_err(), BackendError::EmptyBook);
+        }
+    }
+    assert_eq!(
+        request(client.discard(&book_id())),
+        WorkerRequest::DeleteBook {
+            id: book_id().to_string()
+        }
+    );
+}
+
+#[test]
+fn missing_upload_is_reported_as_a_deferred_error() {
+    let mut client = ready_client();
+    let handle = crate::picker::UploadHandle {
+        key: 7,
+        name: "book.cbz".into(),
+        size: 20,
+    };
+    let (done, result) = test_callback();
+    let (out, deliveries) = client.import(&handle, None, ArchivePolicy::default(), done);
+    assert!(out.is_empty());
+    assert!(result.try_recv().is_err());
+    deliver(&client, deliveries, true);
+    assert!(matches!(
+        result.try_recv().unwrap(),
+        Err(BackendError::Other { .. })
+    ));
+}
+
+#[test]
+fn import_payload_survives_startup_and_transport_failure_resolves_the_callback() {
+    let handle = crate::picker::UploadHandle {
+        key: 1,
+        name: "book.cbz".into(),
+        size: 20,
+    };
+    let mut client = WebClient::new();
+    let (done, result) = test_callback();
+    let (out, deliveries) = client.import(&handle, Some(()), ArchivePolicy::default(), done);
+    assert!(out.is_empty() && deliveries.is_empty());
+    let (out, deliveries) = receive(&mut client, WorkerResponse::Ready, vec![]);
+    assert!(deliveries.is_empty());
+    assert_eq!(out[0].1, Some(()));
+    assert!(matches!(request(out), WorkerRequest::Import { .. }));
+    let deliveries = client.on_worker_failed("startup transport failed");
+    deliver(&client, deliveries, true);
+    assert_eq!(
+        result.try_recv().unwrap().unwrap_err(),
+        BackendError::Other {
+            detail: crate::backend::STORAGE_UNAVAILABLE.into()
+        }
+    );
 }

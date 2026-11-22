@@ -50,43 +50,50 @@ pub(crate) fn apply_outcomes(
     lib: &mut Library,
     outcomes: Vec<add_controller::ProbeOutcome>,
 ) -> AddReport {
-    use add_controller::ProbeKind;
+    use add_controller::{ProbeKind, ProbeSubject};
     let mut books = Vec::new();
     let mut counts: HashMap<BookId, NonZeroUsize> = HashMap::new();
     let mut skipped = 0usize;
-    for add_controller::ProbeOutcome { path, kind, .. } in outcomes {
-        match kind {
+    for add_controller::ProbeOutcome { subject, kind, .. } in outcomes {
+        let (id, title, count) = match kind {
             ProbeKind::Empty => {
                 skipped += 1;
-                tracing::debug!(path = %path.display(), "skipping empty source (no image pages)");
+                tracing::debug!(path = %subject, "skipping empty source (no image pages)");
+                continue;
             }
             ProbeKind::FormatDisabled { format } => {
                 skipped += 1;
                 tracing::info!(
-                    path = %path.display(),
+                    path = %subject,
                     %format,
                     "skipping source: format disabled in safer mode"
                 );
+                continue;
             }
             ProbeKind::Unreadable { error } => {
                 skipped += 1;
-                tracing::warn!(%error, path = %path.display(), "skipping unreadable source");
+                tracing::warn!(%error, path = %subject, "skipping unreadable source");
+                continue;
             }
+            ProbeKind::Imported { id, title, count } => (id, title, count),
             ProbeKind::Counted(count) => {
-                let (id, title) = match book_path::identify(&path, book_path::is_dir(&path)) {
-                    Ok(book) => book,
+                let path = match &subject {
+                    ProbeSubject::Path(path) => path,
+                    ProbeSubject::Upload(_) => unreachable!("path probe must carry a path"),
+                };
+                match book_path::identify(path, book_path::is_dir(path)) {
+                    Ok((id, title)) => (id, title, count),
                     Err(error) => {
                         skipped += 1;
-                        tracing::warn!(%error, path = %path.display(), "skipping unreadable source");
+                        tracing::warn!(%error, path = %subject, "skipping unreadable source");
                         continue;
                     }
-                };
-                // Record the first probed count for each new identity, matching repeated
-                // `add` behaviour when an input batch contains duplicates.
-                counts.entry(id.clone()).or_insert(count);
-                books.push((id, title));
+                }
             }
-        }
+        };
+        // Duplicate identities keep the count from the first outcome.
+        counts.entry(id.clone()).or_insert(count);
+        books.push((id, title));
     }
 
     let added = lib.add_many(books);
@@ -419,14 +426,14 @@ mod tests {
         let outcomes = vec![
             add_controller::ProbeOutcome {
                 index: 0,
-                path: book.clone(),
+                subject: add_controller::ProbeSubject::Path(book.clone()),
                 kind: add_controller::ProbeKind::Counted(
                     std::num::NonZeroUsize::new(3).expect("nonzero"),
                 ),
             },
             add_controller::ProbeOutcome {
                 index: 1,
-                path: book.clone(),
+                subject: add_controller::ProbeSubject::Path(book.clone()),
                 kind: add_controller::ProbeKind::Counted(
                     std::num::NonZeroUsize::new(7).expect("nonzero"),
                 ),
@@ -462,7 +469,7 @@ mod tests {
 
         let counted = |index: usize, id: &BookId, pages: usize| add_controller::ProbeOutcome {
             index,
-            path: book_path::locate(id),
+            subject: add_controller::ProbeSubject::Path(book_path::locate(id)),
             kind: add_controller::ProbeKind::Counted(
                 std::num::NonZeroUsize::new(pages).expect("nonzero"),
             ),
@@ -666,4 +673,50 @@ mod tests {
     fn select_add_notice_added_when_added_nonzero_skipped_zero() {
         assert_eq!(select_add_notice(5, 0), AddNotice::Added { added: 5 });
     }
+}
+
+#[cfg(test)]
+#[test]
+fn imported_outcomes_preserve_metadata_and_share_batch_accounting() {
+    use add_controller::{ProbeKind, ProbeOutcome, ProbeSubject};
+    let id = BookId::new("books/import/Title on disk.cbz");
+    let imported = || ProbeOutcome {
+        index: 0,
+        subject: ProbeSubject::Upload("original.cbz".into()),
+        kind: ProbeKind::Imported {
+            id: id.clone(),
+            title: "Worker supplied title".into(),
+            count: NonZeroUsize::new(5).unwrap(),
+        },
+    };
+    let empty = ProbeOutcome {
+        index: 2,
+        subject: ProbeSubject::Upload("empty.cbz".into()),
+        kind: ProbeKind::Empty,
+    };
+    let mut library = Library::new();
+    let saves = std::cell::Cell::new(0);
+    let (report, saved) =
+        apply_outcomes_and_save(&mut library, vec![imported(), imported(), empty], |_| {
+            saves.set(saves.get() + 1);
+            Ok(())
+        });
+    saved.unwrap();
+    assert_eq!(saves.get(), 1);
+    assert_eq!(report.added, std::slice::from_ref(&id));
+    assert_eq!(report.skipped, 1);
+    assert_eq!(
+        select_add_notice(report.added.len(), report.skipped),
+        AddNotice::AddedWithSkips {
+            added: 1,
+            skipped: 1
+        }
+    );
+    let book = library
+        .books()
+        .iter()
+        .find(|book| book.id() == &id)
+        .unwrap();
+    assert_eq!(book.title(), "Worker supplied title");
+    assert_eq!(book.page_count_opt().unwrap(), 5);
 }

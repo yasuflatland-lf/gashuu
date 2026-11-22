@@ -26,6 +26,7 @@ mod page_count_prefetch;
 pub mod page_decode;
 mod page_jump;
 mod page_loader;
+mod picker;
 mod remove_books;
 mod selection_projection;
 #[cfg(not(target_arch = "wasm32"))]
@@ -41,14 +42,10 @@ mod viewer_state;
 mod viewport;
 #[cfg(any(target_arch = "wasm32", test))]
 mod web_blob_store;
-#[cfg(any(target_arch = "wasm32", test))]
-mod web_books;
 #[cfg(target_arch = "wasm32")]
 mod web_font;
 #[cfg(any(target_arch = "wasm32", test))]
 mod web_ios;
-#[cfg(target_arch = "wasm32")]
-mod web_picker;
 #[cfg(any(target_arch = "wasm32", test))]
 mod web_pointer;
 #[cfg(target_arch = "wasm32")]
@@ -279,6 +276,27 @@ fn main() -> color_eyre::Result<()> {
     Ok(())
 }
 
+#[cfg(any(test, target_arch = "wasm32"))]
+fn is_session_only_id(id: &gashuu_core::BookId) -> bool {
+    id.as_str().starts_with("gashuu-web:")
+}
+
+#[cfg(any(test, target_arch = "wasm32"))]
+fn remove_demo_entries(library: &mut Library) -> bool {
+    let ids: Vec<_> = library
+        .books()
+        .iter()
+        .map(|book| book.id())
+        .filter(|id| is_session_only_id(id))
+        .cloned()
+        .collect();
+    if ids.is_empty() {
+        return false;
+    }
+    library.remove_many(&ids);
+    true
+}
+
 #[cfg(target_arch = "wasm32")]
 fn main() {
     console_error_panic_hook::set_once();
@@ -297,8 +315,13 @@ fn main() {
         }
         None => (Err(CoreError::NoConfigDir), Err(CoreError::NoDataDir)),
     };
-    let (settings, library, settings_store, library_store, load_errs) =
+    let (settings, mut library, settings_store, library_store, load_errs) =
         load_persisted(settings_store, library_store);
+    if remove_demo_entries(&mut library) {
+        if let Err(error) = save_library(&library_store, &library) {
+            tracing::warn!(%error, "could not save library after removing session-only books");
+        }
+    }
     if let Err(e) = run_app(settings, library, settings_store, library_store, load_errs) {
         tracing::error!(error = %e, "gashuu web shell failed to start");
     }
@@ -326,7 +349,9 @@ fn run_app(
     let localizer = Rc::new(i18n::Localizer::new(settings.language));
     localizer.push_strings_to_ui(&ui);
     // macOS picks files and folders in one panel. The web picker supports files only.
-    ui.set_combined_add_picker(cfg!(any(target_os = "macos", target_arch = "wasm32")));
+    let picker = picker::platform_picker();
+    let importer = backend::platform_importer();
+    ui.set_combined_add_picker(cfg!(target_os = "macos") || !picker.supports_folders());
     ui.set_add_picker_includes_folders(cfg!(target_os = "macos"));
     let state = Rc::new(RefCell::new(ViewerState::from_settings(&settings)));
     let viewport = Rc::new(RefCell::new(ViewportState::from_settings(&settings)));
@@ -455,6 +480,8 @@ fn run_app(
     // Wire all event handlers onto the window (handlers/, #151).
     handlers::wire_open_handlers(
         &ui,
+        &picker,
+        importer,
         &settings,
         &library,
         &covers,
@@ -1484,4 +1511,22 @@ mod tests {
             assert_eq!(notice, format!("settings ({error})"));
         }
     }
+}
+
+#[cfg(test)]
+#[test]
+fn demo_cleanup_leaves_opfs_and_desktop_ids_alone() {
+    let demo = gashuu_core::BookId::new("gashuu-web:s/a.cbz");
+    let stored = gashuu_core::BookId::new("books/uuid/a.cbz");
+    let desktop = gashuu_core::BookId::new("/manga/a.cbz");
+    assert!(is_session_only_id(&demo));
+    assert!(!is_session_only_id(&stored));
+    assert!(!is_session_only_id(&desktop));
+    let mut library = Library::new();
+    library.add(demo, "Demo".into());
+    library.add(stored.clone(), "Stored".into());
+    assert!(remove_demo_entries(&mut library));
+    assert_eq!(library.books().len(), 1);
+    assert_eq!(library.books()[0].id(), &stored);
+    assert!(!remove_demo_entries(&mut library));
 }
