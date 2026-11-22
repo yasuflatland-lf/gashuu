@@ -6,6 +6,7 @@ slint::include_modules!();
 
 mod add_books;
 mod add_controller;
+mod backend;
 mod book_availability;
 mod book_path;
 mod carousel;
@@ -341,6 +342,8 @@ fn run_app(
     // clamp, and later PR-L's add / PR-R's position write-back can all reach it.
     let library = Rc::new(RefCell::new(library));
 
+    let backend = backend::platform_backend();
+
     // Thumbnail-strip controller: owns the backing model + generation bookkeeping
     // (epoch + cancel guard). `Rc` so both open handlers share one controller.
     let thumbs = Rc::new(ThumbnailController::new(&ui));
@@ -348,7 +351,7 @@ fn run_app(
     // Cover controller for the carousel (epoch + cancel guard). `start` runs after the
     // model is (re)built so a refresh supersedes covers still streaming from the prior view.
     #[cfg(not(target_arch = "wasm32"))]
-    let covers = Rc::new(cover_loader::CoverController::new());
+    let covers = Rc::new(cover_loader::CoverController::new(Rc::clone(&backend)));
 
     // Page controller for the viewer body. Owns async page-decode epoch and
     // dispatch dedup for cache-miss spreads.
@@ -360,14 +363,18 @@ fn run_app(
             Rc::new(gashuu_web_decode::NativePageDecoder);
         let fallback: Rc<dyn gashuu_core::PageDecoder> =
             Rc::new(gashuu_core::ImageCratePageDecoder);
-        let covers = cover_loader::CoverController::new(Rc::clone(&primary), Rc::clone(&fallback));
+        let covers = cover_loader::CoverController::new(
+            Rc::clone(&primary),
+            Rc::clone(&fallback),
+            Rc::clone(&backend),
+        );
         let pages = PageController::with_decoders(primary, fallback);
         (Rc::new(covers), Rc::new(pages))
     };
 
     // Bulk-add controller (issue 206): probes each source off the UI thread so a bulk
     // add never freezes the event loop. `start` dispatches; `add-finalize` applies.
-    let adder = Rc::new(add_controller::AddController::new());
+    let adder = Rc::new(add_controller::AddController::new(Rc::clone(&backend)));
 
     // Single-open controller: opens and inspects one source off the UI thread;
     // `open-finalize` applies only the current epoch on the event loop.
@@ -1131,7 +1138,7 @@ mod tests {
         let session = Rc::new(RefCell::new(DialogSession::new()));
         let library = Rc::new(RefCell::new(Library::new()));
         let store = Rc::new(None);
-        let covers = cover_loader::CoverController::new();
+        let covers = cover_loader::CoverController::new(backend::fake::FakeBackend::new());
         let leave_point = LeavePointService::new(
             Rc::clone(&state),
             Rc::clone(&viewport),
@@ -1209,7 +1216,9 @@ mod tests {
             .is_some());
         let library = Rc::new(RefCell::new(library_value));
         let dialog_session = Rc::new(RefCell::new(DialogSession::new()));
-        let covers = Rc::new(cover_loader::CoverController::new());
+        let covers = Rc::new(cover_loader::CoverController::new(
+            crate::backend::fake::FakeBackend::new(),
+        ));
         let library_store = Rc::new(Some(LibraryStore::new(root.path().join("library.json"))));
         let leave_point = Rc::new(LeavePointService::new(
             Rc::clone(&state),
@@ -1298,7 +1307,9 @@ mod tests {
             .is_some());
         let library = Rc::new(RefCell::new(library_value));
         let dialog_session = Rc::new(RefCell::new(DialogSession::new()));
-        let covers = Rc::new(cover_loader::CoverController::new());
+        let covers = Rc::new(cover_loader::CoverController::new(
+            crate::backend::fake::FakeBackend::new(),
+        ));
         let library_store = Rc::new(Some(LibraryStore::new(root.path().join("library.json"))));
         let leave_point = Rc::new(LeavePointService::new(
             Rc::clone(&state),

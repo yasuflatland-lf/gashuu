@@ -8,7 +8,7 @@
 //! its own result slot. Workers deliver through a [`Ticket`], and the UI thread
 //! drains results for the current generation.
 
-use crate::ViewerWindow;
+use crate::{backend::Done, ViewerWindow};
 use std::cell::RefCell;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering::Relaxed};
 use std::sync::{Arc, Mutex};
@@ -26,6 +26,7 @@ use std::sync::{Arc, Mutex};
 /// event-loop-gone path so each call site stays identifiable. This is the ONE
 /// spelling of the stale-generation guard (previously inline `epoch.load(Relaxed)
 /// != my_epoch` at eight sites and the `is_current` helper at a ninth).
+#[allow(dead_code)] // TODO(wasm-backend): remove when #656 ([6/13]) and #657 ([7/13]) have both merged
 pub(crate) fn marshal_to_ui(
     weak: slint::Weak<ViewerWindow>,
     epoch: Arc<AtomicUsize>,
@@ -47,12 +48,31 @@ pub(crate) fn marshal_to_ui(
     }
 }
 
+/// Build a completion that checks the current UI epoch and the window lifetime.
+#[allow(dead_code)] // TODO(wasm-backend): remove when #656 ([6/13]) and #657 ([7/13]) have both merged
+pub(crate) fn ui_done<T: Send + 'static>(
+    weak: slint::Weak<ViewerWindow>,
+    epoch: Arc<AtomicUsize>,
+    my_epoch: usize,
+    body: impl FnOnce(&ViewerWindow, T) + Send + 'static,
+) -> Done<T> {
+    Box::new(move |result| {
+        if epoch.load(Relaxed) != my_epoch {
+            return;
+        }
+        if let Some(ui) = weak.upgrade() {
+            body(&ui, result);
+        }
+    })
+}
+
 /// Supersede the previous generation's cancel flag and install a fresh one,
 /// returning a clone of the new flag for the just-started generation. Each
 /// `RefCell` borrow is confined to its own statement (dropped at the `;`) so no
 /// two overlap — collapsing these into one expression would compile but panic at
 /// runtime with a double borrow. Shared by `CoverController` and
 /// `ThumbnailController`.
+#[allow(dead_code)] // TODO(wasm-backend): remove when #656 ([6/13]) and #657 ([7/13]) have both merged
 pub(crate) fn rotate_cancel(cell: &RefCell<Arc<AtomicBool>>) -> Arc<AtomicBool> {
     cell.borrow().store(true, Relaxed);
     *cell.borrow_mut() = Arc::new(AtomicBool::new(false));
@@ -212,5 +232,41 @@ mod tests {
         let mut values = generation.take(ticket.id()).expect("current generation");
         values.sort_unstable();
         assert_eq!(values, (0..8).collect::<Vec<_>>());
+    }
+}
+
+#[cfg(test)]
+mod ui_done_tests {
+    use super::*;
+
+    struct HeadlessPlatform;
+
+    impl slint::platform::Platform for HeadlessPlatform {
+        fn create_window_adapter(
+            &self,
+        ) -> Result<std::rc::Rc<dyn slint::platform::WindowAdapter>, slint::PlatformError> {
+            use slint::platform::software_renderer::{MinimalSoftwareWindow, RepaintBufferType};
+            Ok(MinimalSoftwareWindow::new(RepaintBufferType::NewBuffer))
+        }
+    }
+
+    #[test]
+    fn ui_done_checks_epoch_and_window_before_running_body() {
+        use slint::ComponentHandle;
+        slint::platform::set_platform(Box::new(HeadlessPlatform)).unwrap();
+        let ui = ViewerWindow::new().unwrap();
+        let count = Arc::new(AtomicUsize::new(0));
+        let epoch = Arc::new(AtomicUsize::new(1));
+        let make_done = |weak, id| {
+            let count = Arc::clone(&count);
+            ui_done(weak, Arc::clone(&epoch), id, move |_, value| {
+                count.fetch_add(value, Relaxed);
+            })
+        };
+        make_done(ui.as_weak(), 0)(1);
+        make_done(slint::Weak::default(), 1)(1);
+        assert_eq!(count.load(Relaxed), 0);
+        make_done(ui.as_weak(), 1)(2);
+        assert_eq!(count.load(Relaxed), 2);
     }
 }
