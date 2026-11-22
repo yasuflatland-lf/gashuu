@@ -477,6 +477,29 @@ cover disk cache, wire drag-and-drop and update handlers, wire persistence on
 self-update relaunch, start the update check, restore window geometry, and
 persist state after the event loop returns.
 
+### backend (BookBackend port)
+
+`BookBackend` gives the UI an asynchronous book interface over the synchronous
+core. Desktop uses rayon and the existing archive, page and thumbnail caches.
+`LocalWebBackend` uses the browser session registry and the existing local
+decoders while the Worker is under development. Each open starts a session
+with the caller's cache configuration. `cached_page` only looks up decoded
+pages in memory.
+
+A `Done` runs at most once, on the Slint event-loop thread, after the request
+returns. At delivery the backend drops callbacks for closed sessions and
+cancelled cover generations. Controllers still guard their own UI epochs.
+
+The controller migrations use these methods:
+
+| Controller | Backend methods |
+| --- | --- |
+| Open and viewer state | `open`, `close` |
+| Viewer page loader | `cached_page`, `decode_spread` |
+| Thumbnail strip | `thumbnail` |
+| Carousel cover loader | `cover` with an optional count callback, `cancel_covers` |
+| Bulk add | `probe_page_count` |
+
 ### page_decode
 
 `page_decode.rs` defines the port. `PageDecoder::decode` takes owned encoded bytes and returns a local `DecodeFuture` resolving to

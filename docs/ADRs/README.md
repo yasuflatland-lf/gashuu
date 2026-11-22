@@ -24,6 +24,7 @@ source, the divergence is called out in each ADR's "Implementation notes (as-bui
 | [0012](0012-async-page-decode.md) | Decode cache-miss pages off the UI thread, carrying the result back | Accepted |
 | [0013](0013-auto-update.md) | In-app auto-update via GitHub Releases, hybrid packaging-aware action | Accepted |
 | [0014](0014-web-decodes-pages-with-the-browser-native-decoder.md) | Web decodes pages with the browser-native decoder | Accepted |
+| [0015](0015-web-build-architecture.md) | Web build architecture | Accepted |
 
 ## Conventions
 

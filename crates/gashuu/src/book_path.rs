@@ -87,6 +87,14 @@ pub(crate) fn locate(id: &BookId) -> PathBuf {
     PathBuf::from(id.as_str())
 }
 
+/// Invert `locate` for a picked or recent path before canonicalization.
+#[cfg(not(target_arch = "wasm32"))]
+#[allow(dead_code)] // TODO(wasm-backend): remove when #656 ([6/13]) and #657 ([7/13]) have both merged
+pub(crate) fn request_id(path: &Path) -> Result<BookId, crate::backend::BackendError> {
+    BookId::from_canonical_path(path)
+        .map_err(|error| crate::backend::BackendError::from_core(&error))
+}
+
 /// Identify a picked location and derive its display title.
 pub(crate) fn identify(path: &Path, is_dir: bool) -> Result<(BookId, String), CoreError> {
     let canonical = identity(path);
@@ -106,6 +114,27 @@ mod tests {
 
         let (id, _) = identify(&path, is_dir(&path)).unwrap();
         assert_eq!(locate(&id), path.canonicalize().unwrap());
+    }
+
+    #[test]
+    fn request_id_preserves_a_noncanonical_path() {
+        let path = Path::new("books/../picked.cbz");
+        assert_eq!(
+            locate(&request_id(path).unwrap()).as_os_str(),
+            path.as_os_str()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn request_id_rejects_a_non_utf8_path() {
+        use std::os::unix::ffi::OsStrExt;
+
+        let path = Path::new(std::ffi::OsStr::from_bytes(b"picked\xff.cbz"));
+        assert!(matches!(
+            request_id(path),
+            Err(crate::backend::BackendError::Other { .. })
+        ));
     }
 
     #[test]

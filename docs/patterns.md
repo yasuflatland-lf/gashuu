@@ -514,6 +514,23 @@ adding it as a direct dependency pulls in no new third-party code; it just lets 
 
 the inverse of `ImageCache`'s sliding LRU. Generation is lazy: the UI's `thumbnail_strip` worker `par_iter`s the visible batch on a background thread and calls core's synchronous `generate_one_thumbnail` per page, so `open` returns immediately. Peak RAM ≈ rayon-pool-size full-res pages (one per worker, decoded-then-downscaled) — the same bound as prefetch.
 
+### Async backend port: Done runs on the UI thread, never synchronously; close/cancel drop callbacks
+
+A `BookBackend` request queues work and returns before any `Done<T>` runs,
+including for cache hits. Each callback runs at most once on the Slint
+event-loop thread. The backend checks the session or cover generation again
+just before delivery so `close` and `cancel_covers` also suppress results
+already queued for the UI.
+
+Use `ui_done` to guard controller state with the current epoch and the
+window's weak handle. It executes the body in the completion on the same
+event-loop turn. A stale epoch or a closed window drops the UI update.
+
+Controller tests can inject `FakeBackend`, inspect the recorded calls and use
+`complete_*` to choose when each result reaches the test thread. Complete
+requests out of order to exercise epoch checks, or complete after closing the
+session or cancelling covers to verify that the callback is dropped.
+
 ### First cross-thread UI update convention
 
 A rayon worker reaches the UI thread via `slint::invoke_from_event_loop`. Capture ONLY `Send` values into the closure: `slint::Weak` (Send+Sync), `Arc<AtomicUsize>`/`Arc<AtomicBool>`, `DecodedImage` (Send). `VecModel` (Rc) and `slint::Image` are NOT `Send` and never cross threads — re-fetch the model INSIDE the event-loop closure via `ui.get_thumbnails().as_any().downcast_ref::<VecModel<ThumbnailItem>>()`, and build the `slint::Image` there too (via `to_slint_image`, an O(pixels) copy done ONCE at generation, not per `refresh`).

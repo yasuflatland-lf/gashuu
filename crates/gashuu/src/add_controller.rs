@@ -35,6 +35,7 @@
 //! dropped, so a second add started mid-probe cleanly supersedes the first with
 //! no stale clobber.
 
+use crate::backend::BookBackend;
 use crate::ui_marshal::Generation;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::ui_marshal::Ticket;
@@ -43,6 +44,7 @@ use gashuu_core::{ArchivePolicy, CoreError};
 use std::cell::RefCell;
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
+use std::rc::Rc;
 
 /// How one probed source classified — the `Send` result of opening it on a
 /// worker, carrying just enough to run the UI-thread apply half. Mirrors the
@@ -102,11 +104,13 @@ pub(crate) fn add_progress_ratio(done: usize, total: usize) -> f32 {
 }
 
 /// Owns the bulk-add async bookkeeping: the supersede `epoch` and the current
-/// generation's probe-outcome accumulator. Like `CoverController`, it does NOT
-/// own any `!Send` `Rc` collaborator — the apply half re-acquires those in the
-/// `add-finalize` handler on the UI thread. Held in an `Rc` so the add handlers
+/// generation's probe-outcome accumulator. The apply half re-acquires its
+/// collaborators in the `add-finalize` handler on the UI thread. Held in an `Rc` so the add handlers
 /// (`on_add_books` / `on_add_folder`) and the finalize handler share one.
 pub(crate) struct AddController {
+    #[rustfmt::skip]
+    #[allow(dead_code)] // TODO(wasm-backend): remove when #656 ([6/13]) and #657 ([7/13]) have both merged
+    backend: Rc<dyn BookBackend>,
     generation: Generation<Vec<ProbeOutcome>>,
     /// The op tag ("add-books" / "add-folder") of the current generation, used
     /// only in the apply half's save-failure trace. Replaced on every `start`.
@@ -117,8 +121,9 @@ pub(crate) struct AddController {
 
 impl AddController {
     /// Build the controller. Call once during UI setup.
-    pub(crate) fn new() -> Self {
+    pub(crate) fn new(backend: Rc<dyn BookBackend>) -> Self {
         Self {
+            backend,
             generation: Generation::new(),
             op: RefCell::new("add"),
             #[cfg(target_arch = "wasm32")]
@@ -347,7 +352,7 @@ mod tests {
     /// Verified without any wall-clock dependency.
     #[test]
     fn take_outcomes_restores_input_order() {
-        let ctrl = AddController::new();
+        let ctrl = AddController::new(crate::backend::fake::FakeBackend::new());
         let ticket = ctrl.generation.begin();
         for index in [2usize, 0, 1] {
             push_outcome(&ticket, index);
@@ -368,7 +373,7 @@ mod tests {
     /// the generation counter, not timing.
     #[test]
     fn take_outcomes_drops_superseded_generation() {
-        let ctrl = AddController::new();
+        let ctrl = AddController::new(crate::backend::fake::FakeBackend::new());
         let first = ctrl.generation.begin();
         push_outcome(&first, 0);
         ctrl.generation.begin();

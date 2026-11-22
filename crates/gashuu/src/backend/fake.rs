@@ -1,0 +1,179 @@
+use super::*;
+use std::cell::{Cell, RefCell};
+use std::collections::{HashMap, HashSet};
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum Call {
+    Open(BookId),
+    Close(SessionId),
+    CachedPage(SessionId, usize),
+    DecodeSpread(SessionId, usize, Option<usize>),
+    Thumbnail(SessionId, usize, u32),
+    Cover {
+        id: BookId,
+        max_side: u32,
+        wants_count: bool,
+    },
+    CancelCovers,
+    ProbePageCount(BookId),
+}
+
+type OpenResult = Result<OpenedBook, BackendError>;
+type PendingCover = (u64, Done<ImageResult>, Option<Done<CountResult>>);
+type PendingSession<T> = Vec<(SessionId, Done<T>)>;
+
+/// A UI-thread script of requests. The test decides when each result arrives.
+#[derive(Default)]
+pub(crate) struct FakeBackend {
+    calls: RefCell<Vec<Call>>,
+    cached: RefCell<HashMap<(SessionId, usize), Arc<DecodedImage>>>,
+    closed: RefCell<HashSet<SessionId>>,
+    cover_generation: Cell<u64>,
+    opens: RefCell<Vec<Done<OpenResult>>>,
+    spreads: RefCell<PendingSession<SpreadPages>>,
+    thumbnails: RefCell<PendingSession<ImageResult>>,
+    covers: RefCell<Vec<PendingCover>>,
+    probes: RefCell<Vec<Done<CountResult>>>,
+}
+
+impl FakeBackend {
+    pub(crate) fn new() -> Rc<Self> {
+        Rc::new(Self::default())
+    }
+
+    pub(crate) fn calls(&self) -> Vec<Call> {
+        self.calls.borrow().clone()
+    }
+
+    pub(crate) fn new_session(&self) -> SessionId {
+        SessionId::allocate()
+    }
+
+    pub(crate) fn set_cached(&self, session: SessionId, index: usize, image: Arc<DecodedImage>) {
+        self.cached.borrow_mut().insert((session, index), image);
+    }
+
+    pub(crate) fn complete_open(&self, nth: usize, result: OpenResult) {
+        let done = self.opens.borrow_mut().remove(nth);
+        if result
+            .as_ref()
+            .ok()
+            .is_none_or(|opened| self.is_open(opened.session))
+        {
+            done(result);
+        }
+    }
+
+    pub(crate) fn complete_spread(&self, nth: usize, pages: SpreadPages) {
+        let (session, done) = self.spreads.borrow_mut().remove(nth);
+        if self.is_open(session) {
+            done(pages);
+        }
+    }
+
+    pub(crate) fn complete_thumbnail(&self, nth: usize, result: ImageResult) {
+        let (session, done) = self.thumbnails.borrow_mut().remove(nth);
+        if self.is_open(session) {
+            done(result);
+        }
+    }
+
+    pub(crate) fn complete_cover(
+        &self,
+        nth: usize,
+        cover: ImageResult,
+        count: Option<CountResult>,
+    ) {
+        let (generation, on_cover, on_count) = self.covers.borrow_mut().remove(nth);
+        deliver_cover(
+            || self.cover_generation.get() == generation,
+            on_cover,
+            on_count,
+            cover,
+            count,
+        );
+    }
+
+    pub(crate) fn complete_probe(&self, nth: usize, result: CountResult) {
+        let done = self.probes.borrow_mut().remove(nth);
+        done(result);
+    }
+
+    fn is_open(&self, session: SessionId) -> bool {
+        !self.closed.borrow().contains(&session)
+    }
+
+    fn record(&self, call: Call) {
+        self.calls.borrow_mut().push(call);
+    }
+}
+
+impl BookBackend for FakeBackend {
+    fn open(
+        &self,
+        id: &BookId,
+        _policy: ArchivePolicy,
+        _cache: CacheConfig,
+        done: Done<OpenResult>,
+    ) {
+        self.record(Call::Open(id.clone()));
+        self.opens.borrow_mut().push(done);
+    }
+
+    fn close(&self, session: SessionId) {
+        self.record(Call::Close(session));
+        self.closed.borrow_mut().insert(session);
+        self.cached.borrow_mut().retain(|(id, _), _| *id != session);
+    }
+
+    fn cached_page(&self, session: SessionId, index: usize) -> Option<Arc<DecodedImage>> {
+        self.record(Call::CachedPage(session, index));
+        self.cached.borrow().get(&(session, index)).cloned()
+    }
+
+    fn decode_spread(
+        &self,
+        session: SessionId,
+        leading: usize,
+        trailing: Option<usize>,
+        done: Done<SpreadPages>,
+    ) {
+        self.record(Call::DecodeSpread(session, leading, trailing));
+        self.spreads.borrow_mut().push((session, done));
+    }
+
+    fn thumbnail(&self, session: SessionId, index: usize, max_side: u32, done: Done<ImageResult>) {
+        self.record(Call::Thumbnail(session, index, max_side));
+        self.thumbnails.borrow_mut().push((session, done));
+    }
+
+    fn cover(
+        &self,
+        id: &BookId,
+        max_side: u32,
+        on_cover: Done<ImageResult>,
+        on_count: Option<Done<CountResult>>,
+    ) {
+        self.record(Call::Cover {
+            id: id.clone(),
+            max_side,
+            wants_count: on_count.is_some(),
+        });
+        self.covers
+            .borrow_mut()
+            .push((self.cover_generation.get(), on_cover, on_count));
+    }
+
+    fn cancel_covers(&self) {
+        self.record(Call::CancelCovers);
+        self.cover_generation.set(self.cover_generation.get() + 1);
+    }
+
+    fn probe_page_count(&self, id: &BookId, _policy: ArchivePolicy, done: Done<CountResult>) {
+        self.record(Call::ProbePageCount(id.clone()));
+        self.probes.borrow_mut().push(done);
+    }
+}
+
+#[path = "fake_tests.rs"]
+mod tests;
