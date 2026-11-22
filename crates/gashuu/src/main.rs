@@ -709,8 +709,8 @@ fn stage_exit_state(
     }
 }
 
-/// Non-mutating suspend flush: page counts, leave point (`Suspend` route), settings.
-/// Never ends the dialog session, closes a backend session, or touches the runtime.
+/// Suspend flush: stages the leave point (Suspend route) and saves library and settings.
+/// Never ends the dialog session, closes a backend session, or modifies viewer/viewport runtime state.
 #[cfg(any(target_arch = "wasm32", test))]
 fn stage_suspend_state(
     covers: &cover_loader::CoverController,
