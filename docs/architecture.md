@@ -158,14 +158,15 @@ See [ADR-0003](ADRs/0003-image-loading-and-caching.md) for image loading decisio
 
 ### thumbnail
 
-The desktop backend passes a `PageThumbContext { store, fingerprint }` to the synchronous
-`generate_one_thumbnail` for each requested strip page. A hit for
+The desktop backend runs `thumbnail.rs`'s synchronous `generate_one_thumbnail`
+on a worker and passes a `PageThumbContext { store, fingerprint }` for each
+requested strip page. A hit for
 `ThumbSlot::Page(page_index)` skips the source read and decode. On a miss, core
 decodes the page and returns the image even if storing it fails. The strip uses
 `DEFAULT_THUMB_MAX_SIDE` (160 px). The backend checks that the session is still
 open before delivering the result. `generate_cover` downsizes page zero and
-propagates read and decode errors.
-A zero-page source returns an out-of-range error from the helper.
+propagates read and decode errors. It returns
+`IndexOutOfRange { index: 0, len: 0 }` for an empty source.
 
 ### thumbnail_cache
 
@@ -538,16 +539,19 @@ persist state after the event loop returns.
 ### backend (BookBackend port)
 
 `BookBackend` gives the UI an asynchronous book interface over the synchronous
-core. At startup, `main` passes one `Arc<dyn ThumbStore>` to the backend,
-removal use cases and settings handlers. Desktop uses `FsThumbStore` when
-the cache directory is available and falls back to `NullThumbStore`. Its rayon
-jobs resolve the current fingerprint before looking up a strip thumbnail or
-cover. The cover lookup checks decoded memory first, then disk.
+core. At startup, desktop passes one `Arc<dyn ThumbStore>` to the backend,
+removal use cases and settings handlers. It uses `FsThumbStore` when the cache
+directory is available and falls back to `NullThumbStore`. Desktop uses rayon
+for archive, page and thumbnail work. Its jobs resolve the current fingerprint
+before looking up a strip thumbnail or cover. Cover lookup checks decoded
+memory first, then disk.
 `backend::desktop::spawn_thumb_prune` schedules one sweep after initial cover
-dispatch. Web uses `NullThumbStore` for cleanup and keeps covers in memory.
+dispatch.
+
 `WorkerBackend` handles OPFS books. If the browser lacks OPFS or a Worker
 cannot be created, `UnavailableBackend` reports that the browser cannot store
-books. Each open starts a session with the caller's cache configuration.
+books. Web uses `NullThumbStore` for thumbnail cleanup and keeps covers in
+memory. Each open starts a session with the caller's cache configuration.
 `cached_page` only looks up decoded pages in memory.
 
 A `Done` runs at most once, on the Slint event-loop thread, after the request
@@ -614,7 +618,7 @@ Slint's executor while startup continues. A failure logs a warning.
 ### BookPicker and BookImporter ports
 
 `BookPicker` returns desktop paths or Send upload handles. Desktop uses rfd
-and defers the modal dialog result to the event loop. The web picker opens an
+and defers the modal dialog result to the event loop. `web_picker.rs` opens an
 attached, hidden multiple-file input during the Add Books click. It uses
 `.cbz,.zip` as its accept filter outside iOS-family browsers and checks extensions
 after selection on all browsers. The same click requests persistent storage
@@ -762,10 +766,13 @@ applicable position write-back, delegates view-mode routing
 to `stage_view_modes_to_sink`, and saves the library at most once. `stage_view_modes_to_sink`'s
 `match route` selects the sink: `DialogClosedOnLibrary` → global reconcile;
 `DialogClosedOnViewer` / `LeaveViewer` / `OpenDifferentBook` → per-book write-back; `AppExit` →
-per-book write-back FIRST, then a global reconcile ONLY when `open_book().is_none()`. So the GLOBAL
-route sink is invoked only via the Library-dialog close and the no-book-open exit; a Library-scope
-`DialogSession::end` also invokes the same helper before restoring its snapshot. Every leave point
-hits the per-book sink (a no-op when no book is open).
+per-book write-back first, then a global reconcile when `open_book().is_none()`. `Suspend` uses the
+same view-mode sinks when no dialog is open. With an active dialog, suspend writes back the reading
+position and preserves the dialog session and its unconfirmed edits
+([issue #664](https://github.com/yasuflatland-lf/gashuu/issues/664)).
+The global sink runs on Library-dialog close and when no book is open at exit or dialog-free
+suspend. A Library-scope `DialogSession::end` also invokes the same helper before restoring its
+snapshot. The per-book sink writes an override only when a book is open.
 Before a per-book write-back, `stage_view_override_write_back` builds the current `ResolvedView`,
 asks `DialogSession::inherit_pending(current)` whether the reset guard still applies, and consults
 the shared `Settings` handle to stage only fields that differ from global. The private pure helper
@@ -1071,6 +1078,12 @@ the `UpdateError {Http, Io, Verify}` glue error.
 See [ADR-0013](ADRs/0013-auto-update.md) and its Amendment, and [patterns.md](patterns.md),
 "Self-update replaces the running binary DIFFERENTLY per packaging".
 
+### web_lifecycle
+
+`web_lifecycle.rs` registers app-lifetime `pagehide` and hidden `visibilitychange` listeners.
+They flush page counts, the suspend leave point, and settings without ending a dialog session.
+Both events may flush consecutively; the writes are idempotent.
+
 ### web_blob_store
 
 `web_blob_store.rs` adapts browser `localStorage` to `BlobStore`. It stores UTF-8 JSON text as
@@ -1223,16 +1236,19 @@ pending deliveries, and the strip epoch guards against updates to a replacement 
 Starting without a session clears the strip. The web strip remains empty.
 
 **`cover_loader.rs`** owns the carousel's cover generation. Each refresh persists pending
-counts, calls `BookBackend::cancel_covers`, and advances the epoch. It dispatches 512 px
-covers in focus order and asks for a count only for rows with an unknown total. The desktop
-backend handles disk hits and misses off the UI thread. A miss uses one archive open for
-cover and count. A hit opens the book again only for a requested count. The 512 px size
-is part of the disk cache key and is independent of the strip's 160 px thumbnails.
+counts, calls `BookBackend::cancel_covers`, and advances the epoch. `prioritize_by_focus`
+sorts requests by distance from the focused row. The controller dispatches 512 px covers
+and requests a page count only for rows with an unknown total. Callers release their
+library borrow before dispatch so pending counts can be applied. Counts are also flushed
+on desktop shutdown and on web suspend. Resolved counts update their rows immediately
+and enter a queue for persistence.
 
-Callers release their library borrow before issuing the refresh so the controller can apply
-pending counts. Resolved counts update the row immediately and enter a queue for persistence
-on the next refresh or desktop shutdown. The web backend bounds its in-memory cover cache
-at 64 MiB. Reloading the web app clears that cache.
+On a worker, the desktop backend checks decoded memory and then reads through
+`ThumbStore` for the current fingerprint and `ThumbSlot::Cover`. On a miss it opens
+the archive once for the cover and count. On a hit it queues the cover before opening
+the archive for a requested count. Cover size is part of the cache key and is
+independent of the strip's 160 px thumbnail size. The web backend serializes page-zero
+decodes across refreshes and keeps up to 64 MiB of covers in memory until the app reloads.
 
 Each `ui_done` completion checks the epoch and window before updating its row. An empty book
 reported by either callback raises `empty-book-detected` once with its ID. Other cover errors

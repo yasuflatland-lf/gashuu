@@ -26,6 +26,10 @@ pub(crate) enum ViewModeRoute {
     /// App exit: persist the open book's override, then reconcile into the GLOBAL
     /// defaults ONLY when no book is open.
     AppExit,
+    /// Web tab hidden / page hidden: persist without disturbing live UI state.
+    /// Same as `AppExit` when no settings dialog is open; position-only otherwise.
+    #[cfg(any(target_arch = "wasm32", test))]
+    Suspend,
 }
 
 /// The leave-point persistence application service: one instance per app,
@@ -86,7 +90,7 @@ impl LeavePointService {
     /// hold a per-book value, so reconciling it would overwrite the GLOBAL default
     /// with one book's preference. The routing match below is the invariant: the
     /// GLOBAL sink is written ONLY by (a) the Library-screen settings dialog close and
-    /// (b) the no-book-open exit path; the PER-BOOK sink is written ONLY at leave
+    /// (b) exit or dialog-free suspend when no book is open. The PER-BOOK sink is written at leave
     /// points (the Viewer-screen settings dialog close, the ↑ leave-viewer key, and
     /// opening a different book while one is open). Note (a): the Library dialog
     /// legitimately reconciles into global even while a book is loaded in
@@ -95,6 +99,7 @@ impl LeavePointService {
     /// blanket-guarded on `open_book().is_none()`, or Library-dialog edits would be
     /// dropped. The exit path keeps the per-book write FIRST, then the open-state
     /// guard on the global reconcile.
+    /// Suspend writes the per-book or global sink only when no dialog session is active.
     ///
     /// This is also the SAVE-INJECTION SEAM: `open_book.rs` and `main.rs`'s
     /// `stage_exit_state` call it with their own effect so the one-save boundary
@@ -105,10 +110,15 @@ impl LeavePointService {
         route: ViewModeRoute,
         save: impl FnOnce(&Library) -> Result<(), CoreError>,
     ) -> Result<(), CoreError> {
-        if matches!(
-            route,
-            ViewModeRoute::LeaveViewer | ViewModeRoute::OpenDifferentBook | ViewModeRoute::AppExit
-        ) {
+        let writes_position = match route {
+            ViewModeRoute::DialogClosedOnLibrary | ViewModeRoute::DialogClosedOnViewer => false,
+            ViewModeRoute::LeaveViewer
+            | ViewModeRoute::OpenDifferentBook
+            | ViewModeRoute::AppExit => true,
+            #[cfg(any(target_arch = "wasm32", test))]
+            ViewModeRoute::Suspend => true,
+        };
+        if writes_position {
             stage_position_write_back(&self.state, &self.library);
         }
         stage_view_modes_to_sink(
@@ -151,17 +161,33 @@ fn stage_view_modes_to_sink(
             stage_view_override_write_back(state, viewport, dialog_session, settings, library);
         }
         ViewModeRoute::AppExit => {
-            // Per-book override FIRST (no-op if no book is open), so the open
-            // book's modes are saved before the open-state-guarded global reconcile.
-            stage_view_override_write_back(state, viewport, dialog_session, settings, library);
-            if state.borrow().open_book().is_none() {
-                apply_runtime_view_to_settings(
-                    &state.borrow(),
-                    &viewport.borrow(),
-                    &mut settings.borrow_mut(),
-                );
+            stage_exit_view_modes(state, viewport, dialog_session, settings, library);
+        }
+        #[cfg(any(target_arch = "wasm32", test))]
+        ViewModeRoute::Suspend => {
+            if dialog_session.borrow().scope().is_none() {
+                stage_exit_view_modes(state, viewport, dialog_session, settings, library);
             }
         }
+    }
+}
+
+fn stage_exit_view_modes(
+    state: &RefCell<ViewerState>,
+    viewport: &RefCell<ViewportState>,
+    dialog_session: &RefCell<DialogSession>,
+    settings: &RefCell<Settings>,
+    library: &RefCell<Library>,
+) {
+    // Per-book override FIRST (no-op if no book is open), so the open
+    // book's modes are saved before the open-state-guarded global reconcile.
+    stage_view_override_write_back(state, viewport, dialog_session, settings, library);
+    if state.borrow().open_book().is_none() {
+        apply_runtime_view_to_settings(
+            &state.borrow(),
+            &viewport.borrow(),
+            &mut settings.borrow_mut(),
+        );
     }
 }
 
@@ -359,6 +385,155 @@ mod tests {
             Rc::clone(library),
             Rc::new(None),
         )
+    }
+
+    struct SuspendFixture {
+        _dir: tempfile::TempDir,
+        book_id: BookId,
+        state: Rc<RefCell<ViewerState>>,
+        viewport: Rc<RefCell<ViewportState>>,
+        session: Rc<RefCell<DialogSession>>,
+        settings: Rc<RefCell<Settings>>,
+        library: Rc<RefCell<Library>>,
+    }
+
+    impl SuspendFixture {
+        fn new() -> Self {
+            let dir = tempfile::tempdir().unwrap();
+            for page in 0..10 {
+                std::fs::write(dir.path().join(format!("{page}.png")), []).unwrap();
+            }
+            let settings = Rc::new(RefCell::new(Settings::default()));
+            let state = Rc::new(RefCell::new(ViewerState::from_settings(&settings.borrow())));
+            state.borrow_mut().open_path(dir.path()).unwrap();
+            assert!(state.borrow_mut().jump_to(7));
+            state
+                .borrow_mut()
+                .set_reading_direction(ReadingDirection::Ltr);
+            let book_id = state.borrow().open_book().unwrap().clone();
+            let viewport = Rc::new(RefCell::new(ViewportState::from_settings(
+                &settings.borrow(),
+            )));
+            let session = Rc::new(RefCell::new(DialogSession::new()));
+            let mut value = Library::new();
+            assert!(value.add(book_id.clone(), "book".into()).is_some());
+            value.set_overrides(
+                &book_id,
+                ViewOverride::differences_from(
+                    current_runtime_view(&state, &viewport),
+                    settings.borrow().view_defaults(),
+                ),
+            );
+            Self {
+                _dir: dir,
+                book_id,
+                state,
+                viewport,
+                session,
+                settings,
+                library: Rc::new(RefCell::new(value)),
+            }
+        }
+        fn persist(&self, route: ViewModeRoute) -> String {
+            let mut saved = String::new();
+            leave_point_service(
+                &self.state,
+                &self.viewport,
+                &self.session,
+                &self.settings,
+                &self.library,
+            )
+            .persist_with(route, |library| {
+                saved = library.to_json().unwrap();
+                Ok(())
+            })
+            .unwrap();
+            saved
+        }
+        fn open_dialog(&self, scope: DialogScope) {
+            self.session
+                .borrow_mut()
+                .open(scope, &self.state, &self.viewport, &self.settings);
+        }
+    }
+
+    #[test]
+    fn suspend_without_dialog_matches_app_exit() {
+        let f = SuspendFixture::new();
+        f.state.borrow_mut().set_spread_mode(SpreadMode::Single);
+        let before = f.library.borrow().to_json().unwrap();
+        let suspend = f.persist(ViewModeRoute::Suspend);
+        let settings = f.settings.borrow().view_defaults();
+        *f.library.borrow_mut() = Library::from_json(&before).unwrap();
+        assert_eq!(suspend, f.persist(ViewModeRoute::AppExit));
+        assert_eq!(settings, f.settings.borrow().view_defaults());
+        assert_eq!(f.library.borrow().resume_page(&f.book_id), 7);
+    }
+
+    fn assert_suspend_dialog(scope: DialogScope) {
+        let f = SuspendFixture::new();
+        let overrides = f.library.borrow().overrides_for(&f.book_id);
+        let settings = f.settings.borrow().view_defaults();
+        f.open_dialog(scope);
+        if scope == DialogScope::Viewer {
+            f.state.borrow_mut().set_spread_mode(SpreadMode::Single);
+        }
+        let runtime = current_runtime_view(&f.state, &f.viewport);
+        let saved = f.persist(ViewModeRoute::Suspend);
+        let saved = Library::from_json(&saved).unwrap();
+        assert_eq!(saved.resume_page(&f.book_id), 7);
+        assert_eq!(saved.overrides_for(&f.book_id), overrides);
+        assert_eq!(f.settings.borrow().view_defaults(), settings);
+        assert_eq!(f.session.borrow().scope(), Some(scope));
+        assert_eq!(current_runtime_view(&f.state, &f.viewport), runtime);
+        if scope == DialogScope::Library {
+            assert_eq!(runtime, settings);
+        }
+    }
+
+    #[test]
+    fn suspend_with_library_dialog_writes_position_only() {
+        assert_suspend_dialog(DialogScope::Library);
+    }
+    #[test]
+    fn suspend_with_viewer_dialog_writes_position_only() {
+        assert_suspend_dialog(DialogScope::Viewer);
+    }
+
+    #[test]
+    fn suspend_then_dialog_close_equals_dialog_close_alone() {
+        let f = SuspendFixture::new();
+        let initial = f.library.borrow().to_json().unwrap();
+        f.open_dialog(DialogScope::Library);
+        f.state.borrow_mut().set_spread_mode(SpreadMode::Single);
+        f.persist(ViewModeRoute::Suspend);
+        f.session
+            .borrow_mut()
+            .end(&f.state, &f.viewport, &f.settings);
+        f.persist(ViewModeRoute::DialogClosedOnLibrary);
+        let overrides = f.library.borrow().overrides_for(&f.book_id);
+        let settings = f.settings.borrow().view_defaults();
+        assert_eq!(f.library.borrow().resume_page(&f.book_id), 7);
+        *f.library.borrow_mut() = Library::from_json(&initial).unwrap();
+        *f.settings.borrow_mut() = Settings::default();
+        f.open_dialog(DialogScope::Library);
+        f.state.borrow_mut().set_spread_mode(SpreadMode::Single);
+        f.session
+            .borrow_mut()
+            .end(&f.state, &f.viewport, &f.settings);
+        f.persist(ViewModeRoute::DialogClosedOnLibrary);
+        assert_eq!(f.library.borrow().overrides_for(&f.book_id), overrides);
+        assert_eq!(f.settings.borrow().view_defaults(), settings);
+        assert_eq!(f.library.borrow().resume_page(&f.book_id), 0);
+    }
+
+    #[test]
+    fn suspend_is_idempotent() {
+        let f = SuspendFixture::new();
+        assert_eq!(
+            f.persist(ViewModeRoute::Suspend),
+            f.persist(ViewModeRoute::Suspend)
+        );
     }
 
     #[test]

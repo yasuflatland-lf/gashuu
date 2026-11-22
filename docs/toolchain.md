@@ -117,8 +117,8 @@ Action-time saves to `localStorage` preserve settings and library metadata
 across reloads. Imported archives remain in OPFS.
 If `localStorage` is unavailable at startup, the app opens with defaults and an empty library, shows
 `storage (localStorage unavailable)`, and reports `NoConfigDir` or `NoDataDir`
-on save. Closing the tab skips exit persistence, including the final reading
-position and pending page counts. #664 ([23/23]) tracks the exit flush.
+on save. The web lifecycle flushes the reading position, pending page counts,
+and settings when the page becomes hidden or receives a `pagehide` event.
 
 Trunk copies the Japanese fallback font and its OFL license to `dist/fonts/`.
 The browser preloads the TTF while the wasm downloads. After startup, gashuu
