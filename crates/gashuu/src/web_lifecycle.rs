@@ -17,14 +17,7 @@ pub(crate) fn wire_suspend_persistence(flush: Rc<dyn Fn()>) {
         let flush = Rc::clone(&flush);
         move || flush()
     });
-    if window
-        .add_event_listener_with_callback("pagehide", on_pagehide.as_ref().unchecked_ref())
-        .is_ok()
-    {
-        on_pagehide.forget();
-    } else {
-        tracing::error!("failed to register pagehide listener");
-    }
+    listen(&window, "pagehide", on_pagehide);
 
     let on_visibility = Closure::<dyn FnMut()>::new({
         let document = document.clone();
@@ -34,15 +27,12 @@ pub(crate) fn wire_suspend_persistence(flush: Rc<dyn Fn()>) {
             }
         }
     });
-    if document
-        .add_event_listener_with_callback(
-            "visibilitychange",
-            on_visibility.as_ref().unchecked_ref(),
-        )
-        .is_ok()
-    {
-        on_visibility.forget();
-    } else {
-        tracing::error!("failed to register visibilitychange listener");
+    listen(&document, "visibilitychange", on_visibility);
+}
+
+fn listen(target: &web_sys::EventTarget, event: &str, handler: Closure<dyn FnMut()>) {
+    match target.add_event_listener_with_callback(event, handler.as_ref().unchecked_ref()) {
+        Ok(()) => handler.forget(),
+        Err(error) => tracing::error!(?error, event, "failed to register listener"),
     }
 }

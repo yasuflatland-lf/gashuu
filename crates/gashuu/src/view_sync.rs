@@ -110,18 +110,15 @@ impl LeavePointService {
         route: ViewModeRoute,
         save: impl FnOnce(&Library) -> Result<(), CoreError>,
     ) -> Result<(), CoreError> {
-        #[cfg(any(target_arch = "wasm32", test))]
-        let suspend = matches!(route, ViewModeRoute::Suspend);
-        #[cfg(not(any(target_arch = "wasm32", test)))]
-        let suspend = false;
-        if suspend
-            || matches!(
-                route,
-                ViewModeRoute::LeaveViewer
-                    | ViewModeRoute::OpenDifferentBook
-                    | ViewModeRoute::AppExit
-            )
-        {
+        let writes_position = match route {
+            ViewModeRoute::DialogClosedOnLibrary | ViewModeRoute::DialogClosedOnViewer => false,
+            ViewModeRoute::LeaveViewer
+            | ViewModeRoute::OpenDifferentBook
+            | ViewModeRoute::AppExit => true,
+            #[cfg(any(target_arch = "wasm32", test))]
+            ViewModeRoute::Suspend => true,
+        };
+        if writes_position {
             stage_position_write_back(&self.state, &self.library);
         }
         stage_view_modes_to_sink(
@@ -168,10 +165,9 @@ fn stage_view_modes_to_sink(
         }
         #[cfg(any(target_arch = "wasm32", test))]
         ViewModeRoute::Suspend => {
-            if dialog_session.borrow().scope().is_some() {
-                return;
+            if dialog_session.borrow().scope().is_none() {
+                stage_exit_view_modes(state, viewport, dialog_session, settings, library);
             }
-            stage_exit_view_modes(state, viewport, dialog_session, settings, library);
         }
     }
 }
