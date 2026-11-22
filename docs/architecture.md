@@ -531,6 +531,13 @@ to zero at startup and after settings edits. A 1600 × 2400 RGBA page uses about
 This is the install-free demo path. Issues #655 to #662 track Web Workers,
 OPFS, and `BookBackend` for daily reading.
 
+### web_pointer
+
+`web_pointer.rs` provides `apply_pointer_mode`, which `run_app` calls at startup
+on wasm32 to set `ViewerWindow.tap-opens-centered` from the `(pointer: coarse)` media query.
+The property defaults to false if the query is unavailable. The carousel opens
+the focused cover on a single tap when the property is true and selection mode is off.
+
 ### web_viewport
 
 On wasm32, `web_viewport` sets the Slint window to the browser's viewport size

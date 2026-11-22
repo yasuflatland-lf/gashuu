@@ -95,6 +95,7 @@ app at `/gashuu/app/` in one deployment. Its Trunk build uses
 The web demo starts on the Library screen. Add Books opens a browser picker for
 one or more CBZ or ZIP files. Folders, RAR/CBR, 7z/CB7, and PDF are unsupported.
 On iOS and iPadOS the picker has no accept filter because the system has no registered file type for .cbz and greys such files out; unsupported formats are rejected after selection.
+On coarse-pointer browsers, a single tap on the centered cover opens the book, while mouse users can double-click or press Return.
 The selected archives stay in memory for the browser session. The viewer decodes
 pages on the main thread, caches up to six decoded pages, and disables prefetch
 and the thumbnail strip. Issues #655 to #662 track the daily-reading path with
