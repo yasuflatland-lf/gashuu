@@ -3,16 +3,16 @@
 //! Desktop IDs carry canonical filesystem locations. Web IDs carry OPFS paths
 //! that the Worker resolves asynchronously.
 
-#[cfg(any(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
 use gashuu_core::{ArchiveLoader, ArchivePolicy, PageSource};
 use gashuu_core::{BookId, CoreError};
 #[cfg(test)]
 use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
-#[cfg(any(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
 use std::sync::Arc;
 
-#[cfg(any(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
 pub(crate) fn open(path: &Path, policy: ArchivePolicy) -> Result<Arc<dyn PageSource>, CoreError> {
     ArchiveLoader::open_with_policy(path, policy)
 }
