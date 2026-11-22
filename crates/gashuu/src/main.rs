@@ -458,13 +458,7 @@ fn run_app(
         localizer: Rc::clone(&localizer),
     };
     #[cfg(target_arch = "wasm32")]
-    wire_storage_status(
-        &ui,
-        &carousel,
-        &settings,
-        &settings_store,
-        importer.is_none() || !library_loaded,
-    );
+    wire_storage_status(&ui, &carousel, &settings, &settings_store);
     #[cfg(target_arch = "wasm32")]
     wire_startup_sweep(&ui, &carousel, importer.as_deref(), library_loaded);
     refresh_library_carousel(&ui, &carousel, true);
@@ -662,7 +656,6 @@ fn wire_storage_status(
     carousel: &CarouselRefresh,
     settings: &Rc<RefCell<Settings>>,
     settings_store: &SettingsStoreHandle,
-    refresh_now: bool,
 ) {
     let current_kind = Rc::new(RefCell::new(None::<String>));
     let epoch = Rc::new(std::cell::Cell::new(0_u64));
@@ -738,9 +731,7 @@ fn wire_storage_status(
             });
         }
     });
-    if refresh_now {
-        ui.invoke_storage_inventory_changed();
-    }
+    ui.invoke_storage_inventory_changed();
 }
 
 #[cfg(target_arch = "wasm32")]

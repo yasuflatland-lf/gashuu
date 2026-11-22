@@ -328,7 +328,8 @@ selection-exit-a11y = 選択モードを終了
 # the bulk-delete ConfirmDialog (bound via Strings.selection-delete).
 selection-delete = 削除
 storage-title = ブラウザーのストレージ
-storage-usage = 推定使用量: { $usage } / { $quota }
+storage-usage = 推定使用量: { $usage } / { $quota } ({ $percent }%)
+storage-usage-without-percent = 推定使用量: { $usage } / { $quota }
 storage-unknown = 不明
 storage-protected = 保護されています
 storage-unprotected = 保護されていません

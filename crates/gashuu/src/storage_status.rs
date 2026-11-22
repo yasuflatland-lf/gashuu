@@ -1,6 +1,6 @@
 use std::collections::BTreeSet;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct StorageStatus {
     pub persisted: Option<bool>,
     pub usage: Option<u64>,
@@ -47,12 +47,21 @@ pub(crate) fn guidance(s: &StorageStatus, missing_books: usize) -> Guidance {
     }
 }
 
-pub(crate) fn format_usage(bytes: u64) -> String {
-    let unit = 1024_f64 * 1024.0;
-    let (value, suffix) = if bytes >= 1024 * 1024 * 1024 {
-        (bytes as f64 / (unit * 1024.0), "GB")
+pub(crate) fn format_usage(usage: u64, quota: Option<u64>) -> (String, Option<u8>) {
+    let percent = quota.filter(|&quota| quota > 0).map(|quota| {
+        let quota = u128::from(quota);
+        let rounded = (u128::from(usage) * 100 + quota / 2) / quota;
+        rounded.min(100) as u8
+    });
+    (format_bytes(usage), percent)
+}
+
+pub(crate) fn format_bytes(bytes: u64) -> String {
+    let mib = bytes as f64 / (1024.0 * 1024.0);
+    let (value, suffix) = if mib >= 1024.0 - 0.05 {
+        (mib / 1024.0, "GB")
     } else {
-        (bytes as f64 / unit, "MB")
+        (mib, "MB")
     };
     format!("{value:.1} {suffix}")
 }
@@ -74,11 +83,18 @@ mod tests {
         for persisted in [None, Some(false), Some(true)] {
             for ios_family in [false, true] {
                 for standalone in [false, true] {
-                    for near in [false, true] {
+                    for (usage, quota, near) in [
+                        (Some(90), Some(100), false),
+                        (Some(91), Some(100), true),
+                        (None, Some(100), false),
+                        (Some(u64::MAX), None, false),
+                        (Some(u64::MAX), Some(0), false),
+                        (Some(u64::MAX / 10 * 9), Some(u64::MAX), false),
+                    ] {
                         let status = StorageStatus {
                             persisted,
-                            usage: Some(if near { 91 } else { 90 }),
-                            quota: Some(100),
+                            usage,
+                            quota,
                             standalone,
                             ios_family,
                         };
@@ -101,8 +117,36 @@ mod tests {
 
     #[test]
     fn usage_formats_binary_units() {
-        assert_eq!(format_usage(1_258_291), "1.2 MB");
-        assert_eq!(format_usage(1_288_490_189), "1.2 GB");
+        assert_eq!(format_usage(0, None), ("0.0 MB".into(), None));
+        assert_eq!(format_usage(1_258_291, None), ("1.2 MB".into(), None));
+        assert_eq!(format_usage(1 << 30, None), ("1.0 GB".into(), None));
+        assert_eq!(format_usage(1_288_490_189, None), ("1.2 GB".into(), None));
+    }
+
+    #[test]
+    fn usage_rounding_promotes_to_gigabytes() {
+        assert_eq!(format_usage(1_073_678_909, None).0, "1023.9 MB"); // 1023.94 MiB
+        assert_eq!(format_usage(1_073_699_881, None).0, "1.0 GB"); // 1023.96 MiB
+    }
+
+    #[test]
+    fn usage_percent_requires_a_positive_quota() {
+        assert_eq!(format_usage(1, None).1, None);
+        assert_eq!(format_usage(1, Some(0)).1, None);
+        assert_eq!(format_usage(0, Some(100)).1, Some(0));
+    }
+
+    #[test]
+    fn usage_percent_rounds_to_the_nearest_integer() {
+        assert_eq!(format_usage(1, Some(3)).1, Some(33));
+        assert_eq!(format_usage(2, Some(3)).1, Some(67));
+        assert_eq!(format_usage(1, Some(8)).1, Some(13));
+    }
+
+    #[test]
+    fn usage_percent_clamps_at_100_without_overflow() {
+        assert_eq!(format_usage(u64::MAX, Some(1)).1, Some(100));
+        assert_eq!(format_usage(u64::MAX, Some(u64::MAX)).1, Some(100));
     }
 
     #[test]

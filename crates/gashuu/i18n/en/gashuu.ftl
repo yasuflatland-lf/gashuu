@@ -323,7 +323,8 @@ selection-exit-a11y = Exit selection mode
 # the bulk-delete ConfirmDialog (bound via Strings.selection-delete).
 selection-delete = Delete
 storage-title = Browser storage
-storage-usage = Estimated usage: { $usage } / { $quota }
+storage-usage = Estimated usage: { $usage } / { $quota } ({ $percent }%)
+storage-usage-without-percent = Estimated usage: { $usage } / { $quota }
 storage-unknown = Unknown
 storage-protected = Protected
 storage-unprotected = Not protected
