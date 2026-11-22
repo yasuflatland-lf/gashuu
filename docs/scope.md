@@ -18,6 +18,16 @@ This file is the authoritative record of what has shipped and what is intentiona
 The per-entry 500 MB ceiling (`MAX_ENTRY_BYTES` in `entry_policy.rs`) applies to both ZIP and RAR. RAR still has no streaming `take`, but an entry whose ACTUAL decompressed length exceeds the ceiling is now rejected after the read, so an over-ceiling payload never reaches the decoder; the residual is the transient allocation inside `unrar`'s `read()` (see [docs/patterns.md](patterns.md)).
 RAR requires a C++ compiler on every OS (see [docs/toolchain.md](toolchain.md)).
 
+### Web build
+
+The browser imports CBZ and ZIP files into origin-private storage. The web
+picker supports files only. RAR/CBR and AVIF are unavailable. Browser-native
+image decoding uses a PNG/JPEG fallback.
+
+Known gaps tracked in #662 include removing the OPFS copy when a book is
+deleted from the library, sweeping orphaned directories, detecting duplicate
+imports, and identifying books whose storage the browser evicted.
+
 ### Cache and prefetch
 
 - LRU page cache (up to `DEFAULT_CAPACITY`=50 decoded images).

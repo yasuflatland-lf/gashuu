@@ -3,6 +3,14 @@
 This is the L2/L3 reference doc migrated from the CLAUDE.md "Patterns & gotchas" section.
 An agent should read the relevant entry BEFORE editing the corresponding code area.
 
+### OPFS access handles require single-threaded wasm
+
+`OpfsReadAt` implements the core `ReadAt` trait for the dedicated Web Worker.
+Its `unsafe impl Send` and `unsafe impl Sync` are sound only on wasm32 without
+the `atomics` target feature. Keep both implementations under that guard with
+their safety comments. The worker rejects builds with wasm atomics because a
+JavaScript access handle is confined to its owning thread.
+
 ### Cross-crate mocking via a `testing` feature
 
 `gashuu-core` gates `mockall::automock` on `PageSource` behind `[features] testing = ["dep:mockall"]`; `gashuu`'s dev-dependency enables it, so `ViewerState` tests use `MockPageSource` without pulling `mockall` into release builds.
@@ -534,15 +542,32 @@ Controller tests can inject `FakeBackend`, inspect the recorded calls and use
 requests out of order to exercise epoch checks, or complete after closing the
 session or cancelling covers to verify that the callback is dropped.
 
+### Browser picking and streaming imports
+
+Call the HTML input's click method during the Add Books gesture. Start the
+one-time storage persistence request in the same callback. Deliver the picks
+on the later change or cancel event. Keep File objects on the UI thread and
+pass Send metadata through the result slot before invoking `add-picked`.
+The UI handler owns the application handles and can start a batch directly.
+
+Send the File to the dedicated worker by structured clone. Use the worker's
+synchronous OPFS access handle and an 8 MiB JavaScript typed array for each
+write. Release each array before yielding the worker event loop and serving
+interactive requests. One import holds its handle until it flushes and probes.
+On failure, close the handle before removing the directory. On supersession,
+discard both already-completed and late successful imports that the library
+cannot apply.
+
 ### Session lifetime and thumbnail generations
 
 Closing a backend session suppresses pending thumbnail deliveries, including results already
-queued for the UI. Each strip start also advances the epoch. The `ui_done` callback checks
-that epoch and upgrades the weak window before converting the image and updating its row.
+queued for the UI. Each strip start also advances the epoch. On a carousel refresh,
+`CoverController` calls `cancel_covers` and advances its own epoch. Both controllers use
+`ui_done` to check the epoch and upgrade the weak window. They fetch the model and convert
+decoded pixels to Slint images on the event-loop thread.
 
-The cover controller calls `cancel_covers` on refresh and checks its epoch in each cover and
-count completion. Desktop cache reads and decodes run on workers even on a hit, so a large
-warm carousel can dispatch every request without blocking the UI on disk access.
+Keep cover startup dispatch-only. A desktop disk-cache hit still needs metadata, a cache
+read and decoding. The backend defers delivery even for a memory hit.
 
 ### Worker → UI ACTION (not just a model write) via a Slint callback on the root window (reject-empty-books)
 
@@ -573,6 +598,8 @@ cannot update progress or finalize the newer batch.
 The finalize handler uses `take_outcomes(epoch)` to drain the current batch in input order.
 This keeps insertion, focus and skip reporting deterministic even when probes finish out of
 order. The library mutation, save, carousel rebuild and notice all run in that handler.
+Use fake backend completions in scrambled order to test the drain. Complete an older batch
+after starting a new one to test the generation guard.
 
 ### Build spread images in the backend completion
 
@@ -596,6 +623,8 @@ session and indices. Complete an old request after changing targets to exercise 
 
 `ThumbCell` distinguishes loading, loaded and failed states. On a thumbnail error the strip logs the page index and
 backend error, then updates only that page to `Failed`. Other pending pages can still complete.
+
+### Per-cover failure
 
 `CoverController` uses `ui_done` to check the epoch and window lifetime before applying a backend
 result. A successful cover calls `apply_loaded_cover`. A cover error other than `EmptyBook` calls

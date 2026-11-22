@@ -21,8 +21,11 @@ On this target, core enables the `wasm_js` feature of getrandom 0.4, which is al
 
 #### UI crate on wasm32
 
-`mise run check-wasm-ui` compile-checks the UI crate in `target/wasm`. The CI
-`wasm` job runs it after `check-wasm-core`, then builds the browser bundle and
+`mise run check-wasm-ui` compile-checks the UI crate in `target/wasm`. The UI's
+wasm32 dependencies include `gashuu-web-decode`, which implements browser-native
+decoding for windows and workers and uses `gashuu-core` with default features disabled.
+`mise run check-wasm-decode` checks the adapter independently in the same target directory.
+The CI `wasm` job runs all three wasm checks, then builds the browser bundle and
 checks for `index.html` and a `.wasm` file in `crates/gashuu/dist`.
 
 The UI crate declares these dependencies in
@@ -58,8 +61,8 @@ desktop defaults out of the wasm build.
 ### Web decoding
 
 The wasm32 composition root uses `NativePageDecoder` as the primary decoder and
-`ImageCratePageDecoder` as the fallback. The native adapter uses
-`createImageBitmap` and canvas readback on the main thread; it checks dimensions
+`ImageCratePageDecoder` as the fallback. The adapter in `gashuu-web-decode` uses
+`createImageBitmap` and canvas readback in either a window or a worker. It checks dimensions
 against the core pixel limit before allocating the canvas. It requests straight
 alpha, no color-space conversion, and the original pixel orientation. Canvas
 readback can round partially transparent RGB values. Covers use the same decoders
@@ -88,21 +91,30 @@ The page and canvas set `touch-action: none` and a non-scalable viewport so iPad
 Safari does not consume double-taps or pinch gestures for page zoom and touch reaches the app.
 The Slint window follows the browser viewport on load and resize.
 
+The worker link in `crates/gashuu/index.html` points Trunk at
+`../gashuu-worker/Cargo.toml` and selects the `gashuu-worker` binary.
+Trunk emits `gashuu-worker.js`, `gashuu-worker_bg.wasm`, and
+`gashuu-worker_loader.js` in `crates/gashuu/dist`. The loader uses
+`importScripts` to load the worker glue and initializes the wasm binary.
+Run `mise run check-wasm-worker` to check the worker crate on its own.
+The OPFS reader and importer use synchronous `getSize()` and `close()` methods, available
+as synchronous calls starting in Safari and iPadOS 16.4.
+[WebKit release notes](https://webkit.org/blog/13966/webkit-features-in-safari-16-4/).
+
 The Pages workflow publishes the Vite landing page at `/gashuu/` and the web
 app at `/gashuu/app/` in one deployment. Its Trunk build uses
 `--public-url /gashuu/app/` and the deploy job adds the bundle to `site/dist/app`.
 
-The web demo starts on the Library screen. Add Books opens a browser picker for
+The web app starts on the Library screen. Add Books opens a browser picker for
 one or more CBZ or ZIP files. Folders, RAR/CBR, 7z/CB7, and PDF are unsupported.
 On iOS and iPadOS the picker has no accept filter because the system has no registered file type for .cbz and greys such files out; unsupported formats are rejected after selection.
 On coarse-pointer browsers, a single tap on the centered cover opens the book, while mouse users can double-click or press Return.
-The selected archives stay in memory for the browser session. The viewer decodes
-pages on the main thread, caches up to six decoded pages, and disables prefetch
-and the thumbnail strip. Issues #655 to #662 track the daily-reading path with
-Web Workers, OPFS, and `BookBackend`.
+The Worker imports selected archives into OPFS and decodes pages on demand.
+The viewer caches up to six decoded pages, with prefetch disabled. Thumbnail
+requests run in the worker's background lane.
 
 Action-time saves to `localStorage` preserve settings and library metadata
-across reloads. Restored books appear unavailable because their bytes are gone.
+across reloads. Imported archives remain in OPFS.
 If `localStorage` is unavailable at startup, the app opens with defaults and an empty library, shows
 `storage (localStorage unavailable)`, and reports `NoConfigDir` or `NoDataDir`
 on save. Closing the tab skips exit persistence, including the final reading

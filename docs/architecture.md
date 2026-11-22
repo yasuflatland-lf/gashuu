@@ -12,6 +12,14 @@ inventory: what exists, where it lives, and what it does.
 Slint-independent domain + I/O layer. See [ADR-0002](ADRs/0002-layered-two-crate-architecture.md)
 for the rationale behind the two-crate split. Keep the layer boundary strict.
 
+### page_decode
+
+`PageDecoder` takes owned encoded bytes and returns a local `DecodeFuture` that resolves
+to straight-alpha RGBA8 and dimensions. `ImageCratePageDecoder` wraps `image_ops::decode`
+in a ready future. `decode_with_fallback` retries the same bytes after a primary failure.
+A successful retry returns the image and the primary error. If both attempts fail, the
+caller receives the fallback error.
+
 ### PageSource trait
 
 Requires `Send + Sync` so `Arc<dyn PageSource>` can be shared with rayon worker threads during
@@ -156,7 +164,7 @@ The desktop backend passes a `PageThumbContext { store, fingerprint }` to
 decodes the page and returns the image even if storing it fails. The strip uses
 `DEFAULT_THUMB_MAX_SIDE` (160 px). The backend checks that the session is still
 open before delivering the result. `generate_cover` downsizes page zero and
-propagates read and decode errors.
+propagates read and decode errors. A zero-page source returns an out-of-range error.
 
 ### thumbnail_cache
 
@@ -186,6 +194,10 @@ source bytes or the source error. `insert_decoded(index, decoded)` applies the c
 byte limits and returns the shared `Arc`, reusing an existing entry if a concurrent reader
 already populated the slot. The synchronous `decode_and_cache` checks the cache before and after
 the read, decodes on a miss, and starts neighbour prefetch on success.
+
+`DecodedLru<K>` stores the decoded pages and enforces the count and byte limits.
+It supports removing entries by key or predicate and subtracts their decoded
+bytes from the total. `ImageCache` keys it by page index.
 
 See [ADR-0003](ADRs/0003-image-loading-and-caching.md) for the LRU/prefetch decision.
 
@@ -384,7 +396,7 @@ Location handling lives at the following boundaries.
   merges aliases, and remaps `last_opened` to the surviving ID.
 - `book_path::identify` builds an ID from a picked location and derives the title from the
   resolved path and the caller's directory flag. `book_path::locate` resolves an ID for file access
-  or cache operations. Web IDs carry session registry paths until OPFS support in #660.
+  or cache operations. Web IDs are relative OPFS paths resolved by the Worker.
 
 `Library::book(&BookId)` looks up a shelf entry. `add` and `add_many` take IDs and titles supplied by
 the caller. `Library::register_opened(id, title, page_count)` adds an entry on its first open and
@@ -453,6 +465,45 @@ re-exported at the crate root. See [ADR-0013](ADRs/0013-auto-update.md).
 
 ---
 
+## crates/gashuu-web-decode (wasm32)
+
+`NativePageDecoder` calls `createImageBitmap` on the current `Window` or
+`WorkerGlobalScope`. It checks the pixel limit before allocating an `OffscreenCanvas`
+and falls back to an HTML canvas on windows without offscreen support. It requests
+straight alpha, no color-space conversion, and original pixel orientation. Canvas
+readback can round partially transparent RGB values.
+
+## crates/gashuu-worker (wasm32 worker)
+
+The portable library defines the worker protocol, validates book ids, and
+dispatches requests using injected decoders. The wasm binary installs the
+dedicated worker message handler and posts `Ready` after setup.
+Each message carries JSON text in `m` to preserve exact 64-bit ids. Responses
+with images carry transferable RGBA8 buffers in `b`, in metadata order.
+
+One request runs at a time. The interactive lane handles opens and spreads
+ahead of background thumbnails, covers, page counts, imports, and deletions.
+Each lane is FIFO. The loop yields to browser message delivery between
+background jobs and between the steps of an import.
+Close and cover cancellation run in the message handler and discard outdated
+queued work and replies. Each session retains its page source. Pages are
+decoded on demand with the browser-native decoder and an image-crate fallback
+(PNG and JPEG for books on web). Covers and thumbnails downscale the decoded
+image. Both slots of a spread arrive in one reply.
+
+An OPFS book id is its relative path, `books/<uuid>/<sanitised file name>`.
+The worker validates it before looking up the file and uses a
+`FileSystemSyncAccessHandle` to read at explicit offsets. A weak reader map
+lets sessions, cover requests, and page count probes share one handle per
+book. Dropping the last reader closes the handle and releases its lock.
+
+An import checks estimated quota, creates a UUID directory and streams the
+archive through a synchronous OPFS handle in 8 MiB slices. The worker writes
+from a JavaScript typed array, then flushes and probes through the same handle.
+It returns the relative ID, display title and nonzero page count. A failed
+import closes the handle and removes its directory. `DeleteBook` also removes
+the directory recursively after confirming the reader has been released.
+
 ## crates/gashuu (Slint presentation layer)
 
 See [ADR-0001](ADRs/0001-gui-framework-slint.md) for the Slint framework decision and
@@ -478,10 +529,10 @@ jobs resolve the current fingerprint before looking up a strip thumbnail or
 cover. The cover lookup checks decoded memory first, then disk.
 `backend::desktop::spawn_thumb_prune` schedules one sweep after initial cover
 dispatch. Web uses `NullThumbStore` for cleanup and keeps covers in memory.
-`LocalWebBackend` uses the browser session registry and the existing local
-decoders while the Worker is under development. Each open starts a session
-with the caller's cache configuration. `cached_page` only looks up decoded
-pages in memory.
+`WorkerBackend` handles OPFS books. If the browser lacks OPFS or a Worker
+cannot be created, `UnavailableBackend` reports that the browser cannot store
+books. Each open starts a session with the caller's cache configuration.
+`cached_page` only looks up decoded pages in memory.
 
 A `Done` runs at most once, on the Slint event-loop thread, after the request
 returns. At delivery the backend drops callbacks for closed sessions and
@@ -497,29 +548,45 @@ The controller migrations use these methods:
 | Carousel cover loader | `cover` with an optional count callback, `cancel_covers` |
 | Bulk add | `probe_page_count` |
 
+#### WorkerBackend (web)
+
+`backend/web.rs` starts one dedicated classic Worker and resolves
+`gashuu-worker_loader.js` against the document base URI. `backend/web_client.rs`
+owns the protocol state in Rust and buffers requests until the Worker sends
+`Ready`. Each reply uses JSON metadata and, when present, transferred RGBA
+buffers. The browser adapter copies the buffers into Rust before delivery.
+
+The main thread holds a decoded-page LRU keyed by session and page index.
+Its capacity and byte budget come from the latest successful open's
+`CacheConfig`. The viewer caps capacity at six pages and sets prefetch to
+zero on web. Successful spread slots enter the LRU before delivery.
+`cached_page` is a memory lookup. Cover results use the shared 64 MiB
+`CoverMemCache`.
+
+Worker replies deliver callbacks from the browser message task on the UI
+thread. Cache hits and transport failures defer callbacks through Slint's
+event loop. Both paths check session or cover-generation liveness immediately
+before invocation. After a Worker failure, pending and future requests receive
+`Other { detail: "web worker unavailable" }` and cached pages stay readable.
+
+| Worker error | Backend error |
+| --- | --- |
+| `EmptyBook` | `EmptyBook` |
+| `FormatDisabled` with `rar/cbr` | `FormatDisabled { format: "rar/cbr" }` |
+| `FormatDisabled` with another format | `Other` with the format and disabled-support detail |
+| `Missing` | `Missing` with the Worker detail |
+| `Other` | `Other` with the Worker detail |
+
 ### page_decode
 
-`page_decode.rs` defines the port. `PageDecoder::decode` takes owned encoded bytes and returns a local `DecodeFuture` resolving to
-a straight-alpha RGBA8 `DecodedImage` or `CoreError`. `ImageCratePageDecoder` runs
-`gashuu_core::image_ops::decode` synchronously and returns an already-ready future. The port is
-available on all targets. On a cache miss, `decode_page` reads the encoded bytes once and
-awaits the primary decoder. If it fails, the orchestrator warns once per controller and retries
-with the fallback. A page cached during either await takes precedence. Otherwise a successful
-decode populates the cache, or the fallback error reaches the loader.
+`decode_page` returns cached pages immediately. On a miss it reads the encoded page
+once and uses core's fallback orchestration. A page cached during either decode takes
+precedence. A primary failure triggers one warning per controller when a retry is needed.
 
-On wasm32, the composition root supplies `NativePageDecoder` as primary and
-`ImageCratePageDecoder` as fallback. Desktop uses the image crate only. The port
-and its local `!Send` futures live in `gashuu`, keeping browser bindings out of
-core. Web covers use the same pair, then `image_ops::downscale_to_thumbnail`;
-cover requests run sequentially, including across refreshes. The web thumbnail
-strip remains a no-op. See [ADR-0014](ADRs/0014-web-decodes-pages-with-the-browser-native-decoder.md).
-
-### web_decode
-
-`web_decode.rs` implements `NativePageDecoder` on the browser main thread with
-`createImageBitmap` and canvas readback. It checks the pixel limit before canvas
-allocation and requests straight alpha, no color-space conversion, and original
-pixel orientation. Canvas readback can round partially transparent RGB values.
+The dedicated Worker uses `gashuu_web_decode::NativePageDecoder` as primary and
+`ImageCratePageDecoder` as fallback. It downscales page zero for covers and
+runs thumbnail requests in the background lane. Desktop uses the image crate. See
+[ADR-0014](ADRs/0014-web-decodes-pages-with-the-browser-native-decoder.md).
 
 ### web_font
 
@@ -528,30 +595,26 @@ creating the window. `web_font` registers it in Slint's shared Fontique
 collection as a fallback for Hiragana, Katakana, and Han. Loading runs on
 Slint's executor while startup continues. A failure logs a warning.
 
-### Web demo book loading
+### BookPicker and BookImporter ports
 
-`web_picker` opens a multiple-file browser input from the Library's Add Books
-callback and reads each selected CBZ or ZIP asynchronously. Folder selection is
-hidden, and the picker rejects RAR/CBR, 7z/CB7, and PDF. `web_books` holds the
-selected bytes as `Arc<[u8]>` under unique UTF-8 paths scoped to the session.
-Library metadata can survive a reload. A restored key is unavailable when its
-bytes are missing, and opening it returns an error.
+`BookPicker` returns desktop paths or Send upload handles. Desktop uses rfd
+and defers the modal dialog result to the event loop. The web picker opens an
+attached, hidden multiple-file input during the Add Books click. It uses
+`.cbz,.zip` as its accept filter outside iOS-family browsers and checks extensions
+after selection on all browsers. The same click requests persistent storage
+once per page load.
 
-`book_path` resolves filesystem paths on desktop and registry paths on wasm32.
-Add probes, cover loads, and opens use the same seam. Browser opens call
-`ArchiveLoader::open_read_at`, which opens a `ZipSource` over the shared bytes.
-Carousel opens and Continue Reading use the existing `OpenController` flow.
+The picker holds browser File objects in a UI-thread registry. The
+`add-picked` callback drains a shared result slot so the UI handler can use its
+`Rc` collaborators. Desktop paths go to `BookBackend::probe_page_count`.
+The separate `BookImporter` port takes browser upload handles and returns
+worker-supplied metadata. `WorkerBackend` takes each file from the registry and
+posts it to the worker, retaining it in the outbox if the worker is starting.
 
-`worker` dispatches through rayon on desktop and runs loader work inline on
-wasm32. The browser page loader uses `spawn_local` to await the leading page before
-the trailing page and logs the decode time for each miss. The browser loads covers through the
-memory cache, and leaves thumbnail-strip generation disabled. `ViewerState`
-caps browser cache capacity at six decoded pages and sets the prefetch radius
-to zero at startup and after settings edits. A 1600 × 2400 RGBA page uses about
-15 MB. The #651 spike reached about 1.5 GB with a 50-page cache on Chrome.
-
-This is the install-free demo path. Issues #655 to #662 track Web Workers,
-OPFS, and `BookBackend` for daily reading.
+At web startup, the app removes demo-era session-only IDs before the first
+carousel refresh and saves the cleaned library once. Imported archives live in
+OPFS and the library stores their IDs in localStorage. Availability checks for
+evicted archives are deferred to #662.
 
 ### web_pointer
 
@@ -1143,8 +1206,13 @@ Starting without a session clears the strip. The web strip remains empty.
 counts, calls `BookBackend::cancel_covers`, and advances the epoch. It requests 512 px covers
 in focus order and asks for a count only for rows with an unknown total. A desktop cache miss
 uses one archive open for cover and count. A cache hit opens the book again only for a requested
-count. Web serializes page-zero decodes across refreshes and keeps up to 64 MiB of covers in
-memory. Reloading the web app clears that cache.
+count. The 512 px size is part of the disk cache key and is independent of the strip's 160 px
+thumbnails. Web serializes page-zero decodes across refreshes and keeps up to 64 MiB of covers
+in memory. Reloading the web app clears that cache.
+
+Callers release their library borrow before issuing the refresh so the controller can apply
+pending counts. Resolved counts update the row immediately and enter a queue for persistence
+on the next refresh or desktop shutdown.
 
 Each `ui_done` completion checks the epoch and window before updating its row. An empty book
 reported by either callback raises `empty-book-detected` once with its ID. Other cover errors
@@ -1153,8 +1221,9 @@ mark the row failed, while a count error after a hit only produces a warning.
 **`add_controller.rs`** probes each picked ID through `BookBackend::probe_page_count` under the
 selected archive policy. A path that cannot form an ID produces an unreadable outcome immediately.
 Each outcome advances progress in the current generation. The last one invokes `add-finalize`,
-whose handler takes the outcomes in input order and applies the batch. An empty pick finalizes
-inline. The browser picker uses the same probe path and appends its own notice at finalize.
+whose handler takes the outcomes in input order and applies the batch. Browser imports
+share the same progress and finalize path and append any picker notice. Superseding a
+batch discards stored imports that never reach the library.
 
 **`open_controller.rs`** passes the raw request ID, policy and next-open cache config to
 the backend. A generation ticket accepts one current result. Dropping a superseded result
@@ -1216,31 +1285,17 @@ screen's bottom status strip idle state); the strip's `Text` resolves
 always win; and forwarded the Carousel's `continue-reading()` callback up to the window level for
 Rust handling.
 
-### rfd file/folder picker
+### Library add flow
 
-Library-side pickers: `on_add_books` (né `on_add_files`; filtered cbz/zip/cbr/rar —
-`pick_files_or_folders` on macOS, where one NSOpenPanel picks archives AND folders in a single
-panel, `pick_files` elsewhere; the platform split lives in `#[cfg]` blocks inside the one handler,
-and the matching `combined-add-picker` bool pushed at boot collapses the NavBar's two add capsules
-into one on macOS) and
-`on_add_folder` (`pick_folder`, folder-as-one-book; its capsule is hidden on macOS). The library-add seam is split
-across the UI-thread boundary to keep bulk adds responsive (issue 206).
-`add_controller::AddController::start` calls `backend.probe_page_count` for each picked path with a
-UI-thread `Done`. Each completion records a `ProbeOutcome` and reports `Adding… (k/N)` through
-`add-progress`. The final completion invokes `add-finalize`. Starting a new batch advances the
-epoch and supersedes older tickets, so late completions from an older batch cannot record outcomes
-or update progress. `add_controller::probe_path` is a test-only fixture helper.
-The apply phase runs on the UI thread in the `add-finalize` handler. It calls
-`main.rs::apply_outcomes` (dedup-aware insert, rejects empty/unreadable
-sources, persists the probed count on each genuine insert, returns `AddReport { added, skipped }` — see ADR-0009),
-`build_carousel_model` (Library → `ModelRc<CarouselItem>`,
-0-based `last_page` → 1-based `current`, real `total`/`progress` from persisted `Book::page_count`,
-placeholder cover), and the shared
-`apply_add_report` tail (save → rebuild carousel → status line → restore carousel
-focus; short-circuits when nothing new was added). The 4-way add notice is chosen by the pure
-`select_add_notice(added, skipped) -> AddNotice` selector (testable without Slint; see
-[patterns.md](patterns.md), "Pure-selector seam"). The persisted `Library` lives in `main.rs` as
-`Rc<RefCell<Library>>`, loaded at startup and seeded into `carousel-items` on boot.
+The macOS Add Books panel can pick archives and folders together. Other desktop
+platforms provide a separate Add Folder action. The browser offers one Add
+Books action because its picker supports files only.
+
+`AddController` restores input order at finalize. `add_books::apply_outcomes`
+deduplicates and inserts successful outcomes, then records their page counts.
+Desktop outcomes derive IDs and titles from filesystem paths. Imported
+outcomes supply both directly. The handler saves once when books were added,
+refreshes the carousel and uses `select_add_notice` to report the result.
 
 ### RGBA conversion
 

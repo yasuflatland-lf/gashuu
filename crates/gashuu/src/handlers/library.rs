@@ -1,6 +1,7 @@
-use crate::backend::{BackendError, BookBackend, OpenedBook};
+use crate::backend::{BackendError, BookBackend, BookImporter, OpenedBook, STORAGE_UNAVAILABLE};
 use crate::book_path::{locate, request_id};
 use crate::dialog_session::DialogSession;
+use crate::picker::{forget_uploads, BookPicker, PickedBook};
 use crate::{
     add_controller,
     carousel::{apply_selection_flags, set_carousel_selected},
@@ -23,28 +24,53 @@ use crate::{viewer_state::ViewerState, viewport::ViewportState};
 use gashuu_core::BookId;
 use gashuu_core::{Library, Settings, ThumbStore};
 use slint::ComponentHandle;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
-/// Ask rfd for comic sources to add. macOS picks files and folders in one panel.
-#[cfg(not(target_arch = "wasm32"))]
-fn pick_book_sources() -> Option<Vec<std::path::PathBuf>> {
-    let dialog = rfd::FileDialog::new().add_filter("Comic archive", &["cbz", "zip", "cbr", "rar"]);
-    #[cfg(target_os = "macos")]
-    {
-        dialog.pick_files_or_folders()
+type PickedSlot = Arc<Mutex<Vec<PickedBook>>>;
+
+fn deliver_picks(
+    weak: &slint::Weak<ViewerWindow>,
+    slot: &PickedSlot,
+    folder: bool,
+    picks: Vec<PickedBook>,
+) {
+    // A rejected web selection can have a notice even though it has no handles.
+    #[cfg(target_arch = "wasm32")]
+    let has_notice = !folder && crate::picker::web::has_notice();
+    #[cfg(not(target_arch = "wasm32"))]
+    let has_notice = false;
+    if picks.is_empty() && !has_notice {
+        return;
     }
-    #[cfg(not(target_os = "macos"))]
-    {
-        dialog.pick_files()
+    if let Some(ui) = weak.upgrade() {
+        let old = std::mem::replace(
+            &mut *slot.lock().expect("picked slot mutex poisoned"),
+            picks,
+        );
+        let (_, uploads) = partition_picks(old);
+        forget_uploads(&uploads);
+        ui.invoke_add_picked(folder);
+    } else {
+        let (_, uploads) = partition_picks(picks);
+        forget_uploads(&uploads);
     }
 }
 
-/// Ask rfd for one folder to add as a book.
-#[cfg(not(target_arch = "wasm32"))]
-fn pick_book_folder() -> Option<std::path::PathBuf> {
-    rfd::FileDialog::new().pick_folder()
+fn partition_picks(
+    picks: Vec<PickedBook>,
+) -> (Vec<std::path::PathBuf>, Vec<crate::picker::UploadHandle>) {
+    let mut paths = Vec::new();
+    let mut uploads = Vec::new();
+    for pick in picks {
+        match pick {
+            PickedBook::Path(path) => paths.push(path),
+            PickedBook::Upload(file) => uploads.push(file),
+        }
+    }
+    debug_assert!(paths.is_empty() || uploads.is_empty());
+    (paths, uploads)
 }
 
 /// Registers the add-books/add-folder callbacks onto `ui`.
@@ -52,6 +78,8 @@ fn pick_book_folder() -> Option<std::path::PathBuf> {
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn wire_open_handlers(
     ui: &ViewerWindow,
+    picker: &Rc<dyn BookPicker>,
+    importer: Option<Rc<dyn BookImporter>>,
     settings: &Rc<RefCell<Settings>>,
     library: &Rc<RefCell<Library>>,
     covers: &Rc<cover_loader::CoverController>,
@@ -81,41 +109,77 @@ pub(crate) fn wire_open_handlers(
         localizer: Rc::clone(&localizer),
     };
 
-    // Add Books: pick comic sources. macOS picks archives AND folders in one panel
-    // (`pick_files_or_folders`); sources are probed off the UI thread (issue 206).
-    #[cfg(not(target_arch = "wasm32"))]
+    let picked_slot = PickedSlot::default();
+    let pending_folder = Rc::new(Cell::new(None));
     {
-        let ui_weak = ui.as_weak();
-        let settings = Rc::clone(&settings);
-        let adder = Rc::clone(&adder);
+        let picker = Rc::clone(picker);
+        let weak = ui.as_weak();
+        let slot = picked_slot.clone();
         ui.on_add_books(move || {
-            with_ui(&ui_weak, |ui| {
-                let Some(paths) = pick_book_sources() else {
-                    return;
-                };
-                let policy = settings.borrow().archive_policy();
-                adder.start(ui.as_weak(), paths, policy, "add-books");
-            })
+            let weak = weak.clone();
+            let slot = slot.clone();
+            picker.pick_books(Box::new(move |picks| {
+                deliver_picks(&weak, &slot, false, picks)
+            }));
         });
     }
-    #[cfg(target_arch = "wasm32")]
-    crate::web_picker::wire(ui, &settings, &adder, &localizer);
-
-    // Add Folder: pick one folder, added as one book. Wraps it in a `vec![]` so it reuses
-    // the same off-thread probe + `add-finalize` apply path as `on_add_books` (issue 206).
-    #[cfg(not(target_arch = "wasm32"))]
     {
-        let ui_weak = ui.as_weak();
-        let settings = Rc::clone(&settings);
-        let adder = Rc::clone(&adder);
+        let picker = Rc::clone(picker);
+        let weak = ui.as_weak();
+        let slot = picked_slot.clone();
         ui.on_add_folder(move || {
-            with_ui(&ui_weak, |ui| {
-                let Some(folder) = pick_book_folder() else {
+            let weak = weak.clone();
+            let slot = slot.clone();
+            picker.pick_folder(Box::new(move |pick| {
+                deliver_picks(&weak, &slot, true, pick.into_iter().collect());
+            }));
+        });
+    }
+    {
+        let weak = ui.as_weak();
+        let adder = adder.clone();
+        let picked_slot = picked_slot.clone();
+        let pending_folder = pending_folder.clone();
+        #[cfg(target_arch = "wasm32")]
+        let localizer = localizer.clone();
+        ui.on_add_picked(move |folder| {
+            pending_folder.take();
+            let picks =
+                std::mem::take(&mut *picked_slot.lock().expect("picked slot mutex poisoned"));
+            let (paths, uploads) = partition_picks(picks);
+            let op = if folder { "add-folder" } else { "add-books" };
+            let policy = settings.borrow().archive_policy();
+            if !paths.is_empty() {
+                if !uploads.is_empty() {
+                    // A mixed selection is impossible for platform pickers. In release,
+                    // finish the path batch before starting the uploads.
+                    *picked_slot.lock().expect("picked slot mutex poisoned") =
+                        uploads.into_iter().map(PickedBook::Upload).collect();
+                    pending_folder.set(Some(folder));
+                }
+                adder.start(weak.clone(), paths, policy, op);
+                return;
+            }
+            #[cfg(target_arch = "wasm32")]
+            let notice = crate::picker::web::take_notice(&localizer);
+            #[cfg(not(target_arch = "wasm32"))]
+            let notice: Option<String> = None;
+
+            if !uploads.is_empty() {
+                if let Some(importer) = importer.as_deref() {
+                    adder.start_import(weak.clone(), uploads, policy, op, notice, importer);
                     return;
-                };
-                let policy = settings.borrow().archive_policy();
-                adder.start(ui.as_weak(), vec![folder], policy, "add-folder");
-            })
+                }
+                forget_uploads(&uploads);
+                if let Some(ui) = weak.upgrade() {
+                    ui.set_add_toast_text(append_notice(STORAGE_UNAVAILABLE.into(), notice).into());
+                    ui.invoke_focus_carousel();
+                }
+            } else if let (Some(ui), Some(notice)) = (weak.upgrade(), notice) {
+                ui.set_status_text("".into());
+                ui.set_add_toast_text(notice.into());
+                ui.invoke_focus_carousel();
+            }
         });
     }
 
@@ -155,23 +219,71 @@ pub(crate) fn wire_open_handlers(
                 let Some((outcomes, op)) = adder.take_outcomes(epoch.max(0) as usize) else {
                     return;
                 };
-                apply_add_report(&ui, &carousel, outcomes, op, localizer.loader());
                 #[cfg(target_arch = "wasm32")]
-                if let Some(notice) = adder.take_picker_notice() {
-                    let report = ui.get_add_toast_text();
-                    let text = if report.is_empty() {
-                        notice
-                    } else {
-                        format!("{report}\n{notice}")
-                    };
-                    ui.set_add_toast_text(text.into());
+                let import_notice = import_failure_notice(&outcomes, &localizer);
+                apply_add_report(&ui, &carousel, outcomes, op, localizer.loader());
+                let notice = adder.take_picker_notice();
+                #[cfg(target_arch = "wasm32")]
+                let notice = [notice, import_notice]
+                    .into_iter()
+                    .flatten()
+                    .reduce(|a, b| format!("{a}\n{b}"));
+                if let Some(notice) = notice {
+                    ui.set_add_toast_text(
+                        append_notice(ui.get_add_toast_text().to_string(), Some(notice)).into(),
+                    );
                 }
                 // This generation's add is complete — hide the progress hairline.
                 // (Superseded finalizes returned early above, so a newer in-flight
                 // add's bar is left running for its own finalize to retire.)
                 ui.set_add_active(false);
+                if let Some(folder) = pending_folder.take() {
+                    ui.invoke_add_picked(folder);
+                }
             })
         });
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn import_failure_notice(
+    outcomes: &[add_controller::ProbeOutcome],
+    localizer: &i18n::Localizer,
+) -> Option<String> {
+    use add_controller::{ProbeKind, ProbeSubject};
+    use gashuu_worker::import::{STORAGE_FULL, UNREADABLE_UPLOAD};
+
+    let mut notices = Vec::new();
+    let mut unreadable = 0;
+    for outcome in outcomes {
+        if let (ProbeSubject::Upload(_), ProbeKind::Unreadable { error }) =
+            (&outcome.subject, &outcome.kind)
+        {
+            match error.as_str() {
+                UNREADABLE_UPLOAD => unreadable += 1,
+                reason @ (STORAGE_UNAVAILABLE | STORAGE_FULL)
+                    if !notices.iter().any(|notice| notice == reason) =>
+                {
+                    notices.push(reason.to_owned())
+                }
+                _ => {}
+            }
+        }
+    }
+    if unreadable > 0 {
+        notices.push(i18n::dynamic::web_unreadable_files(
+            localizer.loader(),
+            unreadable,
+        ));
+    }
+    (!notices.is_empty()).then(|| notices.join("\n"))
+}
+
+fn append_notice(report: String, notice: Option<String>) -> String {
+    match notice {
+        Some(notice) if report.is_empty() => notice,
+        Some(notice) => format!("{report}\n{notice}"),
+        None => report,
     }
 }
 
