@@ -71,7 +71,6 @@ use gashuu_core::{
 use library_model::{LibrarySearchState, LibrarySelectionState};
 use navigation::{screen_to_index, NavState};
 use page_loader::PageController;
-#[cfg(not(test))]
 use page_loader::{PageSlot, SpreadDecodeRequest};
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -79,7 +78,6 @@ use std::rc::Rc;
 use std::sync::Arc;
 use thumbnail_strip::ThumbnailController;
 pub(crate) use view_sync::{current_book_name, LeavePointService, ViewModeRoute};
-#[cfg(not(test))]
 use viewer_state::SpreadCacheState;
 use viewer_state::{StatusContent, ViewerState};
 use viewport::ViewportState;
@@ -342,9 +340,7 @@ fn run_app(
 
     let backend = backend::platform_backend();
 
-    // Thumbnail-strip controller: owns the backing model + generation bookkeeping
-    // (epoch + cancel guard). `Rc` so both open handlers share one controller.
-    let thumbs = Rc::new(ThumbnailController::new(&ui));
+    let thumbs = Rc::new(ThumbnailController::new(&ui, Rc::clone(&backend)));
 
     // Cover controller for the carousel (epoch + cancel guard). `start` runs after the
     // model is (re)built so a refresh supersedes covers still streaming from the prior view.
@@ -353,21 +349,15 @@ fn run_app(
 
     // Page controller for the viewer body. Owns async page-decode epoch and
     // dispatch dedup for cache-miss spreads.
-    #[cfg(not(target_arch = "wasm32"))]
-    let pages = Rc::new(page_loader::PageController::new());
+    let pages = Rc::new(PageController::new(backend.clone()));
     #[cfg(target_arch = "wasm32")]
-    let (covers, pages) = {
+    let covers = {
         let primary: Rc<dyn gashuu_core::PageDecoder> =
             Rc::new(gashuu_web_decode::NativePageDecoder);
         let fallback: Rc<dyn gashuu_core::PageDecoder> =
             Rc::new(gashuu_core::ImageCratePageDecoder);
-        let covers = cover_loader::CoverController::new(
-            Rc::clone(&primary),
-            Rc::clone(&fallback),
-            Rc::clone(&backend),
-        );
-        let pages = PageController::with_decoders(primary, fallback);
-        (Rc::new(covers), Rc::new(pages))
+        let covers = cover_loader::CoverController::new(primary, fallback, Rc::clone(&backend));
+        Rc::new(covers)
     };
 
     // Bulk-add controller (issue 206): probes each source off the UI thread so a bulk
@@ -376,7 +366,7 @@ fn run_app(
 
     // Single-open controller: opens and inspects one source off the UI thread;
     // `open-finalize` applies only the current epoch on the event loop.
-    let open_ctrl = Rc::new(open_controller::OpenController::new());
+    let open_ctrl = Rc::new(open_controller::OpenController::new(backend.clone()));
 
     // Shared library-search filter state, so every path (search, add/open backfill,
     // open-time rebuild) projects the SAME visible-index set. Starts on the empty query.
@@ -419,6 +409,7 @@ fn run_app(
             let store = Rc::clone(&settings_store);
             move |settings| save_settings(&store, settings)
         }),
+        backend.clone(),
     ));
 
     // Seed the carousel from the persisted library so boot shows saved books. This is
@@ -512,6 +503,7 @@ fn run_app(
         &selection,
         &localizer,
         &library_store,
+        backend,
     );
     handlers::wire_viewer_input_handlers(&ui, &state, &viewport, &pages, &localizer);
     handlers::wire_settings_handlers(
@@ -807,15 +799,13 @@ fn spread_content_size(leading: &DecodedImage, trailing: Option<&DecodedImage>) 
     }
 }
 
-#[cfg(not(test))]
 fn page_slot(index: usize, decoded: Option<std::sync::Arc<DecodedImage>>) -> PageSlot {
-    match decoded {
-        Some(decoded) => PageSlot::hit(index, decoded),
-        None => PageSlot::miss(index),
+    PageSlot {
+        index,
+        missing: decoded.is_none(),
     }
 }
 
-#[cfg(not(test))]
 fn spread_request(slots: SpreadCacheState) -> SpreadDecodeRequest {
     let leading = page_slot(slots.leading.0, slots.leading.1);
     match slots.trailing {
@@ -832,11 +822,11 @@ pub(crate) fn refresh(
     viewport: &RefCell<ViewportState>,
     loader: &i18n_embed::fluent::FluentLanguageLoader,
     pages: &PageController,
-    #[cfg_attr(test, allow(unused_variables))] ui_weak: slint::Weak<ViewerWindow>,
+    ui_weak: slint::Weak<ViewerWindow>,
 ) {
     let content = state.status_content();
     ui.set_rtl(matches!(state.reading_direction(), ReadingDirection::Rtl));
-    match state.classify_spread() {
+    match state.classify_spread(pages.backend()) {
         Some(slots) => {
             let leading_idx = slots.leading.0;
             let trailing_idx = slots.trailing.as_ref().map(|(index, _)| *index);
@@ -888,9 +878,8 @@ pub(crate) fn refresh(
                 // `changed mouse-x`); suppress the pointer-reveal so chrome doesn't flip on MISS.
                 ui.invoke_arm_pointer_reveal_suppression();
 
-                #[cfg(not(test))]
-                if let Some(dispatch) = state.dispatch_handle() {
-                    pages.dispatch_spread(ui_weak, dispatch, spread_request(slots));
+                if let Some(session) = state.session() {
+                    pages.dispatch_spread(ui_weak, session, spread_request(slots));
                 }
             }
         }
@@ -942,7 +931,7 @@ pub(crate) fn empty_book_removed_status(
     }
 }
 
-/// Finalize an `open_book.apply_probed(path, probe)` outcome on the UI — the headless use case
+/// Finalize an `open_book.apply_opened(request, result)` outcome on the UI — the headless use case
 /// returns data and this applies every Slint effect. On failure, set the localized
 /// error status; on success, `refresh()` the viewer, rebuild the carousel when the
 /// open back-filled a page count (`count_changed`), launch thumbnails, and append
@@ -980,13 +969,10 @@ fn finalize_open(
                 // focused index (matches the old open-coded path).
                 refresh_library_carousel(ui, deps, false);
             }
-            // Kick off parallel thumbnail generation for the newly opened source (success
-            // path only; empty books early-return, failures are `Error`).
             thumbs.start(
                 ui.as_weak(),
-                state.borrow().current_source(),
+                state.borrow().session(),
                 state.borrow().page_count(),
-                state.borrow().open_book().map(book_path::locate),
             );
             for detail in crate::i18n::dynamic::format_notices(loader, &notices) {
                 let base = ui.get_status_text().to_string();
