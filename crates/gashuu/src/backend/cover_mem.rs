@@ -10,13 +10,9 @@ use std::sync::Arc;
 /// raised or lowered freely without invalidating anything on disk.
 pub(crate) const COVER_MEM_BUDGET_BYTES: u64 = 64 * 1024 * 1024;
 
-/// Process-lifetime, byte-budgeted in-memory LRU of decoded covers, checked
-/// BEFORE the disk read in `spawn_load`. The on-disk cover cache HIT path still
-/// `fs::read`s and PNG-decodes `<cache>/<key>.png` on every call
-/// (`ThumbnailCache::get`), so a carousel scrolled back and forth re-decodes the
-/// same covers repeatedly; serving an already-decoded cover from here removes
-/// that repeat work. Covers are held as `Arc<DecodedImage>` so a mem hit is a
-/// cheap refcount bump rather than an RGBA buffer copy.
+/// Byte-budgeted LRU of decoded carousel covers. On desktop, a memory hit
+/// skips the persistent store's QOI read and decode. A hit returns a shared
+/// `Arc<DecodedImage>` so the caller can reuse the RGBA buffer.
 ///
 /// Eviction is by running byte total, not entry count: each `insert` adds the new
 /// buffer's bytes and pops the least-recently-used entry until the total is back

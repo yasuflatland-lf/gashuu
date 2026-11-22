@@ -59,17 +59,14 @@ pub struct ViewerState {
     /// Retained for the language getter; the status line itself is now language-free
     /// (`status_content`) and localized by `i18n::dynamic::format_status`.
     language: Language,
-    /// Number of entries skipped during the most recent successful `open_path`
-    /// call (unreadable or filtered-out entries). Zero when no path has been
-    /// opened yet or when the last open skipped nothing. Only updated on
-    /// `Ok(())` returns; an error return leaves the value from the previous
-    /// successful open unchanged.
+    /// Entries skipped by the most recent book installed via `install_opened`.
+    /// Zero until a book is installed or when the last listing skipped nothing.
+    /// A failed open never reaches installation, so the previous value is retained.
     last_open_skipped: usize,
-    /// Whether an error cut short the page listing during the most recent
-    /// successful `open_path` call. False until a path has been opened or when
-    /// the last listing completed normally. Only updated on `Ok(())` returns;
-    /// an error return leaves the value from the previous successful open
-    /// unchanged.
+    /// Whether an error cut short the page listing of the most recent book
+    /// installed via `install_opened`. False until a book is installed or when
+    /// the last listing completed normally. A failed open never reaches
+    /// installation, so the previous value is retained.
     last_open_truncated: bool,
     /// Identity and display title installed by a successful open.
     open_book: Option<BookId>,
@@ -186,19 +183,17 @@ impl ViewerState {
         self.session.replace(opened.session)
     }
 
-    /// Number of entries skipped during the most recent successful `open_path`
-    /// call. Zero until a path has been successfully opened
-    /// or when the last open skipped nothing. Only meaningful after `Ok(())`;
-    /// an error return leaves the value from the previous successful open.
+    /// Entries skipped by the most recent book installed via `install_opened`.
+    /// Zero until a book is installed or when the last listing skipped nothing.
+    /// A failed open never reaches installation, so the previous value is retained.
     pub fn last_open_skipped(&self) -> usize {
         self.last_open_skipped
     }
 
-    /// Whether an error cut short the page listing during the most recent
-    /// successful `open_path` call. False until a path has been successfully
-    /// opened or when the last listing completed normally. Only meaningful
-    /// after `Ok(())`; an error return leaves the value from the previous
-    /// successful open.
+    /// Whether an error cut short the page listing of the most recent book
+    /// installed via `install_opened`. False until a book is installed or when
+    /// the last listing completed normally. A failed open never reaches
+    /// installation, so the previous value is retained.
     pub fn last_open_truncated(&self) -> bool {
         self.last_open_truncated
     }

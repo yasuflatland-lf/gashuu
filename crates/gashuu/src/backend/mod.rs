@@ -1,6 +1,6 @@
 //! Asynchronous access to books from the UI thread.
 
-use gashuu_core::{ArchivePolicy, BookId, CacheConfig, CoreError, DecodedImage};
+use gashuu_core::{ArchivePolicy, BookId, CacheConfig, CoreError, DecodedImage, ThumbStore};
 use std::fmt;
 use std::num::NonZeroUsize;
 #[cfg(not(target_arch = "wasm32"))]
@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 pub(crate) mod cover_mem;
 #[cfg(not(target_arch = "wasm32"))]
-mod desktop;
+pub(crate) mod desktop;
 #[cfg(test)]
 pub(crate) mod fake;
 #[cfg(target_arch = "wasm32")]
@@ -187,13 +187,18 @@ fn deliver_cover(
     }
 }
 
-pub(crate) fn platform_backend() -> Rc<dyn BookBackend> {
+pub(crate) fn platform_backend(thumbs: Arc<dyn ThumbStore>) -> Rc<dyn BookBackend> {
     #[cfg(not(target_arch = "wasm32"))]
-    return Rc::new(desktop::DesktopBackend::new());
+    {
+        Rc::new(desktop::DesktopBackend::new(thumbs))
+    }
     #[cfg(target_arch = "wasm32")]
-    return web::shared()
-        .map(|backend| backend as Rc<dyn BookBackend>)
-        .unwrap_or_else(|| Rc::new(unavailable::UnavailableBackend::default()));
+    {
+        let _ = thumbs;
+        web::shared()
+            .map(|backend| backend as Rc<dyn BookBackend>)
+            .unwrap_or_else(|| Rc::new(unavailable::UnavailableBackend::default()))
+    }
 }
 
 pub(crate) use importer::{BookImporter, DiscardUpload, ImportedBook};

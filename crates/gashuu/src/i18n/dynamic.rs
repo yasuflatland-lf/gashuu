@@ -395,8 +395,8 @@ pub(crate) fn cover_cache_cleared(
     )
 }
 
-/// Status line when clearing the cover cache failed because the cache directory
-/// could not be opened (e.g. no data dir).
+/// Covers the legacy failure-status translation in the locale tests.
+#[cfg(test)]
 pub(crate) fn cover_cache_clear_failed(loader: &FluentLanguageLoader) -> String {
     fl!(loader, "settings-cache-clear-failed")
 }

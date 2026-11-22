@@ -22,7 +22,7 @@ use crate::{
 };
 use crate::{viewer_state::ViewerState, viewport::ViewportState};
 use gashuu_core::BookId;
-use gashuu_core::{Library, Settings};
+use gashuu_core::{Library, Settings, ThumbStore};
 use slint::ComponentHandle;
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -581,6 +581,7 @@ pub(crate) fn wire_selection_handlers(
     localizer: &Rc<i18n::Localizer>,
     library_store: &LibraryStoreHandle,
     backend: Rc<dyn BookBackend>,
+    thumbs: Arc<dyn ThumbStore>,
 ) {
     // Rebind the `&Rc<_>` params to owned `Rc` locals so each closure's `Rc::clone(&handle)`
     // prelude stays byte-identical to its pre-extraction form in `main`.
@@ -775,6 +776,7 @@ pub(crate) fn wire_selection_handlers(
             Rc::clone(&selection),
             Rc::clone(&library_store),
             backend,
+            Arc::clone(&thumbs),
         );
         ui.on_confirm_delete_accepted(move || {
             with_ui(&ui_weak, |ui| {
@@ -799,9 +801,10 @@ pub(crate) fn wire_selection_handlers(
                 let id = BookId::new(id_str.as_str());
                 // The shared transaction (single home in open_book): title capture
                 // BEFORE removal -> Library::remove -> save -> best-effort cover purge.
-                let removal = open_book::remove_empty_book(&library, &id, None, |library| {
-                    save_library(&library_store, library)
-                });
+                let removal =
+                    open_book::remove_empty_book(&library, &id, None, thumbs.as_ref(), |library| {
+                        save_library(&library_store, library)
+                    });
                 finalize_empty_book_rejected(&ui, &carousel, &removal);
             })
         });
@@ -812,6 +815,21 @@ pub(crate) fn wire_selection_handlers(
 mod tests {
     use super::*;
     use crate::dialog_session::DialogScope;
+    use crate::open_book::opened;
+    use gashuu_core::{
+        CoverMode, FitMode, ReadingDirection, ResolvedView, SpreadMode, ViewOverride,
+    };
+
+    fn make_book_dir(parent: &std::path::Path, name: &str, pages: usize) -> std::path::PathBuf {
+        let source = parent.join(name);
+        std::fs::create_dir(&source).expect("create fixture book");
+        for page in 0..pages {
+            std::fs::write(source.join(format!("page{page:03}.png")), [])
+                .expect("write fixture page");
+        }
+        source
+    }
+
     #[cfg(unix)]
     #[test]
     fn open_and_enter_non_utf8_path_does_not_dispatch() {
@@ -828,20 +846,6 @@ mod tests {
         )
         .is_err());
         assert!(backend.calls().is_empty());
-    }
-    use crate::open_book::opened;
-    use gashuu_core::{
-        CoverMode, FitMode, ReadingDirection, ResolvedView, SpreadMode, ViewOverride,
-    };
-
-    fn make_book_dir(parent: &std::path::Path, name: &str, pages: usize) -> std::path::PathBuf {
-        let source = parent.join(name);
-        std::fs::create_dir(&source).expect("create fixture book");
-        for page in 0..pages {
-            std::fs::write(source.join(format!("page{page:03}.png")), [])
-                .expect("write fixture page");
-        }
-        source
     }
 
     /// Issue #535, path (b), pinned at the PRODUCTION call site: an open that lands
@@ -908,6 +912,7 @@ mod tests {
             Box::new(|_| Ok(())),
             Box::new(|_| Ok(())),
             crate::backend::fake::FakeBackend::new(),
+            Arc::new(gashuu_core::NullThumbStore),
         );
         // The Library-screen dialog seeds the runtime with G, then the in-flight
         // open of the SECOND book lands.
@@ -1021,6 +1026,7 @@ mod tests {
             Box::new(|_| Ok(())),
             Box::new(|_| Ok(())),
             crate::backend::fake::FakeBackend::new(),
+            Arc::new(gashuu_core::NullThumbStore),
         );
 
         dialog_session
