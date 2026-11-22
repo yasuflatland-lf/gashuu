@@ -48,7 +48,12 @@ impl Inbox {
 pub fn start() {
     console_error_panic_hook::set_once();
     let scope: DedicatedWorkerGlobalScope = js_sys::global().unchecked_into();
-    let dispatcher = Dispatcher::new(Rc::new(NativePageDecoder), Rc::new(ImageCratePageDecoder));
+    let dispatcher = Dispatcher::new(Rc::new(NativePageDecoder), Rc::new(ImageCratePageDecoder))
+        .with_fallback_hook(Rc::new(|error| {
+            web_sys::console::warn_1(
+                &format!("native page decode failed, used wasm fallback: {error}").into(),
+            );
+        }));
     let control = dispatcher.control();
     let dispatcher = Rc::new(RefCell::new(Some(dispatcher)));
     let inbox = Rc::new(RefCell::new(Inbox::default()));

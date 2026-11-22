@@ -28,6 +28,7 @@ web-sys = { version = "0.3", features = [
     "DedicatedWorkerGlobalScope", "WorkerGlobalScope", "WorkerNavigator", "StorageManager",
     "FileSystemDirectoryHandle", "FileSystemGetDirectoryOptions", "FileSystemFileHandle",
     "FileSystemSyncAccessHandle", "FileSystemReadWriteOptions", "MessageEvent", "DomException",
+    "console",
 ] }
 
 [dev-dependencies]
