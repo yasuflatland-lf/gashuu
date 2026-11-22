@@ -1,4 +1,4 @@
-//! UI-thread completions and generation-scoped result slots.
+//! Epoch guards for backend completions and result slots for async controllers.
 
 use crate::{backend::Done, ViewerWindow};
 use std::cell::RefCell;

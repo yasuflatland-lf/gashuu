@@ -121,7 +121,7 @@ impl Inner {
         config: CacheConfig,
     ) -> Result<OpenedBook, BackendError> {
         let path = locate(id);
-        let source = crate::book_path::open(&path, policy)
+        let source = ArchiveLoader::open_with_policy(&path, policy)
             .map_err(|error| BackendError::for_open(&path, &error))?;
         let skipped = source.skipped_count();
         let listing_truncated = source.listing_truncated();
