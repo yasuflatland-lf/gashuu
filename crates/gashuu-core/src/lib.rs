@@ -52,7 +52,8 @@ pub use library::{
 };
 pub use library_store::{LibraryStore, LIBRARY_VERSION};
 pub use page_decode::{
-    decode_with_fallback, DecodeFuture, Decoded, ImageCratePageDecoder, PageDecoder,
+    decode_with_fallback, decode_with_fallback_if, DecodeFuture, Decoded, ImageCratePageDecoder,
+    PageDecoder,
 };
 #[cfg(not(target_arch = "wasm32"))]
 pub use page_source::FileReadAt;

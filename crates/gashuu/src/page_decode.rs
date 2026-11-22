@@ -1,8 +1,7 @@
 //! Page cache and cover handling for the presentation layer.
 
 use gashuu_core::{
-    cache::CacheDispatch, page_decode::decode_with_fallback_if, CoreError, DecodedImage,
-    PageDecoder,
+    cache::CacheDispatch, decode_with_fallback_if, CoreError, DecodedImage, PageDecoder,
 };
 use std::cell::Cell;
 use std::sync::Arc;
@@ -56,8 +55,7 @@ pub(crate) async fn decode_cover(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gashuu_core::DecodeFuture;
-    use gashuu_core::{CacheConfig, ImageCache, MockPageSource, PageEntry};
+    use gashuu_core::{CacheConfig, DecodeFuture, ImageCache, MockPageSource, PageEntry};
     use std::future::{ready, Future};
     use std::task::{Context, Poll, Waker};
 
