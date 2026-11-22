@@ -699,6 +699,21 @@ pub(crate) fn wire_selection_handlers(
 mod tests {
     use super::*;
     use crate::dialog_session::DialogScope;
+    use crate::open_book::opened;
+    use gashuu_core::{
+        CoverMode, FitMode, ReadingDirection, ResolvedView, SpreadMode, ViewOverride,
+    };
+
+    fn make_book_dir(parent: &std::path::Path, name: &str, pages: usize) -> std::path::PathBuf {
+        let source = parent.join(name);
+        std::fs::create_dir(&source).expect("create fixture book");
+        for page in 0..pages {
+            std::fs::write(source.join(format!("page{page:03}.png")), [])
+                .expect("write fixture page");
+        }
+        source
+    }
+
     #[cfg(unix)]
     #[test]
     fn open_and_enter_non_utf8_path_does_not_dispatch() {
@@ -715,20 +730,6 @@ mod tests {
         )
         .is_err());
         assert!(backend.calls().is_empty());
-    }
-    use crate::open_book::opened;
-    use gashuu_core::{
-        CoverMode, FitMode, ReadingDirection, ResolvedView, SpreadMode, ViewOverride,
-    };
-
-    fn make_book_dir(parent: &std::path::Path, name: &str, pages: usize) -> std::path::PathBuf {
-        let source = parent.join(name);
-        std::fs::create_dir(&source).expect("create fixture book");
-        for page in 0..pages {
-            std::fs::write(source.join(format!("page{page:03}.png")), [])
-                .expect("write fixture page");
-        }
-        source
     }
 
     /// Issue #535, path (b), pinned at the PRODUCTION call site: an open that lands
