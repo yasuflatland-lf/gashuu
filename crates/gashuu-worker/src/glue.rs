@@ -148,7 +148,7 @@ async fn drain(
                 }
             }
             WorkerRequest::Sweep { req, keep, now_ms } => {
-                let response = match sweep(
+                let response = sweep(
                     &scope,
                     &mut worker,
                     &inbox,
@@ -157,13 +157,10 @@ async fn drain(
                     now_ms,
                 )
                 .await
-                {
-                    Ok(response) => response,
-                    Err(e) => WorkerResponse::Rejected {
-                        req: Some(req),
-                        error: opfs::map_error("books", e),
-                    },
-                };
+                .unwrap_or_else(|error| WorkerResponse::Rejected {
+                    req: Some(req),
+                    error: opfs::map_error("books", error),
+                });
                 post(&scope, Reply::metadata(response));
             }
             request => serve(&scope, &mut worker.dispatcher, request).await,
@@ -171,6 +168,15 @@ async fn drain(
         if lane == Lane::Background && inbox.borrow().only_background_pending() {
             next_turn(&scope).await;
         }
+    }
+}
+
+async fn open_reader(worker: &Dispatcher, id: &str) -> WireResult<Arc<dyn ReadAt>> {
+    match worker.reader_for(id) {
+        Some(reader) => Ok(reader),
+        None => opfs::open_book(id)
+            .await
+            .map(|reader| Arc::new(reader) as Arc<dyn ReadAt>),
     }
 }
 
@@ -183,12 +189,7 @@ async fn serve(
         return;
     }
     let reader = match Dispatcher::needs_reader(&request) {
-        Some(id) => Some(match worker.reader_for(id) {
-            Some(reader) => Ok(reader),
-            None => opfs::open_book(id)
-                .await
-                .map(|reader| Arc::new(reader) as Arc<dyn ReadAt>),
-        }),
+        Some(id) => Some(open_reader(worker, id).await),
         None => None,
     };
     // handle checks obsolescence again after the asynchronous open.
@@ -218,13 +219,7 @@ async fn import(
     }
     let index = worker.content_index.as_mut().expect("initialized above");
     if let Some(id) = index.get(&key) {
-        let existing = match worker.dispatcher.reader_for(id) {
-            Some(reader) => Ok(reader),
-            None => opfs::open_book(id)
-                .await
-                .map(|r| Arc::new(r) as Arc<dyn ReadAt>),
-        };
-        match existing {
+        match open_reader(&worker.dispatcher, id).await {
             Ok(reader) => {
                 let path = gashuu_worker::book_path::parse(id)?;
                 let pages = gashuu_worker::import::probe_upload(
@@ -298,8 +293,7 @@ async fn build_index(
     let map_error = |e| opfs::map_error("books", e);
     if let Some(dirs) = opfs::BookDirs::open(scope).await.map_err(map_error)? {
         while let Some(dir) = dirs.next().await.map_err(map_error)? {
-            if let Some((name, _)) = &dir.file {
-                let id = format!("books/{}/{name}", dir.uuid);
+            if let Some(id) = dir.id() {
                 match dir.stored_key(&id, worker.reader_for(&id)).await {
                     Ok(key) => {
                         index.entry(key).or_insert(id);
@@ -327,10 +321,7 @@ async fn sweep(
     if let Some(dirs) = opfs::BookDirs::open(scope).await? {
         while let Some(dir) = dirs.next().await? {
             yield_to_readers(scope, &mut worker.dispatcher, inbox).await;
-            let id = dir
-                .file
-                .as_ref()
-                .map(|(name, _)| format!("books/{}/{name}", dir.uuid));
+            let id = dir.id();
             let modified = match &dir.file {
                 Some((_, handle))
                     if now_ms.is_some() && !id.as_ref().is_some_and(|id| keep.contains(id)) =>
@@ -347,26 +338,21 @@ async fn sweep(
                 }
                 _ => 0.,
             };
-            if inventory.should_delete(id.as_deref(), modified, &keep, now_ms) {
-                let locked = if id
-                    .as_ref()
-                    .is_some_and(|id| worker.dispatcher.reader_for(id).is_some())
-                {
-                    true
-                } else {
-                    match opfs::remove_entry(&dirs.books, &dir.uuid).await {
-                        Ok(()) => {
-                            removed += 1;
-                            false
-                        }
-                        Err(e) if opfs::named(&e, "NotFoundError") => false,
-                        Err(e) if opfs::named(&e, "NoModificationAllowedError") => true,
-                        Err(e) => return Err(e),
-                    }
-                };
-                if locked {
-                    inventory.locked(id);
-                }
+            if !inventory.should_delete(id.as_deref(), modified, &keep, now_ms) {
+                continue;
+            }
+            if id
+                .as_deref()
+                .is_some_and(|id| worker.dispatcher.reader_for(id).is_some())
+            {
+                inventory.locked(id);
+                continue;
+            }
+            match opfs::remove_entry(&dirs.books, &dir.uuid).await {
+                Ok(()) => removed += 1,
+                Err(e) if opfs::named(&e, "NotFoundError") => {}
+                Err(e) if opfs::named(&e, "NoModificationAllowedError") => inventory.locked(id),
+                Err(e) => return Err(e),
             }
         }
     }

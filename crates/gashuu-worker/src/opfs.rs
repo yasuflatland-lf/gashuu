@@ -7,7 +7,7 @@ use gashuu_worker::{
         fits_in_quota, probe_upload, sanitise_upload_name, upload_title, STORAGE_FULL,
         UNREADABLE_UPLOAD,
     },
-    lifecycle::{content_key, head_tail_ranges},
+    lifecycle::{content_key, head_tail_ranges, is_content_key},
     protocol::ImportedMeta,
     wire_error::WireError,
 };
@@ -413,6 +413,12 @@ pub struct BookDir {
 }
 
 impl BookDir {
+    pub fn id(&self) -> Option<String> {
+        self.file
+            .as_ref()
+            .map(|(name, _)| format!("books/{}/{name}", self.uuid))
+    }
+
     pub async fn stored_key(
         &self,
         id: &str,
@@ -431,11 +437,7 @@ impl BookDir {
                         .map_err(|e| map_error(id, e))?
                         .as_string()
                         .unwrap_or_default();
-                    if key.len() == 64
-                        && key
-                            .bytes()
-                            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
-                    {
+                    if is_content_key(&key) {
                         return Ok(key);
                     }
                 }

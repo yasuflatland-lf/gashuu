@@ -13,6 +13,7 @@ use gashuu_core::{
 use image::{ImageFormat, Rgba, RgbaImage};
 use std::{
     cell::{Cell, RefCell},
+    collections::HashSet,
     future::{ready, Future},
     io::{self, Cursor, Write},
     pin::pin,
@@ -946,8 +947,46 @@ fn upload_fingerprint_and_ranges() {
 }
 
 #[test]
+fn validates_content_key() {
+    use crate::lifecycle::is_content_key;
+
+    let key = "0123456789abcdef".repeat(4);
+    assert!(is_content_key(&key));
+    assert!(!is_content_key(&key.to_ascii_uppercase()));
+    assert!(!is_content_key(&key[..63]));
+    assert!(!is_content_key(&format!("{key}0")));
+}
+
+struct SweepPlan {
+    delete: Vec<String>,
+    present: Vec<String>,
+}
+
+fn plan_sweep(
+    dirs: &[(String, Option<String>, f64)],
+    keep: &HashSet<String>,
+    now_ms: Option<f64>,
+) -> (SweepPlan, u32) {
+    let mut inventory = crate::lifecycle::SweepInventory::default();
+    let mut delete = Vec::new();
+    for (uuid, name, modified) in dirs {
+        let id = name.as_ref().map(|name| format!("books/{uuid}/{name}"));
+        if inventory.should_delete(id.as_deref(), *modified, keep, now_ms) {
+            delete.push(uuid.clone());
+        }
+    }
+    (
+        SweepPlan {
+            delete,
+            present: inventory.present,
+        },
+        inventory.skipped_recent,
+    )
+}
+
+#[test]
 fn startup_and_clear_sweep() {
-    use crate::lifecycle::{is_recent, plan_sweep};
+    use crate::lifecycle::is_recent;
     let now = Some(3_600_000.);
     assert!(!is_recent(0., now));
     assert!(is_recent(1., now));

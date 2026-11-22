@@ -3,6 +3,13 @@
 use sha2::{Digest, Sha256};
 use std::{collections::HashSet, ops::Range};
 
+/// Maximum sample size in bytes at each end of a book file (1 MiB).
+const SAMPLE_BYTES: u64 = 1 << 20;
+
+/// Retention window for recently modified book files (one hour in milliseconds).
+const RECENT_WINDOW_MS: f64 = 3_600_000.;
+
+/// Hash the little-endian file size and its head and tail samples as lowercase SHA-256 hex.
 pub fn content_key(size: u64, head: &[u8], tail: &[u8]) -> String {
     let digest = Sha256::new()
         .chain_update(size.to_le_bytes())
@@ -17,19 +24,23 @@ pub fn content_key(size: u64, head: &[u8], tail: &[u8]) -> String {
     key
 }
 
+/// Return the byte ranges sampled from the beginning and end of the file.
 pub fn head_tail_ranges(size: u64) -> (Range<u64>, Range<u64>) {
-    let n = size.min(1 << 20);
+    let n = size.min(SAMPLE_BYTES);
     (0..n, size - n..size)
 }
 
+/// Check whether the modification is within the retention window when a clock is supplied.
 pub fn is_recent(last_modified_ms: f64, now_ms: Option<f64>) -> bool {
-    now_ms.is_some_and(|now| now - last_modified_ms < 3_600_000.)
+    now_ms.is_some_and(|now| now - last_modified_ms < RECENT_WINDOW_MS)
 }
 
-#[derive(Default)]
-pub struct SweepPlan {
-    pub delete: Vec<String>,
-    pub present: Vec<String>,
+/// Check for exactly 64 lowercase hexadecimal characters.
+pub fn is_content_key(key: &str) -> bool {
+    key.len() == 64
+        && key
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 
 /// Incrementally collect retained IDs as the worker visits each directory.
@@ -63,26 +74,4 @@ impl SweepInventory {
         self.skipped_locked += 1;
         self.present.extend(id);
     }
-}
-
-pub fn plan_sweep(
-    dirs: &[(String, Option<String>, f64)],
-    keep: &HashSet<String>,
-    now_ms: Option<f64>,
-) -> (SweepPlan, u32) {
-    let mut inventory = SweepInventory::default();
-    let mut delete = Vec::new();
-    for (uuid, name, modified) in dirs {
-        let id = name.as_ref().map(|name| format!("books/{uuid}/{name}"));
-        if inventory.should_delete(id.as_deref(), *modified, keep, now_ms) {
-            delete.push(uuid.clone());
-        }
-    }
-    (
-        SweepPlan {
-            delete,
-            present: inventory.present,
-        },
-        inventory.skipped_recent,
-    )
 }
