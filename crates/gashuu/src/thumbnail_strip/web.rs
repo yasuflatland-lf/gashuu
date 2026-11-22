@@ -12,6 +12,7 @@ impl ThumbnailController {
         Self
     }
 
+    /// Leave the strip empty so thumbnail decodes do not compete with page turns.
     pub fn start(
         &self,
         _ui_weak: slint::Weak<ViewerWindow>,

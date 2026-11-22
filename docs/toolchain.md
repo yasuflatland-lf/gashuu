@@ -55,13 +55,17 @@ The `[target.'cfg(target_arch = "wasm32")'.dependencies]` table sets
 `default-features = false` on `gashuu-core`. Cargo resolver 2 keeps the
 desktop defaults out of the wasm build.
 
-**Native decode.** The wasm32 page decoder uses `createImageBitmap` and reads
-straight-alpha RGBA8 pixels from an offscreen or detached HTML canvas. It checks
-the bitmap dimensions against the core pixel limit before allocating the canvas.
-It requests the original pixel orientation, ignoring EXIF orientation to match
-the desktop `image` crate. The canvas stores
-premultiplied colors internally, so rounding can reduce RGB precision for partially
-transparent pixels. The adapter is unused until #686 wires it into the web build.
+### Web decoding
+
+The wasm32 composition root uses `NativePageDecoder` as the primary decoder and
+`ImageCratePageDecoder` as the fallback. The native adapter uses
+`createImageBitmap` and canvas readback on the main thread; it checks dimensions
+against the core pixel limit before allocating the canvas. It requests straight
+alpha, no color-space conversion, and the original pixel orientation. Canvas
+readback can round partially transparent RGB values. Covers use the same decoders
+and are downscaled sequentially; the web thumbnail strip remains disabled. No new
+crates or browser bindings in `gashuu-core` are required. See
+[ADR-0014](ADRs/0014-web-decodes-pages-with-the-browser-native-decoder.md).
 
 ### Web build (Trunk)
 
@@ -92,10 +96,6 @@ The selected archives stay in memory for the browser session. The viewer decodes
 pages on the main thread, caches up to six decoded pages, and disables prefetch
 and the thumbnail strip. Issues #655 to #662 track the daily-reading path with
 Web Workers, OPFS, and `BookBackend`.
-
-On a web page-cache miss, `decode_page` tries the injected primary decoder and
-retries with the fallback on failure. Both use the Rust `image` crate today.
-Issue #686 switches the web primary to the browser-native decoder.
 
 Action-time saves to `localStorage` preserve settings and library metadata
 across reloads. Restored books appear unavailable because their bytes are gone.

@@ -477,13 +477,27 @@ persist state after the event loop returns.
 
 ### page_decode
 
-`PageDecoder::decode` takes owned encoded bytes and returns a local `DecodeFuture` resolving to
+`page_decode.rs` defines the port. `PageDecoder::decode` takes owned encoded bytes and returns a local `DecodeFuture` resolving to
 a straight-alpha RGBA8 `DecodedImage` or `CoreError`. `ImageCratePageDecoder` runs
 `gashuu_core::image_ops::decode` synchronously and returns an already-ready future. The port is
 available on all targets. On a cache miss, `decode_page` reads the encoded bytes once and
 awaits the primary decoder. If it fails, the orchestrator warns once per controller and retries
 with the fallback. A page cached during either await takes precedence. Otherwise a successful
 decode populates the cache, or the fallback error reaches the loader.
+
+On wasm32, the composition root supplies `NativePageDecoder` as primary and
+`ImageCratePageDecoder` as fallback. Desktop uses the image crate only. The port
+and its local `!Send` futures live in `gashuu`, keeping browser bindings out of
+core. Web covers use the same pair, then `image_ops::downscale_to_thumbnail`;
+cover requests run sequentially, including across refreshes. The web thumbnail
+strip remains a no-op. See [ADR-0014](ADRs/0014-web-decodes-pages-with-the-browser-native-decoder.md).
+
+### web_decode
+
+`web_decode.rs` implements `NativePageDecoder` on the browser main thread with
+`createImageBitmap` and canvas readback. It checks the pixel limit before canvas
+allocation and requests straight alpha, no color-space conversion, and original
+pixel orientation. Canvas readback can round partially transparent RGB values.
 
 ### web_font
 

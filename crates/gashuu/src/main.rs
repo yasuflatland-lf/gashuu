@@ -43,7 +43,6 @@ mod web_blob_store;
 #[cfg(any(target_arch = "wasm32", test))]
 mod web_books;
 #[cfg(target_arch = "wasm32")]
-#[allow(dead_code)] // Unused until #686 wires the browser decoder into the page loader.
 mod web_decode;
 #[cfg(target_arch = "wasm32")]
 mod web_font;
@@ -342,6 +341,7 @@ fn run_app(
 
     // Cover controller for the carousel (epoch + cancel guard). `start` runs after the
     // model is (re)built so a refresh supersedes covers still streaming from the prior view.
+    #[cfg(not(target_arch = "wasm32"))]
     let covers = Rc::new(cover_loader::CoverController::new());
 
     // Page controller for the viewer body. Owns async page-decode epoch and
@@ -349,10 +349,14 @@ fn run_app(
     #[cfg(not(target_arch = "wasm32"))]
     let pages = Rc::new(page_loader::PageController::new());
     #[cfg(target_arch = "wasm32")]
-    let pages = Rc::new(PageController::with_decoders(
-        Rc::new(page_decode::ImageCratePageDecoder),
-        Rc::new(page_decode::ImageCratePageDecoder),
-    ));
+    let (covers, pages) = {
+        let primary: Rc<dyn page_decode::PageDecoder> = Rc::new(web_decode::NativePageDecoder);
+        let fallback: Rc<dyn page_decode::PageDecoder> =
+            Rc::new(page_decode::ImageCratePageDecoder);
+        let covers = cover_loader::CoverController::new(Rc::clone(&primary), Rc::clone(&fallback));
+        let pages = PageController::with_decoders(primary, fallback);
+        (Rc::new(covers), Rc::new(pages))
+    };
 
     // Bulk-add controller (issue 206): probes each source off the UI thread so a bulk
     // add never freezes the event loop. `start` dispatches; `add-finalize` applies.

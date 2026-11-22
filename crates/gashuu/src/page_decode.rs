@@ -55,6 +55,34 @@ pub async fn decode_page(
     Ok(dispatch.insert_decoded(index, decoded))
 }
 
+/// Read the first page of an already-opened book for its carousel cover.
+#[cfg(any(target_arch = "wasm32", test))]
+pub(crate) async fn decode_cover(
+    source: Arc<dyn gashuu_core::PageSource>,
+    primary: &dyn PageDecoder,
+    fallback: &dyn PageDecoder,
+    max_side: u32,
+) -> Result<DecodedImage, CoreError> {
+    decode_cover_bytes(source.read_bytes(0)?, primary, fallback, max_side).await
+}
+
+#[cfg(any(target_arch = "wasm32", test))]
+async fn decode_cover_bytes(
+    bytes: Vec<u8>,
+    primary: &dyn PageDecoder,
+    fallback: &dyn PageDecoder,
+    max_side: u32,
+) -> Result<DecodedImage, CoreError> {
+    let decoded = match primary.decode(bytes.clone()).await {
+        Ok(decoded) => decoded,
+        Err(error) => {
+            tracing::warn!(%error, "primary cover decode failed, retrying with fallback");
+            fallback.decode(bytes).await?
+        }
+    };
+    image_ops::downscale_to_thumbnail(&decoded, max_side)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -122,6 +150,71 @@ mod tests {
 
     fn unexpected_decode(_: Vec<u8>) -> DecodeFuture {
         panic!("unexpected decoder call")
+    }
+
+    fn cover_source() -> Arc<dyn gashuu_core::PageSource> {
+        let mut source = MockPageSource::new();
+        source.expect_read_bytes().once().returning(|index| {
+            assert_eq!(index, 0);
+            Ok(vec![42])
+        });
+        Arc::new(source)
+    }
+
+    #[test]
+    fn cover_downscales_page_zero_from_the_primary_decoder() {
+        let primary = FakeDecoder(|bytes: Vec<u8>| {
+            assert_eq!(bytes, [42]);
+            ready(DecodedImage::new(vec![42; 8 * 4 * 4], 8, 4))
+        });
+        let cover = resolve(decode_cover(
+            cover_source(),
+            &primary,
+            &FakeDecoder(unexpected_decode),
+            4,
+        ))
+        .unwrap();
+        assert_eq!((cover.width(), cover.height()), (4, 2));
+        assert_eq!(cover.rgba(), &[42; 4 * 2 * 4]);
+    }
+
+    #[test]
+    fn cover_retries_the_same_bytes_after_primary_failure() {
+        let tried_primary = Cell::new(false);
+        let primary = FakeDecoder(|bytes: Vec<u8>| {
+            assert_eq!(bytes, [42]);
+            tried_primary.set(true);
+            ready(Err(CoreError::UnsupportedFormat {
+                label: "primary".into(),
+            }))
+        });
+        let fallback = FakeDecoder(|bytes: Vec<u8>| {
+            assert!(tried_primary.get());
+            assert_eq!(bytes, [42]);
+            ready(Ok(pixel(bytes[0])))
+        });
+        let cover = resolve(decode_cover(cover_source(), &primary, &fallback, 4)).unwrap();
+        assert_eq!(cover, pixel(42));
+    }
+
+    #[test]
+    fn cover_propagates_the_fallback_decode_error() {
+        let fails = |label: &'static str| {
+            FakeDecoder(move |_| {
+                ready(Err(CoreError::UnsupportedFormat {
+                    label: label.into(),
+                }))
+            })
+        };
+        let result = resolve(decode_cover(
+            cover_source(),
+            &fails("primary"),
+            &fails("fallback"),
+            4,
+        ));
+        assert!(
+            matches!(result, Err(CoreError::UnsupportedFormat { label }) if label == "fallback")
+        );
     }
 
     #[test]
