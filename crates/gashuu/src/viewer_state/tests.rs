@@ -1,22 +1,4 @@
 use super::*;
-use gashuu_core::{MockPageSource, PageEntry};
-use std::io::Cursor;
-
-fn tiny_png() -> Vec<u8> {
-    let img = image::RgbaImage::from_pixel(2, 3, image::Rgba([9, 9, 9, 255]));
-    let mut bytes = Vec::new();
-    img.write_to(&mut Cursor::new(&mut bytes), image::ImageFormat::Png)
-        .unwrap();
-    bytes
-}
-
-fn mock_with(pages: usize) -> Arc<dyn PageSource> {
-    let mut mock = MockPageSource::new();
-    mock.expect_list_pages()
-        .returning(move || vec![PageEntry { name: "p".into() }; pages]);
-    mock.expect_read_bytes().returning(|_| Ok(tiny_png()));
-    Arc::new(mock)
-}
 
 /// Build a Double-mode state (Standalone cover, Ltr) via `from_settings`,
 /// since the mode fields are private.
@@ -34,58 +16,34 @@ fn empty_state_shows_nothing() {
     let state = ViewerState::new();
     assert_eq!(state.page_count(), 0);
     assert_eq!(state.index(), 0);
-    assert!(state.decode_current_spread().is_none());
+    assert!(state.current_spread().is_none());
     assert_eq!(state.status_content().kind, StatusKind::NoFolder);
 }
 
 #[test]
-fn empty_folder_status_distinguishes_from_no_folder() {
+fn status_content_no_folder_iff_no_session() {
     let mut state = ViewerState::new();
-    state.set_source(mock_with(0));
+    state.install_test_book(0);
     assert_eq!(state.status_content().kind, StatusKind::NoImages);
-    assert!(state.decode_current_spread().is_none());
+    assert!(state.current_spread().is_none());
 }
 
 #[test]
-fn set_source_resets_index_to_zero() {
+fn install_test_book_resets_index_to_zero() {
     let mut state = ViewerState::new();
-    state.set_source(mock_with(5));
+    state.install_test_book(5);
     state.apply(NavAction::Next);
     state.apply(NavAction::Next);
     assert_eq!(state.index(), 2);
-    state.set_source(mock_with(3));
+    state.install_test_book(3);
     assert_eq!(state.index(), 0);
     assert_eq!(state.page_count(), 3);
 }
 
 #[test]
-fn decode_current_spread_returns_current_page() {
-    let mut state = ViewerState::new();
-    state.set_source(mock_with(2));
-    let spread = state.decode_current_spread().unwrap().unwrap();
-    let leading = spread.leading;
-    assert_eq!((leading.width(), leading.height()), (2, 3));
-    assert_eq!(leading.rgba().len(), 2 * 3 * 4);
-    // Single mode: no trailing page.
-    assert!(spread.trailing.is_none());
-}
-
-#[test]
-fn decode_current_spread_propagates_source_error() {
-    let mut state = ViewerState::new();
-    let mut mock = MockPageSource::new();
-    mock.expect_list_pages()
-        .returning(|| vec![PageEntry { name: "p".into() }; 1]);
-    mock.expect_read_bytes()
-        .returning(|_| Err(CoreError::IndexOutOfRange { index: 0, len: 0 }));
-    state.set_source(Arc::new(mock));
-    assert!(matches!(state.decode_current_spread(), Some(Err(_))));
-}
-
-#[test]
 fn status_text_is_one_based() {
     let mut state = ViewerState::new();
-    state.set_source(mock_with(100));
+    state.install_test_book(100);
     let c = state.status_content();
     assert_eq!(c.kind, StatusKind::Pages);
     assert_eq!(c.pages, "1 / 100");
@@ -98,7 +56,7 @@ fn status_text_is_one_based() {
 #[test]
 fn status_text_at_last_page() {
     let mut state = ViewerState::new();
-    state.set_source(mock_with(3));
+    state.install_test_book(3);
     state.apply(NavAction::Next);
     state.apply(NavAction::Next);
     let c = state.status_content();
@@ -159,41 +117,26 @@ fn double_standalone_spread_has_trailing_for_pairs_only() {
     // 6 pages, Standalone cover: cover (0) and last odd (5) stand alone;
     // {1,2} and {3,4} have trailing pages.
     let mut state = double_state();
-    state.set_source(mock_with(6));
+    state.install_test_book(6);
 
     // Cover page 0: no trailing.
-    let cover = state.decode_current_spread().unwrap().unwrap();
+    let cover = state.current_spread().unwrap();
     assert!(cover.trailing.is_none());
 
     // {1,2}: trailing present.
     state.apply(NavAction::Next);
     assert_eq!(state.index(), 1);
-    assert!(state
-        .decode_current_spread()
-        .unwrap()
-        .unwrap()
-        .trailing
-        .is_some());
+    assert!(state.current_spread().unwrap().trailing.is_some());
 
     // {3,4}: trailing present.
     state.apply(NavAction::Next);
     assert_eq!(state.index(), 3);
-    assert!(state
-        .decode_current_spread()
-        .unwrap()
-        .unwrap()
-        .trailing
-        .is_some());
+    assert!(state.current_spread().unwrap().trailing.is_some());
 
     // {5}: last odd page stands alone, no trailing.
     state.apply(NavAction::Next);
     assert_eq!(state.index(), 5);
-    assert!(state
-        .decode_current_spread()
-        .unwrap()
-        .unwrap()
-        .trailing
-        .is_none());
+    assert!(state.current_spread().unwrap().trailing.is_none());
 }
 
 // ---- Delegation seam ---------------------------------------------------
@@ -209,7 +152,7 @@ fn preview_is_double_delegates_to_the_navigation_value_object() {
     // 6 pages, Double / Standalone: {0}{1,2}{3,4}{5}. Both a `true` and a
     // `false` row are asserted so neither constant survives.
     let mut state = double_state();
-    state.set_source(mock_with(6));
+    state.install_test_book(6);
     assert!(!state.preview_is_double(0), "cover stands alone");
     assert!(state.preview_is_double(1), "{{1,2}} is a double spread");
     assert!(!state.preview_is_double(5), "last odd page stands alone");
@@ -224,7 +167,7 @@ fn preview_is_double_delegates_to_the_navigation_value_object() {
 #[test]
 fn toggle_reading_direction_flips_and_leaves_index() {
     let mut state = double_state();
-    state.set_source(mock_with(6));
+    state.install_test_book(6);
     state.apply(NavAction::Next);
     assert_eq!(state.index(), 1);
     assert_eq!(state.reading_direction(), ReadingDirection::Ltr);
@@ -256,7 +199,7 @@ fn toggles_are_noop_safe_with_no_folder() {
 fn status_text_double_form_shows_range_and_label() {
     // Double / Standalone at index 1 of 6: {1,2} -> "2-3 / 6".
     let mut state = double_state();
-    state.set_source(mock_with(6));
+    state.install_test_book(6);
     state.apply(NavAction::Next);
     assert_eq!(state.index(), 1);
     let c = state.status_content();
@@ -270,7 +213,7 @@ fn status_text_double_form_shows_range_and_label() {
 fn status_text_double_standalone_cover_is_single_form() {
     // Cover page in Double mode renders as a single page number.
     let mut state = double_state();
-    state.set_source(mock_with(6));
+    state.install_test_book(6);
     let c = state.status_content();
     assert_eq!(c.pages, "1 / 6");
     assert_eq!(c.spread, SpreadMode::Double);
@@ -284,7 +227,7 @@ fn status_text_reflects_rtl_label() {
         reading_direction: ReadingDirection::Rtl,
         ..Default::default()
     });
-    state.set_source(mock_with(6));
+    state.install_test_book(6);
     state.apply(NavAction::Next);
     let c = state.status_content();
     assert_eq!(c.pages, "2\u{2013}3 / 6");
@@ -292,40 +235,6 @@ fn status_text_reflects_rtl_label() {
 }
 
 // ---- Trailing-page decode failure fallback (FIX 4/5) --------------------
-
-#[test]
-fn decode_current_spread_degrades_to_leading_on_trailing_decode_error() {
-    // 3 pages, Double / Standalone: {0}{1,2}. Page 2 (trailing of {1,2}) is made to
-    // fail decode; the spread must degrade to leading-only with a marker.
-    let mut state = ViewerState::from_settings(&Settings {
-        spread_mode: SpreadMode::Double,
-        ..Default::default()
-    });
-    let mut mock = MockPageSource::new();
-    mock.expect_list_pages()
-        .returning(|| vec![PageEntry { name: "p".into() }; 3]);
-    mock.expect_read_bytes().returning(|idx| {
-        if idx == 2 {
-            Err(CoreError::IndexOutOfRange { index: 2, len: 3 })
-        } else {
-            Ok(tiny_png())
-        }
-    });
-    state.set_source(Arc::new(mock));
-
-    // Advance to the {1,2} spread (leading = 1).
-    assert!(state.apply(NavAction::Next));
-    assert_eq!(state.index(), 1);
-
-    let images = state.decode_current_spread().unwrap().unwrap();
-    assert!(images.trailing.is_none(), "trailing should drop on error");
-    assert_eq!(images.failed_trailing_page, Some(2));
-    assert_eq!(
-        (images.leading.width(), images.leading.height()),
-        (2, 3),
-        "leading page must still decode"
-    );
-}
 
 // ---- Double/Paired navigation honors stored cover_mode (FIX 6) ---------
 // ---- toggle_spread from Double/Paired preserves the visible page (FIX 7)
@@ -345,7 +254,7 @@ fn toggle_spread_cycles_single_double_auto() {
     // Single -> Double -> Auto -> Single, each transition keeps the visible
     // page on screen (index normalized). Default viewport 1.0 => Auto=Single.
     let mut state = ViewerState::new();
-    state.set_source(mock_with(6));
+    state.install_test_book(6);
     assert_eq!(state.spread_mode(), SpreadMode::Single);
 
     assert!(state.toggle_spread());
@@ -362,7 +271,7 @@ fn status_text_auto_label() {
     // Auto + portrait => "auto" label and a page RANGE (resolved Double).
     let mut state = auto_state();
     state.set_viewport_size(900.0, 1200.0);
-    state.set_source(mock_with(6));
+    state.install_test_book(6);
     state.apply(NavAction::Next);
     assert_eq!(state.index(), 1);
     let c = state.status_content();
@@ -372,7 +281,7 @@ fn status_text_auto_label() {
     // Auto + landscape => "auto" label and a single page number (Single).
     let mut state = auto_state();
     state.set_viewport_size(1600.0, 900.0);
-    state.set_source(mock_with(6));
+    state.install_test_book(6);
     state.apply(NavAction::Next);
     assert_eq!(state.index(), 1);
     assert_eq!(state.status_content().pages, "2 / 6");
@@ -392,7 +301,7 @@ fn open_path_nonexistent_returns_err() {
     // State must stay clean (no source installed) when open_path errors.
     assert_eq!(state.page_count(), 0);
     assert_eq!(state.index(), 0);
-    assert!(state.decode_current_spread().is_none());
+    assert!(state.current_spread().is_none());
 }
 
 #[test]
@@ -433,8 +342,8 @@ fn open_path_nonexistent_cbr_returns_err_and_leaves_clean_state() {
     assert_eq!(state.page_count(), 0, "page_count must stay 0 after error");
     assert_eq!(state.index(), 0, "index must stay 0 after error");
     assert!(
-        state.decode_current_spread().is_none(),
-        "decode_current_spread must be None after error"
+        state.current_spread().is_none(),
+        "current_spread must be None after error"
     );
     assert_eq!(
         state.last_open_skipped(),
@@ -443,37 +352,36 @@ fn open_path_nonexistent_cbr_returns_err_and_leaves_clean_state() {
     );
 }
 
-// ---- current_source() (PR8a) ---------------------------------------------
+// ---- session() (PR8a) ---------------------------------------------
 
 #[test]
-fn current_source_is_none_before_open() {
+fn session_is_none_before_open() {
     // A freshly constructed ViewerState has no source installed yet.
     let state = ViewerState::new();
     assert!(
-        state.current_source().is_none(),
-        "current_source must be None before any open"
+        state.session().is_none(),
+        "session must be None before any open"
     );
 }
 
 #[test]
-fn current_source_is_some_after_set_source() {
-    // After set_source the Arc is retained and current_source returns Some.
+fn session_is_some_after_install_test_book() {
     let mut state = ViewerState::new();
-    state.set_source(mock_with(3));
+    state.install_test_book(3);
     assert!(
-        state.current_source().is_some(),
-        "current_source must be Some after set_source"
+        state.session().is_some(),
+        "session must be Some after install_test_book"
     );
 }
 
 #[test]
-fn current_source_is_none_after_failed_open_path() {
-    // A failed open_path must NOT install a source; current_source stays None.
+fn session_is_none_after_failed_open_path() {
+    // A failed open_path must NOT install a source; session stays None.
     let mut state = ViewerState::new();
     let _ = state.open_path(std::path::Path::new("/nonexistent_pr8a_source"));
     assert!(
-        state.current_source().is_none(),
-        "current_source must remain None after a failed open_path"
+        state.session().is_none(),
+        "session must remain None after a failed open_path"
     );
 }
 
@@ -499,14 +407,14 @@ fn open_book_is_none_after_failed_open_path() {
 }
 
 #[test]
-fn open_book_stays_none_after_direct_set_source() {
-    // set_source has no path; open_book tracks the path given to open_path, so
-    // after a direct set_source it stays None.
+fn open_book_stays_none_after_direct_install_test_book() {
+    // install_test_book has no path; open_book tracks the path given to open_path, so
+    // after a direct install_test_book it stays None.
     let mut state = ViewerState::new();
-    state.set_source(mock_with(3));
+    state.install_test_book(3);
     assert!(
         state.open_book().is_none(),
-        "set_source without a path must leave open_book as None"
+        "install_test_book without a path must leave open_book as None"
     );
 }
 
@@ -547,12 +455,16 @@ fn open_read_leave_sequence_state_invariants() {
 
     let mut state = ViewerState::new();
 
-    // set_source sets the cache but not open_book (open_path does that, tested
+    // install_test_book creates a session without a book ID (open_path sets the ID, tested
     // separately); here we assert only the fields we control in tests.
-    state.set_source(mock_with(10));
-    // After a direct set_source, open_book is None (no path); the happy path is
+    state.install_test_book(10);
+    // After a direct install_test_book, open_book is None (no path); the happy path is
     // covered elsewhere. Here we verify index tracking and the read-shape.
-    assert_eq!(state.index(), 0, "fresh after set_source: index is 0");
+    assert_eq!(
+        state.index(),
+        0,
+        "fresh after install_test_book: index is 0"
+    );
 
     // Read two pages (two spreads in Single mode).
     assert!(state.apply(NavAction::Next));
@@ -566,17 +478,17 @@ fn open_read_leave_sequence_state_invariants() {
     // The reads stage_position_write_back performs must not conflict in sequence
     // (distinct immutable borrows); this test pins the shape of those reads.
     let _page = state.resume_index_to_persist(); // what write-back calls
-                                                 // open_book() is None here (set_source path), but the call must not panic.
+                                                 // open_book() is None here (install_test_book path), but the call must not panic.
     let _path = state.open_book(); // what stage_position_write_back calls
                                    // No panic reached: the sequence is safe.
 
     // Simulate opening a second book (write_back fires for the first, then
-    // set_source resets the state).
-    state.set_source(mock_with(5));
-    assert_eq!(state.index(), 0, "set_source resets index to 0");
+    // install_test_book resets the state).
+    state.install_test_book(5);
+    assert_eq!(state.index(), 0, "install_test_book resets index to 0");
     assert!(
         state.open_book().is_none(),
-        "set_source without path leaves open_book None"
+        "install_test_book without path leaves open_book None"
     );
 }
 
@@ -587,7 +499,7 @@ fn set_reading_direction_flips_and_leaves_index() {
     // Double / Standalone, Ltr. Switching to Rtl returns true; pairing is
     // direction-agnostic so index must remain unchanged.
     let mut state = double_state();
-    state.set_source(mock_with(6));
+    state.install_test_book(6);
     state.apply(NavAction::Next);
     assert_eq!(state.index(), 1);
     assert_eq!(state.reading_direction(), ReadingDirection::Ltr);
@@ -606,7 +518,7 @@ fn set_reading_direction_same_value_is_noop() {
     // Calling set_reading_direction with the already-active direction must
     // return false and leave index unchanged.
     let mut state = double_state();
-    state.set_source(mock_with(6));
+    state.install_test_book(6);
     state.apply(NavAction::Next);
     assert_eq!(state.index(), 1);
     assert_eq!(state.reading_direction(), ReadingDirection::Ltr);
@@ -618,7 +530,7 @@ fn set_reading_direction_same_value_is_noop() {
 
 #[test]
 fn set_cache_config_updates_fields() {
-    // set_cache_config updates the fields set_source reads on the next open, so a
+    // set_cache_config updates the config supplied to the backend on the next open, so a
     // settings dialog's new cache/preload values apply to the next book, no relaunch.
     let mut state = ViewerState::new();
     // radius 7 exceeds MAX_PREFETCH_RADIUS (5) and is clamped by CacheConfig::new.
@@ -682,19 +594,17 @@ fn close_returns_to_no_book_open_state() {
     // close() drops the source and reports the boot/no-folder shape (no source, zero
     // pages/index, open_book None, status NoFolder). Used by bulk-removal of the open book.
     let mut state = ViewerState::new();
-    state.set_source(mock_with(5));
+    state.install_test_book(5);
     assert_eq!(state.page_count(), 5);
-    assert!(state.current_source().is_some());
+    assert!(state.session().is_some());
 
-    state.close();
+    let session = state.session();
+    assert_eq!(state.close(), session);
     assert_eq!(state.page_count(), 0, "page count zeroed on close");
     assert_eq!(state.index(), 0, "index reset on close");
-    assert!(state.current_source().is_none(), "source dropped on close");
+    assert!(state.session().is_none(), "source dropped on close");
     assert!(state.open_book().is_none(), "open_book cleared on close");
-    assert!(
-        state.decode_current_spread().is_none(),
-        "no spread after close"
-    );
+    assert!(state.current_spread().is_none(), "no spread after close");
     assert_eq!(
         state.status_content().kind,
         StatusKind::NoFolder,
@@ -703,14 +613,15 @@ fn close_returns_to_no_book_open_state() {
 }
 
 #[test]
-fn close_preserves_display_modes() {
+fn close_returns_session_and_keeps_modes() {
     // Closing a book is not a settings reset: the runtime display modes survive
     // so the NEXT open reuses them (the apply_resolved_view path then overrides).
     let mut state = double_state();
-    state.set_source(mock_with(4));
+    state.install_test_book(4);
     assert_eq!(state.spread_mode(), SpreadMode::Double);
 
-    state.close();
+    let session = state.session();
+    assert_eq!(state.close(), session);
     assert_eq!(
         state.spread_mode(),
         SpreadMode::Double,
@@ -722,7 +633,8 @@ fn close_preserves_display_modes() {
 fn close_is_idempotent_from_boot_state() {
     // Closing when nothing is open must be a harmless no-op (no panic, stays empty).
     let mut state = ViewerState::new();
-    state.close();
+    let session = state.session();
+    assert_eq!(state.close(), session);
     assert_eq!(state.page_count(), 0);
     assert!(state.open_book().is_none());
     assert_eq!(state.status_content().kind, StatusKind::NoFolder);
@@ -739,7 +651,7 @@ fn page_count_opt_is_none_when_empty() {
 
     // An open source with zero displayable pages is also "empty" -> None.
     let mut state = ViewerState::new();
-    state.set_source(mock_with(0));
+    state.install_test_book(0);
     assert_eq!(state.page_count(), 0);
     assert!(state.page_count_opt().is_none());
 }
@@ -749,7 +661,53 @@ fn page_count_opt_is_some_with_real_count() {
     // A positive page count surfaces as Some(NonZeroUsize) with the exact value,
     // while the raw page_count() accessor stays in lockstep.
     let mut state = ViewerState::new();
-    state.set_source(mock_with(5));
+    state.install_test_book(5);
     assert_eq!(state.page_count(), 5);
     assert_eq!(state.page_count_opt().map(NonZeroUsize::get), Some(5));
+}
+
+#[test]
+fn install_opened_returns_superseded_session() {
+    let mut state = ViewerState::new();
+    let mut opened = OpenedBook {
+        session: SessionId::for_test(1),
+        id: BookId::new("first"),
+        page_count: 3,
+        skipped: 0,
+        listing_truncated: false,
+        is_dir: true,
+    };
+    assert_eq!(state.install_opened(&opened), None);
+    let previous = opened.session;
+    opened.session = SessionId::for_test(2);
+    assert_eq!(state.install_opened(&opened), Some(previous));
+}
+
+#[test]
+fn classify_spread_reports_miss_then_hit() {
+    use crate::backend::fake::{Call, FakeBackend};
+    let backend = FakeBackend::new();
+    let mut state = double_state();
+    state.set_cover_mode(CoverMode::Paired);
+    state.install_test_book(2);
+    let session = state.session().unwrap();
+    let slots = state.classify_spread(backend.as_ref()).unwrap();
+    assert!(slots.leading.1.is_none());
+    assert!(slots.trailing.unwrap().1.is_none());
+    let image = Arc::new(DecodedImage::new(vec![0; 4], 1, 1).unwrap());
+    for page in 0..2 {
+        backend.set_cached(session, page, image.clone());
+    }
+    let slots = state.classify_spread(backend.as_ref()).unwrap();
+    assert!(Arc::ptr_eq(&slots.leading.1.unwrap(), &image));
+    assert!(Arc::ptr_eq(&slots.trailing.unwrap().1.unwrap(), &image));
+    assert_eq!(
+        backend.calls(),
+        vec![
+            Call::CachedPage(session, 0),
+            Call::CachedPage(session, 1),
+            Call::CachedPage(session, 0),
+            Call::CachedPage(session, 1)
+        ]
+    );
 }
