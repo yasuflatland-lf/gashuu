@@ -1,14 +1,13 @@
 //! The browser demo leaves the thumbnail strip empty.
 
+use crate::backend::{BookBackend, SessionId};
 use crate::ViewerWindow;
-use gashuu_core::PageSource;
-use std::path::PathBuf;
-use std::sync::Arc;
+use std::rc::Rc;
 
 pub struct ThumbnailController;
 
 impl ThumbnailController {
-    pub fn new(_ui: &ViewerWindow) -> Self {
+    pub fn new(_ui: &ViewerWindow, _backend: Rc<dyn BookBackend>) -> Self {
         Self
     }
 
@@ -16,9 +15,8 @@ impl ThumbnailController {
     pub fn start(
         &self,
         _ui_weak: slint::Weak<ViewerWindow>,
-        _source: Option<Arc<dyn PageSource>>,
+        _session: Option<SessionId>,
         _page_count: usize,
-        _path: Option<PathBuf>,
     ) {
     }
 }

@@ -1,42 +1,18 @@
-//! Thumbnail-strip generation controller (lazy / virtualized).
-//!
-//! Owns the strip's backing `VecModel` plus the bookkeeping that keeps thumbnail
-//! generation correct across book re-opens: an epoch counter that tags each
-//! generation (so a superseded book's late callbacks are dropped) and a cancel
-//! flag that stops the previous generation's CPU work the instant a new book
-//! opens.
-//!
-//! Generation is **lazy**: `start` paints `N` `Loading` placeholders but decodes
-//! nothing eagerly. Pages are decoded only when their cell is at/near the visible
-//! viewport — once for the initial leading window, then on every
-//! `visible-range-changed` event the strip fires as the user scrolls/resizes. A
-//! per-generation `requested` set de-dups so a page is never decoded twice. This
-//! makes first-open work O(visible) instead of O(all pages) and reuses W1-D's
-//! per-page disk cache (a cached visible page is a fast read). The synchronous
-//! decode/downscale of one page lives in core's `generate_one_thumbnail`.
-//!
-//! Thread-boundary rule: each visible-range batch spawns a `std::thread` that
-//! `par_iter`s the batch and calls `generate_one_thumbnail` per page, marshaling
-//! results back to the UI thread. The worker may capture only `Send` values — the
-//! `slint::Weak` (Send+Sync), the epoch `Arc`, the cancel `Arc`, and the `Arc`
-//! source. The `Rc` model and `slint::Image` are NOT `Send`; the model is
-//! re-fetched and the image is built inside `invoke_from_event_loop`, i.e. only
-//! ever on the UI thread.
+//! Desktop thumbnail strip. Each open requests the leading window from the backend,
+//! then scroll and resize events request newly visible pages and their neighbours.
+//! Closing the book session suppresses pending deliveries. The strip epoch also
+//! guards the model against callbacks from an earlier strip generation.
 
+use crate::backend::{BookBackend, SessionId};
 use crate::to_slint_image;
-use crate::ui_marshal::marshal_to_ui;
+use crate::ui_marshal::ui_done;
 use crate::{ThumbnailItem, ViewerWindow};
-use gashuu_core::{
-    generate_one_thumbnail, CoreError, DecodedImage, PageSource, PageThumbContext, ThumbnailCache,
-    DEFAULT_THUMB_MAX_SIDE,
-};
-use rayon::prelude::*;
+use gashuu_core::DEFAULT_THUMB_MAX_SIDE;
 use slint::{ComponentHandle, Model, ModelRc, VecModel};
 use std::cell::RefCell;
 use std::collections::HashSet;
-use std::path::PathBuf;
 use std::rc::Rc;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering::Relaxed};
+use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
 use std::sync::Arc;
 
 /// Extra cells fetched on each side of the visible window so a small scroll
@@ -123,169 +99,64 @@ fn thumbnail_item(page: usize, cell: ThumbCell) -> ThumbnailItem {
     }
 }
 
-/// Marshal a single thumbnail-cell update onto the UI thread, applying the
-/// epoch + upgrade + model-downcast + bounds preamble shared by the success and
-/// failure paths. `make_cell` is evaluated INSIDE the event-loop closure (i.e.
-/// on the UI thread), so a `!Send` value such as `slint::Image` may be built
-/// there even though it could not cross the thread boundary as a capture; the
-/// closure stays `Send` because only its captures must be `Send` (the `!Send`
-/// `ThumbCell::Loaded` it returns does not affect that).
-fn marshal_cell(
-    weak: slint::Weak<ViewerWindow>,
-    epoch: Arc<AtomicUsize>,
-    my_epoch: usize,
-    i: usize,
-    make_cell: impl FnOnce() -> ThumbCell + Send + 'static,
-) {
-    marshal_to_ui(weak, epoch, my_epoch, "thumbnail", move |ui| {
-        // Re-fetch the model on the UI thread (never move the Rc across threads);
-        // any non-Send cell payload (e.g. a slint::Image) is built here.
-        let model = ui.get_thumbnails();
-        let Some(vm) = model.as_any().downcast_ref::<VecModel<ThumbnailItem>>() else {
-            return;
-        };
-        if i < vm.row_count() {
-            vm.set_row_data(i, thumbnail_item(i, make_cell()));
-        }
-    });
+/// Update one row of the current strip on the UI thread.
+fn marshal_cell(ui: &ViewerWindow, page: usize, cell: ThumbCell) {
+    let model = ui.get_thumbnails();
+    let Some(vm) = model.as_any().downcast_ref::<VecModel<ThumbnailItem>>() else {
+        return;
+    };
+    if page < vm.row_count() {
+        vm.set_row_data(page, thumbnail_item(page, cell));
+    }
 }
 
-/// Per-generation state captured at `start`: the source + cache inputs, the
-/// epoch/cancel guards for this open, and the set of page indices already
-/// requested. Replaced wholesale on each open so a re-open starts with an empty
-/// `requested` set and a fresh epoch/cancel.
 struct StripGen {
-    source: Arc<dyn PageSource>,
+    session: SessionId,
     page_count: usize,
-    /// Canonical book path keying each page in the on-disk cache; `None` (or an
-    /// unavailable cache dir) degrades gracefully to no persistence.
-    path: Option<PathBuf>,
     epoch: usize,
-    cancel: Arc<AtomicBool>,
-    /// Page indices already dispatched to a worker — the de-dup set that keeps a
-    /// page from being decoded twice across overlapping visible-range events.
     requested: HashSet<usize>,
 }
 
-/// Shared controller state held behind an `Rc` so the `visible-range-changed`
-/// callback wired in `new` can dispatch backfill without a handle to the outer
-/// `ThumbnailController`. All fields are touched only on the UI thread except the
-/// `epoch`/cancel `Arc`s, which the spawned workers also read.
 struct Inner {
+    backend: Rc<dyn BookBackend>,
     model: Rc<VecModel<ThumbnailItem>>,
     epoch: Arc<AtomicUsize>,
-    cancel: RefCell<Arc<AtomicBool>>,
-    /// The active generation, or `None` before the first open / after a sourceless
-    /// open. Borrowed only on the UI thread (in `start` and the scroll callback).
     current: RefCell<Option<StripGen>>,
 }
 
 impl Inner {
-    /// Supersede the previous generation's cancel flag and install a fresh one,
-    /// returning a clone of the new flag for the just-started generation. Delegates
-    /// to the shared [`crate::ui_marshal::rotate_cancel`], which single-homes the
-    /// one-borrow-per-statement discipline; shared shape with `CoverController`.
-    fn rotate_cancel(&self) -> Arc<AtomicBool> {
-        crate::ui_marshal::rotate_cancel(&self.cancel)
-    }
-
-    /// Decode the not-yet-requested subset of `pages` (clamped to the current
-    /// generation's range) on a background worker. The de-dup decision is recorded
-    /// in `requested` under the UI thread *before* the worker spawns, so two
-    /// overlapping visible-range events never decode the same page twice. A no-op
-    /// when there is no active generation or every page was already requested.
     fn request_pages(&self, weak: slint::Weak<ViewerWindow>, pages: Vec<usize>) {
-        let mut guard = self.current.borrow_mut();
-        let Some(gen) = guard.as_mut() else {
+        let mut current = self.current.borrow_mut();
+        let Some(gen) = current.as_mut() else {
             return;
         };
         let fresh = take_fresh(&mut gen.requested, gen.page_count, pages);
-        if fresh.is_empty() {
-            return;
+        for page in fresh {
+            self.backend.thumbnail(
+                gen.session,
+                page,
+                DEFAULT_THUMB_MAX_SIDE,
+                ui_done::<Result<Arc<_>, _>>(
+                    weak.clone(),
+                    Arc::clone(&self.epoch),
+                    gen.epoch,
+                    move |ui, result| {
+                        let cell = match result {
+                            Ok(img) => ThumbCell::Loaded(to_slint_image(&img)),
+                            Err(e) => {
+                                tracing::warn!(page, error = %e, "thumbnail generation failed");
+                                ThumbCell::Failed
+                            }
+                        };
+                        marshal_cell(ui, page, cell);
+                    },
+                ),
+            );
         }
-        let source = Arc::clone(&gen.source);
-        let path = gen.path.clone();
-        let cancel = Arc::clone(&gen.cancel);
-        let my_epoch = gen.epoch;
-        let epoch = Arc::clone(&self.epoch);
-        // Drop the borrow before spawning so a worker that synchronously re-enters
-        // the UI (it does not, but defensively) cannot double-borrow `current`.
-        drop(guard);
-        spawn_decode(weak, source, path, cancel, epoch, my_epoch, fresh);
     }
 }
 
-/// Decode each page in `pages` on a background thread and marshal the results to
-/// the strip, scoped to one visible-range batch. Mirrors the epoch + double
-/// cancel-check discipline of the former all-pages worker. The on-disk cache is
-/// built once per batch on the worker (it holds only a directory; building it off
-/// the UI thread side-steps a `!Send` capture — mirrors `cover_loader`): a miss
-/// decodes + persists, a hit is a fast read. Best-effort — with no path or an
-/// unavailable cache dir the batch still decodes, just without persistence.
-fn spawn_decode(
-    weak: slint::Weak<ViewerWindow>,
-    source: Arc<dyn PageSource>,
-    path: Option<PathBuf>,
-    cancel: Arc<AtomicBool>,
-    epoch: Arc<AtomicUsize>,
-    my_epoch: usize,
-    pages: Vec<usize>,
-) {
-    std::thread::spawn(move || {
-        let cache = match path.as_deref() {
-            Some(_) => match ThumbnailCache::new() {
-                Ok(cache) => Some(cache),
-                Err(e) => {
-                    tracing::warn!(
-                        error = %e,
-                        "no thumbnail cache available; strip thumbnails will not be persisted"
-                    );
-                    None
-                }
-            },
-            None => None,
-        };
-        let cache_ctx = match (cache.as_ref(), path.as_deref()) {
-            (Some(cache), Some(path)) => Some(PageThumbContext { cache, path }),
-            _ => None,
-        };
-        pages.par_iter().for_each(|&i| {
-            // Skip work for a superseded generation before AND after the decode so
-            // a re-open stops promptly and never delivers a stale result.
-            if cancel.load(Relaxed) {
-                return;
-            }
-            let res: Result<DecodedImage, CoreError> =
-                generate_one_thumbnail(&source, DEFAULT_THUMB_MAX_SIDE, i, cache_ctx);
-            if cancel.load(Relaxed) {
-                return;
-            }
-            match res {
-                // Build the slint::Image INSIDE the marshalled closure (UI thread);
-                // `img` (Send) is captured, the `!Send` image is produced there.
-                Ok(img) => marshal_cell(weak.clone(), Arc::clone(&epoch), my_epoch, i, move || {
-                    ThumbCell::Loaded(to_slint_image(&img))
-                }),
-                Err(e) => {
-                    // Log on the worker so the CoreError never crosses the thread
-                    // boundary; the failed cell shows a distinct red placeholder.
-                    tracing::warn!(page = i, error = %e, "thumbnail generation failed");
-                    marshal_cell(weak.clone(), Arc::clone(&epoch), my_epoch, i, || {
-                        ThumbCell::Failed
-                    });
-                }
-            }
-        });
-    });
-}
-
-/// Owns the thumbnail strip's model and the lazy-generation bookkeeping.
-///
-/// `model` is the live backing store for the strip (placeholders first, filled in
-/// as visible pages decode on background threads). The shared `Inner` carries the
-/// epoch (tags each generation so a superseded book's late callbacks are dropped),
-/// the cancel flag (flipped the instant a new book opens), and the active
-/// generation's de-dup set.
+/// Owns the thumbnail strip model and its per-open request bookkeeping.
 pub struct ThumbnailController {
     inner: Rc<Inner>,
 }
@@ -294,13 +165,13 @@ impl ThumbnailController {
     /// Build the strip's model, bind it to the UI as the `thumbnails` model, wire
     /// the lazy backfill callback, and return the controller. Call once during UI
     /// setup.
-    pub fn new(ui: &ViewerWindow) -> Self {
+    pub fn new(ui: &ViewerWindow, backend: Rc<dyn BookBackend>) -> Self {
         let model = Rc::new(VecModel::<ThumbnailItem>::default());
         ui.set_thumbnails(ModelRc::from(model.clone()));
         let inner = Rc::new(Inner {
             model,
             epoch: Arc::new(AtomicUsize::new(0)),
-            cancel: RefCell::new(Arc::new(AtomicBool::new(false))),
+            backend,
             current: RefCell::new(None),
         });
 
@@ -325,54 +196,30 @@ impl ThumbnailController {
         Self { inner }
     }
 
-    /// Start a fresh lazy generation for the given source. Runs on the UI thread:
-    /// supersedes the previous generation, resets the model to `page_count`
-    /// `Loading` placeholders, records the new generation, then (when `source` is
-    /// `Some`) requests only a modest initial window — NOT all pages. The rest is
-    /// backfilled on demand by `visible-range-changed`. Invoked after every open.
-    ///
-    /// `path` is the canonical book path used to key each page's thumbnail in the
-    /// on-disk cache so a second open of the same unchanged book reads ~10-30 KB
-    /// PNGs instead of re-decoding full-resolution pages. `None` (or a cache dir
-    /// that cannot be built) degrades gracefully to no persistence.
+    /// Reset the strip and request the leading window of the active session.
     pub fn start(
         &self,
         ui_weak: slint::Weak<ViewerWindow>,
-        source: Option<Arc<dyn PageSource>>,
+        session: Option<SessionId>,
         page_count: usize,
-        path: Option<PathBuf>,
     ) {
-        // 1. Supersede the previous generation and take this one's fresh cancel flag.
-        let cancel_flag = self.inner.rotate_cancel();
+        let epoch = self.inner.epoch.fetch_add(1, Relaxed) + 1;
+        *self.inner.current.borrow_mut() = session.map(|session| StripGen {
+            session,
+            page_count,
+            epoch,
+            requested: HashSet::new(),
+        });
+        if session.is_none() {
+            self.inner.model.set_vec(Vec::new());
+            return;
+        }
 
-        // 2. Tag this generation so superseded callbacks can be dropped.
-        let my_epoch = self.inner.epoch.fetch_add(1, Relaxed) + 1;
-
-        // 3. Rebuild the model with N `Loading` placeholders (decode nothing yet).
-        let placeholders: Vec<ThumbnailItem> = (0..page_count)
+        let placeholders: Vec<_> = (0..page_count)
             .map(|i| thumbnail_item(i, ThumbCell::Loading))
             .collect();
         self.inner.model.set_vec(placeholders);
-
-        // 4. Grab the source (None => nothing to generate; clear any prior state).
-        let source = match source {
-            Some(s) => s,
-            None => {
-                *self.inner.current.borrow_mut() = None;
-                return;
-            }
-        };
-
-        // 5. Record the generation, then request only the initial leading window.
-        *self.inner.current.borrow_mut() = Some(StripGen {
-            source,
-            page_count,
-            path,
-            epoch: my_epoch,
-            cancel: cancel_flag,
-            requested: HashSet::new(),
-        });
-        let initial: Vec<usize> = (0..INITIAL_VISIBLE_PAGES.min(page_count)).collect();
+        let initial = (0..INITIAL_VISIBLE_PAGES.min(page_count)).collect();
         self.inner.request_pages(ui_weak, initial);
     }
 }
@@ -380,6 +227,58 @@ impl ThumbnailController {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use crate::backend::fake::{Call, FakeBackend};
+    use crate::backend::BackendError;
+
+    fn headless_window() -> ViewerWindow {
+        struct HeadlessPlatform;
+        impl slint::platform::Platform for HeadlessPlatform {
+            fn create_window_adapter(
+                &self,
+            ) -> Result<Rc<dyn slint::platform::WindowAdapter>, slint::PlatformError> {
+                use slint::platform::software_renderer::{
+                    MinimalSoftwareWindow, RepaintBufferType,
+                };
+                Ok(MinimalSoftwareWindow::new(RepaintBufferType::NewBuffer))
+            }
+        }
+        slint::platform::set_platform(Box::new(HeadlessPlatform)).unwrap();
+        ViewerWindow::new().unwrap()
+    }
+
+    #[test]
+    fn strip_requests_initial_window_once_per_page() {
+        let ui = headless_window();
+        let backend = FakeBackend::new();
+        let strip = ThumbnailController::new(&ui, backend.clone());
+        let session = backend.new_session();
+        strip.start(ui.as_weak(), Some(session), INITIAL_VISIBLE_PAGES + 5);
+        ui.invoke_thumbnail_strip_visible_range_changed(0.0, 300.0, 100.0);
+        let expected: Vec<_> = (0..INITIAL_VISIBLE_PAGES)
+            .map(|page| Call::Thumbnail(session, page, DEFAULT_THUMB_MAX_SIDE))
+            .collect();
+        assert_eq!(backend.calls(), expected);
+    }
+
+    #[test]
+    fn strip_failed_thumbnail_sets_failed_cell() {
+        let ui = headless_window();
+        let backend = FakeBackend::new();
+        let strip = ThumbnailController::new(&ui, backend.clone());
+        strip.start(ui.as_weak(), Some(backend.new_session()), 2);
+        backend.complete_thumbnail(
+            1,
+            Err(BackendError::Other {
+                detail: "corrupt page".into(),
+            }),
+        );
+        let model = ui.get_thumbnails();
+        let failed = model.row_data(1).unwrap();
+        assert!(failed.failed);
+        assert!(!failed.loaded);
+        assert!(!model.row_data(0).unwrap().failed);
+    }
 
     // Pure mapping test (no display server): proves the sum type collapses to
     // the correct (loaded, failed) booleans at each of the three cell states.

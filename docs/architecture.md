@@ -162,13 +162,11 @@ See [ADR-0003](ADRs/0003-image-loading-and-caching.md) for image loading decisio
 SYNCHRONOUS single-page thumbnail. With a `PageThumbContext { cache, path }` it reads from / writes to
 the on-disk `ThumbnailCache` under `page_cache_key(path, mtime, max_side, page_index)` (a hit skips
 the full-page read+decode; the `put` result is ignored); failure is returned as `Err` (never panics).
-Parallelism and cancellation are the caller's: the UI's `thumbnail_strip` worker `par_iter`s the
-visible batch and polls its cancel flag before AND after each call. `DEFAULT_THUMB_MAX_SIDE`=160; headless (no slint/tracing), same "testable synchronous core; UI
-owns the fire-and-forget spawn" philosophy as `ImageCache`. The single-page sibling
-`generate_cover(source: Arc<dyn PageSource>, max_side) -> Result<DecodedImage, CoreError>` (a
-downscaled thumbnail of page index 0, the book's cover; `Err(IndexOutOfRange{index:0,len:0})` on a
-0-page source, decode errors propagated); re-exported from the crate root and consumed by the UI's
-`cover_loader.rs`.
+The desktop backend schedules the work and checks that the session is still open
+before delivering the result. The strip uses `DEFAULT_THUMB_MAX_SIDE` (160 px).
+The desktop backend also calls the sibling `generate_cover(source, max_side)` to
+downsize page zero. It propagates read and decode errors and returns
+`IndexOutOfRange { index: 0, len: 0 }` for an empty source.
 
 ### thumbnail_cache
 
@@ -178,8 +176,7 @@ seam. `put(key, &DecodedImage)` QOI-encodes the RGBA at exact dimensions and wri
 (temp-file-then-rename); `get(key) -> Option<DecodedImage>` reads `<dir>/<key>.qoi` and decodes,
 returning `None` on any missing/unreadable/corrupt file (a cache miss, never panics). `cache_key(path,
 mtime_secs, max_side)` derives a stable 16-hex-char filename via FNV-1a (NOT `DefaultHasher`; see
-docs/patterns.md). Headless (no slint/tracing). The cover carousel consumes it via the UI's
-`cover_loader.rs`.
+docs/patterns.md). Headless (no slint/tracing). `DesktopBackend::cover` uses this cache after checking its decoded-cover memory cache.
 
 Issue 143 adds the GC half: `prune(max_bytes) -> PruneReport` sweeps the directory down to
 `max_bytes` of `*.qoi` payload in ascending `(mtime, file name)` order, and reclaims stale
@@ -189,7 +186,7 @@ key-orphaned covers (source mtime drifted past `purge_for`) are never read again
 front, and disappear once the cap bites. Best-effort throughout (missing dir → zero report,
 failed unlink skipped, foreign files never touched); the caller logs the returned `PruneReport`
 (core stays log-free). The cap POLICY is the app layer's: `cover_loader.rs` owns
-`COVER_CACHE_MAX_BYTES` (256 MiB) and `spawn_cache_prune()`, dispatched once at startup on a
+`CoverCachePolicy::DEFAULT.max_bytes` (256 MiB) and `spawn_cache_prune()`, dispatched once at startup on a
 rayon worker right after the initial cover stream.
 
 ### cache::ImageCache
@@ -630,88 +627,20 @@ in logical pixels at startup and on each browser resize event.
 
 ### ViewerState
 
-Presentation state with two primary responsibilities: the active page source/cache and open-book
-metadata/settings integration. Spread position and pairing inputs are held as a single
-`SpreadNavigation` field; `ViewerState::apply` only maps the UI crate's `NavAction` onto
-`SpreadNavigation::next`/`prev`, and its other navigation-facing public methods delegate without
-reconstructing pairing context.
-`open_path(path)` / `open_path_with_policy(path, policy)` are now the SYNCHRONOUS composition of the
-pure, `Send` `open_controller::probe_open` (archive dispatch + full listing + skipped/truncated
-flags, ID, and title) and the new mutation-only tail
-`install_opened(source, skipped, truncated, canonical)`. The blocking work is therefore defined in
-ONE place and the async open path cannot drift from it, while the contract is unchanged — an error
-leaves the state untouched, because nothing is installed unless the probe opened. Two paired
-getters report what the probe saw: `last_open_skipped() -> usize` (entries dropped from an otherwise
-complete listing) and `last_open_truncated() -> bool` (the listing itself was cut short, so an
-unknown number of later pages are missing). BOTH are only meaningful after `Ok(())` — an error
-return leaves the previous successful open's values. `jump_to(page) -> bool` delegates to
-`SpreadNavigation::jump_to`, which clamps and normalizes atomically and returns whether it moved,
-mirroring `set_viewport_size`'s "did it change → caller refreshes" convention — and
-`resume_index_to_persist()` returns the final page index when the current spread contains the final
-page, otherwise the current leading (or `index()` when no source), so finished write-back reaches
-`100%` without changing which spread reopens — and
-`current_source() -> Option<Arc<dyn PageSource>>`
-retaining the opened `Arc` because `ImageCache` does not expose its source; `index()`/`page_count()`
-lost their `#[allow(dead_code)]`, now used by the thumbnail-strip wiring.
+`ViewerState` holds the active session, canonical book ID, title, listing notices, and display
+preferences. Its `SpreadNavigation` computes page pairs, normalizes jumps, and chooses the
+resume index. `install_opened` and `close` return the previous session for the caller to release.
+Closing resets navigation and metadata and preserves the display modes and next-open cache config.
+On web that config limits the cache to six pages and disables neighbour prefetch.
 
-Production page delivery goes through two non-blocking methods:
-`classify_spread() -> Option<SpreadCacheState>`
-classifies the current spread into per-slot HIT (`Some(Arc<DecodedImage>)`) / MISS (`None`) pairs
-without ever reading or decoding on a miss; `dispatch_handle() -> Option<CacheDispatch>` returns the
-`Send` decode handle. `main.rs::refresh` calls `classify_spread()` and branches: all-HIT → apply
-images synchronously; any-MISS → set `leading-loading` / `trailing-loading` loading flags and hand
-the `SpreadCacheState` to `PageController::dispatch_spread` for off-thread decode.
-`decode_current_spread()`
-(decodes synchronously on miss, surfaces the spread images as `SpreadImages`) is `#[cfg(test)]`-only
-and never called on the UI thread in production.
+`classify_spread(backend)` looks up each visible index with `cached_page`. A fully cached spread
+can render immediately. On a miss, the page controller sends both indices to the backend.
+The backend owns decoded pages throughout the session.
 
-The settings dialog drives IDEMPOTENT value setters `set_spread_mode(SpreadMode)`/`set_cover_mode(CoverMode)`/`set_reading_direction(ReadingDirection)`
-(all `-> bool`, same value → `false` no-op, mirroring `jump_to`'s "moved? → caller refreshes"
-convention) — `set_spread_mode`/`set_cover_mode` delegate to `SpreadNavigation`, which
-re-normalizes before returning,
-`set_reading_direction` does NOT (pairing is direction-agnostic) — plus
-`set_cache_config(cache_size, preload_pages)` which updates the fields `set_source` reads on the
-NEXT open (the dialog's cache/preload edits would otherwise only take effect after relaunch, since
-the fields are seeded once at `from_settings` and `set_source` reads ViewerState's own fields, not
-live `Settings`).
-
-`install_opened` stores the probe's ID and title alongside the source. `open_book() -> Option<&BookId>`
-supplies the key for position and view-mode write-back, and `open_title() -> Option<&str>` supplies
-the window title through `view_sync::current_book_name`. Both start empty and are cleared by
-`set_source` and `close`. Failed opens preserve the active source, ID, and title.
-
-This-feature added `apply_resolved_view(ResolvedView)` — sets `reading_direction`/`spread_mode`/`cover_mode`
-from a resolved view (the `fit_mode` field is applied by the caller via `ViewportState::set_fit`),
-called after the source is set when opening/returning to a book so its per-book override (resolved
-against global `Settings`) takes effect. Runtime modes are intentionally NOT reset on open — they are
-re-seeded by this call — which is why the open-time global reconcile is a clobber trap (see
-[patterns.md](patterns.md), "Write-direction invariant audit").
-
-Two scrubber-support helpers:
-
-- `scrub_fraction_to_page(fraction, page_count, rtl)` — pure, total, RTL-aware mapping of a
-  `0..1` knob fraction to a raw 0-based page index (clamped, non-finite-safe). As of #71 it is the
-  SINGLE LIVE source of that mapping. It now lives in `gashuu_core::spread` and is re-exported by
-  `viewer_state` to preserve the handler import path: `Scrubber.slint` passes the raw clamped fraction up via
-  `preview(float)`/`commit(float)` and `handlers/viewer.rs`'s `on_scrub_preview`/`on_scrub_commit` call this
-  helper to resolve the page (the former in-Slint `drag-page` rounding is gone, so it no longer
-  carries `#[allow(dead_code)]`). See [patterns.md](patterns.md) for the one-authoritative-side rule.
-- `preview_is_double(page)` — returns whether a previewed page would land on a 2-page spread
-  (using the same layout resolution the body uses) WITHOUT advancing the index; used by the
-  scrubber preview to choose 1 vs 2 popover thumbnails.
-
-`close(&mut self)` (#129): drops the cache and source and calls `nav.set_total(0)`,
-and clears the active ID and title — returning `ViewerState` to the no-book-open state. Display modes
-(`reading_direction` plus the spread/cover/aspect configuration inside `nav`) and `cache_config` are
-deliberately preserved (closing a book is not a settings reset). Called by
-`RemoveBooksUseCase::run` (headless) when the open book is among the deleted ones, and by
-`OpenBookUseCase::run`'s empty-book arm, so a rejected empty open leaves `open_book()` `None`
-instead of a phantom zero-page source (see §open_book below and
-[ADR-0009](ADRs/0009-reject-empty-books.md)'s Amendment); the matching
-title-bar blank — `ui.set_current_book_name("".into())` — is the Slint side of that close and lives
-in `carousel_refresh::finalize_remove` (`carousel_refresh.rs:302`), gated on the outcome's
-`closed_open_book` flag, NOT in `run`. The UI wiring sets this name at boot and on a successful open
-via `current_book_name` from `view_sync.rs`.
+The scrubber uses `scrub_fraction_to_page` to translate its fraction to a zero-based page
+in either reading direction. `preview_is_double` checks the effective layout without moving
+the reading position. Spread and cover changes normalize the position to a valid leading page.
+Changing reading direction alters placement while preserving that page.
 
 ### ViewportState
 
@@ -744,88 +673,20 @@ projection; falls back to 0 when `None`, filtered out, or empty).
 
 ### open_book
 
-`open_book.rs`. `OpenBookUseCase` — the open-a-book application use case extracted from `main.rs`
-(#67). Holds five headless collaborators as `Rc<RefCell<…>>` fields (`ViewerState`, `Settings`,
-`ViewportState`, `DialogSession`, and `Library`), plus the shared `Rc<LeavePointService>` and its two
-injected save effects. The return value (#114) is built from two types and a single export:
+`OpenBookUseCase::apply_opened` receives the requested ID and the backend result. It first
+persists the outgoing book's position and view overrides. A failed open preserves the current
+session. On success it installs the canonical identity, closes the superseded session and
+clears the settings dialog's pending inherit intent.
 
-- `apply_probed(&self, path: &Path, probe: OpenProbeOutcome) -> OpenOutcome` — short orchestration
-  over six private steps: `persist_outgoing` (outgoing position/view save), `install` (probe
-  discrimination, source install, pending-inherit clear), `reject_empty` (removal transaction and
-  viewer close), `record_recent` (tracking-gated settings save), `register_and_resume` (register and
-  page-count back-fill using the installed ID and title, then apply the resolved per-book view BEFORE jumping to the resume page),
-  and `persist_registered` (the second synchronous library save). On a `Failed` probe
-  it returns `OpenOutcome::Error(String)` (the worker's pre-captured message); on success it
-  returns `OpenOutcome::Success { notices, count_changed }`. **`apply_probed` does NOT transition
-  screens, rebuild the carousel, launch thumbnails, or import `crate::i18n`** — those UI effects and
-  all formatting are deferred to `main.rs::finalize_open`.
-- `run(&self, path: &Path) -> OpenOutcome` = `apply_probed(path, probe_open(path, policy))` — the
-  retained SYNCHRONOUS composition. It blocks on the archive open, so the Slint open sites dispatch
-  through `open_controller` instead (issue #487) and only tests call it; it stays the single entry
-  point for a future non-UI caller and pins that the split composes back to the pre-split behaviour.
-- `NoticesContent` — neutral data struct passed to `i18n::dynamic::format_notices` in
-  `finalize_open`; no locale logic inside. It carries the skipped count, `SkippedDetail`,
-  `listing_truncated: bool` (the damaged-archive signal, rendered FIRST — most severe first — via
-  the `notice-listing-truncated` key), and three optional save-error strings:
-  `leave_save_err` (the OUTGOING book's leave-point save failure, rendered through the existing
-  `notice-failed-save-library` key BEFORE the open-time save lines), `settings_save_err`, and
-  `library_save_err`.
-- `OpenOutcome` / `SkippedDetail` / `NoticesContent` live here; `main.rs`, `handlers/library.rs`,
-  and `i18n::dynamic` import them straight from this module — there is no re-export facade.
+An empty book goes through the shared removal, save and cover-purge transaction. The use case
+then closes its session and returns `EmptyBookRejected` before recording a recent or registering
+the book (ADR-0009). For a nonempty book it records the requested location when tracking is enabled,
+registers the canonical ID and page count, applies the resolved view, jumps to the resume page,
+and saves the library. Applying the view before jumping preserves spread alignment (#534).
 
-The reject-empty-books feature added a third `OpenOutcome` variant: `EmptyBookRejected { title,
-removed, save_error }`, returned when the source opens CLEANLY but counts zero pages. `apply_probed`
-(and therefore `run`) bails out
-HERE — before `register_opened`, with the recents push / settings save / per-book view resolve /
-carousel rebuild / thumbnail start all bypassed (so an empty book never re-enters via
-`register_opened`); it removes the book if present (`Library::remove`, idempotent bool), re-saves,
-best-effort purges the removed book's cover (via the shared `open_book::remove_empty_book`; Wave-2 #150
-closed the old open-path purge gap), and pre-captures any save error. AFTER `remove_empty_book` and
-BEFORE returning the variant it also calls `ViewerState::close()`, so the post-rejection state is
-`open_book()` `None`, `page_count()` `0`, no source mounted. WHY: `open_path_with_policy` SUCCEEDS on
-an empty folder/archive, so the zero-page source used to stay mounted with `open_book =
-Some(<the just-REMOVED book>)` — which showed the removed book in the title bar, let the Library's
-Down key pass its only guard (`open_book().is_none()`) and enter a 0-page Viewer, silently closed
-whatever book WAS open, and made the `AppExit` route see a phantom open book and skip reconciling
-runtime view modes into global `Settings`. The recents push + settings save are DEFERRED past this check so
-they fire only for a non-empty book (see [patterns.md](patterns.md), "Insert a guard before X").
-`title` prefers the stored `Book::title`, falling back to `gashuu_core::display_title` (the core
-derivation rule made public in Wave 1 #149; the Wave-2 #150 switchover dissolved the UI replica —
-see [patterns.md](patterns.md), "Replicate-and-PIN" for the pattern's endgame). `finalize_open` handles the variant
-by rebuilding the carousel (the active search filter preserved) and showing the notice ONLY when
-`removed == true`; it does NOT switch screens, and the carousel-open / continue-reading sites guard
-their `go_to_viewer` with an `enter_viewer` check so the user stays on a refreshed Library. The
-open-time and cover-time removal paths share `main.rs::empty_book_removed_status` for the
-notice-plus-save-failure compose.
-
-`main.rs` constructs one instance and shares it (`Rc`) into the open-handler closures:
-`on_carousel_open` and `on_carousel_continue_reading` only DISPATCH
-(`handlers/library.rs::open_and_enter` → `OpenController::start`); the whole tail below runs in the
-`on_open_finalize` handler. It calls
-`finalize_open(&ui, &state, &viewport, &pages, &thumbs, &carousel, outcome)` after `apply_probed`
-returns — the signature gained the full `CarouselRefresh` deps (was just `&localizer`) because the
-`EmptyBookRejected` arm may rebuild the carousel. That handler also calls `go_to_viewer`, but gates
-it on the POSITIVE outcome — `enter_viewer = matches!(outcome, OpenOutcome::Success(..))` (was
-`!matches!(outcome, EmptyBookRejected { .. })`, which ALSO entered the Viewer on a FAILED open and
-dropped the user into a blank 0-page stage). On `Error` it stays on the Library; when the file is
-missing or its volume is unmounted (the probe's `path_exists == false`, stat'd off-thread rather
-than by a live `path.exists()` call) it replaces the raw I/O error with the book-named
-`viewer-open-inaccessible` message (title via `open_book::book_display_title`).
-See [patterns.md](patterns.md), "OpenOutcome pattern", "finalize_open helper", and "Gate a screen
-transition on the POSITIVE outcome".
-
-Lives in the UI crate because it coordinates Slint components; `gashuu-core` is untouched.
-
-`apply_probed` writes back the OUTGOING book's per-book view override through the persistence
-chokepoint — `LeavePointService::persist_with(ViewModeRoute::OpenDifferentBook, save_library)` right
-beside the position write-back at its top, still the FIRST thing the apply half does, before the
-source is replaced. Because that write lives in the apply half and not in the probe, exactly ONE
-leave-point write happens per APPLIED open: a probe superseded mid-flight writes nothing. Its
-failure is surfaced as `NoticesContent::leave_save_err`. That route writes ONLY the per-book sink, so — per the per-book-overrides feature —
-it does NOT reconcile runtime modes into the GLOBAL `Settings` on its open-time save (the runtime
-still holds the outgoing book's per-book modes there; reconciling would clobber the global
-defaults — see [patterns.md](patterns.md), "Write-direction invariant audit"). It then applies the
-just-opened book's `ResolvedView` via `ViewerState::apply_resolved_view` (+ `ViewportState::set_fit`).
+The use case returns listing and save notices as data. The finalize handler formats them,
+refreshes the viewer and carousel, and enters the viewer on success. A missing location keeps
+the library visible with the book-named inaccessible notice.
 
 ### remove_books
 
@@ -882,10 +743,13 @@ applicable position write-back, delegates view-mode routing
 to `stage_view_modes_to_sink`, and saves the library at most once. `stage_view_modes_to_sink`'s
 `match route` selects the sink: `DialogClosedOnLibrary` → global reconcile;
 `DialogClosedOnViewer` / `LeaveViewer` / `OpenDifferentBook` → per-book write-back; `AppExit` →
-per-book write-back FIRST, then a global reconcile ONLY when `open_book().is_none()`. So the GLOBAL
-route sink is invoked only via the Library-dialog close and the no-book-open exit; a Library-scope
-`DialogSession::end` also invokes the same helper before restoring its snapshot. Every leave point
-hits the per-book sink (a no-op when no book is open).
+per-book write-back first, then a global reconcile when `open_book().is_none()`. `Suspend` uses the
+same view-mode sinks when no dialog is open. With an active dialog, suspend writes back the reading
+position and preserves the dialog session and its unconfirmed edits
+([issue #664](https://github.com/yasuflatland-lf/gashuu/issues/664)).
+The global sink runs on Library-dialog close and when no book is open at exit or dialog-free
+suspend. A Library-scope `DialogSession::end` also invokes the same helper before restoring its
+snapshot. The per-book sink writes an override only when a book is open.
 Before a per-book write-back, `stage_view_override_write_back` builds the current `ResolvedView`,
 asks `DialogSession::inherit_pending(current)` whether the reset guard still applies, and consults
 the shared `Settings` handle to stage only fields that differ from global. The private pure helper
@@ -1023,18 +887,11 @@ All four share a private `visible_paths(search, library)` join and are headlessl
 
 ### page_count_prefetch
 
-`page_count_prefetch.rs`. The background page-count prefetch concern for the library carousel. A book
-whose page count is unknown is resolved on a `cover_loader` rayon worker from the SAME archive open
-that produces its cover (no extra `ArchiveLoader::open`). Because a worker cannot touch the `!Send`
-`Rc<RefCell<Library>>`, `push_and_marshal_count` (worker side) does two things: it pushes a
-`ResolvedCount { id, count }` onto a `Send` `Arc<Mutex<Vec<ResolvedCount>>>` queue for later
-UI-thread persistence (zero-page archives map `count == 0` to `None`, so nothing is queued), and it
-`marshal_total`s the count onto the carousel row (`set_carousel_total`) for immediate display, both
-behind the cover-epoch guard so a superseded generation is dropped. `PageCountPrefetch` owns the
-queue: `queue()` hands a `Send` clone to a worker; `apply(&library)` drains it on the UI thread,
-calls `Library::set_page_count` by ID, and saves ONCE if anything changed (called at the next `start`);
-`flush(&library)` re-applies on shutdown. `ResolvedCount` is a named struct (not a bare tuple) so the
-queue element reads as "a resolved fact being carried home".
+`PageCountPrefetch::record_count` displays the resolved total in its carousel row and queues
+the book ID and nonzero count for persistence. The backend completion runs on the UI thread
+after the cover epoch check. It captures the queue through an `Arc<Mutex<_>>` because backend
+callbacks must be `Send`. At the next refresh or shutdown, the controller drains the queue,
+applies each count through `Library::set_page_count`, and saves once if any count changed.
 
 ### enum_adapters
 
@@ -1148,7 +1005,7 @@ lives in `carousel_refresh.rs`).
 `handlers/drag_drop.rs`. OS file/folder drag-and-drop onto the Library screen. Slint exposes no
 stable file-drop API, so this bridges the winit backend's raw `WindowEvent`s (behind the
 `unstable-winit-030` feature) into the EXISTING bulk-add pipeline — dropped paths are handed straight
-to `add_loader::AddController::start`, reusing dedup, the reject rules, the archive policy, and the
+to `add_controller::AddController::start`, reusing dedup, the reject rules, the archive policy, and the
 add toast (`gashuu-core` untouched; drag-drop is just a new presentation-layer SOURCE of the same
 `paths` the Add buttons produce). `drop_action_for(&WindowEvent) -> DropAction` is the pure, testable
 mapping (`HoveredFile` → `ShowOverlay`, `HoveredFileCancelled` → `HideOverlay`, `DroppedFile(path)`
@@ -1193,6 +1050,12 @@ the `UpdateError {Http, Io, Verify}` glue error.
 
 See [ADR-0013](ADRs/0013-auto-update.md) and its Amendment, and [patterns.md](patterns.md),
 "Self-update replaces the running binary DIFFERENTLY per packaging".
+
+### web_lifecycle
+
+`web_lifecycle.rs` registers app-lifetime `pagehide` and hidden `visibilitychange` listeners.
+They flush page counts, the suspend leave point, and settings without ending a dialog session.
+Both events may flush consecutively; the writes are idempotent.
 
 ### web_blob_store
 
@@ -1338,92 +1201,45 @@ vertical-only — over `struct ThumbnailItem { image, page, loaded, failed }`. #
 per-cell markup with the shared `ThumbnailCell` component (border ring / background / radius /
 loaded-loading-failed-highlighted states now live there).
 
-**`thumbnail_strip.rs`** (`ThumbnailController`, issue #30): owns the strip's
-`Rc<VecModel<ThumbnailItem>>`, the epoch counter, and the cancel flag; `new(&ui)` builds and binds the
-model via `ui.set_thumbnails`; `start(&self, ui_weak, source, page_count)` cancels any in-flight
-generation, resets the model to `page_count` placeholders, and spawns the background worker. `main.rs`
-constructs the controller once and calls `thumbs.start(...)` in every open handler, with no thumbnail
-bookkeeping inline.
+**`thumbnail_strip.rs`** owns the desktop strip model. On open it creates one placeholder per
+page and requests the first 16 pages (or the whole book if shorter) via `BookBackend::thumbnail`.
+Scrolling or resizing requests fresh pages in the viewport and its three-page margin on either side.
+Each UI-thread completion updates its row to loaded or failed. Closing the session suppresses
+pending deliveries, and the strip epoch guards against updates to a replacement model.
+Starting without a session clears the strip. The web strip remains empty.
 
-**`cover_loader.rs`** (`CoverController`): a structural
-TWIN of `ThumbnailController` for the Library carousel. Streams each book's real cover into the shared
-`VecModel<CarouselItem>`. `start` is DISPATCH-ONLY on the UI thread: every `CoverRequest` becomes one
-`rayon::spawn` worker (`spawn_load`), and the worker does ALL the per-book I/O — derive
-`cache_key(path, mtime, max_side)` (the mtime `fs::metadata` happens on the worker), try
-`ThumbnailCache::get` (a HIT reads + decodes the cached QOI on the worker), or on a MISS open via
-`ArchiveLoader`, call core `generate_cover`, `ThumbnailCache::put` — then `invoke_from_event_loop` to
-set the row. Hit and miss share this one worker path (a warm 500-book start used to decode 500 QOIs
-inline on the event loop), under the SAME epoch + cancel double-guard and Send/!Send discipline as the
-thumbnail strip (see [patterns.md](patterns.md)). The cancel-rotation lives in a shared-shape private
-`rotate_cancel(&self) -> Arc<AtomicBool>` helper kept IDENTICAL in both controllers. Requests are
-dispatched focus-first: `prioritize_by_focus(requests, focus_row)` (pure, unit-tested) sorts by
-`abs_diff` from the carousel's focused row so the visible neighbourhood streams in before off-screen
-rows. Covers render at `COVER_MAX_SIDE = 512` px — DECOUPLED from the strip's
-`DEFAULT_THUMB_MAX_SIDE = 160` (a focused cover slot is far larger than a strip cell, so 160 px upscaled
-blurry); `max_side` is in the cache key, so raising it auto-regenerates stale 160 px covers. The
-controller ALSO prefetches each unopened book's REAL page count (fixing the "1 / 0" display): a request
-flagged `needs_count` (`Book::page_count_opt() == None`) resolves the count on the same worker — the
-cover-MISS worker reuses its archive open (`source.list_pages().len()` before `generate_cover`), a
-cover-cache HIT opens the archive once for the count AFTER marshalling the cover (so the count never
-delays the visible image). `marshal_total` streams the count to the row's `total` for immediate display,
-and a `ResolvedCount { id, count }` is queued in `pending_counts` for UI-thread persistence — drained
-via `Library::set_page_count` + `save` at the next `start` and at shutdown (`flush_counts`), so the
-count survives a relaunch (a worker can't touch the `!Send` `Rc<RefCell<Library>>`, hence the queue).
-Callers build the `CoverRequest` list BEFORE `start` so the `library.borrow()` is released before
-`start`'s persistence `borrow_mut`. The reject-empty-books feature added empty-book DETECTION to the
-worker: a worker that opens a book CLEANLY but counts zero pages (the pure `should_signal_empty`
-decision = `open_result.is_ok() && count == 0`) calls `marshal_empty_book`, which fires the root
-`empty-book-detected(string)` Slint callback under the same epoch guard as `marshal_total` (the
-worker passes the raw ID string; the `!Send` removal work runs on the UI thread in
-`handlers/library.rs`'s `on_empty_book_detected`). An open ERROR is unreadable, NOT empty — it keeps the placeholder
-+ log behavior and fires no signal. A dropped stale-epoch signal cannot lose the detection (a zero
-count is never persisted, so the next generation re-detects), and a removed book is absent from the
-next generation's requests (no loop). See [patterns.md](patterns.md), "Worker → UI ACTION via a
-Slint callback", and [ADR-0009](ADRs/0009-reject-empty-books.md).
+**`cover_loader.rs`** owns the carousel's cover generation. Each refresh persists pending
+counts, calls `BookBackend::cancel_covers`, and advances the epoch. `prioritize_by_focus`
+sorts requests by distance from the focused row. The controller dispatches 512 px covers
+and requests a page count only for rows with an unknown total. Callers release their
+library borrow before dispatch so pending counts can be applied. Counts are also flushed
+on shutdown and on web suspend.
 
-**`add_controller.rs`** (`AddController`, issue 206): the SAME async harness applied to the bulk ADD, so opening
-several large/cloud-synced archives in the `+` picker never freezes the event loop (`probe_page_count` reads each
-ZIP's central directory; `File::open` can block on hydration). `start(ui_weak, paths, policy, op)` begins a batch
-with the shared `ui_marshal::Generation<Vec<ProbeOutcome>>`, shows `Adding… (0/N)`, then
-dispatches one `rayon::spawn` per path running the pure, `Send` `probe_path` (classifies into
-`ProbeKind::{Counted(NonZeroUsize), Empty, FormatDisabled, Unreadable}` — touching NO `Library`). Each worker
-pushes its `ProbeOutcome` through a cloned ticket and marshals an epoch-guarded `add-progress(done, total)` tick. The worker
-that drains the `remaining` `AtomicUsize` to zero marshals `add-finalize(epoch)`. The finalize handler
-(`handlers/library.rs`) drains via `AddController::take_outcomes(epoch)` — epoch-guarded, so a second add started
-mid-probe supersedes the first with no stale clobber — re-sorts to INPUT order, then runs the APPLY half on the UI
-thread: `main.rs::apply_outcomes` (the old synchronous `add_paths` body, byte-identical behaviour, logging deferred
-here so the probe stays pure) + `apply_add_report` (save → rebuild → notice → focus). Same Send/!Send discipline as
-the cover loader: only `Send` values cross into the workers and the marshaled closures; every `Library` mutation
-runs on the UI thread. See [patterns.md](patterns.md), "Worker → UI ACTION via a Slint callback".
+The desktop backend reads the on-disk cover cache on a worker. On a miss it opens the
+archive once for the cover and count. On a hit it queues the cover before opening the
+archive for a requested count. Cover size is part of the cache key and is independent
+of the strip's 160 px thumbnail size. The web backend serializes page-zero decodes across
+refreshes and keeps up to 64 MiB of covers in memory until the app reloads.
 
-**`open_controller.rs`** (`OpenController`, issue #487): the SAME async harness applied to the
-SINGLE open, so a cold cloud-synced or network book no longer freezes the event loop for the whole
-hydration (`ArchiveLoader::open_with_policy` lists every entry; `File::open` can block). Only the
-read-only PROBE crosses the thread boundary: the pure, `Send` `probe_open(path, policy)` performs
-the archive or folder open, derives the ID and title through `book_path::identify`, and captures
-the skipped count, listing-truncation flag, and failure availability,
-returning `OpenProbeOutcome::{Opened(OpenProbe), Failed { error, path_exists }}` — touching no
-`ViewerState`, `Library`, or `Settings` (`PageSource` is `Send + Sync`, so the opened source itself
-crosses). `start(ui_weak, path, policy)` uses the shared `ui_marshal::Generation` to allocate
-a slot for one probe result. The rayon worker uses its ticket to deliver the result and marshal
-`open-finalize(epoch)`.
-`take_outcome(epoch)` drains it once and returns `None` when superseded, so double-clicking a second
-book mid-probe opens ONLY the second. Every state mutation and BOTH library saves (plus the optional
-settings save) stay on the UI thread in `OpenBookUseCase::apply_probed` — the synchronous-save
-rationale (the detached-write revert hazard) is untouched, and `persist_outgoing` still runs
-first, before the source is replaced. See [patterns.md](patterns.md), "Worker → UI ACTION via a
-Slint callback".
+Each `ui_done` completion checks the epoch and window before updating its row. An empty book
+reported by either callback raises `empty-book-detected` once with its ID. Other cover errors
+mark the row failed, while a count error after a hit only produces a warning.
 
-**`page_loader.rs`** owns the viewer's page-decode controller. `PageController` tracks the
-target spread, reserves missing pages, and advances an epoch on source or target changes.
-Desktop workers use `CacheDispatch::decode_and_cache` and `rayon::join` for two misses.
-The wasm32 task uses the decoders injected by `run_app`. Both paths finish the spread through
-the same epoch-guarded Slint callback. On success it calls `ui.invoke_spread_anchored(content_w,
-content_h, single, trailing_failed, leading_idx, trailing_idx)` (which drives geometry + image
-apply on the UI thread); on decode failure it calls `ui.invoke_page_decode_error(index)`. The
-UI-side `slint::Image` is built inside the event-loop closure (never `Send`). `main.rs::refresh`
-calls `ViewerState::classify_spread()` to classify the current spread, branches on all-HIT vs
-any-MISS, and hands a `SpreadDecodeRequest` to `dispatch_spread` on a miss.
+**`add_controller.rs`** probes each picked ID through `BookBackend::probe_page_count` under the
+selected archive policy. A path that cannot form an ID produces an unreadable outcome immediately.
+Each outcome advances progress in the current generation. The last one invokes `add-finalize`,
+whose handler takes the outcomes in input order and applies the batch. An empty pick finalizes
+inline. The browser picker uses the same probe path and appends its own notice at finalize.
+
+**`open_controller.rs`** passes the raw request ID, policy and next-open cache config to
+the backend. A generation ticket accepts one current result. Dropping a superseded result
+queues its session for closure on the next dispatch or drain. Taking the current result
+transfers session ownership to the open use case.
+
+**`page_loader.rs`** tracks the target spread and reserves missing pages. It passes the session
+and both indices to `BookBackend::decode_spread`. Its epoch-checked completion installs both
+images together and invokes `spread-anchored` on the UI thread. A failed trailing page degrades
+to the leading image. A failed leading page follows the `page-decode-error` path.
 
 **`SettingsDialog.slint`** (issue 102 replaced its std-widgets `ComboBox`/`SpinBox`/`CheckBox` with the token-driven `Segmented`/`Stepper`/`Toggle`/`Dropdown` atoms): modal overlay editing active settings; two-way `current-index <=> in-out-prop` +
 `selected`/`edited`/`toggled` callbacks. Since issue 103/104 it is a **content-hug glass panel** (φ relocated into the component proportions; spec 2026-06-04) built from custom `components/` atoms and inheriting the shared `GlassModal` shell for the scrim + panel chrome; its footer "Shortcuts" link opens `ShortcutsOverlay`, and an `in property <int> focus-epoch` (bumped by `ViewerWindow.focus-settings()`) lets the parent re-focus this still-mounted dialog after the overlay closes.
@@ -1483,12 +1299,14 @@ panel, `pick_files` elsewhere; the platform split lives in `#[cfg]` blocks insid
 and the matching `combined-add-picker` bool pushed at boot collapses the NavBar's two add capsules
 into one on macOS) and
 `on_add_folder` (`pick_folder`, folder-as-one-book; its capsule is hidden on macOS). The library-add seam is split
-across the UI-thread boundary (issue 206, to keep a bulk add of large/cloud-synced archives from freezing the event
-loop): the PROBE half runs OFF the UI thread — `add_loader::AddController::start` dispatches one rayon
-`add_loader::probe_path` per picked path (`ArchiveLoader::probe_page_count` → a `Send` `ProbeOutcome`, touching no
-`Library`), streams `Adding… (k/N)` progress via the `add-progress` callback, and marshals `add-finalize` when the
-last probe completes (an `AtomicUsize` epoch supersedes a second add started mid-probe). The APPLY half runs on the
-UI thread in the `add-finalize` handler: `main.rs::apply_outcomes` (dedup-aware insert, rejects empty/unreadable
+across the UI-thread boundary to keep bulk adds responsive (issue 206).
+`add_controller::AddController::start` calls `backend.probe_page_count` for each picked path with a
+UI-thread `Done`. Each completion records a `ProbeOutcome` and reports `Adding… (k/N)` through
+`add-progress`. The final completion invokes `add-finalize`. Starting a new batch advances the
+epoch and supersedes older tickets, so late completions from an older batch cannot record outcomes
+or update progress. `add_controller::probe_path` is a test-only fixture helper.
+The apply phase runs on the UI thread in the `add-finalize` handler. It calls
+`main.rs::apply_outcomes` (dedup-aware insert, rejects empty/unreadable
 sources, persists the probed count on each genuine insert, returns `AddReport { added, skipped }` — see ADR-0009),
 `build_carousel_model` (Library → `ModelRc<CarouselItem>`,
 0-based `last_page` → 1-based `current`, real `total`/`progress` from persisted `Book::page_count`,

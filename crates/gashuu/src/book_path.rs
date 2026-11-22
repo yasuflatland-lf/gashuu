@@ -4,11 +4,16 @@
 //! registry locations until OPFS storage arrives in #660. The backend work
 //! in #655–#660 moves location resolution behind the platform backend.
 
-use gashuu_core::{ArchiveLoader, ArchivePolicy, BookId, CoreError, PageSource};
+#[cfg(any(test, target_arch = "wasm32"))]
+use gashuu_core::{ArchiveLoader, ArchivePolicy, PageSource};
+use gashuu_core::{BookId, CoreError};
+#[cfg(any(test, target_arch = "wasm32"))]
 use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
+#[cfg(any(test, target_arch = "wasm32"))]
 use std::sync::Arc;
 
+#[cfg(any(test, target_arch = "wasm32"))]
 pub(crate) fn open(path: &Path, policy: ArchivePolicy) -> Result<Arc<dyn PageSource>, CoreError> {
     #[cfg(not(target_arch = "wasm32"))]
     {
@@ -21,6 +26,8 @@ pub(crate) fn open(path: &Path, policy: ArchivePolicy) -> Result<Arc<dyn PageSou
     }
 }
 
+// The web backend uses this helper on wasm32 and in desktop tests.
+#[cfg(any(test, target_arch = "wasm32"))]
 pub(crate) fn probe_page_count(
     path: &Path,
     policy: ArchivePolicy,
@@ -88,8 +95,6 @@ pub(crate) fn locate(id: &BookId) -> PathBuf {
 }
 
 /// Invert `locate` for a picked or recent path before canonicalization.
-#[cfg(not(target_arch = "wasm32"))]
-#[allow(dead_code)] // TODO(wasm-backend): remove when #656 ([6/13]) and #657 ([7/13]) have both merged
 pub(crate) fn request_id(path: &Path) -> Result<BookId, crate::backend::BackendError> {
     BookId::from_canonical_path(path)
         .map_err(|error| crate::backend::BackendError::from_core(&error))

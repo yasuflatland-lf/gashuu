@@ -94,6 +94,12 @@ impl FakeBackend {
         );
     }
 
+    /// Take the callbacks so callers can exercise their own stale-result guards.
+    pub(crate) fn take_cover(&self, nth: usize) -> (Done<ImageResult>, Option<Done<CountResult>>) {
+        let (_, on_cover, on_count) = self.covers.borrow_mut().remove(nth);
+        (on_cover, on_count)
+    }
+
     pub(crate) fn complete_probe(&self, nth: usize, result: CountResult) {
         let done = self.probes.borrow_mut().remove(nth);
         done(result);

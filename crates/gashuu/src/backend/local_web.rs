@@ -6,7 +6,8 @@ use super::{
 use crate::book_path;
 use crate::page_decode::{decode_cover, decode_page};
 use gashuu_core::{
-    cache_key, ArchivePolicy, BookId, CacheConfig, DecodedImage, ImageCache, PageDecoder,
+    cache_key, ArchivePolicy, BookId, CacheConfig, DecodedImage, ImageCache, ImageCratePageDecoder,
+    PageDecoder,
 };
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, VecDeque};
@@ -66,7 +67,7 @@ impl LocalWebBackend {
                 }
             }),
             Rc::new(gashuu_web_decode::NativePageDecoder),
-            Rc::new(gashuu_core::ImageCratePageDecoder),
+            Rc::new(ImageCratePageDecoder),
         )
     }
 
