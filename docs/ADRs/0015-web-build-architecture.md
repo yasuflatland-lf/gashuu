@@ -68,8 +68,8 @@ Reading those books needs bounded memory and responsive page turns.
 - Desktop reads retain their behavior. Once the controllers use the port, their
   rayon dispatch lives in `backend/desktop.rs`. Update checks and startup
   cover pruning retain their separate desktop jobs.
-- The web `ReadAt` adapter's `unsafe impl Send + Sync` is valid only without
-  the `atomics` target feature.
+- The web `ReadAt` adapter (#659) may need `unsafe impl Send + Sync`; that is
+  sound only without the `atomics` target feature.
 - The web decoded-page cache holds at most six pages, about 15 MB each for
   1600 × 2400 RGBA. The Worker retains decoded pages only for the request in flight.
   Web page prefetch stays disabled pending a separate measured change.
