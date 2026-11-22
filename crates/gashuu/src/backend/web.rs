@@ -11,6 +11,7 @@ use wasm_bindgen::{closure::Closure, JsCast, JsValue};
 use web_sys::{ErrorEvent, MessageEvent, Url, Worker, WorkerOptions};
 
 const LOADER: &str = "gashuu-worker_loader.js";
+const STARTUP_TIMEOUT_MS: i32 = 15_000;
 
 pub(super) struct WorkerBackend {
     client: RefCell<WebClient>,
@@ -21,9 +22,8 @@ pub(super) struct WorkerBackend {
 
 impl WorkerBackend {
     fn new() -> Result<Rc<Self>, String> {
-        let document = web_sys::window()
-            .and_then(|window| window.document())
-            .ok_or("document unavailable")?;
+        let window = web_sys::window().ok_or("window unavailable")?;
+        let document = window.document().ok_or("document unavailable")?;
         let base = document
             .base_uri()
             .map_err(js_error)?
@@ -32,7 +32,7 @@ impl WorkerBackend {
         // The Trunk loader uses importScripts and must run as a classic Worker.
         let worker =
             Worker::new_with_options(&url.href(), &WorkerOptions::new()).map_err(js_error)?;
-        Ok(Rc::new_cyclic(|backend: &Weak<Self>| {
+        let backend = Rc::new_cyclic(|backend: &Weak<Self>| {
             let weak = backend.clone();
             let onmessage = Closure::new(move |event: MessageEvent| {
                 if let Some(backend) = weak.upgrade() {
@@ -59,7 +59,27 @@ impl WorkerBackend {
                 _onmessage: onmessage,
                 _onerror: onerror,
             }
-        }))
+        });
+        let weak = Rc::downgrade(&backend);
+        let timeout = Closure::once_aborting(move || {
+            if let Some(backend) = weak.upgrade() {
+                let deliveries = backend
+                    .client
+                    .borrow_mut()
+                    .fail_if_starting("web worker did not become ready");
+                if let Some(deliveries) = deliveries {
+                    backend.finish_failure(deliveries);
+                }
+            }
+        });
+        window
+            .set_timeout_with_callback_and_timeout_and_arguments_0(
+                timeout.as_ref().unchecked_ref(),
+                STARTUP_TIMEOUT_MS,
+            )
+            .map_err(js_error)?;
+        timeout.forget();
+        Ok(backend)
     }
 
     fn dispatch(&self, f: impl FnOnce(&mut WebClient) -> Effects) {
@@ -77,8 +97,12 @@ impl WorkerBackend {
     }
 
     fn failed(&self, detail: &str) {
-        self.worker.terminate();
         let deliveries = self.client.borrow_mut().on_worker_failed(detail);
+        self.finish_failure(deliveries);
+    }
+
+    fn finish_failure(&self, deliveries: Vec<Delivery>) {
+        self.worker.terminate();
         self.deliver(deliveries);
     }
 

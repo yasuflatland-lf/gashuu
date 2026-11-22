@@ -115,12 +115,17 @@ impl WebClient {
         }
     }
 
+    pub(super) fn is_ready(&self) -> bool {
+        self.connection == Connection::Ready
+    }
+
     fn post(&mut self, request: Request) -> Vec<Outgoing> {
         let outgoing = || Outgoing(protocol::encode(&request));
-        match self.connection {
-            Connection::Starting => self.outbox.push(outgoing()),
-            Connection::Ready => return vec![outgoing()],
-            Connection::Failed => {}
+        if self.is_ready() {
+            return vec![outgoing()];
+        }
+        if self.connection == Connection::Starting {
+            self.outbox.push(outgoing());
         }
         Vec::new()
     }
@@ -417,6 +422,10 @@ impl WebClient {
             }),
         };
         (Vec::new(), vec![Delivery::Now(ready)])
+    }
+
+    pub(super) fn fail_if_starting(&mut self, detail: &str) -> Option<Vec<Delivery>> {
+        (self.connection == Connection::Starting).then(|| self.on_worker_failed(detail))
     }
 
     pub(super) fn on_worker_failed(&mut self, detail: &str) -> Vec<Delivery> {

@@ -12,35 +12,6 @@ inventory: what exists, where it lives, and what it does.
 Slint-independent domain + I/O layer. See [ADR-0002](ADRs/0002-layered-two-crate-architecture.md)
 for the rationale behind the two-crate split. Keep the layer boundary strict.
 
-#### WorkerBackend (web)
-
-`backend/web.rs` starts one dedicated classic Worker and resolves
-`gashuu-worker_loader.js` against the document base URI. `backend/web_client.rs`
-owns the protocol state in Rust and buffers requests until the Worker sends
-`Ready`. Each reply uses JSON metadata and, when present, transferred RGBA
-buffers. The browser adapter copies the buffers into Rust before delivery.
-
-The main thread holds a decoded-page LRU keyed by session and page index.
-Its capacity and byte budget come from the latest successful open's
-`CacheConfig`. The viewer caps capacity at six pages and sets prefetch to
-zero on web. Successful spread slots enter the LRU before delivery.
-`cached_page` is a memory lookup. Cover results use the shared 64 MiB
-`CoverMemCache`.
-
-Worker replies deliver callbacks from the browser message task on the UI
-thread. Cache hits and transport failures defer callbacks through Slint's
-event loop. Both paths check session or cover-generation liveness immediately
-before invocation. After a Worker failure, pending and future requests receive
-`Other { detail: "web worker unavailable" }` and cached pages stay readable.
-
-| Worker error | Backend error |
-| --- | --- |
-| `EmptyBook` | `EmptyBook` |
-| `FormatDisabled` with `rar/cbr` | `FormatDisabled { format: "rar/cbr" }` |
-| `FormatDisabled` with another format | `Other` with the format and disabled-support detail |
-| `Missing` | `Missing` with the Worker detail |
-| `Other` | `Other` with the Worker detail |
-
 ### page_decode
 
 `PageDecoder` takes owned encoded bytes and returns a local `DecodeFuture` that resolves
@@ -572,6 +543,35 @@ The controller migrations use these methods:
 | Thumbnail strip | `thumbnail` |
 | Carousel cover loader | `cover` with an optional count callback, `cancel_covers` |
 | Bulk add | `probe_page_count` |
+
+#### WorkerBackend (web)
+
+`backend/web.rs` starts one dedicated classic Worker and resolves
+`gashuu-worker_loader.js` against the document base URI. `backend/web_client.rs`
+owns the protocol state in Rust and buffers requests until the Worker sends
+`Ready`. Each reply uses JSON metadata and, when present, transferred RGBA
+buffers. The browser adapter copies the buffers into Rust before delivery.
+
+The main thread holds a decoded-page LRU keyed by session and page index.
+Its capacity and byte budget come from the latest successful open's
+`CacheConfig`. The viewer caps capacity at six pages and sets prefetch to
+zero on web. Successful spread slots enter the LRU before delivery.
+`cached_page` is a memory lookup. Cover results use the shared 64 MiB
+`CoverMemCache`.
+
+Worker replies deliver callbacks from the browser message task on the UI
+thread. Cache hits and transport failures defer callbacks through Slint's
+event loop. Both paths check session or cover-generation liveness immediately
+before invocation. After a Worker failure, pending and future requests receive
+`Other { detail: "web worker unavailable" }` and cached pages stay readable.
+
+| Worker error | Backend error |
+| --- | --- |
+| `EmptyBook` | `EmptyBook` |
+| `FormatDisabled` with `rar/cbr` | `FormatDisabled { format: "rar/cbr" }` |
+| `FormatDisabled` with another format | `Other` with the format and disabled-support detail |
+| `Missing` | `Missing` with the Worker detail |
+| `Other` | `Other` with the Worker detail |
 
 ### page_decode
 

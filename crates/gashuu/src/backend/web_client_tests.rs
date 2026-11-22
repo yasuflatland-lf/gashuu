@@ -137,12 +137,15 @@ fn fill(client: &mut WebClient, session: SessionId, index: u32, image: ImageMeta
 #[test]
 fn requests_before_ready_are_buffered_and_flushed_in_order() {
     let mut client = WebClient::new();
+    assert!(!client.is_ready());
     let policy = ArchivePolicy::default();
     let (open, _) = client.open(&book_id(), policy, CacheConfig::new(6, 0), Box::new(|_| {}));
     let (probe, _) = client.probe_page_count(&book_id(), policy, Box::new(|_| {}));
     let cancel = client.cancel_covers();
     assert!(open.is_empty() && probe.is_empty() && cancel.is_empty());
     let (out, deliveries) = receive(&mut client, WorkerResponse::Ready, vec![]);
+    assert!(client.is_ready());
+    assert!(client.fail_if_starting("deadline elapsed").is_none());
     assert!(deliveries.is_empty());
     let requests: Vec<_> = out
         .into_iter()
@@ -156,6 +159,36 @@ fn requests_before_ready_are_buffered_and_flushed_in_order() {
             WorkerRequest::CancelCovers { below: 1 }
         ]
     ));
+}
+
+#[test]
+fn startup_failure_fails_buffered_requests() {
+    let mut client = WebClient::new();
+    let policy = ArchivePolicy::default();
+    let (open_done, open) = test_callback();
+    let (probe_done, probe) = test_callback();
+    let (out, deliveries) = client.open(&book_id(), policy, CacheConfig::new(6, 0), open_done);
+    assert!(out.is_empty() && deliveries.is_empty());
+    let (out, deliveries) = client.probe_page_count(&book_id(), policy, probe_done);
+    assert!(out.is_empty() && deliveries.is_empty());
+
+    let deliveries = client
+        .fail_if_starting("web worker did not become ready")
+        .expect("worker was still starting");
+    assert_eq!(deliveries.len(), 2);
+    assert!(open.try_recv().is_err() && probe.try_recv().is_err());
+    for delivery in deliveries {
+        deliver(&client, vec![delivery], true);
+    }
+    let unavailable = BackendError::Other {
+        detail: "web worker unavailable".into(),
+    };
+    assert_eq!(open.try_recv().unwrap().err(), Some(unavailable.clone()));
+    assert_eq!(probe.try_recv().unwrap().unwrap_err(), unavailable);
+
+    let (out, deliveries) = receive(&mut client, WorkerResponse::Ready, vec![]);
+    assert!(out.is_empty() && deliveries.is_empty());
+    assert!(!client.is_ready());
 }
 
 #[test]
@@ -234,6 +267,28 @@ fn decode_spread_all_hit_is_deferred_and_posts_nothing() {
     client.close(session);
     deliver(&client, deliveries, true);
     assert!(result.try_recv().is_err());
+}
+
+#[test]
+fn decode_spread_with_only_leading_cached_posts_request() {
+    let mut client = ready_client();
+    let session = opened(&mut client, CacheConfig::new(6, 0)).session;
+    fill(&mut client, session, 0, meta());
+
+    let (out, deliveries) = client.decode_spread(session, 0, Some(1), Box::new(|_| {}));
+    assert!(deliveries.is_empty());
+    spread_request(out, session, 0, Some(1));
+}
+
+#[test]
+fn decode_spread_with_only_trailing_cached_posts_request() {
+    let mut client = ready_client();
+    let session = opened(&mut client, CacheConfig::new(6, 0)).session;
+    fill(&mut client, session, 1, meta());
+
+    let (out, deliveries) = client.decode_spread(session, 0, Some(1), Box::new(|_| {}));
+    assert!(deliveries.is_empty());
+    spread_request(out, session, 0, Some(1));
 }
 
 #[test]
@@ -569,6 +624,30 @@ fn worker_failure_fails_pending_and_future_requests() {
     deliver(&client, deliveries, true);
     assert_eq!(future.try_recv().unwrap().err(), Some(unavailable));
     assert!(client.cached_page(session, 0).is_some());
+}
+
+#[test]
+fn malformed_message_fails_pending_and_future_requests() {
+    let mut client = ready_client();
+    let session = opened(&mut client, CacheConfig::new(6, 0)).session;
+    let (done, pending) = test_callback();
+    let (out, deliveries) = client.thumbnail(session, 0, 128, done);
+    assert!(matches!(request(out), WorkerRequest::Thumbnail { .. }));
+    assert!(deliveries.is_empty());
+
+    let (out, deliveries) = client.on_message("not json", vec![]);
+    assert!(out.is_empty() && pending.try_recv().is_err());
+    deliver(&client, deliveries, true);
+    let unavailable = BackendError::Other {
+        detail: "web worker unavailable".into(),
+    };
+    assert_eq!(pending.try_recv().unwrap().unwrap_err(), unavailable);
+
+    let (done, future) = test_callback();
+    let (out, deliveries) = client.thumbnail(session, 1, 128, done);
+    assert!(out.is_empty() && future.try_recv().is_err());
+    deliver(&client, deliveries, true);
+    assert_eq!(future.try_recv().unwrap().unwrap_err(), unavailable);
 }
 
 #[test]
