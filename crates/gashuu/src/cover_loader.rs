@@ -665,9 +665,10 @@ impl CoverController {
         crate::ui_marshal::rotate_cancel(&self.cancel)
     }
 
-    /// Persist any still-pending prefetched page counts. Call once on shutdown
-    /// (after the event loop ends) so counts resolved after the last `start`
-    /// survive a restart instead of being recomputed by re-opening every archive.
+    /// Persist any still-pending prefetched page counts. Call on shutdown or on a web suspend event;
+    /// safe to call repeatedly and while the event loop is running (pending counts are drained, not
+    /// duplicated). Counts resolved after the last start survive a restart instead of being recomputed
+    /// by re-opening every archive.
     pub fn flush_counts(&self, library: &RefCell<Library>, library_store: &LibraryStoreHandle) {
         self.prefetch.flush(library, library_store);
     }

@@ -802,10 +802,13 @@ applicable position write-back, delegates view-mode routing
 to `stage_view_modes_to_sink`, and saves the library at most once. `stage_view_modes_to_sink`'s
 `match route` selects the sink: `DialogClosedOnLibrary` → global reconcile;
 `DialogClosedOnViewer` / `LeaveViewer` / `OpenDifferentBook` → per-book write-back; `AppExit` →
-per-book write-back FIRST, then a global reconcile ONLY when `open_book().is_none()`. So the GLOBAL
-route sink is invoked only via the Library-dialog close and the no-book-open exit; a Library-scope
-`DialogSession::end` also invokes the same helper before restoring its snapshot. Every leave point
-hits the per-book sink (a no-op when no book is open).
+per-book write-back first, then a global reconcile when `open_book().is_none()`. `Suspend` uses the
+same view-mode sinks when no dialog is open. With an active dialog, suspend writes back the reading
+position and preserves the dialog session and its unconfirmed edits
+([issue #664](https://github.com/yasuflatland-lf/gashuu/issues/664)).
+The global sink runs on Library-dialog close and when no book is open at exit or dialog-free
+suspend. A Library-scope `DialogSession::end` also invokes the same helper before restoring its
+snapshot. The per-book sink writes an override only when a book is open.
 Before a per-book write-back, `stage_view_override_write_back` builds the current `ResolvedView`,
 asks `DialogSession::inherit_pending(current)` whether the reset guard still applies, and consults
 the shared `Settings` handle to stage only fields that differ from global. The private pure helper
@@ -1113,6 +1116,12 @@ the `UpdateError {Http, Io, Verify}` glue error.
 
 See [ADR-0013](ADRs/0013-auto-update.md) and its Amendment, and [patterns.md](patterns.md),
 "Self-update replaces the running binary DIFFERENTLY per packaging".
+
+### web_lifecycle
+
+`web_lifecycle.rs` registers app-lifetime `pagehide` and hidden `visibilitychange` listeners.
+They flush page counts, the suspend leave point, and settings without ending a dialog session.
+Both events may flush consecutively; the writes are idempotent.
 
 ### web_blob_store
 

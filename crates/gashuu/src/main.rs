@@ -47,6 +47,8 @@ mod web_font;
 #[cfg(any(target_arch = "wasm32", test))]
 mod web_ios;
 #[cfg(target_arch = "wasm32")]
+mod web_lifecycle;
+#[cfg(target_arch = "wasm32")]
 mod web_picker;
 #[cfg(any(target_arch = "wasm32", test))]
 mod web_pointer;
@@ -580,6 +582,27 @@ fn run_app(
         window_state::restore_geometry(&ui, &settings.borrow());
     }
 
+    #[cfg(target_arch = "wasm32")]
+    {
+        let covers = Rc::clone(&covers);
+        let library = Rc::clone(&library);
+        let library_store = Rc::clone(&library_store);
+        let leave_point = Rc::clone(&leave_point);
+        let settings = Rc::clone(&settings);
+        let settings_store = Rc::clone(&settings_store);
+        web_lifecycle::wire_suspend_persistence(Rc::new(move || {
+            stage_suspend_state(
+                &covers,
+                &library,
+                &library_store,
+                &leave_point,
+                &settings,
+                |l| save_library(&library_store, l),
+                |s| save_settings(&settings_store, s),
+            );
+        }));
+    }
+
     ui.run()?;
     #[cfg(not(target_arch = "wasm32"))]
     {
@@ -682,6 +705,27 @@ fn stage_exit_state(
         // notice, and the relaunch caller replaces the process moments later — but the
         // failure must not be silently discarded.
         tracing::error!(error = %e, "failed to persist the leave point on exit");
+    }
+}
+
+/// Suspend flush: stages the leave point (Suspend route) and saves library and settings.
+/// Never ends the dialog session, closes a backend session, or modifies viewer/viewport runtime state.
+#[cfg(any(target_arch = "wasm32", test))]
+fn stage_suspend_state(
+    covers: &cover_loader::CoverController,
+    library: &RefCell<Library>,
+    library_store: &LibraryStoreHandle,
+    leave_point: &LeavePointService,
+    settings: &RefCell<Settings>,
+    save_library: impl FnOnce(&Library) -> Result<(), CoreError>,
+    save_settings: impl FnOnce(&Settings) -> Result<(), CoreError>,
+) {
+    covers.flush_counts(library, library_store);
+    if let Err(e) = leave_point.persist_with(ViewModeRoute::Suspend, save_library) {
+        tracing::error!(error = %e, "failed to persist the leave point on suspend");
+    }
+    if let Err(e) = save_settings(&settings.borrow()) {
+        tracing::error!(error = %e, "failed to save settings on suspend");
     }
 }
 
@@ -1076,6 +1120,50 @@ mod tests {
     use super::*;
     use dialog_session::DialogScope;
     use gashuu_core::{CoverMode, FitMode, ResolvedView, SpreadMode, ViewOverride};
+
+    #[test]
+    fn stage_suspend_state_writes_once_each_and_never_ends_dialog() {
+        let settings = Rc::new(RefCell::new(Settings::default()));
+        let state = Rc::new(RefCell::new(ViewerState::new()));
+        let viewport = Rc::new(RefCell::new(ViewportState::from_settings(
+            &settings.borrow(),
+        )));
+        let session = Rc::new(RefCell::new(DialogSession::new()));
+        let library = Rc::new(RefCell::new(Library::new()));
+        let store = Rc::new(None);
+        let covers = cover_loader::CoverController::new();
+        let leave_point = LeavePointService::new(
+            Rc::clone(&state),
+            Rc::clone(&viewport),
+            Rc::clone(&session),
+            Rc::clone(&settings),
+            Rc::clone(&library),
+            Rc::clone(&store),
+        );
+        session
+            .borrow_mut()
+            .open(DialogScope::Library, &state, &viewport, &settings);
+        let mut library_saves = 0;
+        let mut settings_saves = 0;
+        stage_suspend_state(
+            &covers,
+            &library,
+            &store,
+            &leave_point,
+            &settings,
+            |_| {
+                library_saves += 1;
+                Ok(())
+            },
+            |_| {
+                settings_saves += 1;
+                Ok(())
+            },
+        );
+        assert_eq!(library_saves, 1);
+        assert_eq!(settings_saves, 1);
+        assert_eq!(session.borrow().scope(), Some(DialogScope::Library));
+    }
 
     /// Issue #535, path (a), pinned at the PRODUCTION call site: quitting while a
     /// settings dialog opened on the Library screen is still up must persist the
