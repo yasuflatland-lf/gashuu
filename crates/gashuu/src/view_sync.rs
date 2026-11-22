@@ -2,9 +2,9 @@ use crate::{
     dialog_session::DialogSession, save_library, viewer_state::ViewerState,
     viewport::ViewportState, LibraryStoreHandle,
 };
-use gashuu_core::{CoreError, Library, ResolvedView, Settings, ViewOverride};
+use gashuu_core::{BookId, CoreError, Library, ResolvedView, Settings, ViewOverride};
 use std::cell::RefCell;
-use std::path::{Path, PathBuf};
+
 use std::rc::Rc;
 
 /// The leave/close point at which runtime view modes are persisted, naming WHERE
@@ -92,7 +92,7 @@ impl LeavePointService {
     /// legitimately reconciles into global even while a book is loaded in
     /// `ViewerState`, because the runtime was global-seeded
     /// by `apply_global_view_to_runtime` at dialog open — so this path must NOT be
-    /// blanket-guarded on `open_file().is_none()`, or Library-dialog edits would be
+    /// blanket-guarded on `open_book().is_none()`, or Library-dialog edits would be
     /// dropped. The exit path keeps the per-book write FIRST, then the open-state
     /// guard on the global reconcile.
     ///
@@ -154,7 +154,7 @@ fn stage_view_modes_to_sink(
             // Per-book override FIRST (no-op if no book is open), so the open
             // book's modes are saved before the open-state-guarded global reconcile.
             stage_view_override_write_back(state, viewport, dialog_session, settings, library);
-            if state.borrow().open_file().is_none() {
+            if state.borrow().open_book().is_none() {
                 apply_runtime_view_to_settings(
                     &state.borrow(),
                     &viewport.borrow(),
@@ -233,37 +233,19 @@ pub(crate) fn apply_global_view_to_runtime(
     viewport.borrow_mut().set_fit(s.fit_mode);
 }
 
-/// Derive the centered title-bar display name from the AUTHORITATIVE post-open
-/// state, so it can never show a book that did not actually open.
-///
-/// Reads the canonical `open_file()` from `ViewerState` (the same key the
-/// library write-back uses), which is `Some(path)` after a successful open of a
-/// folder OR an archive and is left UNCHANGED on a failed open (`open_path`
-/// returns early via `?` before `set_source`). Therefore:
-///   - success  -> the just-opened book's name (from the canonical path);
-///   - failure with a prior book still open -> that book's name (still shown);
-///   - failure with nothing open / boot -> `""`.
-///
-/// `open_file` is a real filesystem path; the folder/archive discrimination
-/// happens inside `gashuu_core::display_title`, which checks `is_dir()` live
-/// on the same real path. Borrow discipline: the single `state.borrow()` `Ref`
-/// is confined to this function and drops on return.
+/// The title captured by the open probe for the active book.
 pub(crate) fn current_book_name(state: &RefCell<ViewerState>) -> String {
-    let s = state.borrow();
-    match s.open_file() {
-        Some(path) => gashuu_core::display_title(path),
-        None => String::new(),
-    }
+    state.borrow().open_title().unwrap_or_default().to_owned()
 }
 
 /// Pure helper: decide if and what to write back to the Library.
 ///
-/// Returns `Some((canonical_path, page_index))` when a write-back should be
+/// Returns `Some((book_id, page_index))` when a write-back should be
 /// performed (a book is open), `None` otherwise. Extracted for table-testing
 /// so the predicate can be verified independently of the effectful
 /// `stage_position_write_back` that actually calls `library.set_resume_page`.
-fn position_to_write_back(open_file: Option<&Path>, page: usize) -> Option<(PathBuf, usize)> {
-    open_file.map(|p| (p.to_path_buf(), page))
+fn position_to_write_back(open_book: Option<&BookId>, page: usize) -> Option<(BookId, usize)> {
+    open_book.map(|p| (p.clone(), page))
 }
 
 /// Stage the current reading position in the Library without persisting.
@@ -280,20 +262,20 @@ fn position_to_write_back(open_file: Option<&Path>, page: usize) -> Option<(Path
 /// borrows drop before the next statement acquires a different borrow,
 /// following the one-statement rule in `docs/patterns.md`.
 fn stage_position_write_back(state: &RefCell<ViewerState>, library: &RefCell<Library>) {
-    // Extract the (path, page) tuple from the viewer state under one shared
+    // Extract the (id, page) tuple from the viewer state under one shared
     // borrow; the `Ref` drops at the `;` before `library` is borrowed.
-    let Some((path, page)) = ({
+    let Some((id, page)) = ({
         let s = state.borrow();
-        position_to_write_back(s.open_file(), s.resume_index_to_persist())
+        position_to_write_back(s.open_book(), s.resume_index_to_persist())
     }) else {
         return; // no book open — nothing to write back
     };
-    library.borrow_mut().set_resume_page(&path, page);
+    library.borrow_mut().set_resume_page(&id, page);
 }
 
 /// Pure helper: decide what view override to write back for the open book.
 ///
-/// Returns `Some((canonical_path, override))` when a book is open (so the
+/// Returns `Some((book_id, override))` when a book is open (so the
 /// caller persists it), `None` otherwise. The override carries only runtime modes
 /// that differ from `global`; matching fields remain inherited.
 ///
@@ -306,19 +288,19 @@ fn stage_position_write_back(state: &RefCell<ViewerState>, library: &RefCell<Lib
 /// Extracted (mirrors `position_to_write_back`) so the predicate is unit-tested
 /// without the effectful `set_overrides` + `save`.
 fn view_override_to_write_back(
-    open_file: Option<&Path>,
+    open_book: Option<&BookId>,
     view: ResolvedView,
     global: ResolvedView,
     inherit_pending: bool,
-) -> Option<(PathBuf, ViewOverride)> {
-    open_file.map(|p| {
+) -> Option<(BookId, ViewOverride)> {
+    open_book.map(|p| {
         let overrides = if inherit_pending {
             // Keep inheriting: an empty override falls back to every global default.
             ViewOverride::none()
         } else {
             ViewOverride::differences_from(view, global)
         };
-        (p.to_path_buf(), overrides)
+        (p.clone(), overrides)
     })
 }
 
@@ -341,10 +323,10 @@ fn stage_view_override_write_back(
 ) {
     let current = current_runtime_view(state, viewport);
     let inherit_pending = dialog_session.borrow().inherit_pending(current);
-    let Some((path, overrides)) = ({
+    let Some((id, overrides)) = ({
         let s = state.borrow();
         view_override_to_write_back(
-            s.open_file(),
+            s.open_book(),
             current,
             settings.borrow().view_defaults(),
             inherit_pending,
@@ -352,7 +334,7 @@ fn stage_view_override_write_back(
     }) else {
         return; // no book open — nothing to write back
     };
-    library.borrow_mut().set_overrides(&path, overrides);
+    library.borrow_mut().set_overrides(&id, overrides);
 }
 
 #[cfg(test)]
@@ -360,7 +342,7 @@ mod tests {
     use super::*;
     use crate::dialog_session::{DialogScope, DialogSession};
     use gashuu_core::{CoverMode, FitMode, ReadingDirection, SpreadMode};
-    use std::path::{Path, PathBuf};
+    use std::path::Path;
 
     fn leave_point_service(
         state: &Rc<RefCell<ViewerState>>,
@@ -419,12 +401,12 @@ mod tests {
     #[test]
     fn current_book_name_empty_after_failed_open() {
         // Bug guard: a FAILED open must leave the title-bar name empty. `current_book_name`
-        // reads authoritative `open_file()` (None after a failed open), never the dialog path.
+        // reads authoritative `open_book()` (None after a failed open), never the dialog path.
         let state = Rc::new(RefCell::new(ViewerState::new()));
         // Sanity: blank before any open.
         assert_eq!(current_book_name(&state), "");
         // A nonexistent path makes `open_path` return Err before `set_source`,
-        // so `open_file()` stays None and the derived name stays empty.
+        // so `open_book()` stays None and the derived name stays empty.
         let _ = state
             .borrow_mut()
             .open_path(Path::new("/nonexistent_gashuu_title_guard"));
@@ -437,7 +419,7 @@ mod tests {
 
     #[test]
     fn current_book_name_is_folder_name_after_successful_open() {
-        // A SUCCESSFUL folder open derives the directory name from canonical `open_file()`.
+        // A SUCCESSFUL folder open derives the directory name from canonical `open_book()`.
         // Uses a real temp dir (an empty folder opens fine as a FolderSource).
         let dir = std::env::temp_dir().join(format!("gashuu_title_ok_{}", std::process::id()));
         std::fs::create_dir_all(&dir).expect("create temp dir");
@@ -464,7 +446,7 @@ mod tests {
     // ---- position_to_write_back (PR-R) ------------------------------------
 
     #[test]
-    fn position_to_write_back_none_when_no_open_file() {
+    fn position_to_write_back_none_when_no_open_book() {
         assert!(
             position_to_write_back(None, 5).is_none(),
             "no open file => no write-back"
@@ -473,8 +455,8 @@ mod tests {
 
     #[test]
     fn position_to_write_back_some_when_file_open() {
-        let path = PathBuf::from("/some/book.cbz");
-        let result = position_to_write_back(Some(path.as_path()), 7);
+        let path = BookId::new("/some/book.cbz");
+        let result = position_to_write_back(Some(&path), 7);
         assert!(result.is_some(), "open file => write-back tuple");
         let (p, pg) = result.unwrap();
         assert_eq!(p, path);
@@ -483,8 +465,8 @@ mod tests {
 
     #[test]
     fn position_to_write_back_zero_page() {
-        let path = PathBuf::from("/some/book.cbz");
-        let result = position_to_write_back(Some(path.as_path()), 0);
+        let path = BookId::new("/some/book.cbz");
+        let result = position_to_write_back(Some(&path), 0);
         assert!(result.is_some());
         let (_, pg) = result.unwrap();
         assert_eq!(pg, 0, "page 0 is a valid write-back (start of book)");
@@ -509,12 +491,14 @@ mod tests {
         assert!(runtime.jump_to(8));
         assert_eq!(runtime.index(), 8);
         let canonical = runtime
-            .open_file()
+            .open_book()
             .expect("open file after successful open")
-            .to_path_buf();
+            .clone();
 
         let mut library_value = Library::new();
-        assert!(library_value.add(canonical.clone()).is_some());
+        assert!(library_value
+            .add(canonical.clone(), "book".into())
+            .is_some());
         let state = Rc::new(RefCell::new(runtime));
         let library = Rc::new(RefCell::new(library_value));
 
@@ -541,14 +525,16 @@ mod tests {
         let mut runtime = ViewerState::from_settings(&global);
         runtime.open_path(&book).expect("open test book");
         let canonical = runtime
-            .open_file()
+            .open_book()
             .expect("open file after successful open")
-            .to_path_buf();
+            .clone();
         let state = Rc::new(RefCell::new(runtime));
         let viewport = Rc::new(RefCell::new(ViewportState::from_settings(&global)));
         let settings = Rc::new(RefCell::new(global));
         let mut library_value = Library::new();
-        assert!(library_value.add(canonical.clone()).is_some());
+        assert!(library_value
+            .add(canonical.clone(), "book".into())
+            .is_some());
         let library = Rc::new(RefCell::new(library_value));
         let dialog_session = Rc::new(RefCell::new(DialogSession::new()));
 
@@ -585,14 +571,16 @@ mod tests {
         let mut runtime = ViewerState::from_settings(&initial_global);
         runtime.open_path(&book).expect("open test book");
         let canonical = runtime
-            .open_file()
+            .open_book()
             .expect("open file after successful open")
-            .to_path_buf();
+            .clone();
         let state = Rc::new(RefCell::new(runtime));
         let viewport = Rc::new(RefCell::new(ViewportState::from_settings(&initial_global)));
         let settings = Rc::new(RefCell::new(initial_global));
         let mut library_value = Library::new();
-        assert!(library_value.add(canonical.clone()).is_some());
+        assert!(library_value
+            .add(canonical.clone(), "book".into())
+            .is_some());
         let library = Rc::new(RefCell::new(library_value));
         let dialog_session = Rc::new(RefCell::new(DialogSession::new()));
 
@@ -643,14 +631,16 @@ mod tests {
         runtime.set_spread_mode(SpreadMode::Single);
         runtime.open_path(&book).expect("open test book");
         let canonical = runtime
-            .open_file()
+            .open_book()
             .expect("open file after successful open")
-            .to_path_buf();
+            .clone();
         let state = Rc::new(RefCell::new(runtime));
         let viewport = Rc::new(RefCell::new(ViewportState::from_settings(&initial_global)));
         let settings = Rc::new(RefCell::new(initial_global));
         let mut library_value = Library::new();
-        assert!(library_value.add(canonical.clone()).is_some());
+        assert!(library_value
+            .add(canonical.clone(), "book".into())
+            .is_some());
         let library = Rc::new(RefCell::new(library_value));
         let dialog_session = Rc::new(RefCell::new(DialogSession::new()));
 
@@ -692,7 +682,7 @@ mod tests {
     }
 
     #[test]
-    fn view_override_to_write_back_none_when_no_open_file() {
+    fn view_override_to_write_back_none_when_no_open_book() {
         let global = Settings::default();
         assert!(
             view_override_to_write_back(
@@ -713,7 +703,7 @@ mod tests {
 
     #[test]
     fn view_override_to_write_back_some_carries_all_four_modes() {
-        let path = PathBuf::from("/manga/book.cbz");
+        let path = BookId::new("/manga/book.cbz");
         let global = Settings {
             reading_direction: ReadingDirection::Ltr,
             spread_mode: SpreadMode::Single,
@@ -722,7 +712,7 @@ mod tests {
             ..Settings::default()
         };
         let result = view_override_to_write_back(
-            Some(path.as_path()),
+            Some(&path),
             ResolvedView {
                 reading_direction: ReadingDirection::Rtl,
                 spread_mode: SpreadMode::Double,
@@ -742,7 +732,7 @@ mod tests {
 
     #[test]
     fn write_back_emits_only_fields_that_differ_from_global() {
-        let path = PathBuf::from("/manga/book.cbz");
+        let path = BookId::new("/manga/book.cbz");
         let global = Settings {
             reading_direction: ReadingDirection::Rtl,
             spread_mode: SpreadMode::Double,
@@ -751,7 +741,7 @@ mod tests {
             ..Settings::default()
         };
         let (_, overrides) = view_override_to_write_back(
-            Some(path.as_path()),
+            Some(&path),
             ResolvedView {
                 reading_direction: ReadingDirection::Ltr,
                 spread_mode: SpreadMode::Double,
@@ -781,7 +771,7 @@ mod tests {
         // CX repro: a book is open AND was just "reset to global" (inherit_pending),
         // so the write-back on dialog close must keep the override EMPTY (inherit),
         // even though every current runtime mode differs from global.
-        let path = PathBuf::from("/manga/book.cbz");
+        let path = BookId::new("/manga/book.cbz");
         let global = Settings {
             reading_direction: ReadingDirection::Ltr,
             spread_mode: SpreadMode::Single,
@@ -790,7 +780,7 @@ mod tests {
             ..Settings::default()
         };
         let result = view_override_to_write_back(
-            Some(path.as_path()),
+            Some(&path),
             ResolvedView {
                 reading_direction: ReadingDirection::Rtl,
                 spread_mode: SpreadMode::Double,
@@ -814,7 +804,7 @@ mod tests {
         // Regression case: after reset the user changes a mode again, which clears
         // inherit_pending; the write-back must then re-create the differing field
         // (the guard does not block re-selection).
-        let path = PathBuf::from("/manga/book.cbz");
+        let path = BookId::new("/manga/book.cbz");
         let global = Settings {
             reading_direction: ReadingDirection::Rtl,
             spread_mode: SpreadMode::Single,
@@ -823,7 +813,7 @@ mod tests {
             ..Settings::default()
         };
         let (_, ov) = view_override_to_write_back(
-            Some(path.as_path()),
+            Some(&path),
             ResolvedView {
                 reading_direction: ReadingDirection::Ltr,
                 spread_mode: SpreadMode::Single,
@@ -858,14 +848,16 @@ mod tests {
         state.borrow_mut().open_path(&book).expect("open test book");
         let canonical = state
             .borrow()
-            .open_file()
+            .open_book()
             .expect("open file after successful open")
-            .to_path_buf();
+            .clone();
         let viewport = Rc::new(RefCell::new(ViewportState::from_settings(
             &settings.borrow(),
         )));
         let mut library_value = Library::new();
-        assert!(library_value.add(canonical.clone()).is_some());
+        assert!(library_value
+            .add(canonical.clone(), "book".into())
+            .is_some());
         let library = Rc::new(RefCell::new(library_value));
         let dialog_session = Rc::new(RefCell::new(DialogSession::new()));
 
@@ -907,14 +899,16 @@ mod tests {
         state.borrow_mut().open_path(&book).expect("open test book");
         let canonical = state
             .borrow()
-            .open_file()
+            .open_book()
             .expect("open file after successful open")
-            .to_path_buf();
+            .clone();
         let viewport = Rc::new(RefCell::new(ViewportState::from_settings(
             &settings.borrow(),
         )));
         let mut library_value = Library::new();
-        assert!(library_value.add(canonical.clone()).is_some());
+        assert!(library_value
+            .add(canonical.clone(), "book".into())
+            .is_some());
         let library = Rc::new(RefCell::new(library_value));
         let dialog_session = Rc::new(RefCell::new(DialogSession::new()));
 
@@ -952,14 +946,16 @@ mod tests {
         state.borrow_mut().open_path(&book).expect("open test book");
         let canonical = state
             .borrow()
-            .open_file()
+            .open_book()
             .expect("open file after successful open")
-            .to_path_buf();
+            .clone();
         let viewport = Rc::new(RefCell::new(ViewportState::from_settings(
             &settings.borrow(),
         )));
         let mut library_value = Library::new();
-        assert!(library_value.add(canonical.clone()).is_some());
+        assert!(library_value
+            .add(canonical.clone(), "book".into())
+            .is_some());
         let library = Rc::new(RefCell::new(library_value));
         let dialog_session = Rc::new(RefCell::new(DialogSession::new()));
 
@@ -1018,10 +1014,10 @@ mod tests {
         let mut library_value = Library::new();
         let canonical = state
             .borrow()
-            .open_file()
+            .open_book()
             .expect("open file after successful open")
-            .to_path_buf();
-        assert!(library_value.add(canonical).is_some());
+            .clone();
+        assert!(library_value.add(canonical, "book".into()).is_some());
         let library = Rc::new(RefCell::new(library_value));
         let dialog_session = Rc::new(RefCell::new(DialogSession::new()));
 
@@ -1063,9 +1059,9 @@ mod tests {
         state.borrow_mut().open_path(&book).expect("open test book");
         let canonical = state
             .borrow()
-            .open_file()
+            .open_book()
             .expect("open file after successful open")
-            .to_path_buf();
+            .clone();
         let viewport = Rc::new(RefCell::new(ViewportState::from_settings(
             &settings.borrow(),
         )));
@@ -1079,7 +1075,9 @@ mod tests {
             &mut viewport.borrow_mut(),
         );
         let mut library_value = Library::new();
-        assert!(library_value.add(canonical.clone()).is_some());
+        assert!(library_value
+            .add(canonical.clone(), "book".into())
+            .is_some());
         let library = Rc::new(RefCell::new(library_value));
         let dialog_session = Rc::new(RefCell::new(DialogSession::new()));
 
@@ -1129,10 +1127,12 @@ mod tests {
                     runtime.open_path(&book).expect("open test book");
                     runtime.jump_to(2);
                     let canonical = runtime
-                        .open_file()
+                        .open_book()
                         .expect("open file after successful open")
-                        .to_path_buf();
-                    assert!(library_value.add(canonical.clone()).is_some());
+                        .clone();
+                    assert!(library_value
+                        .add(canonical.clone(), "book".into())
+                        .is_some());
                     Some(canonical)
                 } else {
                     None

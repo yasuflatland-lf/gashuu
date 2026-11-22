@@ -12,12 +12,12 @@ use crate::keymap::NavAction;
 use crate::open_controller::{probe_open, OpenProbeOutcome};
 use crate::viewport::ViewportState;
 use gashuu_core::{
-    cache::CacheDispatch, ArchivePolicy, CacheConfig, CoreError, CoverMode, DecodedImage,
+    cache::CacheDispatch, ArchivePolicy, BookId, CacheConfig, CoreError, CoverMode, DecodedImage,
     ImageCache, Language, PageSource, ReadingDirection, ResolvedView, Settings, Spread, SpreadMode,
     SpreadNavigation,
 };
 use std::num::NonZeroUsize;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 
 pub use gashuu_core::scrub_fraction_to_page;
@@ -94,14 +94,9 @@ pub struct ViewerState {
     /// an error return leaves the value from the previous successful open
     /// unchanged.
     last_open_truncated: bool,
-    /// Canonical path of the most recently successfully opened source. `None`
-    /// until `open_path` completes `Ok(())`; reset to `None` only by a
-    /// subsequent `set_source` call (including the one the next successful
-    /// `open_path` makes before re-setting it). A failed `open_path` returns
-    /// early via `?` before `set_source`, so it leaves this field unchanged.
-    /// Used by `view_sync` to identify the book when staging its resume position
-    /// at every leave point.
-    open_file: Option<PathBuf>,
+    /// Identity and display title installed by a successful open.
+    open_book: Option<BookId>,
+    open_title: Option<String>,
 }
 
 // A 1600x2400 RGBA page takes about 15 MB. The #651 Chrome spike reached
@@ -135,7 +130,8 @@ impl ViewerState {
             language: Language::default(),
             last_open_skipped: 0,
             last_open_truncated: false,
-            open_file: None,
+            open_book: None,
+            open_title: None,
         }
     }
 
@@ -154,7 +150,8 @@ impl ViewerState {
             language: settings.language,
             last_open_skipped: 0,
             last_open_truncated: false,
-            open_file: None,
+            open_book: None,
+            open_title: None,
         }
     }
 
@@ -164,7 +161,8 @@ impl ViewerState {
     /// `current_source()` can return it without going through `ImageCache`.
     pub fn set_source(&mut self, source: Arc<dyn PageSource>) {
         self.source = Some(Arc::clone(&source));
-        self.open_file = None;
+        self.open_book = None;
+        self.open_title = None;
         let cache = ImageCache::new(source, self.cache_config);
         self.nav.set_total(cache.len());
         self.cache = Some(cache);
@@ -177,7 +175,7 @@ impl ViewerState {
     /// opened" rather than keep rendering a book that no longer exists.
     ///
     /// Drops the cache + source, zeroes the page count / index /
-    /// `last_open_skipped` / `last_open_truncated`, and clears `open_file` so
+    /// `last_open_skipped` / `last_open_truncated`, and clears the book ID and title so
     /// `current_book_name`
     /// reads `""` and `status_content` reports `NoFolder`. The display MODES (direction/spread/cover) and the
     /// `cache_config` and `nav`'s display configuration are deliberately
@@ -192,7 +190,8 @@ impl ViewerState {
         self.nav.set_total(0);
         self.last_open_skipped = 0;
         self.last_open_truncated = false;
-        self.open_file = None;
+        self.open_book = None;
+        self.open_title = None;
     }
 
     /// Returns the currently opened page source, if any. Used by the UI to
@@ -254,7 +253,8 @@ impl ViewerState {
                     probe.source,
                     probe.skipped,
                     probe.truncated,
-                    probe.canonical,
+                    probe.id,
+                    probe.title,
                 );
                 Ok(())
             }
@@ -271,12 +271,14 @@ impl ViewerState {
         source: Arc<dyn PageSource>,
         skipped: usize,
         truncated: bool,
-        canonical: PathBuf,
+        id: BookId,
+        title: String,
     ) {
         self.last_open_skipped = skipped;
         self.last_open_truncated = truncated;
         self.set_source(source);
-        self.open_file = Some(canonical);
+        self.open_book = Some(id);
+        self.open_title = Some(title);
     }
 
     /// Number of entries skipped during the most recent successful `open_path`
@@ -296,13 +298,13 @@ impl ViewerState {
         self.last_open_truncated
     }
 
-    /// The canonical path of the currently open source, or `None` after
-    /// construction or a direct `set_source` call. Set on a successful
-    /// `open_path`; a failed `open_path` leaves the previous value unchanged
-    /// (it returns early before `set_source`). Used by `main.rs` to write the
-    /// reading position back to the `Library` at leave points.
-    pub fn open_file(&self) -> Option<&Path> {
-        self.open_file.as_deref()
+    /// The ID installed by the most recent successful open, if still active.
+    pub fn open_book(&self) -> Option<&BookId> {
+        self.open_book.as_ref()
+    }
+
+    pub fn open_title(&self) -> Option<&str> {
+        self.open_title.as_deref()
     }
 
     /// Open any supported path with the default (allow-all) policy.

@@ -255,13 +255,20 @@ pub(crate) fn wire_settings_handlers(
         let library_store = Rc::clone(&library_store);
         ui.on_reset_overrides(move || {
             with_ui(&ui_weak, |ui| {
-                if let Some(path) = state.borrow().open_file().map(|p| p.to_path_buf()) {
-                    let changed = library.borrow_mut().set_overrides(&path, ViewOverride::none());
+                if let Some(id) = state.borrow().open_book().cloned() {
+                    let changed = library
+                        .borrow_mut()
+                        .set_overrides(&id, ViewOverride::none());
                     if !changed {
-                        tracing::warn!(path = %path.display(), "reset override: open book not found in library");
+                        tracing::warn!(id = %id, "reset override: open book not found in library");
                     }
                     if let Err(e) = save_library(&library_store, &library.borrow()) {
-                        report_save_error(&ui, localizer.loader(), &e, "failed to save library on override reset");
+                        report_save_error(
+                            &ui,
+                            localizer.loader(),
+                            &e,
+                            "failed to save library on override reset",
+                        );
                     }
                 }
                 dialog_session

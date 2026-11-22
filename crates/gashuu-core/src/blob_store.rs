@@ -181,8 +181,8 @@ mod tests {
             ..Settings::default()
         };
         let mut library = Library::new();
-        let book = PathBuf::from("/manga/a.cbz");
-        assert!(library.add(book.clone()).is_some());
+        let book = crate::BookId::new("/manga/a.cbz");
+        assert!(library.add(book.clone(), "a".into()).is_some());
         assert!(library.set_resume_page(&book, 2));
 
         settings_store.save(&settings).unwrap();
@@ -199,7 +199,7 @@ mod tests {
         assert_eq!(settings_store.load().unwrap(), settings);
         let loaded = library_store.load().unwrap();
         assert_eq!(loaded.books().len(), 1);
-        assert_eq!(loaded.books()[0].path(), book.as_path());
+        assert_eq!(loaded.books()[0].id(), &book);
         assert_eq!(loaded.books()[0].resume_page(), 2);
     }
 

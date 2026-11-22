@@ -103,7 +103,6 @@ mod tests {
     use super::*;
     use gashuu_core::{Library, LibraryStore, Settings, SettingsStore};
     use std::collections::HashMap;
-    use std::path::PathBuf;
     use std::sync::{Arc, Mutex};
 
     #[derive(Debug, Default)]
@@ -246,8 +245,8 @@ mod tests {
             ..Settings::default()
         };
         let mut library = Library::new();
-        let book = PathBuf::from("/manga/a.cbz");
-        assert!(library.add(book.clone()).is_some());
+        let book = gashuu_core::BookId::new("/manga/a.cbz");
+        assert!(library.add(book.clone(), "a".into()).is_some());
         assert!(library.set_resume_page(&book, 2));
 
         settings_store.save(&settings).unwrap();

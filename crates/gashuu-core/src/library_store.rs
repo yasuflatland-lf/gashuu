@@ -4,12 +4,11 @@ use crate::error::CoreError;
 use crate::library::{Book, Library};
 #[cfg(not(target_arch = "wasm32"))]
 use crate::FsBlobStore;
-use crate::{BlobStore, LIBRARY_KEY};
+use crate::{BlobStore, BookId, LIBRARY_KEY};
 use serde::Serialize;
 use std::io;
-use std::path::Path;
 #[cfg(not(target_arch = "wasm32"))]
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 /// On-disk library schema version.
@@ -24,7 +23,7 @@ struct LibraryDocument<'a> {
     version: u32,
     books: &'a [Book],
     #[serde(skip_serializing_if = "Option::is_none")]
-    last_opened: Option<&'a Path>,
+    last_opened: Option<&'a BookId>,
 }
 
 /// Repository for a library document stored as a JSON blob.
@@ -129,6 +128,7 @@ impl Library {
         let mut library: Library = serde_json::from_value(value).map_err(CoreError::Library)?;
         // Re-canonicalize + merge duplicate identities (filesystem I/O) BEFORE the pure
         // sort/orphan-clear in `normalize`, so each load self-heals pre-canonical paths.
+        #[cfg(not(target_arch = "wasm32"))]
         library.recanonicalize_and_merge();
         library.normalize();
         Ok(library)
@@ -152,47 +152,77 @@ fn migrate(mut value: serde_json::Value, from: u32) -> serde_json::Value {
 mod tests {
     use super::*;
     use std::num::NonZeroUsize;
-    use std::path::{Path, PathBuf};
 
     #[cfg(unix)]
     #[test]
-    fn to_json_fails_for_a_non_utf8_book_path() {
-        // Unix permits arbitrary path bytes, which lets this test document why
-        // ArchiveLoader must gate non-UTF-8 paths before they can become books.
-        use std::ffi::OsStr;
-        use std::os::unix::ffi::OsStrExt;
+    fn book_id_rejects_a_non_utf8_canonical_path() {
+        use std::{ffi::OsStr, os::unix::ffi::OsStrExt};
 
-        let mut lib = Library::new();
-        assert!(lib
-            .add(PathBuf::from(OsStr::from_bytes(b"bad\xffname.cbz")))
-            .is_some());
+        let path = Path::new(OsStr::from_bytes(b"bad\xffname.cbz"));
+        assert!(matches!(
+            BookId::from_canonical_path(path),
+            Err(CoreError::NonUtf8Path { .. })
+        ));
+    }
 
-        let Err(CoreError::Library(error)) = lib.to_json() else {
-            panic!("expected a library serialization error for a non-UTF-8 path");
-        };
-        assert!(error
-            .to_string()
-            .to_ascii_lowercase()
-            .contains("invalid utf-8"));
+    fn title(id: &BookId) -> String {
+        crate::display_title(Path::new(id.as_str()), false)
+    }
+
+    #[test]
+    fn library_json_is_byte_identical_across_bookid_change() {
+        let fixture = r#"{
+  "version": 1,
+  "books": [
+    {
+      "path": "/manga/Series/Vol 1.cbz",
+      "title": "Vol 1",
+      "last_page": 4,
+      "page_count": 12,
+      "overrides": {
+        "reading_direction": "rtl"
+      }
+    },
+    {
+      "path": "/manga/Vol 2.cbz",
+      "title": "Vol 2",
+      "last_page": 0,
+      "page_count": 0
+    }
+  ],
+  "last_opened": "/manga/Series/Vol 1.cbz"
+}"#;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("library.json");
+        std::fs::write(&path, fixture).unwrap();
+        let store = LibraryStore::new(path.clone());
+
+        assert_eq!(
+            Library::from_json(fixture).unwrap().to_json().unwrap(),
+            fixture
+        );
+        let lib = store.load().unwrap();
+        store.save(&lib).unwrap();
+        assert_eq!(std::fs::read_to_string(path).unwrap(), fixture);
     }
 
     #[test]
     fn to_json_then_from_json_round_trips() {
         let mut lib = Library::new();
-        let first = PathBuf::from("/manga/a.cbz");
-        let second = PathBuf::from("/manga/b.cbz");
-        assert!(lib.add(first.clone()).is_some());
-        assert!(lib.add(second.clone()).is_some());
+        let first = BookId::new("/manga/a.cbz");
+        let second = BookId::new("/manga/b.cbz");
+        assert!(lib.add(first.clone(), title(&first)).is_some());
+        assert!(lib.add(second.clone(), title(&second)).is_some());
         assert!(lib.set_resume_page(&second, 42));
 
         let json = lib.to_json().unwrap();
         let parsed = Library::from_json(&json).unwrap();
 
         assert_eq!(parsed.books().len(), 2);
-        assert_eq!(parsed.books()[0].path(), Path::new("/manga/a.cbz"));
+        assert_eq!(parsed.books()[0].id(), &BookId::new("/manga/a.cbz"));
         assert_eq!(parsed.books()[0].title(), "a");
         assert_eq!(parsed.books()[0].resume_page(), 0);
-        assert_eq!(parsed.books()[1].path(), Path::new("/manga/b.cbz"));
+        assert_eq!(parsed.books()[1].id(), &BookId::new("/manga/b.cbz"));
         assert_eq!(parsed.books()[1].title(), "b");
         assert_eq!(parsed.books()[1].resume_page(), 42);
     }
@@ -200,7 +230,12 @@ mod tests {
     #[test]
     fn to_json_emits_version_and_books() {
         let mut lib = Library::new();
-        assert!(lib.add(PathBuf::from("/manga/a.cbz")).is_some());
+        assert!(lib
+            .add(
+                BookId::new("/manga/a.cbz"),
+                crate::display_title(Path::new("/manga/a.cbz"), false)
+            )
+            .is_some());
 
         let value: serde_json::Value = serde_json::from_str(&lib.to_json().unwrap()).unwrap();
 
@@ -217,8 +252,8 @@ mod tests {
         // Pins the `Some(n)` direction of the serde shim: a known count serializes as the
         // bare integer `n`, keeping the on-disk shape byte-compatible (`None` emits as `0`).
         let mut lib = Library::new();
-        let book = PathBuf::from("/manga/a.cbz");
-        assert!(lib.add(book.clone()).is_some());
+        let book = BookId::new("/manga/a.cbz");
+        assert!(lib.add(book.clone(), title(&book)).is_some());
         assert!(lib.set_page_count(&book, NonZeroUsize::new(123).unwrap()));
 
         let value: serde_json::Value = serde_json::from_str(&lib.to_json().unwrap()).unwrap();
@@ -329,9 +364,9 @@ mod tests {
     fn save_to_then_load_from_round_trips() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("nested").join("library.json");
-        let book = PathBuf::from("/manga/a.cbz");
+        let book = BookId::new("/manga/a.cbz");
         let mut original = Library::new();
-        assert!(original.add(book.clone()).is_some());
+        assert!(original.add(book.clone(), title(&book)).is_some());
         assert!(original.set_resume_page(&book, 7));
 
         let store = LibraryStore::new(path);
@@ -339,7 +374,7 @@ mod tests {
         let loaded = store.load().unwrap();
 
         assert_eq!(loaded.books().len(), 1);
-        assert_eq!(loaded.books()[0].path(), Path::new("/manga/a.cbz"));
+        assert_eq!(loaded.books()[0].id(), &BookId::new("/manga/a.cbz"));
         assert_eq!(loaded.books()[0].resume_page(), 7);
     }
 
@@ -365,8 +400,18 @@ mod tests {
 
         // First save: two books (a longer document).
         let mut original = Library::new();
-        assert!(original.add(PathBuf::from("/manga/a.cbz")).is_some());
-        assert!(original.add(PathBuf::from("/manga/b.cbz")).is_some());
+        assert!(original
+            .add(
+                BookId::new("/manga/a.cbz"),
+                crate::display_title(Path::new("/manga/a.cbz"), false)
+            )
+            .is_some());
+        assert!(original
+            .add(
+                BookId::new("/manga/b.cbz"),
+                crate::display_title(Path::new("/manga/b.cbz"), false)
+            )
+            .is_some());
         let store = LibraryStore::new(path.clone());
         store.save(&original).unwrap();
 
@@ -398,9 +443,9 @@ mod tests {
     fn page_count_persists_across_save_and_load() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("nested").join("library.json");
-        let book = PathBuf::from("/manga/a.cbz");
+        let book = BookId::new("/manga/a.cbz");
         let mut original = Library::new();
-        assert!(original.add(book.clone()).is_some());
+        assert!(original.add(book.clone(), title(&book)).is_some());
         assert!(original.set_page_count(&book, NonZeroUsize::new(42).unwrap()));
 
         let store = LibraryStore::new(path);
@@ -408,7 +453,7 @@ mod tests {
         let loaded = store.load().unwrap();
 
         assert_eq!(loaded.books().len(), 1);
-        assert_eq!(loaded.books()[0].path(), Path::new("/manga/a.cbz"));
+        assert_eq!(loaded.books()[0].id(), &BookId::new("/manga/a.cbz"));
         assert_eq!(loaded.books()[0].page_count_opt(), Some(42));
     }
 
@@ -464,7 +509,12 @@ mod tests {
         // skip_serializing_if: a book with no overrides must NOT emit an
         // "overrides" key, so the on-disk shape is unchanged for existing books.
         let mut lib = Library::new();
-        assert!(lib.add(PathBuf::from("/manga/a.cbz")).is_some());
+        assert!(lib
+            .add(
+                BookId::new("/manga/a.cbz"),
+                crate::display_title(Path::new("/manga/a.cbz"), false)
+            )
+            .is_some());
         let value: serde_json::Value = serde_json::from_str(&lib.to_json().unwrap()).unwrap();
         assert!(value["books"][0].get("overrides").is_none());
     }
@@ -472,8 +522,8 @@ mod tests {
     #[test]
     fn non_empty_overrides_round_trip() {
         let mut lib = Library::new();
-        let p = PathBuf::from("/manga/a.cbz");
-        assert!(lib.add(p.clone()).is_some());
+        let p = BookId::new("/manga/a.cbz");
+        assert!(lib.add(p.clone(), title(&p)).is_some());
         let ov = crate::view_override::ViewOverride {
             reading_direction: Some(crate::view_modes::ReadingDirection::Rtl),
             spread_mode: Some(crate::view_modes::SpreadMode::Double),
@@ -492,8 +542,8 @@ mod tests {
     #[test]
     fn reading_progress_is_not_persisted() {
         let mut lib = Library::new();
-        let p = PathBuf::from("/manga/a.cbz");
-        assert!(lib.add(p.clone()).is_some());
+        let p = BookId::new("/manga/a.cbz");
+        assert!(lib.add(p.clone(), title(&p)).is_some());
         assert!(lib.set_resume_page(&p, 3));
         assert!(lib.set_page_count(&p, NonZeroUsize::new(10).unwrap()));
 
@@ -572,9 +622,9 @@ mod tests {
             "last_opened must be absent when None"
         );
 
-        let book = PathBuf::from("/manga/a.cbz");
+        let book = BookId::new("/manga/a.cbz");
         let mut lib = Library::new();
-        lib.register_opened(&book, None);
+        lib.register_opened(&book, &title(&book), None);
         let some_value: serde_json::Value = serde_json::from_str(&lib.to_json().unwrap()).unwrap();
         assert_eq!(
             some_value.get("last_opened").and_then(|v| v.as_str()),
@@ -588,9 +638,9 @@ mod tests {
         // A library with last_opened set keeps the value across to_json/from_json.
         let dir = tempfile::tempdir().unwrap();
         let file_path = dir.path().join("library.json");
-        let book = PathBuf::from("/manga/a.cbz");
+        let book = BookId::new("/manga/a.cbz");
         let mut lib = Library::new();
-        lib.register_opened(&book, NonZeroUsize::new(10));
+        lib.register_opened(&book, &title(&book), NonZeroUsize::new(10));
 
         let store = LibraryStore::new(file_path);
         store.save(&lib).unwrap();
@@ -598,7 +648,7 @@ mod tests {
 
         assert_eq!(
             loaded.last_opened(),
-            Some(Path::new("/manga/a.cbz")),
+            Some(&BookId::new("/manga/a.cbz")),
             "last_opened must survive save/load"
         );
     }
@@ -608,12 +658,12 @@ mod tests {
         // Verify that last_opened survives a full store save → load round-trip.
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("library.json");
-        let book = PathBuf::from("/manga/vol1.cbz");
+        let book = BookId::new("/manga/vol1.cbz");
         let mut lib = Library::new();
-        assert!(lib.add(book.clone()).is_some());
-        lib.register_opened(&book, None);
+        assert!(lib.add(book.clone(), title(&book)).is_some());
+        lib.register_opened(&book, &title(&book), None);
         // last_opened is set before saving.
-        assert_eq!(lib.last_opened(), Some(Path::new("/manga/vol1.cbz")));
+        assert_eq!(lib.last_opened(), Some(&BookId::new("/manga/vol1.cbz")));
 
         let store = LibraryStore::new(path);
         store.save(&lib).unwrap();
@@ -621,7 +671,7 @@ mod tests {
 
         assert_eq!(
             loaded.last_opened(),
-            Some(Path::new("/manga/vol1.cbz")),
+            Some(&BookId::new("/manga/vol1.cbz")),
             "last_opened must survive save_to/load_from"
         );
     }
@@ -652,9 +702,15 @@ mod tests {
         for name in ["a.cbz", "b.cbz"] {
             let f = dir.path().join(name);
             std::fs::write(&f, []).unwrap();
-            assert!(lib.add(crate::canonical_identity(&f)).is_some());
+            assert!(lib
+                .add(
+                    BookId::from_canonical_path(&crate::canonical_identity(&f)).unwrap(),
+                    crate::display_title(&f, false)
+                )
+                .is_some());
         }
-        let canonical_b = dir.path().join("b.cbz").canonicalize().unwrap();
+        let canonical_b =
+            BookId::from_canonical_path(&dir.path().join("b.cbz").canonicalize().unwrap()).unwrap();
         assert!(lib.set_resume_page(&canonical_b, 4));
         assert!(lib.set_page_count(&canonical_b, NonZeroUsize::new(12).unwrap()));
         let ov = crate::view_override::ViewOverride {
@@ -662,7 +718,7 @@ mod tests {
             ..crate::view_override::ViewOverride::none()
         };
         assert!(lib.set_overrides(&canonical_b, ov));
-        lib.register_opened(&canonical_b, None);
+        lib.register_opened(&canonical_b, &title(&canonical_b), None);
 
         let before = lib.to_json().unwrap();
         let reloaded = Library::from_json(&before).unwrap();
@@ -677,14 +733,14 @@ mod tests {
     #[test]
     fn last_opened_to_json_then_from_json_round_trips() {
         // In-memory round-trip via to_json/from_json (without touching the FS).
-        let book = PathBuf::from("/manga/a.cbz");
+        let book = BookId::new("/manga/a.cbz");
         let mut lib = Library::new();
-        lib.register_opened(&book, None);
+        lib.register_opened(&book, &title(&book), None);
         let json = lib.to_json().unwrap();
         let parsed = Library::from_json(&json).unwrap();
         assert_eq!(
             parsed.last_opened(),
-            Some(Path::new("/manga/a.cbz")),
+            Some(&BookId::new("/manga/a.cbz")),
             "last_opened must survive to_json/from_json"
         );
     }
