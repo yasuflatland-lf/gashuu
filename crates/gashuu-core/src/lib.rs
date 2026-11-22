@@ -13,6 +13,7 @@ extern "system" {}
 pub mod archive_loader;
 pub(crate) mod atomic_write;
 pub mod blob_store;
+pub mod book_id;
 pub mod cache;
 pub mod cache_config;
 pub mod error;
@@ -42,6 +43,7 @@ pub use atomic_write::write_atomic;
 #[cfg(not(target_arch = "wasm32"))]
 pub use blob_store::FsBlobStore;
 pub use blob_store::{BlobStore, MemoryBlobStore, LIBRARY_KEY, SETTINGS_KEY};
+pub use book_id::BookId;
 pub use cache::{ImageCache, DEFAULT_CAPACITY, DEFAULT_PREFETCH_RADIUS};
 pub use cache_config::{CacheConfig, MAX_CACHE_CAPACITY, MAX_PREFETCH_RADIUS};
 pub use error::CoreError;

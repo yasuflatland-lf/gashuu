@@ -1,30 +1,23 @@
-//! Library domain model: a naturally ordered, de-duplicated shelf of books.
+//! A naturally ordered, de-duplicated shelf keyed by opaque book IDs.
 //!
-//! Headless (no slint, no tracing). Identity is a filesystem path the CALLER has
-//! already put through [`canonical_identity`]; availability is derived (never
-//! stored). The aggregate is therefore an in-memory ordered set with one
-//! deliberate filesystem-I/O exception, [`Library::recanonicalize_and_merge`],
-//! which the load path invokes explicitly. Persistence lives in `library_store`.
+//! Callers supply identity and display titles. On desktop, the load path
+//! explicitly re-resolves legacy locations before normalizing the shelf.
 
 use crate::reading_progress::ReadingProgress;
 use crate::view_override::ViewOverride;
+use crate::BookId;
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeSet, HashMap};
+use std::collections::BTreeSet;
+#[cfg(not(target_arch = "wasm32"))]
+use std::collections::HashMap;
 use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 
-/// One book in the shelf. Identity is the canonical filesystem path.
-///
-/// Carries display data only: the path, a derived `title` (file stem for a file,
-/// directory name for a folder), and the resume page index (normally the
-/// last-viewed spread leading, or the final page index for a finished book). The
-/// book kind (folder / archive) is resolved at open time by `ArchiveLoader` and
-/// is deliberately NOT persisted. Availability (whether the path still
-/// resolves) is derived at render time, never stored.
+/// One book in the shelf, with a caller-supplied title and stored reading state.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(from = "BookRecord", into = "BookRecord")]
 pub struct Book {
-    path: PathBuf,
+    id: BookId,
     title: String,
     progress: ReadingProgress,
     overrides: ViewOverride,
@@ -33,7 +26,7 @@ pub struct Book {
 /// Version 1 book fields in their on-disk order.
 #[derive(Serialize, Deserialize)]
 struct BookRecord {
-    path: PathBuf,
+    path: BookId,
     title: String,
     #[serde(default)]
     last_page: usize,
@@ -46,7 +39,7 @@ struct BookRecord {
 impl From<BookRecord> for Book {
     fn from(record: BookRecord) -> Self {
         Self {
-            path: record.path,
+            id: record.path,
             title: record.title,
             progress: ReadingProgress::new(record.last_page, record.page_count),
             overrides: record.overrides,
@@ -57,7 +50,7 @@ impl From<BookRecord> for Book {
 impl From<Book> for BookRecord {
     fn from(book: Book) -> Self {
         Self {
-            path: book.path,
+            path: book.id,
             title: book.title,
             last_page: book.progress.last_viewed(),
             page_count: book.progress.total_count(),
@@ -92,14 +85,10 @@ mod page_count_serde {
     }
 }
 
-/// Derive a book's display title from its path. For a folder the title is the
-/// directory name; for a file it is the file stem (e.g. `Cool Title` from
-/// `Cool Title.cbz`). Either source is rejected when empty, and the lossy full
-/// path string is the fallback so the title is never empty. This is the single
-/// home of the title rule; `Book::from_path` (and, in later waves, the UI
-/// replicas) delegate to it.
-pub fn display_title(path: &Path) -> String {
-    if path.is_dir() {
+/// Derive a book title from the directory name or file stem, using the
+/// full path as a fallback when the selected component is missing or empty.
+pub fn display_title(path: &Path, is_dir: bool) -> String {
+    if is_dir {
         path.file_name()
             .map(|s| s.to_string_lossy().into_owned())
             .filter(|s| !s.is_empty())
@@ -111,16 +100,8 @@ pub fn display_title(path: &Path) -> String {
     .unwrap_or_else(|| path.to_string_lossy().into_owned())
 }
 
-/// The shelf identity for `path`: its canonical form when that is available AND
-/// valid UTF-8, otherwise `path` verbatim.
-///
-/// The UTF-8 condition is not cosmetic: `Book::path` is serialized as a JSON string,
-/// so a non-UTF-8 identity would make `Library::to_json` — and therefore EVERY save —
-/// fail wholesale (CORE-S-1). A UTF-8 path that canonicalizes into a directory with
-/// non-UTF-8 bytes must therefore keep its own (persistable) spelling; dedup is
-/// marginally weaker for that book, which is strictly better than losing all saves.
-/// This is the single home of the rule: aggregate callers and
-/// [`Library::recanonicalize_and_merge`] use it for every persisted identity.
+/// Resolve a desktop location for use as an ID. Keep the original spelling
+/// when canonicalization fails or yields a path that cannot serve as a UTF-8 ID.
 pub fn canonical_identity(path: &Path) -> PathBuf {
     path.canonicalize()
         .ok()
@@ -129,25 +110,20 @@ pub fn canonical_identity(path: &Path) -> PathBuf {
 }
 
 impl Book {
-    /// Build a `Book` from a path, deriving the display title via
-    /// [`display_title`] (file stem for a file, directory name for a folder,
-    /// lossy full path as a never-empty fallback).
-    pub(crate) fn from_path(path: PathBuf) -> Self {
-        let title = display_title(&path);
+    pub(crate) fn new(id: BookId, title: String) -> Self {
         Self {
-            path,
+            id,
             title,
             progress: ReadingProgress::default(),
             overrides: ViewOverride::none(),
         }
     }
 
-    /// The canonical filesystem path that identifies this book.
-    pub fn path(&self) -> &Path {
-        &self.path
+    pub fn id(&self) -> &BookId {
+        &self.id
     }
 
-    /// Display title (derived: file stem for a file, directory name for a folder).
+    /// The caller-supplied display title.
     pub fn title(&self) -> &str {
         &self.title
     }
@@ -175,7 +151,7 @@ impl Book {
 
 fn book_order(a: &Book, b: &Book) -> std::cmp::Ordering {
     crate::ordering::natural_cmp(a.title(), b.title())
-        .then_with(|| a.path().as_os_str().cmp(b.path().as_os_str()))
+        .then_with(|| a.id().as_str().cmp(b.id().as_str()))
 }
 
 /// Collapse one resolution group (books resolving to the same `key`) into a single
@@ -184,10 +160,11 @@ fn book_order(a: &Book, b: &Book) -> std::cmp::Ordering {
 /// takes the max, `page_count` the first `Some` in vec order, `overrides` the first
 /// non-empty in vec order. The survivor's progress is constructed from both values
 /// because the max resume and first-`Some` count can come from different members.
-/// The survivor's `path` is finally set to `key`, which upgrades a now-resolvable
+/// The survivor's ID is finally set to `key`, which upgrades a now-resolvable
 /// raw path even for a group of one. `members` is non-empty by
 /// construction (a group is only created when a member is pushed).
-fn merge_group(key: PathBuf, members: Vec<Book>) -> Book {
+#[cfg(not(target_arch = "wasm32"))]
+fn merge_group(key: BookId, members: Vec<Book>) -> Book {
     let mut iter = members.into_iter();
     let mut survivor = iter
         .next()
@@ -201,41 +178,27 @@ fn merge_group(key: PathBuf, members: Vec<Book>) -> Book {
             survivor.overrides = member.overrides;
         }
     }
-    survivor.path = key;
+    survivor.id = key;
     survivor.progress = ReadingProgress::new(last_viewed, total);
     survivor
 }
 
-/// An ordered, de-duplicated shelf of books. Natural title order is the carousel
-/// order, with canonical path as the deterministic tie-break. Identity / dedup
-/// is on the caller-supplied [`canonical_identity`] result. Mirrors
-/// `Settings::push_recent` discipline: one place owns the invariants.
+/// An ordered shelf, de-duplicated by book ID and sorted by natural title
+/// order with the raw ID as the tie-break.
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct Library {
     #[serde(default)]
     books: Vec<Book>,
-    /// The canonical path of the most recently opened book, or `None` when no
-    /// book has been opened yet. Invariant: if `Some`, the path is present in
-    /// `books`. Maintained by: `register_opened` (sets from the stored book so
-    /// membership holds by construction), `remove`/`remove_many` (clear when
-    /// the pointed-at book is removed), `normalize()` (clears an orphan on
-    /// load).
+    /// The most recently opened book. When set, its ID is present in the shelf.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    last_opened: Option<PathBuf>,
+    last_opened: Option<BookId>,
 }
 
-/// Outcome of [`Library::remove_many`]: the canonical paths actually removed and
-/// the inputs that matched no stored book. A pure value report — never a bare
-/// count, so the caller can both surface "removed N" feedback AND distinguish a
-/// stale/already-gone selection (`not_found`) from a real removal. The two vecs
-/// partition the de-duplicated input: a path appears in exactly one of them, and
-/// a duplicated input path is counted once.
+/// Deduplicated removal inputs, in ID order within each partition.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct RemovalReport {
-    /// The paths that matched a stored book and were unregistered.
-    pub removed: Vec<PathBuf>,
-    /// The input paths that matched no stored book (already gone / never present).
-    pub not_found: Vec<PathBuf>,
+    pub removed: Vec<BookId>,
+    pub not_found: Vec<BookId>,
 }
 
 /// Outcome of [`Library::register_opened`]: where to resume reading and whether the
@@ -250,18 +213,13 @@ pub struct OpenRegistration {
 }
 
 impl Library {
-    /// The book stored under `path` (canonical-path identity), if any.
-    fn find_book(&self, path: &Path) -> Option<&Book> {
-        self.books.iter().find(|book| book.path() == path)
+    /// Look up a book by ID.
+    pub fn book(&self, id: &BookId) -> Option<&Book> {
+        self.books.iter().find(|book| book.id() == id)
     }
 
-    fn find_book_mut(&mut self, path: &Path) -> Option<&mut Book> {
-        self.books.iter_mut().find(|book| book.path() == path)
-    }
-
-    /// Membership form of `find_book` for the `.any()` call sites.
-    fn contains_path(&self, path: &Path) -> bool {
-        self.books.iter().any(|book| book.path() == path)
+    fn book_mut(&mut self, id: &BookId) -> Option<&mut Book> {
+        self.books.iter_mut().find(|book| book.id() == id)
     }
 
     /// An empty library.
@@ -269,17 +227,14 @@ impl Library {
         Self::default()
     }
 
-    /// The books in natural title (carousel) order, with canonical path tie-break.
+    /// The books in natural title (carousel) order, with raw ID tie-break.
     pub fn books(&self) -> &[Book] {
         &self.books
     }
 
-    /// The canonical path of the most recently opened book, or `None` when no
-    /// book has been opened yet. Invariant: if `Some`, the path is present in
-    /// [`books()`](Library::books) (see the `last_opened` field for how it is
-    /// maintained).
-    pub fn last_opened(&self) -> Option<&Path> {
-        self.last_opened.as_deref()
+    /// The ID of the most recently opened book, if any.
+    pub fn last_opened(&self) -> Option<&BookId> {
+        self.last_opened.as_ref()
     }
 
     /// Clear all persisted reading-library state. Returns `true` when either
@@ -292,83 +247,30 @@ impl Library {
         changed
     }
 
-    /// The resume target: `last_opened` only when that path is still a shelved
-    /// book. This is the single home of the "resume target must be a shelved
-    /// book" rule, so callers need not re-derive it by scanning `books`. The
-    /// `last_opened` invariant already guarantees membership for a library built
-    /// through the public API, but this guards a `Library` reached by a route
-    /// that bypasses `normalize` (e.g. raw deserialization), returning `None`
-    /// rather than a dangling bookmark.
-    pub fn bookmark(&self) -> Option<&Path> {
-        let last_opened = self.last_opened()?;
-        self.contains_path(last_opened).then_some(last_opened)
+    /// The most recently opened book's ID if it is still on the shelf.
+    pub fn bookmark(&self) -> Option<&BookId> {
+        self.book(self.last_opened()?).map(Book::id)
     }
 
-    /// Add `canonical` to the shelf, deriving the title and de-duplicating by
-    /// the supplied identity. Returns `Some` with the path of the newly stored
-    /// book, or `None` if the path was already present (duplicate, no-op).
-    ///
-    /// # Preconditions
-    ///
-    /// `canonical` must be the caller's [`canonical_identity`] result and therefore
-    /// valid UTF-8. Production callers obtain it after an [`crate::ArchiveLoader`]
-    /// open or probe.
-    pub fn add(&mut self, canonical: PathBuf) -> Option<&Path> {
-        let (canonical, added) = self.add_canonical(canonical);
-        // Preserve the public contract: `Some` only for a newly stored book,
-        // `None` for an already-present duplicate.
-        added.then(|| {
-            self.find_book(&canonical)
-                .map(Book::path)
-                .expect("just-added book must be present")
-        })
-    }
-
-    /// Ensure `canonical` is on the shelf, returning the stored identity together
-    /// with whether this call newly added it. The
-    /// returned `PathBuf` is the shelf's identity for the book in BOTH cases —
-    /// newly added or already present — so a caller that needs to look the book
-    /// up after a subsequent `&mut self` call (e.g. `register_opened`) has an
-    /// owned key that always matches a stored entry. Internal seam shared by
-    /// `add`; not part of the public surface.
-    fn add_canonical(&mut self, canonical: PathBuf) -> (PathBuf, bool) {
-        // The serialization oracle deliberately exercises direct invalid input
-        // in unit tests; production debug builds still enforce the public precondition.
-        #[cfg(not(test))]
-        debug_assert!(
-            canonical.to_str().is_some(),
-            "book identities must be UTF-8; non-UTF-8 paths are rejected by ArchiveLoader",
-        );
-        if self.contains_path(&canonical) {
-            return (canonical, false);
+    /// Add a book and return its stored ID. A duplicate leaves the shelf unchanged.
+    pub fn add(&mut self, id: BookId, title: String) -> Option<&BookId> {
+        if self.book(&id).is_some() {
+            return None;
         }
-        self.books.push(Book::from_path(canonical.clone()));
+        self.books.push(Book::new(id.clone(), title));
         self.books.sort_by(book_order);
-        (canonical, true)
+        self.book(&id).map(Book::id)
     }
 
-    /// Add a batch of caller-supplied [`canonical_identity`] results, skipping
-    /// identities already on the shelf or repeated within the batch. This is the
-    /// batch form of [`add`](Library::add): returned paths are newly stored books
-    /// in input order, while the shelf is re-sorted only once at the end.
-    ///
-    /// # Preconditions
-    ///
-    /// Every path must be the caller's [`canonical_identity`] result and therefore
-    /// valid UTF-8.
-    pub fn add_many(&mut self, canonicals: Vec<PathBuf>) -> Vec<PathBuf> {
+    /// Add a batch, skipping duplicate IDs. Return new IDs in input order and
+    /// sort the shelf once after insertion.
+    pub fn add_many(&mut self, books: Vec<(BookId, String)>) -> Vec<BookId> {
         let mut added = Vec::new();
-        for canonical in canonicals {
-            #[cfg(not(test))]
-            debug_assert!(
-                canonical.to_str().is_some(),
-                "book identities must be UTF-8; non-UTF-8 paths are rejected by ArchiveLoader",
-            );
-            if self.contains_path(&canonical) {
-                continue;
+        for (id, title) in books {
+            if self.book(&id).is_none() {
+                self.books.push(Book::new(id.clone(), title));
+                added.push(id);
             }
-            self.books.push(Book::from_path(canonical.clone()));
-            added.push(canonical);
         }
         self.books.sort_by(book_order);
         added
@@ -388,28 +290,30 @@ impl Library {
     /// pub(crate) routine invoked explicitly from `library_store::from_json`
     /// before `normalize`, not folded into the pure `normalize`.
     ///
-    /// Resolution key: [`canonical_identity`] — the same rule `add_canonical`
-    /// uses. A missing file or a non-UTF-8 canonical form keeps the raw path as
+    /// Resolution uses [`canonical_identity`]. A missing file or a non-UTF-8
+    /// canonical form keeps the raw path as
     /// its key: it can never be merged away and its path is preserved verbatim
     /// (a singleton group whose key equals its own raw path). Books are grouped
     /// by key in first-seen (vec) order; each group collapses to one survivor
-    /// whose `path` is set to the canonical key (upgrading a now-resolvable raw
+    /// whose ID is set to the canonical key (upgrading a now-resolvable raw
     /// path even for a group of one). Cross-member field merge is deterministic:
     /// progress combines the maximum resume with the first known count in vec order,
     /// `overrides` = first non-empty in vec order, `title` = the first member's
     /// title.
     /// `last_opened` is repointed from a merged-away / pre-upgrade spelling to the
     /// survivor's canonical key (a genuine orphan is left for `normalize` to clear).
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn recanonicalize_and_merge(&mut self) {
         let books = std::mem::take(&mut self.books);
         // First-seen key order, the group members, and a remap from each book's
         // ORIGINAL stored path to its group's canonical key (for `last_opened`).
-        let mut order: Vec<PathBuf> = Vec::new();
-        let mut groups: HashMap<PathBuf, Vec<Book>> = HashMap::new();
-        let mut remap: HashMap<PathBuf, PathBuf> = HashMap::new();
+        let mut order: Vec<BookId> = Vec::new();
+        let mut groups: HashMap<BookId, Vec<Book>> = HashMap::new();
+        let mut remap: HashMap<BookId, BookId> = HashMap::new();
         for book in books {
-            let key = canonical_identity(book.path());
-            remap.insert(book.path().to_path_buf(), key.clone());
+            let canonical = canonical_identity(Path::new(book.id().as_str()));
+            let key = BookId::from_canonical_path(&canonical).unwrap_or_else(|_| book.id().clone());
+            remap.insert(book.id().clone(), key.clone());
             if !groups.contains_key(&key) {
                 order.push(key.clone());
             }
@@ -429,73 +333,47 @@ impl Library {
         self.books.sort_by(book_order);
     }
 
-    /// Re-sort the shelf into natural title order (with canonical path tie-break)
+    /// Re-sort the shelf into natural title order (with raw ID tie-break)
     /// and enforce the `last_opened` invariant. Called on load
     /// (`LibraryStore::load`) so libraries persisted before natural
     /// ordering converge to the canonical sort on the next save; it also repairs
     /// any otherwise-unsorted `books` vec and clears an orphan `last_opened`
-    /// (a path that is no longer present in `books`).
+    /// (an ID that is no longer present in `books`).
     pub(crate) fn normalize(&mut self) {
         self.books.sort_by(book_order);
-        // Clear a `last_opened` whose path is no longer in the shelf (e.g.
+        // Clear a `last_opened` whose ID is no longer in the shelf (e.g.
         // after an external edit removed a book without going through `remove`).
         if let Some(ref p) = self.last_opened {
-            if !self.contains_path(p) {
+            if self.book(p).is_none() {
                 self.last_opened = None;
             }
         }
     }
 
-    /// Remove the book identified by `path`. Returns `false` when absent.
-    /// Clears `last_opened` when it points at the removed book; preserves it
-    /// when the removed book is different.
-    pub fn remove(&mut self, path: &Path) -> bool {
+    /// Remove a book by ID and clear its bookmark if it was the last opened.
+    pub fn remove(&mut self, id: &BookId) -> bool {
         let before = self.books.len();
-        self.books.retain(|b| b.path() != path);
+        self.books.retain(|book| book.id() != id);
         let removed = self.books.len() != before;
-        if removed && self.last_opened.as_deref() == Some(path) {
+        if removed && self.last_opened.as_ref() == Some(id) {
             self.last_opened = None;
         }
         removed
     }
 
-    /// Remove every book whose path is in `paths`, in ONE retain pass, and report
-    /// the outcome. The natural-order invariant is preserved by construction:
-    /// `retain` keeps the surviving books in their existing relative order, so the
-    /// shelf stays sorted without a re-sort.
-    ///
-    /// Path identity uses the SAME comparison `remove` does (`Book::path() ==`),
-    /// against the canonical paths stored at `add` time. Selection always
-    /// originates from [`books()`](Library::books), so the inputs are already the
-    /// stored canonical paths — no canonicalization happens here. The returned
-    /// [`RemovalReport`] partitions the de-duplicated input into `removed` (matched
-    /// a stored book) and `not_found` (matched none); a path duplicated in `paths`
-    /// is counted once, and empty input yields an empty report. Clears
-    /// `last_opened` when it points at one of the removed paths; preserves it
-    /// otherwise.
-    pub fn remove_many(&mut self, paths: &[PathBuf]) -> RemovalReport {
-        // Collect requested paths into a set: dedup falls out for free (a repeated input
-        // is counted once) and the retain predicate becomes O(log M), not O(M) per book.
-        let requested: BTreeSet<&Path> = paths.iter().map(PathBuf::as_path).collect();
-        // Split into present (removed) and absent (not_found) BEFORE the retain, while the
-        // books are still in the shelf. Iterate the sorted set for a deterministic report.
+    /// Remove a set of IDs in one retain pass, preserving shelf order.
+    pub fn remove_many(&mut self, ids: &[BookId]) -> RemovalReport {
+        let requested: BTreeSet<&BookId> = ids.iter().collect();
         let mut report = RemovalReport::default();
-        for &path in &requested {
-            if self.contains_path(path) {
-                report.removed.push(path.to_path_buf());
+        for &id in &requested {
+            if self.book(id).is_some() {
+                report.removed.push(id.clone());
             } else {
-                report.not_found.push(path.to_path_buf());
+                report.not_found.push(id.clone());
             }
         }
-        // ONE retain pass drops every requested book; survivors keep their relative
-        // (already-sorted) order, so the natural-order invariant holds with no re-sort.
-        self.books.retain(|b| !requested.contains(b.path()));
-        // Clear `last_opened` when it points at one of the removed books.
-        if self
-            .last_opened
-            .as_deref()
-            .is_some_and(|p| requested.contains(p))
-        {
+        self.books.retain(|book| !requested.contains(book.id()));
+        if self.last_opened().is_some_and(|id| requested.contains(id)) {
             self.last_opened = None;
         }
         report
@@ -504,7 +382,7 @@ impl Library {
     /// Re-insert previously removed `Book` entries AND restore `last_opened`,
     /// returning to a truly byte-identical pre-removal state.
     ///
-    /// Unlike [`add`](Library::add), which derives a FRESH `Book` from a path
+    /// Unlike [`add`](Library::add), which creates a fresh book
     /// (losing `resume_page` / `page_count` / `overrides`), this re-inserts WHOLE
     /// `Book` values, so it can undo a [`remove_many`](Library::remove_many) with
     /// no data loss. It is the rollback primitive: a caller that removed a set of
@@ -512,17 +390,16 @@ impl Library {
     /// persist can hand both back to recover the exact pre-removal shelf
     /// (byte-identical re-serialization).
     ///
-    /// De-duplicates by canonical path against the books already present (an entry
-    /// whose path is already on the shelf is skipped, never duplicated), then
+    /// Skips IDs already on the shelf, then
     /// re-sorts via the same `book_order` invariant `add` uses — the aggregate
     /// owns its ordering, callers never re-sort. Empty input is a no-op.
     ///
-    /// `last_opened` is restored only when the passed path is present on the
+    /// `last_opened` is restored only when the passed ID is present on the
     /// re-inserted shelf, preserving the invariant that `last_opened`, when
     /// `Some`, always points at a shelved book (a stale bookmark is dropped).
-    pub fn restore(&mut self, books: Vec<Book>, last_opened: Option<PathBuf>) {
+    pub fn restore(&mut self, books: Vec<Book>, last_opened: Option<BookId>) {
         for book in books {
-            if !self.contains_path(book.path()) {
+            if self.book(book.id()).is_none() {
                 self.books.push(book);
             }
         }
@@ -530,21 +407,21 @@ impl Library {
         // Restore the bookmark, but only if it points at a book now on the shelf,
         // upholding the `last_opened`-is-a-member invariant.
         if let Some(p) = last_opened {
-            if self.contains_path(&p) {
+            if self.book(&p).is_some() {
                 self.last_opened = Some(p);
             }
         }
     }
 
-    /// The resume page index for `path` (0 when unknown).
-    pub fn resume_page(&self, path: &Path) -> usize {
-        self.find_book(path).map(Book::resume_page).unwrap_or(0)
+    /// The resume page index for `id` (0 when unknown).
+    pub fn resume_page(&self, id: &BookId) -> usize {
+        self.book(id).map(Book::resume_page).unwrap_or(0)
     }
 
     /// Record a resume index, clamped to the final page when the total is known.
     /// Returns true only when the book exists and its stored progress changes.
-    pub fn set_resume_page(&mut self, path: &Path, page: usize) -> bool {
-        let Some(book) = self.find_book_mut(path) else {
+    pub fn set_resume_page(&mut self, id: &BookId, page: usize) -> bool {
+        let Some(book) = self.book_mut(id) else {
             return false;
         };
         let next = book.progress.with_last_viewed(page);
@@ -555,8 +432,8 @@ impl Library {
 
     /// Record a measured total, clamping the resume index to the new final page.
     /// Returns true only when the book exists and its stored progress changes.
-    pub fn set_page_count(&mut self, path: &Path, count: NonZeroUsize) -> bool {
-        let Some(book) = self.find_book_mut(path) else {
+    pub fn set_page_count(&mut self, id: &BookId, count: NonZeroUsize) -> bool {
+        let Some(book) = self.book_mut(id) else {
             return false;
         };
         let next = book.progress.with_total(count);
@@ -565,12 +442,12 @@ impl Library {
         changed
     }
 
-    /// Record the view overrides for `path`. Returns `false` when the path is
+    /// Record the view overrides for `id`. Returns `false` when the ID is
     /// absent OR the value is unchanged (mirrors `set_resume_page`/`set_page_count`
     /// so callers can skip a save). The aggregate owns this mutation; `Book` has
     /// no setter.
-    pub fn set_overrides(&mut self, path: &Path, overrides: ViewOverride) -> bool {
-        match self.find_book_mut(path) {
+    pub fn set_overrides(&mut self, id: &BookId, overrides: ViewOverride) -> bool {
+        match self.book_mut(id) {
             Some(book) if book.overrides != overrides => {
                 book.overrides = overrides;
                 true
@@ -579,43 +456,29 @@ impl Library {
         }
     }
 
-    /// The view overrides for `path`, or an all-None override when `path` is
+    /// The view overrides for `id`, or an all-None override when `id` is
     /// absent (so callers always get a value to `resolve`).
-    pub fn overrides_for(&self, path: &Path) -> ViewOverride {
-        self.find_book(path)
-            .map(Book::overrides)
-            .unwrap_or_default()
+    pub fn overrides_for(&self, id: &BookId) -> ViewOverride {
+        self.book(id).map(Book::overrides).unwrap_or_default()
     }
 
-    /// Register a freshly opened book and report how to resume it. Idempotent add
-    /// by canonical path, then back-fill the page count when known. `page_count`
-    /// is `Some(n)` for a measured total and `None` when the total is unknown
-    /// (an empty/fully-skipped source); the `None` arm skips the back-fill and
-    /// leaves the stored count at its unknown encoding. Returns the resume
-    /// position (the book's `ReadingProgress`) and whether the back-fill changed
-    /// the stored count OR repaired a resume left past the new final index, so the
-    /// caller can decide to rebuild the carousel.
-    ///
-    /// `canonical` must be the caller's [`canonical_identity`] result and therefore
-    /// valid UTF-8. Production callers capture it after a successful
-    /// [`crate::ArchiveLoader`] open. It is the shelf identity used by
-    /// `resume_page` and `set_page_count`.
+    /// Register a book using the supplied title on first open. Update its
+    /// progress when the page count is known and return where to resume.
     pub fn register_opened(
         &mut self,
-        canonical: &Path,
+        id: &BookId,
+        title: &str,
         page_count: Option<NonZeroUsize>,
     ) -> OpenRegistration {
-        // `add_canonical` returns the shelf's identity (same owned `PathBuf` whether newly
-        // added or already present), ending the `self` borrow before the `&mut self` calls.
-        let (stored, _added) = self.add_canonical(canonical.to_path_buf());
-        let count_changed = page_count.is_some_and(|c| self.set_page_count(&stored, c));
-        // Resolve the resume position from the book stored under `stored`, so the
-        // `last_opened`-is-a-member invariant holds by construction (the lookup is total).
+        if self.book(id).is_none() {
+            self.add(id.clone(), title.to_owned());
+        }
+        let count_changed = page_count.is_some_and(|count| self.set_page_count(id, count));
         let resume = self
-            .find_book(&stored)
-            .map(Book::progress)
-            .expect("registered book must be present");
-        self.last_opened = Some(stored);
+            .book(id)
+            .expect("registered book must be present")
+            .progress();
+        self.last_opened = Some(id.clone());
         OpenRegistration {
             resume,
             count_changed,
@@ -629,16 +492,16 @@ mod tests {
 
     #[test]
     fn book_derives_title_from_file_stem() {
-        let book = Book::from_path(PathBuf::from("/manga/Cool Title.cbz"));
+        let book = book_from_path(Path::new("/manga/Cool Title.cbz"), false);
         assert_eq!(book.title(), "Cool Title");
-        assert_eq!(book.path(), Path::new("/manga/Cool Title.cbz"));
+        assert_eq!(book.id(), &BookId::new("/manga/Cool Title.cbz"));
         assert_eq!(book.resume_page(), 0);
     }
 
     #[test]
     fn book_derives_title_from_dir_name_when_no_extension() {
         // A folder book has no extension; the title is the directory name.
-        let book = Book::from_path(PathBuf::from("/manga/My Folder Book"));
+        let book = book_from_path(Path::new("/manga/My Folder Book"), true);
         assert_eq!(book.title(), "My Folder Book");
     }
 
@@ -647,7 +510,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let folder = dir.path().join("Series.1997");
         std::fs::create_dir(&folder).unwrap();
-        let book = Book::from_path(folder);
+        let book = book_from_path(&folder, true);
         assert_eq!(book.title(), "Series.1997");
     }
 
@@ -655,11 +518,11 @@ mod tests {
     fn book_title_falls_back_to_path_string_when_no_stem() {
         // Pathological path with no file_stem (e.g. root) falls back to the lossy
         // path string so the title is never empty.
-        let book = Book::from_path(PathBuf::from("/"));
+        let book = book_from_path(Path::new("/"), false);
         assert!(!book.title().is_empty());
     }
 
-    // --- display_title tests (the title rule Book::from_path delegates to) ---
+    // --- display_title tests (the pure title rule) ---
 
     #[test]
     fn display_title_uses_dir_name_for_real_folder() {
@@ -668,7 +531,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let folder = dir.path().join("Series.1997");
         std::fs::create_dir(&folder).unwrap();
-        assert_eq!(display_title(&folder), "Series.1997");
+        assert_eq!(display_title(&folder, true), "Series.1997");
     }
 
     #[test]
@@ -676,7 +539,7 @@ mod tests {
         // A file path (non-directory): the rule takes the file stem, dropping the
         // extension.
         assert_eq!(
-            display_title(Path::new("/manga/Cool Title.cbz")),
+            display_title(Path::new("/manga/Cool Title.cbz"), false),
             "Cool Title"
         );
     }
@@ -685,14 +548,14 @@ mod tests {
     fn display_title_keeps_leading_dot_name_as_stem() {
         // A dotfile like `.cbz` keeps the whole `.cbz` as its (non-empty) stem, so the
         // empty filter never fires and the title is the dotfile name, not the fallback.
-        assert_eq!(display_title(Path::new("/manga/.cbz")), ".cbz");
+        assert_eq!(display_title(Path::new("/manga/.cbz"), false), ".cbz");
     }
 
     #[test]
     fn display_title_falls_back_to_lossy_path_when_no_file_component() {
         // A non-dir path whose `file_stem` is None (a trailing `..`) hits the fallback
         // arm: the lossy full path string is used so the title is never empty.
-        let title = display_title(Path::new("/manga/.."));
+        let title = display_title(Path::new("/manga/.."), false);
         assert!(!title.is_empty());
         assert_eq!(title, "/manga/..");
     }
@@ -701,9 +564,60 @@ mod tests {
     fn display_title_falls_back_to_lossy_path_for_root() {
         // A root-ish path has no file_name / file_stem at all, so the rule falls
         // back to the lossy full path string.
-        let title = display_title(Path::new("/"));
+        let title = display_title(Path::new("/"), false);
         assert!(!title.is_empty());
         assert_eq!(title, "/");
+    }
+
+    fn book_from_path(path: &Path, is_dir: bool) -> Book {
+        Book::new(
+            BookId::from_canonical_path(path).unwrap(),
+            display_title(path, is_dir),
+        )
+    }
+
+    fn add(lib: &mut Library, raw: &str) -> BookId {
+        lib.add(BookId::new(raw), display_title(Path::new(raw), false))
+            .unwrap()
+            .clone()
+    }
+
+    fn title(id: &BookId) -> String {
+        display_title(Path::new(id.as_str()), false)
+    }
+
+    #[test]
+    fn display_title_is_pure_given_is_dir() {
+        let path = Path::new("/manga/Series.1997");
+        assert_eq!(display_title(path, true), "Series.1997");
+        assert_eq!(display_title(path, false), "Series");
+    }
+
+    #[test]
+    fn book_lookup_by_id() {
+        let mut lib = Library::new();
+        let id = add(&mut lib, "opaque-id");
+        assert_eq!(lib.book(&id).unwrap().id(), &id);
+        assert!(lib.book(&BookId::new("missing")).is_none());
+    }
+
+    #[test]
+    fn remove_many_report_order_matches_path_order() {
+        let mut lib = Library::new();
+        let spaced = add(&mut lib, "/m/A 2.cbz");
+        let nested = add(&mut lib, "/m/A/1.cbz");
+        let report = lib.remove_many(&[spaced.clone(), nested.clone()]);
+        assert_eq!(report.removed, vec![nested, spaced]);
+    }
+
+    #[test]
+    fn register_opened_uses_caller_title_for_a_new_book_and_keeps_stored_title_on_reopen() {
+        let mut lib = Library::new();
+        let id = BookId::new("opaque-id");
+        lib.register_opened(&id, "First title", None);
+        assert_eq!(lib.book(&id).unwrap().title(), "First title");
+        lib.register_opened(&id, "Changed title", None);
+        assert_eq!(lib.book(&id).unwrap().title(), "First title");
     }
 
     #[test]
@@ -765,7 +679,12 @@ mod tests {
         let (_dir, link) = utf8_symlink_to_non_utf8_target();
         let mut lib = Library::new();
 
-        assert!(lib.add(canonical_identity(&link)).is_some());
+        assert!(lib
+            .add(
+                BookId::from_canonical_path(&canonical_identity(&link)).unwrap(),
+                display_title(&link, false)
+            )
+            .is_some());
         let value: serde_json::Value =
             serde_json::from_str(&lib.to_json().expect("UTF-8 identity must serialize")).unwrap();
 
@@ -793,11 +712,11 @@ mod tests {
     #[test]
     fn clear_non_empty_library_removes_books_and_last_opened() {
         let mut lib = Library::new();
-        let first = PathBuf::from("/manga/a.cbz");
-        let second = PathBuf::from("/manga/b.cbz");
-        assert!(lib.add(first.clone()).is_some());
-        assert!(lib.add(second.clone()).is_some());
-        lib.register_opened(&second, NonZeroUsize::new(24));
+        let first = BookId::new("/manga/a.cbz");
+        let second = BookId::new("/manga/b.cbz");
+        assert!(lib.add(first.clone(), title(&first)).is_some());
+        assert!(lib.add(second.clone(), title(&second)).is_some());
+        lib.register_opened(&second, &title(&second), NonZeroUsize::new(24));
 
         assert!(
             lib.clear(),
@@ -811,9 +730,9 @@ mod tests {
     fn add_orders_books_by_natural_title() {
         // Non-existent paths are already their caller-supplied identities.
         let mut lib = Library::new();
-        assert!(lib.add(PathBuf::from("/manga/vol 10.cbz")).is_some());
-        assert!(lib.add(PathBuf::from("/manga/vol 1.cbz")).is_some());
-        assert!(lib.add(PathBuf::from("/manga/vol 2.cbz")).is_some());
+        add(&mut lib, "/manga/vol 10.cbz");
+        add(&mut lib, "/manga/vol 1.cbz");
+        add(&mut lib, "/manga/vol 2.cbz");
         let titles: Vec<&str> = lib.books().iter().map(|b| b.title()).collect();
         assert_eq!(
             titles,
@@ -833,23 +752,24 @@ mod tests {
         let b = b_dir.join("Same.cbz");
         std::fs::write(&a, []).unwrap();
         std::fs::write(&b, []).unwrap();
-        let a = a.canonicalize().unwrap();
-        let b = b.canonicalize().unwrap();
+        let a = BookId::from_canonical_path(&a.canonicalize().unwrap()).unwrap();
+        let b = BookId::from_canonical_path(&b.canonicalize().unwrap()).unwrap();
 
         let mut lib = Library::new();
-        assert!(lib.add(b.clone()).is_some());
-        assert!(lib.add(a.clone()).is_some());
+        assert!(lib.add(b.clone(), title(&b)).is_some());
+        assert!(lib.add(a.clone(), title(&a)).is_some());
 
-        let paths: Vec<&Path> = lib.books().iter().map(|book| book.path()).collect();
-        assert_eq!(paths, vec![a.as_path(), b.as_path()]);
+        let paths: Vec<&BookId> = lib.books().iter().map(|book| book.id()).collect();
+        assert_eq!(paths, vec![&a, &b]);
     }
 
     #[test]
     fn add_dedups_by_path_and_returns_false() {
         let mut lib = Library::new();
-        assert!(lib.add(PathBuf::from("/manga/a.cbz")).is_some());
+        add(&mut lib, "/manga/a.cbz");
+        let id = BookId::new("/manga/a.cbz");
         assert!(
-            lib.add(PathBuf::from("/manga/a.cbz")).is_none(),
+            lib.add(id.clone(), title(&id)).is_none(),
             "adding an existing path must be a no-op returning None"
         );
         assert_eq!(lib.books().len(), 1);
@@ -862,16 +782,23 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("Book.cbz");
         std::fs::write(&file, []).unwrap();
-        let canonical = file.canonicalize().unwrap();
+        let canonical = BookId::from_canonical_path(&file.canonicalize().unwrap()).unwrap();
 
         let mut lib = Library::new();
         assert_eq!(
-            lib.add(canonical_identity(&file)),
-            Some(canonical.as_path()),
+            lib.add(
+                BookId::from_canonical_path(&canonical_identity(&file)).unwrap(),
+                display_title(&file, false)
+            ),
+            Some(&canonical),
             "first add must return the stored canonical path"
         );
         assert!(
-            lib.add(canonical_identity(&file)).is_none(),
+            lib.add(
+                BookId::from_canonical_path(&canonical_identity(&file)).unwrap(),
+                display_title(&file, false)
+            )
+            .is_none(),
             "adding the same path again must return None (duplicate)"
         );
         assert_eq!(lib.books().len(), 1);
@@ -879,10 +806,10 @@ mod tests {
 
     #[test]
     fn add_many_matches_repeated_add() {
-        let already_present = PathBuf::from("/manga/already.cbz");
-        let vol10 = PathBuf::from("/manga/vol 10.cbz");
-        let vol2 = PathBuf::from("/manga/vol 2.cbz");
-        let vol1 = PathBuf::from("/manga/vol 1.cbz");
+        let already_present = BookId::new("/manga/already.cbz");
+        let vol10 = BookId::new("/manga/vol 10.cbz");
+        let vol2 = BookId::new("/manga/vol 2.cbz");
+        let vol1 = BookId::new("/manga/vol 1.cbz");
         let inputs = vec![
             vol10.clone(),
             already_present.clone(),
@@ -892,18 +819,22 @@ mod tests {
         ];
 
         let mut batched = Library::new();
-        assert!(batched.add(already_present.clone()).is_some());
-        let added = batched.add_many(inputs.clone());
+        assert!(batched
+            .add(already_present.clone(), title(&already_present))
+            .is_some());
+        let added = batched.add_many(inputs.iter().map(|id| (id.clone(), title(id))).collect());
 
         let mut repeated = Library::new();
-        assert!(repeated.add(already_present).is_some());
-        let repeated_added: Vec<PathBuf> = inputs
+        assert!(repeated
+            .add(already_present.clone(), title(&already_present))
+            .is_some());
+        let repeated_added: Vec<BookId> = inputs
             .into_iter()
-            .filter_map(|path| repeated.add(path).map(Path::to_path_buf))
+            .filter_map(|path| repeated.add(path.clone(), title(&path)).cloned())
             .collect();
 
-        let batched_paths: Vec<&Path> = batched.books().iter().map(Book::path).collect();
-        let repeated_paths: Vec<&Path> = repeated.books().iter().map(Book::path).collect();
+        let batched_paths: Vec<&BookId> = batched.books().iter().map(Book::id).collect();
+        let repeated_paths: Vec<&BookId> = repeated.books().iter().map(Book::id).collect();
         assert_eq!(batched_paths, repeated_paths);
         assert_eq!(added, repeated_added);
         assert_eq!(added, vec![vol10, vol2, vol1]);
@@ -911,31 +842,35 @@ mod tests {
 
     #[test]
     fn add_many_sorts_once_into_natural_order() {
-        let vol10 = PathBuf::from("/manga/vol 10.cbz");
-        let vol2 = PathBuf::from("/manga/vol 2.cbz");
-        let vol1 = PathBuf::from("/manga/vol 1.cbz");
+        let vol10 = BookId::new("/manga/vol 10.cbz");
+        let vol2 = BookId::new("/manga/vol 2.cbz");
+        let vol1 = BookId::new("/manga/vol 1.cbz");
         let mut lib = Library::new();
 
         assert_eq!(
-            lib.add_many(vec![vol10.clone(), vol2.clone(), vol1.clone()]),
+            lib.add_many(
+                [&vol10, &vol2, &vol1]
+                    .map(|id| (id.clone(), title(id)))
+                    .to_vec()
+            ),
             vec![vol10.clone(), vol2.clone(), vol1.clone()]
         );
 
-        let paths: Vec<&Path> = lib.books().iter().map(Book::path).collect();
-        assert_eq!(paths, vec![vol1.as_path(), vol2.as_path(), vol10.as_path()]);
+        let paths: Vec<&BookId> = lib.books().iter().map(Book::id).collect();
+        assert_eq!(paths, vec![&vol1, &vol2, &vol10]);
     }
 
     #[test]
     fn add_many_empty_input_is_a_no_op() {
-        let existing = PathBuf::from("/manga/existing.cbz");
+        let existing = BookId::new("/manga/existing.cbz");
         let mut lib = Library::new();
-        assert!(lib.add(existing.clone()).is_some());
+        assert!(lib.add(existing.clone(), title(&existing)).is_some());
         let before = lib.to_json().unwrap();
 
         assert!(lib.add_many(Vec::new()).is_empty());
 
         assert_eq!(lib.to_json().unwrap(), before);
-        assert_eq!(lib.books()[0].path(), existing);
+        assert_eq!(lib.books()[0].id(), &existing);
     }
 
     #[test]
@@ -943,12 +878,15 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let folder = dir.path().join("Series.1997");
         std::fs::create_dir(&folder).unwrap();
-        let canonical = canonical_identity(&folder.join("."));
+        let canonical =
+            BookId::from_canonical_path(&canonical_identity(&folder.join("."))).unwrap();
 
         let mut lib = Library::new();
-        assert!(lib.add(canonical.clone()).is_some());
+        assert!(lib
+            .add(canonical.clone(), display_title(&folder, true))
+            .is_some());
         assert_eq!(lib.books().len(), 1);
-        assert_eq!(lib.books()[0].path(), canonical);
+        assert_eq!(lib.books()[0].id(), &canonical);
         assert_eq!(lib.books()[0].title(), "Series.1997");
     }
 
@@ -973,11 +911,16 @@ mod tests {
         );
 
         let mut lib = Library::new();
-        assert!(lib.add(non_canonical.clone()).is_some());
+        assert!(lib
+            .add(
+                BookId::from_canonical_path(&non_canonical).unwrap(),
+                display_title(&non_canonical, true)
+            )
+            .is_some());
         assert_eq!(lib.books().len(), 1);
         assert_eq!(
-            lib.books()[0].path(),
-            non_canonical.as_path(),
+            lib.books()[0].id(),
+            &BookId::from_canonical_path(&non_canonical).unwrap(),
             "add must store the caller-supplied identity verbatim"
         );
     }
@@ -985,8 +928,8 @@ mod tests {
     #[test]
     fn remove_existing_returns_true_and_drops_book() {
         let mut lib = Library::new();
-        let path = PathBuf::from("/manga/a.cbz");
-        assert!(lib.add(path.clone()).is_some());
+        let path = BookId::new("/manga/a.cbz");
+        assert!(lib.add(path.clone(), title(&path)).is_some());
         assert!(lib.remove(&path));
         assert!(lib.books().is_empty());
     }
@@ -994,20 +937,19 @@ mod tests {
     #[test]
     fn remove_absent_returns_false() {
         let mut lib = Library::new();
-        assert!(!lib.remove(Path::new("/manga/missing.cbz")));
+        assert!(!lib.remove(&BookId::new("/manga/missing.cbz")));
     }
 
     #[test]
     fn remove_many_removes_multiple_and_reports_them() {
         let mut lib = Library::new();
         for name in ["a.cbz", "b.cbz", "c.cbz"] {
-            assert!(lib.add(PathBuf::from(format!("/manga/{name}"))).is_some());
+            add(&mut lib, &format!("/manga/{name}"));
         }
-        let report =
-            lib.remove_many(&[PathBuf::from("/manga/a.cbz"), PathBuf::from("/manga/c.cbz")]);
+        let report = lib.remove_many(&[BookId::new("/manga/a.cbz"), BookId::new("/manga/c.cbz")]);
         assert_eq!(
             report.removed,
-            vec![PathBuf::from("/manga/a.cbz"), PathBuf::from("/manga/c.cbz")]
+            vec![BookId::new("/manga/a.cbz"), BookId::new("/manga/c.cbz")]
         );
         assert!(report.not_found.is_empty());
         let titles: Vec<&str> = lib.books().iter().map(|b| b.title()).collect();
@@ -1020,12 +962,12 @@ mod tests {
         // retain keeps relative order, so no re-sort is needed).
         let mut lib = Library::new();
         for name in ["vol 1.cbz", "vol 2.cbz", "vol 10.cbz", "vol 11.cbz"] {
-            assert!(lib.add(PathBuf::from(format!("/manga/{name}"))).is_some());
+            add(&mut lib, &format!("/manga/{name}"));
         }
         // Remove the two middle volumes; vol 1 and vol 11 must remain in order.
         let report = lib.remove_many(&[
-            PathBuf::from("/manga/vol 2.cbz"),
-            PathBuf::from("/manga/vol 10.cbz"),
+            BookId::new("/manga/vol 2.cbz"),
+            BookId::new("/manga/vol 10.cbz"),
         ]);
         assert_eq!(report.removed.len(), 2);
         let titles: Vec<&str> = lib.books().iter().map(|b| b.title()).collect();
@@ -1039,15 +981,15 @@ mod tests {
     #[test]
     fn remove_many_splits_not_found() {
         let mut lib = Library::new();
-        assert!(lib.add(PathBuf::from("/manga/a.cbz")).is_some());
+        add(&mut lib, "/manga/a.cbz");
         let report = lib.remove_many(&[
-            PathBuf::from("/manga/a.cbz"),
-            PathBuf::from("/manga/missing.cbz"),
+            BookId::new("/manga/a.cbz"),
+            BookId::new("/manga/missing.cbz"),
         ]);
-        assert_eq!(report.removed, vec![PathBuf::from("/manga/a.cbz")]);
+        assert_eq!(report.removed, vec![BookId::new("/manga/a.cbz")]);
         assert_eq!(
             report.not_found,
-            vec![PathBuf::from("/manga/missing.cbz")],
+            vec![BookId::new("/manga/missing.cbz")],
             "an input matching no book is reported, not removed"
         );
         assert!(lib.books().is_empty());
@@ -1056,10 +998,10 @@ mod tests {
     #[test]
     fn remove_many_empty_input_yields_empty_report() {
         let mut lib = Library::new();
-        let book = PathBuf::from("/manga/a.cbz");
-        assert!(lib.add(book.clone()).is_some());
+        let book = BookId::new("/manga/a.cbz");
+        assert!(lib.add(book.clone(), title(&book)).is_some());
         // Register it as last-opened so we can verify it is preserved.
-        lib.register_opened(&book, None);
+        lib.register_opened(&book, &title(&book), None);
         let report = lib.remove_many(&[]);
         assert_eq!(report, RemovalReport::default());
         assert!(report.removed.is_empty());
@@ -1067,7 +1009,7 @@ mod tests {
         assert_eq!(lib.books().len(), 1, "no input removes nothing");
         assert_eq!(
             lib.last_opened(),
-            Some(book.as_path()),
+            Some(&book),
             "empty remove_many must not disturb last_opened"
         );
     }
@@ -1075,13 +1017,12 @@ mod tests {
     #[test]
     fn remove_many_counts_duplicate_input_once() {
         let mut lib = Library::new();
-        assert!(lib.add(PathBuf::from("/manga/a.cbz")).is_some());
+        add(&mut lib, "/manga/a.cbz");
         // The same path passed twice must be removed once and reported once.
-        let report =
-            lib.remove_many(&[PathBuf::from("/manga/a.cbz"), PathBuf::from("/manga/a.cbz")]);
+        let report = lib.remove_many(&[BookId::new("/manga/a.cbz"), BookId::new("/manga/a.cbz")]);
         assert_eq!(
             report.removed,
-            vec![PathBuf::from("/manga/a.cbz")],
+            vec![BookId::new("/manga/a.cbz")],
             "a duplicated input path is counted once"
         );
         assert!(report.not_found.is_empty());
@@ -1094,12 +1035,12 @@ mod tests {
         // WHOLE books (carrying resume_page/page_count/overrides) and re-sort.
         let mut lib = Library::new();
         for name in ["vol 1.cbz", "vol 2.cbz", "vol 10.cbz"] {
-            assert!(lib.add(PathBuf::from(format!("/manga/{name}"))).is_some());
+            add(&mut lib, &format!("/manga/{name}"));
         }
         // Give the middle volume a non-default reading position before removal.
-        assert!(lib.set_resume_page(Path::new("/manga/vol 2.cbz"), 7));
+        assert!(lib.set_resume_page(&BookId::new("/manga/vol 2.cbz"), 7));
         assert!(lib.set_page_count(
-            Path::new("/manga/vol 2.cbz"),
+            &BookId::new("/manga/vol 2.cbz"),
             NonZeroUsize::new(20).unwrap()
         ));
 
@@ -1108,14 +1049,14 @@ mod tests {
             .books()
             .iter()
             .filter(|b| {
-                b.path() == Path::new("/manga/vol 1.cbz")
-                    || b.path() == Path::new("/manga/vol 10.cbz")
+                b.id() == &BookId::new("/manga/vol 1.cbz")
+                    || b.id() == &BookId::new("/manga/vol 10.cbz")
             })
             .cloned()
             .collect();
         let report = lib.remove_many(&[
-            PathBuf::from("/manga/vol 1.cbz"),
-            PathBuf::from("/manga/vol 10.cbz"),
+            BookId::new("/manga/vol 1.cbz"),
+            BookId::new("/manga/vol 10.cbz"),
         ]);
         assert_eq!(report.removed.len(), 2);
         let titles: Vec<&str> = lib.books().iter().map(|b| b.title()).collect();
@@ -1129,7 +1070,7 @@ mod tests {
             "restore re-inserts and restores natural order"
         );
         // The untouched middle volume kept its position; the restored ones are intact.
-        assert_eq!(lib.resume_page(Path::new("/manga/vol 2.cbz")), 7);
+        assert_eq!(lib.resume_page(&BookId::new("/manga/vol 2.cbz")), 7);
     }
 
     #[test]
@@ -1137,8 +1078,8 @@ mod tests {
         // The add()-trap: re-adding by path yields a FRESH book (resume_page 0, count None,
         // overrides all-None); restore must re-insert the WHOLE clone, keeping that data.
         let mut lib = Library::new();
-        let p = PathBuf::from("/manga/a.cbz");
-        assert!(lib.add(p.clone()).is_some());
+        let p = BookId::new("/manga/a.cbz");
+        assert!(lib.add(p.clone(), title(&p)).is_some());
         assert!(lib.set_resume_page(&p, 42));
         assert!(lib.set_page_count(&p, NonZeroUsize::new(100).unwrap()));
         let ov = crate::view_override::ViewOverride {
@@ -1170,8 +1111,8 @@ mod tests {
     fn restore_is_duplicate_safe() {
         // Restoring a book whose path is already present must NOT duplicate it.
         let mut lib = Library::new();
-        let p = PathBuf::from("/manga/a.cbz");
-        assert!(lib.add(p.clone()).is_some());
+        let p = BookId::new("/manga/a.cbz");
+        assert!(lib.add(p.clone(), title(&p)).is_some());
         let clone: Vec<Book> = lib.books().to_vec();
         // The book is still present; restoring its clone is a no-op (dedup by path).
         lib.restore(clone, None);
@@ -1185,7 +1126,7 @@ mod tests {
     #[test]
     fn restore_empty_input_is_noop() {
         let mut lib = Library::new();
-        assert!(lib.add(PathBuf::from("/manga/a.cbz")).is_some());
+        add(&mut lib, "/manga/a.cbz");
         lib.restore(Vec::new(), None);
         assert_eq!(lib.books().len(), 1, "empty restore changes nothing");
     }
@@ -1196,24 +1137,24 @@ mod tests {
         // JSON. A non-default override keeps the `overrides` comparison non-vacuous.
         let mut lib = Library::new();
         for name in ["a.cbz", "b.cbz", "c.cbz"] {
-            assert!(lib.add(PathBuf::from(format!("/manga/{name}"))).is_some());
+            add(&mut lib, &format!("/manga/{name}"));
         }
-        assert!(lib.set_resume_page(Path::new("/manga/b.cbz"), 9));
-        assert!(lib.set_page_count(Path::new("/manga/b.cbz"), NonZeroUsize::new(50).unwrap()));
+        assert!(lib.set_resume_page(&BookId::new("/manga/b.cbz"), 9));
+        assert!(lib.set_page_count(&BookId::new("/manga/b.cbz"), NonZeroUsize::new(50).unwrap()));
         let ov = crate::view_override::ViewOverride {
             reading_direction: Some(crate::view_modes::ReadingDirection::Rtl),
             ..crate::view_override::ViewOverride::none()
         };
-        assert!(lib.set_overrides(Path::new("/manga/b.cbz"), ov));
+        assert!(lib.set_overrides(&BookId::new("/manga/b.cbz"), ov));
         let before = lib.to_json().unwrap();
 
         let removed: Vec<Book> = lib
             .books()
             .iter()
-            .filter(|b| b.path() != Path::new("/manga/a.cbz"))
+            .filter(|b| b.id() != &BookId::new("/manga/a.cbz"))
             .cloned()
             .collect();
-        lib.remove_many(&[PathBuf::from("/manga/b.cbz"), PathBuf::from("/manga/c.cbz")]);
+        lib.remove_many(&[BookId::new("/manga/b.cbz"), BookId::new("/manga/c.cbz")]);
         lib.restore(removed, None);
         assert_eq!(
             lib.to_json().unwrap(),
@@ -1229,16 +1170,16 @@ mod tests {
         // hand the bookmark back so the "continue reading" target is not silently lost.
         let mut lib = Library::new();
         for name in ["a.cbz", "b.cbz"] {
-            assert!(lib.add(PathBuf::from(format!("/manga/{name}"))).is_some());
+            add(&mut lib, &format!("/manga/{name}"));
         }
-        let b = PathBuf::from("/manga/b.cbz");
-        lib.register_opened(&b, None);
-        assert_eq!(lib.last_opened(), Some(b.as_path()), "B is the bookmark");
+        let b = BookId::new("/manga/b.cbz");
+        lib.register_opened(&b, &title(&b), None);
+        assert_eq!(lib.last_opened(), Some(&b), "B is the bookmark");
 
         let removed: Vec<Book> = lib
             .books()
             .iter()
-            .filter(|book| book.path() == b.as_path())
+            .filter(|book| book.id() == &b)
             .cloned()
             .collect();
         assert_eq!(lib.remove_many(std::slice::from_ref(&b)).removed.len(), 1);
@@ -1248,7 +1189,7 @@ mod tests {
         assert_eq!(lib.books().len(), 2, "both books restored");
         assert_eq!(
             lib.last_opened(),
-            Some(b.as_path()),
+            Some(&b),
             "restore recovers the last_opened bookmark"
         );
     }
@@ -1258,13 +1199,13 @@ mod tests {
         // The membership guard (invariant S69): a last_opened that points at no
         // shelved book must be dropped, never re-installed as a dangling bookmark.
         let mut lib = Library::new();
-        let a = PathBuf::from("/manga/a.cbz");
-        assert!(lib.add(a.clone()).is_some());
+        let a = BookId::new("/manga/a.cbz");
+        assert!(lib.add(a.clone(), title(&a)).is_some());
         let removed: Vec<Book> = lib.books().to_vec();
         assert_eq!(lib.remove_many(std::slice::from_ref(&a)).removed.len(), 1);
 
         // Restore the book but point the bookmark at a book that was never re-inserted.
-        lib.restore(removed, Some(PathBuf::from("/manga/ghost.cbz")));
+        lib.restore(removed, Some(BookId::new("/manga/ghost.cbz")));
         assert_eq!(lib.books().len(), 1, "the removed book is back");
         assert_eq!(
             lib.last_opened(),
@@ -1276,14 +1217,14 @@ mod tests {
     #[test]
     fn last_page_is_zero_for_unknown_path() {
         let lib = Library::new();
-        assert_eq!(lib.resume_page(Path::new("/manga/missing.cbz")), 0);
+        assert_eq!(lib.resume_page(&BookId::new("/manga/missing.cbz")), 0);
     }
 
     #[test]
     fn set_resume_page_updates_and_round_trips() {
         let mut lib = Library::new();
-        let path = PathBuf::from("/manga/a.cbz");
-        assert!(lib.add(path.clone()).is_some());
+        let path = BookId::new("/manga/a.cbz");
+        assert!(lib.add(path.clone(), title(&path)).is_some());
         assert!(lib.set_resume_page(&path, 42));
         assert_eq!(lib.resume_page(&path), 42);
     }
@@ -1291,29 +1232,29 @@ mod tests {
     #[test]
     fn set_resume_page_false_when_absent() {
         let mut lib = Library::new();
-        assert!(!lib.set_resume_page(Path::new("/manga/missing.cbz"), 12));
+        assert!(!lib.set_resume_page(&BookId::new("/manga/missing.cbz"), 12));
     }
 
     #[test]
     fn set_resume_page_false_when_unchanged() {
         let mut lib = Library::new();
-        let path = PathBuf::from("/manga/a.cbz");
-        assert!(lib.add(path.clone()).is_some());
+        let path = BookId::new("/manga/a.cbz");
+        assert!(lib.add(path.clone(), title(&path)).is_some());
         assert!(lib.set_resume_page(&path, 3));
         assert!(!lib.set_resume_page(&path, 3));
     }
 
     #[test]
     fn page_count_opt_is_none_for_fresh_book() {
-        let book = Book::from_path(PathBuf::from("/manga/a.cbz"));
+        let book = book_from_path(Path::new("/manga/a.cbz"), false);
         assert_eq!(book.page_count_opt(), None);
     }
 
     #[test]
     fn set_page_count_updates_and_returns_true() {
         let mut lib = Library::new();
-        let path = PathBuf::from("/manga/a.cbz");
-        assert!(lib.add(path.clone()).is_some());
+        let path = BookId::new("/manga/a.cbz");
+        assert!(lib.add(path.clone(), title(&path)).is_some());
         assert!(lib.set_page_count(&path, NonZeroUsize::new(42).unwrap()));
         assert_eq!(lib.books()[0].page_count_opt(), Some(42));
     }
@@ -1322,7 +1263,7 @@ mod tests {
     fn set_page_count_false_when_absent() {
         let mut lib = Library::new();
         assert!(!lib.set_page_count(
-            Path::new("/manga/missing.cbz"),
+            &BookId::new("/manga/missing.cbz"),
             NonZeroUsize::new(12).unwrap()
         ));
     }
@@ -1330,8 +1271,8 @@ mod tests {
     #[test]
     fn set_page_count_false_when_unchanged() {
         let mut lib = Library::new();
-        let path = PathBuf::from("/manga/a.cbz");
-        assert!(lib.add(path.clone()).is_some());
+        let path = BookId::new("/manga/a.cbz");
+        assert!(lib.add(path.clone(), title(&path)).is_some());
         assert!(lib.set_page_count(&path, NonZeroUsize::new(3).unwrap()));
         assert!(!lib.set_page_count(&path, NonZeroUsize::new(3).unwrap()));
     }
@@ -1341,8 +1282,8 @@ mod tests {
         // A book read to page 41 whose archive later shrank to 5 pages: writing the
         // new count must also pull the stored resume back into the book.
         let mut lib = Library::new();
-        let path = PathBuf::from("/manga/a.cbz");
-        assert!(lib.add(path.clone()).is_some());
+        let path = BookId::new("/manga/a.cbz");
+        assert!(lib.add(path.clone(), title(&path)).is_some());
         assert!(lib.set_resume_page(&path, 40));
         assert!(
             lib.set_page_count(&path, NonZeroUsize::new(5).unwrap()),
@@ -1359,9 +1300,9 @@ mod tests {
     #[test]
     fn set_page_count_reports_a_resume_only_repair() {
         let mut lib = Library::new();
-        let path = PathBuf::from("/manga/a.cbz");
+        let path = BookId::new("/manga/a.cbz");
         let count = NonZeroUsize::new(5).unwrap();
-        assert!(lib.add(path.clone()).is_some());
+        assert!(lib.add(path.clone(), title(&path)).is_some());
         assert!(lib.set_resume_page(&path, 9));
         assert!(lib.set_page_count(&path, count));
         assert_eq!(lib.resume_page(&path), 4);
@@ -1371,8 +1312,8 @@ mod tests {
     #[test]
     fn set_resume_page_clamps_into_a_known_total() {
         let mut lib = Library::new();
-        let path = PathBuf::from("/manga/a.cbz");
-        assert!(lib.add(path.clone()).is_some());
+        let path = BookId::new("/manga/a.cbz");
+        assert!(lib.add(path.clone(), title(&path)).is_some());
         assert!(lib.set_page_count(&path, NonZeroUsize::new(5).unwrap()));
         assert!(lib.set_resume_page(&path, 9));
         assert_eq!(lib.resume_page(&path), 4);
@@ -1391,8 +1332,8 @@ mod tests {
     #[test]
     fn book_json_shape_is_byte_identical() {
         let mut lib = Library::new();
-        let path = PathBuf::from("a.cbz");
-        assert!(lib.add(path.clone()).is_some());
+        let path = BookId::new("a.cbz");
+        assert!(lib.add(path.clone(), title(&path)).is_some());
         assert!(lib.set_resume_page(&path, 3));
         let unknown = r#"{
   "version": 1,
@@ -1421,7 +1362,7 @@ mod tests {
             "last_page": 5,
         });
         let book: Book = serde_json::from_value(value).unwrap();
-        assert_eq!(book.path(), Path::new("/manga/a.cbz"));
+        assert_eq!(book.id(), &BookId::new("/manga/a.cbz"));
         assert_eq!(book.resume_page(), 5);
         assert_eq!(book.page_count_opt(), None);
     }
@@ -1429,8 +1370,8 @@ mod tests {
     #[test]
     fn progress_is_at_start_for_freshly_added_book() {
         let mut lib = Library::new();
-        let path = PathBuf::from("/manga/a.cbz");
-        assert!(lib.add(path.clone()).is_some());
+        let path = BookId::new("/manga/a.cbz");
+        assert!(lib.add(path.clone(), title(&path)).is_some());
         let p = lib.books()[0].progress();
         assert!(p.is_at_start(), "freshly added book must be at the start");
         assert_eq!(p.last_viewed(), 0);
@@ -1440,8 +1381,8 @@ mod tests {
     #[test]
     fn progress_reflects_last_page_and_page_count() {
         let mut lib = Library::new();
-        let path = PathBuf::from("/manga/a.cbz");
-        assert!(lib.add(path.clone()).is_some());
+        let path = BookId::new("/manga/a.cbz");
+        assert!(lib.add(path.clone(), title(&path)).is_some());
         assert!(lib.set_resume_page(&path, 3));
         assert!(lib.set_page_count(&path, NonZeroUsize::new(10).unwrap()));
         let p = lib.books()[0].progress();
@@ -1459,8 +1400,8 @@ mod tests {
     #[test]
     fn register_opened_adds_fresh_book_and_back_fills_count() {
         let mut lib = Library::new();
-        let path = PathBuf::from("/manga/a.cbz");
-        let reg = lib.register_opened(&path, NonZeroUsize::new(10));
+        let path = BookId::new("/manga/a.cbz");
+        let reg = lib.register_opened(&path, &title(&path), NonZeroUsize::new(10));
         assert_eq!(lib.books().len(), 1, "fresh open must add the book");
         assert!(reg.count_changed, "0 -> 10 must report a count change");
         assert!(reg.resume.is_at_start(), "fresh book resumes at the start");
@@ -1471,9 +1412,9 @@ mod tests {
     #[test]
     fn register_opened_is_idempotent_and_reports_no_change_when_count_unchanged() {
         let mut lib = Library::new();
-        let path = PathBuf::from("/manga/a.cbz");
-        lib.register_opened(&path, NonZeroUsize::new(10));
-        let reg = lib.register_opened(&path, NonZeroUsize::new(10));
+        let path = BookId::new("/manga/a.cbz");
+        lib.register_opened(&path, &title(&path), NonZeroUsize::new(10));
+        let reg = lib.register_opened(&path, &title(&path), NonZeroUsize::new(10));
         assert_eq!(lib.books().len(), 1, "re-opening must not duplicate");
         assert!(
             !reg.count_changed,
@@ -1486,8 +1427,8 @@ mod tests {
         // `None` means the total is unknown: the `is_some_and` guard skips set_page_count,
         // so the stored count stays unknown and surfaces as `total() == None`.
         let mut lib = Library::new();
-        let path = PathBuf::from("/manga/b.cbz");
-        let reg = lib.register_opened(&path, None);
+        let path = BookId::new("/manga/b.cbz");
+        let reg = lib.register_opened(&path, &title(&path), None);
         assert_eq!(lib.books().len(), 1, "the book is still added");
         assert!(
             !reg.count_changed,
@@ -1499,10 +1440,10 @@ mod tests {
     #[test]
     fn register_opened_resumes_at_recorded_last_page() {
         let mut lib = Library::new();
-        let path = PathBuf::from("/manga/a.cbz");
-        assert!(lib.add(path.clone()).is_some());
+        let path = BookId::new("/manga/a.cbz");
+        assert!(lib.add(path.clone(), title(&path)).is_some());
         assert!(lib.set_resume_page(&path, 5));
-        let reg = lib.register_opened(&path, NonZeroUsize::new(10));
+        let reg = lib.register_opened(&path, &title(&path), NonZeroUsize::new(10));
         assert_eq!(
             reg.resume.last_viewed(),
             5,
@@ -1519,10 +1460,10 @@ mod tests {
         // one is now repaired by `set_page_count`, which would test the clamp rather
         // than the preservation this case is about.
         let mut lib = Library::new();
-        let p = PathBuf::from("/manga/a.cbz");
-        lib.register_opened(&p, NonZeroUsize::new(10));
+        let p = BookId::new("/manga/a.cbz");
+        lib.register_opened(&p, &title(&p), NonZeroUsize::new(10));
         assert!(lib.set_resume_page(&p, 4));
-        let reg = lib.register_opened(&p, NonZeroUsize::new(10));
+        let reg = lib.register_opened(&p, &title(&p), NonZeroUsize::new(10));
         assert_eq!(lib.books().len(), 1, "re-open must not duplicate the book");
         assert_eq!(
             reg.resume.last_viewed(),
@@ -1537,9 +1478,12 @@ mod tests {
         // A legitimately changed (non-zero -> different non-zero) page count is
         // reported as count_changed, flowing set_page_count's "did it move" branch.
         let mut lib = Library::new();
-        let p = PathBuf::from("/manga/a.cbz");
-        assert!(lib.register_opened(&p, NonZeroUsize::new(10)).count_changed);
-        let reg = lib.register_opened(&p, NonZeroUsize::new(12));
+        let p = BookId::new("/manga/a.cbz");
+        assert!(
+            lib.register_opened(&p, &title(&p), NonZeroUsize::new(10))
+                .count_changed
+        );
+        let reg = lib.register_opened(&p, &title(&p), NonZeroUsize::new(12));
         assert!(reg.count_changed, "10 -> 12 is a real change");
         assert_eq!(reg.resume.total(), Some(12));
     }
@@ -1557,18 +1501,18 @@ mod tests {
         let sub = dir.path().join("sub");
         std::fs::create_dir(&sub).unwrap();
         let non_canonical = sub.join("..").join("Book.cbz");
-        let canonical = canonical_identity(&non_canonical);
+        let canonical = BookId::from_canonical_path(&canonical_identity(&non_canonical)).unwrap();
 
         let mut lib = Library::new();
-        lib.register_opened(&canonical, None);
+        lib.register_opened(&canonical, &title(&canonical), None);
 
         // last_opened is set, and its path is a book actually in the shelf.
         let lo = lib
             .last_opened()
             .expect("register_opened must always set last_opened")
-            .to_path_buf();
+            .clone();
         assert!(
-            lib.books().iter().any(|b| b.path() == lo),
+            lib.books().iter().any(|b| b.id() == &lo),
             "last_opened must point at a book actually in the shelf"
         );
         assert_eq!(
@@ -1579,15 +1523,15 @@ mod tests {
 
     #[test]
     fn new_book_has_empty_overrides() {
-        let book = Book::from_path(PathBuf::from("/manga/a.cbz"));
+        let book = book_from_path(Path::new("/manga/a.cbz"), false);
         assert!(book.overrides().is_empty());
     }
 
     #[test]
     fn set_overrides_updates_and_reports_change() {
         let mut lib = Library::new();
-        let p = PathBuf::from("/manga/a.cbz");
-        assert!(lib.add(p.clone()).is_some());
+        let p = BookId::new("/manga/a.cbz");
+        assert!(lib.add(p.clone(), title(&p)).is_some());
         let ov = crate::view_override::ViewOverride {
             reading_direction: Some(crate::view_modes::ReadingDirection::Rtl),
             ..crate::view_override::ViewOverride::none()
@@ -1602,8 +1546,8 @@ mod tests {
     #[test]
     fn set_overrides_clear_to_none_reports_change_and_empties() {
         let mut lib = Library::new();
-        let p = PathBuf::from("/manga/a.cbz");
-        assert!(lib.add(p.clone()).is_some());
+        let p = BookId::new("/manga/a.cbz");
+        assert!(lib.add(p.clone(), title(&p)).is_some());
         let ov = crate::view_override::ViewOverride {
             reading_direction: Some(crate::view_modes::ReadingDirection::Rtl),
             ..crate::view_override::ViewOverride::none()
@@ -1618,14 +1562,14 @@ mod tests {
     fn set_overrides_false_when_path_absent() {
         let mut lib = Library::new();
         let ov = crate::view_override::ViewOverride::none();
-        assert!(!lib.set_overrides(Path::new("/manga/missing.cbz"), ov));
+        assert!(!lib.set_overrides(&BookId::new("/manga/missing.cbz"), ov));
     }
 
     #[test]
     fn overrides_for_absent_path_is_empty() {
         let lib = Library::new();
         assert!(lib
-            .overrides_for(Path::new("/manga/missing.cbz"))
+            .overrides_for(&BookId::new("/manga/missing.cbz"))
             .is_empty());
     }
 
@@ -1640,37 +1584,37 @@ mod tests {
     #[test]
     fn register_opened_sets_last_opened_on_fresh_book() {
         let mut lib = Library::new();
-        let path = PathBuf::from("/manga/a.cbz");
-        lib.register_opened(&path, None);
-        assert_eq!(lib.last_opened(), Some(Path::new("/manga/a.cbz")));
+        let path = BookId::new("/manga/a.cbz");
+        lib.register_opened(&path, &title(&path), None);
+        assert_eq!(lib.last_opened(), Some(&BookId::new("/manga/a.cbz")));
     }
 
     #[test]
     fn register_opened_updates_last_opened_on_reopen() {
         // Opening a different book after the first one replaces last_opened.
         let mut lib = Library::new();
-        let a = PathBuf::from("/manga/a.cbz");
-        let b = PathBuf::from("/manga/b.cbz");
-        lib.register_opened(&a, None);
-        lib.register_opened(&b, None);
-        assert_eq!(lib.last_opened(), Some(Path::new("/manga/b.cbz")));
+        let a = BookId::new("/manga/a.cbz");
+        let b = BookId::new("/manga/b.cbz");
+        lib.register_opened(&a, &title(&a), None);
+        lib.register_opened(&b, &title(&b), None);
+        assert_eq!(lib.last_opened(), Some(&BookId::new("/manga/b.cbz")));
     }
 
     #[test]
     fn register_opened_same_book_twice_preserves_last_opened() {
         // Re-opening the same book keeps last_opened pointing at it.
         let mut lib = Library::new();
-        let path = PathBuf::from("/manga/a.cbz");
-        lib.register_opened(&path, None);
-        lib.register_opened(&path, None);
-        assert_eq!(lib.last_opened(), Some(Path::new("/manga/a.cbz")));
+        let path = BookId::new("/manga/a.cbz");
+        lib.register_opened(&path, &title(&path), None);
+        lib.register_opened(&path, &title(&path), None);
+        assert_eq!(lib.last_opened(), Some(&BookId::new("/manga/a.cbz")));
     }
 
     #[test]
     fn remove_last_opened_book_clears_last_opened() {
         let mut lib = Library::new();
-        let path = PathBuf::from("/manga/a.cbz");
-        lib.register_opened(&path, None);
+        let path = BookId::new("/manga/a.cbz");
+        lib.register_opened(&path, &title(&path), None);
         assert!(lib.remove(&path));
         assert_eq!(lib.last_opened(), None);
     }
@@ -1678,14 +1622,14 @@ mod tests {
     #[test]
     fn remove_different_book_preserves_last_opened() {
         let mut lib = Library::new();
-        let a = PathBuf::from("/manga/a.cbz");
-        let b = PathBuf::from("/manga/b.cbz");
-        lib.register_opened(&a, None);
-        lib.add(b.clone());
+        let a = BookId::new("/manga/a.cbz");
+        let b = BookId::new("/manga/b.cbz");
+        lib.register_opened(&a, &title(&a), None);
+        lib.add(b.clone(), title(&b));
         assert!(lib.remove(&b));
         assert_eq!(
             lib.last_opened(),
-            Some(Path::new("/manga/a.cbz")),
+            Some(&BookId::new("/manga/a.cbz")),
             "removing a different book must not clear last_opened"
         );
     }
@@ -1693,10 +1637,10 @@ mod tests {
     #[test]
     fn remove_many_containing_last_opened_clears_it() {
         let mut lib = Library::new();
-        let a = PathBuf::from("/manga/a.cbz");
-        let b = PathBuf::from("/manga/b.cbz");
-        lib.register_opened(&a, None);
-        lib.add(b.clone());
+        let a = BookId::new("/manga/a.cbz");
+        let b = BookId::new("/manga/b.cbz");
+        lib.register_opened(&a, &title(&a), None);
+        lib.add(b.clone(), title(&b));
         lib.remove_many(&[a.clone(), b.clone()]);
         assert_eq!(lib.last_opened(), None);
     }
@@ -1704,14 +1648,14 @@ mod tests {
     #[test]
     fn remove_many_not_containing_last_opened_preserves_it() {
         let mut lib = Library::new();
-        let a = PathBuf::from("/manga/a.cbz");
-        let b = PathBuf::from("/manga/b.cbz");
-        lib.register_opened(&a, None);
-        lib.add(b.clone());
+        let a = BookId::new("/manga/a.cbz");
+        let b = BookId::new("/manga/b.cbz");
+        lib.register_opened(&a, &title(&a), None);
+        lib.add(b.clone(), title(&b));
         lib.remove_many(std::slice::from_ref(&b));
         assert_eq!(
             lib.last_opened(),
-            Some(Path::new("/manga/a.cbz")),
+            Some(&BookId::new("/manga/a.cbz")),
             "removing an unrelated book must not clear last_opened"
         );
     }
@@ -1721,11 +1665,11 @@ mod tests {
     #[test]
     fn bookmark_is_some_when_last_opened_is_shelved() {
         let mut lib = Library::new();
-        let path = PathBuf::from("/manga/a.cbz");
-        lib.register_opened(&path, None);
+        let path = BookId::new("/manga/a.cbz");
+        lib.register_opened(&path, &title(&path), None);
         assert_eq!(
             lib.bookmark(),
-            Some(Path::new("/manga/a.cbz")),
+            Some(&BookId::new("/manga/a.cbz")),
             "bookmark resolves to a shelved last_opened"
         );
     }
@@ -1734,7 +1678,7 @@ mod tests {
     fn bookmark_is_none_when_last_opened_is_none() {
         let mut lib = Library::new();
         // A shelved book but nothing opened yet: no resume target.
-        assert!(lib.add(PathBuf::from("/manga/a.cbz")).is_some());
+        add(&mut lib, "/manga/a.cbz");
         assert_eq!(lib.last_opened(), None);
         assert_eq!(lib.bookmark(), None, "no last_opened means no bookmark");
     }
@@ -1751,7 +1695,7 @@ mod tests {
         let lib: Library = serde_json::from_str(&json).unwrap();
         assert_eq!(
             lib.last_opened(),
-            Some(Path::new("/manga/gone.cbz")),
+            Some(&BookId::new("/manga/gone.cbz")),
             "raw deserialization preserves the orphan (no normalize)"
         );
         assert_eq!(
@@ -1791,7 +1735,7 @@ mod tests {
         let lib = Library::from_json(&json).unwrap();
         assert_eq!(
             lib.last_opened(),
-            Some(Path::new("/manga/a.cbz")),
+            Some(&BookId::new("/manga/a.cbz")),
             "normalize must keep a valid last_opened"
         );
     }
@@ -1846,8 +1790,8 @@ mod tests {
         );
         let book = &lib.books()[0];
         assert_eq!(
-            book.path(),
-            canonical.as_path(),
+            book.id(),
+            &BookId::from_canonical_path(&canonical).unwrap(),
             "survivor path is the canonical key"
         );
         assert_eq!(
@@ -1929,8 +1873,8 @@ mod tests {
 
         assert_eq!(lib.books().len(), 1);
         assert_eq!(
-            lib.books()[0].path(),
-            canonical.as_path(),
+            lib.books()[0].id(),
+            &BookId::from_canonical_path(&canonical).unwrap(),
             "a resolvable non-canonical path is upgraded to canonical on load"
         );
         assert_eq!(
@@ -1957,8 +1901,8 @@ mod tests {
 
         assert_eq!(lib.books().len(), 1, "a missing-path book is kept");
         assert_eq!(
-            lib.books()[0].path(),
-            Path::new(raw),
+            lib.books()[0].id(),
+            &BookId::new(raw),
             "the raw path is preserved unchanged"
         );
         assert_eq!(lib.books()[0].resume_page(), 9);
@@ -1995,7 +1939,7 @@ mod tests {
         );
         assert_eq!(
             lib.last_opened(),
-            Some(canonical.as_path()),
+            Some(&BookId::from_canonical_path(&canonical).unwrap()),
             "last_opened is repointed to the surviving canonical path"
         );
     }

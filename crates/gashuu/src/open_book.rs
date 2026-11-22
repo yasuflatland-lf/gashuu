@@ -15,8 +15,9 @@ use std::num::NonZeroUsize;
 use std::path::Path;
 use std::rc::Rc;
 
-use gashuu_core::{CoreError, Library, Settings, ThumbnailCache};
+use gashuu_core::{BookId, CoreError, Library, Settings, ThumbnailCache};
 
+use crate::book_path;
 use crate::cover_loader::purge_cover;
 use crate::dialog_session::DialogSession;
 use crate::open_controller::{probe_open, OpenProbeOutcome};
@@ -179,9 +180,7 @@ impl OpenBookUseCase {
             Ok(is_dir) => is_dir,
             Err(error) => return OpenOutcome::Error(error),
         };
-        // The CANONICAL key the source was opened under (from `open_file`), not the raw
-        // dialog `path` — the same key `resume_page`/`set_page_count`/write-back use.
-        let canonical = self.state.borrow().open_file().map(Path::to_path_buf);
+        let id = self.state.borrow().open_book().cloned();
         // `page_count_opt()` returns a `Copy` `Option<NonZeroUsize>`; the `borrow()` drops at
         // the `;` so it cannot conflict with the `borrow_mut()`s the later steps take.
         let page_count = self.state.borrow().page_count_opt();
@@ -189,14 +188,14 @@ impl OpenBookUseCase {
         // a zero-page source bypasses both (spec-pinned, ADR-0009). Deliberately an early
         // return rather than a single exit point.
         if page_count.is_none() {
-            if let Some(c) = canonical.as_deref() {
-                return self.reject_empty(c);
+            if let Some(id) = id.as_ref() {
+                return self.reject_empty(id);
             }
         }
         // Non-empty path only: the recents push + settings save were DEFERRED past the
         // empty-book check above precisely so a rejected source never reaches them.
         let settings_save = self.record_recent(path);
-        let count_changed = self.register_and_resume(canonical.as_deref(), page_count, path);
+        let count_changed = self.register_and_resume(id.as_ref(), page_count, path);
         let library_save = self.persist_registered();
         let skipped = self.state.borrow().last_open_skipped();
         let listing_truncated = self.state.borrow().last_open_truncated();
@@ -224,7 +223,7 @@ impl OpenBookUseCase {
 
     /// Step 1 — library write 1. Capture the OUTGOING book's position and view
     /// modes and save them together BEFORE the source is replaced; once
-    /// [`Self::install`] runs, `open_file()` names the incoming book and the
+    /// [`Self::install`] runs, `open_book()` names the incoming book and the
     /// outgoing book's runtime is unrecoverable. Routed through the leave-point
     /// chokepoint's save-injection seam so the open use case's own
     /// `save_library` effect stays the one that performs the write.
@@ -247,7 +246,8 @@ impl OpenBookUseCase {
                     probe.source,
                     probe.skipped,
                     probe.truncated,
-                    probe.canonical,
+                    probe.id,
+                    probe.title,
                 );
                 self.dialog_session.borrow_mut().clear_pending_inherit();
                 tracing::info!(path = %path.display(), "opened source");
@@ -266,14 +266,12 @@ impl OpenBookUseCase {
     /// cover-load-only asymmetry orphaned cached covers).
     ///
     /// The zero-page source must not stay mounted, so the viewer is closed back to
-    /// the boot state: `open_file()` becomes `None`, which is what clears the
+    /// the boot state: `open_book()` becomes `None`, which is what clears the
     /// title, makes carousel-back refuse, and lets `AppExit` reconcile the global
     /// modes. The OUTGOING book's position/override were already persisted by
     /// [`Self::persist_outgoing`], so closing here loses nothing.
-    fn reject_empty(&self, canonical: &Path) -> OpenOutcome {
-        let removal = remove_empty_book(&self.library, canonical, |library| {
-            (self.save_library)(library)
-        });
+    fn reject_empty(&self, id: &BookId) -> OpenOutcome {
+        let removal = remove_empty_book(&self.library, id, |library| (self.save_library)(library));
         self.state.borrow_mut().close();
         OpenOutcome::EmptyBookRejected {
             title: removal.title,
@@ -314,21 +312,26 @@ impl OpenBookUseCase {
     /// step between them or reorder them.
     fn register_and_resume(
         &self,
-        canonical: Option<&Path>,
+        id: Option<&BookId>,
         page_count: Option<NonZeroUsize>,
         path: &Path,
     ) -> bool {
         // `register_opened` = idempotent add + back-fill + resume lookup; its `borrow_mut`
         // is confined to this statement and released before the state updates below.
-        let (count_changed, resume_page) = if let Some(c) = canonical {
-            let reg = self.library.borrow_mut().register_opened(c, page_count);
+        let (count_changed, resume_page) = if let Some(id) = id {
+            let state = self.state.borrow();
+            let title = state.open_title().expect("installed book has a title");
+            let reg = self
+                .library
+                .borrow_mut()
+                .register_opened(id, title, page_count);
             (reg.count_changed, Some(reg.resume.last_viewed()))
         } else {
-            // Unreachable in practice: a successful open always sets `open_file`. Log if
+            // Unreachable in practice: a successful open always sets `open_book`. Log if
             // the invariant breaks so the book-not-registered failure isn't silent.
             tracing::warn!(
                 path = %path.display(),
-                "open_file was None after a successful open; book not registered in library"
+                "open_book was None after a successful open; book not registered in library"
             );
             (false, None)
         };
@@ -336,8 +339,8 @@ impl OpenBookUseCase {
         // BEFORE `jump_to`, so the resume index is normalised under this book's pairing,
         // not the outgoing book's.
         let resolved = {
-            let overrides = canonical
-                .map(|c| self.library.borrow().overrides_for(c))
+            let overrides = id
+                .map(|id| self.library.borrow().overrides_for(id))
                 .unwrap_or_default();
             overrides.resolve(self.settings.borrow().view_defaults())
         };
@@ -405,14 +408,13 @@ pub(crate) struct EmptyBookOutcome {
 
 /// The display title to show for `path`: the stored `Book::title` when the book
 /// is in the library, else the core path-derivation (`gashuu_core::display_title`).
-/// Single-homes the "stored title preferred, path-derived fallback" rule shared
-/// by the empty-book removal transaction and the failed-open status message.
+/// Used by the failed-open status message.
 pub(crate) fn book_display_title(lib: &Library, path: &Path) -> String {
-    lib.books()
-        .iter()
-        .find(|b| b.path() == path)
-        .map(|b| b.title().to_string())
-        .unwrap_or_else(|| gashuu_core::display_title(path))
+    BookId::from_canonical_path(path)
+        .ok()
+        .and_then(|id| lib.book(&id))
+        .map(|book| book.title().to_owned())
+        .unwrap_or_else(|| gashuu_core::display_title(path, book_path::is_dir(path)))
 }
 
 /// The single home of the empty-book removal transaction: capture the display
@@ -423,16 +425,16 @@ pub(crate) fn book_display_title(lib: &Library, path: &Path) -> String {
 /// notices / rebuild the carousel from the returned data.
 pub(crate) fn remove_empty_book(
     library: &RefCell<Library>,
-    path: &Path,
+    id: &BookId,
     save: impl FnOnce(&Library) -> Result<(), CoreError>,
 ) -> EmptyBookOutcome {
     // The `borrow_mut` is confined to this statement and drops at the `;`.
-    let removal = remove_empty_book_with(&mut library.borrow_mut(), path, save);
+    let removal = remove_empty_book_with(&mut library.borrow_mut(), id, save);
     // Best-effort purge OUTSIDE the seam so the transaction stays headless-testable.
     // mtime drift / missing file is expected (only warned); cache-construction failure skips it.
     if removal.removed {
         match ThumbnailCache::new() {
-            Ok(cache) => purge_cover(&cache, path),
+            Ok(cache) => purge_cover(&cache, &book_path::locate(id)),
             Err(e) => {
                 tracing::warn!(error = %e, "cover cache unavailable; skipping cover purge on empty-book removal");
             }
@@ -450,15 +452,21 @@ pub(crate) fn remove_empty_book(
 /// the error is reported.
 fn remove_empty_book_with(
     lib: &mut Library,
-    path: &Path,
+    id: &BookId,
     save: impl FnOnce(&Library) -> Result<(), CoreError>,
 ) -> EmptyBookOutcome {
     // Prefer the stored Book's title; fall back to the core path-derivation
     // when the book was never added. Captured BEFORE removal.
-    let title = book_display_title(lib, path);
+    let title = lib
+        .book(id)
+        .map(|book| book.title().to_owned())
+        .unwrap_or_else(|| {
+            let path = book_path::locate(id);
+            gashuu_core::display_title(&path, book_path::is_dir(&path))
+        });
     // `Library::remove` is idempotent and returns false when the book is
     // absent; it also clears `last_opened` when it pointed at this book.
-    let removed = lib.remove(path);
+    let removed = lib.remove(id);
     // Persist only when something was actually removed; otherwise the shelf
     // is unchanged so there is nothing to save.
     let save_error = if removed {
@@ -672,10 +680,10 @@ mod tests {
         let store = LibraryStore::new(dir.path().join("library.json"));
 
         let mut lib = Library::new();
-        let book = PathBuf::from("/manga/Just Opened Vol.cbz");
+        let book = BookId::new("/manga/Just Opened Vol.cbz");
         // Mirror the open path: register with a known page count, then save synchronously
         // (production saves the borrowed library through `LibraryStore`).
-        lib.register_opened(&book, std::num::NonZeroUsize::new(42));
+        lib.register_opened(&book, "Just Opened Vol", std::num::NonZeroUsize::new(42));
         store.save(&lib).expect("synchronous save must succeed");
 
         // The write completed before control returned here (no background thread
@@ -684,7 +692,7 @@ mod tests {
         let stored = reloaded
             .books()
             .iter()
-            .find(|b| b.path() == book)
+            .find(|b| b.id() == &book)
             .expect("the just-opened book must be persisted synchronously");
         assert_eq!(
             stored.page_count_opt(),
@@ -693,7 +701,7 @@ mod tests {
         );
         assert_eq!(
             reloaded.last_opened(),
-            Some(book.as_path()),
+            Some(&book),
             "last_opened must point at the just-opened book on disk"
         );
     }
@@ -703,8 +711,8 @@ mod tests {
     #[test]
     fn remove_empty_book_removes_saves_and_reports_stored_title() {
         let mut lib = Library::new();
-        let path = PathBuf::from("/manga/Empty Vol.cbz");
-        lib.add(path.clone());
+        let path = BookId::new("/manga/Empty Vol.cbz");
+        lib.add(path.clone(), "Empty Vol".into());
         let saves = std::cell::Cell::new(0);
         let removal = remove_empty_book_with(&mut lib, &path, |_| {
             saves.set(saves.get() + 1);
@@ -720,7 +728,7 @@ mod tests {
     #[test]
     fn remove_empty_book_absent_book_skips_save_and_derives_title() {
         let mut lib = Library::new();
-        let path = PathBuf::from("/manga/Never Added.cbz");
+        let path = BookId::new("/manga/Never Added.cbz");
         let removal = remove_empty_book_with(&mut lib, &path, |_| -> Result<(), CoreError> {
             panic!("save must not be attempted when nothing was removed")
         });
@@ -728,7 +736,7 @@ mod tests {
         assert_eq!(removal.save_error, None);
         assert_eq!(
             removal.title,
-            gashuu_core::display_title(&path),
+            gashuu_core::display_title(&book_path::locate(&path), false),
             "fallback is the core derivation"
         );
     }
@@ -736,8 +744,8 @@ mod tests {
     #[test]
     fn remove_empty_book_captures_save_error_and_keeps_removal() {
         let mut lib = Library::new();
-        let path = PathBuf::from("/manga/Empty.cbz");
-        lib.add(path.clone());
+        let path = BookId::new("/manga/Empty.cbz");
+        lib.add(path.clone(), "Empty".into());
         let removal = remove_empty_book_with(&mut lib, &path, |_| Err(err()));
         assert!(
             removal.removed,
@@ -944,9 +952,9 @@ mod tests {
             let library = match scenario {
                 Scenario::StoredEmpty | Scenario::StoredEmptyWithRecents => {
                     std::fs::create_dir(&source).expect("create empty source");
-                    let canonical = source.canonicalize().expect("canonical empty source");
+                    let (canonical, title) = book_path::identify(&source, true).unwrap();
                     let mut library = Library::new();
-                    let _ = library.add(canonical);
+                    let _ = library.add(canonical, title);
                     Rc::new(RefCell::new(library))
                 }
                 Scenario::SuccessWithoutRecents | Scenario::SuccessWithRecents => {
@@ -1020,11 +1028,16 @@ mod tests {
         // derivation to the full directory NAME ("Stored Title.cbz"), so the stored title
         // and the path-derived fallback differ and the preference cannot pass vacuously.
         let mut seeded = Library::new();
-        assert!(seeded.add(stored.clone()).is_some());
+        assert!(seeded
+            .add(
+                BookId::from_canonical_path(&stored).unwrap(),
+                gashuu_core::display_title(&stored, false)
+            )
+            .is_some());
         std::fs::create_dir(&stored).expect("create stored empty source");
         std::fs::create_dir(&absent).expect("create absent empty source");
         assert_eq!(
-            gashuu_core::display_title(&stored),
+            gashuu_core::display_title(&stored, true),
             "Stored Title.cbz",
             "fixture must make the path-derived fallback differ from the stored title"
         );
@@ -1046,7 +1059,9 @@ mod tests {
             .borrow_mut()
             .open_path(&stored)
             .expect("open stored empty source");
-        let stored_outcome = parts.use_case.reject_empty(&stored);
+        let stored_outcome = parts
+            .use_case
+            .reject_empty(&BookId::from_canonical_path(&stored).unwrap());
         assert!(matches!(
             stored_outcome,
             OpenOutcome::EmptyBookRejected {
@@ -1056,14 +1071,16 @@ mod tests {
             } if title == "Stored Title"
         ));
         assert_eq!(saves.get(), 1, "a removed book is saved once");
-        assert!(parts.state.borrow().open_file().is_none());
+        assert!(parts.state.borrow().open_book().is_none());
 
         parts
             .state
             .borrow_mut()
             .open_path(&absent)
             .expect("open absent empty source");
-        let absent_outcome = parts.use_case.reject_empty(&absent);
+        let absent_outcome = parts
+            .use_case
+            .reject_empty(&BookId::from_canonical_path(&absent).unwrap());
         assert!(matches!(
             absent_outcome,
             OpenOutcome::EmptyBookRejected { removed: false, .. }
@@ -1073,7 +1090,7 @@ mod tests {
             1,
             "an absent book must not trigger another save"
         );
-        assert!(parts.state.borrow().open_file().is_none());
+        assert!(parts.state.borrow().open_book().is_none());
     }
 
     /// Step 4 in isolation. `None` (tracking off) is NOT the same as `Some(Ok(()))`
@@ -1209,14 +1226,14 @@ mod tests {
         {
             let root = tempfile::tempdir().expect("tempdir");
             let source = make_book_dir(root.path(), total);
-            let canonical = source.canonicalize().expect("canonical fixture path");
+            let canonical = book_path::identify(&source, true).unwrap().0;
             let settings = Settings {
                 spread_mode: before_spread,
                 cover_mode: before_cover,
                 ..Settings::default()
             };
             let mut seeded = Library::new();
-            seeded.register_opened(&canonical, std::num::NonZeroUsize::new(total));
+            seeded.register_opened(&canonical, "book", std::num::NonZeroUsize::new(total));
             assert!(seeded.set_resume_page(&canonical, resume));
             assert!(seeded.set_overrides(
                 &canonical,
@@ -1264,14 +1281,14 @@ mod tests {
     fn resume_unchanged_when_book_modes_match_runtime() {
         let root = tempfile::tempdir().expect("tempdir");
         let source = make_book_dir(root.path(), 5);
-        let canonical = source.canonicalize().expect("canonical fixture path");
+        let canonical = book_path::identify(&source, true).unwrap().0;
         let settings = Settings {
             spread_mode: SpreadMode::Double,
             cover_mode: CoverMode::Standalone,
             ..Settings::default()
         };
         let mut seeded = Library::new();
-        seeded.register_opened(&canonical, std::num::NonZeroUsize::new(5));
+        seeded.register_opened(&canonical, "book", std::num::NonZeroUsize::new(5));
         assert!(seeded.set_resume_page(&canonical, 2));
         assert!(seeded.set_overrides(
             &canonical,
@@ -1304,14 +1321,14 @@ mod tests {
     fn never_read_book_still_opens_at_page_zero() {
         let root = tempfile::tempdir().expect("tempdir");
         let source = make_book_dir(root.path(), 5);
-        let canonical = source.canonicalize().expect("canonical fixture path");
+        let canonical = book_path::identify(&source, true).unwrap().0;
         let settings = Settings {
             spread_mode: SpreadMode::Single,
             cover_mode: CoverMode::Standalone,
             ..Settings::default()
         };
         let mut seeded = Library::new();
-        seeded.register_opened(&canonical, std::num::NonZeroUsize::new(5));
+        seeded.register_opened(&canonical, "book", std::num::NonZeroUsize::new(5));
         assert!(seeded.set_overrides(
             &canonical,
             ViewOverride {
@@ -1341,7 +1358,7 @@ mod tests {
     fn apply_probed_failed_maps_to_error_and_leaves_state() {
         let root = tempfile::tempdir().expect("tempdir");
         let source = make_book_dir(root.path(), 2);
-        let canonical = source.canonicalize().expect("canonical fixture path");
+        let canonical = book_path::identify(&source, true).unwrap().0;
         let library = Rc::new(RefCell::new(Library::new()));
         let (use_case, state) = use_case_with_saves(
             Settings::default(),
@@ -1358,7 +1375,8 @@ mod tests {
             probe.source,
             probe.skipped,
             probe.truncated,
-            probe.canonical,
+            probe.id,
+            probe.title,
         );
 
         let outcome = use_case.apply_probed(
@@ -1371,7 +1389,7 @@ mod tests {
 
         assert!(matches!(outcome, OpenOutcome::Error(ref e) if e == "unavailable"));
         assert!(library.borrow().books().is_empty());
-        assert_eq!(state.borrow().open_file(), Some(canonical.as_path()));
+        assert_eq!(state.borrow().open_book(), Some(&canonical));
     }
 
     #[test]
@@ -1392,7 +1410,7 @@ mod tests {
             outcome,
             OpenOutcome::EmptyBookRejected { removed: false, .. }
         ));
-        assert!(state.borrow().open_file().is_none());
+        assert!(state.borrow().open_book().is_none());
         assert!(state.borrow().current_source().is_none());
         assert!(library.borrow().books().is_empty());
     }
@@ -1406,11 +1424,11 @@ mod tests {
         std::fs::create_dir(&book_b_parent).expect("create book B parent");
         let book_a = make_book_dir(&book_a_parent, 3);
         let book_b = make_book_dir(&book_b_parent, 2);
-        let canonical_a = book_a.canonicalize().expect("canonical book A");
-        let canonical_b = book_b.canonicalize().expect("canonical book B");
+        let canonical_a = book_path::identify(&book_a, true).unwrap().0;
+        let canonical_b = book_path::identify(&book_b, true).unwrap().0;
 
         let mut seeded = Library::new();
-        assert!(seeded.add(canonical_a.clone()).is_some());
+        assert!(seeded.add(canonical_a.clone(), "book".into()).is_some());
         let library = Rc::new(RefCell::new(seeded));
         let saves = Rc::new(RefCell::new(Vec::new()));
         let observed = Rc::clone(&saves);
@@ -1422,7 +1440,7 @@ mod tests {
             move |value| {
                 observed.borrow_mut().push((
                     value.resume_page(&observed_a),
-                    value.books().iter().any(|book| book.path() == observed_b),
+                    value.books().iter().any(|book| book.id() == &observed_b),
                 ));
                 Ok(())
             },
@@ -1526,7 +1544,7 @@ mod tests {
             "an empty source must be rejected, got {outcome:?}"
         );
         let state = state.borrow();
-        assert!(state.open_file().is_none());
+        assert!(state.open_book().is_none());
         assert_eq!(state.page_count(), 0);
         assert!(state.current_source().is_none());
     }
@@ -1537,13 +1555,15 @@ mod tests {
         let book_a_parent = root.path().join("book-a-parent");
         std::fs::create_dir(&book_a_parent).expect("create book A parent");
         let book_a = make_book_dir(&book_a_parent, 3);
-        let canonical_a = book_a.canonicalize().expect("canonical book A path");
+        let canonical_a = book_path::identify(&book_a, true).unwrap().0;
         let book_b = root.path().join("empty-book-b");
         std::fs::create_dir(&book_b).expect("create empty book B");
-        let canonical_b = book_b.canonicalize().expect("canonical book B path");
+        let canonical_b = book_path::identify(&book_b, true).unwrap().0;
 
         let mut seeded = Library::new();
-        assert!(seeded.add(canonical_b.clone()).is_some());
+        assert!(seeded
+            .add(canonical_b.clone(), "empty-book-b".into())
+            .is_some());
         let library = Rc::new(RefCell::new(seeded));
         let (use_case, state) = use_case_with_saves(
             Settings::default(),
@@ -1558,7 +1578,7 @@ mod tests {
             matches!(first_outcome, OpenOutcome::Success { .. }),
             "book A must open successfully, got {first_outcome:?}"
         );
-        assert_eq!(state.borrow().open_file(), Some(canonical_a.as_path()));
+        assert_eq!(state.borrow().open_book(), Some(&canonical_a));
 
         let second_outcome = use_case.run(&book_b);
 
@@ -1570,7 +1590,7 @@ mod tests {
             "book B must be rejected and removed, got {second_outcome:?}"
         );
         let state = state.borrow();
-        assert!(state.open_file().is_none());
+        assert!(state.open_book().is_none());
         assert_eq!(state.page_count(), 0);
         drop(state);
         assert!(
@@ -1578,7 +1598,7 @@ mod tests {
                 .borrow()
                 .books()
                 .iter()
-                .all(|book| book.path() != canonical_b),
+                .all(|book| book.id() != &canonical_b),
             "empty book B must be removed from the library"
         );
     }
@@ -1587,12 +1607,12 @@ mod tests {
     fn run_success_registers_probed_count_persists_and_resumes() {
         let root = tempfile::tempdir().expect("tempdir");
         let source = make_book_dir(root.path(), 4);
-        let canonical = source.canonicalize().expect("canonical fixture path");
+        let canonical = book_path::identify(&source, true).unwrap().0;
         let library_store = root.path().join("saved-library.json");
         let settings_store = root.path().join("saved-settings.json");
 
         let mut seeded = Library::new();
-        assert!(seeded.add(canonical.clone()).is_some());
+        assert!(seeded.add(canonical.clone(), "book".into()).is_some());
         assert!(seeded.set_resume_page(&canonical, 2));
         let library = Rc::new(RefCell::new(seeded));
 
@@ -1628,7 +1648,7 @@ mod tests {
         let stored = saved
             .books()
             .iter()
-            .find(|book| book.path() == canonical)
+            .find(|book| book.id() == &canonical)
             .expect("registered fixture must reach the injected save");
         assert_eq!(
             stored.page_count_opt(),
@@ -1752,8 +1772,8 @@ mod tests {
         std::fs::create_dir(&book_b_parent).expect("create book B parent");
         let book_a = make_book_dir(&book_a_parent, 3);
         let book_b = make_book_dir(&book_b_parent, 2);
-        let canonical_a = book_a.canonicalize().expect("canonical book A");
-        let canonical_b = book_b.canonicalize().expect("canonical book B");
+        let canonical_a = book_path::identify(&book_a, true).unwrap().0;
+        let canonical_b = book_path::identify(&book_b, true).unwrap().0;
 
         let settings = Settings {
             reading_direction: ReadingDirection::Rtl,
@@ -1772,7 +1792,7 @@ mod tests {
             fit_mode: Some(FitMode::Whole),
         };
         let mut seeded = Library::new();
-        seeded.register_opened(&canonical_a, std::num::NonZeroUsize::new(3));
+        seeded.register_opened(&canonical_a, "book", std::num::NonZeroUsize::new(3));
         assert!(seeded.set_overrides(&canonical_a, book_a_override));
         let library = Rc::new(RefCell::new(seeded));
         let parts = use_case_parts(

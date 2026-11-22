@@ -10,12 +10,12 @@
 //! UI tail lives in
 //! [`finalize_remove`](crate::carousel_refresh::finalize_remove).
 
+use crate::book_path::locate;
 use std::cell::RefCell;
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
-use gashuu_core::{Book, CoreError, Library, RemovalReport, ThumbnailCache};
+use gashuu_core::{Book, BookId, CoreError, Library, RemovalReport, ThumbnailCache};
 use i18n_embed::fluent::FluentLanguageLoader;
 
 use crate::cover_loader::purge_cover;
@@ -43,18 +43,18 @@ pub(crate) enum RemoveOutcome {
     /// `n` books were removed and saved. `closed_open_book` is true when the book
     /// that was open in the viewer was among them (the viewer was cleared to the
     /// no-book-open state). `n` counts only the books actually removed
-    /// (`RemovalReport::removed`), excluding any stale `not_found` paths.
+    /// (`RemovalReport::removed`), excluding any stale `not_found` ids.
     Removed { n: usize, closed_open_book: bool },
 }
 
-/// Remove every book in `paths` from `library` and persist, rolling back the
+/// Remove every book in `ids` from `library` and persist, rolling back the
 /// in-memory shelf byte-identically if the save fails.
 ///
 /// The transaction (issue §4):
 /// 1. Capture FULL clones of the books about to be removed (so a rollback can
 ///    re-insert them WITHOUT the `add()`-trap that would reset
 ///    `resume_page`/`page_count`/`overrides` — see [`Library::restore`]).
-/// 2. `remove_many(paths)` drops them in one retain pass and reports the outcome.
+/// 2. `remove_many(ids)` drops them in one retain pass and reports the outcome.
 /// 3. `save(library)`; on `Err`, `restore` the captured clones (which re-sorts
 ///    into natural order) and return the error. Caches are NOT touched on
 ///    failure — only the persisted shelf is the transaction boundary.
@@ -64,7 +64,7 @@ pub(crate) enum RemoveOutcome {
 /// unit-testable against an in-memory failing/succeeding save.
 pub(crate) fn remove_books_with_rollback(
     library: &mut Library,
-    paths: &[PathBuf],
+    ids: &[BookId],
     save: impl FnOnce(&Library) -> Result<(), CoreError>,
 ) -> Result<RemovalReport, CoreError> {
     // 1. Keep whole-Book clones of the entries we are about to remove, BEFORE the
@@ -72,16 +72,16 @@ pub(crate) fn remove_books_with_rollback(
     let removed_books: Vec<Book> = library
         .books()
         .iter()
-        .filter(|b| paths.iter().any(|p| p.as_path() == b.path()))
+        .filter(|b| ids.contains(b.id()))
         .cloned()
         .collect();
     // 1b. Snapshot the pre-removal `last_opened` bookmark too: `remove_many` clears
     //     it when the deletion set contains it, so a rollback must hand it back to
     //     recover the truly byte-identical pre-delete state (the "continue reading"
     //     bookmark would otherwise be silently lost on a failed save).
-    let prior_last_opened = library.last_opened().map(|p| p.to_path_buf());
+    let prior_last_opened = library.last_opened().cloned();
     // 2. Drop them and report what actually matched (vs. stale not_found inputs).
-    let report = library.remove_many(paths);
+    let report = library.remove_many(ids);
     // 3. Persist; roll back the in-memory shelf byte-identically on failure.
     match save(library) {
         Ok(()) => Ok(report),
@@ -95,14 +95,9 @@ pub(crate) fn remove_books_with_rollback(
     }
 }
 
-/// Decide whether the currently open file is among the removed paths (so the
-/// viewer must be cleared). Pure and testable in isolation from the live
-/// `ViewerWindow`, so `RemoveBooksUseCase::run` can stay a thin orchestration
-/// shell (like `OpenBookUseCase::run`). `open_file` is `None` when no book is
-/// open; comparison is by canonical path identity (the same key the selection
-/// and the library store under).
-pub(crate) fn removed_contains_open(open_file: Option<&Path>, removed: &[PathBuf]) -> bool {
-    open_file.is_some_and(|open| removed.iter().any(|p| p.as_path() == open))
+/// Whether the open book is among the removed IDs.
+pub(crate) fn removed_contains_open(open_book: Option<&BookId>, removed: &[BookId]) -> bool {
+    open_book.is_some_and(|open| removed.contains(open))
 }
 
 /// Coordinates the "remove the selected books" use case. Mirrors
@@ -156,31 +151,23 @@ impl RemoveBooksUseCase {
     /// blank the viewer title (the Slint side of the headless close recorded by
     /// `closed_open_book`).
     pub(crate) fn run(&self) -> RemoveOutcome {
-        // 1. Snapshot the selected paths (deterministic BTreeSet order). Empty
+        // 1. Snapshot the selected IDs (deterministic BTreeSet order). Empty
         //    selection short-circuits before any mutation.
-        let paths: Vec<PathBuf> = self
-            .selection
-            .borrow()
-            .selected()
-            .map(Path::to_path_buf)
-            .collect();
-        if paths.is_empty() {
+        let ids: Vec<BookId> = self.selection.borrow().selected().cloned().collect();
+        if ids.is_empty() {
             return RemoveOutcome::NoSelection;
         }
 
         // 1b. Snapshot page counts BEFORE removal drops entries so the strip purge can
         //     iterate per-page cache keys; borrow scoped so step 2's mut borrow can't clash.
-        let page_counts: HashMap<PathBuf, usize> = {
+        let page_counts: HashMap<BookId, usize> = {
             let library = self.library.borrow();
-            paths
-                .iter()
-                .filter_map(|path| {
+            ids.iter()
+                .filter_map(|id| {
                     library
-                        .books()
-                        .iter()
-                        .find(|b| b.path() == path.as_path())
+                        .book(id)
                         .and_then(Book::page_count_opt)
-                        .map(|count| (path.clone(), count))
+                        .map(|count| (id.clone(), count))
                 })
                 .collect()
         };
@@ -189,7 +176,7 @@ impl RemoveBooksUseCase {
         //    to this statement so the cover-purge borrow below cannot conflict.
         let report = match remove_books_with_rollback(
             &mut self.library.borrow_mut(),
-            &paths,
+            &ids,
             |library| save_library(&self.library_store, library),
         ) {
             Ok(report) => report,
@@ -207,14 +194,18 @@ impl RemoveBooksUseCase {
         //    thumbnails; a cache-construction failure skips both purges wholesale.
         match ThumbnailCache::new() {
             Ok(cache) => {
-                for path in &report.removed {
-                    purge_cover(&cache, path);
+                for id in &report.removed {
+                    purge_cover(&cache, &locate(id));
                 }
                 // Strips are keyed PER PAGE, so `purge_cover` (cover key only) orphans
                 // them (issue #361); core derives the shared mtime recipe internally.
-                for path in &report.removed {
-                    if let Some(&n) = page_counts.get(path) {
-                        cache.purge_pages_for(path, &[gashuu_core::DEFAULT_THUMB_MAX_SIDE], n);
+                for id in &report.removed {
+                    if let Some(&n) = page_counts.get(id) {
+                        cache.purge_pages_for(
+                            &locate(id),
+                            &[gashuu_core::DEFAULT_THUMB_MAX_SIDE],
+                            n,
+                        );
                     }
                 }
             }
@@ -226,8 +217,8 @@ impl RemoveBooksUseCase {
         // 4. If the open book was deleted, close it (no previous book to fall back to).
         //    Headless only; `closed_open_book` tells `finalize_remove` to blank the title.
         let closed_open_book = {
-            let open_file = self.state.borrow().open_file().map(Path::to_path_buf);
-            if removed_contains_open(open_file.as_deref(), &report.removed) {
+            let open_book = self.state.borrow().open_book().cloned();
+            if removed_contains_open(open_book.as_ref(), &report.removed) {
                 self.state.borrow_mut().close();
                 self.dialog_session.borrow_mut().clear_pending_inherit();
                 true
@@ -260,7 +251,7 @@ pub(crate) struct ConfirmDeleteContent {
     /// Dialog title, e.g. "Remove 3 books?" — driven by the TOTAL selection count.
     pub title: String,
     /// Up to [`CONFIRM_DELETE_LIST_CAP`] selected book titles (in selection /
-    /// `BTreeSet` path order), followed by an "…and M more" line when the
+    /// `BTreeSet` ID order), followed by an "…and M more" line when the
     /// selection exceeds the cap, and finally an "N selected outside the current
     /// search" line when some selected books are not in the visible projection.
     pub body_lines: Vec<String>,
@@ -276,7 +267,7 @@ pub(crate) struct ConfirmDeleteContent {
 ///
 /// - `title` uses the TOTAL selection count (`selection.count()`).
 /// - `body_lines` lists up to [`CONFIRM_DELETE_LIST_CAP`] resolvable titles in
-///   selection order. A selected path with no library entry (projection drift)
+///   selection order. A selected ID with no library entry (projection drift)
 ///   is skipped from the LIST but still counts toward the title/`count()` — we
 ///   stay honest: the title reflects what the user selected, the list reflects
 ///   what we can name.
@@ -285,21 +276,21 @@ pub(crate) struct ConfirmDeleteContent {
 ///   (`count > visible_selected_count`), an "N selected outside the current
 ///   search" line is appended LAST so the user is not surprised that filtered-out
 ///   books are deleted too.
-/// - `warning` is non-empty only when `open_file` is selected.
+/// - `warning` is non-empty only when `open_book` is selected.
 pub(crate) fn confirm_delete_content(
     loader: &FluentLanguageLoader,
     selection: &LibrarySelectionState,
     search: &LibrarySearchState,
     library: &Library,
-    open_file: Option<&Path>,
+    open_book: Option<&BookId>,
 ) -> ConfirmDeleteContent {
     let count = selection.count();
 
-    // List up to CAP resolvable titles in selection order; a path absent from the
+    // List up to CAP resolvable titles in selection order; an ID absent from the
     // library is skipped from the LIST but still counts toward `count` (see fn doc).
     let mut body_lines: Vec<String> = selection
         .selected()
-        .filter_map(|path| library.books().iter().find(|b| b.path() == path))
+        .filter_map(|id| library.book(id))
         .take(CONFIRM_DELETE_LIST_CAP)
         .map(|book| book.title().to_string())
         .collect();
@@ -324,7 +315,7 @@ pub(crate) fn confirm_delete_content(
     }
 
     // The open-book warning fires only when the open file is itself selected.
-    let warning = match open_file {
+    let warning = match open_book {
         Some(open) if selection.contains(open) => {
             crate::i18n::dynamic::confirm_delete_open_book(loader)
         }
@@ -362,10 +353,15 @@ mod tests {
     fn lib_with_three() -> Library {
         let mut lib = Library::new();
         for name in ["a.cbz", "b.cbz", "c.cbz"] {
-            assert!(lib.add(PathBuf::from(format!("/manga/{name}"))).is_some());
+            assert!(lib
+                .add(
+                    BookId::new(format!("/manga/{name}")),
+                    name.trim_end_matches(".cbz").into()
+                )
+                .is_some());
         }
-        assert!(lib.set_resume_page(Path::new("/manga/b.cbz"), 17));
-        assert!(lib.set_page_count(Path::new("/manga/b.cbz"), NonZeroUsize::new(80).unwrap()));
+        assert!(lib.set_resume_page(&BookId::new("/manga/b.cbz"), 17));
+        assert!(lib.set_page_count(&BookId::new("/manga/b.cbz"), NonZeroUsize::new(80).unwrap()));
         lib
     }
 
@@ -378,7 +374,7 @@ mod tests {
 
         let result = remove_books_with_rollback(
             &mut lib,
-            &[PathBuf::from("/manga/b.cbz"), PathBuf::from("/manga/c.cbz")],
+            &[BookId::new("/manga/b.cbz"), BookId::new("/manga/c.cbz")],
             |_| Err(err()),
         );
 
@@ -390,7 +386,7 @@ mod tests {
         );
         assert_eq!(lib.books().len(), 3, "all books restored");
         assert_eq!(
-            lib.resume_page(Path::new("/manga/b.cbz")),
+            lib.resume_page(&BookId::new("/manga/b.cbz")),
             17,
             "restored book keeps its resume_page (add() would reset it to 0)"
         );
@@ -403,11 +399,16 @@ mod tests {
         // alongside the books — otherwise "continue reading" is silently lost.
         let mut lib = Library::new();
         for name in ["a.cbz", "b.cbz"] {
-            assert!(lib.add(PathBuf::from(format!("/manga/{name}"))).is_some());
+            assert!(lib
+                .add(
+                    BookId::new(format!("/manga/{name}")),
+                    name.trim_end_matches(".cbz").into()
+                )
+                .is_some());
         }
-        let b = PathBuf::from("/manga/b.cbz");
-        lib.register_opened(&b, None);
-        assert_eq!(lib.last_opened(), Some(b.as_path()), "B is the bookmark");
+        let b = BookId::new("/manga/b.cbz");
+        lib.register_opened(&b, "b", None);
+        assert_eq!(lib.last_opened(), Some(&b), "B is the bookmark");
 
         let result = remove_books_with_rollback(&mut lib, std::slice::from_ref(&b), |_| Err(err()));
 
@@ -415,7 +416,7 @@ mod tests {
         assert_eq!(lib.books().len(), 2, "both books restored");
         assert_eq!(
             lib.last_opened(),
-            Some(b.as_path()),
+            Some(&b),
             "rollback must restore the last_opened bookmark, not just the books"
         );
     }
@@ -426,7 +427,7 @@ mod tests {
         let mut lib = lib_with_three();
         let report = remove_books_with_rollback(
             &mut lib,
-            &[PathBuf::from("/manga/a.cbz"), PathBuf::from("/manga/c.cbz")],
+            &[BookId::new("/manga/a.cbz"), BookId::new("/manga/c.cbz")],
             |_| Ok(()),
         )
         .expect("a succeeding save returns Ok(report)");
@@ -444,18 +445,15 @@ mod tests {
         let mut lib = lib_with_three();
         let report = remove_books_with_rollback(
             &mut lib,
-            &[
-                PathBuf::from("/manga/a.cbz"),
-                PathBuf::from("/manga/ghost.cbz"),
-            ],
+            &[BookId::new("/manga/a.cbz"), BookId::new("/manga/ghost.cbz")],
             |_| Ok(()),
         )
         .expect("succeeding save");
 
-        assert_eq!(report.removed, vec![PathBuf::from("/manga/a.cbz")]);
+        assert_eq!(report.removed, vec![BookId::new("/manga/a.cbz")]);
         assert_eq!(
             report.not_found,
-            vec![PathBuf::from("/manga/ghost.cbz")],
+            vec![BookId::new("/manga/ghost.cbz")],
             "the stale path is not_found, excluded from the removed count"
         );
     }
@@ -464,25 +462,25 @@ mod tests {
 
     #[test]
     fn open_book_in_removed_decides_close() {
-        let removed = vec![PathBuf::from("/manga/a.cbz"), PathBuf::from("/manga/b.cbz")];
+        let removed = vec![BookId::new("/manga/a.cbz"), BookId::new("/manga/b.cbz")];
         assert!(
-            removed_contains_open(Some(Path::new("/manga/b.cbz")), &removed),
+            removed_contains_open(Some(&BookId::new("/manga/b.cbz")), &removed),
             "an open book among the removed paths triggers a close"
         );
     }
 
     #[test]
     fn open_book_not_in_removed_keeps_viewer() {
-        let removed = vec![PathBuf::from("/manga/a.cbz")];
+        let removed = vec![BookId::new("/manga/a.cbz")];
         assert!(
-            !removed_contains_open(Some(Path::new("/manga/keep.cbz")), &removed),
+            !removed_contains_open(Some(&BookId::new("/manga/keep.cbz")), &removed),
             "an open book outside the removed set must not be closed"
         );
     }
 
     #[test]
     fn nothing_open_never_closes() {
-        let removed = vec![PathBuf::from("/manga/a.cbz")];
+        let removed = vec![BookId::new("/manga/a.cbz")];
         assert!(
             !removed_contains_open(None, &removed),
             "no open book means there is nothing to close"
@@ -500,7 +498,10 @@ mod tests {
         let mut lib = Library::new();
         for i in 0..n {
             assert!(lib
-                .add(PathBuf::from(format!("/manga/book{i:02}.cbz")))
+                .add(
+                    BookId::new(format!("/manga/book{i:02}.cbz")),
+                    format!("book{i:02}")
+                )
                 .is_some());
         }
         let mut search = LibrarySearchState::default();
@@ -514,10 +515,28 @@ mod tests {
     }
 
     #[test]
+    fn confirm_delete_lists_titles_in_path_order() {
+        let mut lib = Library::new();
+        let spaced = BookId::new("/m/A 2.cbz");
+        let nested = BookId::new("/m/A/1.cbz");
+        lib.add(spaced.clone(), "A 2".into());
+        lib.add(nested.clone(), "1".into());
+        let mut selection = LibrarySelectionState::default();
+        selection.insert(spaced);
+        selection.insert(nested);
+        let mut search = LibrarySearchState::default();
+        search.recompute(&lib);
+
+        let loc = en_loader();
+        let content = confirm_delete_content(loc.loader(), &selection, &search, &lib, None);
+        assert_eq!(content.body_lines, ["1", "A 2"]);
+    }
+
+    #[test]
     fn confirm_content_lists_titles_and_title_carries_count() {
         let (lib, search, mut sel) = delete_fixture(3);
         for i in 0..3 {
-            sel.toggle(PathBuf::from(format!("/manga/book{i:02}.cbz")));
+            sel.toggle(BookId::new(format!("/manga/book{i:02}.cbz")));
         }
         let loc = en_loader();
         let content = confirm_delete_content(loc.loader(), &sel, &search, &lib, None);
@@ -541,7 +560,7 @@ mod tests {
         // 12 selected ⇒ 10 titles + 1 "…and 2 more" line = 11 body lines.
         let (lib, search, mut sel) = delete_fixture(12);
         for i in 0..12 {
-            sel.toggle(PathBuf::from(format!("/manga/book{i:02}.cbz")));
+            sel.toggle(BookId::new(format!("/manga/book{i:02}.cbz")));
         }
         let loc = en_loader();
         let content = confirm_delete_content(loc.loader(), &sel, &search, &lib, None);
@@ -568,7 +587,7 @@ mod tests {
         // do not); the query is an exact substring match, case-insensitive.
         search.set_query("book00".to_string(), &lib);
         for i in 0..12 {
-            sel.toggle(PathBuf::from(format!("/manga/book{i:02}.cbz")));
+            sel.toggle(BookId::new(format!("/manga/book{i:02}.cbz")));
         }
         let loc = en_loader();
         let content = confirm_delete_content(loc.loader(), &sel, &search, &lib, None);
@@ -606,7 +625,7 @@ mod tests {
         // Only book00 matches this query.
         search.set_query("book00".to_string(), &lib);
         for i in 0..3 {
-            sel.toggle(PathBuf::from(format!("/manga/book{i:02}.cbz")));
+            sel.toggle(BookId::new(format!("/manga/book{i:02}.cbz")));
         }
         let loc = en_loader();
         let content = confirm_delete_content(loc.loader(), &sel, &search, &lib, None);
@@ -629,7 +648,7 @@ mod tests {
         // All selected books are visible ⇒ no outside-search line.
         let (lib, search, mut sel) = delete_fixture(2);
         for i in 0..2 {
-            sel.toggle(PathBuf::from(format!("/manga/book{i:02}.cbz")));
+            sel.toggle(BookId::new(format!("/manga/book{i:02}.cbz")));
         }
         let loc = en_loader();
         let content = confirm_delete_content(loc.loader(), &sel, &search, &lib, None);
@@ -643,7 +662,7 @@ mod tests {
     #[test]
     fn confirm_content_warns_when_open_book_is_selected() {
         let (lib, search, mut sel) = delete_fixture(2);
-        let open = PathBuf::from("/manga/book00.cbz");
+        let open = BookId::new("/manga/book00.cbz");
         sel.toggle(open.clone());
         let loc = en_loader();
         let content = confirm_delete_content(loc.loader(), &sel, &search, &lib, Some(&open));
@@ -657,8 +676,8 @@ mod tests {
     fn confirm_content_no_warning_when_open_book_not_selected() {
         let (lib, search, mut sel) = delete_fixture(2);
         // Select book01, but the open book is book00 (not selected).
-        sel.toggle(PathBuf::from("/manga/book01.cbz"));
-        let open = PathBuf::from("/manga/book00.cbz");
+        sel.toggle(BookId::new("/manga/book01.cbz"));
+        let open = BookId::new("/manga/book00.cbz");
         let loc = en_loader();
         let content = confirm_delete_content(loc.loader(), &sel, &search, &lib, Some(&open));
         assert!(
@@ -672,8 +691,8 @@ mod tests {
         // Projection drift: a path with no library entry is skipped from the LIST but
         // still counts (honesty rule), and being outside search adds an outside-search line.
         let (lib, search, mut sel) = delete_fixture(1);
-        sel.toggle(PathBuf::from("/manga/book00.cbz")); // resolvable
-        sel.toggle(PathBuf::from("/manga/ghost.cbz")); // not in library
+        sel.toggle(BookId::new("/manga/book00.cbz")); // resolvable
+        sel.toggle(BookId::new("/manga/ghost.cbz")); // not in library
         let loc = en_loader();
         let content = confirm_delete_content(loc.loader(), &sel, &search, &lib, None);
 
@@ -730,12 +749,17 @@ mod tests {
             .expect("open the fixture book");
         let open = state
             .borrow()
-            .open_file()
-            .map(Path::to_path_buf)
+            .open_book()
+            .cloned()
             .expect("the fixture book must be open");
 
         let mut lib = Library::new();
-        assert!(lib.add(open.clone()).is_some());
+        assert!(lib
+            .add(
+                open.clone(),
+                state.borrow().open_title().unwrap().to_owned()
+            )
+            .is_some());
         let library = Rc::new(RefCell::new(lib));
         let mut search = LibrarySearchState::default();
         search.recompute(&library.borrow());
