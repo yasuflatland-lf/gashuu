@@ -303,10 +303,30 @@ fn optional_page_i32(index: Option<usize>) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::backend::fake::{Call, FakeBackend};
+    use crate::backend::BackendError;
+    use slint::ComponentHandle;
+    use std::cell::Cell;
+
+    fn headless_window() -> ViewerWindow {
+        struct HeadlessPlatform;
+        impl slint::platform::Platform for HeadlessPlatform {
+            fn create_window_adapter(
+                &self,
+            ) -> Result<Rc<dyn slint::platform::WindowAdapter>, slint::PlatformError> {
+                use slint::platform::software_renderer::{
+                    MinimalSoftwareWindow, RepaintBufferType,
+                };
+                Ok(MinimalSoftwareWindow::new(RepaintBufferType::NewBuffer))
+            }
+        }
+        slint::platform::set_platform(Box::new(HeadlessPlatform)).unwrap();
+        ViewerWindow::new().unwrap()
+    }
 
     #[test]
     fn dispatched_pages_are_deduplicated_cleared_and_reset_with_source() {
-        let controller = PageController::new(crate::backend::fake::FakeBackend::new());
+        let controller = PageController::new(FakeBackend::new());
 
         assert!(controller.reserve_dispatch(4));
         assert!(!controller.reserve_dispatch(4));
@@ -326,7 +346,7 @@ mod tests {
 
     #[test]
     fn reserve_dispatch_is_per_page_not_per_spread() {
-        let controller = PageController::new(crate::backend::fake::FakeBackend::new());
+        let controller = PageController::new(FakeBackend::new());
 
         assert!(controller.reserve_dispatch(4));
         assert!(!controller.reserve_dispatch(4));
@@ -337,7 +357,7 @@ mod tests {
 
     #[test]
     fn spread_reservation_still_reserves_new_partner_when_one_slot_is_in_flight() {
-        let controller = PageController::new(crate::backend::fake::FakeBackend::new());
+        let controller = PageController::new(FakeBackend::new());
         assert!(controller.reserve_dispatch(4));
 
         let status = controller.reserve_missing_slots(4, true, Some((5, true)));
@@ -351,7 +371,7 @@ mod tests {
 
     #[test]
     fn target_changes_advance_epoch_and_clear_dispatches() {
-        let controller = PageController::new(crate::backend::fake::FakeBackend::new());
+        let controller = PageController::new(FakeBackend::new());
         let epoch = controller.current_epoch();
 
         let first = controller.set_target(1, None, true);
@@ -367,7 +387,8 @@ mod tests {
 
     #[test]
     fn dispatch_spread_requests_both_indices_once() {
-        let backend = crate::backend::fake::FakeBackend::new();
+        let ui = headless_window();
+        let backend = FakeBackend::new();
         let pages = PageController::new(backend.clone());
         let session = backend.new_session();
         let request = SpreadDecodeRequest::double(
@@ -381,45 +402,119 @@ mod tests {
             },
         );
         assert!(pages
-            .dispatch_spread(Default::default(), session, request.clone())
+            .dispatch_spread(ui.as_weak(), session, request.clone())
             .any_reserved());
         assert!(
             pages
-                .dispatch_spread(Default::default(), session, request)
+                .dispatch_spread(ui.as_weak(), session, request)
                 .blocked_by_in_flight
         );
         assert_eq!(
             backend.calls(),
-            vec![crate::backend::fake::Call::DecodeSpread(
-                session,
-                0,
-                Some(1)
-            )]
+            vec![Call::DecodeSpread(session, 0, Some(1))]
         );
     }
+
     #[test]
     fn stale_spread_done_is_ignored() {
-        let backend = crate::backend::fake::FakeBackend::new();
+        let ui = headless_window();
+        let decode_errors = Rc::new(Cell::new(0));
+        ui.on_page_decode_error({
+            let decode_errors = Rc::clone(&decode_errors);
+            move |_| decode_errors.set(decode_errors.get() + 1)
+        });
+        let anchored_spreads = Rc::new(Cell::new(0));
+        ui.on_spread_anchored({
+            let anchored_spreads = Rc::clone(&anchored_spreads);
+            move |_, _, _, _, _, _| anchored_spreads.set(anchored_spreads.get() + 1)
+        });
+
+        let backend = FakeBackend::new();
         let pages = PageController::new(backend.clone());
-        pages.set_target(0, None, true);
+        let epoch = pages.set_target(0, None, true);
         pages.dispatch_spread(
-            Default::default(),
+            ui.as_weak(),
             backend.new_session(),
             SpreadDecodeRequest::single(PageSlot {
                 index: 0,
                 missing: true,
             }),
         );
-        pages.set_target(1, None, true);
-        pages.reserve_dispatch(1);
+        assert!(pages.set_target(1, None, true) > epoch);
+        assert!(pages.reserve_dispatch(1));
         backend.complete_spread(
             0,
             SpreadPages {
-                leading: (0, Err(crate::backend::BackendError::EmptyBook)),
+                leading: (0, Err(BackendError::EmptyBook)),
                 trailing: None,
             },
         );
+        assert_eq!(decode_errors.get(), 0);
+        assert_eq!(anchored_spreads.get(), 0);
         assert!(pages.is_dispatched(1));
         assert!(!pages.is_dispatched(0));
+    }
+
+    #[test]
+    fn current_spread_leading_error_reports_page_index() {
+        let ui = headless_window();
+        let failed_page = Rc::new(Cell::new(None));
+        ui.on_page_decode_error({
+            let failed_page = Rc::clone(&failed_page);
+            move |index| failed_page.set(Some(index))
+        });
+
+        let backend = FakeBackend::new();
+        let pages = PageController::new(backend.clone());
+        pages.set_target(3, None, true);
+        pages.dispatch_spread(
+            ui.as_weak(),
+            backend.new_session(),
+            SpreadDecodeRequest::single(PageSlot {
+                index: 3,
+                missing: true,
+            }),
+        );
+        backend.complete_spread(
+            0,
+            SpreadPages {
+                leading: (3, Err(BackendError::EmptyBook)),
+                trailing: None,
+            },
+        );
+
+        assert_eq!(failed_page.get(), Some(3));
+    }
+
+    #[test]
+    fn current_spread_leading_image_anchors_spread() {
+        let ui = headless_window();
+        let anchored_spreads = Rc::new(Cell::new(0));
+        ui.on_spread_anchored({
+            let anchored_spreads = Rc::clone(&anchored_spreads);
+            move |_, _, _, _, _, _| anchored_spreads.set(anchored_spreads.get() + 1)
+        });
+
+        let backend = FakeBackend::new();
+        let pages = PageController::new(backend.clone());
+        pages.set_target(0, None, true);
+        pages.dispatch_spread(
+            ui.as_weak(),
+            backend.new_session(),
+            SpreadDecodeRequest::single(PageSlot {
+                index: 0,
+                missing: true,
+            }),
+        );
+        let image = Arc::new(DecodedImage::new(vec![0, 0, 0, 255], 1, 1).unwrap());
+        backend.complete_spread(
+            0,
+            SpreadPages {
+                leading: (0, Ok(image)),
+                trailing: None,
+            },
+        );
+
+        assert_eq!(anchored_spreads.get(), 1);
     }
 }
