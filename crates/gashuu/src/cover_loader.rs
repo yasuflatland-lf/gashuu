@@ -9,7 +9,7 @@ use crate::carousel::update_carousel_row;
 use crate::page_count_prefetch::PageCountPrefetch;
 use crate::ui_marshal::ui_done;
 use crate::{to_slint_image, CarouselItem, LibraryStoreHandle, ViewerWindow};
-use gashuu_core::{BookId, Library, ThumbnailCache};
+use gashuu_core::{BookId, DecodedImage, Library, ThumbnailCache};
 use slint::{Model, VecModel};
 use std::cell::RefCell;
 use std::path::PathBuf;
@@ -198,7 +198,7 @@ impl CoverController {
             weak.clone(),
             Arc::clone(&self.epoch),
             my_epoch,
-            move |ui, result: Result<Arc<gashuu_core::DecodedImage>, BackendError>| match result {
+            move |ui, result: Result<Arc<DecodedImage>, BackendError>| match result {
                 Ok(image) => apply_loaded_cover(ui, row, to_slint_image(&image)),
                 Err(BackendError::EmptyBook) => ui.invoke_empty_book_detected(id.as_str().into()),
                 Err(error) => {
