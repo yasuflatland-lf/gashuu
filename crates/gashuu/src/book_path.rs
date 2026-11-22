@@ -4,12 +4,16 @@
 //! registry locations until OPFS storage arrives in #660. The backend work
 //! in #655–#660 moves location resolution behind the platform backend.
 
-use gashuu_core::{ArchiveLoader, ArchivePolicy, BookId, CoreError, PageSource};
+#[cfg(any(test, target_arch = "wasm32"))]
+use gashuu_core::{ArchiveLoader, ArchivePolicy, PageSource};
+use gashuu_core::{BookId, CoreError};
 #[cfg(any(test, target_arch = "wasm32"))]
 use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
+#[cfg(any(test, target_arch = "wasm32"))]
 use std::sync::Arc;
 
+#[cfg(any(test, target_arch = "wasm32"))]
 pub(crate) fn open(path: &Path, policy: ArchivePolicy) -> Result<Arc<dyn PageSource>, CoreError> {
     #[cfg(not(target_arch = "wasm32"))]
     {

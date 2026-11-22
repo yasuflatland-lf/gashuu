@@ -57,7 +57,6 @@ mod web_pointer;
 mod web_viewport;
 #[cfg(not(target_arch = "wasm32"))]
 mod window_state;
-mod worker;
 
 pub(crate) use carousel_refresh::{
     apply_add_report, finalize_empty_book_rejected, finalize_remove, push_selection_toolbar_state,
