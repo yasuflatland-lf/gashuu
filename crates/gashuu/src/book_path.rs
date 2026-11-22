@@ -5,6 +5,7 @@
 //! in #655–#660 moves location resolution behind the platform backend.
 
 use gashuu_core::{ArchiveLoader, ArchivePolicy, BookId, CoreError, PageSource};
+#[cfg(any(test, target_arch = "wasm32"))]
 use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -21,6 +22,8 @@ pub(crate) fn open(path: &Path, policy: ArchivePolicy) -> Result<Arc<dyn PageSou
     }
 }
 
+// The web backend uses this helper on wasm32 and in desktop tests.
+#[cfg(any(test, target_arch = "wasm32"))]
 pub(crate) fn probe_page_count(
     path: &Path,
     policy: ArchivePolicy,

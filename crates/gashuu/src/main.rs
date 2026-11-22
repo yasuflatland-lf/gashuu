@@ -362,11 +362,7 @@ fn run_app(
         let primary: Rc<dyn page_decode::PageDecoder> = Rc::new(web_decode::NativePageDecoder);
         let fallback: Rc<dyn page_decode::PageDecoder> =
             Rc::new(page_decode::ImageCratePageDecoder);
-        let covers = cover_loader::CoverController::new(
-            Rc::clone(&primary),
-            Rc::clone(&fallback),
-            Rc::clone(&backend),
-        );
+        let covers = cover_loader::CoverController::new(Rc::clone(&backend));
         let pages = PageController::with_decoders(primary, fallback);
         (Rc::new(covers), Rc::new(pages))
     };
