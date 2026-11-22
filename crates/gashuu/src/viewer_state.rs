@@ -1,20 +1,12 @@
-//! Presentation-layer view state: which folder is open and the current spread.
-//! Backed by `ImageCache` (LRU + background prefetch) since PR2; drives a
-//! two-page spread (Single/Double/Auto, Standalone/Paired cover, LTR/RTL) since PR4/PR4a.
-//!
-//! The pure page-pairing math lives in `gashuu_core::spread` and is
-//! reading-direction-agnostic: it decides WHICH pages form a spread (in reading
-//! order); this layer owns the cache and maps UI navigation actions onto it.
-//! Placement (which side each page renders on) is resolved in the UI from
-//! `reading_direction`; this state only exposes the leading/trailing images.
-
+//! Viewer session, spread navigation and display preferences.
+//! The backend owns page data. Navigation determines the leading and trailing
+//! indices in reading order, and the UI places them using the reading direction.
+use crate::backend::{BookBackend, OpenedBook, SessionId};
 use crate::keymap::NavAction;
-use crate::open_controller::{probe_open, OpenProbeOutcome};
 use crate::viewport::ViewportState;
 use gashuu_core::{
-    cache::CacheDispatch, ArchivePolicy, BookId, CacheConfig, CoreError, CoverMode, DecodedImage,
-    ImageCache, Language, PageSource, ReadingDirection, ResolvedView, Settings, Spread, SpreadMode,
-    SpreadNavigation,
+    BookId, CacheConfig, CoverMode, DecodedImage, Language, ReadingDirection, ResolvedView,
+    Settings, Spread, SpreadMode, SpreadNavigation,
 };
 use std::num::NonZeroUsize;
 use std::path::Path;
@@ -45,17 +37,6 @@ pub(crate) struct StatusContent {
     pub(crate) kind: StatusKind,
 }
 
-/// One displayed unit from the legacy synchronous test seam: the leading image
-/// and, in two-page modes, an optional trailing image.
-#[cfg(test)]
-pub struct SpreadImages {
-    pub leading: Arc<DecodedImage>,
-    pub trailing: Option<Arc<DecodedImage>>,
-    /// `Some(page_index)` when the trailing page failed to decode and the view
-    /// degraded to leading-only; `None` for a normal single- or two-page spread.
-    pub failed_trailing_page: Option<usize>,
-}
-
 /// Non-blocking cache classification for the current spread.
 ///
 /// Each slot carries its page index plus `Some(decoded)` on a cache HIT or
@@ -66,14 +47,10 @@ pub(crate) struct SpreadCacheState {
     pub(crate) single: bool,
 }
 
-/// Holds the active image cache, source metadata, and presentation settings.
+/// Holds the active session, book metadata, and presentation settings.
 /// Spread pairing and its always-valid-leading invariant live in `nav`.
 pub struct ViewerState {
-    cache: Option<ImageCache>,
-    /// The currently open `PageSource`, retained separately from `ImageCache`
-    /// (which does not expose its source) so the UI can launch background
-    /// thumbnail generation. `None` until a source is successfully opened.
-    source: Option<Arc<dyn PageSource>>,
+    session: Option<SessionId>,
     nav: SpreadNavigation,
     cache_config: CacheConfig,
     reading_direction: ReadingDirection,
@@ -122,8 +99,7 @@ impl ViewerState {
     /// so callers that only care about cache sizing get single-page behavior.
     pub fn with_cache_config(cache_config: CacheConfig) -> Self {
         Self {
-            cache: None,
-            source: None,
+            session: None,
             nav: SpreadNavigation::new(SpreadMode::Single, CoverMode::Standalone),
             cache_config: platform_cache_config(cache_config, cfg!(target_arch = "wasm32")),
             reading_direction: ReadingDirection::Ltr,
@@ -139,8 +115,7 @@ impl ViewerState {
     /// display modes.
     pub fn from_settings(settings: &Settings) -> Self {
         Self {
-            cache: None,
-            source: None,
+            session: None,
             nav: SpreadNavigation::new(settings.spread_mode, settings.cover_mode),
             cache_config: platform_cache_config(
                 settings.cache_config(),
@@ -155,50 +130,19 @@ impl ViewerState {
         }
     }
 
-    /// Replace the active source (used by `open_path` and by tests). Wraps the
-    /// source in a fresh `ImageCache`, discarding any previously cached pages and
-    /// resetting to the first page. Stores a clone of the source so
-    /// `current_source()` can return it without going through `ImageCache`.
-    pub fn set_source(&mut self, source: Arc<dyn PageSource>) {
-        self.source = Some(Arc::clone(&source));
-        self.open_book = None;
-        self.open_title = None;
-        let cache = ImageCache::new(source, self.cache_config);
-        self.nav.set_total(cache.len());
-        self.cache = Some(cache);
-    }
-
-    /// Close the current source, returning the viewer to the boot/no-book-open
-    /// state (the same shape `with_cache_config` constructs). Used by the
-    /// bulk-removal path when the open book is among the deleted ones: there is
-    /// no "previous book" to fall back to, so the viewer must show "No folder
-    /// opened" rather than keep rendering a book that no longer exists.
-    ///
-    /// Drops the cache + source, zeroes the page count / index /
-    /// `last_open_skipped` / `last_open_truncated`, and clears the book ID and title so
-    /// `current_book_name`
-    /// reads `""` and `status_content` reports `NoFolder`. The display MODES (direction/spread/cover) and the
-    /// `cache_config` and `nav`'s display configuration are deliberately
-    /// preserved — closing a book is not a settings reset; the next open reuses
-    /// the same configuration.
-    ///
-    /// Called by `remove_books::RemoveBooksUseCase::run` when the open book is among
-    /// the deleted ones (PR-5 #129).
-    pub fn close(&mut self) {
-        self.cache = None;
-        self.source = None;
+    /// Close the current book, preserving the configured display and cache modes.
+    #[must_use]
+    pub fn close(&mut self) -> Option<SessionId> {
         self.nav.set_total(0);
         self.last_open_skipped = 0;
         self.last_open_truncated = false;
         self.open_book = None;
         self.open_title = None;
+        self.session.take()
     }
 
-    /// Returns the currently opened page source, if any. Used by the UI to
-    /// launch background thumbnail generation (`ImageCache` does not expose its
-    /// source). Returns `None` before a source is successfully opened.
-    pub fn current_source(&self) -> Option<Arc<dyn PageSource>> {
-        self.source.clone()
+    pub(crate) fn session(&self) -> Option<SessionId> {
+        self.session
     }
 
     /// Jump to the spread containing `page`. The target is normalized to a valid
@@ -224,61 +168,22 @@ impl ViewerState {
         self.nav.preview_is_double(page)
     }
 
-    // Test-only accessors: in a binary crate `pub` is not a public API surface, so
-    // `-D warnings` flags cfg(test)-only callers as dead code (hence #[allow(dead_code)]).
-    /// The cache configuration applied to newly opened books.
-    #[allow(dead_code)]
-    pub fn cache_config(&self) -> CacheConfig {
+    pub(crate) fn cache_config(&self) -> CacheConfig {
         self.cache_config
     }
 
-    /// Open any supported path (directory or archive) as the active source,
-    /// using the given `policy` to control which formats are permitted.
-    ///
-    /// The synchronous composition of [`probe_open`] + [`Self::install_opened`],
-    /// so the blocking work is defined in ONE place and the async open path
-    /// (`OpenController`) cannot drift from it. Because the probe outcome is
-    /// `Send` it carries the failure as a pre-captured message, so an error is
-    /// re-wrapped here rather than forwarding the original `CoreError` variant;
-    /// no caller discriminates it, and the state-on-error contract is unchanged
-    /// (nothing is installed unless the probe opened).
-    pub fn open_path_with_policy(
-        &mut self,
-        path: &Path,
-        policy: ArchivePolicy,
-    ) -> Result<(), CoreError> {
-        match probe_open(path, policy) {
-            OpenProbeOutcome::Opened(probe) => {
-                self.install_opened(
-                    probe.source,
-                    probe.skipped,
-                    probe.truncated,
-                    probe.id,
-                    probe.title,
-                );
-                Ok(())
-            }
-            OpenProbeOutcome::Failed { error, .. } => Err(std::io::Error::other(error).into()),
-        }
-    }
-
-    /// Install a source already opened by [`probe_open`]. This is the
-    /// mutation-only tail of [`ViewerState::open_path_with_policy`]: `skipped`
-    /// and `truncated` are read off the source by the probe (which also logs
-    /// them), so this half performs no I/O.
-    pub fn install_opened(
-        &mut self,
-        source: Arc<dyn PageSource>,
-        skipped: usize,
-        truncated: bool,
-        id: BookId,
-        title: String,
-    ) {
-        self.last_open_skipped = skipped;
-        self.last_open_truncated = truncated;
-        self.set_source(source);
-        self.open_book = Some(id);
-        self.open_title = Some(title);
+    /// Install the book metadata and return the session its owner must close.
+    #[must_use]
+    pub(crate) fn install_opened(&mut self, opened: &OpenedBook) -> Option<SessionId> {
+        self.last_open_skipped = opened.skipped;
+        self.last_open_truncated = opened.listing_truncated;
+        self.nav.set_total(opened.page_count);
+        self.open_book = Some(opened.id.clone());
+        self.open_title = Some(gashuu_core::display_title(
+            Path::new(opened.id.as_str()),
+            opened.is_dir,
+        ));
+        self.session.replace(opened.session)
     }
 
     /// Number of entries skipped during the most recent successful `open_path`
@@ -307,12 +212,34 @@ impl ViewerState {
         self.open_title.as_deref()
     }
 
-    /// Open any supported path with the default (allow-all) policy.
-    /// Kept for test compatibility; the production open path dispatches through
-    /// `OpenController` (`probe_open` + `install_opened`).
-    #[allow(dead_code)]
-    pub fn open_path(&mut self, path: &Path) -> Result<(), CoreError> {
-        self.open_path_with_policy(path, ArchivePolicy::default())
+    #[cfg(test)]
+    pub fn open_path(&mut self, path: &Path) -> Result<(), gashuu_core::CoreError> {
+        let source = gashuu_core::ArchiveLoader::open_with_policy(path, Default::default())?;
+        let id = BookId::from_canonical_path(&gashuu_core::canonical_identity(path))?;
+        let _ = self.install_opened(&OpenedBook {
+            session: Self::test_session(),
+            id,
+            page_count: source.list_pages().len(),
+            skipped: source.skipped_count(),
+            listing_truncated: source.listing_truncated(),
+            is_dir: path.is_dir(),
+        });
+        Ok(())
+    }
+
+    #[cfg(test)]
+    fn test_session() -> SessionId {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static NEXT: AtomicU64 = AtomicU64::new(u64::MAX);
+        SessionId::for_test(NEXT.fetch_sub(1, Ordering::Relaxed))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn install_test_book(&mut self, page_count: usize) -> Option<SessionId> {
+        self.nav.set_total(page_count);
+        self.open_book = None;
+        self.open_title = None;
+        self.session.replace(Self::test_session())
     }
 
     /// Total page count of the current source (0 when none is open). Used by the
@@ -362,11 +289,11 @@ impl ViewerState {
     ///
     /// `None` means no source or an empty source. `Some` never decodes on cache
     /// MISS; callers must dispatch missing slots separately.
-    pub(crate) fn classify_spread(&self) -> Option<SpreadCacheState> {
-        let cache = self.cache.as_ref()?;
+    pub(crate) fn classify_spread(&self, backend: &dyn BookBackend) -> Option<SpreadCacheState> {
+        let session = self.session?;
         let s = self.nav.spread()?;
-        let leading = (s.leading, cache.get_cached(s.leading));
-        let trailing = s.trailing.map(|t| (t, cache.get_cached(t)));
+        let leading = (s.leading, backend.cached_page(session, s.leading));
+        let trailing = s.trailing.map(|t| (t, backend.cached_page(session, t)));
         Some(SpreadCacheState {
             leading,
             trailing,
@@ -374,40 +301,9 @@ impl ViewerState {
         })
     }
 
-    /// Return a cloneable off-thread decode handle for the active source.
-    pub(crate) fn dispatch_handle(&self) -> Option<CacheDispatch> {
-        self.cache.as_ref().map(ImageCache::dispatch_handle)
-    }
-
-    /// Return the current spread from the cache, decoding on a miss (a cache miss
-    /// here performs synchronous I/O — hence "decode" in the name).
-    ///
-    /// Kept for the existing spread/navigation tests only; production uses
-    /// [`ViewerState::classify_spread`] so cache misses never decode on the UI
-    /// thread.
     #[cfg(test)]
-    pub fn decode_current_spread(&self) -> Option<Result<SpreadImages, CoreError>> {
-        let cache = self.cache.as_ref()?;
-        let s = self.nav.spread()?;
-        let leading = match cache.get(s.leading) {
-            Ok(img) => img,
-            Err(e) => return Some(Err(e)),
-        };
-        let (trailing, failed_trailing_page) = match s.trailing {
-            Some(t) => match cache.get(t) {
-                Ok(img) => (Some(img), None),
-                Err(e) => {
-                    tracing::warn!(page = t, error = %e, "failed to decode trailing page; showing leading alone");
-                    (None, Some(t))
-                }
-            },
-            None => (None, None),
-        };
-        Some(Ok(SpreadImages {
-            leading,
-            trailing,
-            failed_trailing_page,
-        }))
+    pub(crate) fn current_spread(&self) -> Option<Spread> {
+        self.nav.spread()
     }
 
     /// Cycle Single -> Double -> Auto -> Single, then re-normalizes the index
@@ -477,7 +373,7 @@ impl ViewerState {
     /// Update the cache configuration used the NEXT time a book is opened.
     ///
     /// This deliberately does NOT rebuild the current book's cache — the new
-    /// values are consumed by `set_source` on the next open, matching the
+    /// values are consumed by the backend on the next open, matching the
     /// "applies to newly opened books" contract surfaced in the settings
     /// dialog. (Immediate runtime rebuild of the current cache is deferred.)
     pub fn set_cache_config(&mut self, cache_config: CacheConfig) {
@@ -549,7 +445,7 @@ impl ViewerState {
     pub fn status_content(&self) -> StatusContent {
         // `spread`/`direction` are the same in every arm; only `pages`/`kind`
         // vary, so compute that pair per-arm and build the struct once.
-        let (pages, kind) = match (&self.cache, self.nav.spread()) {
+        let (pages, kind) = match (self.session, self.nav.spread()) {
             (None, _) => (String::new(), StatusKind::NoFolder),
             (Some(_), None) => (String::new(), StatusKind::NoImages),
             (Some(_), Some(s)) => {
@@ -579,78 +475,3 @@ impl Default for ViewerState {
 #[cfg(test)]
 #[path = "viewer_state/tests.rs"]
 mod tests;
-
-#[cfg(test)]
-mod async_slot_tests {
-    use super::*;
-    use gashuu_core::{MockPageSource, PageEntry};
-    use std::io::Cursor;
-    use std::sync::atomic::{AtomicUsize, Ordering};
-
-    fn tiny_png() -> Vec<u8> {
-        let img = image::RgbaImage::from_pixel(2, 3, image::Rgba([9, 9, 9, 255]));
-        let mut bytes = Vec::new();
-        img.write_to(&mut Cursor::new(&mut bytes), image::ImageFormat::Png)
-            .unwrap();
-        bytes
-    }
-
-    fn counted_source(pages: usize) -> (Arc<dyn PageSource>, Arc<AtomicUsize>) {
-        let reads = Arc::new(AtomicUsize::new(0));
-        let reads_for_mock = Arc::clone(&reads);
-        let mut mock = MockPageSource::new();
-        mock.expect_list_pages()
-            .returning(move || vec![PageEntry { name: "p".into() }; pages]);
-        mock.expect_read_bytes().returning(move |_| {
-            reads_for_mock.fetch_add(1, Ordering::SeqCst);
-            Ok(tiny_png())
-        });
-        (Arc::new(mock), reads)
-    }
-
-    #[test]
-    fn classify_spread_returns_none_without_displayable_pages() {
-        let mut state = ViewerState::new();
-        assert!(state.classify_spread().is_none());
-
-        let (empty, _) = counted_source(0);
-        state.set_source(empty);
-        assert!(state.classify_spread().is_none());
-    }
-
-    #[test]
-    fn classify_spread_reports_miss_without_reading_or_decoding() {
-        let (source, reads) = counted_source(1);
-        let mut state = ViewerState::with_cache_config(CacheConfig::new(4, 0));
-        state.set_source(source);
-
-        let slots = state.classify_spread().expect("one page yields a slot");
-
-        assert_eq!(slots.leading.0, 0);
-        assert!(slots.leading.1.is_none());
-        assert!(slots.trailing.is_none());
-        assert!(slots.single);
-        assert_eq!(
-            reads.load(Ordering::SeqCst),
-            0,
-            "spread slot classification must not decode cache misses"
-        );
-    }
-
-    #[test]
-    fn classify_spread_reports_cache_hits_after_dispatch_decode() {
-        let (source, reads) = counted_source(1);
-        let mut state = ViewerState::with_cache_config(CacheConfig::new(4, 0));
-        state.set_source(source);
-        let decoded = state
-            .dispatch_handle()
-            .expect("source has a dispatch handle")
-            .decode_and_cache(0)
-            .expect("tiny png decodes");
-
-        let slots = state.classify_spread().expect("one page yields a slot");
-
-        assert!(Arc::ptr_eq(slots.leading.1.as_ref().unwrap(), &decoded));
-        assert_eq!(reads.load(Ordering::SeqCst), 1);
-    }
-}

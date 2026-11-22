@@ -1,219 +1,227 @@
-//! Off-UI-thread single-open controller.
-//!
-//! Opening an archive or folder can block while a cloud-synced or network path
-//! hydrates. This controller moves only that read-only probe onto a rayon worker:
-//! archive/folder open, page listing, skipped count, listing truncation,
-//! canonicalization, and path metadata. The `open-finalize` callback drains the
-//! result and runs every state mutation and persistence effect on the UI thread.
-//!
-//! Each start begins a new [`Generation`]. The worker delivers the probe result
-//! through its ticket, which also guards the finalize callback on the UI thread.
-
+//! Routes backend open completions to the current generation and reclaims stale sessions.
+use crate::backend::{BackendError, BookBackend, OpenedBook, SessionId};
 use crate::ui_marshal::Generation;
-use crate::{book_path, worker, ViewerWindow};
-use gashuu_core::{ArchivePolicy, BookId, PageSource};
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use crate::ViewerWindow;
+use gashuu_core::{ArchivePolicy, BookId, CacheConfig};
+use std::rc::Rc;
+use std::sync::{Arc, Mutex};
 
-/// A successfully opened source plus all filesystem metadata needed by the
-/// UI-thread apply half.
-pub(crate) struct OpenProbe {
-    pub(crate) source: Arc<dyn PageSource>,
-    pub(crate) skipped: usize,
-    pub(crate) truncated: bool,
-    pub(crate) id: BookId,
-    pub(crate) title: String,
-    pub(crate) is_dir: bool,
+struct SessionGuard {
+    session: Option<SessionId>,
+    orphans: Arc<Mutex<Vec<SessionId>>>,
 }
-
-/// The `Send` result of probing one path without mutating application state.
-pub(crate) enum OpenProbeOutcome {
-    Opened(OpenProbe),
-    Failed { error: String, path_exists: bool },
-}
-
-/// Open and inspect one source without touching `ViewerState`, `Library`, or
-/// `Settings`. This is the complete worker-thread portion of a single open.
-pub(crate) fn probe_open(path: &Path, policy: ArchivePolicy) -> OpenProbeOutcome {
-    match book_path::open(path, policy) {
-        Ok(source) => {
-            let is_dir = book_path::is_dir(path);
-            let (id, title) = match book_path::identify(path, is_dir) {
-                Ok(identified) => identified,
-                Err(error) => {
-                    return OpenProbeOutcome::Failed {
-                        error: error.to_string(),
-                        path_exists: book_path::exists(path),
-                    }
-                }
-            };
-            let skipped = source.skipped_count();
-            let truncated = source.listing_truncated();
-            if skipped > 0 {
-                tracing::warn!(skipped, path = %path.display(), "entries skipped while opening path");
-            }
-            if truncated {
-                tracing::warn!(
-                    path = %path.display(),
-                    "archive listing truncated; later pages are missing"
-                );
-            }
-            OpenProbeOutcome::Opened(OpenProbe {
-                source,
-                skipped,
-                truncated,
-                id,
-                title,
-                is_dir,
-            })
+impl Drop for SessionGuard {
+    fn drop(&mut self) {
+        if let Some(session) = self.session.take() {
+            self.orphans
+                .lock()
+                .expect("orphan queue poisoned")
+                .push(session);
         }
-        Err(error) => OpenProbeOutcome::Failed {
-            error: error.to_string(),
-            path_exists: book_path::exists(path),
-        },
     }
 }
 
-/// Holds the worker result for the current single-open operation.
+pub(crate) struct PendingOpen {
+    pub(crate) request: BookId,
+    result: Result<OpenedBook, BackendError>,
+    guard: SessionGuard,
+}
+impl PendingOpen {
+    pub(crate) fn into_result(mut self) -> (BookId, Result<OpenedBook, BackendError>) {
+        self.guard.session = None;
+        (self.request, self.result)
+    }
+}
+
 pub(crate) struct OpenController {
-    generation: Generation<Option<(PathBuf, OpenProbeOutcome)>>,
+    backend: Rc<dyn BookBackend>,
+    generation: Generation<Option<PendingOpen>>,
+    orphans: Arc<Mutex<Vec<SessionId>>>,
 }
-
 impl OpenController {
-    /// Build the controller once during UI setup.
-    pub(crate) fn new() -> Self {
+    pub(crate) fn new(backend: Rc<dyn BookBackend>) -> Self {
         Self {
+            backend,
             generation: Generation::new(),
+            orphans: Arc::default(),
         }
     }
-
-    /// Probe `path` on a rayon worker and marshal one epoch-guarded finalize
-    /// callback back to the Slint event loop.
+    fn close_orphans(&self) {
+        let sessions = std::mem::take(&mut *self.orphans.lock().expect("orphan queue poisoned"));
+        for session in sessions {
+            self.backend.close(session);
+        }
+    }
     pub(crate) fn start(
         &self,
-        ui_weak: slint::Weak<ViewerWindow>,
-        path: PathBuf,
+        weak: slint::Weak<ViewerWindow>,
+        request: BookId,
         policy: ArchivePolicy,
+        cache: CacheConfig,
     ) {
+        self.close_orphans();
         let ticket = self.generation.begin();
-        worker::spawn(move || {
-            let outcome = probe_open(&path, policy);
-            ticket.deliver(|slot| *slot = Some((path, outcome)));
-            let id = ticket.id();
-            ticket.marshal(ui_weak, "open-finalize", move |ui| {
-                ui.invoke_open_finalize(id as i32);
-            });
-        });
+        let orphans = self.orphans.clone();
+        let id = request.clone();
+        self.backend.open(
+            &id,
+            policy,
+            cache,
+            Box::new(move |result| {
+                let guard = SessionGuard {
+                    session: result.as_ref().ok().map(|opened| opened.session),
+                    orphans,
+                };
+                let pending = PendingOpen {
+                    request,
+                    result,
+                    guard,
+                };
+                if ticket.deliver(|slot| *slot = Some(pending)) {
+                    if let Some(ui) = weak.upgrade() {
+                        ui.invoke_open_finalize(ticket.id() as i32);
+                    }
+                }
+            }),
+        );
     }
-
-    /// Drain the current generation's worker result exactly once. A stale
-    /// finalize returns `None` without touching the live generation's slot.
-    pub(crate) fn take_outcome(&self, my_epoch: usize) -> Option<(PathBuf, OpenProbeOutcome)> {
-        self.generation.take(my_epoch).flatten()
+    pub(crate) fn take_outcome(&self, epoch: usize) -> Option<PendingOpen> {
+        self.close_orphans();
+        self.generation.take(epoch).flatten()
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::{Path, PathBuf};
-
-    fn make_book_dir(parent: &Path, name: &str, pages: usize) -> PathBuf {
-        let dir = parent.join(name);
-        std::fs::create_dir_all(&dir).expect("create book dir");
-        for page in 0..pages {
-            std::fs::write(dir.join(format!("page{page:03}.png")), []).expect("write fixture page");
-        }
-        dir
-    }
+    use crate::backend::fake::{Call, FakeBackend};
 
     #[test]
-    fn probe_open_opens_a_real_folder() {
-        let root = tempfile::tempdir().expect("tempdir");
-        let path = make_book_dir(root.path(), "book", 3);
-
-        let OpenProbeOutcome::Opened(probe) =
-            probe_open(&path, gashuu_core::ArchivePolicy::default())
-        else {
-            panic!("a real folder must open");
-        };
-
-        assert_eq!(probe.source.list_pages().len(), 3);
-        assert_eq!(probe.skipped, 0);
+    fn superseded_open_session_is_closed() {
+        let backend = FakeBackend::new();
+        let ctrl = OpenController::new(backend.clone());
+        let a = BookId::new("a");
+        let b = BookId::new("b");
+        for id in [&a, &b] {
+            ctrl.start(
+                Default::default(),
+                id.clone(),
+                ArchivePolicy::default(),
+                CacheConfig::default(),
+            );
+        }
+        let old = backend.new_session();
+        let current = backend.new_session();
+        for (session, id, page_count) in [(old, a, 3), (current, b.clone(), 0)] {
+            backend.complete_open(
+                0,
+                Ok(OpenedBook {
+                    session,
+                    id,
+                    page_count,
+                    skipped: 0,
+                    listing_truncated: false,
+                    is_dir: true,
+                }),
+            );
+        }
+        assert!(ctrl.take_outcome(1).is_none());
+        let (request, result) = ctrl.take_outcome(2).unwrap().into_result();
+        let opened = result.unwrap();
+        assert_eq!(request, b);
+        assert_eq!(opened.session, current);
+        assert_eq!(opened.page_count, 0);
+        assert!(ctrl.take_outcome(2).is_none());
         assert_eq!(
-            book_path::locate(&probe.id),
-            std::fs::canonicalize(&path).expect("canonical fixture")
+            backend
+                .calls()
+                .into_iter()
+                .filter(|c| matches!(c, Call::Close(_)))
+                .collect::<Vec<_>>(),
+            [Call::Close(old)]
         );
-        assert!(probe.is_dir);
     }
-
-    #[test]
-    fn probe_open_keeps_empty_folder_for_apply_classification() {
-        let root = tempfile::tempdir().expect("tempdir");
-        let path = make_book_dir(root.path(), "empty", 0);
-
-        let OpenProbeOutcome::Opened(probe) =
-            probe_open(&path, gashuu_core::ArchivePolicy::default())
-        else {
-            panic!("an empty folder opens cleanly");
-        };
-
-        assert!(probe.source.list_pages().is_empty());
-        assert_eq!(probe.skipped, 0);
-        assert!(probe.is_dir);
-    }
-
-    #[test]
-    fn probe_open_reports_missing_path_without_a_ui_thread_stat() {
-        let root = tempfile::tempdir().expect("tempdir");
-        let missing = root.path().join("missing");
-
-        match probe_open(&missing, gashuu_core::ArchivePolicy::default()) {
-            OpenProbeOutcome::Failed { error, path_exists } => {
-                assert!(!error.is_empty());
-                assert!(!path_exists);
-            }
-            OpenProbeOutcome::Opened(_) => panic!("a missing path must fail"),
-        }
-    }
-
     #[test]
     fn take_outcome_drops_superseded_and_drains_current_once() {
-        let controller = OpenController::new();
-        let old = controller.generation.begin();
-        old.deliver(|slot| {
-            *slot = Some((
-                PathBuf::from("/old"),
-                OpenProbeOutcome::Failed {
-                    error: "old".into(),
-                    path_exists: false,
-                },
-            ));
-        });
+        let backend = FakeBackend::new();
+        let ctrl = OpenController::new(backend.clone());
+        let old = backend.new_session();
+        let first = BookId::new("first");
+        ctrl.start(
+            Default::default(),
+            first.clone(),
+            Default::default(),
+            Default::default(),
+        );
+        backend.complete_open(
+            0,
+            Ok(OpenedBook {
+                session: old,
+                id: first,
+                page_count: 3,
+                skipped: 0,
+                listing_truncated: false,
+                is_dir: true,
+            }),
+        );
+        let next = BookId::new("next");
+        ctrl.start(
+            Default::default(),
+            next.clone(),
+            Default::default(),
+            Default::default(),
+        );
+        let session = backend.new_session();
+        backend.complete_open(
+            0,
+            Ok(OpenedBook {
+                session,
+                id: next.clone(),
+                page_count: 5,
+                skipped: 1,
+                listing_truncated: true,
+                is_dir: false,
+            }),
+        );
+        assert!(ctrl.take_outcome(1).is_none());
+        let (request, result) = ctrl.take_outcome(2).unwrap().into_result();
+        let opened = result.unwrap();
+        assert_eq!(request, next);
+        assert_eq!(opened.id, next);
+        assert_eq!(opened.session, session);
+        assert_eq!(opened.page_count, 5);
+        assert_eq!(opened.skipped, 1);
+        assert!(opened.listing_truncated);
+        assert!(ctrl.take_outcome(2).is_none());
+        assert_eq!(
+            backend
+                .calls()
+                .iter()
+                .filter(|c| matches!(c,Call::Close(s) if *s==old))
+                .count(),
+            1
+        );
+    }
 
-        let current = controller.generation.begin();
-        assert!(controller.take_outcome(old.id()).is_none());
-
-        current.deliver(|slot| {
-            *slot = Some((
-                PathBuf::from("/new"),
-                OpenProbeOutcome::Failed {
-                    error: "new".into(),
-                    path_exists: true,
-                },
-            ));
-        });
-        let (path, outcome) = controller
-            .take_outcome(current.id())
-            .expect("current outcome");
-        assert_eq!(path, PathBuf::from("/new"));
+    #[test]
+    fn missing_open_preserves_backend_error() {
+        let backend = FakeBackend::new();
+        let ctrl = OpenController::new(backend.clone());
+        ctrl.start(
+            Default::default(),
+            BookId::new("missing"),
+            Default::default(),
+            Default::default(),
+        );
+        backend.complete_open(
+            0,
+            Err(BackendError::Missing {
+                detail: "gone".into(),
+            }),
+        );
         assert!(matches!(
-            outcome,
-            OpenProbeOutcome::Failed {
-                path_exists: true,
-                ..
-            }
+            ctrl.take_outcome(1).unwrap().into_result().1,
+            Err(BackendError::Missing { .. })
         ));
-        assert!(controller.take_outcome(current.id()).is_none());
     }
 }

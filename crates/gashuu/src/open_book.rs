@@ -1,30 +1,30 @@
-//! The "open a book" application use case, extracted out of `main.rs`.
-//!
-//! [`OpenBookUseCase`] bundles the headless collaborators the open path
-//! coordinates as fields, so the open sites
-//! call [`OpenBookUseCase::apply_probed`] with the per-call `path` plus the
-//! already-completed probe (`skipped_detail` is derived internally);
-//! [`OpenBookUseCase::run`] is the synchronous `probe_open` + `apply_probed`
-//! composition. Both are fully headless — they return an
-//! [`OpenOutcome`] and `main.rs`'s `finalize_open` applies every UI effect
-//! (status text, viewer refresh, carousel rebuild, thumbnail launch), the same
-//! headless-use-case + UI-finalize split as `RemoveBooksUseCase` / `finalize_remove`.
+//! Applies a backend open result, persists the outgoing and incoming book,
+//! and returns notices for the viewer to display.
 
 use std::cell::RefCell;
 use std::num::NonZeroUsize;
 use std::path::Path;
 use std::rc::Rc;
 
-use gashuu_core::{BookId, CoreError, Library, Settings, ThumbnailCache};
+use gashuu_core::{BookId, CoreError, Library, Settings};
 
+use crate::backend::{BackendError, BookBackend, OpenedBook};
+#[cfg(test)]
 use crate::book_path;
-use crate::cover_loader::purge_cover;
 use crate::dialog_session::DialogSession;
-use crate::open_controller::{probe_open, OpenProbeOutcome};
+use crate::remove_books::purge_empty_cover;
+
 use crate::view_sync::LeavePointService;
 use crate::viewer_state::ViewerState;
 use crate::viewport::ViewportState;
 use crate::ViewModeRoute;
+
+#[cfg(test)]
+pub(crate) fn opened(path: &Path) -> (BookId, Result<OpenedBook, BackendError>) {
+    let id = book_path::request_id(path).unwrap();
+    let result = OpenedBook::open_for_test(&id, Default::default(), Default::default());
+    (id, result)
+}
 
 type SaveLibrary = Box<dyn Fn(&Library) -> Result<(), CoreError>>;
 type SaveSettings = Box<dyn Fn(&Settings) -> Result<(), CoreError>>;
@@ -47,7 +47,7 @@ pub(crate) struct NoticesContent {
     pub(crate) library_save_err: Option<String>,
 }
 
-/// Result of [`OpenBookUseCase::apply_probed`]. Carries enough information for
+/// Result of [`OpenBookUseCase::apply_opened`]. Carries enough information for
 /// `main.rs` to finalize the UI without any i18n logic in this module.
 #[derive(Debug)]
 pub(crate) enum OpenOutcome {
@@ -92,8 +92,8 @@ pub(crate) enum SkippedDetail {
 }
 
 /// Coordinates the "open a book" use case. The headless collaborators it
-/// threads are fields, so the open sites call [`OpenBookUseCase::apply_probed`]
-/// with just a `path` and its probe; `main.rs`'s `finalize_open` applies the UI
+/// threads are fields, so the open sites call [`OpenBookUseCase::apply_opened`]
+/// with the requested ID and the backend result; `main.rs`'s `finalize_open` applies the UI
 /// effects (symmetry with `RemoveBooksUseCase`).
 pub(crate) struct OpenBookUseCase {
     state: Rc<RefCell<ViewerState>>,
@@ -104,6 +104,7 @@ pub(crate) struct OpenBookUseCase {
     leave_point: Rc<LeavePointService>,
     save_library: SaveLibrary,
     save_settings: SaveSettings,
+    backend: Rc<dyn BookBackend>,
 }
 
 impl OpenBookUseCase {
@@ -122,6 +123,7 @@ impl OpenBookUseCase {
         leave_point: Rc<LeavePointService>,
         save_library: SaveLibrary,
         save_settings: SaveSettings,
+        backend: Rc<dyn BookBackend>,
     ) -> Self {
         Self {
             state,
@@ -132,36 +134,25 @@ impl OpenBookUseCase {
             leave_point,
             save_library,
             save_settings,
+            backend,
         }
     }
 
-    /// Open `path` and mutate the shared state: write back the previous position,
-    /// open the source, reconcile + save settings (when recent-files tracking is
-    /// on), register + save the library, and resolve the per-book view modes.
-    ///
-    /// Returns [`OpenOutcome::Error`] with a pre-captured error string on failure,
-    /// or [`OpenOutcome::Success`] with neutral [`NoticesContent`] and the
-    /// `count_changed` flag on success. `main.rs`'s `finalize_open` applies every
-    /// UI effect (viewer refresh, carousel rebuild, thumbnail launch, status notices).
-    ///
-    /// The `skipped_detail` suffix is DERIVED internally from `path`
-    /// ([`SkippedDetail::None`] for folders, [`SkippedDetail::Archive`] for
-    /// archives), not passed by the caller.
-    ///
-    /// The retained SYNCHRONOUS composition of [`probe_open`] +
-    /// [`OpenBookUseCase::apply_probed`]: it blocks on the probe, so the Slint
-    /// open sites dispatch through `OpenController` instead and only
-    /// `cfg(test)` callers remain (hence `#[allow(dead_code)]`, the same
-    /// convention as `ViewerState::open_path`). It stays the single entry point
-    /// for any future non-UI caller and pins that the split composes back to
-    /// the pre-split behaviour.
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub(crate) fn run(&self, path: &Path) -> OpenOutcome {
-        let policy = self.settings.borrow().archive_policy();
-        self.apply_probed(path, probe_open(path, policy))
+        let id = match book_path::request_id(path) {
+            Ok(id) => id,
+            Err(e) => return OpenOutcome::Error(e.to_string()),
+        };
+        let opened = OpenedBook::open_for_test(
+            &id,
+            self.settings.borrow().archive_policy(),
+            self.state.borrow().cache_config(),
+        );
+        self.apply_opened(&id, opened)
     }
 
-    /// Apply a completed read-only probe on the UI thread. All shared-state
+    /// Apply a completed backend open on the UI thread. All shared-state
     /// mutation and persistence remain in this half.
     ///
     /// The body is pure ORCHESTRATION: one named private step per responsibility,
@@ -172,11 +163,16 @@ impl OpenBookUseCase {
     /// [`Self::persist_registered`] (library write 2 on the success path). Moving
     /// a step across the empty-book bail-out changes which side effects a zero-page
     /// source triggers, which is spec-pinned by ADR-0009.
-    pub(crate) fn apply_probed(&self, path: &Path, probe: OpenProbeOutcome) -> OpenOutcome {
+    pub(crate) fn apply_opened(
+        &self,
+        request: &BookId,
+        result: Result<OpenedBook, BackendError>,
+    ) -> OpenOutcome {
+        let path = Path::new(request.as_str());
         // Preserve the result so the live UI can report a leave-point failure even
         // after the new book opens successfully.
         let leave_save = self.persist_outgoing();
-        let is_dir = match self.install(probe, path) {
+        let is_dir = match self.install(result, path) {
             Ok(is_dir) => is_dir,
             Err(error) => return OpenOutcome::Error(error),
         };
@@ -234,30 +230,25 @@ impl OpenBookUseCase {
             })
     }
 
-    /// Step 2 — discriminate the probe result and install the source. Returns the
-    /// probe's `is_dir` (which decides the skipped-entries detail suffix) or the
+    /// Step 2 — install the opened session. Returns the
+    /// backend's `is_dir` (which decides the skipped-entries detail suffix) or the
     /// pre-captured failure message. Nothing is persisted here: the recents push
     /// and the register save are deliberately deferred past the empty-book check.
-    fn install(&self, probe: OpenProbeOutcome, path: &Path) -> Result<bool, String> {
-        match probe {
-            OpenProbeOutcome::Opened(probe) => {
-                let is_dir = probe.is_dir;
-                self.state.borrow_mut().install_opened(
-                    probe.source,
-                    probe.skipped,
-                    probe.truncated,
-                    probe.id,
-                    probe.title,
-                );
-                self.dialog_session.borrow_mut().clear_pending_inherit();
-                tracing::info!(path = %path.display(), "opened source");
-                Ok(is_dir)
-            }
-            OpenProbeOutcome::Failed { error, .. } => {
-                tracing::error!(error = %error, "failed to open source");
-                Err(error)
-            }
+    fn install(
+        &self,
+        result: Result<OpenedBook, BackendError>,
+        path: &Path,
+    ) -> Result<bool, String> {
+        let opened = result.map_err(|error| {
+            tracing::error!(error = %error, "failed to open source");
+            error.to_string()
+        })?;
+        if let Some(previous) = self.state.borrow_mut().install_opened(&opened) {
+            self.backend.close(previous);
         }
+        self.dialog_session.borrow_mut().clear_pending_inherit();
+        tracing::info!(path = %path.display(), "opened source");
+        Ok(opened.is_dir)
     }
 
     /// Step 3 — library write 2 + cache write, then an early return (ADR-0009).
@@ -271,8 +262,13 @@ impl OpenBookUseCase {
     /// modes. The OUTGOING book's position/override were already persisted by
     /// [`Self::persist_outgoing`], so closing here loses nothing.
     fn reject_empty(&self, id: &BookId) -> OpenOutcome {
-        let removal = remove_empty_book(&self.library, id, |library| (self.save_library)(library));
-        self.state.borrow_mut().close();
+        let fallback = self.state.borrow().open_title().map(str::to_owned);
+        let removal = remove_empty_book(&self.library, id, fallback, |library| {
+            (self.save_library)(library)
+        });
+        if let Some(session) = self.state.borrow_mut().close() {
+            self.backend.close(session);
+        }
         OpenOutcome::EmptyBookRejected {
             title: removal.title,
             removed: removal.removed,
@@ -409,12 +405,10 @@ pub(crate) struct EmptyBookOutcome {
 /// The display title to show for `path`: the stored `Book::title` when the book
 /// is in the library, else the core path-derivation (`gashuu_core::display_title`).
 /// Used by the failed-open status message.
-pub(crate) fn book_display_title(lib: &Library, path: &Path) -> String {
-    BookId::from_canonical_path(path)
-        .ok()
-        .and_then(|id| lib.book(&id))
+pub(crate) fn book_display_title(lib: &Library, id: &BookId) -> String {
+    lib.book(id)
         .map(|book| book.title().to_owned())
-        .unwrap_or_else(|| gashuu_core::display_title(path, book_path::is_dir(path)))
+        .unwrap_or_else(|| gashuu_core::display_title(Path::new(id.as_str()), false))
 }
 
 /// The single home of the empty-book removal transaction: capture the display
@@ -426,19 +420,15 @@ pub(crate) fn book_display_title(lib: &Library, path: &Path) -> String {
 pub(crate) fn remove_empty_book(
     library: &RefCell<Library>,
     id: &BookId,
+    fallback: Option<String>,
     save: impl FnOnce(&Library) -> Result<(), CoreError>,
 ) -> EmptyBookOutcome {
     // The `borrow_mut` is confined to this statement and drops at the `;`.
-    let removal = remove_empty_book_with(&mut library.borrow_mut(), id, save);
+    let removal = remove_empty_book_with(&mut library.borrow_mut(), id, fallback, save);
     // Best-effort purge OUTSIDE the seam so the transaction stays headless-testable.
     // mtime drift / missing file is expected (only warned); cache-construction failure skips it.
     if removal.removed {
-        match ThumbnailCache::new() {
-            Ok(cache) => purge_cover(&cache, &book_path::locate(id)),
-            Err(e) => {
-                tracing::warn!(error = %e, "cover cache unavailable; skipping cover purge on empty-book removal");
-            }
-        }
+        purge_empty_cover(id);
     }
     removal
 }
@@ -453,6 +443,7 @@ pub(crate) fn remove_empty_book(
 fn remove_empty_book_with(
     lib: &mut Library,
     id: &BookId,
+    fallback: Option<String>,
     save: impl FnOnce(&Library) -> Result<(), CoreError>,
 ) -> EmptyBookOutcome {
     // Prefer the stored Book's title; fall back to the core path-derivation
@@ -460,10 +451,8 @@ fn remove_empty_book_with(
     let title = lib
         .book(id)
         .map(|book| book.title().to_owned())
-        .unwrap_or_else(|| {
-            let path = book_path::locate(id);
-            gashuu_core::display_title(&path, book_path::is_dir(&path))
-        });
+        .or(fallback)
+        .unwrap_or_else(|| gashuu_core::display_title(Path::new(id.as_str()), false));
     // `Library::remove` is idempotent and returns false when the book is
     // absent; it also clears `last_opened` when it pointed at this book.
     let removed = lib.remove(id);
@@ -492,8 +481,7 @@ mod tests {
     use super::*;
     use crate::view_sync::current_runtime_view;
     use gashuu_core::{
-        ArchivePolicy, CoverMode, FitMode, LibraryStore, ReadingDirection, SettingsStore,
-        SpreadMode, ViewOverride,
+        CoverMode, FitMode, LibraryStore, ReadingDirection, SettingsStore, SpreadMode, ViewOverride,
     };
     use std::cell::Cell;
     use std::path::PathBuf;
@@ -714,7 +702,7 @@ mod tests {
         let path = BookId::new("/manga/Empty Vol.cbz");
         lib.add(path.clone(), "Empty Vol".into());
         let saves = std::cell::Cell::new(0);
-        let removal = remove_empty_book_with(&mut lib, &path, |_| {
+        let removal = remove_empty_book_with(&mut lib, &path, None, |_| {
             saves.set(saves.get() + 1);
             Ok(())
         });
@@ -729,7 +717,7 @@ mod tests {
     fn remove_empty_book_absent_book_skips_save_and_derives_title() {
         let mut lib = Library::new();
         let path = BookId::new("/manga/Never Added.cbz");
-        let removal = remove_empty_book_with(&mut lib, &path, |_| -> Result<(), CoreError> {
+        let removal = remove_empty_book_with(&mut lib, &path, None, |_| -> Result<(), CoreError> {
             panic!("save must not be attempted when nothing was removed")
         });
         assert!(!removal.removed);
@@ -746,7 +734,7 @@ mod tests {
         let mut lib = Library::new();
         let path = BookId::new("/manga/Empty.cbz");
         lib.add(path.clone(), "Empty".into());
-        let removal = remove_empty_book_with(&mut lib, &path, |_| Err(err()));
+        let removal = remove_empty_book_with(&mut lib, &path, None, |_| Err(err()));
         assert!(
             removal.removed,
             "the in-memory removal stands on save failure"
@@ -878,6 +866,7 @@ mod tests {
             leave_point,
             Box::new(save_library),
             Box::new(save_settings),
+            crate::backend::fake::FakeBackend::new(),
         );
         UseCaseParts {
             use_case,
@@ -886,6 +875,67 @@ mod tests {
             settings,
             dialog_session,
         }
+    }
+
+    #[test]
+    fn opening_new_book_closes_previous_session() {
+        let (mut uc, state) = use_case_with_saves(
+            Settings::default(),
+            Rc::new(RefCell::new(Library::new())),
+            |_| Ok(()),
+            |_| Ok(()),
+        );
+        let backend = crate::backend::fake::FakeBackend::new();
+        uc.backend = backend.clone();
+        state.borrow_mut().install_test_book(2);
+        let old = state.borrow().session().unwrap();
+        let session = backend.new_session();
+        let id = BookId::new("/book");
+        let opened = OpenedBook {
+            session,
+            id: id.clone(),
+            page_count: 2,
+            skipped: 0,
+            listing_truncated: false,
+            is_dir: true,
+        };
+        assert!(matches!(
+            uc.apply_opened(&id, Ok(opened)),
+            OpenOutcome::Success { .. }
+        ));
+        assert_eq!(state.borrow().session(), Some(session));
+        assert_eq!(backend.calls(), [crate::backend::fake::Call::Close(old)]);
+    }
+
+    #[test]
+    fn empty_book_rejection_closes_its_session() {
+        let (mut uc, state) = use_case_with_saves(
+            Settings::default(),
+            Rc::new(RefCell::new(Library::new())),
+            |_| Ok(()),
+            |_| Ok(()),
+        );
+        let backend = crate::backend::fake::FakeBackend::new();
+        uc.backend = backend.clone();
+        let session = backend.new_session();
+        let id = BookId::new("/empty");
+        let opened = OpenedBook {
+            session,
+            id: id.clone(),
+            page_count: 0,
+            skipped: 0,
+            listing_truncated: false,
+            is_dir: true,
+        };
+        assert!(matches!(
+            uc.apply_opened(&id, Ok(opened)),
+            OpenOutcome::EmptyBookRejected { .. }
+        ));
+        assert_eq!(state.borrow().session(), None);
+        assert_eq!(
+            backend.calls(),
+            [crate::backend::fake::Call::Close(session)]
+        );
     }
 
     /// Create a real folder source using the same zero-byte image fixtures as
@@ -900,7 +950,7 @@ mod tests {
         source
     }
 
-    /// The behaviour-preservation barrier for the `apply_probed` split: the split
+    /// The behaviour-preservation barrier for the `apply_opened` split: the split
     /// may not add, drop, or move a disk write. Counts BOTH effects on all five
     /// paths at once, so moving a step across the empty-book early return (the one
     /// mistake the split could plausibly make) shows up as a changed count rather
@@ -915,7 +965,7 @@ mod tests {
     /// Rows collect into a `Vec` and assert once, so one broken path cannot mask
     /// the other four.
     #[test]
-    fn apply_probed_write_count_is_unchanged() {
+    fn apply_opened_write_count_is_unchanged() {
         #[derive(Clone, Copy)]
         enum Scenario {
             Failed,
@@ -988,14 +1038,13 @@ mod tests {
                 },
             );
             let probe = match scenario {
-                Scenario::Failed => OpenProbeOutcome::Failed {
-                    error: "unavailable".to_string(),
-                    path_exists: false,
-                },
-                _ => probe_open(&source, ArchivePolicy::default()),
+                Scenario::Failed => Err(BackendError::Other {
+                    detail: "unavailable".to_string(),
+                }),
+                _ => opened(&source).1,
             };
 
-            let _ = use_case.apply_probed(&source, probe);
+            let _ = use_case.apply_opened(&book_path::request_id(&source).unwrap(), probe);
             let actual = (library_writes.get(), settings_writes.get());
             if actual != expected {
                 failures.push(format!(
@@ -1011,7 +1060,7 @@ mod tests {
         );
     }
 
-    /// Step 3 in isolation, which the whole-`apply_probed` tests cannot reach
+    /// Step 3 in isolation, which the whole-`apply_opened` tests cannot reach
     /// separately: the stored `Book`'s title wins over the path derivation, the
     /// save runs ONLY when something was actually removed, and the viewer is
     /// closed either way so a zero-page source never stays mounted.
@@ -1135,7 +1184,7 @@ mod tests {
         assert_eq!(settings_writes.get(), 1);
     }
 
-    /// Regression guard for #534: `apply_probed` used to `jump_to` the stored
+    /// Regression guard for #534: `apply_opened` used to `jump_to` the stored
     /// resume BEFORE installing the book's own view modes, so the target was
     /// normalised under the OUTGOING book's pairing and then re-normalised — a
     /// composition that is not commutative across modes, landing the reader one
@@ -1251,10 +1300,10 @@ mod tests {
                 |_| Ok(()),
                 |_| panic!("settings save must not be attempted"),
             );
-            let probe = crate::open_controller::probe_open(&source, ArchivePolicy::default());
+            let (request, probe) = opened(&source);
 
             assert!(matches!(
-                use_case.apply_probed(&source, probe),
+                use_case.apply_opened(&request, probe),
                 OpenOutcome::Success { .. }
             ));
 
@@ -1305,10 +1354,10 @@ mod tests {
             |_| Ok(()),
             |_| panic!("settings save must not be attempted"),
         );
-        let probe = crate::open_controller::probe_open(&source, ArchivePolicy::default());
+        let (request, probe) = opened(&source);
 
         assert!(matches!(
-            use_case.apply_probed(&source, probe),
+            use_case.apply_opened(&request, probe),
             OpenOutcome::Success { .. }
         ));
 
@@ -1344,10 +1393,10 @@ mod tests {
             |_| Ok(()),
             |_| panic!("settings save must not be attempted"),
         );
-        let probe = crate::open_controller::probe_open(&source, ArchivePolicy::default());
+        let (request, probe) = opened(&source);
 
         assert!(matches!(
-            use_case.apply_probed(&source, probe),
+            use_case.apply_opened(&request, probe),
             OpenOutcome::Success { .. }
         ));
 
@@ -1355,7 +1404,7 @@ mod tests {
     }
 
     #[test]
-    fn apply_probed_failed_maps_to_error_and_leaves_state() {
+    fn apply_opened_failed_maps_to_error_and_leaves_state() {
         let root = tempfile::tempdir().expect("tempdir");
         let source = make_book_dir(root.path(), 2);
         let canonical = book_path::identify(&source, true).unwrap().0;
@@ -1366,25 +1415,13 @@ mod tests {
             |_| Ok(()),
             |_| panic!("settings save must not be attempted"),
         );
-        let crate::open_controller::OpenProbeOutcome::Opened(probe) =
-            crate::open_controller::probe_open(&source, ArchivePolicy::default())
-        else {
-            panic!("fixture must probe");
-        };
-        state.borrow_mut().install_opened(
-            probe.source,
-            probe.skipped,
-            probe.truncated,
-            probe.id,
-            probe.title,
-        );
+        state.borrow_mut().open_path(&source).unwrap();
 
-        let outcome = use_case.apply_probed(
-            Path::new("/missing"),
-            crate::open_controller::OpenProbeOutcome::Failed {
-                error: "unavailable".into(),
-                path_exists: false,
-            },
+        let outcome = use_case.apply_opened(
+            &book_path::request_id(Path::new("/missing")).unwrap(),
+            Err(BackendError::Other {
+                detail: "unavailable".into(),
+            }),
         );
 
         assert!(matches!(outcome, OpenOutcome::Error(ref e) if e == "unavailable"));
@@ -1393,7 +1430,7 @@ mod tests {
     }
 
     #[test]
-    fn apply_probed_empty_probe_rejects_and_closes() {
+    fn apply_opened_empty_probe_rejects_and_closes() {
         let root = tempfile::tempdir().expect("tempdir");
         let library = Rc::new(RefCell::new(Library::new()));
         let (use_case, state) = use_case_with_saves(
@@ -1402,21 +1439,21 @@ mod tests {
             |_| Ok(()),
             |_| panic!("settings save must not be attempted"),
         );
-        let probe = crate::open_controller::probe_open(root.path(), ArchivePolicy::default());
+        let (request, probe) = opened(root.path());
 
-        let outcome = use_case.apply_probed(root.path(), probe);
+        let outcome = use_case.apply_opened(&request, probe);
 
         assert!(matches!(
             outcome,
             OpenOutcome::EmptyBookRejected { removed: false, .. }
         ));
         assert!(state.borrow().open_book().is_none());
-        assert!(state.borrow().current_source().is_none());
+        assert!(state.borrow().session().is_none());
         assert!(library.borrow().books().is_empty());
     }
 
     #[test]
-    fn apply_probed_saves_leave_point_before_registering_new_book() {
+    fn apply_opened_saves_leave_point_before_registering_new_book() {
         let root = tempfile::tempdir().expect("tempdir");
         let book_a_parent = root.path().join("book-a-parent");
         let book_b_parent = root.path().join("book-b-parent");
@@ -1450,10 +1487,10 @@ mod tests {
         assert!(matches!(use_case.run(&book_a), OpenOutcome::Success { .. }));
         saves.borrow_mut().clear();
         assert!(state.borrow_mut().jump_to(2));
-        let probe = crate::open_controller::probe_open(&book_b, ArchivePolicy::default());
+        let (request, probe) = opened(&book_b);
 
         assert!(matches!(
-            use_case.apply_probed(&book_b, probe),
+            use_case.apply_opened(&request, probe),
             OpenOutcome::Success { .. }
         ));
 
@@ -1546,7 +1583,7 @@ mod tests {
         let state = state.borrow();
         assert!(state.open_book().is_none());
         assert_eq!(state.page_count(), 0);
-        assert!(state.current_source().is_none());
+        assert!(state.session().is_none());
     }
 
     #[test]
@@ -1810,11 +1847,9 @@ mod tests {
 
         // Open A, then reset it to global — the runtime moves off A's override and
         // the session records the installed (global) view as the pending intent.
+        let (request, result) = opened(&book_a);
         assert!(matches!(
-            parts.use_case.apply_probed(
-                &book_a,
-                crate::open_controller::probe_open(&book_a, ArchivePolicy::default()),
-            ),
+            parts.use_case.apply_opened(&request, result),
             OpenOutcome::Success { .. }
         ));
         session
@@ -1827,11 +1862,9 @@ mod tests {
             "fixture must arm the pending intent before opening the next book"
         );
 
+        let (request, result) = opened(&book_b);
         assert!(matches!(
-            parts.use_case.apply_probed(
-                &book_b,
-                crate::open_controller::probe_open(&book_b, ArchivePolicy::default()),
-            ),
+            parts.use_case.apply_opened(&request, result),
             OpenOutcome::Success { .. }
         ));
 
