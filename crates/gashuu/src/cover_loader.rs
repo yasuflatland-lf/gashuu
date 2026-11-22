@@ -1,19 +1,10 @@
 //! Book-cover loading controller for the library carousel.
 //!
-//! Each book's cover is the thumbnail of its page 0 (see core `generate_cover`).
-//! `start` is DISPATCH-ONLY on the UI thread: every request becomes one
-//! fire-and-forget rayon job, and the worker does ALL the per-book I/O — derive
-//! `cache_key(path, mtime_secs, max_side)`, try the disk cache (a hit reads and
-//! decodes the cached PNG on the worker), or on a miss open the source via
-//! `ArchiveLoader`, call `generate_cover`, and store the result with
-//! `ThumbnailCache::put`. Either way the cover is marshalled back to the row via
-//! `invoke_from_event_loop`. Hit and miss share this single worker path so a
-//! large library can never freeze the event loop (a 500-book warm start used to
-//! decode 500 cached PNGs inline on the UI thread). A PERMANENT failure (open
-//! or decode error) is marshalled too: `marshal_failed` flips the row's
-//! `cover_failed` flag so the card renders the shared failed treatment instead
-//! of an indefinite loading placeholder (issue 144 — parity with the page
-//! strip's failed cell).
+//! A book's cover is a thumbnail of page zero. Desktop dispatches each request
+//! to a rayon worker, which checks the memory and disk caches before opening the
+//! book. The browser uses the memory cache and awaits one page decode at a time
+//! on the Slint event loop. Both paths reuse the open source for the page count
+//! and marshal the cover, empty book, or load failure to the carousel.
 //!
 //! Correctness across library refreshes is the SAME epoch + cancel double-guard
 //! as `ThumbnailController` (see `thumbnail_strip.rs`): `start` bumps an
@@ -31,19 +22,25 @@
 
 use crate::carousel::update_carousel_row;
 use crate::page_count_prefetch::{self, PageCountPrefetch, ResolvedCount};
+#[cfg(target_arch = "wasm32")]
+use crate::page_decode::{decode_cover, PageDecoder};
 use crate::to_slint_image;
 use crate::ui_marshal::marshal_to_ui;
-use crate::{book_path, worker, CarouselItem, LibraryStoreHandle, ViewerWindow};
 #[cfg(not(target_arch = "wasm32"))]
-use gashuu_core::thumbnail_cache::source_mtime_secs;
+use crate::worker;
+use crate::{book_path, CarouselItem, LibraryStoreHandle, ViewerWindow};
 use gashuu_core::{
-    cache_key, generate_cover, ArchivePolicy, DecodedImage, Library, ThumbnailCache,
+    cache_key, ArchivePolicy, CoreError, DecodedImage, Library, PageSource, ThumbnailCache,
 };
+#[cfg(not(target_arch = "wasm32"))]
+use gashuu_core::{generate_cover, thumbnail_cache::source_mtime_secs};
 use lru::LruCache;
 use slint::{Model, VecModel};
 use std::cell::RefCell;
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
+#[cfg(target_arch = "wasm32")]
+use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering::Relaxed};
 use std::sync::{Arc, Mutex};
 
@@ -248,8 +245,11 @@ pub struct CoverController {
     /// `Arc<Mutex<_>>` because rayon workers share it; the lock is held only around
     /// `get`/`insert`, never across a decode or any I/O. See [`CoverMemCache`].
     mem: Arc<Mutex<CoverMemCache>>,
+    #[cfg(target_arch = "wasm32")]
+    web: WebCoverLoader,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl Default for CoverController {
     fn default() -> Self {
         Self::new()
@@ -437,10 +437,218 @@ fn resolve_count_after_hit(
     }
 }
 
+/// Handles shared by requests for the same carousel model.
+#[derive(Clone)]
+struct CoverGeneration {
+    weak: slint::Weak<ViewerWindow>,
+    epoch: Arc<AtomicUsize>,
+    my_epoch: usize,
+    cancel: Arc<AtomicBool>,
+    pending: Arc<Mutex<Vec<ResolvedCount>>>,
+    mem: Arc<Mutex<CoverMemCache>>,
+}
+
+/// Everything needed to publish a cover once its page has been decoded.
+struct CoverMiss {
+    req: CoverRequest,
+    key: String,
+    count: Option<NonZeroUsize>,
+    #[cfg(not(target_arch = "wasm32"))]
+    disk_cache: ThumbnailCache,
+}
+
+impl CoverGeneration {
+    fn cache_cover(&self, key: String, decoded: DecodedImage) -> Arc<DecodedImage> {
+        let decoded = Arc::new(decoded);
+        if let Ok(mut mem) = self.mem.lock() {
+            mem.insert(key, Arc::clone(&decoded));
+        }
+        decoded
+    }
+
+    fn mark_failed(&self, row: usize) {
+        if !self.cancel.load(Relaxed) {
+            marshal_failed(
+                self.weak.clone(),
+                Arc::clone(&self.epoch),
+                self.my_epoch,
+                row,
+            );
+        }
+    }
+
+    /// Serve a cached cover immediately. Only a miss on a nonempty book needs a decode.
+    fn prepare(&self, req: CoverRequest) -> Option<(CoverMiss, Arc<dyn PageSource>)> {
+        if self.cancel.load(Relaxed) {
+            return None;
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        let disk_cache = ThumbnailCache::new().ok()?;
+        #[cfg(not(target_arch = "wasm32"))]
+        let mtime = source_mtime_secs(&req.path);
+        #[cfg(target_arch = "wasm32")]
+        let mtime = 0;
+        let key = cache_key(&req.path, mtime, CoverCachePolicy::DEFAULT.max_side);
+        let cached = self.mem.lock().ok().and_then(|mut mem| mem.get(&key));
+        #[cfg(not(target_arch = "wasm32"))]
+        let cached = cached.or_else(|| {
+            disk_cache
+                .get(&key)
+                .map(|img| self.cache_cover(key.clone(), img))
+        });
+        if let Some(decoded) = cached {
+            marshal_cover(
+                self.weak.clone(),
+                Arc::clone(&self.epoch),
+                self.my_epoch,
+                req.row,
+                decoded,
+            );
+            if req.needs_count && !self.cancel.load(Relaxed) {
+                resolve_count_after_hit(
+                    &self.pending,
+                    &self.weak,
+                    &self.epoch,
+                    self.my_epoch,
+                    &self.cancel,
+                    req.row,
+                    req.path,
+                );
+            }
+            return None;
+        }
+
+        // TODO(#175-followup): thread ArchivePolicy through CoverRequest / CarouselRefresh.
+        let source = match book_path::open(&req.path, ArchivePolicy::default()) {
+            Ok(source) => source,
+            Err(e) => {
+                tracing::warn!(path = %req.path.display(), error = %e, "cover: open failed");
+                self.mark_failed(req.row);
+                return None;
+            }
+        };
+        let Some(page_count) = NonZeroUsize::new(source.list_pages().len()) else {
+            if !self.cancel.load(Relaxed) {
+                marshal_empty_book(&self.weak, &self.epoch, self.my_epoch, req.path);
+            }
+            return None;
+        };
+        let miss = CoverMiss {
+            count: req.needs_count.then_some(page_count),
+            req,
+            key,
+            #[cfg(not(target_arch = "wasm32"))]
+            disk_cache,
+        };
+        Some((miss, source))
+    }
+
+    fn finish(&self, miss: CoverMiss, result: Result<DecodedImage, CoreError>) {
+        let req = miss.req;
+        let decoded = match result {
+            Ok(decoded) => decoded,
+            Err(e) => {
+                tracing::warn!(path = %req.path.display(), error = %e, "cover: generate failed");
+                self.mark_failed(req.row);
+                return;
+            }
+        };
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Err(e) = miss.disk_cache.put(&miss.key, &decoded) {
+            tracing::warn!(path = %req.path.display(), error = %e, "cover: cache put failed");
+        }
+        let decoded = self.cache_cover(miss.key, decoded);
+        if self.cancel.load(Relaxed) {
+            return;
+        }
+        if let Some(count) = miss.count {
+            page_count_prefetch::push_and_marshal_count(
+                &self.pending,
+                &self.weak,
+                &self.epoch,
+                self.my_epoch,
+                req.row,
+                req.path,
+                count.get(),
+            );
+        }
+        marshal_cover(
+            self.weak.clone(),
+            Arc::clone(&self.epoch),
+            self.my_epoch,
+            req.row,
+            decoded,
+        );
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn spawn_load(&self, req: CoverRequest) {
+        let generation = self.clone();
+        worker::spawn(move || {
+            if let Some((miss, source)) = generation.prepare(req) {
+                let result = generate_cover(source, CoverCachePolicy::DEFAULT.max_side);
+                generation.finish(miss, result);
+            }
+        });
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+struct WebCoverLoader {
+    primary: Rc<dyn PageDecoder>,
+    fallback: Rc<dyn PageDecoder>,
+    task: RefCell<Option<slint::JoinHandle<()>>>,
+}
+
+#[cfg(target_arch = "wasm32")]
+impl WebCoverLoader {
+    fn start(&self, generation: CoverGeneration, requests: Vec<CoverRequest>) {
+        let primary = Rc::clone(&self.primary);
+        let fallback = Rc::clone(&self.fallback);
+        let previous = self.task.take();
+        let task = slint::spawn_local(async move {
+            // A refresh can arrive while the previous native decode is still pending.
+            if let Some(previous) = previous {
+                previous.await;
+            }
+            for req in requests {
+                if generation.cancel.load(Relaxed) {
+                    break;
+                }
+                if let Some((miss, source)) = generation.prepare(req) {
+                    let result = decode_cover(
+                        source,
+                        primary.as_ref(),
+                        fallback.as_ref(),
+                        CoverCachePolicy::DEFAULT.max_side,
+                    )
+                    .await;
+                    generation.finish(miss, result);
+                }
+            }
+        });
+        match task {
+            Ok(task) => *self.task.borrow_mut() = Some(task),
+            Err(error) => {
+                tracing::warn!(%error, "could not schedule cover loading");
+            }
+        }
+    }
+}
+
 impl CoverController {
     /// Build the controller. Call once during UI setup.
-    pub fn new() -> Self {
+    pub fn new(
+        #[cfg(target_arch = "wasm32")] primary: Rc<dyn PageDecoder>,
+        #[cfg(target_arch = "wasm32")] fallback: Rc<dyn PageDecoder>,
+    ) -> Self {
         Self {
+            #[cfg(target_arch = "wasm32")]
+            web: WebCoverLoader {
+                primary,
+                fallback,
+                task: RefCell::default(),
+            },
             epoch: Arc::new(AtomicUsize::new(0)),
             cancel: RefCell::new(Arc::new(AtomicBool::new(false))),
             prefetch: PageCountPrefetch::new(),
@@ -463,153 +671,8 @@ impl CoverController {
         self.prefetch.flush(library, library_store);
     }
 
-    /// Load one cover on a rayon worker — the SINGLE per-book path for cache hit
-    /// and miss alike, so no per-book I/O (mtime `fs::metadata`, cached-PNG read +
-    /// decode, archive open, page-0 decode) ever runs on the UI thread.
-    ///
-    /// Worker flow: derive `cache_key` (reads the mtime HERE, not at dispatch) →
-    /// try the in-memory cover LRU FIRST. MEM HIT → marshal the shared
-    /// `Arc<DecodedImage>` straight to the row (no `fs::read`, no PNG decode),
-    /// then resolve a still-unknown count. Otherwise try the disk cache. DISK HIT
-    /// → the read + decode happens once here, the result is interned into the mem
-    /// LRU (so the next carousel pass is a mem hit), then marshalled. MISS → open
-    /// the source, capture the count from the same open (when needed), generate +
-    /// store the cover (disk + mem), then marshal count and cover; an open or
-    /// decode FAILURE marshals the row failed instead (issue 144). Cancel is
-    /// polled before each heavy step and re-checked before crossing to the UI
-    /// thread; every crossing goes through the epoch-guarded marshal helpers. The
-    /// mem `Mutex` is held only around `get`/`insert`, never across a decode or
-    /// any I/O. Capture rule: only `Send` values enter the closure.
-    fn spawn_load(
-        &self,
-        ui_weak: &slint::Weak<ViewerWindow>,
-        cancel_flag: &Arc<AtomicBool>,
-        my_epoch: usize,
-        req: CoverRequest,
-    ) {
-        let weak = ui_weak.clone();
-        let epoch = Arc::clone(&self.epoch);
-        let cancel = Arc::clone(cancel_flag);
-        let pending = self.prefetch.queue();
-        let mem = Arc::clone(&self.mem);
-        worker::spawn(move || {
-            // Bail before the heavy work if a newer generation superseded us.
-            if cancel.load(Relaxed) {
-                return;
-            }
-            // Reconstruct the cache on this thread: ThumbnailCache isn't Clone and holds only a
-            // dir, so this is cheap and side-steps a !Send/!Clone capture.
-            #[cfg(not(target_arch = "wasm32"))]
-            let (disk_cache, mtime) = match ThumbnailCache::new() {
-                Ok(cache) => (Some(cache), source_mtime_secs(&req.path)),
-                Err(_) => return,
-            };
-            #[cfg(target_arch = "wasm32")]
-            let (disk_cache, mtime): (Option<ThumbnailCache>, i64) = (None, 0);
-            let key = cache_key(&req.path, mtime, CoverCachePolicy::DEFAULT.max_side);
-            // MEM HIT: cover decoded earlier this session — serve the shared Arc straight to the
-            // row (no fs::read/decode). lock().ok() degrades a poisoned mutex to a disk read.
-            let cached = mem.lock().ok().and_then(|mut c| c.get(&key));
-            if let Some(decoded) = cached {
-                marshal_cover(weak.clone(), Arc::clone(&epoch), my_epoch, req.row, decoded);
-                // Cover is shown but the page count may still be unknown —
-                // resolve it with one archive open so the row shows "1 / N".
-                if req.needs_count && !cancel.load(Relaxed) {
-                    resolve_count_after_hit(
-                        &pending, &weak, &epoch, my_epoch, &cancel, req.row, req.path,
-                    );
-                }
-                return;
-            }
-            // DISK HIT: read + decode on THIS worker, intern into the mem LRU so the next
-            // carousel pass is a mem hit, then stream to the row first (the count open may be slow).
-            if let Some(decoded) = disk_cache.as_ref().and_then(|cache| cache.get(&key)) {
-                let decoded = Arc::new(decoded);
-                if let Ok(mut c) = mem.lock() {
-                    c.insert(key.clone(), Arc::clone(&decoded));
-                }
-                marshal_cover(weak.clone(), Arc::clone(&epoch), my_epoch, req.row, decoded);
-                // Cover is cached but the page count may still be unknown —
-                // resolve it with one archive open so the row shows "1 / N".
-                if req.needs_count && !cancel.load(Relaxed) {
-                    resolve_count_after_hit(
-                        &pending, &weak, &epoch, my_epoch, &cancel, req.row, req.path,
-                    );
-                }
-                return;
-            }
-            // MISS: open the source. An unreadable file marks the row FAILED (issue 144) so a
-            // permanent failure is distinct from a loading placeholder; cancel-recheck before crossing.
-            // TODO(#175-followup): use open_with_policy once ArchivePolicy
-            // is threaded through CoverRequest / CarouselRefresh.
-            let open_result = book_path::open(&req.path, ArchivePolicy::default());
-            let source = match open_result {
-                Ok(s) => s,
-                Err(e) => {
-                    tracing::warn!(path = %req.path.display(), error = %e, "cover: open failed");
-                    if !cancel.load(Relaxed) {
-                        marshal_failed(weak, epoch, my_epoch, req.row);
-                    }
-                    return;
-                }
-            };
-            // The same open yields the page count for free; capture it BEFORE `source` moves into
-            // generate_cover. None = opened cleanly but zero pages → signal empty and stop.
-            let Some(page_count) = NonZeroUsize::new(source.list_pages().len()) else {
-                if !cancel.load(Relaxed) {
-                    marshal_empty_book(&weak, &epoch, my_epoch, req.path);
-                }
-                return;
-            };
-            let count = req.needs_count.then_some(page_count.get());
-            let decoded = match generate_cover(source, CoverCachePolicy::DEFAULT.max_side) {
-                Ok(d) => d,
-                Err(e) => {
-                    tracing::warn!(path = %req.path.display(), error = %e, "cover: generate failed");
-                    // Decode failure: same FAILED marking as the open-error arm.
-                    if !cancel.load(Relaxed) {
-                        marshal_failed(weak, epoch, my_epoch, req.row);
-                    }
-                    return;
-                }
-            };
-            // Store to the disk cache so the next launch is a hit. A cache write
-            // failure is non-fatal (we already have the image to show).
-            if let Some(Err(e)) = disk_cache.map(|cache| cache.put(&key, &decoded)) {
-                tracing::warn!(path = %req.path.display(), error = %e, "cover: cache put failed");
-            }
-            // Intern into the mem LRU so a later carousel pass over this row is a mem hit
-            // (no disk read + decode). Wrap in Arc so the marshal below shares, not copies.
-            let decoded = Arc::new(decoded);
-            if let Ok(mut c) = mem.lock() {
-                c.insert(key, Arc::clone(&decoded));
-            }
-            // Post-generate cancel re-check before crossing to the UI thread
-            // (mirrors the strip worker's second cancel poll in `thumbnail_strip::spawn_decode`).
-            if cancel.load(Relaxed) {
-                return;
-            }
-            // Stream the resolved count to the row and queue it for persistence.
-            if let Some(c) = count {
-                page_count_prefetch::push_and_marshal_count(
-                    &pending, &weak, &epoch, my_epoch, req.row, req.path, c,
-                );
-            }
-            marshal_cover(weak, epoch, my_epoch, req.row, decoded);
-        });
-    }
-
-    /// (Re)load covers for the given books. First persists any page counts resolved
-    /// since the previous generation (UI thread), then cancels any in-flight
-    /// generation, bumps the epoch, and dispatches EVERY request to a rayon worker
-    /// (`spawn_load` — hit and miss share one off-thread path; results stream back
-    /// via `invoke_from_event_loop`). The UI-thread work here is the count
-    /// persistence, a cheap cache-dir probe, and the dispatch loop — no per-book
-    /// I/O, regardless of cache state or library size. Call after the carousel
-    /// model is built or refreshed (initial library load + every add/remove). The
-    /// caller MUST build `requests` BEFORE the call (releasing its own
-    /// `library.borrow()`) so the `prefetch.apply` `borrow_mut` here cannot
-    /// double-borrow.
+    /// Persist pending counts and start a generation for the freshly built carousel.
+    /// Callers must release their library borrow before the pending counts are applied.
     pub fn start(
         &self,
         ui_weak: slint::Weak<ViewerWindow>,
@@ -643,9 +706,20 @@ impl CoverController {
         // (dispatch only — all per-book I/O happens on the workers).
         let started = crate::clock::now();
         let dispatched = requests.len();
+        let generation = CoverGeneration {
+            weak: ui_weak,
+            epoch: Arc::clone(&self.epoch),
+            my_epoch,
+            cancel: cancel_flag,
+            pending: self.prefetch.queue(),
+            mem: Arc::clone(&self.mem),
+        };
+        #[cfg(not(target_arch = "wasm32"))]
         for req in requests {
-            self.spawn_load(&ui_weak, &cancel_flag, my_epoch, req);
+            generation.spawn_load(req);
         }
+        #[cfg(target_arch = "wasm32")]
+        self.web.start(generation, requests);
         tracing::debug!(
             dispatched,
             elapsed_us = started.elapsed().as_micros() as u64,
