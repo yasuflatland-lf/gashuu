@@ -359,8 +359,10 @@ fn run_app(
     let pages = Rc::new(page_loader::PageController::new());
     #[cfg(target_arch = "wasm32")]
     let (covers, pages) = {
-        let primary: Rc<dyn gashuu_core::PageDecoder> = Rc::new(gashuu_web_decode::NativePageDecoder);
-        let fallback: Rc<dyn gashuu_core::PageDecoder> = Rc::new(gashuu_core::ImageCratePageDecoder);
+        let primary: Rc<dyn gashuu_core::PageDecoder> =
+            Rc::new(gashuu_web_decode::NativePageDecoder);
+        let fallback: Rc<dyn gashuu_core::PageDecoder> =
+            Rc::new(gashuu_core::ImageCratePageDecoder);
         let covers = cover_loader::CoverController::new(
             Rc::clone(&primary),
             Rc::clone(&fallback),
