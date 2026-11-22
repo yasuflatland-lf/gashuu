@@ -102,6 +102,16 @@ pub(crate) fn web_unreadable_files(loader: &FluentLanguageLoader, count: usize) 
     fl!(loader, "notice-web-picker-unreadable", count = count)
 }
 
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn web_storage_unavailable(loader: &FluentLanguageLoader) -> String {
+    fl!(loader, "notice-web-storage-unavailable")
+}
+
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn web_storage_full(loader: &FluentLanguageLoader) -> String {
+    fl!(loader, "notice-web-storage-full")
+}
+
 /// Parenthesized marker for the trailing page of a spread that failed to decode.
 /// `page` is 1-based.
 pub(crate) fn page_unavailable(loader: &FluentLanguageLoader, page: usize) -> String {
