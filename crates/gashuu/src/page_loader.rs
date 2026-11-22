@@ -1,25 +1,9 @@
-//! Viewer async page-decode controller.
-//!
-//! The controller tracks in-flight pages on the UI thread. Desktop spreads
-//! decode on rayon workers and wasm32 spreads decode in a local async task.
-//! Both deliver the finished spread through epoch-guarded Slint callbacks.
-//!
-//! Thread-boundary rule: only `Send` values cross into the rayon job and the
-//! event-loop closure. `slint::Image` is built inside the UI-thread closure, and
-//! `Rc`, `VecModel`, viewport state, and the localizer are never captured.
+//! Tracks in-flight spread requests and applies the current target's pages together.
 
-#[cfg(target_arch = "wasm32")]
-use crate::page_decode::{ImageCratePageDecoder, PageDecoder};
-#[cfg(not(test))]
-use crate::ui_marshal::marshal_to_ui;
-#[cfg(not(test))]
+use crate::backend::{BookBackend, SessionId, SpreadPages};
+use crate::ui_marshal::ui_done;
 use crate::{apply_spread_images, to_slint_image, ViewerWindow};
-#[cfg(not(test))]
 use gashuu_core::DecodedImage;
-#[cfg(not(test))]
-use gashuu_core::{cache::CacheDispatch, CoreError};
-#[cfg(target_arch = "wasm32")]
-use std::cell::Cell;
 use std::cell::RefCell;
 use std::collections::HashSet;
 #[cfg(not(target_arch = "wasm32"))]
@@ -33,23 +17,13 @@ use std::sync::Arc;
 /// `dispatched` is deliberately UI-thread-only state: it prevents duplicate
 /// decode dispatches for a page while a result is in flight, and handlers clear
 /// it when the corresponding scalar callback is applied.
-#[cfg_attr(not(target_arch = "wasm32"), derive(Default))]
 pub struct PageController {
     epoch: Arc<AtomicUsize>,
     dispatched: RefCell<HashSet<usize>>,
     target: RefCell<Option<SpreadTarget>>,
     #[cfg(not(target_arch = "wasm32"))]
     _ui_thread: PhantomData<Rc<()>>,
-    #[cfg(target_arch = "wasm32")]
-    decoders: PageDecoders,
-}
-
-#[cfg(target_arch = "wasm32")]
-#[derive(Clone)]
-struct PageDecoders {
-    primary: Rc<dyn PageDecoder>,
-    fallback: Rc<dyn PageDecoder>,
-    warned: Rc<Cell<bool>>,
+    backend: Rc<dyn BookBackend>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -59,41 +33,19 @@ struct SpreadTarget {
     single: bool,
 }
 
-#[cfg(target_arch = "wasm32")]
-impl Default for PageController {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl PageController {
-    /// Build the controller. Call once during UI setup.
-    pub fn new() -> Self {
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            Self::default()
-        }
-        #[cfg(target_arch = "wasm32")]
-        {
-            Self::with_decoders(
-                Rc::new(ImageCratePageDecoder),
-                Rc::new(ImageCratePageDecoder),
-            )
+    pub fn new(backend: Rc<dyn BookBackend>) -> Self {
+        Self {
+            backend,
+            epoch: Arc::default(),
+            dispatched: RefCell::default(),
+            target: RefCell::default(),
+            #[cfg(not(target_arch = "wasm32"))]
+            _ui_thread: PhantomData,
         }
     }
-
-    #[cfg(target_arch = "wasm32")]
-    pub fn with_decoders(primary: Rc<dyn PageDecoder>, fallback: Rc<dyn PageDecoder>) -> Self {
-        Self {
-            epoch: Arc::new(AtomicUsize::new(0)),
-            dispatched: RefCell::new(HashSet::new()),
-            target: RefCell::new(None),
-            decoders: PageDecoders {
-                primary,
-                fallback,
-                warned: Rc::new(Cell::new(false)),
-            },
-        }
+    pub(crate) fn backend(&self) -> &dyn BookBackend {
+        self.backend.as_ref()
     }
 
     /// Current generation number.
@@ -208,18 +160,13 @@ impl PageController {
     }
 
     /// Dispatch an atomic spread decode for any cache-missing slots.
-    ///
-    /// The request carries already-decoded HIT slots as `Arc<DecodedImage>` and
-    /// marks MISS slots with `None`. A new reservation starts a rayon job on
-    /// desktop or a local task on wasm32.
-    #[cfg(not(test))]
     pub fn dispatch_spread(
         &self,
         ui_weak: slint::Weak<ViewerWindow>,
-        cache_dispatch: CacheDispatch,
+        session: SessionId,
         request: SpreadDecodeRequest,
     ) -> DispatchStatus {
-        let leading_missing = request.leading.is_missing();
+        let leading_missing = request.leading.missing;
 
         let status = self.reserve_missing_slots(
             request.leading.index,
@@ -227,59 +174,36 @@ impl PageController {
             request
                 .trailing
                 .as_ref()
-                .map(|slot| (slot.index, slot.is_missing())),
+                .map(|slot| (slot.index, slot.missing)),
         );
 
         if !status.any_reserved() {
             return status;
         }
 
-        spawn_decode_spread(
-            ui_weak,
-            Arc::clone(&self.epoch),
-            self.current_epoch(),
-            cache_dispatch,
-            request,
-            #[cfg(target_arch = "wasm32")]
-            self.decoders.clone(),
+        self.backend.decode_spread(
+            session,
+            request.leading.index,
+            request.trailing.as_ref().map(|slot| slot.index),
+            ui_done(
+                ui_weak,
+                self.epoch.clone(),
+                self.current_epoch(),
+                move |ui, pages| finish_decode_spread(ui, pages, request.single),
+            ),
         );
         status
     }
 }
 
 /// One page slot in a spread-classification result.
-#[cfg(not(test))]
 #[derive(Clone)]
 pub struct PageSlot {
     pub index: usize,
-    /// `Some` means cache HIT; `None` means cache MISS and must be decoded by the
-    /// controller.
-    pub decoded: Option<Arc<DecodedImage>>,
-}
-
-#[cfg(not(test))]
-impl PageSlot {
-    pub fn hit(index: usize, decoded: Arc<DecodedImage>) -> Self {
-        Self {
-            index,
-            decoded: Some(decoded),
-        }
-    }
-
-    pub fn miss(index: usize) -> Self {
-        Self {
-            index,
-            decoded: None,
-        }
-    }
-
-    pub fn is_missing(&self) -> bool {
-        self.decoded.is_none()
-    }
+    pub missing: bool,
 }
 
 /// A currently targeted spread whose MISS slots should be decoded off-thread.
-#[cfg(not(test))]
 #[derive(Clone)]
 pub struct SpreadDecodeRequest {
     pub leading: PageSlot,
@@ -287,7 +211,6 @@ pub struct SpreadDecodeRequest {
     pub single: bool,
 }
 
-#[cfg(not(test))]
 impl SpreadDecodeRequest {
     pub fn single(leading: PageSlot) -> Self {
         Self {
@@ -320,130 +243,18 @@ impl DispatchStatus {
     }
 }
 
-#[cfg(all(not(test), not(target_arch = "wasm32")))]
-fn spawn_decode_spread(
-    weak: slint::Weak<ViewerWindow>,
-    epoch: Arc<AtomicUsize>,
-    my_epoch: usize,
-    cache_dispatch: CacheDispatch,
-    request: SpreadDecodeRequest,
-) {
-    crate::worker::spawn(move || {
-        let leading_idx = request.leading.index;
-        let trailing_slot = request.trailing;
-        let requested_single = request.single || trailing_slot.is_none();
-
-        // Resolve each slot: a HIT wraps the cached image in Ok; a MISS decodes
-        // on this worker. When both are missing, rayon::join runs them in parallel.
-        let (leading_result, trailing_result) = match (request.leading.decoded, trailing_slot) {
-            (leading_hit, None) => {
-                let leading = leading_hit
-                    .map(Ok)
-                    .unwrap_or_else(|| cache_dispatch.decode_and_cache(leading_idx));
-                (leading, None)
-            }
-            (Some(leading), Some(t)) => {
-                let trailing = t
-                    .decoded
-                    .map(Ok)
-                    .unwrap_or_else(|| cache_dispatch.decode_and_cache(t.index));
-                (Ok(leading), Some((t.index, trailing)))
-            }
-            (None, Some(t)) => {
-                let (leading, trailing) = match t.decoded {
-                    Some(trailing) => (cache_dispatch.decode_and_cache(leading_idx), Ok(trailing)),
-                    None => {
-                        let trailing_dispatch = cache_dispatch.clone();
-                        rayon::join(
-                            || cache_dispatch.decode_and_cache(leading_idx),
-                            || trailing_dispatch.decode_and_cache(t.index),
-                        )
-                    }
-                };
-                (leading, Some((t.index, trailing)))
-            }
-        };
-
-        finish_decode_spread(
-            weak,
-            epoch,
-            my_epoch,
-            leading_idx,
-            leading_result,
-            trailing_result,
-            requested_single,
-        );
-    });
-}
-
-#[cfg(all(not(test), target_arch = "wasm32"))]
-fn spawn_decode_spread(
-    weak: slint::Weak<ViewerWindow>,
-    epoch: Arc<AtomicUsize>,
-    my_epoch: usize,
-    cache_dispatch: CacheDispatch,
-    request: SpreadDecodeRequest,
-    decoders: PageDecoders,
-) {
-    wasm_bindgen_futures::spawn_local(async move {
-        let resolve = async |slot: PageSlot| {
-            if let Some(hit) = slot.decoded {
-                return Ok(hit);
-            }
-            let started = crate::clock::now();
-            let result = crate::page_decode::decode_page(
-                &cache_dispatch,
-                slot.index,
-                decoders.primary.as_ref(),
-                decoders.fallback.as_ref(),
-                &decoders.warned,
-            )
-            .await;
-            tracing::debug!(
-                index = slot.index,
-                elapsed_ms = started.elapsed().as_secs_f64() * 1000.0,
-                "page decode finished"
-            );
-            result
-        };
-        let leading_idx = request.leading.index;
-        let leading = resolve(request.leading).await;
-        let trailing = match request.trailing {
-            Some(slot) => Some((slot.index, resolve(slot).await)),
-            None => None,
-        };
-        let requested_single = request.single || trailing.is_none();
-        finish_decode_spread(
-            weak,
-            epoch,
-            my_epoch,
-            leading_idx,
-            leading,
-            trailing,
-            requested_single,
-        );
-    });
-}
-
-#[cfg(not(test))]
-fn finish_decode_spread(
-    weak: slint::Weak<ViewerWindow>,
-    epoch: Arc<AtomicUsize>,
-    my_epoch: usize,
-    leading_idx: usize,
-    leading: Result<Arc<DecodedImage>, CoreError>,
-    trailing: Option<(usize, Result<Arc<DecodedImage>, CoreError>)>,
-    requested_single: bool,
-) {
+fn finish_decode_spread(ui: &ViewerWindow, pages: SpreadPages, requested_single: bool) {
+    let (leading_idx, leading) = pages.leading;
+    let trailing = pages.trailing;
     let leading = match leading {
         Ok(leading) => leading,
         Err(e) => {
             tracing::error!(index = leading_idx, error = %e, "failed to decode leading page");
             if let Some((trailing_idx, Err(e))) = trailing {
                 tracing::error!(index = trailing_idx, error = %e, "failed to decode trailing page");
-                marshal_page_decode_error(weak.clone(), Arc::clone(&epoch), my_epoch, trailing_idx);
+                ui.invoke_page_decode_error(page_i32(trailing_idx));
             }
-            marshal_page_decode_error(weak, epoch, my_epoch, leading_idx);
+            ui.invoke_page_decode_error(page_i32(leading_idx));
             return;
         }
     };
@@ -458,61 +269,20 @@ fn finish_decode_spread(
     };
     let final_single = requested_single || trailing.is_none();
 
-    marshal_spread(
-        weak,
-        epoch,
-        my_epoch,
-        leading_idx,
-        trailing_idx,
-        leading,
-        trailing,
+    let (content_w, content_h) = content_size(&leading, trailing.as_deref());
+    let leading = to_slint_image(&leading);
+    let trailing = trailing.as_deref().map(to_slint_image);
+    apply_spread_images(ui, leading, trailing, final_single);
+    ui.invoke_spread_anchored(
+        content_w,
+        content_h,
         final_single,
-        failed_trailing_page,
+        optional_page_i32(failed_trailing_page),
+        page_i32(leading_idx),
+        optional_page_i32(trailing_idx),
     );
 }
 
-#[cfg(not(test))]
-#[allow(clippy::too_many_arguments)]
-fn marshal_spread(
-    weak: slint::Weak<ViewerWindow>,
-    epoch: Arc<AtomicUsize>,
-    my_epoch: usize,
-    leading_idx: usize,
-    trailing_idx: Option<usize>,
-    leading: Arc<DecodedImage>,
-    trailing: Option<Arc<DecodedImage>>,
-    single: bool,
-    failed_trailing_page: Option<usize>,
-) {
-    marshal_to_ui(weak, epoch, my_epoch, "page-decode", move |ui| {
-        let (content_w, content_h) = content_size(&leading, trailing.as_deref());
-        let leading = to_slint_image(&leading);
-        let trailing = trailing.as_deref().map(to_slint_image);
-        apply_spread_images(ui, leading, trailing, single);
-        ui.invoke_spread_anchored(
-            content_w,
-            content_h,
-            single,
-            optional_page_i32(failed_trailing_page),
-            page_i32(leading_idx),
-            optional_page_i32(trailing_idx),
-        );
-    });
-}
-
-#[cfg(not(test))]
-fn marshal_page_decode_error(
-    weak: slint::Weak<ViewerWindow>,
-    epoch: Arc<AtomicUsize>,
-    my_epoch: usize,
-    index: usize,
-) {
-    marshal_to_ui(weak, epoch, my_epoch, "page-decode-error", move |ui| {
-        ui.invoke_page_decode_error(page_i32(index));
-    });
-}
-
-#[cfg(not(test))]
 fn content_size(leading: &DecodedImage, trailing: Option<&DecodedImage>) -> (f32, f32) {
     match trailing {
         Some(trailing) => (
@@ -523,12 +293,10 @@ fn content_size(leading: &DecodedImage, trailing: Option<&DecodedImage>) -> (f32
     }
 }
 
-#[cfg(not(test))]
 fn page_i32(index: usize) -> i32 {
     i32::try_from(index).unwrap_or(i32::MAX)
 }
 
-#[cfg(not(test))]
 fn optional_page_i32(index: Option<usize>) -> i32 {
     index.map_or(-1, page_i32)
 }
@@ -536,10 +304,30 @@ fn optional_page_i32(index: Option<usize>) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::backend::fake::{Call, FakeBackend};
+    use crate::backend::BackendError;
+    use slint::ComponentHandle;
+    use std::cell::Cell;
+
+    fn headless_window() -> ViewerWindow {
+        struct HeadlessPlatform;
+        impl slint::platform::Platform for HeadlessPlatform {
+            fn create_window_adapter(
+                &self,
+            ) -> Result<Rc<dyn slint::platform::WindowAdapter>, slint::PlatformError> {
+                use slint::platform::software_renderer::{
+                    MinimalSoftwareWindow, RepaintBufferType,
+                };
+                Ok(MinimalSoftwareWindow::new(RepaintBufferType::NewBuffer))
+            }
+        }
+        slint::platform::set_platform(Box::new(HeadlessPlatform)).unwrap();
+        ViewerWindow::new().unwrap()
+    }
 
     #[test]
     fn dispatched_pages_are_deduplicated_cleared_and_reset_with_source() {
-        let controller = PageController::new();
+        let controller = PageController::new(FakeBackend::new());
 
         assert!(controller.reserve_dispatch(4));
         assert!(!controller.reserve_dispatch(4));
@@ -559,7 +347,7 @@ mod tests {
 
     #[test]
     fn reserve_dispatch_is_per_page_not_per_spread() {
-        let controller = PageController::new();
+        let controller = PageController::new(FakeBackend::new());
 
         assert!(controller.reserve_dispatch(4));
         assert!(!controller.reserve_dispatch(4));
@@ -570,7 +358,7 @@ mod tests {
 
     #[test]
     fn spread_reservation_still_reserves_new_partner_when_one_slot_is_in_flight() {
-        let controller = PageController::new();
+        let controller = PageController::new(FakeBackend::new());
         assert!(controller.reserve_dispatch(4));
 
         let status = controller.reserve_missing_slots(4, true, Some((5, true)));
@@ -584,7 +372,7 @@ mod tests {
 
     #[test]
     fn target_changes_advance_epoch_and_clear_dispatches() {
-        let controller = PageController::new();
+        let controller = PageController::new(FakeBackend::new());
         let epoch = controller.current_epoch();
 
         let first = controller.set_target(1, None, true);
@@ -596,5 +384,138 @@ mod tests {
 
         assert!(second > first);
         assert!(!controller.is_dispatched(1));
+    }
+
+    #[test]
+    fn dispatch_spread_requests_both_indices_once() {
+        let ui = headless_window();
+        let backend = FakeBackend::new();
+        let pages = PageController::new(backend.clone());
+        let session = backend.new_session();
+        let request = SpreadDecodeRequest::double(
+            PageSlot {
+                index: 0,
+                missing: true,
+            },
+            PageSlot {
+                index: 1,
+                missing: true,
+            },
+        );
+        assert!(pages
+            .dispatch_spread(ui.as_weak(), session, request.clone())
+            .any_reserved());
+        assert!(
+            pages
+                .dispatch_spread(ui.as_weak(), session, request)
+                .blocked_by_in_flight
+        );
+        assert_eq!(
+            backend.calls(),
+            vec![Call::DecodeSpread(session, 0, Some(1))]
+        );
+    }
+
+    #[test]
+    fn stale_spread_done_is_ignored() {
+        let ui = headless_window();
+        let decode_errors = Rc::new(Cell::new(0));
+        ui.on_page_decode_error({
+            let decode_errors = Rc::clone(&decode_errors);
+            move |_| decode_errors.set(decode_errors.get() + 1)
+        });
+        let anchored_spreads = Rc::new(Cell::new(0));
+        ui.on_spread_anchored({
+            let anchored_spreads = Rc::clone(&anchored_spreads);
+            move |_, _, _, _, _, _| anchored_spreads.set(anchored_spreads.get() + 1)
+        });
+
+        let backend = FakeBackend::new();
+        let pages = PageController::new(backend.clone());
+        let epoch = pages.set_target(0, None, true);
+        pages.dispatch_spread(
+            ui.as_weak(),
+            backend.new_session(),
+            SpreadDecodeRequest::single(PageSlot {
+                index: 0,
+                missing: true,
+            }),
+        );
+        assert!(pages.set_target(1, None, true) > epoch);
+        assert!(pages.reserve_dispatch(1));
+        backend.complete_spread(
+            0,
+            SpreadPages {
+                leading: (0, Err(BackendError::EmptyBook)),
+                trailing: None,
+            },
+        );
+        assert_eq!(decode_errors.get(), 0);
+        assert_eq!(anchored_spreads.get(), 0);
+        assert!(pages.is_dispatched(1));
+        assert!(!pages.is_dispatched(0));
+    }
+
+    #[test]
+    fn current_spread_leading_error_reports_page_index() {
+        let ui = headless_window();
+        let failed_page = Rc::new(Cell::new(None));
+        ui.on_page_decode_error({
+            let failed_page = Rc::clone(&failed_page);
+            move |index| failed_page.set(Some(index))
+        });
+
+        let backend = FakeBackend::new();
+        let pages = PageController::new(backend.clone());
+        pages.set_target(3, None, true);
+        pages.dispatch_spread(
+            ui.as_weak(),
+            backend.new_session(),
+            SpreadDecodeRequest::single(PageSlot {
+                index: 3,
+                missing: true,
+            }),
+        );
+        backend.complete_spread(
+            0,
+            SpreadPages {
+                leading: (3, Err(BackendError::EmptyBook)),
+                trailing: None,
+            },
+        );
+
+        assert_eq!(failed_page.get(), Some(3));
+    }
+
+    #[test]
+    fn current_spread_leading_image_anchors_spread() {
+        let ui = headless_window();
+        let anchored_spreads = Rc::new(Cell::new(0));
+        ui.on_spread_anchored({
+            let anchored_spreads = Rc::clone(&anchored_spreads);
+            move |_, _, _, _, _, _| anchored_spreads.set(anchored_spreads.get() + 1)
+        });
+
+        let backend = FakeBackend::new();
+        let pages = PageController::new(backend.clone());
+        pages.set_target(0, None, true);
+        pages.dispatch_spread(
+            ui.as_weak(),
+            backend.new_session(),
+            SpreadDecodeRequest::single(PageSlot {
+                index: 0,
+                missing: true,
+            }),
+        );
+        let image = Arc::new(DecodedImage::new(vec![0, 0, 0, 255], 1, 1).unwrap());
+        backend.complete_spread(
+            0,
+            SpreadPages {
+                leading: (0, Ok(image)),
+                trailing: None,
+            },
+        );
+
+        assert_eq!(anchored_spreads.get(), 1);
     }
 }

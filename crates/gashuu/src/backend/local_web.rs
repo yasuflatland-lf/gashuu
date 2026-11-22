@@ -4,8 +4,11 @@ use super::{
     SessionId, SpreadPages,
 };
 use crate::book_path;
-use crate::page_decode::{decode_cover, decode_page, ImageCratePageDecoder, PageDecoder};
-use gashuu_core::{cache_key, ArchivePolicy, BookId, CacheConfig, DecodedImage, ImageCache};
+use crate::page_decode::{decode_cover, decode_page};
+use gashuu_core::{
+    cache_key, ArchivePolicy, BookId, CacheConfig, DecodedImage, ImageCache, ImageCratePageDecoder,
+    PageDecoder,
+};
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, VecDeque};
 use std::future::Future;
@@ -63,7 +66,7 @@ impl LocalWebBackend {
                     tracing::debug!(%error, "dropped backend result; event loop gone");
                 }
             }),
-            Rc::new(crate::web_decode::NativePageDecoder),
+            Rc::new(gashuu_web_decode::NativePageDecoder),
             Rc::new(ImageCratePageDecoder),
         )
     }

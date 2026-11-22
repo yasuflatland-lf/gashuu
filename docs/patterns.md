@@ -3,6 +3,14 @@
 This is the L2/L3 reference doc migrated from the CLAUDE.md "Patterns & gotchas" section.
 An agent should read the relevant entry BEFORE editing the corresponding code area.
 
+### OPFS access handles require single-threaded wasm
+
+`OpfsReadAt` implements the core `ReadAt` trait for the dedicated Web Worker.
+Its `unsafe impl Send` and `unsafe impl Sync` are sound only on wasm32 without
+the `atomics` target feature. Keep both implementations under that guard with
+their safety comments. The worker rejects builds with wasm atomics because a
+JavaScript access handle is confined to its owning thread.
+
 ### Cross-crate mocking via a `testing` feature
 
 `gashuu-core` gates `mockall::automock` on `PageSource` behind `[features] testing = ["dep:mockall"]`; `gashuu`'s dev-dependency enables it, so `ViewerState` tests use `MockPageSource` without pulling `mockall` into release builds.
@@ -255,12 +263,12 @@ THE KEY GOTCHA of this feature, and the reusable harness for any "global config 
 
 A real bug shipped-then-caught here. The plan correctly gated the EXIT reconcile on "no book open", but MISSED a SECOND reconcile on the open path — inside `OpenBookUseCase::run`, behind the `if track_recent_files` save gate. Runtime view modes are NOT reset when a new book is opened (the new book's `ResolvedView` is applied LATER in `run`), so at that save point the runtime still held the OUTGOING book's per-book modes — reconciling them there wrote the outgoing book's preferences into the global `Settings`. The fix was to NOT reconcile on the open-time save at all (it now persists only recents + cache/preload/track + the UNCHANGED global view fields); the comment at that call site spells out why.
 
-STRUCTURAL ENFORCEMENT (Wave-1 DDD refactor). The audit no longer needs to chase scattered call sites: all view-mode persistence now routes through ONE chokepoint, `LeavePointService::persist(route: ViewModeRoute)` in `view_sync.rs`, and the private `stage_view_modes_to_sink` helper contains the routing `match`. Its two sink fns (`apply_runtime_view_to_settings` → global, `stage_view_override_write_back` → per-book) are reachable in production only through that chokepoint, with ONE named exception: `apply_runtime_view_to_settings` is `pub(crate)` so `DialogSession::end` can commit a Library-scope dialog's global edit at the session boundary (issue #556); `stage_view_override_write_back` stays private. The audit is therefore the routing match PLUS that single named extra caller. `ViewModeRoute` names each leave point (`DialogClosedOnLibrary` / `DialogClosedOnViewer` / `LeaveViewer` / `OpenDifferentBook` / `AppExit`), and the match routes it to the right sink; the clobber-trap rationale lives as a comment on that match. So the harness below now reduces to auditing the SINGLE routing match — a new leave point cannot reach a write fn except by adding a `ViewModeRoute` variant and a match arm, where the global-vs-per-book decision is forced into view. The cautionary lesson still holds (the trap is real and shipped once); the structure now makes the dangerous global-write sites enumerable in one place instead of grep-able across the crate.
+STRUCTURAL ENFORCEMENT (Wave-1 DDD refactor). The audit no longer needs to chase scattered call sites: all view-mode persistence now routes through ONE chokepoint, `LeavePointService::persist(route: ViewModeRoute)` in `view_sync.rs`, and the private `stage_view_modes_to_sink` helper contains the routing `match`. Its two sink fns (`apply_runtime_view_to_settings` → global, `stage_view_override_write_back` → per-book) are reachable in production only through that chokepoint, with ONE named exception: `apply_runtime_view_to_settings` is `pub(crate)` so `DialogSession::end` can commit a Library-scope dialog's global edit at the session boundary (issue #556); `stage_view_override_write_back` stays private. The audit is therefore the routing match PLUS that single named extra caller. `ViewModeRoute` names each leave point (`DialogClosedOnLibrary` / `DialogClosedOnViewer` / `LeaveViewer` / `OpenDifferentBook` / `AppExit` / `Suspend`), and the match routes it to the right sink; the clobber-trap rationale lives as a comment on that match. So the harness below now reduces to auditing the SINGLE routing match — a new leave point cannot reach a write fn except by adding a `ViewModeRoute` variant and a match arm, where the global-vs-per-book decision is forced into view. The cautionary lesson still holds (the trap is real and shipped once); the structure now makes the dangerous global-write sites enumerable in one place instead of grep-able across the crate.
 
 HARNESS:
 
 1. **Audit the ONE routing match (was: enumerate ALL write sites).** Pre-chokepoint this meant grepping both write fns and reading every call site — and the plan's enumeration missed one. Now every write goes through `LeavePointService`; read `stage_view_modes_to_sink`'s `match route` to cover all sinks. The write fns are private, so no path can bypass it. A new leave point is a new `ViewModeRoute` variant + arm, which is exactly where the global-vs-per-book routing decision is made.
-2. **State the invariant explicitly, then audit every route against it.** The invariant for this feature: the GLOBAL view modes are written ONLY by (a) the global-scope UI — the Library settings dialog close (`DialogClosedOnLibrary`) — and (b) the no-book-open exit path (`AppExit`, guarded on `open_file().is_none()`); the PER-CONTEXT override is written ONLY at leave points (`stage_view_override_write_back`, the other three routes). Any route arm that reconciles into global outside (a)/(b) is the bug.
+2. **State the invariant explicitly, then audit every route against it.** The invariant for this feature: the GLOBAL view modes are written ONLY by (a) the global-scope UI — the Library settings dialog close (`DialogClosedOnLibrary`) — and (b) the no-book-open exit or dialog-free suspend path (`AppExit` or `Suspend`, guarded on `open_file().is_none()`); the PER-CONTEXT override is written at leave points via `stage_view_override_write_back`. Suspend skips both sinks during an active dialog. Any route arm that reconciles into global outside (a)/(b) is the bug.
 3. **Watch for the asymmetry that hides the clobber**: runtime modes persist across an open (they are re-seeded only AFTER the open succeeds), so "the runtime obviously holds the global default at a global-write site" is FALSE on the open path. The `OpenDifferentBook` route is per-book-ONLY for exactly this reason — opening a book must NOT reconcile into global.
 
 This is a sharper instance of the "verify the as-merged state, do not trust the plan" discipline (the move-only-refactor checklist + the `#76` dead-helper entry): here the plan's enumeration of write sites was the thing that was wrong — and the chokepoint is the structural answer to "the enumeration can be wrong".
@@ -512,7 +520,10 @@ adding it as a direct dependency pulls in no new third-party code; it just lets 
 
 ### Thumbnails are a "hold ALL N pages" non-LRU set
 
-the inverse of `ImageCache`'s sliding LRU. Generation is lazy: the UI's `thumbnail_strip` worker `par_iter`s the visible batch on a background thread and calls core's synchronous `generate_one_thumbnail` per page, so `open` returns immediately. Peak RAM ≈ rayon-pool-size full-res pages (one per worker, decoded-then-downscaled) — the same bound as prefetch.
+The desktop strip allocates one loading row per page and keeps completed rows until the next
+open. It requests the leading window immediately. On scroll or resize, `take_fresh` records
+new indices in the generation's `requested` set before dispatch, so overlapping windows
+request each page at most once.
 
 ### Async backend port: Done runs on the UI thread, never synchronously; close/cancel drop callbacks
 
@@ -531,21 +542,21 @@ Controller tests can inject `FakeBackend`, inspect the recorded calls and use
 requests out of order to exercise epoch checks, or complete after closing the
 session or cancelling covers to verify that the callback is dropped.
 
-### First cross-thread UI update convention
+### Session lifetime and thumbnail generations
 
-A rayon worker reaches the UI thread via `slint::invoke_from_event_loop`. Capture ONLY `Send` values into the closure: `slint::Weak` (Send+Sync), `Arc<AtomicUsize>`/`Arc<AtomicBool>`, `DecodedImage` (Send). `VecModel` (Rc) and `slint::Image` are NOT `Send` and never cross threads — re-fetch the model INSIDE the event-loop closure via `ui.get_thumbnails().as_any().downcast_ref::<VecModel<ThumbnailItem>>()`, and build the `slint::Image` there too (via `to_slint_image`, an O(pixels) copy done ONCE at generation, not per `refresh`).
+Closing a backend session suppresses pending thumbnail deliveries, including results already
+queued for the UI. Each strip start also advances the epoch. The `ui_done` callback checks
+that epoch and upgrades the weak window before converting the image and updating its row.
 
-### epoch + cancel DOUBLE-guard against superseded thumbnail generations
+### Cover generations and cache hits
 
-Re-opening a book (a) `cancel.store(true)` on the prior generation's flag (stops CPU promptly) AND (b) bumps an `AtomicUsize` epoch so any in-flight `invoke_from_event_loop` whose captured `my_epoch` mismatches the current epoch is dropped (prevents an old generation writing into the new model). Either guard alone is insufficient.
+`CoverController` calls `backend.cancel_covers()` before dispatching each generation.
+Its `ui_done` callbacks also check the epoch for cover and count results. The controller
+fetches the model and builds the `slint::Image` on the UI thread.
 
-`ThumbnailController` (`thumbnail_strip.rs`) rotates its cancel flag with `rotate_cancel` and
-checks its epoch when it marshals a result to the UI thread. `CoverController` (`cover_loader.rs`)
-calls `backend.cancel_covers()` when starting a new generation and uses `ui_done` to check the
-epoch of each cover and count completion. Both controllers fetch the `VecModel` and build the
-`slint::Image` on the UI thread.
-
-A corollary learned the hard way (`perf/async-cover-loading`): the controller's `start` must be DISPATCH-ONLY — a disk-cache HIT belongs on the worker exactly like a miss. `CoverController` originally served warm-cache covers inline in `start`'s request loop ("the decode is already done on disk, it's cheap"), but per-book `fs::metadata` + PNG read + decode + `to_slint_image` is 2–8 ms, and a ~500-book warm start serialized that into seconds of event-loop blocking — the hit path was the slow path. If a per-item fast-path tempts you to skip the worker, multiply its cost by the largest realistic item count first.
+The desktop backend handles cover cache hits and misses on a worker. Reading metadata,
+loading the cache file and decoding it inline can stall the event loop when a library
+has hundreds of books.
 
 ### Worker → UI ACTION (not just a model write) via a Slint callback on the root window (reject-empty-books)
 
@@ -577,21 +588,33 @@ The finalize handler uses `take_outcomes(epoch)` to drain the current batch in i
 This keeps insertion, focus and skip reporting deterministic even when probes finish out of
 order. The library mutation, save, carousel rebuild and notice all run in that handler.
 
-### Worker → UI ACTION that CARRIES THE RENDERED VALUE: build the `slint::Image` inside the marshal, fire a SCALAR-ONLY callback (issue #207, async page decode)
+Tests insert outcomes in scrambled order and advance the generation explicitly to
+verify ordered delivery and rejection of superseded batches.
 
-The third payload shape of the Worker → UI bridge. The bulk-add entry above carries a COLLECTION (worker accumulates `Send` `ProbeOutcome`s in a controller-owned `Arc<Mutex<…>>`, the callback is a bare epoch token); the page-decode worker instead carries the rendered value ITSELF — but a `slint::Image` is `!Send` and can never leave the worker. The resolution: the worker decodes to a `Send` `Arc<DecodedImage>` and crosses the boundary inside `slint::invoke_from_event_loop`; the `to_slint_image(&DecodedImage)` conversion happens INSIDE that closure (on the UI thread), then the closure calls a callback declared on the root `ViewerWindow` whose arguments are ALL scalars — `spread-anchored(float, float, bool, int, int, int)` (content size, single flag, the failed/leading/trailing page indices as `i32`, with `-1` for "none" via `optional_page_i32`) and `page-decode-error(int)`. The image itself is set with `apply_spread_images(&ui, leading, trailing, single)` against the upgraded `ui` handle, not passed through the callback. The handler on the UI thread (`main.rs`) holds the `!Send` `Rc` viewport/localizer state the scalar arguments feed into (`apply_spread_geometry`). So the rule splits by payload: a COLLECTION → controller-owned `Send` accumulator + epoch-token callback; a single RENDERED value → build the `!Send` `slint::Image` inside the marshal and hand the handler only `Send` scalars. Both share the identical `invoke_from_event_loop` preamble: `is_current(&epoch, my_epoch)` epoch guard → `weak.upgrade()` bail → `invoke_from_event_loop` error logged at `debug!` (event-loop-gone at teardown). The double-MISS spread uses `rayon::join` so the two `decode_and_cache` calls run in parallel before the single marshal.
+### Build spread images in the backend completion
 
-### Per-spread epoch via `SpreadTarget`: advance the generation only when the TARGET actually changes (issue #207, async page decode)
+`decode_spread` delivers the leading and optional trailing results together. Its UI-thread
+callback converts decoded pixels to Slint images, applies them, and passes scalar indices
+and geometry to `spread-anchored`. A leading failure triggers `page-decode-error`.
 
-`PageController` does NOT bump its epoch on every refresh — a resize or language change re-runs the refresh, and bumping there would kill legitimate in-flight decodes for the SAME spread. Instead `set_target(leading_idx, trailing_idx, single)` builds a `SpreadTarget` value and compares it to the stored one: if equal it returns `current_epoch()` unchanged (the in-flight decode survives); only a real `(leading, trailing, single)` change stores the new target and calls `begin_generation` (clear `dispatched` + `fetch_add` the epoch). So the epoch tracks WHAT is being shown, not how many times refresh fired. `clear_target` advances once only if a target was active (`take().is_some()`); `set_source` (different book) forces `target = None` then `begin_generation` so a same-index spread in a new book is never mistaken for the old target. Pair this target-epoch with the PER-PAGE dispatch reservation, which is independent: `dispatched` is a `HashSet<usize>`, and `reserve_missing_slots` reserves each missing slot on its OWN — so when one slot is already in flight and its partner is a fresh MISS, the partner still gets reserved (`leading_reserved=false, trailing_reserved=true`, NOT `blocked_by_in_flight`). `blocked_by_in_flight` is true only when MISS work was requested but EVERY missing page was already reserved. The two guards answer different questions: the epoch drops STALE-generation marshals; the per-page set prevents DUPLICATE dispatch of a still-in-flight page within the live generation.
+### Advance the page epoch when the spread target changes
 
-### `#[cfg(not(test))]`-gate a dispatch chain that is structurally unreachable under test — then extract the pure logic so it stays covered (issue #207, async page decode)
+A target comprises the leading index, trailing index and single-page flag. A resize or language
+change can refresh the same target while its request is in flight. Preserve reservations on that
+refresh. A new target or book advances the epoch and clears the reservations. Each fresh missing
+index can trigger a dispatch even when its partner is already in flight.
 
-`PageController::dispatch_spread` and its whole downstream chain (`spawn_decode_spread` → `finish_decode_spread` → `marshal_spread`/`marshal_page_decode_error`, plus the `PageSlot`/`SpreadDecodeRequest` types and the `to_slint_image`/`ViewerWindow`/`DecodedImage`/`CacheDispatch` imports) are `#[cfg(not(test))]`. The reason is forced, not a coverage dodge: the SOLE caller sits in UI bootstrap that no unit test constructs (it needs a live `slint::Weak<ViewerWindow>` and a real `CacheDispatch`), so under `cfg(test)` the entire chain is dead code — and `clippy --workspace --all-targets -D warnings` fails the build on it. Gating the chain (types + helpers + the call block together; gate the whole transitive set or you get dangling references) is the only way to keep clippy green. This is the OPPOSITE situation from `cover_loader`, whose marshal chain stays reachable and ungated. To avoid losing real coverage, the TESTABLE pure logic is extracted OUT of the gate: `is_current` (epoch compare), `reserve_dispatch`/`reserve_missing_slots`/`clear_dispatched*`, `set_target`/`clear_target`/`set_source`, and `DispatchStatus` are all `cfg`-agnostic and unit-tested directly (scrambled-order, in-flight-partner, target-epoch). Consequence to remember: a function whose BODY is gated out under test but whose SIGNATURE is not must carry `#[cfg_attr(test, allow(unused_variables))]` on its params, or the test build warns on the now-unused arguments.
+### Exercise spread dispatch with a fake backend
 
-### Per-page thumbnail failure → distinct FAILED cell, not a silent/ambiguous placeholder
+Pass a default weak window handle to the controller and inspect the fake backend's recorded
+session and indices. Complete an old request after changing targets to exercise the epoch guard.
 
-`generate_one_thumbnail` returns the failure as `Err` (no panic). The worker logs `tracing::warn!(page, error)` (capturing the real `CoreError` WITHOUT crossing the thread boundary), then marshals a failed cell rendered distinctly (red ✕) so a permanent failure is visually separable from a still-loading gray cell (upholds the "view must match status" rule). `ThumbnailItem`'s `(loaded, failed)` pair is enforced through a private `enum ThumbCell { Loading, Loaded(slint::Image), Failed }` sum type (issue #30): the single `fn thumbnail_item(page, cell) -> ThumbnailItem` chokepoint maps each variant to the correct boolean triple, eliminating the former three-site procedural enforcement; a `debug_assert!(!(loaded && failed))` inside `thumbnail_item` guards against any future hand-edit to the match arms (same `debug_assert` philosophy as `seq_index`). `ThumbCell::Loaded(slint::Image)` is `!Send`, so only the UI thread can construct it — the thread-boundary rule is type-enforced, not comment-only. The shared `invoke_from_event_loop` preamble (epoch-mismatch guard → `weak.upgrade()` → `get_thumbnails()` → downcast → row-count bound check) is centralized in `marshal_cell`, called by both the success and failure paths. `invoke_from_event_loop` errors are logged at `debug!` (not `let _`-swallowed) — the realistic trigger is an event-loop-gone race at teardown.
+### Per-page thumbnail failure
+
+`ThumbCell` distinguishes loading, loaded and failed states. On a thumbnail error the strip logs the page index and
+backend error, then updates only that page to `Failed`. Other pending pages can still complete.
+
+### Per-book cover failure
 
 `CoverController` uses `ui_done` to check the epoch and window lifetime before applying a backend
 result. A successful cover calls `apply_loaded_cover`. A cover error other than `EmptyBook` calls
@@ -601,9 +624,10 @@ in both z-order passes. An unavailable book renders its broken-cover treatment. 
 result from either completion invokes `empty-book-detected`. Other count errors are logged and
 leave the cover state alone. Rebuilding the model resets the flags so the next generation retries.
 
-### Testing a post-decode cancel check deterministically
+### Test backend cancellation before delivery
 
-To test a cancel flag polled AFTER decode / BEFORE delivery, use a single-page test source whose `read_bytes` flips the flag as a side effect: the first check still sees `false`, so the second check fires deterministically — avoiding the racy "flip the flag inside the callback" approach, where other parallel tasks may have already passed the check. (Its original subject, core's former all-pages thumbnail generator, was deleted once the strip went lazy and left it with no production caller.) The strip's live cancel re-checks sit in `thumbnail_strip::spawn_decode` on the background stream path (`invoke_from_event_loop`), which stays coverage-EXEMPT (same as the cache rayon path).
+Queue a result, close its session before delivery, then drain the queue and assert that the
+callback did not run. This exercises the delivery boundary independently of decode timing.
 
 ### TouchArea click focus recovery for thumbnails
 
@@ -981,16 +1005,11 @@ Builds DIRECTLY on the reconcile entry above: the four view modes are now PER-BO
 
 TRADE-OFF worth stating: write-back is a VALUE DIFF against the current global, not a record of which controls the user touched. A book left at a value equal to global stores `None` for that field and therefore FOLLOWS a later global change, even if the user had explicitly selected the matching value. A differing value remains `Some` and survives later global changes. This restores active inheritance without per-field dirty flags; see ADR-0007's 2026-08-16 amendment.
 
-### Key `Library` by the CANONICAL path, never the raw dialog path
+### Key `Library` by the canonical book ID
 
-Any code that keys into `Library` by path (`resume_page`/`set_resume_page`/`add`) MUST use the
-caller-produced `canonical_identity`. `open_controller::probe_open` derives that identity off the UI
-thread, `install_opened` parks it in `open_file`, and the open tail passes it unchanged to
-`Library::register_opened`; bulk add derives the same identity before calling `Library::add_many`.
-Resume/write-back therefore read the key from `state.open_file()`, NEVER the raw `path` argument
-(which may carry `..`/symlinks/case differences). This is a SILENT-failure trap: a raw-path lookup
-"succeeds" returning `resume_page` = 0, so the bug presents as resuming at page 0 rather than an
-error.
+Send the picked location to the backend as a request ID. The backend resolves the canonical
+identity during open. Registration, resume and write-back use the installed `OpenedBook::id`.
+Recents retain the raw requested location so the menu reopens the user's original selection.
 
 ### Re-canonicalize and merge duplicate book identities on load
 
@@ -1456,3 +1475,11 @@ HARNESS — test a networked script WITHOUT the network: expose the base URL as 
 - **macOS `.app` and deb are deliberately NOT self-replaced.** macOS is `ManualInstall` (unsigned + Gatekeeper quarantine would flag an in-place-swapped bundle as "damaged"); deb is `ExternalInstall` (dpkg owns `/usr/bin/gashuu`). This is a strategy decision in core, unit-tested in `packaging.rs::strategy_mapping` — the UI never second-guesses it.
 
 The whole pipeline runs off the UI thread (`rayon::spawn`) and marshals back with `slint::invoke_from_event_loop`; on success it sets a localized "Restarting…" status, then `slint::Timer::single_shot` lets it paint for ~900ms. The timer invokes the `persist-before-relaunch` bridge to run the SAME shared exit persistence as a normal quit before `relaunch_and_exit` spawns the new binary and `exit(0)`s, because `exit(0)` bypasses everything after `ui.run()`. On ANY failure it falls back to `opener::open(RELEASES_PAGE_URL)` so the user is never stranded on a broken self-update.
+
+### Web suspend is not exit: never `DialogSession::end` outside a real dialog close or process exit
+
+A hidden tab can return with its settings dialog still open. Ending its session during a
+`pagehide` or hidden `visibilitychange` would clear the snapshot and change what subsequent edits
+modify. The `Suspend` route always stages the reading position, but skips view-mode writes while
+a dialog is active. Without a dialog it uses the exit routing. The session and runtime stay intact;
+unconfirmed edits can be lost if the browser discards the tab ([issue #664](https://github.com/yasuflatland-lf/gashuu/issues/664)).

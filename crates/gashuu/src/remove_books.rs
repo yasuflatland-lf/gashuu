@@ -29,6 +29,16 @@ use crate::{save_library, LibraryStoreHandle};
 /// this the dialog would grow unboundedly for a large bulk selection.
 const CONFIRM_DELETE_LIST_CAP: usize = 10;
 
+/// Remove the cached cover of a rejected empty book.
+pub(crate) fn purge_empty_cover(id: &BookId) {
+    match ThumbnailCache::new() {
+        Ok(cache) => purge_cover(&cache, &locate(id)),
+        Err(e) => {
+            tracing::warn!(error = %e, "cover cache unavailable; skipping cover purge on empty-book removal");
+        }
+    }
+}
+
 /// Result of [`RemoveBooksUseCase::run`]. Carries enough for `main.rs` to
 /// finalize the UI (status line / carousel rebuild) without any i18n logic here.
 #[derive(Debug, PartialEq)]
@@ -110,6 +120,7 @@ pub(crate) fn removed_contains_open(open_book: Option<&BookId>, removed: &[BookI
 /// [`finalize_remove`](crate::carousel_refresh::finalize_remove) from that
 /// outcome.
 pub(crate) struct RemoveBooksUseCase {
+    backend: Rc<dyn crate::backend::BookBackend>,
     state: Rc<RefCell<ViewerState>>,
     dialog_session: Rc<RefCell<DialogSession>>,
     library: Rc<RefCell<Library>>,
@@ -126,6 +137,7 @@ impl RemoveBooksUseCase {
         search: Rc<RefCell<LibrarySearchState>>,
         selection: Rc<RefCell<LibrarySelectionState>>,
         library_store: LibraryStoreHandle,
+        backend: Rc<dyn crate::backend::BookBackend>,
     ) -> Self {
         Self {
             state,
@@ -134,6 +146,7 @@ impl RemoveBooksUseCase {
             search,
             selection,
             library_store,
+            backend,
         }
     }
 
@@ -219,7 +232,9 @@ impl RemoveBooksUseCase {
         let closed_open_book = {
             let open_book = self.state.borrow().open_book().cloned();
             if removed_contains_open(open_book.as_ref(), &report.removed) {
-                self.state.borrow_mut().close();
+                if let Some(session) = self.state.borrow_mut().close() {
+                    self.backend.close(session);
+                }
                 self.dialog_session.borrow_mut().clear_pending_inherit();
                 true
             } else {
@@ -730,7 +745,7 @@ mod tests {
     /// retire it, only the explicit `clear_pending_inherit()` can, and anything
     /// opened next would otherwise start out believing it had just been reset.
     #[test]
-    fn removing_the_open_book_discards_its_pending_inherit() {
+    fn removing_open_book_closes_its_session_and_discards_pending_inherit() {
         let book_dir = tempfile::tempdir().expect("create book directory");
         let store_dir = tempfile::tempdir().expect("create store directory");
         let raw = Settings {
@@ -782,6 +797,8 @@ mod tests {
             "fixture must arm the pending intent before the removal"
         );
 
+        let backend = crate::backend::fake::FakeBackend::new();
+        let old = state.borrow().session().unwrap();
         let use_case = RemoveBooksUseCase::new(
             Rc::clone(&state),
             Rc::clone(&session),
@@ -791,6 +808,7 @@ mod tests {
             Rc::new(Some(gashuu_core::LibraryStore::new(
                 store_dir.path().join("library.json"),
             ))),
+            backend.clone(),
         );
 
         assert_eq!(
@@ -801,6 +819,7 @@ mod tests {
             }
         );
 
+        assert_eq!(backend.calls(), [crate::backend::fake::Call::Close(old)]);
         // `close()` leaves the view modes standing, so the recorded view still
         // matches the runtime — the discard has to be explicit.
         assert!(
