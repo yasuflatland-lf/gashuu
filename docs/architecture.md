@@ -140,7 +140,11 @@ Returns raw RGBA8 + dimensions. Carries an explicit pixel-count guard `check_pix
 header pre-read + `check_pixel_limit` + `Limits`-bounded decode — so BOTH `decode` and
 `decode_thumbnail(&[u8], max_side) -> Result<DecodedImage, CoreError>` route through it and the bomb
 guard lives in ONE place; a dedicated test proves `decode_thumbnail` inherits the early
-`check_pixel_limit` rejection.
+`check_pixel_limit` rejection. `downscale_to_thumbnail(&DecodedImage, max_side)` fits an
+already-decoded RGBA8 page within the requested square, preserving aspect ratio and leaving
+smaller images at their original size. `decode_thumbnail` uses it for RGBA8 input. For other
+pixel formats it samples at the same dimensions before converting to RGBA8, preserving the
+original sample precision.
 
 See [ADR-0003](ADRs/0003-image-loading-and-caching.md) for image loading decisions.
 
@@ -183,14 +187,14 @@ rayon worker right after the initial cover stream.
 ### cache::ImageCache
 
 LRU of `Arc<DecodedImage>` up to `DEFAULT_CAPACITY`=50 + background ±`DEFAULT_PREFETCH_RADIUS`=3
-prefetch in front of any `PageSource`. Two access paths serve different callers: `get(index)`
-decodes synchronously on a miss (kept for tests); `get_cached(index)` is a non-blocking pure
-cache-hit probe that returns `None` on a miss without ever reading or decoding. `dispatch_handle()`
-returns a cloneable `Send` `CacheDispatch` handle (`decode_and_cache`) that shares the live LRU via
-`Arc<Inner>` — the rayon worker decodes on a miss, inserts into the shared cache, then spawns
-neighbour prefetch. A racing prefetch or a concurrent worker that populated the same slot is detected
-by the double-checked `cached()` call in `decode_and_cache`, so the last writer wins and a duplicate
-decode is safely discarded.
+prefetch in front of any `PageSource`. `get(index)` decodes synchronously on a miss.
+`get_cached(index)` returns immediately on a miss and starts neighbour prefetch on a hit.
+`dispatch_handle()` returns a cloneable `Send` `CacheDispatch` that shares the LRU via `Arc<Inner>`.
+Its `cached(index)` promotes a hit without starting prefetch. `read_raw(index)` returns the
+source bytes or the source error. `insert_decoded(index, decoded)` applies the cache's count and
+byte limits and returns the shared `Arc`, reusing an existing entry if a concurrent reader
+already populated the slot. The synchronous `decode_and_cache` checks the cache before and after
+the read, decodes on a miss, and starts neighbour prefetch on success.
 
 See [ADR-0003](ADRs/0003-image-loading-and-caching.md) for the LRU/prefetch decision.
 
@@ -470,6 +474,13 @@ and run Slint's event loop. The desktop-only blocks in `run_app` prune the
 cover disk cache, wire drag-and-drop and update handlers, wire persistence on
 self-update relaunch, start the update check, restore window geometry, and
 persist state after the event loop returns.
+
+### page_decode
+
+`PageDecoder::decode` takes owned encoded bytes and returns a local `DecodeFuture` resolving to
+a straight-alpha RGBA8 `DecodedImage` or `CoreError`. `ImageCratePageDecoder` runs
+`gashuu_core::image_ops::decode` synchronously and returns an already-ready future. The port is
+available on all targets. The page loader still uses `CacheDispatch::decode_and_cache`.
 
 ### web_font
 

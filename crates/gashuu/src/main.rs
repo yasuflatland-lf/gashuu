@@ -22,6 +22,7 @@ mod navigation;
 mod open_book;
 mod open_controller;
 mod page_count_prefetch;
+pub mod page_decode;
 mod page_jump;
 mod page_loader;
 mod remove_books;

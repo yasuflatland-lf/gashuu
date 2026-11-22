@@ -39,6 +39,11 @@ pub struct DecodedImage {
 }
 
 impl DecodedImage {
+    fn from_rgba8(rgba: image::RgbaImage) -> Result<Self, CoreError> {
+        let (width, height) = rgba.dimensions();
+        Self::new(rgba.into_raw(), width, height)
+    }
+
     /// Build a decoded image, validating that `rgba` is exactly
     /// `width * height * 4` bytes (row-major, RGBA order).
     pub fn new(rgba: Vec<u8>, width: u32, height: u32) -> Result<Self, CoreError> {
@@ -115,10 +120,34 @@ fn decode_dynamic(bytes: &[u8]) -> Result<image::DynamicImage, CoreError> {
 /// its guard runs once, post-decode (see `decode_dynamic`). The existing
 /// `image::Limits` alloc cap is kept as a second layer.
 pub fn decode(bytes: &[u8]) -> Result<DecodedImage, CoreError> {
-    let img = decode_dynamic(bytes)?;
-    let rgba = img.to_rgba8();
-    let (width, height) = rgba.dimensions();
-    DecodedImage::new(rgba.into_raw(), width, height)
+    DecodedImage::from_rgba8(decode_dynamic(bytes)?.into_rgba8())
+}
+
+/// Target dimensions for a downscale, using the same nearest-pixel rounding
+/// and one-pixel minimum as `DynamicImage::thumbnail`.
+fn thumbnail_dimensions(width: u32, height: u32, max_side: u32) -> Option<(u32, u32)> {
+    let long_edge = width.max(height);
+    if long_edge <= max_side {
+        return None;
+    }
+    let scale = f64::from(max_side) / f64::from(long_edge);
+    let scaled = |n: u32| ((f64::from(n) * scale).round() as u32).max(1).min(n);
+    Some((scaled(width), scaled(height)))
+}
+
+/// Fit a decoded RGBA8 page within `max_side` while preserving its aspect ratio.
+/// Images that already fit retain their original pixels and dimensions.
+pub fn downscale_to_thumbnail(
+    img: &DecodedImage,
+    max_side: u32,
+) -> Result<DecodedImage, CoreError> {
+    let Some((width, height)) = thumbnail_dimensions(img.width(), img.height(), max_side) else {
+        return Ok(img.clone());
+    };
+    let pixels =
+        image::ImageBuffer::<image::Rgba<u8>, _>::from_raw(img.width(), img.height(), img.rgba())
+            .expect("DecodedImage validates the RGBA buffer length");
+    DecodedImage::from_rgba8(image::imageops::thumbnail(&pixels, width, height))
 }
 
 /// Decode `bytes` and downscale to a thumbnail whose longer edge is at most
@@ -139,15 +168,17 @@ pub fn decode(bytes: &[u8]) -> Result<DecodedImage, CoreError> {
 /// full-decode path for JPEG too until the pinned backend regains scaled decode.
 pub fn decode_thumbnail(bytes: &[u8], max_side: u32) -> Result<DecodedImage, CoreError> {
     let img = decode_dynamic(bytes)?;
-    // Downscale only: `DynamicImage::thumbnail` upscales small images to fill the
-    // bounds, so guard explicitly and return already-fitting images unchanged.
-    let rgba = if img.width() > max_side || img.height() > max_side {
-        img.thumbnail(max_side, max_side).to_rgba8()
-    } else {
-        img.to_rgba8()
+    if let image::DynamicImage::ImageRgba8(rgba) = img {
+        return downscale_to_thumbnail(&DecodedImage::from_rgba8(rgba)?, max_side);
+    }
+
+    // Sample other formats before converting to RGBA8 to retain the source
+    // precision and avoid expanding a full-resolution grayscale or RGB page.
+    let thumb = match thumbnail_dimensions(img.width(), img.height(), max_side) {
+        Some((width, height)) => img.thumbnail_exact(width, height),
+        None => img,
     };
-    let (w, h) = rgba.dimensions();
-    DecodedImage::new(rgba.into_raw(), w, h)
+    DecodedImage::from_rgba8(thumb.into_rgba8())
 }
 
 #[cfg(test)]
@@ -184,6 +215,32 @@ mod tests {
         img.write_to(&mut Cursor::new(&mut bytes), image::ImageFormat::Jpeg)
             .unwrap();
         bytes
+    }
+
+    #[test]
+    fn downscale_to_thumbnail_fits_the_long_edge_and_preserves_aspect() {
+        for (w, h, expected) in [(6, 4, (3, 2)), (4, 6, (2, 3))] {
+            let img = decode(&png_bytes(w, h)).unwrap();
+            let thumb = downscale_to_thumbnail(&img, 3).unwrap();
+            assert_eq!((thumb.width(), thumb.height()), expected);
+        }
+    }
+
+    #[test]
+    fn downscale_to_thumbnail_keeps_small_images_unchanged() {
+        let img = decode(&png_bytes(2, 3)).unwrap();
+        assert_eq!(downscale_to_thumbnail(&img, 8).unwrap(), img);
+    }
+
+    #[test]
+    fn decode_thumbnail_resizes_before_quantizing_16_bit_samples() {
+        let img = image::ImageBuffer::<image::Luma<u16>, _>::from_vec(2, 1, vec![0, 160]).unwrap();
+        let mut bytes = Vec::new();
+        img.write_to(&mut Cursor::new(&mut bytes), image::ImageFormat::Png)
+            .unwrap();
+        // The average (80) rounds to zero in RGBA8. Quantizing first would
+        // average the 8-bit samples 0 and 1, rounding up to 1.
+        assert_eq!(decode_thumbnail(&bytes, 1).unwrap().rgba(), &[0, 0, 0, 255]);
     }
 
     #[test]
