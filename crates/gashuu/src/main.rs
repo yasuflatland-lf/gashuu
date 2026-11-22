@@ -43,8 +43,6 @@ mod web_blob_store;
 #[cfg(any(target_arch = "wasm32", test))]
 mod web_books;
 #[cfg(target_arch = "wasm32")]
-mod web_decode;
-#[cfg(target_arch = "wasm32")]
 mod web_font;
 #[cfg(any(target_arch = "wasm32", test))]
 mod web_ios;
@@ -62,7 +60,7 @@ mod worker;
 
 pub(crate) use carousel_refresh::{
     apply_add_report, finalize_empty_book_rejected, finalize_remove, push_selection_toolbar_state,
-    refresh_library_carousel, snap_carousel_focus_to_last_opened, visible_index_to_path,
+    refresh_library_carousel, snap_carousel_focus_to_last_opened, visible_index_to_id,
     CarouselRefresh,
 };
 use dialog_session::DialogSession;
@@ -358,9 +356,10 @@ fn run_app(
     let pages = Rc::new(page_loader::PageController::new());
     #[cfg(target_arch = "wasm32")]
     let (covers, pages) = {
-        let primary: Rc<dyn page_decode::PageDecoder> = Rc::new(web_decode::NativePageDecoder);
-        let fallback: Rc<dyn page_decode::PageDecoder> =
-            Rc::new(page_decode::ImageCratePageDecoder);
+        let primary: Rc<dyn gashuu_core::PageDecoder> =
+            Rc::new(gashuu_web_decode::NativePageDecoder);
+        let fallback: Rc<dyn gashuu_core::PageDecoder> =
+            Rc::new(gashuu_core::ImageCratePageDecoder);
         let covers = cover_loader::CoverController::new(Rc::clone(&primary), Rc::clone(&fallback));
         let pages = PageController::with_decoders(primary, fallback);
         (Rc::new(covers), Rc::new(pages))
@@ -1024,7 +1023,7 @@ fn finalize_open(
                 ui.as_weak(),
                 state.borrow().current_source(),
                 state.borrow().page_count(),
-                state.borrow().open_file().map(std::path::Path::to_path_buf),
+                state.borrow().open_book().map(book_path::locate),
             );
             for detail in crate::i18n::dynamic::format_notices(loader, &notices) {
                 let base = ui.get_status_text().to_string();
@@ -1189,9 +1188,9 @@ mod tests {
         state.borrow_mut().open_path(&book).expect("open test book");
         let canonical = state
             .borrow()
-            .open_file()
+            .open_book()
             .expect("open file after successful open")
-            .to_path_buf();
+            .clone();
         let viewport = Rc::new(RefCell::new(ViewportState::from_settings(
             &settings.borrow(),
         )));
@@ -1205,7 +1204,9 @@ mod tests {
             &mut viewport.borrow_mut(),
         );
         let mut library_value = Library::new();
-        assert!(library_value.add(canonical.clone()).is_some());
+        assert!(library_value
+            .add(canonical.clone(), "book".into())
+            .is_some());
         let library = Rc::new(RefCell::new(library_value));
         let dialog_session = Rc::new(RefCell::new(DialogSession::new()));
         let covers = Rc::new(cover_loader::CoverController::new());
@@ -1276,9 +1277,9 @@ mod tests {
         state.borrow_mut().open_path(&book).expect("open test book");
         let canonical = state
             .borrow()
-            .open_file()
+            .open_book()
             .expect("open file after successful open")
-            .to_path_buf();
+            .clone();
         let viewport = Rc::new(RefCell::new(ViewportState::from_settings(
             &settings.borrow(),
         )));
@@ -1292,7 +1293,9 @@ mod tests {
             .borrow_mut()
             .apply_resolved_view(book_view, &mut viewport.borrow_mut());
         let mut library_value = Library::new();
-        assert!(library_value.add(canonical.clone()).is_some());
+        assert!(library_value
+            .add(canonical.clone(), "book".into())
+            .is_some());
         let library = Rc::new(RefCell::new(library_value));
         let dialog_session = Rc::new(RefCell::new(DialogSession::new()));
         let covers = Rc::new(cover_loader::CoverController::new());
@@ -1467,9 +1470,9 @@ mod tests {
         // Add the canonical identity, the form the load path normalizes to (on macOS
         // a tempdir's `/var` resolves to `/private/var`), so the round trip compares
         // like with like.
-        let stored = gashuu_core::canonical_identity(&book);
+        let (stored, title) = book_path::identify(&book, true).unwrap();
         let mut library_value = Library::new();
-        assert!(library_value.add(stored.clone()).is_some());
+        assert!(library_value.add(stored.clone(), title).is_some());
         // `track_recent_sources` is off by default and untouched by `normalize`,
         // so it survives the round trip iff the save actually happened.
         let settings_value = Settings {
@@ -1499,7 +1502,7 @@ mod tests {
             reloaded_library
                 .books()
                 .iter()
-                .map(|b| b.path().to_path_buf())
+                .map(|b| b.id().clone())
                 .collect::<Vec<_>>(),
             vec![stored],
             "the resolved handle must persist the library it was handed"

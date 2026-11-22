@@ -12,6 +12,14 @@ inventory: what exists, where it lives, and what it does.
 Slint-independent domain + I/O layer. See [ADR-0002](ADRs/0002-layered-two-crate-architecture.md)
 for the rationale behind the two-crate split. Keep the layer boundary strict.
 
+### page_decode
+
+`PageDecoder` takes owned encoded bytes and returns a local `DecodeFuture` that resolves
+to straight-alpha RGBA8 and dimensions. `ImageCratePageDecoder` wraps `image_ops::decode`
+in a ready future. `decode_with_fallback` retries the same bytes after a primary failure.
+A successful retry returns the image and the primary error. If both attempts fail, the
+caller receives the fallback error.
+
 ### PageSource trait
 
 Requires `Send + Sync` so `Arc<dyn PageSource>` can be shared with rayon worker threads during
@@ -298,7 +306,10 @@ uses the document's production key, `library.json` or `settings.json`.
 
 - `load` decodes UTF-8 and parses the document. An absent blob yields `Library::new()` or
   `Settings::default()`. Invalid UTF-8 returns an I/O error of kind `InvalidData`.
-- `save` passes the existing JSON serialization to the adapter's atomic write.
+- `save` passes the existing JSON serialization to the adapter's atomic write. Library version 1
+  writes `BookId` as a bare string under each book's `path` key and in `last_opened` when present.
+  Desktop loads re-resolve legacy locations and merge aliases before normalization. Web loads
+  normalize directly.
 - `quarantine(now_secs)` passes the timestamp to the adapter and returns the destination label
   if a blob was moved.
 - `SettingsStore::stored_text` supplies the raw text for startup repair.
@@ -379,53 +390,52 @@ decision and [patterns.md](patterns.md) ("Partial/total override pair") for the 
 
 ### Library aggregate
 
-`library.rs` (signature retyped in #65; book ordering added in #82; per-book view overrides added
-in this feature).
-`Library::register_opened(canonical: &Path, page_count: Option<NonZeroUsize>) -> OpenRegistration
-{ resume: ReadingProgress, count_changed: bool }` centralises the open-time domain rule that
-previously lived in `main.rs`'s open flow: idempotent add by canonical path
-(dedup); page-count back-fill applied only for `Some(_)` (an unknown total = `None` is skipped);
-resume lookup via `Book::progress()`. Both `set_resume_page` and `set_page_count` report whether
-the stored progress changed. They update it through `with_last_viewed` and `with_total`, which
-delegate to `ReadingProgress::new` for clamping. Identity merges construct the survivor's progress
-from the maximum resume index and the first known count in shelf order. Deserialization also
-constructs progress, so a stale index in a saved book is bounded as soon as it loads. The next
-ordinary save writes the corrected index.
-`Book::page_count_opt() -> Option<usize>` exposes the count, and `Book::progress()` returns the
-stored value by copy.
-`ViewerState::page_count_opt() -> Option<NonZeroUsize>` supplies the already-typed count;
-`OpenBookUseCase::run` passes it to `register_opened` and calls
-`jump_to(reg.resume.last_viewed())`. The reject-empty-books path bails out at
-`EmptyBookRejected` BEFORE `register_opened` when that count is `None` (see ADR-0009), keeping the
-domain rule out of the presentation layer (aligns with the core↔UI boundary, ADR-0002).
-`count_changed` tells the caller whether to rebuild the carousel. `Book::progress() ->
-ReadingProgress` is the per-book accessor that `carousel_data_for_indices` and `register_opened`
-both use;
-`library.json` serde shape is unchanged (only `last_page` + `page_count` are persisted on each
-`Book`, `page_count` still a bare `usize` with `0` for unknown).
+`BookId` identifies a book across the library, viewer, and selection. Its UTF-8 string defines
+equality and hashing. Its `Ord` implementation compares path components first to preserve desktop
+selection and removal order, then compares the raw strings to distinguish IDs with equal components.
+Location handling lives at the following boundaries.
 
-`Library` is the single source of truth for book ordering: **natural title order** (numeric-aware,
-via `ordering::natural_cmp`) with the canonical path as a stable tiebreak for identically titled
-books. `add()` sorts the book list after inserting; `normalize()` re-sorts on load
-(`LibraryStore::load`) so libraries persisted before #82 (insertion order) converge to
-natural title order on the next launch. The presentation layer (`carousel_data_for_indices`,
-`cover_requests`) inherits this order by iterating `books()` — it does NOT sort independently,
-which keeps carousel row indices and cover-request indices aligned.
+- `canonical_identity` in core resolves a picked desktop path and keeps its original spelling if
+  resolution fails or the result is non-UTF-8.
+- `Library::recanonicalize_and_merge` interprets stored IDs as locations during desktop loads,
+  merges aliases, and remaps `last_opened` to the surviving ID.
+- `book_path::identify` builds an ID from a picked location and derives the title from the
+  resolved path and the caller's directory flag. `book_path::locate` resolves an ID for file access
+  or cache operations. Web IDs carry session registry paths until OPFS support in #660.
 
-`Library` also holds `last_opened: Option<PathBuf>` (private, `#[serde(default, skip_serializing_if = "Option::is_none")]`): the canonical path of the most recently opened book, or `None`. Invariant: when `Some`, the path is present in `books`. Set by `register_opened` immediately after the idempotent add; cleared by `remove`/`remove_many` when they remove the matching book; orphan entry (path no longer in `books`) cleared by `normalize()` on load. Public accessor: `last_opened() -> Option<&Path>`. Persisted by the existing `save()` leave points; no separate save — same recipe as `last_page`/`overrides`.
+`Library::book(&BookId)` looks up a shelf entry. `add` and `add_many` take IDs and titles supplied by
+the caller. `Library::register_opened(id, title, page_count)` adds an entry on its first open and
+preserves its stored title on subsequent opens. It applies a known page count and returns
+`OpenRegistration { resume: ReadingProgress, count_changed: bool }`. The open use case applies the
+book's resolved view before jumping to the returned resume position. It rejects empty sources
+before registration (see [ADR-0009](ADRs/0009-reject-empty-books.md)).
+
+`set_resume_page` and `set_page_count` report whether stored progress changed. They delegate to
+`ReadingProgress` for clamping. Identity merges construct the survivor's progress from the maximum
+resume index and the first known count in shelf order. Deserialization also clamps stale indices.
+The version 1 document stores progress as `last_page` and `page_count`, with `0` as the unknown
+count. `Book::progress()` provides the in-memory value for registration and carousel projection.
+
+`Library` sorts by natural title order via `ordering::natural_cmp` and breaks title ties with the raw
+ID string. Inserts maintain this order and `normalize` restores it on load. Carousel rows and cover
+requests share the same projection of the library's order.
+
+`Library` holds `last_opened: Option<BookId>` and exposes it through `last_opened() -> Option<&BookId>`.
+`register_opened` sets it, removal clears it when the matching book is deleted, and normalization
+clears orphan IDs on load. The usual leave-point saves persist the bookmark alongside reading
+progress and overrides.
 
 Each `Book` also carries a `ViewOverride overrides` field (the per-book view-preference overrides;
 `#[serde(default, skip_serializing_if = "ViewOverride::is_empty")]`, so an all-`None` override emits
 no key and `library.json` stays byte-compatible with files written before this feature — see
 [conventions.md](conventions.md), "Add an optional nested config"). The aggregate owns the mutation:
-`Library::set_overrides(path, ViewOverride) -> bool` (idempotent-changed bool, same `false`==no-op
-convention as `set_last_page`/`set_page_count`) and `Library::overrides_for(path) -> ViewOverride`
-(returns `ViewOverride::none()` for an unknown path, so the caller can `resolve` unconditionally).
+`Library::set_overrides(id, ViewOverride) -> bool` (idempotent-changed bool, same `false`==no-op
+convention as `set_last_page`/`set_page_count`) and `Library::overrides_for(id) -> ViewOverride`
+(returns `ViewOverride::none()` for an unknown ID, so the caller can `resolve` unconditionally).
 There is NO `Book` setter — `Book::overrides()` is read-only.
 
-The bulk-delete rollback primitive (#129) is `Library::restore(books: Vec<Book>)` —
-re-inserts the supplied `Book` clones, de-duplicating by canonical path (an entry whose path is
-already present is skipped), then re-sorts via `book_order`. This is the counterpart to
+The bulk-delete rollback primitive (#129) is `Library::restore(books: Vec<Book>, last_opened: Option<BookId>)` —
+re-inserts the supplied `Book` clones by ID, restores a valid bookmark, and re-sorts via `book_order`. This is the counterpart to
 `remove_many`: a caller that captured clones before removal and then failed to persist can hand
 them back to recover the exact pre-removal shelf (byte-identical re-serialization). Avoids the
 `add()`-trap (which resets `last_page`/`page_count`) because the full clones carry all existing
@@ -460,6 +470,14 @@ re-exported at the crate root. See [ADR-0013](ADRs/0013-auto-update.md).
 
 ---
 
+## crates/gashuu-web-decode (wasm32)
+
+`NativePageDecoder` calls `createImageBitmap` on the current `Window` or
+`WorkerGlobalScope`. It checks the pixel limit before allocating an `OffscreenCanvas`
+and falls back to an HTML canvas on windows without offscreen support. It requests
+straight alpha, no color-space conversion, and original pixel orientation. Canvas
+readback can round partially transparent RGB values.
+
 ## crates/gashuu (Slint presentation layer)
 
 See [ADR-0001](ADRs/0001-gui-framework-slint.md) for the Slint framework decision and
@@ -477,27 +495,14 @@ persist state after the event loop returns.
 
 ### page_decode
 
-`page_decode.rs` defines the port. `PageDecoder::decode` takes owned encoded bytes and returns a local `DecodeFuture` resolving to
-a straight-alpha RGBA8 `DecodedImage` or `CoreError`. `ImageCratePageDecoder` runs
-`gashuu_core::image_ops::decode` synchronously and returns an already-ready future. The port is
-available on all targets. On a cache miss, `decode_page` reads the encoded bytes once and
-awaits the primary decoder. If it fails, the orchestrator warns once per controller and retries
-with the fallback. A page cached during either await takes precedence. Otherwise a successful
-decode populates the cache, or the fallback error reaches the loader.
+`decode_page` returns cached pages immediately. On a miss it reads the encoded page
+once and uses core's fallback orchestration. A page cached during either decode takes
+precedence. A primary failure triggers one warning per controller when a retry is needed.
 
-On wasm32, the composition root supplies `NativePageDecoder` as primary and
-`ImageCratePageDecoder` as fallback. Desktop uses the image crate only. The port
-and its local `!Send` futures live in `gashuu`, keeping browser bindings out of
-core. Web covers use the same pair, then `image_ops::downscale_to_thumbnail`;
-cover requests run sequentially, including across refreshes. The web thumbnail
-strip remains a no-op. See [ADR-0014](ADRs/0014-web-decodes-pages-with-the-browser-native-decoder.md).
-
-### web_decode
-
-`web_decode.rs` implements `NativePageDecoder` on the browser main thread with
-`createImageBitmap` and canvas readback. It checks the pixel limit before canvas
-allocation and requests straight alpha, no color-space conversion, and original
-pixel orientation. Canvas readback can round partially transparent RGB values.
+On wasm32 the composition root supplies `gashuu_web_decode::NativePageDecoder` as
+primary and `ImageCratePageDecoder` as fallback. `decode_cover` uses the same pair on
+page zero, then downscales the result. Covers load sequentially across refreshes.
+Desktop uses the image crate only. See [ADR-0014](ADRs/0014-web-decodes-pages-with-the-browser-native-decoder.md).
 
 ### web_font
 
@@ -552,7 +557,7 @@ metadata/settings integration. Spread position and pairing inputs are held as a 
 reconstructing pairing context.
 `open_path(path)` / `open_path_with_policy(path, policy)` are now the SYNCHRONOUS composition of the
 pure, `Send` `open_controller::probe_open` (archive dispatch + full listing + skipped/truncated
-flags + `canonical_identity`) and the new mutation-only tail
+flags, ID, and title) and the new mutation-only tail
 `install_opened(source, skipped, truncated, canonical)`. The blocking work is therefore defined in
 ONE place and the async open path cannot drift from it, while the contract is unchanged — an error
 leaves the state untouched, because nothing is installed unless the probe opened. Two paired
@@ -590,16 +595,10 @@ NEXT open (the dialog's cache/preload edits would otherwise only take effect aft
 the fields are seeded once at `from_settings` and `set_source` reads ViewerState's own fields, not
 live `Settings`).
 
-`open_file() -> Option<&Path>`: the CANONICAL path of the most recently successful
-`open_path` (set via `gashuu_core::canonical_identity(path)` — canonicalize best-effort, falling
-back to the GIVEN path when canonicalization FAILS **or** yields a non-UTF-8 path; `None` until the
-first `Ok`, reset by `set_source`, unchanged by a failed `open_path`). That function is the single
-home of the rule: callers pass its result unchanged to `Library::add` / `Library::register_opened`,
-and `Library::recanonicalize_and_merge` uses it for the explicit load-time self-heal, so
-canonicalization can never introduce an unserializable identity (a non-UTF-8 `Book::path` would
-break every library save).
-`view_sync.rs` reads it to form the write-back tuple `(canonical_path, index())` for the `Library`
-at every leave point — see the resume/write-back scope entry and `docs/patterns.md`.
+`install_opened` stores the probe's ID and title alongside the source. `open_book() -> Option<&BookId>`
+supplies the key for position and view-mode write-back, and `open_title() -> Option<&str>` supplies
+the window title through `view_sync::current_book_name`. Both start empty and are cleared by
+`set_source` and `close`. Failed opens preserve the active source, ID, and title.
 
 This-feature added `apply_resolved_view(ResolvedView)` — sets `reading_direction`/`spread_mode`/`cover_mode`
 from a resolved view (the `fit_mode` field is applied by the caller via `ViewportState::set_fit`),
@@ -622,11 +621,11 @@ Two scrubber-support helpers:
   scrubber preview to choose 1 vs 2 popover thumbnails.
 
 `close(&mut self)` (#129): drops the cache and source and calls `nav.set_total(0)`,
-and clears `open_file` — returning `ViewerState` to the no-book-open state. Display modes
+and clears the active ID and title — returning `ViewerState` to the no-book-open state. Display modes
 (`reading_direction` plus the spread/cover/aspect configuration inside `nav`) and `cache_config` are
 deliberately preserved (closing a book is not a settings reset). Called by
 `RemoveBooksUseCase::run` (headless) when the open book is among the deleted ones, and by
-`OpenBookUseCase::run`'s empty-book arm, so a rejected empty open leaves `open_file()` `None`
+`OpenBookUseCase::run`'s empty-book arm, so a rejected empty open leaves `open_book()` `None`
 instead of a phantom zero-page source (see §open_book below and
 [ADR-0009](ADRs/0009-reject-empty-books.md)'s Amendment); the matching
 title-bar blank — `ui.set_current_book_name("".into())` — is the Slint side of that close and lives
@@ -674,7 +673,7 @@ injected save effects. The return value (#114) is built from two types and a sin
   over six private steps: `persist_outgoing` (outgoing position/view save), `install` (probe
   discrimination, source install, pending-inherit clear), `reject_empty` (removal transaction and
   viewer close), `record_recent` (tracking-gated settings save), `register_and_resume` (register and
-  page-count back-fill, then apply the resolved per-book view BEFORE jumping to the resume page),
+  page-count back-fill using the installed ID and title, then apply the resolved per-book view BEFORE jumping to the resume page),
   and `persist_registered` (the second synchronous library save). On a `Failed` probe
   it returns `OpenOutcome::Error(String)` (the worker's pre-captured message); on success it
   returns `OpenOutcome::Success { notices, count_changed }`. **`apply_probed` does NOT transition
@@ -703,10 +702,10 @@ carousel rebuild / thumbnail start all bypassed (so an empty book never re-enter
 best-effort purges the removed book's cover (via the shared `open_book::remove_empty_book`; Wave-2 #150
 closed the old open-path purge gap), and pre-captures any save error. AFTER `remove_empty_book` and
 BEFORE returning the variant it also calls `ViewerState::close()`, so the post-rejection state is
-`open_file()` `None`, `page_count()` `0`, no source mounted. WHY: `open_path_with_policy` SUCCEEDS on
-an empty folder/archive, so the zero-page source used to stay mounted with `open_file =
+`open_book()` `None`, `page_count()` `0`, no source mounted. WHY: `open_path_with_policy` SUCCEEDS on
+an empty folder/archive, so the zero-page source used to stay mounted with `open_book =
 Some(<the just-REMOVED book>)` — which showed the removed book in the title bar, let the Library's
-Down key pass its only guard (`open_file().is_none()`) and enter a 0-page Viewer, silently closed
+Down key pass its only guard (`open_book().is_none()`) and enter a 0-page Viewer, silently closed
 whatever book WAS open, and made the `AppExit` route see a phantom open book and skip reconciling
 runtime view modes into global `Settings`. The recents push + settings save are DEFERRED past this check so
 they fire only for a non-empty book (see [patterns.md](patterns.md), "Insert a guard before X").
@@ -757,10 +756,9 @@ data and touches no Slint; the UI tail lives in `carousel_refresh::finalize_remo
 - `RemoveBooksUseCase` — the "remove the selected books" use case. Holds five shared collaborators
   as `Rc<RefCell<…>>` fields: `ViewerState`, `DialogSession`, `Library`, `LibrarySearchState`, and
   `LibrarySelectionState`. `run(&self) -> RemoveOutcome` (no `ui` arg — headless) executes the full
-  destructive transaction in the non-negotiable order: snapshot selected paths → mutate+save with
-  rollback (via `remove_books_with_rollback`) → best-effort cover purge via `cover_loader::purge_cover`
-  (the single home of the cover-key recipe; `mtime_secs` and `COVER_MAX_SIDE` are private to
-  `cover_loader.rs`; `tracing::warn`-only on miss) → clear the viewer via `ViewerState::close()` and
+  destructive transaction in the non-negotiable order: snapshot selected IDs → mutate+save with
+  rollback (via `remove_books_with_rollback`) → resolve locations with `book_path::locate` and purge
+  their covers and page thumbnails → clear the viewer via `ViewerState::close()` and
   its pending intent via `DialogSession::clear_pending_inherit()` when the open book was deleted,
   recording `closed_open_book` in the outcome
   so the Slint side can blank the title bar → recompute the search projection → clear the selection
@@ -771,18 +769,16 @@ data and touches no Slint; the UI tail lives in `carousel_refresh::finalize_remo
   `wire_selection_handlers`) hands the outcome to `carousel_refresh::finalize_remove`, which rebuilds
   the carousel, clamps the focused index, blanks the viewer title (`ui.set_current_book_name("".into())`,
   `carousel_refresh.rs:302`) when `closed_open_book`, and composes the status line.
-- `remove_books_with_rollback(library, paths, save)` — the transaction primitive: captures full
+- `remove_books_with_rollback(library, ids, save)` — the transaction primitive: captures full
   `Book` clones before removal, calls `Library::remove_many`, then calls `save`; on `Err` calls
-  `Library::restore(removed_books)` (byte-identical rollback — avoids the `add()`-trap that would
-  reset `last_page`/`page_count`) and propagates the error. The injected `save` closure makes it
-  unit-testable against a failing or succeeding save.
-- `removed_contains_open(open_file, removed) -> bool` — pure decision helper: whether the currently
-  open file (`None` when no book is open) is among the removed paths, compared by canonical path
-  identity. Keeps `run` a thin orchestration shell, testable in isolation from the live `ViewerWindow`.
-- `confirm_delete_content(loader, selection, search, library, open_file) -> ConfirmDeleteContent`
+  `Library::restore(removed_books, prior_last_opened)` and propagates the error. Keeping the full
+  books and bookmark makes serialization byte-identical after rollback.
+- `removed_contains_open(open_book, removed) -> bool` — pure decision helper: whether the currently
+  open book is among the removed IDs.
+- `confirm_delete_content(loader, selection, search, library, open_book) -> ConfirmDeleteContent`
   — pure (no I/O, no Slint) builder for the confirm dialog body: title with total count, up to 10
-  book titles in selection (BTreeSet path) order, an "…and M more" line when count > 10, an "N
-  selected outside the current search" line when filtered-out books are included, and a warning
+  book titles in ID order, an overflow line when count > 10, a line for books selected outside the
+  current search, and a warning
   when the open book is selected. The struct (`title`, `body_lines`, `info`, `warning`) holds
   fully localized strings — each field is resolved via `i18n::dynamic` inside the builder and is
   display-ready.
@@ -806,16 +802,17 @@ applicable position write-back, delegates view-mode routing
 to `stage_view_modes_to_sink`, and saves the library at most once. `stage_view_modes_to_sink`'s
 `match route` selects the sink: `DialogClosedOnLibrary` → global reconcile;
 `DialogClosedOnViewer` / `LeaveViewer` / `OpenDifferentBook` → per-book write-back; `AppExit` →
-per-book write-back FIRST, then a global reconcile ONLY when `open_file().is_none()`; `Suspend` →
-the same sinks when no dialog is open, otherwise position only. An active dialog holds unconfirmed
-edits or a global scratchpad, so suspend must preserve its session ([issue #664](https://github.com/yasuflatland-lf/gashuu/issues/664)).
-The GLOBAL route sink is invoked via the Library-dialog close and the no-book-open exit or suspend; a Library-scope
-`DialogSession::end` also invokes the same helper before restoring its snapshot. Every leave point
-hits the per-book sink (a no-op when no book is open), except suspend with an active dialog.
+per-book write-back first, then a global reconcile when `open_book().is_none()`. `Suspend` uses the
+same view-mode sinks when no dialog is open. With an active dialog, suspend writes back the reading
+position and preserves the dialog session and its unconfirmed edits
+([issue #664](https://github.com/yasuflatland-lf/gashuu/issues/664)).
+The global sink runs on Library-dialog close and when no book is open at exit or dialog-free
+suspend. A Library-scope `DialogSession::end` also invokes the same helper before restoring its
+snapshot. The per-book sink writes an override only when a book is open.
 Before a per-book write-back, `stage_view_override_write_back` builds the current `ResolvedView`,
 asks `DialogSession::inherit_pending(current)` whether the reset guard still applies, and consults
 the shared `Settings` handle to stage only fields that differ from global. The private pure helper
-is `view_override_to_write_back(open_file, view, global, inherit_pending)`; pending inherit keeps
+is `view_override_to_write_back(open_book, view, global, inherit_pending)`; pending inherit keeps
 priority and emits `ViewOverride::none()` outright. The predicate is derived from runtime equality,
 so mode setters do not participate in its maintenance.
 `apply_global_view_to_runtime(&settings, &state, &viewport)` mirrors the GLOBAL `Settings` view
@@ -866,7 +863,7 @@ snapshot, the next leave point could write an override pinning the OLD global va
 
 ### book_availability
 
-`book_availability.rs` supplies the desktop path-existence predicate; unavailable books remain in the library.
+`book_availability.rs` checks existence through `book_path::exists(&book_path::locate(book.id()))`. Unavailable books remain in the library.
 
 ### library_model
 
@@ -883,7 +880,7 @@ keeps the derivation table-testable without a display backend. Each row is built
 one-page total → `0.0`, final page and overshoot clamp to `1.0`);
 `total = ReadingProgress::total() -> Option<usize>`. The free derivation no longer lives in `library_model`
 — it is centralised in `ReadingProgress` (see core entry below). `available` is derived by an injected predicate, keeping the availability decision outside core. `bookmarked: bool` is a pure derivation computed in
-`carousel_data_for_indices`: `book.path() == library.last_opened()` — true for at most one row
+`carousel_data_for_indices`: `Some(book.id()) == library.last_opened()` — true for at most one row
 (the last-opened book); the `BookmarkRibbon` atom in `CoverCard` shows when this is `true`.
 `carousel.rs`'s `to_carousel_item` adapter builds the `!Send`
 `slint::Image` (a `slint::Image::default()` placeholder, filled in asynchronously by `CoverController`)
@@ -900,38 +897,32 @@ saturating cast is unchanged.
 ### LibrarySearchState
 
 #88, `library_model.rs` (pub(crate) struct). Owns the active search `query` and a set of
-`forced_visible_paths` — books added in the current session that stay visible even when the
+`forced_visible_ids` — books added in the current session that stay visible even when the
 query would exclude them, until the next query change. Maintains `visible_indices: Vec<usize>` —
 the filtered projection of library row indices in natural `Library::books()` order. Recomputes
-after every mutation: `set_query(query, &Library)` (clears forced paths, then recomputes);
-`force_visible(paths, &Library)` (dedups against the existing forced set, then recomputes).
+after every mutation: `set_query(query, &Library)` (clears forced IDs, then recomputes);
+`force_visible(ids, &Library)` (dedups against the existing forced set, then recomputes).
 `recompute(&Library)` is the entry point for LIBRARY-changed-only cases where neither the query
 nor the forced set moved (startup seed, open-time backfill). `visible_indices()` is read-only and
 always consistent with the last mutation. The pure `book_matches` helper lives in core `search.rs`;
-`matching_indices` lives alongside `LibrarySearchState` and is the fast-path delegate when no paths
+`matching_indices` lives alongside `LibrarySearchState` and is the fast-path delegate when no IDs
 are forced visible.
 
 ### LibrarySelectionState
 
 Bulk-delete feature (#126/#128), `library_model.rs` (pub(crate) struct). Owns the active
-selection as a `BTreeSet<PathBuf>` keyed by canonical path — the same key `Library::add` uses —
-so the selection survives query changes and carousel rebuilds. It owns ONLY the path-set invariant
-(selection is ORTHOGONAL to the search query); the "act on just the visible slice" joins live
-OUTSIDE it in `selection_projection.rs` (next entry). Key mutators: `toggle(path)` (adds or removes
-one path), `insert(path)` / `remove(path)` (the single-path primitives the projection joins build
-on), and `clear()` (success-path reset, called by `RemoveBooksUseCase` on success only). Key
-accessors: `count()` (total selection size, across the whole library); `selected() -> impl
-Iterator<Item=&Path>` (BTreeSet path-sorted order — deterministic for the confirm-dialog title
-list and the `RemoveBooksUseCase` removal snapshot); `contains(path) -> bool`. Used as a
-collaborator by `RemoveBooksUseCase` (#129).
+selection as a `BTreeSet<BookId>` so selected books survive query changes and carousel rebuilds.
+`toggle` and `insert` take owned IDs, and `remove` and `contains` take borrowed IDs. The
+`selected()` iterator supplies IDs in deterministic order for the confirmation titles and removal
+snapshot. `selection_projection.rs` joins the selection with the current search results.
 
 ### selection_projection
 
 `selection_projection.rs`. The selection-over-projection JOINS — the four ops that combine the pure
-`LibrarySelectionState` path-set with the search projection (`LibrarySearchState::visible_indices()`)
+`LibrarySelectionState` ID set with the search projection (`LibrarySearchState::visible_indices()`)
 and the `Library`. They are FREE FUNCTIONS (NOT methods on `LibrarySelectionState`), each taking a
 `&mut`/`& LibrarySelectionState` as the FIRST argument plus `&LibrarySearchState, &Library`, so the
-selection type keeps only its path-set invariant while "operate on just the visible slice" stays a
+selection type keeps only its ID set invariant while "operate on just the visible slice" stays a
 separate, composable concern:
 
 - `select_visible(&mut selection, search, library)` — select every currently visible book, leaving
@@ -940,18 +931,18 @@ separate, composable concern:
   leaving selected-but-filtered-out books untouched (the orthogonality invariant).
 - `all_visible_selected(&selection, search, library) -> bool` — whether every visible book is
   selected (`false` for an empty projection); drives the Select-all toggle direction.
-- `visible_selected_count(&selection, search, library) -> usize` — how many selected paths appear in
+- `visible_selected_count(&selection, search, library) -> usize` — how many selected IDs appear in
   the current visible projection (the toolbar's "N outside search" indicator and `confirm_delete_content`).
 
 All four share a private `visible_paths(search, library)` join and are headlessly unit-tested in-module.
 
 ### carousel
 
-`carousel.rs`. UI-thread adapter layer between `library_model` and Slint: `to_carousel_item` (private) maps a `CarouselData` row to a `CarouselItem` (placeholder `slint::Image::default()` cover); `build_carousel_model(library: &Library, indices: &[usize], is_available: &dyn Fn(&Book) -> bool)` (pub(crate)) is a HEADLESS builder — no `ViewerWindow` arg — returning the `Rc<VecModel<CarouselItem>>`; a separate `bind_carousel_model(ui, model)` performs the Slint bind (the build/bind split enables unit tests over visible-index order); `cover_requests(library: &Library, indices: &[usize])` (pub(crate)) derives the per-book `CoverRequest` list, re-basing each request's `row` to the enumerated position in the filtered `indices` slice (not the library index), so cover targets stay aligned with the filtered carousel model; `thumb_state_at` (pub(crate)) re-fetches a row's thumbnail state for the scrubber preview.
+`carousel.rs`. UI-thread adapter layer between `library_model` and Slint: `to_carousel_item` (private) maps a `CarouselData` row to a `CarouselItem` (placeholder `slint::Image::default()` cover); `build_carousel_model(library: &Library, indices: &[usize], is_available: &dyn Fn(&Book) -> bool)` (pub(crate)) is a HEADLESS builder — no `ViewerWindow` arg — returning the `Rc<VecModel<CarouselItem>>`; a separate `bind_carousel_model(ui, model)` performs the Slint bind (the build/bind split enables unit tests over visible-index order); `cover_requests(library: &Library, indices: &[usize])` (pub(crate)) derives the per-book `CoverRequest` list with an ID for library updates and a location from `book_path::locate` for source and cache access, re-basing each request's `row` to the enumerated position in the filtered `indices` slice (not the library index), so cover targets stay aligned with the filtered carousel model; `thumb_state_at` (pub(crate)) re-fetches a row's thumbnail state for the scrubber preview.
 
 ### carousel refresh / projection (`carousel_refresh.rs`)
 
-`carousel_refresh.rs` (extracted from `main.rs`, mirroring the `view_sync.rs` split). Owns the carousel-refresh/projection cluster: `refresh_library_carousel` (the single chokepoint that rebuilds + binds the filtered carousel model, optionally resets focus, re-applies the path-keyed selection, and (re)starts focus-prioritized cover loading), the `CarouselRefresh` collaborator bundle it takes (`library` / `library_store` / `covers` / `search` / `selection` / `localizer`, all `pub(crate)`; `library_store` is the `LibraryStoreHandle` the add-path save routes through), the visible-index projection helpers (`visible_index_to_path`, `visible_focus_index_for_path`, `entry_focus_index` (private), `snap_carousel_focus_to_last_opened`, `clamp_focused_index`), and `push_selection_strings` (the selection-toolbar string chokepoint). The `CarouselRefresh` bundle OWNS its `Rc` handles and derives `Clone`: a Slint callback must be `'static`, so each `wire_*` fn whose callbacks rebuild the carousel assembles one bundle from its own parameters and every such callback captures `carousel.clone()`. UI-thread only; driven almost entirely from `handlers/library.rs` and `handlers/settings.rs`, with `go_to_library`/`go_to_viewer` (still in `main.rs`) routing their carousel work through it via the crate-root re-exports.
+`carousel_refresh.rs` (extracted from `main.rs`, mirroring the `view_sync.rs` split). Owns the carousel-refresh/projection cluster: `refresh_library_carousel` (the single chokepoint that rebuilds + binds the filtered carousel model, optionally resets focus, re-applies the ID-keyed selection, and (re)starts focus-prioritized cover loading), the `CarouselRefresh` collaborator bundle it takes (`library` / `library_store` / `covers` / `search` / `selection` / `localizer`, all `pub(crate)`; `library_store` is the `LibraryStoreHandle` the add-path save routes through), the visible-index projection helpers (`visible_index_to_id`, `visible_focus_index_for_id`, `entry_focus_index` (private), `snap_carousel_focus_to_last_opened`, `clamp_focused_index`), and `push_selection_strings` (the selection-toolbar string chokepoint). The `CarouselRefresh` bundle OWNS its `Rc` handles and derives `Clone`: a Slint callback must be `'static`, so each `wire_*` fn whose callbacks rebuild the carousel assembles one bundle from its own parameters and every such callback captures `carousel.clone()`. UI-thread only; driven almost entirely from `handlers/library.rs` and `handlers/settings.rs`, with `go_to_library`/`go_to_viewer` (still in `main.rs`) routing their carousel work through it via the crate-root re-exports.
 
 ### page_count_prefetch
 
@@ -959,12 +950,12 @@ All four share a private `visible_paths(search, library)` join and are headlessl
 whose page count is unknown is resolved on a `cover_loader` rayon worker from the SAME archive open
 that produces its cover (no extra `ArchiveLoader::open`). Because a worker cannot touch the `!Send`
 `Rc<RefCell<Library>>`, `push_and_marshal_count` (worker side) does two things: it pushes a
-`ResolvedCount { path, count }` onto a `Send` `Arc<Mutex<Vec<ResolvedCount>>>` queue for later
+`ResolvedCount { id, count }` onto a `Send` `Arc<Mutex<Vec<ResolvedCount>>>` queue for later
 UI-thread persistence (zero-page archives map `count == 0` to `None`, so nothing is queued), and it
 `marshal_total`s the count onto the carousel row (`set_carousel_total`) for immediate display, both
 behind the cover-epoch guard so a superseded generation is dropped. `PageCountPrefetch` owns the
 queue: `queue()` hands a `Send` clone to a worker; `apply(&library)` drains it on the UI thread,
-calls `Library::set_page_count`, and saves ONCE if anything changed (called at the next `start`);
+calls `Library::set_page_count` by ID, and saves ONCE if anything changed (called at the next `start`);
 `flush(&library)` re-applies on shutdown. `ResolvedCount` is a named struct (not a bare tuple) so the
 queue element reads as "a resolved fact being carried home".
 
@@ -1304,7 +1295,7 @@ flagged `needs_count` (`Book::page_count_opt() == None`) resolves the count on t
 cover-MISS worker reuses its archive open (`source.list_pages().len()` before `generate_cover`), a
 cover-cache HIT opens the archive once for the count AFTER marshalling the cover (so the count never
 delays the visible image). `marshal_total` streams the count to the row's `total` for immediate display,
-and a `ResolvedCount { path, count }` is queued in `pending_counts` for UI-thread persistence — drained
+and a `ResolvedCount { id, count }` is queued in `pending_counts` for UI-thread persistence — drained
 via `Library::set_page_count` + `save` at the next `start` and at shutdown (`flush_counts`), so the
 count survives a relaunch (a worker can't touch the `!Send` `Rc<RefCell<Library>>`, hence the queue).
 Callers build the `CoverRequest` list BEFORE `start` so the `library.borrow()` is released before
@@ -1312,7 +1303,7 @@ Callers build the `CoverRequest` list BEFORE `start` so the `library.borrow()` i
 worker: a worker that opens a book CLEANLY but counts zero pages (the pure `should_signal_empty`
 decision = `open_result.is_ok() && count == 0`) calls `marshal_empty_book`, which fires the root
 `empty-book-detected(string)` Slint callback under the same epoch guard as `marshal_total` (the
-worker holds only a `Send` `PathBuf`; the `!Send` removal work runs on the UI thread in
+worker passes the raw ID string; the `!Send` removal work runs on the UI thread in
 `handlers/library.rs`'s `on_empty_book_detected`). An open ERROR is unreadable, NOT empty — it keeps the placeholder
 + log behavior and fires no signal. A dropped stale-epoch signal cannot lose the detection (a zero
 count is never persisted, so the next generation re-detects), and a removed book is absent from the
@@ -1338,8 +1329,8 @@ runs on the UI thread. See [patterns.md](patterns.md), "Worker → UI ACTION via
 SINGLE open, so a cold cloud-synced or network book no longer freezes the event loop for the whole
 hydration (`ArchiveLoader::open_with_policy` lists every entry; `File::open` can block). Only the
 read-only PROBE crosses the thread boundary: the pure, `Send` `probe_open(path, policy)` performs
-the archive/folder open, the skipped count, the listing-truncation flag, `canonical_identity`, and
-the `is_dir` / `exists` stats,
+the archive or folder open, derives the ID and title through `book_path::identify`, and captures
+the skipped count, listing-truncation flag, and failure availability,
 returning `OpenProbeOutcome::{Opened(OpenProbe), Failed { error, path_exists }}` — touching no
 `ViewerState`, `Library`, or `Settings` (`PageSource` is `Send + Sync`, so the opened source itself
 crosses). `start(ui_weak, path, policy)` uses the shared `ui_marshal::Generation` to allocate
@@ -1405,7 +1396,7 @@ driven by a `chrome-shown` bool + an idle `Timer`; chrome is revealed on pointer
 `PageView.reveal()`) and scrubber drag — NOT on page turns (arrows / Space / Backspace / tap /
 swipe stay quiet so the chrome doesn't flash on every turn). #71 mounted the shared `TitleBar`
 component (bound to a new `current-book-name` in-prop — derived by `view_sync.rs`'s
-`current_book_name` from the post-open `ViewerState::open_file()`, see [patterns.md](patterns.md)),
+`current_book_name` from `ViewerState::open_title()`, see [patterns.md](patterns.md)),
 and set a `min-width`/`min-height` floor on the window. `feat/library-chrome-polish` added
 `in property <string> library-count-text` (the pre-composed total book count for the Library
 screen's bottom status strip idle state); the strip's `Text` resolves

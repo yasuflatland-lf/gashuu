@@ -1,24 +1,23 @@
 //! Selection-over-projection joins: the operations that combine the pure
-//! `LibrarySelectionState` path-set with the search projection
+//! `LibrarySelectionState` ID set with the search projection
 //! (`LibrarySearchState::visible_indices`) and the `Library`. These live OUTSIDE
-//! `LibrarySelectionState` so that type owns only the path-set invariant (its
+//! `LibrarySelectionState` so that type owns only the ID set invariant (its
 //! ORTHOGONAL-to-search guarantee), while "act on just the visible slice" is a
 //! separate, composable concern.
 
 use crate::library_model::{LibrarySearchState, LibrarySelectionState};
-use gashuu_core::Library;
-use std::path::Path;
+use gashuu_core::{BookId, Library};
 
-/// The canonical paths of the currently visible books — the search projection
+/// The IDs of the currently visible books — the search projection
 /// joined against the library. The shared join the four ops below are built on.
-fn visible_paths<'a>(
+fn visible_ids<'a>(
     search: &'a LibrarySearchState,
     library: &'a Library,
-) -> impl Iterator<Item = &'a Path> {
+) -> impl Iterator<Item = &'a BookId> {
     search
         .visible_indices()
         .iter()
-        .filter_map(move |&index| library.books().get(index).map(|book| book.path()))
+        .filter_map(move |&index| library.books().get(index).map(|book| book.id()))
 }
 
 /// Select every CURRENTLY VISIBLE book, leaving already-selected non-visible
@@ -28,8 +27,8 @@ pub(crate) fn select_visible(
     search: &LibrarySearchState,
     library: &Library,
 ) {
-    for path in visible_paths(search, library) {
-        selection.insert(path.to_path_buf());
+    for id in visible_ids(search, library) {
+        selection.insert(id.clone());
     }
 }
 
@@ -40,8 +39,8 @@ pub(crate) fn deselect_visible(
     search: &LibrarySearchState,
     library: &Library,
 ) {
-    for path in visible_paths(search, library) {
-        selection.remove(path);
+    for id in visible_ids(search, library) {
+        selection.remove(id);
     }
 }
 
@@ -53,9 +52,9 @@ pub(crate) fn all_visible_selected(
     library: &Library,
 ) -> bool {
     let mut any = false;
-    let all = visible_paths(search, library).all(|path| {
+    let all = visible_ids(search, library).all(|id| {
         any = true;
-        selection.contains(path)
+        selection.contains(id)
     });
     any && all
 }
@@ -66,8 +65,8 @@ pub(crate) fn visible_selected_count(
     search: &LibrarySearchState,
     library: &Library,
 ) -> usize {
-    visible_paths(search, library)
-        .filter(|path| selection.contains(path))
+    visible_ids(search, library)
+        .filter(|id| selection.contains(id))
         .count()
 }
 
@@ -76,17 +75,20 @@ mod tests {
     use super::*;
     use crate::library_model::{LibrarySearchState, LibrarySelectionState};
     use gashuu_core::Library;
-    use std::path::PathBuf;
 
     #[test]
     fn select_visible_selects_only_the_visible_projection() {
         // With an active "alpha" filter, select_visible selects ONLY the visible
         // (alpha) book; the filtered-out beta is left untouched.
         let mut lib = Library::new();
-        assert!(lib.add(PathBuf::from("/manga/alpha.cbz")).is_some());
-        assert!(lib.add(PathBuf::from("/manga/beta.cbz")).is_some());
-        let alpha_path = lib.books()[0].path().to_path_buf();
-        let beta_path = lib.books()[1].path().to_path_buf();
+        assert!(lib
+            .add(BookId::new("/manga/alpha.cbz"), "alpha".into())
+            .is_some());
+        assert!(lib
+            .add(BookId::new("/manga/beta.cbz"), "beta".into())
+            .is_some());
+        let alpha_path = lib.books()[0].id().clone();
+        let beta_path = lib.books()[1].id().clone();
 
         let mut search = LibrarySearchState::default();
         search.set_query("alpha".to_string(), &lib);
@@ -101,10 +103,14 @@ mod tests {
     #[test]
     fn all_visible_selected_flips_with_the_visible_set() {
         let mut lib = Library::new();
-        assert!(lib.add(PathBuf::from("/manga/alpha.cbz")).is_some());
-        assert!(lib.add(PathBuf::from("/manga/beta.cbz")).is_some());
-        let alpha_path = lib.books()[0].path().to_path_buf();
-        let beta_path = lib.books()[1].path().to_path_buf();
+        assert!(lib
+            .add(BookId::new("/manga/alpha.cbz"), "alpha".into())
+            .is_some());
+        assert!(lib
+            .add(BookId::new("/manga/beta.cbz"), "beta".into())
+            .is_some());
+        let alpha_path = lib.books()[0].id().clone();
+        let beta_path = lib.books()[1].id().clone();
 
         let mut search = LibrarySearchState::default();
         search.set_query(String::new(), &lib); // both visible
@@ -139,10 +145,14 @@ mod tests {
         // Orthogonality: deselect_visible must only remove visible selections;
         // a selected book that is filtered out of the visible projection must stay selected.
         let mut lib = Library::new();
-        assert!(lib.add(PathBuf::from("/manga/alpha.cbz")).is_some());
-        assert!(lib.add(PathBuf::from("/manga/beta.cbz")).is_some());
-        let alpha_path = lib.books()[0].path().to_path_buf();
-        let beta_path = lib.books()[1].path().to_path_buf();
+        assert!(lib
+            .add(BookId::new("/manga/alpha.cbz"), "alpha".into())
+            .is_some());
+        assert!(lib
+            .add(BookId::new("/manga/beta.cbz"), "beta".into())
+            .is_some());
+        let alpha_path = lib.books()[0].id().clone();
+        let beta_path = lib.books()[1].id().clone();
 
         let mut search = LibrarySearchState::default();
         // Only alpha is visible under "alpha" filter.
@@ -172,8 +182,10 @@ mod tests {
     fn deselect_visible_empty_projection_is_noop() {
         // An empty visible projection must leave the selection unchanged.
         let mut lib = Library::new();
-        assert!(lib.add(PathBuf::from("/manga/alpha.cbz")).is_some());
-        let alpha_path = lib.books()[0].path().to_path_buf();
+        assert!(lib
+            .add(BookId::new("/manga/alpha.cbz"), "alpha".into())
+            .is_some());
+        let alpha_path = lib.books()[0].id().clone();
 
         let mut search = LibrarySearchState::default();
         search.set_query("no-match".to_string(), &lib);
@@ -197,8 +209,12 @@ mod tests {
         // After select_visible then deselect_visible, all_visible_selected is false
         // and visible_selected_count is 0.
         let mut lib = Library::new();
-        assert!(lib.add(PathBuf::from("/manga/alpha.cbz")).is_some());
-        assert!(lib.add(PathBuf::from("/manga/beta.cbz")).is_some());
+        assert!(lib
+            .add(BookId::new("/manga/alpha.cbz"), "alpha".into())
+            .is_some());
+        assert!(lib
+            .add(BookId::new("/manga/beta.cbz"), "beta".into())
+            .is_some());
 
         let mut search = LibrarySearchState::default();
         search.set_query(String::new(), &lib); // both visible
@@ -227,9 +243,13 @@ mod tests {
         // Some visible books were never selected: deselect_visible must not panic
         // and must not over-remove (already-absent entries are silently skipped).
         let mut lib = Library::new();
-        assert!(lib.add(PathBuf::from("/manga/alpha.cbz")).is_some());
-        assert!(lib.add(PathBuf::from("/manga/beta.cbz")).is_some());
-        let alpha_path = lib.books()[0].path().to_path_buf();
+        assert!(lib
+            .add(BookId::new("/manga/alpha.cbz"), "alpha".into())
+            .is_some());
+        assert!(lib
+            .add(BookId::new("/manga/beta.cbz"), "beta".into())
+            .is_some());
+        let alpha_path = lib.books()[0].id().clone();
 
         let mut search = LibrarySearchState::default();
         search.set_query(String::new(), &lib); // both visible
@@ -251,7 +271,9 @@ mod tests {
     #[test]
     fn all_visible_selected_false_for_empty_projection() {
         let mut lib = Library::new();
-        assert!(lib.add(PathBuf::from("/manga/alpha.cbz")).is_some());
+        assert!(lib
+            .add(BookId::new("/manga/alpha.cbz"), "alpha".into())
+            .is_some());
         let mut search = LibrarySearchState::default();
         search.set_query("no-match".to_string(), &lib); // empty projection
         assert!(search.visible_indices().is_empty());
@@ -268,12 +290,18 @@ mod tests {
         // Production sequence guard: select_visible under a broad query, then narrow,
         // then deselect_visible must remove ONLY the narrowed projection, keeping the rest.
         let mut lib = Library::new();
-        assert!(lib.add(PathBuf::from("/manga/alpha.cbz")).is_some());
-        assert!(lib.add(PathBuf::from("/manga/beta.cbz")).is_some());
-        assert!(lib.add(PathBuf::from("/manga/gamma.cbz")).is_some());
-        let alpha_path = lib.books()[0].path().to_path_buf();
-        let beta_path = lib.books()[1].path().to_path_buf();
-        let gamma_path = lib.books()[2].path().to_path_buf();
+        assert!(lib
+            .add(BookId::new("/manga/alpha.cbz"), "alpha".into())
+            .is_some());
+        assert!(lib
+            .add(BookId::new("/manga/beta.cbz"), "beta".into())
+            .is_some());
+        assert!(lib
+            .add(BookId::new("/manga/gamma.cbz"), "gamma".into())
+            .is_some());
+        let alpha_path = lib.books()[0].id().clone();
+        let beta_path = lib.books()[1].id().clone();
+        let gamma_path = lib.books()[2].id().clone();
 
         let mut search = LibrarySearchState::default();
         // Step 1: broad (empty) query — all books visible.

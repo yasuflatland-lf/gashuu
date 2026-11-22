@@ -23,14 +23,16 @@
 use crate::carousel::update_carousel_row;
 use crate::page_count_prefetch::{self, PageCountPrefetch, ResolvedCount};
 #[cfg(target_arch = "wasm32")]
-use crate::page_decode::{decode_cover, PageDecoder};
+use crate::page_decode::decode_cover;
 use crate::to_slint_image;
 use crate::ui_marshal::marshal_to_ui;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::worker;
 use crate::{book_path, CarouselItem, LibraryStoreHandle, ViewerWindow};
+#[cfg(target_arch = "wasm32")]
+use gashuu_core::PageDecoder;
 use gashuu_core::{
-    cache_key, ArchivePolicy, CoreError, DecodedImage, Library, PageSource, ThumbnailCache,
+    cache_key, ArchivePolicy, BookId, CoreError, DecodedImage, Library, PageSource, ThumbnailCache,
 };
 #[cfg(not(target_arch = "wasm32"))]
 use gashuu_core::{generate_cover, thumbnail_cache::source_mtime_secs};
@@ -200,10 +202,11 @@ pub(crate) fn spawn_cache_prune() {
 }
 
 /// One book the controller must load a cover for: its carousel row index and its
-/// canonical filesystem path. Built on the UI thread from the `Library`, then the
-/// `PathBuf` (Send) is what crosses into the worker.
+/// book ID and resolved location. The worker uses the ID for library updates
+/// and the location for source and cache access.
 pub struct CoverRequest {
     pub row: usize,
+    pub id: BookId,
     pub path: PathBuf,
     /// The book's page count is unknown (never opened, nothing persisted). When
     /// set, the controller resolves the real total in the background (one archive
@@ -352,7 +355,7 @@ fn marshal_failed(
 }
 
 /// Marshal an "empty book detected" signal onto the UI thread for the book at
-/// `path`. Fired by a worker that opened a book's source CLEANLY but found ZERO
+/// ID. Fired by a worker that opened a book's source CLEANLY but found ZERO
 /// pages (see `should_signal_empty`): the `on_empty_book_detected` handler in
 /// `handlers/library.rs` removes the book, purges its cover cache, rebuilds the
 /// carousel, and shows a notice. The counterpart of `marshal_total`: same epoch-guard + upgrade
@@ -363,13 +366,12 @@ fn marshal_failed(
 /// generation is dropped, the still-present empty book is re-detected by the next
 /// generation's worker (the open is re-issued for every book lacking a count);
 /// once the book is removed it is absent from the next generation's requests, so
-/// there is no removal loop. The `path` is the canonical removal key (a `Send`
-/// `PathBuf`); the `!Send` `SharedString` is built inside the closure.
+/// there is no removal loop. The closure builds the `SharedString` from the ID.
 fn marshal_empty_book(
     weak: &slint::Weak<ViewerWindow>,
     epoch: &Arc<AtomicUsize>,
     my_epoch: usize,
-    path: PathBuf,
+    id: BookId,
 ) {
     marshal_to_ui(
         weak.clone(),
@@ -377,7 +379,7 @@ fn marshal_empty_book(
         my_epoch,
         "empty-book",
         move |ui| {
-            ui.invoke_empty_book_detected(path.to_string_lossy().as_ref().into());
+            ui.invoke_empty_book_detected(id.as_str().into());
         },
     );
 }
@@ -407,9 +409,9 @@ fn resolve_count_after_hit(
     epoch: &Arc<AtomicUsize>,
     my_epoch: usize,
     cancel: &Arc<AtomicBool>,
-    row: usize,
-    path: PathBuf,
+    req: CoverRequest,
 ) {
+    let CoverRequest { row, id, path, .. } = req;
     // TODO(#175-followup): use open_with_policy once ArchivePolicy is threaded
     // through CoverRequest / CarouselRefresh.
     let open_result = book_path::open(&path, ArchivePolicy::default());
@@ -423,10 +425,10 @@ fn resolve_count_after_hit(
             // Opened cleanly but zero pages: signal the empty book (count == 0 also means
             // push_and_marshal_count below queues nothing — NonZeroUsize::new(0) is None).
             if should_signal_empty(&open_result, NonZeroUsize::new(count)) {
-                marshal_empty_book(weak, epoch, my_epoch, path.clone());
+                marshal_empty_book(weak, epoch, my_epoch, id.clone());
             }
             page_count_prefetch::push_and_marshal_count(
-                pending, weak, epoch, my_epoch, row, path, count,
+                pending, weak, epoch, my_epoch, row, id, count,
             );
         }
         Err(e) => {
@@ -511,8 +513,7 @@ impl CoverGeneration {
                     &self.epoch,
                     self.my_epoch,
                     &self.cancel,
-                    req.row,
-                    req.path,
+                    req,
                 );
             }
             return None;
@@ -529,7 +530,7 @@ impl CoverGeneration {
         };
         let Some(page_count) = NonZeroUsize::new(source.list_pages().len()) else {
             if !self.cancel.load(Relaxed) {
-                marshal_empty_book(&self.weak, &self.epoch, self.my_epoch, req.path);
+                marshal_empty_book(&self.weak, &self.epoch, self.my_epoch, req.id);
             }
             return None;
         };
@@ -568,7 +569,7 @@ impl CoverGeneration {
                 &self.epoch,
                 self.my_epoch,
                 req.row,
-                req.path,
+                req.id,
                 count.get(),
             );
         }
@@ -904,9 +905,11 @@ mod tests {
     }
 
     fn req(row: usize) -> CoverRequest {
+        let id = BookId::new(format!("/manga/{row}.cbz"));
         CoverRequest {
             row,
-            path: PathBuf::from(format!("/manga/{row}.cbz")),
+            path: book_path::locate(&id),
+            id,
             needs_count: false,
         }
     }
