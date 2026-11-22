@@ -1203,10 +1203,10 @@ pending deliveries, and the strip epoch guards against updates to a replacement 
 Starting without a session clears the strip. The web strip remains empty.
 
 **`cover_loader.rs`** owns the carousel's cover generation. Each refresh persists pending
-counts, calls `BookBackend::cancel_covers`, and advances the epoch. It requests 512 px covers
+counts, calls `BookBackend::cancel_covers`, and advances the epoch. It requests covers at `COVER_MAX_SIDE`
 in focus order and asks for a count only for rows with an unknown total. A desktop cache miss
 uses one archive open for cover and count. A cache hit opens the book again only for a requested
-count. The 512 px size is part of the disk cache key and is independent of the strip's 160 px
+count. The cover size is part of the disk cache key and is independent of the strip's 160 px
 thumbnails. Web serializes page-zero decodes across refreshes and keeps up to 64 MiB of covers
 in memory. Reloading clears that memory cache; OPFS retains QOI covers when available.
 
@@ -1317,4 +1317,4 @@ See [ADR-0002](ADRs/0002-layered-two-crate-architecture.md) for the full rationa
 
 ### Web cover persistence
 
-The worker stores QOI covers at `covers/<cover_key>.qoi` in OPFS, alongside `books/`. A staged `ThumbStore` preloads bytes before synchronous dispatch and queues writes and removals for the asynchronous OPFS bridge. Reads and writes are best-effort; startup prunes oldest files to 64 MiB. Deleting a book purges its 512-pixel carousel cover.
+The worker stores QOI covers at `covers/<cover_key>.qoi` in OPFS, alongside `books/`. A staged `ThumbStore` preloads bytes before synchronous dispatch and queues writes and removals for the asynchronous OPFS bridge. Reads and writes are best-effort; startup prunes oldest files to 64 MiB. Deleting a book purges its carousel cover at `COVER_MAX_SIDE`, the same size the UI requests.

@@ -74,6 +74,7 @@ settings-cache-cleared =
     { $n ->
        *[other] キャッシュした { $n } 件のファイル（{ $size }）を削除しました。
     }
+settings-cache-cleared-without-count = カバーキャッシュをクリアしました。
 settings-cache-clear-failed = カバーキャッシュをクリアできませんでした。
 
 # General section — Language row

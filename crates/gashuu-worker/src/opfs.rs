@@ -290,13 +290,16 @@ async fn remove_directory(books: &FileSystemDirectoryHandle, uuid: &str) {
     let options = FileSystemRemoveOptions::new();
     options.set_recursive(true);
     if let Err(error) = JsFuture::from(books.remove_entry_with_options(uuid, &options)).await {
-        if !error
-            .dyn_ref::<DomException>()
-            .is_some_and(|e| e.name() == "NotFoundError")
-        {
+        if !is_not_found(&error) {
             web_sys::console::warn_2(&"could not clean up browser book storage".into(), &error);
         }
     }
+}
+
+fn is_not_found(error: &JsValue) -> bool {
+    error
+        .dyn_ref::<DomException>()
+        .is_some_and(|e| e.name() == "NotFoundError")
 }
 
 fn storage_full() -> WireError {
@@ -343,39 +346,79 @@ pub async fn write_cover(name: &str, bytes: &[u8]) -> Result<(), JsValue> {
 }
 
 pub async fn remove_cover(name: &str) -> Result<(), JsValue> {
-    let dir = covers_directory().await?;
-    JsFuture::from(dir.remove_entry(name)).await?;
-    Ok(())
+    let dir = match covers_directory().await {
+        Err(error) if is_not_found(&error) => return Ok(()),
+        result => result?,
+    };
+    remove_cover_entry(&dir, name).await
+}
+
+async fn remove_cover_entry(dir: &FileSystemDirectoryHandle, name: &str) -> Result<(), JsValue> {
+    match JsFuture::from(dir.remove_entry(name)).await {
+        Err(error) if !is_not_found(&error) => Err(error),
+        _ => Ok(()),
+    }
+}
+
+async fn cover_handles(
+    dir: &FileSystemDirectoryHandle,
+) -> Result<(Vec<FileSystemFileHandle>, usize), JsValue> {
+    let values: js_sys::Function = Reflect::get(dir, &"values".into())?.dyn_into()?;
+    let iterator = values.call0(dir)?;
+    let next: js_sys::Function = Reflect::get(&iterator, &"next".into())?.dyn_into()?;
+    let mut handles = Vec::new();
+    let mut failures = 0;
+    loop {
+        let promise: Promise = next.call0(&iterator)?.dyn_into()?;
+        let entry = JsFuture::from(promise).await?;
+        match Reflect::get(&entry, &"done".into()) {
+            Ok(done) if done.as_bool() == Some(true) => break,
+            Ok(_) => {}
+            Err(error) => {
+                failures += usize::from(!is_not_found(&error));
+                continue;
+            }
+        }
+        match Reflect::get(&entry, &"value".into()) {
+            Ok(value) => {
+                if let Ok(handle) = value.dyn_into::<FileSystemFileHandle>() {
+                    handles.push(handle);
+                }
+            }
+            Err(error) => failures += usize::from(!is_not_found(&error)),
+        }
+    }
+    Ok((handles, failures))
 }
 
 pub async fn list_covers() -> Result<Vec<(String, u64, f64)>, JsValue> {
     let dir = covers_directory().await?;
-    let values: js_sys::Function = Reflect::get(&dir, &"values".into())?.dyn_into()?;
-    let iterator = values.call0(&dir)?;
-    let next: js_sys::Function = Reflect::get(&iterator, &"next".into())?.dyn_into()?;
-    let mut files = Vec::new();
-    loop {
-        let promise: Promise = next.call0(&iterator)?.dyn_into()?;
-        let entry = JsFuture::from(promise).await?;
-        if Reflect::get(&entry, &"done".into())?
-            .as_bool()
-            .unwrap_or(false)
-        {
-            break;
-        }
-        let value = Reflect::get(&entry, &"value".into())?;
-        let Ok(handle) = value.dyn_into::<FileSystemFileHandle>() else {
-            continue;
+    let (handles, mut failures) = cover_handles(&dir).await?;
+    let mut files = Vec::with_capacity(handles.len());
+    for handle in handles {
+        match resolve::<File>(handle.get_file()).await {
+            Ok(file) => files.push((file.name(), file.size() as u64, file.last_modified())),
+            Err(error) => failures += usize::from(!is_not_found(&error)),
         };
-        let file: File = resolve(handle.get_file()).await?;
-        files.push((file.name(), file.size() as u64, file.last_modified()));
     }
+    warn_cover_failures("list", failures);
     Ok(files)
 }
 
 pub async fn clear_covers() -> Result<(), JsValue> {
-    for (name, _, _) in list_covers().await? {
-        remove_cover(&name).await?;
+    let dir = covers_directory().await?;
+    let (handles, mut failures) = cover_handles(&dir).await?;
+    for handle in handles {
+        failures += usize::from(remove_cover_entry(&dir, &handle.name()).await.is_err());
     }
+    warn_cover_failures("clear", failures);
     Ok(())
+}
+
+fn warn_cover_failures(operation: &str, failures: usize) {
+    if failures > 0 {
+        web_sys::console::warn_1(
+            &format!("cover cache {operation} failed for {failures} entries").into(),
+        );
+    }
 }

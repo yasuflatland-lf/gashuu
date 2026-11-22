@@ -338,23 +338,21 @@ pub(crate) fn wire_settings_handlers(
         });
     }
 
-    // Clear cover cache (issue #178): immediate. Deletes on-disk thumbnail files;
-    // in-session covers are left alone (no rebuild). Best-effort, with status feedback.
+    // Clear persistent cover files and show status without rebuilding the carousel.
     {
         let ui_weak = ui.as_weak();
         let localizer = Rc::clone(&localizer);
         ui.on_clear_cover_cache(move || {
             with_ui(&ui_weak, |ui| {
                 #[cfg(target_arch = "wasm32")]
-                crate::backend::web::clear_covers();
-                let report = thumbs.clear();
+                let report = {
+                    crate::backend::web::clear_covers();
+                    None
+                };
+                #[cfg(not(target_arch = "wasm32"))]
+                let report = Some(thumbs.clear());
                 ui.set_data_action_status(
-                    i18n::dynamic::cover_cache_cleared(
-                        localizer.loader(),
-                        report.removed_files,
-                        report.removed_bytes,
-                    )
-                    .into(),
+                    i18n::dynamic::cover_cache_cleared(localizer.loader(), report).into(),
                 );
             })
         });

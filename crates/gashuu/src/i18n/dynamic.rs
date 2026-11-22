@@ -12,7 +12,7 @@
 
 use crate::open_book::{NoticesContent, SkippedDetail};
 use crate::viewer_state::{StatusContent, StatusKind};
-use gashuu_core::{ReadingDirection, SpreadMode};
+use gashuu_core::{ClearCacheReport, ReadingDirection, SpreadMode};
 use i18n_embed::fluent::FluentLanguageLoader;
 use i18n_embed_fl::fl;
 use std::fmt::Display;
@@ -387,16 +387,16 @@ pub(crate) fn reading_history_clear_failed(loader: &FluentLanguageLoader) -> Str
     fl!(loader, "settings-history-clear-failed")
 }
 
-/// Status line after the user clears the on-disk cover cache. `removed_files` is
-/// the number of cached cover files deleted (plural-aware in en); `removed_bytes`
-/// is the reclaimed disk space, rendered via [`human_size`].
+/// Status line for clearing the cover cache. The web worker supplies no report.
 pub(crate) fn cover_cache_cleared(
     loader: &FluentLanguageLoader,
-    removed_files: usize,
-    removed_bytes: u64,
+    report: Option<ClearCacheReport>,
 ) -> String {
-    let n = removed_files as i64;
-    let size = human_size(removed_bytes);
+    let Some(report) = report else {
+        return fl!(loader, "settings-cache-cleared-without-count");
+    };
+    let n = report.removed_files as i64;
+    let size = human_size(report.removed_bytes);
     fl!(
         loader,
         "settings-cache-cleared",
@@ -1004,9 +1004,13 @@ mod tests {
     fn cover_cache_cleared_embeds_count_and_size() {
         // The file count and the human size string must both appear; failure
         // helper non-empty; en/ja differ.
+        let report = Some(ClearCacheReport {
+            removed_files: 5,
+            removed_bytes: 3 * 1024 * 1024 / 2,
+        });
         for loc in [en(), ja()] {
             let l = loc.loader();
-            let result = cover_cache_cleared(l, 5, 3 * 1024 * 1024 / 2);
+            let result = cover_cache_cleared(l, report);
             assert!(!result.is_empty(), "cover_cache_cleared must not be empty");
             assert!(
                 result.contains('5'),
@@ -1022,8 +1026,8 @@ mod tests {
             );
         }
         assert_ne!(
-            cover_cache_cleared(en().loader(), 5, 1024),
-            cover_cache_cleared(ja().loader(), 5, 1024),
+            cover_cache_cleared(en().loader(), report),
+            cover_cache_cleared(ja().loader(), report),
             "cover_cache_cleared must differ between En and Ja"
         );
         assert_ne!(
@@ -1036,8 +1040,17 @@ mod tests {
     #[test]
     fn cover_cache_cleared_singular_vs_plural_in_english() {
         // English plural select: "cached file" (singular) vs "cached files" (plural).
-        let one = cover_cache_cleared(en().loader(), 1, 1024);
-        let many = cover_cache_cleared(en().loader(), 2, 1024);
+        let render = |removed_files| {
+            cover_cache_cleared(
+                en().loader(),
+                Some(ClearCacheReport {
+                    removed_files,
+                    removed_bytes: 1024,
+                }),
+            )
+        };
+        let one = render(1);
+        let many = render(2);
         assert!(
             one.contains("cached file ") && !one.contains("cached files"),
             "en singular must use 'file', got: {one:?}"
@@ -1046,6 +1059,20 @@ mod tests {
             many.contains("cached files"),
             "en plural must use 'files', got: {many:?}"
         );
+    }
+
+    #[test]
+    fn web_cover_cache_clear_shows_status_without_counts() {
+        for (loc, expected) in [
+            (en(), "Cover cache cleared."),
+            (ja(), "カバーキャッシュをクリアしました。"),
+        ] {
+            assert_eq!(cover_cache_cleared(loc.loader(), None), expected);
+            assert!(
+                cover_cache_cleared(loc.loader(), Some(ClearCacheReport::default()))
+                    .contains("0 B")
+            );
+        }
     }
 
     #[test]

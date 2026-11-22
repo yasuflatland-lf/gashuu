@@ -72,6 +72,7 @@ settings-cache-cleared =
         [one] Removed { $n } cached file ({ $size }).
        *[other] Removed { $n } cached files ({ $size }).
     }
+settings-cache-cleared-without-count = Cover cache cleared.
 settings-cache-clear-failed = Could not clear cover cache.
 
 # General section — Language row

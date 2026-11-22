@@ -1,7 +1,7 @@
 //! Bridge worker messages to the portable dispatcher.
 
 use crate::opfs;
-use gashuu_core::{BookId, ImageCratePageDecoder, ReadAt, ThumbStore};
+use gashuu_core::{BookId, ImageCratePageDecoder, ReadAt, ThumbStore, COVER_MAX_SIDE};
 use gashuu_web_decode::NativePageDecoder;
 use gashuu_worker::{
     cover_store::{plan_cover_prune, StagedCoverStore},
@@ -144,8 +144,8 @@ async fn drain(
                 if worker.reader_for(&id).is_none() {
                     opfs::delete_book(&scope, &id).await;
                 }
-                // The carousel currently requests covers at 512 pixels.
-                store.purge_cover(store.fingerprint(&BookId::new(&id)), &[512]);
+                // Covers are always requested at COVER_MAX_SIDE; purge that side.
+                store.purge_cover(store.fingerprint(&BookId::new(&id)), &[COVER_MAX_SIDE]);
                 flush_covers(&store).await;
             }
             WorkerRequest::ClearCovers => {
