@@ -55,7 +55,6 @@ mod web_pointer;
 mod web_viewport;
 #[cfg(not(target_arch = "wasm32"))]
 mod window_state;
-mod worker;
 
 pub(crate) use carousel_refresh::{
     apply_add_report, finalize_empty_book_rejected, finalize_remove, push_selection_toolbar_state,
@@ -344,21 +343,11 @@ fn run_app(
 
     // Cover controller for the carousel (epoch + cancel guard). `start` runs after the
     // model is (re)built so a refresh supersedes covers still streaming from the prior view.
-    #[cfg(not(target_arch = "wasm32"))]
     let covers = Rc::new(cover_loader::CoverController::new(Rc::clone(&backend)));
 
     // Page controller for the viewer body. Owns async page-decode epoch and
     // dispatch dedup for cache-miss spreads.
     let pages = Rc::new(PageController::new(backend.clone()));
-    #[cfg(target_arch = "wasm32")]
-    let covers = {
-        let primary: Rc<dyn gashuu_core::PageDecoder> =
-            Rc::new(gashuu_web_decode::NativePageDecoder);
-        let fallback: Rc<dyn gashuu_core::PageDecoder> =
-            Rc::new(gashuu_core::ImageCratePageDecoder);
-        let covers = cover_loader::CoverController::new(primary, fallback, Rc::clone(&backend));
-        Rc::new(covers)
-    };
 
     // Bulk-add controller (issue 206): probes each source off the UI thread so a bulk
     // add never freezes the event loop. `start` dispatches; `add-finalize` applies.

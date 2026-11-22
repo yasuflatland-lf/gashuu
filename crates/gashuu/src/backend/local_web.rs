@@ -58,6 +58,11 @@ impl Drop for CoverDrain {
 
 impl LocalWebBackend {
     #[cfg(target_arch = "wasm32")]
+    pub(super) fn has_session(&self, session: SessionId) -> bool {
+        self.inner.sessions.borrow().contains_key(&session)
+    }
+
+    #[cfg(target_arch = "wasm32")]
     pub(crate) fn new() -> Self {
         Self::with_parts(
             Rc::new(|task| {

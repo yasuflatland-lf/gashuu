@@ -1,3 +1,4 @@
+use super::local_web::LocalWebBackend;
 use super::web_client::{Delivery, Effects, Outgoing, Ready, WebClient};
 use super::{
     BackendError, BookBackend, CountResult, Done, ImageResult, OpenedBook, SessionId, SpreadPages,
@@ -14,6 +15,7 @@ const LOADER: &str = "gashuu-worker_loader.js";
 const STARTUP_TIMEOUT_MS: i32 = 15_000;
 
 pub(super) struct WorkerBackend {
+    local: LocalWebBackend,
     client: RefCell<WebClient>,
     worker: Worker,
     _onmessage: Closure<dyn Fn(MessageEvent)>,
@@ -54,6 +56,7 @@ impl WorkerBackend {
             worker.set_onmessage(Some(onmessage.as_ref().unchecked_ref()));
             worker.set_onerror(Some(onerror.as_ref().unchecked_ref()));
             Self {
+                local: LocalWebBackend::new(),
                 client: RefCell::new(WebClient::new()),
                 worker,
                 _onmessage: onmessage,
@@ -166,6 +169,10 @@ fn js_error(error: JsValue) -> String {
     error.as_string().unwrap_or_else(|| format!("{error:?}"))
 }
 
+fn is_session_book(id: &BookId) -> bool {
+    std::path::Path::new(id.as_str()).starts_with(crate::web_books::SESSION_ROOT)
+}
+
 pub(super) fn shared() -> Option<Rc<WorkerBackend>> {
     thread_local! {
         static BACKEND: OnceCell<Option<Rc<WorkerBackend>>> = const { OnceCell::new() };
@@ -191,15 +198,27 @@ impl BookBackend for WorkerBackend {
         cache: CacheConfig,
         done: Done<Result<OpenedBook, BackendError>>,
     ) {
-        self.dispatch(|client| client.open(id, policy, cache, done));
+        if is_session_book(id) {
+            self.local.open(id, policy, cache, done);
+        } else {
+            self.dispatch(|client| client.open(id, policy, cache, done));
+        }
     }
 
     fn close(&self, session: SessionId) {
-        self.dispatch(|client| (client.close(session), Vec::new()));
+        if self.local.has_session(session) {
+            self.local.close(session);
+        } else {
+            self.dispatch(|client| (client.close(session), Vec::new()));
+        }
     }
 
     fn cached_page(&self, session: SessionId, index: usize) -> Option<Arc<DecodedImage>> {
-        self.client.borrow_mut().cached_page(session, index)
+        if self.local.has_session(session) {
+            self.local.cached_page(session, index)
+        } else {
+            self.client.borrow_mut().cached_page(session, index)
+        }
     }
 
     fn decode_spread(
@@ -209,11 +228,19 @@ impl BookBackend for WorkerBackend {
         trailing: Option<usize>,
         done: Done<SpreadPages>,
     ) {
-        self.dispatch(|client| client.decode_spread(session, leading, trailing, done));
+        if self.local.has_session(session) {
+            self.local.decode_spread(session, leading, trailing, done);
+        } else {
+            self.dispatch(|client| client.decode_spread(session, leading, trailing, done));
+        }
     }
 
     fn thumbnail(&self, session: SessionId, index: usize, max_side: u32, done: Done<ImageResult>) {
-        self.dispatch(|client| client.thumbnail(session, index, max_side, done));
+        if self.local.has_session(session) {
+            self.local.thumbnail(session, index, max_side, done);
+        } else {
+            self.dispatch(|client| client.thumbnail(session, index, max_side, done));
+        }
     }
 
     fn cover(
@@ -223,14 +250,23 @@ impl BookBackend for WorkerBackend {
         on_cover: Done<ImageResult>,
         on_count: Option<Done<CountResult>>,
     ) {
-        self.dispatch(|client| client.cover(id, max_side, on_cover, on_count));
+        if is_session_book(id) {
+            self.local.cover(id, max_side, on_cover, on_count);
+        } else {
+            self.dispatch(|client| client.cover(id, max_side, on_cover, on_count));
+        }
     }
 
     fn cancel_covers(&self) {
+        self.local.cancel_covers();
         self.dispatch(|client| (client.cancel_covers(), Vec::new()));
     }
 
     fn probe_page_count(&self, id: &BookId, policy: ArchivePolicy, done: Done<CountResult>) {
-        self.dispatch(|client| client.probe_page_count(id, policy, done));
+        if is_session_book(id) {
+            self.local.probe_page_count(id, policy, done);
+        } else {
+            self.dispatch(|client| client.probe_page_count(id, policy, done));
+        }
     }
 }

@@ -4,6 +4,8 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+pub(crate) const SESSION_ROOT: &str = "gashuu-web:";
+
 struct Registry {
     namespace: PathBuf,
     books: HashMap<PathBuf, Arc<[u8]>>,
@@ -12,7 +14,7 @@ struct Registry {
 impl Registry {
     fn new(session: &str) -> Self {
         Self {
-            namespace: PathBuf::from("gashuu-web:").join(session),
+            namespace: PathBuf::from(SESSION_ROOT).join(session),
             books: HashMap::new(),
         }
     }

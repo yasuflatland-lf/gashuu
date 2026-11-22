@@ -1,30 +1,16 @@
-//! Page-count prefetch concern for the library carousel.
-//!
-//! A book whose page count is unknown (never opened, nothing persisted) is
-//! resolved in the background by `cover_loader`'s worker — the SAME archive open
-//! that produces the cover also yields the count, so no extra `ArchiveLoader::open`
-//! is added here. The worker streams the resolved total to the row for immediate
-//! display (`marshal_total`) and queues it for UI-thread persistence into the
-//! `Library` (the worker cannot touch the `!Send` `Rc<RefCell<Library>>`, so it
-//! pushes a `ResolvedCount` onto the `Send` `Arc<Mutex>` queue owned by
-//! [`PageCountPrefetch`]). The UI thread drains and applies the queue via
-//! [`PageCountPrefetch::apply`] at the next `start` and at shutdown
-//! ([`PageCountPrefetch::flush`]).
+//! Show page counts as backend cover callbacks arrive on the UI thread.
+//! Queue nonzero counts by book ID and persist changes together on the next
+//! carousel refresh or when the application shuts down.
 
 use crate::carousel::update_carousel_row;
 use crate::library_model::clamp_to_i32;
-use crate::ui_marshal::marshal_to_ui;
 use crate::{save_library, LibraryStoreHandle, ViewerWindow};
 use gashuu_core::{BookId, Library};
 use std::cell::RefCell;
 use std::num::NonZeroUsize;
-use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
 use std::sync::{Arc, Mutex};
 
-/// One page count a background worker resolved for a book, awaiting UI-thread
-/// persistence into the `Library`. Named (rather than a bare `(BookId,
-/// NonZeroUsize)` tuple) so the queue's element reads as what it is: a resolved
-/// fact being carried home, not anonymous data.
+/// A backend count awaiting persistence in the library.
 pub(crate) struct ResolvedCount {
     /// The book's ID — the `Library::set_page_count` lookup key.
     id: BookId,
@@ -41,60 +27,8 @@ fn set_carousel_total(ui: &ViewerWindow, row: usize, total: i32) {
     update_carousel_row(ui, row, |item| item.total = total);
 }
 
-/// Marshal a resolved page `count` onto the UI thread as carousel row `row`'s
-/// `total`. The count counterpart of `marshal_cover`: same epoch-guard + upgrade
-/// preamble, so a count from a superseded generation (library refreshed since) is
-/// dropped rather than flashing a stale total. `count` is the raw `usize` page
-/// count (a `Send` `Copy` value); the saturating `i32` map happens here.
-fn marshal_total(
-    weak: slint::Weak<ViewerWindow>,
-    epoch: Arc<AtomicUsize>,
-    my_epoch: usize,
-    row: usize,
-    count: usize,
-) {
-    let total = clamp_to_i32(count);
-    marshal_to_ui(weak, epoch, my_epoch, "total", move |ui| {
-        set_carousel_total(ui, row, total);
-    });
-}
-
-/// Worker-side: record a resolved page `count` for `id`/`row`. Queues `(id,
-/// count)` for UI-thread persistence (a zero-page archive yields `count == 0`,
-/// which `NonZeroUsize::new` maps to `None` so nothing is queued or persisted) and
-/// marshals the total to the row for immediate display. Runs on a rayon worker, so
-/// it only touches `Send` state (the `Arc<Mutex>` queue, the `Weak`, the epoch).
-pub(crate) fn push_and_marshal_count(
-    pending: &Arc<Mutex<Vec<ResolvedCount>>>,
-    weak: &slint::Weak<ViewerWindow>,
-    epoch: &Arc<AtomicUsize>,
-    my_epoch: usize,
-    row: usize,
-    id: BookId,
-    count: usize,
-) {
-    // Persist only while OUR generation is current: a stale push can't lose a count
-    // (the fresh generation re-dispatches), it only clobbers a good one. Mirrors `marshal_total`.
-    if epoch.load(Relaxed) == my_epoch {
-        if let Some(nz) = NonZeroUsize::new(count) {
-            pending
-                .lock()
-                .expect("cover pending_counts mutex poisoned")
-                .push(ResolvedCount { id, count: nz });
-        }
-    }
-    marshal_total(weak.clone(), Arc::clone(epoch), my_epoch, row, count);
-}
-
-/// Owns the page-count prefetch pending queue and its UI-thread lifecycle. A
-/// background worker resolves a book's page count from the same archive open that
-/// produced its cover and pushes it here; the UI thread drains and persists.
+/// Counts awaiting the next library save. Backend callbacks must be Send.
 pub(crate) struct PageCountPrefetch {
-    /// Page counts resolved by background workers, awaiting persistence on the
-    /// UI thread. A worker cannot touch the `!Send` `Rc<RefCell<Library>>`, so it
-    /// pushes a `ResolvedCount` here (the `Arc<Mutex>` is `Send`); the UI thread
-    /// drains and applies them via `apply` at the next `start` and at shutdown
-    /// (`flush`).
     pending: Arc<Mutex<Vec<ResolvedCount>>>,
 }
 
@@ -105,17 +39,32 @@ impl PageCountPrefetch {
         }
     }
 
-    /// A `Send` handle to the pending queue for a worker to push resolved counts into.
+    /// A `Send` handle to the pending queue for a backend completion.
     pub(crate) fn queue(&self) -> Arc<Mutex<Vec<ResolvedCount>>> {
         Arc::clone(&self.pending)
     }
 
-    /// Persist page counts resolved by background workers since the last call, on
-    /// the UI thread (a worker cannot touch the `!Send` `Rc<RefCell<Library>>`).
-    /// Drains the pending queue, applies each via `Library::set_page_count`, and
-    /// saves ONCE if any changed. Borrow discipline: each `borrow_mut` is confined
-    /// to its own statement (dropped at the `;`); the final `borrow` for `save` is
-    /// a separate statement — collapsing them would double-borrow-panic.
+    /// Called on the UI thread inside an epoch-checked completion, so only the
+    /// current generation can queue a count or update the visible row.
+    pub(crate) fn record_count(
+        pending: &Arc<Mutex<Vec<ResolvedCount>>>,
+        ui: &ViewerWindow,
+        row: usize,
+        id: BookId,
+        count: NonZeroUsize,
+    ) {
+        Self::queue_count(pending, id, count);
+        set_carousel_total(ui, row, clamp_to_i32(count.get()));
+    }
+
+    fn queue_count(pending: &Mutex<Vec<ResolvedCount>>, id: BookId, count: NonZeroUsize) {
+        pending
+            .lock()
+            .expect("cover pending_counts mutex poisoned")
+            .push(ResolvedCount { id, count });
+    }
+
+    /// Drain resolved counts and save the library once if any changed.
     pub(crate) fn apply(&self, library: &RefCell<Library>, library_store: &LibraryStoreHandle) {
         let drained: Vec<ResolvedCount> = {
             let mut queue = self
@@ -144,5 +93,22 @@ impl PageCountPrefetch {
     /// Persist any still-pending prefetched page counts. Call once on shutdown.
     pub(crate) fn flush(&self, library: &RefCell<Library>, library_store: &LibraryStoreHandle) {
         self.apply(library, library_store);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn record_count_queues_nonzero_count() {
+        let pending = PageCountPrefetch::new().queue();
+        let id = BookId::new("book.cbz");
+        let count = NonZeroUsize::new(7).unwrap();
+        PageCountPrefetch::queue_count(&pending, id.clone(), count);
+        let records = pending.lock().unwrap();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].id, id);
+        assert_eq!(records[0].count, count);
     }
 }
