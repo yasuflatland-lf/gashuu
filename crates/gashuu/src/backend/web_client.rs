@@ -11,7 +11,7 @@ use gashuu_worker::protocol::{
 };
 use gashuu_worker::wire_error::WireError;
 use std::collections::hash_map::Entry;
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 
@@ -56,6 +56,7 @@ enum Pending {
     Thumbnail(SessionId, Done<ImageResult>),
     Cover(u64, String, Done<ImageResult>, Option<Done<CountResult>>),
     Count(LiveCheck, Done<CountResult>),
+    Sweep(Done<super::SweepReport>),
     Import(Done<Result<ImportedBook, BackendError>>),
 }
 
@@ -67,7 +68,7 @@ impl Pending {
             }
             Self::Cover(gen, ..) => LiveCheck::CoverGen(gen),
             Self::Count(target, _) => target,
-            Self::Import(_) => LiveCheck::Always,
+            Self::Sweep(_) | Self::Import(_) => LiveCheck::Always,
         }
     }
 
@@ -97,6 +98,10 @@ impl Pending {
                 Ready::new(target, done, Err(error))
             }
             Self::Count(_, done) => Ready::new(target, done, Err(error)),
+            Self::Sweep(_) => Ready(
+                target,
+                Box::new(move || tracing::warn!(%error, "opfs sweep failed")),
+            ),
             Self::Import(done) => Ready::new(target, done, Err(error)),
         }
     }
@@ -112,6 +117,10 @@ enum Connection {
 pub(super) struct WebClient<F = ()> {
     connection: Connection,
     next_req: u32,
+    // A superseded result may post DeleteBook from its completion. Deliver it
+    // before a later import can re-adopt the same bytes.
+    active_import: Option<ReqId>,
+    waiting_storage: VecDeque<(Request, Option<F>)>,
     outbox: Vec<Outgoing<F>>,
     pending: HashMap<u32, Pending>,
     sessions: HashSet<SessionId>,
@@ -125,6 +134,8 @@ impl<F> WebClient<F> {
         Self {
             connection: Connection::Starting,
             next_req: 0,
+            active_import: None,
+            waiting_storage: VecDeque::new(),
             outbox: Vec::new(),
             pending: HashMap::new(),
             sessions: HashSet::new(),
@@ -143,6 +154,22 @@ impl<F> WebClient<F> {
     }
 
     fn post_with_file(&mut self, request: Request, file: Option<F>) -> Vec<Outgoing<F>> {
+        if self.active_import.is_some()
+            && matches!(
+                request,
+                Request::Import { .. } | Request::Sweep { .. } | Request::DeleteBook { .. }
+            )
+        {
+            self.waiting_storage.push_back((request, file));
+            return vec![];
+        }
+        if let Request::Import { req, .. } = request {
+            self.active_import = Some(req);
+        }
+        self.send(request, file)
+    }
+
+    fn send(&mut self, request: Request, file: Option<F>) -> Vec<Outgoing<F>> {
         let outgoing = || Outgoing(protocol::encode(&request), file);
         if self.is_ready() {
             return vec![outgoing()];
@@ -364,8 +391,43 @@ impl<F> WebClient<F> {
         self.post(Request::PruneCovers { max_bytes })
     }
 
+    pub(super) fn sweep(
+        &mut self,
+        keep: Vec<BookId>,
+        now_ms: Option<f64>,
+        done: Done<super::SweepReport>,
+    ) -> Effects<F> {
+        let keep = keep.into_iter().map(|id| id.to_string()).collect();
+        self.queue(Pending::Sweep(done), |req| Request::Sweep {
+            req,
+            keep,
+            now_ms,
+        })
+    }
+
     pub(super) fn discard(&mut self, id: &BookId) -> Vec<Outgoing<F>> {
         self.post(Request::DeleteBook { id: id.to_string() })
+    }
+
+    pub(super) fn discard_stale(&mut self, id: &BookId) -> Vec<Outgoing<F>> {
+        self.send(Request::DeleteBook { id: id.to_string() }, None)
+    }
+
+    pub(super) fn after_delivery(&mut self) -> Vec<Outgoing<F>> {
+        let finished =
+            matches!(self.active_import, Some(req) if !self.pending.contains_key(&req.0));
+        if !finished {
+            return vec![];
+        }
+        self.active_import = None;
+        let mut outgoing = vec![];
+        while self.active_import.is_none() {
+            let Some((request, file)) = self.waiting_storage.pop_front() else {
+                break;
+            };
+            outgoing.extend(self.post_with_file(request, file));
+        }
+        outgoing
     }
 
     pub(super) fn on_message(&mut self, text: &str, images: Vec<Vec<u8>>) -> Effects<F> {
@@ -396,6 +458,7 @@ impl<F> WebClient<F> {
             | Response::Cover { req, .. }
             | Response::CoverCount { req, .. }
             | Response::PageCount { req, .. }
+            | Response::Swept { req, .. }
             | Response::Imported { req, .. }
             | Response::Rejected { req: Some(req), .. } => req,
         };
@@ -476,11 +539,36 @@ impl<F> WebClient<F> {
                 done,
                 NonZeroUsize::new(count as usize).ok_or(BackendError::EmptyBook),
             ),
+            (
+                Pending::Sweep(done),
+                Response::Swept {
+                    removed,
+                    skipped_recent,
+                    skipped_locked,
+                    present,
+                    ..
+                },
+            ) => {
+                let report = super::SweepReport {
+                    removed,
+                    skipped_recent,
+                    skipped_locked,
+                    present: present.into_iter().map(BookId::new).collect(),
+                };
+                tracing::info!(
+                    removed = report.removed,
+                    skipped_recent = report.skipped_recent,
+                    skipped_locked = report.skipped_locked,
+                    "opfs sweep"
+                );
+                Ready::new(target, done, report)
+            }
             (Pending::Import(done), Response::Imported { result, .. }) => {
                 let result = result.map_err(backend_error).and_then(|meta| {
                     let page_count = NonZeroUsize::new(meta.page_count as usize)
                         .ok_or(BackendError::EmptyBook)?;
                     Ok(ImportedBook {
+                        duplicate: meta.duplicate,
                         id: BookId::new(meta.id),
                         title: meta.title,
                         page_count,
@@ -516,6 +604,8 @@ impl<F> WebClient<F> {
         tracing::error!(%detail, "web worker unavailable");
         self.connection = Connection::Failed;
         self.outbox.clear();
+        self.waiting_storage.clear();
+        self.active_import = None;
         self.pending
             .drain()
             .map(|(_, p)| Delivery::Deferred(p.fail_unavailable()))

@@ -158,13 +158,15 @@ See [ADR-0003](ADRs/0003-image-loading-and-caching.md) for image loading decisio
 
 ### thumbnail
 
-The desktop backend passes a `PageThumbContext { store, fingerprint }` to
-`generate_one_thumbnail` for each requested strip page. A hit for
+The desktop backend runs `thumbnail.rs`'s synchronous `generate_one_thumbnail`
+on a worker and passes a `PageThumbContext { store, fingerprint }` for each
+requested strip page. A hit for
 `ThumbSlot::Page(page_index)` skips the source read and decode. On a miss, core
 decodes the page and returns the image even if storing it fails. The strip uses
 `DEFAULT_THUMB_MAX_SIDE` (160 px). The backend checks that the session is still
 open before delivering the result. `generate_cover` downsizes page zero and
-propagates read and decode errors. A zero-page source returns an out-of-range error.
+propagates read and decode errors. It returns
+`IndexOutOfRange { index: 0, len: 0 }` for an empty source.
 
 ### thumbnail_cache
 
@@ -482,9 +484,10 @@ Each message carries JSON text in `m` to preserve exact 64-bit ids. Responses
 with images carry transferable RGBA8 buffers in `b`, in metadata order.
 
 One request runs at a time. The interactive lane handles opens and spreads
-ahead of background thumbnails, covers, page counts, imports, and deletions.
-Each lane is FIFO. The loop yields to browser message delivery between
-background jobs and between the steps of an import.
+ahead of background thumbnails, covers, page counts, and storage operations.
+Storage operations run in submission order. Between directory visits or upload
+slices, the worker yields to message delivery, serves pending interactive
+requests and handles one queued cover.
 Close and cover cancellation run in the message handler and discard outdated
 queued work and replies. Each session retains its page source. Pages are
 decoded on demand with the browser-native decoder and an image-crate fallback
@@ -504,6 +507,20 @@ It returns the relative ID, display title and nonzero page count. A failed
 import closes the handle and removes its directory. `DeleteBook` also removes
 the directory recursively after confirming the reader has been released.
 
+Before copying, the worker hashes the little-endian 64-bit file size followed
+by the first and last MiB with SHA-256. For a file shorter than one MiB it
+hashes the whole file twice. Successful imports store the lowercase hex digest
+in a sibling `.content-key` file. The first import builds an in-memory index,
+backfilling missing sidecars from older archives. A match reuses the stored
+archive after probing it under the current policy. Superseding a batch discards
+only newly written copies.
+
+After the library loads, the worker sweeps one directory per unit. It keeps
+library IDs, files modified within the past hour, and locked directories.
+Clearing reading history after a successful library save also sweeps, with an
+empty keep list and no age guard. Bulk removal discards stored copies after
+saving the library and closing any removed open book.
+
 ## crates/gashuu (Slint presentation layer)
 
 See [ADR-0001](ADRs/0001-gui-framework-slint.md) for the Slint framework decision and
@@ -522,16 +539,20 @@ persist state after the event loop returns.
 ### backend (BookBackend port)
 
 `BookBackend` gives the UI an asynchronous book interface over the synchronous
-core. At startup, `main` passes one `Arc<dyn ThumbStore>` to the backend,
-removal use cases and settings handlers. Desktop uses `FsThumbStore` when
-the cache directory is available and falls back to `NullThumbStore`. Its rayon
-jobs resolve the current fingerprint before looking up a strip thumbnail or
-cover. The cover lookup checks decoded memory first, then disk.
+core. At startup, desktop passes one `Arc<dyn ThumbStore>` to the backend,
+removal use cases and settings handlers. It uses `FsThumbStore` when the cache
+directory is available and falls back to `NullThumbStore`. Desktop uses rayon
+for archive, page and thumbnail work. Its jobs resolve the current fingerprint
+before looking up a strip thumbnail or cover. Cover lookup checks decoded
+memory first, then disk.
 `backend::desktop::spawn_thumb_prune` schedules one sweep after initial cover
-dispatch. Web uses `NullThumbStore` for cleanup and keeps covers in memory.
+dispatch.
+
 `WorkerBackend` handles OPFS books. If the browser lacks OPFS or a Worker
 cannot be created, `UnavailableBackend` reports that the browser cannot store
-books. Each open starts a session with the caller's cache configuration.
+books. Web uses `NullThumbStore` on the UI side. The worker manages the OPFS cover
+cache and the web backend keeps decoded covers in memory. Each open starts a
+session with the caller's cache configuration.
 `cached_page` only looks up decoded pages in memory.
 
 A `Done` runs at most once, on the Slint event-loop thread, after the request
@@ -598,7 +619,7 @@ Slint's executor while startup continues. A failure logs a warning.
 ### BookPicker and BookImporter ports
 
 `BookPicker` returns desktop paths or Send upload handles. Desktop uses rfd
-and defers the modal dialog result to the event loop. The web picker opens an
+and defers the modal dialog result to the event loop. `web_picker.rs` opens an
 attached, hidden multiple-file input during the Add Books click. It uses
 `.cbz,.zip` as its accept filter outside iOS-family browsers and checks extensions
 after selection on all browsers. The same click requests persistent storage
@@ -613,8 +634,8 @@ posts it to the worker, retaining it in the outbox if the worker is starting.
 
 At web startup, the app removes demo-era session-only IDs before the first
 carousel refresh and saves the cleaned library once. Imported archives live in
-OPFS and the library stores their IDs in localStorage. Availability checks for
-evicted archives are deferred to #662.
+OPFS and the library stores their IDs in localStorage. The startup sweep reports the IDs still present.
+The carousel greys out missing books and preserves their reading positions.
 
 ### web_pointer
 
@@ -746,10 +767,13 @@ applicable position write-back, delegates view-mode routing
 to `stage_view_modes_to_sink`, and saves the library at most once. `stage_view_modes_to_sink`'s
 `match route` selects the sink: `DialogClosedOnLibrary` → global reconcile;
 `DialogClosedOnViewer` / `LeaveViewer` / `OpenDifferentBook` → per-book write-back; `AppExit` →
-per-book write-back FIRST, then a global reconcile ONLY when `open_book().is_none()`. So the GLOBAL
-route sink is invoked only via the Library-dialog close and the no-book-open exit; a Library-scope
-`DialogSession::end` also invokes the same helper before restoring its snapshot. Every leave point
-hits the per-book sink (a no-op when no book is open).
+per-book write-back first, then a global reconcile when `open_book().is_none()`. `Suspend` uses the
+same view-mode sinks when no dialog is open. With an active dialog, suspend writes back the reading
+position and preserves the dialog session and its unconfirmed edits
+([issue #664](https://github.com/yasuflatland-lf/gashuu/issues/664)).
+The global sink runs on Library-dialog close and when no book is open at exit or dialog-free
+suspend. A Library-scope `DialogSession::end` also invokes the same helper before restoring its
+snapshot. The per-book sink writes an override only when a book is open.
 Before a per-book write-back, `stage_view_override_write_back` builds the current `ResolvedView`,
 asks `DialogSession::inherit_pending(current)` whether the reset guard still applies, and consults
 the shared `Settings` handle to stage only fields that differ from global. The private pure helper
@@ -804,7 +828,11 @@ snapshot, the next leave point could write an override pinning the OLD global va
 
 ### book_availability
 
-`book_availability.rs` checks existence through `book_path::exists(&book_path::locate(book.id()))`. Unavailable books remain in the library.
+- **Desktop** checks existence through `book_path::exists(&book_path::locate(book.id()))`.
+- **Web** treats every book as available until the first successful sweep. Each sweep replaces
+  the `WebAvailability` set with `Swept.present`. Imports and removals update the set.
+
+Unavailable books remain in the library.
 
 ### library_model
 
@@ -1051,6 +1079,12 @@ the `UpdateError {Http, Io, Verify}` glue error.
 See [ADR-0013](ADRs/0013-auto-update.md) and its Amendment, and [patterns.md](patterns.md),
 "Self-update replaces the running binary DIFFERENTLY per packaging".
 
+### web_lifecycle
+
+`web_lifecycle.rs` registers app-lifetime `pagehide` and hidden `visibilitychange` listeners.
+They flush page counts, the suspend leave point, and settings without ending a dialog session.
+Both events may flush consecutively; the writes are idempotent.
+
 ### web_blob_store
 
 `web_blob_store.rs` adapts browser `localStorage` to `BlobStore`. It stores UTF-8 JSON text as
@@ -1203,16 +1237,20 @@ pending deliveries, and the strip epoch guards against updates to a replacement 
 Starting without a session clears the strip. The web strip remains empty.
 
 **`cover_loader.rs`** owns the carousel's cover generation. Each refresh persists pending
-counts, calls `BookBackend::cancel_covers`, and advances the epoch. It requests covers at `COVER_MAX_SIDE`
-in focus order and asks for a count only for rows with an unknown total. A desktop cache miss
-uses one archive open for cover and count. A cache hit opens the book again only for a requested
-count. The cover size is part of the disk cache key and is independent of the strip's 160 px
-thumbnails. Web serializes page-zero decodes across refreshes and keeps up to 64 MiB of covers
-in memory. Reloading clears that memory cache; OPFS retains QOI covers when available.
+ counts, calls `BookBackend::cancel_covers`, and advances the epoch. `prioritize_by_focus`
+sorts requests by distance from the focused row. The controller dispatches covers at
+`COVER_MAX_SIDE` (512 px) and requests a page count only for rows with an unknown total. Callers release their
+library borrow before dispatch so pending counts can be applied. Counts are also flushed
+on desktop shutdown and on web suspend. Resolved counts update their rows immediately
+and enter a queue for persistence.
 
-Callers release their library borrow before issuing the refresh so the controller can apply
-pending counts. Resolved counts update the row immediately and enter a queue for persistence
-on the next refresh or desktop shutdown.
+On a worker, the desktop backend checks decoded memory and then reads through
+`ThumbStore` for the current fingerprint and `ThumbSlot::Cover`. On a miss it opens
+the archive once for the cover and count. On a hit it queues the cover before opening
+the archive for a requested count. Cover size is part of the cache key and is
+independent of the strip's 160 px thumbnail size. The web backend serializes page-zero
+decodes across refreshes and keeps up to 64 MiB of decoded covers in memory. Reloading
+clears the memory cache. OPFS retains QOI covers when available.
 
 Each `ui_done` completion checks the epoch and window before updating its row. An empty book
 reported by either callback raises `empty-book-detected` once with its ID. Other cover errors
@@ -1223,7 +1261,7 @@ selected archive policy. A path that cannot form an ID produces an unreadable ou
 Each outcome advances progress in the current generation. The last one invokes `add-finalize`,
 whose handler takes the outcomes in input order and applies the batch. Browser imports
 share the same progress and finalize path and append any picker notice. Superseding a
-batch discards stored imports that never reach the library.
+batch discards newly written imports that never reach the library.
 
 **`open_controller.rs`** passes the raw request ID, policy and next-open cache config to
 the backend. A generation ticket accepts one current result. Dropping a superseded result
@@ -1315,6 +1353,19 @@ Slint, pixel buffers, and logging.
 
 See [ADR-0002](ADRs/0002-layered-two-crate-architecture.md) for the full rationale.
 
+### Browser storage guidance
+
+`web_storage.rs` reads browser persistence and quota estimates on the main thread.
+`storage_status.rs` chooses the highest-priority notice using those estimates and
+the existing web availability inventory. The Library displays the notice and Settings
+displays estimated usage and protection. Dismissed guidance kinds are stored in
+settings and reset when the active kind changes. Browser storage is refreshed at
+startup and after inventory changes; desktop does not construct this status.
+
 ### Web cover persistence
 
-The worker stores QOI covers at `covers/<cover_key>.qoi` in OPFS, alongside `books/`. A staged `ThumbStore` preloads bytes before synchronous dispatch and queues writes and removals for the asynchronous OPFS bridge. Reads and writes are best-effort; startup prunes oldest files to 64 MiB. Deleting a book purges its carousel cover at `COVER_MAX_SIDE`, the same size the UI requests.
+The worker stores QOI covers at `covers/<cover_key>.qoi` in OPFS alongside `books/`.
+The OPFS bridge preloads cover bytes before dispatch and applies the writes and removals
+queued by the staged `ThumbStore`. Reads and writes are best-effort. At startup, the
+worker prunes the oldest cover files to a 64 MiB budget. A `DeleteBook` request purges
+the carousel cover at `COVER_MAX_SIDE`, the same size the UI requests.

@@ -106,6 +106,7 @@ pub(crate) struct OpenBookUseCase {
     save_library: SaveLibrary,
     save_settings: SaveSettings,
     backend: Rc<dyn BookBackend>,
+    importer: Option<Rc<dyn crate::backend::BookImporter>>,
     thumbs: Arc<dyn ThumbStore>,
 }
 
@@ -126,6 +127,7 @@ impl OpenBookUseCase {
         save_library: SaveLibrary,
         save_settings: SaveSettings,
         backend: Rc<dyn BookBackend>,
+        importer: Option<Rc<dyn crate::backend::BookImporter>>,
         thumbs: Arc<dyn ThumbStore>,
     ) -> Self {
         Self {
@@ -138,6 +140,7 @@ impl OpenBookUseCase {
             save_library,
             save_settings,
             backend,
+            importer,
             thumbs,
         }
     }
@@ -267,16 +270,17 @@ impl OpenBookUseCase {
     /// [`Self::persist_outgoing`], so closing here loses nothing.
     fn reject_empty(&self, id: &BookId) -> OpenOutcome {
         let fallback = self.state.borrow().open_title().map(str::to_owned);
+        if let Some(session) = self.state.borrow_mut().close() {
+            self.backend.close(session);
+        }
         let removal = remove_empty_book(
             &self.library,
             id,
             fallback,
             self.thumbs.as_ref(),
+            self.importer.as_deref(),
             |library| (self.save_library)(library),
         );
-        if let Some(session) = self.state.borrow_mut().close() {
-            self.backend.close(session);
-        }
         OpenOutcome::EmptyBookRejected {
             title: removal.title,
             removed: removal.removed,
@@ -430,12 +434,16 @@ pub(crate) fn remove_empty_book(
     id: &BookId,
     fallback: Option<String>,
     thumbs: &dyn ThumbStore,
+    importer: Option<&dyn crate::backend::BookImporter>,
     save: impl FnOnce(&Library) -> Result<(), CoreError>,
 ) -> EmptyBookOutcome {
     // The `borrow_mut` is confined to this statement and drops at the `;`.
     let removal = remove_empty_book_with(&mut library.borrow_mut(), id, fallback, save);
     if removal.removed {
         purge_cover(thumbs, id);
+        if let Some(importer) = importer {
+            importer.discard(id);
+        }
     }
     removal
 }
@@ -711,8 +719,16 @@ mod tests {
         let library = RefCell::new(Library::new());
         library.borrow_mut().add(id.clone(), "Empty".into());
 
-        remove_empty_book(&library, &id, None, &store, |_| Ok(()));
-        remove_empty_book(&library, &id, None, &store, |_| Ok(()));
+        let importer = crate::backend::fake::FakeBackend::new();
+        for _ in 0..2 {
+            remove_empty_book(&library, &id, None, &store, Some(importer.as_ref()), |_| {
+                Ok(())
+            });
+        }
+        assert_eq!(
+            importer.calls(),
+            [crate::backend::fake::Call::Discard(id.clone())]
+        );
         assert_eq!(
             store.take_calls(),
             [Call::PurgeCover(
@@ -893,6 +909,7 @@ mod tests {
             Box::new(save_library),
             Box::new(save_settings),
             crate::backend::fake::FakeBackend::new(),
+            None,
             Arc::new(gashuu_core::NullThumbStore),
         );
         UseCaseParts {

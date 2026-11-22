@@ -17,6 +17,9 @@ impl BookImporter for FakeImporter {
         self.pending.borrow_mut().push((file, done));
     }
 
+    fn sweep(&self, _: Vec<BookId>, _: bool, _: Done<crate::backend::SweepReport>) {
+        unreachable!()
+    }
     fn discard(&self, id: &BookId) {
         self.discarder()(id);
     }
@@ -53,6 +56,7 @@ fn imported(key: u32) -> ImportedBook {
         id: BookId::new(format!("books/{key}/book.cbz")),
         title: format!("Book {key}"),
         page_count: NonZeroUsize::MIN,
+        duplicate: false,
     }
 }
 
@@ -129,13 +133,29 @@ fn superseding_an_import_discards_early_and_late_successes() {
             &importer,
         );
     };
-    start(&[1, 2]);
+    start(&[1, 2, 4, 5]);
+    let duplicate = |key| ImportedBook {
+        duplicate: true,
+        ..imported(key)
+    };
+    importer.deliver(4, Ok(duplicate(4)));
     importer.deliver(1, Ok(imported(1)));
     start(&[3]);
+    importer.deliver(5, Ok(duplicate(5)));
     importer.deliver(2, Ok(imported(2)));
-    importer.deliver(3, Ok(imported(3)));
+    importer.deliver(3, Ok(duplicate(3)));
     assert!(controller.take_outcomes(1).is_none());
-    assert_eq!(controller.take_outcomes(2).unwrap().0.len(), 1);
+    let mut library = gashuu_core::Library::new();
+    library.add(imported(3).id, "Already on shelf".into());
+    let (outcomes, _) = controller.take_outcomes(2).unwrap();
+    assert_eq!(outcomes.len(), 1);
+    let report = crate::add_books::apply_outcomes(&mut library, outcomes);
+    assert!(report.added.is_empty());
+    assert_eq!(report.skipped, 0);
+    assert_eq!(
+        crate::add_books::select_add_notice(report.added.len(), report.skipped),
+        crate::add_books::AddNotice::AlreadyInLibrary
+    );
     assert_eq!(
         *importer.discarded.lock().unwrap(),
         [imported(1).id, imported(2).id]

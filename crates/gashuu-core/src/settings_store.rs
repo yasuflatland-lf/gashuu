@@ -119,6 +119,7 @@ mod tests {
             auto_update_check: false,
             skipped_version: Some("v9.9.9".to_string()),
             last_update_check: Some(1_700_000_000),
+            web_guidance_dismissed: ["evicted".to_owned()].into_iter().collect(),
         }
     }
 

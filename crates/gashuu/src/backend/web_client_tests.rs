@@ -692,6 +692,7 @@ fn imports_route_success_failure_and_discard() {
     };
     for result in [
         Ok(gashuu_worker::protocol::ImportedMeta {
+            duplicate: true,
             id: book_id().to_string(),
             title: "本".into(),
             page_count: 2,
@@ -721,9 +722,11 @@ fn imports_route_success_failure_and_discard() {
         );
         deliver(&client, deliveries, false);
         let response = received.try_recv().unwrap();
+        assert!(client.after_delivery().is_empty());
         if succeeded {
             let imported = response.unwrap();
             assert_eq!(imported.id, book_id());
+            assert!(imported.duplicate);
             assert_eq!(imported.title, "本");
             assert_eq!(imported.page_count.get(), 2);
         } else {
@@ -790,4 +793,82 @@ fn cover_cache_maintenance_posts_requests() {
         request(client.prune_covers(64)),
         WorkerRequest::PruneCovers { max_bytes: 64 }
     );
+}
+
+#[test]
+fn sweep_delivers_storage_inventory() {
+    let mut client = ready_client();
+    for now in [Some(22.), None] {
+        let (done, received) = test_callback();
+        let (out, _) = client.sweep(vec![book_id()], now, done);
+        let WorkerRequest::Sweep { req, keep, now_ms } = request(out) else {
+            panic!("expected sweep")
+        };
+        assert_eq!(keep, [book_id().to_string()]);
+        assert_eq!(now_ms, now);
+        let (_, deliveries) = receive(
+            &mut client,
+            WorkerResponse::Swept {
+                req,
+                removed: 1,
+                skipped_recent: 2,
+                skipped_locked: 3,
+                present: keep,
+            },
+            vec![],
+        );
+        deliver(&client, deliveries, false);
+        let report = received.try_recv().unwrap();
+        assert_eq!(
+            (report.removed, report.skipped_recent, report.skipped_locked),
+            (1, 2, 3)
+        );
+        assert_eq!(report.present, [book_id()]);
+    }
+}
+
+#[test]
+fn superseded_import_cleanup_runs_before_a_queued_duplicate_can_reuse_its_id() {
+    let mut client = ready_client();
+    let upload = crate::picker::UploadHandle {
+        key: 1,
+        name: "book.cbz".into(),
+        size: 20,
+    };
+    let start = |client: &mut WebClient| {
+        client
+            .import(
+                &upload,
+                Some(()),
+                ArchivePolicy::default(),
+                Box::new(|_| {}),
+            )
+            .0
+    };
+    let WorkerRequest::Import { req, .. } = request(start(&mut client)) else {
+        panic!("expected first import")
+    };
+    assert!(start(&mut client).is_empty());
+    let (_, done) = receive(
+        &mut client,
+        WorkerResponse::Imported {
+            req,
+            result: Ok(gashuu_worker::protocol::ImportedMeta {
+                id: book_id().to_string(),
+                title: "Book".into(),
+                page_count: 1,
+                duplicate: false,
+            }),
+        },
+        vec![],
+    );
+    deliver(&client, done, false);
+    assert!(matches!(
+        request(client.discard_stale(&book_id())),
+        WorkerRequest::DeleteBook { .. }
+    ));
+    assert!(matches!(
+        request(client.after_delivery()),
+        WorkerRequest::Import { .. }
+    ));
 }

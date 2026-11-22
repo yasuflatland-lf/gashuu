@@ -61,6 +61,11 @@ pub enum WorkerRequest {
     PruneCovers { max_bytes: u64 },
     /// Remove the book directory, with no response.
     DeleteBook { id: String },
+    Sweep {
+        req: ReqId,
+        keep: Vec<String>,
+        now_ms: Option<f64>,
+    },
     ProbePageCount {
         req: ReqId,
         id: String,
@@ -99,6 +104,13 @@ pub enum WorkerResponse {
         req: ReqId,
         result: WireResult<u32>,
     },
+    Swept {
+        req: ReqId,
+        removed: u32,
+        skipped_recent: u32,
+        skipped_locked: u32,
+        present: Vec<String>,
+    },
     Imported {
         req: ReqId,
         result: WireResult<ImportedMeta>,
@@ -120,6 +132,7 @@ pub struct OpenedMeta {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ImportedMeta {
+    pub duplicate: bool,
     pub id: String,
     pub title: String,
     pub page_count: u32,

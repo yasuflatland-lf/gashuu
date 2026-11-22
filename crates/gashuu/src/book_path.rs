@@ -30,12 +30,6 @@ pub(crate) fn exists(path: &Path) -> bool {
     path.exists()
 }
 
-#[cfg(target_arch = "wasm32")]
-pub(crate) fn exists(_path: &Path) -> bool {
-    // OPFS availability will be supplied asynchronously by the backend in #662.
-    true
-}
-
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn is_dir(path: &Path) -> bool {
     path.is_dir()

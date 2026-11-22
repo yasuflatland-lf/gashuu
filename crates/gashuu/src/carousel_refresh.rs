@@ -302,6 +302,8 @@ pub(crate) fn finalize_remove(ui: &ViewerWindow, deps: &CarouselRefresh, outcome
             // `run` already recomputed the projection and cleared the selection. Rebuild from
             // the fresh visible set (no focus reset — the focused index is clamped below).
             refresh_library_carousel(ui, deps, false);
+            #[cfg(target_arch = "wasm32")]
+            ui.invoke_storage_inventory_changed();
             // Clamp the focused index into the NEW visible row count BEFORE Slint can
             // read a stale out-of-range value (index-out-of-range is the crash risk).
             let visible_count = deps.search.borrow().visible_indices().len();
@@ -402,6 +404,8 @@ pub(crate) fn apply_add_report(
         .borrow_mut()
         .force_visible(added_ids.clone(), &deps.library.borrow());
     refresh_library_carousel(ui, deps, false);
+    #[cfg(target_arch = "wasm32")]
+    ui.invoke_storage_inventory_changed();
     match save_result {
         Err(e) => {
             tracing::error!(error = %e, "failed to save library after {op}");

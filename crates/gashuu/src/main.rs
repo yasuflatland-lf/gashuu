@@ -31,6 +31,8 @@ mod picker;
 mod recording_thumb_store;
 mod remove_books;
 mod selection_projection;
+#[cfg(any(test, target_arch = "wasm32"))]
+mod storage_status;
 #[cfg(not(target_arch = "wasm32"))]
 mod thumbnail_strip;
 #[cfg(target_arch = "wasm32")]
@@ -48,8 +50,14 @@ mod web_blob_store;
 mod web_font;
 #[cfg(any(target_arch = "wasm32", test))]
 mod web_ios;
+#[cfg(target_arch = "wasm32")]
+mod web_lifecycle;
+#[cfg(target_arch = "wasm32")]
+mod web_picker;
 #[cfg(any(target_arch = "wasm32", test))]
 mod web_pointer;
+#[cfg(target_arch = "wasm32")]
+mod web_storage;
 #[cfg(target_arch = "wasm32")]
 mod web_viewport;
 #[cfg(not(target_arch = "wasm32"))]
@@ -209,7 +217,7 @@ fn load_persisted(
     library_store: Result<LibraryStore, CoreError>,
 ) -> (
     Settings,
-    Library,
+    Option<Library>,
     SettingsStoreHandle,
     LibraryStoreHandle,
     Vec<String>,
@@ -223,7 +231,7 @@ fn load_persisted(
         tracing::warn!("localStorage unavailable; using defaults");
         return (
             Settings::default(),
-            Library::new(),
+            None,
             Rc::new(None),
             Rc::new(None),
             vec!["storage (localStorage unavailable)".to_owned()],
@@ -246,7 +254,7 @@ fn load_persisted(
     let library = load_or_default(
         "library",
         library_store.as_ref(),
-        LibraryStore::load,
+        |store| store.load().map(Some),
         LibraryStore::quarantine,
         &mut load_errs,
     );
@@ -318,9 +326,11 @@ fn main() {
     };
     let (settings, mut library, settings_store, library_store, load_errs) =
         load_persisted(settings_store, library_store);
-    if remove_demo_entries(&mut library) {
-        if let Err(error) = save_library(&library_store, &library) {
-            tracing::warn!(%error, "could not save library after removing session-only books");
+    if let Some(library) = library.as_mut() {
+        if remove_demo_entries(library) {
+            if let Err(error) = save_library(&library_store, library) {
+                tracing::warn!(%error, "could not save library after removing session-only books");
+            }
         }
     }
     if let Err(e) = run_app(settings, library, settings_store, library_store, load_errs) {
@@ -338,7 +348,7 @@ const WEB_COVER_CACHE_MAX_BYTES: u64 = 64 * 1024 * 1024;
 /// On wasm32 `ui.run()` never returns (winit unwinds out of the start function).
 fn run_app(
     settings: Settings,
-    library: Library,
+    library: Option<Library>,
     settings_store: SettingsStoreHandle,
     library_store: LibraryStoreHandle,
     load_errs: Vec<String>,
@@ -366,7 +376,9 @@ fn run_app(
 
     // The persisted shelf, shared so the carousel model build, the focused-index
     // clamp, and later PR-L's add / PR-R's position write-back can all reach it.
-    let library = Rc::new(RefCell::new(library));
+    #[cfg(target_arch = "wasm32")]
+    let library_loaded = library.is_some();
+    let library = Rc::new(RefCell::new(library.unwrap_or_default()));
 
     #[cfg(not(target_arch = "wasm32"))]
     let thumb_store: Arc<dyn gashuu_core::ThumbStore> = match gashuu_core::FsThumbStore::new() {
@@ -440,6 +452,7 @@ fn run_app(
             move |settings| save_settings(&store, settings)
         }),
         backend.clone(),
+        importer.clone(),
         Arc::clone(&thumb_store),
     ));
 
@@ -453,6 +466,10 @@ fn run_app(
         selection: Rc::clone(&selection),
         localizer: Rc::clone(&localizer),
     };
+    #[cfg(target_arch = "wasm32")]
+    wire_storage_status(&ui, &carousel, &settings, &settings_store);
+    #[cfg(target_arch = "wasm32")]
+    wire_startup_sweep(&ui, &carousel, importer.as_deref(), library_loaded);
     refresh_library_carousel(&ui, &carousel, true);
     // Continue reading: override the refresh's reset-to-0 with a one-shot snap to the
     // last-read book's visible row (resolved through the empty-query visible set).
@@ -504,7 +521,7 @@ fn run_app(
     handlers::wire_open_handlers(
         &ui,
         &picker,
-        importer,
+        importer.clone(),
         &settings,
         &library,
         &covers,
@@ -543,6 +560,7 @@ fn run_app(
         &localizer,
         &library_store,
         backend,
+        importer.clone(),
         Arc::clone(&thumb_store),
     );
     handlers::wire_viewer_input_handlers(&ui, &state, &viewport, &pages, &localizer);
@@ -561,6 +579,8 @@ fn run_app(
         &localizer,
         &settings_store,
         &library_store,
+        importer,
+        &adder,
         thumb_store,
     );
     handlers::wire_view_mode_handlers(
@@ -620,6 +640,27 @@ fn run_app(
         window_state::restore_geometry(&ui, &settings.borrow());
     }
 
+    #[cfg(target_arch = "wasm32")]
+    {
+        let covers = Rc::clone(&covers);
+        let library = Rc::clone(&library);
+        let library_store = Rc::clone(&library_store);
+        let leave_point = Rc::clone(&leave_point);
+        let settings = Rc::clone(&settings);
+        let settings_store = Rc::clone(&settings_store);
+        web_lifecycle::wire_suspend_persistence(Rc::new(move || {
+            stage_suspend_state(
+                &covers,
+                &library,
+                &library_store,
+                &leave_point,
+                &settings,
+                |l| save_library(&library_store, l),
+                |s| save_settings(&settings_store, s),
+            );
+        }));
+    }
+
     ui.run()?;
     #[cfg(not(target_arch = "wasm32"))]
     {
@@ -637,6 +678,124 @@ fn run_app(
         );
     }
     Ok(())
+}
+
+/// Wires notice dismissal and owns the single `storage_inventory_changed` handler.
+/// That handler re-reads `navigator.storage` status, recomputes guidance, and
+/// refreshes the carousel. The epoch drops stale async results.
+#[cfg(target_arch = "wasm32")]
+fn wire_storage_status(
+    ui: &ViewerWindow,
+    carousel: &CarouselRefresh,
+    settings: &Rc<RefCell<Settings>>,
+    settings_store: &SettingsStoreHandle,
+) {
+    let current_kind = Rc::new(RefCell::new(None::<String>));
+    let epoch = Rc::new(std::cell::Cell::new(0_u64));
+    ui.on_storage_notice_dismissed({
+        let weak = ui.as_weak();
+        let current_kind = Rc::clone(&current_kind);
+        let settings = Rc::clone(settings);
+        let store = Rc::clone(settings_store);
+        move || {
+            if let Some(kind) = current_kind.borrow().as_ref() {
+                let mut settings = settings.borrow_mut();
+                settings.web_guidance_dismissed.insert(kind.clone());
+                if let Err(error) = save_settings(&store, &settings) {
+                    tracing::warn!(%error, "failed to save storage notice dismissal");
+                }
+            }
+            if let Some(ui) = weak.upgrade() {
+                ui.set_storage_notice_visible(false);
+            }
+        }
+    });
+    ui.on_storage_inventory_changed({
+        let weak = ui.as_weak();
+        let carousel = carousel.clone();
+        let settings = Rc::clone(settings);
+        let store = Rc::clone(settings_store);
+        let current_kind = Rc::clone(&current_kind);
+        let epoch = Rc::clone(&epoch);
+        move || {
+            epoch.set(epoch.get() + 1);
+            let ticket = epoch.get();
+            let weak = weak.clone();
+            let carousel = carousel.clone();
+            let settings = Rc::clone(&settings);
+            let store = Rc::clone(&store);
+            let current_kind = Rc::clone(&current_kind);
+            let epoch = Rc::clone(&epoch);
+            wasm_bindgen_futures::spawn_local(async move {
+                let status = web_storage::read_status().await;
+                if ticket != epoch.get() {
+                    return;
+                }
+                let Some(ui) = weak.upgrade() else {
+                    return;
+                };
+                let inventory = book_availability::web_inventory();
+                let missing = carousel
+                    .library
+                    .borrow()
+                    .books()
+                    .iter()
+                    .filter(|book| !inventory.contains(book.id()))
+                    .count();
+                let guidance = storage_status::guidance(&status, missing);
+                *current_kind.borrow_mut() = guidance.kind().map(str::to_owned);
+                let mut settings = settings.borrow_mut();
+                let before = settings.web_guidance_dismissed.clone();
+                let visible =
+                    storage_status::notice_visible(&guidance, &mut settings.web_guidance_dismissed);
+                if before != settings.web_guidance_dismissed {
+                    if let Err(error) = save_settings(&store, &settings) {
+                        tracing::warn!(%error, "failed to reset storage notice dismissal");
+                    }
+                }
+                let (title, usage, protection, notice) =
+                    i18n::dynamic::storage_text(carousel.localizer.loader(), &status, &guidance);
+                ui.set_storage_title(title.into());
+                ui.set_storage_usage_text(usage.into());
+                ui.set_storage_protected(protection.into());
+                ui.set_storage_notice_text(notice.into());
+                ui.set_storage_notice_visible(visible);
+                refresh_library_carousel(&ui, &carousel, false);
+            });
+        }
+    });
+    ui.invoke_storage_inventory_changed();
+}
+
+#[cfg(target_arch = "wasm32")]
+fn wire_startup_sweep(
+    ui: &ViewerWindow,
+    carousel: &CarouselRefresh,
+    importer: Option<&dyn backend::BookImporter>,
+    library_loaded: bool,
+) {
+    let Some(importer) = importer.filter(|_| library_loaded) else {
+        return;
+    };
+    let weak = ui.as_weak();
+    let inventory = book_availability::web_inventory();
+    let ids: Vec<_> = carousel
+        .library
+        .borrow()
+        .books()
+        .iter()
+        .map(|book| book.id().clone())
+        .collect();
+    importer.sweep(
+        ids,
+        false,
+        Box::new(move |report| {
+            inventory.replace(report.present);
+            if let Some(ui) = weak.upgrade() {
+                ui.invoke_storage_inventory_changed();
+            }
+        }),
+    );
 }
 
 /// The app's single exit-persistence sequence: flush resolved page counts, stage
@@ -722,6 +881,27 @@ fn stage_exit_state(
         // notice, and the relaunch caller replaces the process moments later — but the
         // failure must not be silently discarded.
         tracing::error!(error = %e, "failed to persist the leave point on exit");
+    }
+}
+
+/// Suspend flush: stages the leave point (Suspend route) and saves library and settings.
+/// Never ends the dialog session, closes a backend session, or modifies viewer/viewport runtime state.
+#[cfg(any(target_arch = "wasm32", test))]
+fn stage_suspend_state(
+    covers: &cover_loader::CoverController,
+    library: &RefCell<Library>,
+    library_store: &LibraryStoreHandle,
+    leave_point: &LeavePointService,
+    settings: &RefCell<Settings>,
+    save_library: impl FnOnce(&Library) -> Result<(), CoreError>,
+    save_settings: impl FnOnce(&Settings) -> Result<(), CoreError>,
+) {
+    covers.flush_counts(library, library_store);
+    if let Err(e) = leave_point.persist_with(ViewModeRoute::Suspend, save_library) {
+        tracing::error!(error = %e, "failed to persist the leave point on suspend");
+    }
+    if let Err(e) = save_settings(&settings.borrow()) {
+        tracing::error!(error = %e, "failed to save settings on suspend");
     }
 }
 
@@ -1110,6 +1290,50 @@ mod tests {
     use super::*;
     use dialog_session::DialogScope;
     use gashuu_core::{CoverMode, FitMode, ResolvedView, SpreadMode, ViewOverride};
+
+    #[test]
+    fn stage_suspend_state_writes_once_each_and_never_ends_dialog() {
+        let settings = Rc::new(RefCell::new(Settings::default()));
+        let state = Rc::new(RefCell::new(ViewerState::new()));
+        let viewport = Rc::new(RefCell::new(ViewportState::from_settings(
+            &settings.borrow(),
+        )));
+        let session = Rc::new(RefCell::new(DialogSession::new()));
+        let library = Rc::new(RefCell::new(Library::new()));
+        let store = Rc::new(None);
+        let covers = cover_loader::CoverController::new(backend::fake::FakeBackend::new());
+        let leave_point = LeavePointService::new(
+            Rc::clone(&state),
+            Rc::clone(&viewport),
+            Rc::clone(&session),
+            Rc::clone(&settings),
+            Rc::clone(&library),
+            Rc::clone(&store),
+        );
+        session
+            .borrow_mut()
+            .open(DialogScope::Library, &state, &viewport, &settings);
+        let mut library_saves = 0;
+        let mut settings_saves = 0;
+        stage_suspend_state(
+            &covers,
+            &library,
+            &store,
+            &leave_point,
+            &settings,
+            |_| {
+                library_saves += 1;
+                Ok(())
+            },
+            |_| {
+                settings_saves += 1;
+                Ok(())
+            },
+        );
+        assert_eq!(library_saves, 1);
+        assert_eq!(settings_saves, 1);
+        assert_eq!(session.borrow().scope(), Some(DialogScope::Library));
+    }
 
     /// Issue #535, path (a), pinned at the PRODUCTION call site: quitting while a
     /// settings dialog opened on the Library screen is still up must persist the

@@ -241,6 +241,7 @@ impl Dispatcher {
             }
             // Import and deletion are executed by the browser glue, which owns OPFS.
             WorkerRequest::Import { .. }
+            | WorkerRequest::Sweep { .. }
             | WorkerRequest::DeleteBook { .. }
             | WorkerRequest::ClearCovers
             | WorkerRequest::PruneCovers { .. }

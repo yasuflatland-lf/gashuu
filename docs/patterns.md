@@ -263,12 +263,12 @@ THE KEY GOTCHA of this feature, and the reusable harness for any "global config 
 
 A real bug shipped-then-caught here. The plan correctly gated the EXIT reconcile on "no book open", but MISSED a SECOND reconcile on the open path — inside `OpenBookUseCase::run`, behind the `if track_recent_files` save gate. Runtime view modes are NOT reset when a new book is opened (the new book's `ResolvedView` is applied LATER in `run`), so at that save point the runtime still held the OUTGOING book's per-book modes — reconciling them there wrote the outgoing book's preferences into the global `Settings`. The fix was to NOT reconcile on the open-time save at all (it now persists only recents + cache/preload/track + the UNCHANGED global view fields); the comment at that call site spells out why.
 
-STRUCTURAL ENFORCEMENT (Wave-1 DDD refactor). The audit no longer needs to chase scattered call sites: all view-mode persistence now routes through ONE chokepoint, `LeavePointService::persist(route: ViewModeRoute)` in `view_sync.rs`, and the private `stage_view_modes_to_sink` helper contains the routing `match`. Its two sink fns (`apply_runtime_view_to_settings` → global, `stage_view_override_write_back` → per-book) are reachable in production only through that chokepoint, with ONE named exception: `apply_runtime_view_to_settings` is `pub(crate)` so `DialogSession::end` can commit a Library-scope dialog's global edit at the session boundary (issue #556); `stage_view_override_write_back` stays private. The audit is therefore the routing match PLUS that single named extra caller. `ViewModeRoute` names each leave point (`DialogClosedOnLibrary` / `DialogClosedOnViewer` / `LeaveViewer` / `OpenDifferentBook` / `AppExit`), and the match routes it to the right sink; the clobber-trap rationale lives as a comment on that match. So the harness below now reduces to auditing the SINGLE routing match — a new leave point cannot reach a write fn except by adding a `ViewModeRoute` variant and a match arm, where the global-vs-per-book decision is forced into view. The cautionary lesson still holds (the trap is real and shipped once); the structure now makes the dangerous global-write sites enumerable in one place instead of grep-able across the crate.
+STRUCTURAL ENFORCEMENT (Wave-1 DDD refactor). The audit no longer needs to chase scattered call sites: all view-mode persistence now routes through ONE chokepoint, `LeavePointService::persist(route: ViewModeRoute)` in `view_sync.rs`, and the private `stage_view_modes_to_sink` helper contains the routing `match`. Its two sink fns (`apply_runtime_view_to_settings` → global, `stage_view_override_write_back` → per-book) are reachable in production only through that chokepoint, with ONE named exception: `apply_runtime_view_to_settings` is `pub(crate)` so `DialogSession::end` can commit a Library-scope dialog's global edit at the session boundary (issue #556); `stage_view_override_write_back` stays private. The audit is therefore the routing match PLUS that single named extra caller. `ViewModeRoute` names each leave point (`DialogClosedOnLibrary` / `DialogClosedOnViewer` / `LeaveViewer` / `OpenDifferentBook` / `AppExit` / `Suspend`), and the match routes it to the right sink; the clobber-trap rationale lives as a comment on that match. So the harness below now reduces to auditing the SINGLE routing match — a new leave point cannot reach a write fn except by adding a `ViewModeRoute` variant and a match arm, where the global-vs-per-book decision is forced into view. The cautionary lesson still holds (the trap is real and shipped once); the structure now makes the dangerous global-write sites enumerable in one place instead of grep-able across the crate.
 
 HARNESS:
 
 1. **Audit the ONE routing match (was: enumerate ALL write sites).** Pre-chokepoint this meant grepping both write fns and reading every call site — and the plan's enumeration missed one. Now every write goes through `LeavePointService`; read `stage_view_modes_to_sink`'s `match route` to cover all sinks. The write fns are private, so no path can bypass it. A new leave point is a new `ViewModeRoute` variant + arm, which is exactly where the global-vs-per-book routing decision is made.
-2. **State the invariant explicitly, then audit every route against it.** The invariant for this feature: the GLOBAL view modes are written ONLY by (a) the global-scope UI — the Library settings dialog close (`DialogClosedOnLibrary`) — and (b) the no-book-open exit path (`AppExit`, guarded on `open_file().is_none()`); the PER-CONTEXT override is written ONLY at leave points (`stage_view_override_write_back`, the other three routes). Any route arm that reconciles into global outside (a)/(b) is the bug.
+2. **State the invariant explicitly, then audit every route against it.** The invariant for this feature: the GLOBAL view modes are written ONLY by (a) the global-scope UI — the Library settings dialog close (`DialogClosedOnLibrary`) — and (b) the no-book-open exit or dialog-free suspend path (`AppExit` or `Suspend`, guarded on `open_file().is_none()`); the PER-CONTEXT override is written at leave points via `stage_view_override_write_back`. Suspend skips both sinks during an active dialog. Any route arm that reconciles into global outside (a)/(b) is the bug.
 3. **Watch for the asymmetry that hides the clobber**: runtime modes persist across an open (they are re-seeded only AFTER the open succeeds), so "the runtime obviously holds the global default at a global-write site" is FALSE on the open path. The `OpenDifferentBook` route is per-book-ONLY for exactly this reason — opening a book must NOT reconcile into global.
 
 This is a sharper instance of the "verify the as-merged state, do not trust the plan" discipline (the move-only-refactor checklist + the `#76` dead-helper entry): here the plan's enumeration of write sites was the thing that was wrong — and the chokepoint is the structural answer to "the enumeration can be wrong".
@@ -561,13 +561,19 @@ cannot apply.
 ### Session lifetime and thumbnail generations
 
 Closing a backend session suppresses pending thumbnail deliveries, including results already
-queued for the UI. Each strip start also advances the epoch. On a carousel refresh,
-`CoverController` calls `cancel_covers` and advances its own epoch. Both controllers use
-`ui_done` to check the epoch and upgrade the weak window. They fetch the model and convert
-decoded pixels to Slint images on the event-loop thread.
+queued for the UI. Each strip start also advances the epoch. The `ui_done` callback checks
+that epoch and upgrades the weak window before converting the image and updating its row.
 
-Keep cover startup dispatch-only. A desktop disk-cache hit still needs metadata, a cache
-read and decoding. The backend defers delivery even for a memory hit.
+### Cover generations and cache hits
+
+`CoverController` calls `backend.cancel_covers()` before dispatching each generation.
+Its `ui_done` callbacks also check the epoch for cover and count results. The controller
+fetches the model and builds the `slint::Image` on the UI thread.
+
+Keep cover startup dispatch-only. The desktop backend resolves the book fingerprint
+and checks decoded memory and `ThumbStore` on a worker. Reading source metadata,
+loading cached covers, and decoding them inline can stall the event loop when a
+library has hundreds of books. The backend defers delivery even for a memory hit.
 
 ### Worker → UI ACTION (not just a model write) via a Slint callback on the root window (reject-empty-books)
 
@@ -585,10 +591,12 @@ RACE IDEMPOTENCY via the mutator's bool: open-time removal (`OpenBookUseCase::ru
 
 ### Worker → UI ACTION that carries a COLLECTION: hold the `Send` accumulator in the controller, pass only an epoch token through the callback (issue 206, bulk-add probe)
 
-The add controller holds one `Generation<Vec<ProbeOutcome>>` per batch. It converts each picked
+The add controller holds one `Generation<Vec<ProbeOutcome>>` per batch. It converts each desktop
 path to a request ID and asks the backend to probe it. The completion retains the original path
 and input index. `ProbeKind::from_probe` preserves the count or diagnostic details for the
 apply handler. A path conversion failure uses the same completion step synchronously.
+For a browser upload, the controller uses the imported ID, title and page count returned by
+`BookImporter`.
 
 Each completion pushes its outcome through its generation ticket on the UI thread. The number
 of accumulated outcomes supplies the progress tick. When the batch is full, the controller
@@ -598,8 +606,9 @@ cannot update progress or finalize the newer batch.
 The finalize handler uses `take_outcomes(epoch)` to drain the current batch in input order.
 This keeps insertion, focus and skip reporting deterministic even when probes finish out of
 order. The library mutation, save, carousel rebuild and notice all run in that handler.
-Use fake backend completions in scrambled order to test the drain. Complete an older batch
-after starting a new one to test the generation guard.
+
+Tests insert outcomes in scrambled order and advance the generation explicitly to
+verify ordered delivery and rejection of superseded batches.
 
 ### Build spread images in the backend completion
 
@@ -624,7 +633,7 @@ session and indices. Complete an old request after changing targets to exercise 
 `ThumbCell` distinguishes loading, loaded and failed states. On a thumbnail error the strip logs the page index and
 backend error, then updates only that page to `Failed`. Other pending pages can still complete.
 
-### Per-cover failure
+### Per-book cover failure
 
 `CoverController` uses `ui_done` to check the epoch and window lifetime before applying a backend
 result. A successful cover calls `apply_loaded_cover`. A cover error other than `EmptyBook` calls
@@ -1490,3 +1499,11 @@ HARNESS — test a networked script WITHOUT the network: expose the base URL as 
 - **macOS `.app` and deb are deliberately NOT self-replaced.** macOS is `ManualInstall` (unsigned + Gatekeeper quarantine would flag an in-place-swapped bundle as "damaged"); deb is `ExternalInstall` (dpkg owns `/usr/bin/gashuu`). This is a strategy decision in core, unit-tested in `packaging.rs::strategy_mapping` — the UI never second-guesses it.
 
 The whole pipeline runs off the UI thread (`rayon::spawn`) and marshals back with `slint::invoke_from_event_loop`; on success it sets a localized "Restarting…" status, then `slint::Timer::single_shot` lets it paint for ~900ms. The timer invokes the `persist-before-relaunch` bridge to run the SAME shared exit persistence as a normal quit before `relaunch_and_exit` spawns the new binary and `exit(0)`s, because `exit(0)` bypasses everything after `ui.run()`. On ANY failure it falls back to `opener::open(RELEASES_PAGE_URL)` so the user is never stranded on a broken self-update.
+
+### Web suspend is not exit: never `DialogSession::end` outside a real dialog close or process exit
+
+A hidden tab can return with its settings dialog still open. Ending its session during a
+`pagehide` or hidden `visibilitychange` would clear the snapshot and change what subsequent edits
+modify. The `Suspend` route always stages the reading position, but skips view-mode writes while
+a dialog is active. Without a dialog it uses the exit routing. The session and runtime stay intact;
+unconfirmed edits can be lost if the browser discards the tab ([issue #664](https://github.com/yasuflatland-lf/gashuu/issues/664)).
