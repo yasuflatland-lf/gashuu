@@ -3,6 +3,7 @@
 use gashuu_core::{ArchivePolicy, BookId, CacheConfig, CoreError, DecodedImage, ThumbStore};
 use std::fmt;
 use std::num::NonZeroUsize;
+#[cfg(not(target_arch = "wasm32"))]
 use std::path::Path;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
@@ -13,8 +14,12 @@ pub(crate) mod cover_mem;
 pub(crate) mod desktop;
 #[cfg(test)]
 pub(crate) mod fake;
+#[cfg(target_arch = "wasm32")]
+mod unavailable;
+#[cfg(target_arch = "wasm32")]
+mod web;
 #[cfg(any(test, target_arch = "wasm32"))]
-mod local_web;
+mod web_client;
 
 /// Every `Done` passed to a backend is:
 /// - invoked **at most once**;
@@ -68,6 +73,7 @@ pub(crate) enum BackendError {
 }
 
 impl BackendError {
+    #[cfg(not(target_arch = "wasm32"))]
     fn for_open(path: &Path, error: &CoreError) -> Self {
         if crate::book_path::exists(path) {
             Self::from_core(error)
@@ -189,9 +195,52 @@ pub(crate) fn platform_backend(thumbs: Arc<dyn ThumbStore>) -> Rc<dyn BookBacken
     #[cfg(target_arch = "wasm32")]
     {
         let _ = thumbs;
-        Rc::new(local_web::LocalWebBackend::new())
+        web::shared()
+            .map(|backend| backend as Rc<dyn BookBackend>)
+            .unwrap_or_else(|| Rc::new(unavailable::UnavailableBackend::default()))
     }
 }
+
+pub(crate) use importer::{BookImporter, DiscardUpload, ImportedBook};
+
+mod importer {
+    use super::{BackendError, Done};
+    use crate::picker::UploadHandle;
+    use gashuu_core::{ArchivePolicy, BookId};
+    use std::{num::NonZeroUsize, sync::Arc};
+
+    #[derive(Debug)]
+    pub(crate) struct ImportedBook {
+        pub id: BookId,
+        pub title: String,
+        pub page_count: NonZeroUsize,
+    }
+
+    pub(crate) type DiscardUpload = Arc<dyn Fn(&BookId) + Send + Sync>;
+
+    pub(crate) trait BookImporter {
+        fn import(
+            &self,
+            file: UploadHandle,
+            policy: ArchivePolicy,
+            done: Done<Result<ImportedBook, BackendError>>,
+        );
+        #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+        fn discard(&self, id: &BookId);
+        /// A cleanup callback that a Send completion can invoke on the UI thread.
+        fn discarder(&self) -> DiscardUpload;
+    }
+}
+
+pub(crate) fn platform_importer() -> Option<Rc<dyn BookImporter>> {
+    #[cfg(target_arch = "wasm32")]
+    return web::shared().map(|backend| backend as Rc<dyn BookImporter>);
+    #[cfg(not(target_arch = "wasm32"))]
+    return None;
+}
+
+#[cfg(any(test, target_arch = "wasm32"))]
+pub(crate) const STORAGE_UNAVAILABLE: &str = "this browser cannot store books";
 
 #[cfg(test)]
 #[path = "port_tests.rs"]

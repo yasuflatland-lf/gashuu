@@ -1,20 +1,11 @@
-//! Shared background-worker → UI-thread plumbing for the async loader controllers.
-//!
-//! The library carousel's cover loader, the page-count prefetch, the bulk-add
-//! controller, the thumbnail strip, and the viewer page loader all hand a result
-//! from a rayon worker back to the Slint event loop the same way, and the cover
-//! loader and thumbnail strip rotate a per-generation cancel flag the same way.
-//! The open and bulk-add controllers use [`Generation`] to give each operation
-//! its own result slot. Workers deliver through a [`Ticket`], and the UI thread
-//! drains results for the current generation.
+//! Epoch guards for backend completions and result slots for async controllers.
 
 use crate::{backend::Done, ViewerWindow};
 use std::cell::RefCell;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering::Relaxed};
+use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
 use std::sync::{Arc, Mutex};
 
 /// Build a completion that checks the current UI epoch and the window lifetime.
-#[allow(dead_code)] // TODO(wasm-backend): remove when #656 ([6/13]) and #657 ([7/13]) have both merged
 pub(crate) fn ui_done<T: Send + 'static>(
     weak: slint::Weak<ViewerWindow>,
     epoch: Arc<AtomicUsize>,
@@ -29,19 +20,6 @@ pub(crate) fn ui_done<T: Send + 'static>(
             body(&ui, result);
         }
     })
-}
-
-/// Supersede the previous generation's cancel flag and install a fresh one,
-/// returning a clone of the new flag for the just-started generation. Each
-/// `RefCell` borrow is confined to its own statement (dropped at the `;`) so no
-/// two overlap — collapsing these into one expression would compile but panic at
-/// runtime with a double borrow. Shared by `CoverController` and
-/// `ThumbnailController`.
-#[allow(dead_code)] // TODO(wasm-backend): remove when #656 ([6/13]) and #657 ([7/13]) have both merged
-pub(crate) fn rotate_cancel(cell: &RefCell<Arc<AtomicBool>>) -> Arc<AtomicBool> {
-    cell.borrow().store(true, Relaxed);
-    *cell.borrow_mut() = Arc::new(AtomicBool::new(false));
-    Arc::clone(&cell.borrow())
 }
 
 /// Epoch-guarded, take-once result slot for one async generation at a time.
