@@ -93,6 +93,10 @@ pages on the main thread, caches up to six decoded pages, and disables prefetch
 and the thumbnail strip. Issues #655 to #662 track the daily-reading path with
 Web Workers, OPFS, and `BookBackend`.
 
+On a web page-cache miss, `decode_page` tries the injected primary decoder and
+retries with the fallback on failure. Both use the Rust `image` crate today.
+Issue #686 switches the web primary to the browser-native decoder.
+
 Action-time saves to `localStorage` preserve settings and library metadata
 across reloads. Restored books appear unavailable because their bytes are gone.
 If `localStorage` is unavailable at startup, the app opens with defaults and an empty library, shows

@@ -480,7 +480,10 @@ persist state after the event loop returns.
 `PageDecoder::decode` takes owned encoded bytes and returns a local `DecodeFuture` resolving to
 a straight-alpha RGBA8 `DecodedImage` or `CoreError`. `ImageCratePageDecoder` runs
 `gashuu_core::image_ops::decode` synchronously and returns an already-ready future. The port is
-available on all targets. The page loader still uses `CacheDispatch::decode_and_cache`.
+available on all targets. On a cache miss, `decode_page` reads the encoded bytes once and
+awaits the primary decoder. If it fails, the orchestrator warns once per controller and retries
+with the fallback. A page cached during either await takes precedence. Otherwise a successful
+decode populates the cache, or the fallback error reaches the loader.
 
 ### web_font
 
@@ -504,7 +507,8 @@ Add probes, cover loads, and opens use the same seam. Browser opens call
 Carousel opens and Continue Reading use the existing `OpenController` flow.
 
 `worker` dispatches through rayon on desktop and runs loader work inline on
-wasm32. The browser decodes spread pages sequentially, loads covers through the
+wasm32. The browser page loader uses `spawn_local` to await the leading page before
+the trailing page and logs the decode time for each miss. The browser loads covers through the
 memory cache, and leaves thumbnail-strip generation disabled. `ViewerState`
 caps browser cache capacity at six decoded pages and sets the prefetch radius
 to zero at startup and after settings edits. A 1600 × 2400 RGBA page uses about
@@ -1319,17 +1323,11 @@ rationale (the detached-write revert hazard) is untouched, and `persist_outgoing
 first, before the source is replaced. See [patterns.md](patterns.md), "Worker → UI ACTION via a
 Slint callback".
 
-**`page_loader.rs`** (`PageController`, issue #207): the viewer's async-decode arm. Keeps the same
-mental model as `cover_loader.rs` — UI-thread bookkeeping in the controller, heavy decode on rayon
-workers, scalar-only `Send` values marshalled back via Slint callbacks — applied to page turns so a
-cache-miss page never blocks the event loop. `PageController` owns an `Arc<AtomicUsize>` epoch, a
-`RefCell<HashSet<usize>>` dispatch-dedup set, and a `RefCell<Option<SpreadTarget>>` (holding
-`leading_idx`, `trailing_idx`, `single`). `set_source` / `set_target` advance the epoch so stale
-marshal closures that arrive after a source change or spread navigation are silently discarded.
-`dispatch_spread(ui_weak, cache_dispatch, request)` reserves each MISS slot independently via
-`reserve_missing_slots` (dedup prevents duplicate in-flight decodes for the same page); when both
-slots are MISS, the rayon job uses `rayon::join` so they decode in parallel. Each rayon job marshals
-back via `slint::invoke_from_event_loop`: on success it calls `ui.invoke_spread_anchored(content_w,
+**`page_loader.rs`** owns the viewer's page-decode controller. `PageController` tracks the
+target spread, reserves missing pages, and advances an epoch on source or target changes.
+Desktop workers use `CacheDispatch::decode_and_cache` and `rayon::join` for two misses.
+The wasm32 task uses the decoders injected by `run_app`. Both paths finish the spread through
+the same epoch-guarded Slint callback. On success it calls `ui.invoke_spread_anchored(content_w,
 content_h, single, trailing_failed, leading_idx, trailing_idx)` (which drives geometry + image
 apply on the UI thread); on decode failure it calls `ui.invoke_page_decode_error(index)`. The
 UI-side `slint::Image` is built inside the event-loop closure (never `Send`). `main.rs::refresh`

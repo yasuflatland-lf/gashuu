@@ -346,7 +346,13 @@ fn run_app(
 
     // Page controller for the viewer body. Owns async page-decode epoch and
     // dispatch dedup for cache-miss spreads.
+    #[cfg(not(target_arch = "wasm32"))]
     let pages = Rc::new(page_loader::PageController::new());
+    #[cfg(target_arch = "wasm32")]
+    let pages = Rc::new(PageController::with_decoders(
+        Rc::new(page_decode::ImageCratePageDecoder),
+        Rc::new(page_decode::ImageCratePageDecoder),
+    ));
 
     // Bulk-add controller (issue 206): probes each source off the UI thread so a bulk
     // add never freezes the event loop. `start` dispatches; `add-finalize` applies.
