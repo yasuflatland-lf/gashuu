@@ -250,6 +250,7 @@ export component ViewerWindow inherits Window {
     // macOS and web use one add capsule. Only the macOS picker accepts folders.
     in property <bool> combined-add-picker;
     in property <bool> add-picker-includes-folders;
+    in property <bool> tap-opens-centered;
     /// Web only: set by Rust after a Japanese fallback font is registered, to force a re-shape.
     /// Empty (the default) means "platform default", which is what desktop always uses.
     in property <string> web-font-family: "";
@@ -322,6 +323,7 @@ export component ViewerWindow inherits Window {
         library-book-count: root.library-book-count;
         combined-add-picker: root.combined-add-picker;
         add-picker-includes-folders: root.add-picker-includes-folders;
+        tap-opens-centered: root.tap-opens-centered;
         // Suppress the carousel's keyboard seams while a modal overlays the
         // Library — same condition the Viewer FocusScope uses (see `fs` below).
         modal-open: root.any-modal-open;

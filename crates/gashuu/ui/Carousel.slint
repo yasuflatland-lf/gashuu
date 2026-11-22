@@ -236,6 +236,7 @@ export component Carousel inherits Rectangle {
     // macOS and web use one add capsule. Only the macOS picker accepts folders.
     in property <bool> combined-add-picker;
     in property <bool> add-picker-includes-folders;
+    in property <bool> tap-opens-centered: false;
 
     // ── Library search seams (issue 88) ───────────────────────────────────────
     // `library-book-count` is filter-INDEPENDENT so the empty-library CTA and no-results
@@ -481,8 +482,15 @@ export component Carousel inherits Rectangle {
                   cover-loaded: item.cover-loaded;
                   // PR-2: ONLY the pass-1 backing copy is click-interactive, so each cover
                   // (incl. the centered one, pass-2 = interactive:false) fires exactly once.
+                  // On coarse pointers a tap on the centered cover also opens; Rust's
+                  // cover-clicked only sets focus in normal mode, so open fires once.
                   interactive: true;
-                  clicked => { root.cover-clicked(idx); }
+                  clicked => {
+                      if (root.tap-opens-centered && idx == root.focused-index && !root.selection-mode) {
+                          root.open(idx);
+                      }
+                      root.cover-clicked(idx);
+                  }
                   // Double-click opens via the SAME `open(int)` as Return; only reachable on
                   // the CENTER strip. Gated off in selection mode (else it yanks you out mid-select).
                   double-clicked => { if (!root.selection-mode) { root.open(idx); } }
