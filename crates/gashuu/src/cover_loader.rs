@@ -285,6 +285,10 @@ pub(crate) fn test_window() -> ViewerWindow {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::backend::fake::{Call, FakeBackend};
+    use gashuu_core::CoreError;
+    use slint::{ComponentHandle, SharedString};
+    use std::num::NonZeroUsize;
 
     /// The cover-cache policy values are load-bearing for on-disk compatibility:
     /// `max_side` (512) is a `cache_key` / `purge_cover_for` ingredient, so the
@@ -409,8 +413,6 @@ mod tests {
 
     #[test]
     fn start_cancels_covers_then_requests_each_book_in_focus_order() {
-        use crate::backend::fake::{Call, FakeBackend};
-        use slint::ComponentHandle;
         let ui = test_window();
         let fake = FakeBackend::new();
         let controller = CoverController::new(fake.clone());
@@ -442,8 +444,7 @@ mod tests {
 
     #[test]
     fn start_persists_previously_resolved_counts_before_cancelling() {
-        use crate::backend::fake::{Call, FakeBackend};
-        use gashuu_core::{BlobStore, CoreError, LibraryStore};
+        use gashuu_core::{BlobStore, LibraryStore};
 
         // The store observes the fake's call log at the instant the library is saved.
         thread_local! {
@@ -481,7 +482,7 @@ mod tests {
             &ui,
             0,
             id,
-            std::num::NonZeroUsize::MIN,
+            NonZeroUsize::MIN,
         );
         controller.start(slint::Weak::default(), &library, &store, vec![]);
         assert_eq!(library.borrow().books()[0].page_count_opt(), Some(1));
@@ -489,21 +490,127 @@ mod tests {
         assert_eq!(fake.calls(), [Call::CancelCovers]);
     }
 
-    #[test]
-    fn stale_generation_cover_and_count_are_ignored() {
-        use crate::backend::fake::FakeBackend;
-        use slint::ComponentHandle;
-        let ui = test_window();
+    fn start_cover(ui: &ViewerWindow) -> (Rc<FakeBackend>, CoverController) {
+        ui.set_carousel_items(Rc::new(VecModel::from(vec![carousel_item("book")])).into());
         let fake = FakeBackend::new();
         let controller = CoverController::new(fake.clone());
-        let library = RefCell::new(Library::new());
-        let store = Rc::new(None);
         let mut request = req(0);
         request.needs_count = true;
-        controller.start(ui.as_weak(), &library, &store, vec![request]);
-        controller.start(slint::Weak::default(), &library, &store, vec![]);
-        let img = gashuu_core::DecodedImage::new(vec![0; 4], 1, 1).unwrap();
-        fake.complete_cover(0, Ok(Arc::new(img)), Some(Ok(std::num::NonZeroUsize::MIN)));
+        controller.start(
+            ui.as_weak(),
+            &RefCell::new(Library::new()),
+            &Rc::new(None),
+            vec![request],
+        );
+        (fake, controller)
+    }
+
+    fn cover_image() -> Arc<DecodedImage> {
+        Arc::new(DecodedImage::new(vec![255; 8], 2, 1).unwrap())
+    }
+
+    fn io_error() -> BackendError {
+        BackendError::from_core(&CoreError::Io(std::io::Error::other("read failed")))
+    }
+
+    #[test]
+    fn stale_generation_cover_and_count_are_ignored() {
+        let ui = test_window();
+        let (fake, controller) = start_cover(&ui);
+        let (on_cover, on_count) = fake.take_cover(0);
+        let mut replacement = carousel_item("replacement");
+        // Slint treats empty images as unequal, even after cloning.
+        let image = DecodedImage::new(vec![0; 4], 1, 1).unwrap();
+        replacement.cover = to_slint_image(&image);
+        ui.set_carousel_items(Rc::new(VecModel::from(vec![replacement.clone()])).into());
+        controller.start(
+            ui.as_weak(),
+            &RefCell::new(Library::new()),
+            &Rc::new(None),
+            vec![],
+        );
+
+        on_cover(Ok(cover_image()));
+        on_count.expect("requested count")(Ok(NonZeroUsize::MIN));
+
+        let model = ui.get_carousel_items();
+        assert_eq!(model.row_count(), 1);
+        assert_eq!(model.row_data(0).unwrap(), replacement);
+        assert!(controller.prefetch.queue().lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn current_generation_cover_and_count_update_row_and_queue_count() {
+        let ui = test_window();
+        let (fake, controller) = start_cover(&ui);
+        let count = NonZeroUsize::new(7).unwrap();
+        fake.complete_cover(0, Ok(cover_image()), Some(Ok(count)));
+
+        let row = ui.get_carousel_items().row_data(0).unwrap();
+        assert!(row.cover_loaded);
+        assert!(!row.cover_failed);
+        assert_eq!(row.cover.size().width, 2);
+        assert_eq!(row.cover.size().height, 1);
+        assert_eq!(row.total, 7);
+        assert_eq!(controller.prefetch.queue().lock().unwrap().len(), 1);
+
+        let id = req(0).id;
+        let mut library = Library::new();
+        library.add(id, "book".into()).unwrap();
+        let library = RefCell::new(library);
+        controller.flush_counts(&library, &Rc::new(None));
+        assert_eq!(library.borrow().books()[0].page_count_opt(), Some(7));
+    }
+
+    fn assert_empty_book_detected(
+        cover: Result<Arc<DecodedImage>, BackendError>,
+        count: Option<Result<NonZeroUsize, BackendError>>,
+    ) {
+        let ui = test_window();
+        let (fake, controller) = start_cover(&ui);
+        let detected = Rc::new(RefCell::new(Vec::new()));
+        ui.on_empty_book_detected({
+            let detected = detected.clone();
+            move |id| detected.borrow_mut().push(id)
+        });
+
+        fake.complete_cover(0, cover, count);
+
+        assert_eq!(*detected.borrow(), [SharedString::from(req(0).id.as_str())]);
+        assert!(!ui.get_carousel_items().row_data(0).unwrap().cover_failed);
+        assert!(controller.prefetch.queue().lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn empty_cover_completion_signals_empty_book_once() {
+        assert_empty_book_detected(Err(BackendError::EmptyBook), None);
+    }
+
+    #[test]
+    fn empty_count_completion_signals_empty_book_once() {
+        assert_empty_book_detected(Ok(cover_image()), Some(Err(BackendError::EmptyBook)));
+    }
+
+    #[test]
+    fn cover_io_error_marks_cover_failed() {
+        let ui = test_window();
+        let (fake, _controller) = start_cover(&ui);
+        fake.complete_cover(0, Err(io_error()), None);
+
+        let row = ui.get_carousel_items().row_data(0).unwrap();
+        assert!(row.cover_failed);
+        assert!(!row.cover_loaded);
+    }
+
+    #[test]
+    fn count_io_error_leaves_cover_loaded_and_queue_empty() {
+        let ui = test_window();
+        let (fake, controller) = start_cover(&ui);
+        fake.complete_cover(0, Ok(cover_image()), Some(Err(io_error())));
+
+        let row = ui.get_carousel_items().row_data(0).unwrap();
+        assert!(row.cover_loaded);
+        assert!(!row.cover_failed);
         assert!(controller.prefetch.queue().lock().unwrap().is_empty());
     }
 }

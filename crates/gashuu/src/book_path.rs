@@ -91,8 +91,6 @@ pub(crate) fn locate(id: &BookId) -> PathBuf {
 }
 
 /// Invert `locate` for a picked or recent path before canonicalization.
-#[cfg(not(target_arch = "wasm32"))]
-#[allow(dead_code)] // TODO(wasm-backend): remove when #656 ([6/13]) and #657 ([7/13]) have both merged
 pub(crate) fn request_id(path: &Path) -> Result<BookId, crate::backend::BackendError> {
     BookId::from_canonical_path(path)
         .map_err(|error| crate::backend::BackendError::from_core(&error))

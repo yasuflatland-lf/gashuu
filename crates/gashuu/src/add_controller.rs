@@ -3,7 +3,6 @@
 //! progress. Only the current generation can finalize and update the library.
 
 use crate::backend::{BackendError, BookBackend};
-#[cfg(any(test, not(target_arch = "wasm32")))]
 use crate::book_path as location;
 use crate::ui_marshal::Generation;
 use crate::ViewerWindow;
@@ -154,11 +153,7 @@ impl AddController {
         ui.invoke_add_progress(0, total as i32);
 
         for (index, path) in paths.into_iter().enumerate() {
-            #[cfg(not(target_arch = "wasm32"))]
             let id = location::request_id(&path);
-            #[cfg(target_arch = "wasm32")]
-            let id = gashuu_core::BookId::from_canonical_path(&path)
-                .map_err(|error| BackendError::from_core(&error));
 
             let ticket = ticket.clone();
             let weak = ui_weak.clone();
@@ -277,6 +272,50 @@ mod tests {
             outcomes.into_iter().map(|o| o.path).collect::<Vec<_>>(),
             paths
         );
+    }
+
+    #[test]
+    fn add_superseded_batch_probe_completions_are_ignored() {
+        let ui = crate::cover_loader::test_window();
+        let fake = FakeBackend::new();
+        let controller = AddController::new(fake.clone());
+        let ticks = Rc::new(RefCell::new(Vec::new()));
+        let finalized = Rc::new(RefCell::new(Vec::new()));
+        ui.on_add_progress({
+            let ticks = ticks.clone();
+            move |done, total| ticks.borrow_mut().push((done, total))
+        });
+        ui.on_add_finalize({
+            let finalized = finalized.clone();
+            move |epoch| finalized.borrow_mut().push(epoch)
+        });
+
+        controller.start(
+            ui.as_weak(),
+            ["old-a", "old-b"].map(PathBuf::from).to_vec(),
+            ArchivePolicy::default(),
+            "add-books",
+        );
+        let current = PathBuf::from("current");
+        controller.start(
+            ui.as_weak(),
+            vec![current.clone()],
+            ArchivePolicy::default(),
+            "add-books",
+        );
+
+        fake.complete_probe(0, Ok(NonZeroUsize::MIN));
+        fake.complete_probe(0, Ok(NonZeroUsize::MIN));
+        assert_eq!(*ticks.borrow(), [(0, 2), (0, 1)]);
+        assert!(finalized.borrow().is_empty());
+        assert!(controller.take_outcomes(1).is_none());
+
+        fake.complete_probe(0, Ok(NonZeroUsize::MIN));
+        assert_eq!(*ticks.borrow(), [(0, 2), (0, 1), (1, 1)]);
+        assert_eq!(*finalized.borrow(), [2]);
+        let (outcomes, _) = controller.take_outcomes(2).unwrap();
+        assert_eq!(outcomes.len(), 1);
+        assert_eq!(outcomes[0].path, current);
     }
 
     #[cfg(unix)]

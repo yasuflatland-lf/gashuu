@@ -1076,7 +1076,7 @@ lives in `carousel_refresh.rs`).
 `handlers/drag_drop.rs`. OS file/folder drag-and-drop onto the Library screen. Slint exposes no
 stable file-drop API, so this bridges the winit backend's raw `WindowEvent`s (behind the
 `unstable-winit-030` feature) into the EXISTING bulk-add pipeline — dropped paths are handed straight
-to `add_loader::AddController::start`, reusing dedup, the reject rules, the archive policy, and the
+to `add_controller::AddController::start`, reusing dedup, the reject rules, the archive policy, and the
 add toast (`gashuu-core` untouched; drag-drop is just a new presentation-layer SOURCE of the same
 `paths` the Add buttons produce). `drop_action_for(&WindowEvent) -> DropAction` is the pure, testable
 mapping (`HoveredFile` → `ShowOverlay`, `HoveredFileCancelled` → `HideOverlay`, `DroppedFile(path)`
@@ -1377,12 +1377,14 @@ panel, `pick_files` elsewhere; the platform split lives in `#[cfg]` blocks insid
 and the matching `combined-add-picker` bool pushed at boot collapses the NavBar's two add capsules
 into one on macOS) and
 `on_add_folder` (`pick_folder`, folder-as-one-book; its capsule is hidden on macOS). The library-add seam is split
-across the UI-thread boundary (issue 206, to keep a bulk add of large/cloud-synced archives from freezing the event
-loop): the PROBE half runs OFF the UI thread — `add_loader::AddController::start` dispatches one rayon
-`add_loader::probe_path` per picked path (`ArchiveLoader::probe_page_count` → a `Send` `ProbeOutcome`, touching no
-`Library`), streams `Adding… (k/N)` progress via the `add-progress` callback, and marshals `add-finalize` when the
-last probe completes (an `AtomicUsize` epoch supersedes a second add started mid-probe). The APPLY half runs on the
-UI thread in the `add-finalize` handler: `main.rs::apply_outcomes` (dedup-aware insert, rejects empty/unreadable
+across the UI-thread boundary to keep bulk adds responsive (issue 206).
+`add_controller::AddController::start` calls `backend.probe_page_count` for each picked path with a
+UI-thread `Done`. Each completion records a `ProbeOutcome` and reports `Adding… (k/N)` through
+`add-progress`. The final completion invokes `add-finalize`. Starting a new batch advances the
+epoch and supersedes older tickets, so late completions from an older batch cannot record outcomes
+or update progress. `add_controller::probe_path` is a test-only fixture helper.
+The apply phase runs on the UI thread in the `add-finalize` handler. It calls
+`main.rs::apply_outcomes` (dedup-aware insert, rejects empty/unreadable
 sources, persists the probed count on each genuine insert, returns `AddReport { added, skipped }` — see ADR-0009),
 `build_carousel_model` (Library → `ModelRc<CarouselItem>`,
 0-based `last_page` → 1-based `current`, real `total`/`progress` from persisted `Book::page_count`,
