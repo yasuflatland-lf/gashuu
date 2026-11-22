@@ -219,26 +219,25 @@ async fn import(
     }
     let index = worker.content_index.as_mut().expect("initialized above");
     if let Some(id) = index.get(&key) {
-        match open_reader(&worker.dispatcher, id).await {
-            Ok(reader) => {
+        let duplicate = open_reader(&worker.dispatcher, id)
+            .await
+            .and_then(|reader| {
                 let path = gashuu_worker::book_path::parse(id)?;
-                let pages = gashuu_worker::import::probe_upload(
-                    &path.name,
-                    reader,
-                    ArchivePolicy { allow_rar },
-                )?;
-                return Ok(ImportedMeta {
-                    id: id.clone(),
-                    title: gashuu_worker::import::upload_title(&path.name),
-                    page_count: pages.get() as u32,
-                    duplicate: true,
-                });
-            }
-            Err(WireError::Missing { .. }) => {
-                index.remove(&key);
-            }
-            Err(e) => return Err(e),
+                gashuu_worker::import::probe_upload(&path.name, reader, ArchivePolicy { allow_rar })
+                    .map(|pages| ImportedMeta {
+                        id: id.clone(),
+                        title: gashuu_worker::import::upload_title(&path.name),
+                        page_count: pages.get() as u32,
+                        duplicate: true,
+                    })
+            });
+        match duplicate {
+            Ok(meta) => return Ok(meta),
+            Err(error) => web_sys::console::warn_1(
+                &format!("could not reuse stored book {id}: {error:?}").into(),
+            ),
         }
+        index.remove(&key);
     }
     let mut upload = opfs::begin_import(scope, name, size, file).await?;
     loop {
@@ -292,14 +291,12 @@ async fn build_index(
     let mut index = HashMap::new();
     let map_error = |e| opfs::map_error("books", e);
     if let Some(dirs) = opfs::BookDirs::open(scope).await.map_err(map_error)? {
-        while let Some(dir) = dirs.next().await.map_err(map_error)? {
-            if let Some(id) = dir.id() {
-                match dir.stored_key(&id, worker.reader_for(&id)).await {
-                    Ok(key) => {
-                        index.entry(key).or_insert(id);
-                    }
-                    Err(WireError::Missing { .. }) => {}
-                    Err(error) => return Err(error),
+        // If the root iterator fails mid-scan, retain the entries already collected.
+        while let Ok(Some(dir)) = dirs.next().await {
+            if let Ok(dir) = dir {
+                if let Some(id) = dir.id() {
+                    let key = dir.stored_key(&id, worker.reader_for(&id)).await;
+                    gashuu_worker::lifecycle::index_stored_key(&mut index, id, key);
                 }
             }
             yield_to_readers(scope, worker, inbox).await;
@@ -320,23 +317,24 @@ async fn sweep(
     let mut removed = 0;
     if let Some(dirs) = opfs::BookDirs::open(scope).await? {
         while let Some(dir) = dirs.next().await? {
+            let dir = dir?;
             yield_to_readers(scope, &mut worker.dispatcher, inbox).await;
             let id = dir.id();
-            let modified = match &dir.file {
-                Some((_, handle))
-                    if now_ms.is_some() && !id.as_ref().is_some_and(|id| keep.contains(id)) =>
-                {
-                    match JsFuture::from(handle.get_file()).await {
-                        Ok(value) => value.dyn_into::<File>()?.last_modified(),
-                        Err(e) if opfs::named(&e, "NotFoundError") => continue,
-                        Err(e) if opfs::named(&e, "NoModificationAllowedError") => {
-                            inventory.locked(id);
-                            continue;
-                        }
-                        Err(e) => return Err(e),
+            let modified = if now_ms.is_some() && !id.as_ref().is_some_and(|id| keep.contains(id)) {
+                match dir.last_modified().await {
+                    Ok(modified) => modified,
+                    Err(e) if opfs::named(&e, "NotFoundError") => {
+                        inventory.locked(None);
+                        continue;
                     }
+                    Err(e) if opfs::named(&e, "NoModificationAllowedError") => {
+                        inventory.locked(id);
+                        continue;
+                    }
+                    Err(e) => return Err(e),
                 }
-                _ => 0.,
+            } else {
+                None
             };
             if !inventory.should_delete(id.as_deref(), modified, &keep, now_ms) {
                 continue;

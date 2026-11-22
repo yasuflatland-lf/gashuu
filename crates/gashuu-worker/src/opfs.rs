@@ -26,6 +26,8 @@ use web_sys::{
     StorageManager,
 };
 
+const CONTENT_KEY_FILE: &str = ".content-key";
+
 pub struct OpfsReadAt {
     handle: FileSystemSyncAccessHandle,
     len: u64,
@@ -376,7 +378,8 @@ impl BookDirs {
             Err(e) => Err(e),
         }
     }
-    pub async fn next(&self) -> Result<Option<BookDir>, JsValue> {
+    /// Returns root iterator errors separately from errors reading one child directory.
+    pub async fn next(&self) -> Result<Option<Result<BookDir, JsValue>>, JsValue> {
         while let Some(uuid) = next_name(&self.keys).await? {
             let dir: FileSystemDirectoryHandle =
                 match resolve(self.books.get_directory_handle(&uuid)).await {
@@ -384,23 +387,9 @@ impl BookDirs {
                     Err(e) if named(&e, "NotFoundError") || named(&e, "TypeMismatchError") => {
                         continue
                     }
-                    Err(e) => return Err(e),
+                    Err(e) => return Ok(Some(Err(e))),
                 };
-            let keys = dir.keys();
-            let mut file = None;
-            while let Some(name) = next_name(&keys).await? {
-                if name.starts_with('.') {
-                    continue;
-                }
-                let handle: FileSystemFileHandle = match resolve(dir.get_file_handle(&name)).await {
-                    Ok(handle) => handle,
-                    Err(e) if named(&e, "NotFoundError") => continue,
-                    Err(e) => return Err(e),
-                };
-                file = Some((name, handle));
-                break;
-            }
-            return Ok(Some(BookDir { uuid, dir, file }));
+            return Ok(Some(BookDir::read(uuid, dir).await));
         }
         Ok(None)
     }
@@ -409,10 +398,43 @@ impl BookDirs {
 pub struct BookDir {
     pub uuid: String,
     dir: FileSystemDirectoryHandle,
-    pub file: Option<(String, FileSystemFileHandle)>,
+    file: Option<(String, FileSystemFileHandle)>,
 }
 
 impl BookDir {
+    async fn read(uuid: String, dir: FileSystemDirectoryHandle) -> Result<Self, JsValue> {
+        let keys = dir.keys();
+        let mut file = None;
+        while let Some(name) = next_name(&keys).await? {
+            if name.starts_with('.') {
+                continue;
+            }
+            let handle = match resolve(dir.get_file_handle(&name)).await {
+                Ok(handle) => handle,
+                Err(e) if named(&e, "NotFoundError") => continue,
+                Err(e) => return Err(e),
+            };
+            file = Some((name, handle));
+            break;
+        }
+        Ok(Self { uuid, dir, file })
+    }
+
+    pub async fn last_modified(&self) -> Result<Option<f64>, JsValue> {
+        let handle = match &self.file {
+            Some((_, handle)) => handle.clone(),
+            None => match resolve(self.dir.get_file_handle(CONTENT_KEY_FILE)).await {
+                Ok(handle) => handle,
+                Err(e) if named(&e, "NotFoundError") || named(&e, "TypeMismatchError") => {
+                    return Ok(None)
+                }
+                Err(e) => return Err(e),
+            },
+        };
+        let file: File = resolve(handle.get_file()).await?;
+        Ok(Some(file.last_modified()))
+    }
+
     pub fn id(&self) -> Option<String> {
         self.file
             .as_ref()
@@ -425,7 +447,7 @@ impl BookDir {
         shared: Option<Arc<dyn ReadAt>>,
     ) -> Result<String, WireError> {
         let sidecar: Result<FileSystemFileHandle, _> =
-            resolve(self.dir.get_file_handle(".content-key")).await;
+            resolve(self.dir.get_file_handle(CONTENT_KEY_FILE)).await;
         match sidecar {
             Ok(handle) => {
                 let file: File = resolve(handle.get_file())
@@ -471,7 +493,7 @@ impl BookDir {
 }
 
 async fn write_key(dir: &FileSystemDirectoryHandle, key: &str) -> Result<(), JsValue> {
-    let handle = create_file(dir, ".content-key").await?;
+    let handle = create_file(dir, CONTENT_KEY_FILE).await?;
     let result = (|| {
         handle.truncate_with_u32(0)?;
         if handle.write_with_u8_array(key.as_bytes())? != key.len() as f64 {

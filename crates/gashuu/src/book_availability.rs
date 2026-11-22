@@ -47,7 +47,7 @@ mod web {
     }
 }
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(any(test, target_arch = "wasm32"))]
 pub(crate) fn web_inventory() -> WebAvailability {
     thread_local! { static INVENTORY: WebAvailability = WebAvailability::default(); }
     INVENTORY.with(Clone::clone)

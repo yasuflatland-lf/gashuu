@@ -254,20 +254,7 @@ impl BookImporter for WorkerBackend {
         done: Done<Result<ImportedBook, BackendError>>,
     ) {
         let browser_file = take_file(file.key);
-        let inventory = crate::book_availability::web_inventory();
-        self.dispatch(|client| {
-            client.import(
-                &file,
-                browser_file,
-                policy,
-                Box::new(move |result| {
-                    if let Ok(book) = &result {
-                        inventory.insert(&book.id);
-                    }
-                    done(result);
-                }),
-            )
-        });
+        self.dispatch(|client| client.import(&file, browser_file, policy, done));
     }
 
     fn sweep(&self, keep: Vec<BookId>, explicit_clear: bool, done: Done<super::SweepReport>) {

@@ -1,7 +1,23 @@
 //! Content fingerprints and retention policy for browser-owned book files.
 
 use sha2::{Digest, Sha256};
-use std::{collections::HashSet, ops::Range};
+use std::{
+    collections::{HashMap, HashSet},
+    ops::Range,
+};
+
+use crate::wire_error::WireError;
+
+/// Index readable keys, skipping directories whose content could not be sampled.
+pub fn index_stored_key(
+    index: &mut HashMap<String, String>,
+    id: String,
+    key: Result<String, WireError>,
+) {
+    if let Ok(key) = key {
+        index.entry(key).or_insert(id);
+    }
+}
 
 /// Maximum sample size in bytes at each end of a book file (1 MiB).
 const SAMPLE_BYTES: u64 = 1 << 20;
@@ -55,18 +71,18 @@ impl SweepInventory {
     pub fn should_delete(
         &mut self,
         id: Option<&str>,
-        modified: f64,
+        modified: Option<f64>,
         keep: &HashSet<String>,
         now_ms: Option<f64>,
     ) -> bool {
-        let Some(id) = id else { return true };
-        if !keep.contains(id) {
-            if !is_recent(modified, now_ms) {
+        if !id.is_some_and(|id| keep.contains(id)) {
+            // A directory without a timestamp may belong to an import still creating its file.
+            if !now_ms.is_some_and(|now| modified.is_none_or(|time| is_recent(time, Some(now)))) {
                 return true;
             }
             self.skipped_recent += 1;
         }
-        self.present.push(id.to_owned());
+        self.present.extend(id.map(str::to_owned));
         false
     }
 

@@ -562,6 +562,7 @@ fn run_app(
         &settings_store,
         &library_store,
         importer,
+        &adder,
         thumb_store,
     );
     handlers::wire_view_mode_handlers(

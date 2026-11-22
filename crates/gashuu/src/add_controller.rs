@@ -126,6 +126,14 @@ impl AddController {
         self.picker_notice.take()
     }
 
+    pub(crate) fn cancel_import(&self) -> bool {
+        if self.import_batch.borrow().is_none() {
+            return false;
+        }
+        self.begin("add");
+        true
+    }
+
     fn begin(&self, op: &'static str) -> Ticket<Vec<ProbeOutcome>> {
         self.picker_notice.take();
         if let Some((epoch, discard)) = self.import_batch.take() {
@@ -193,6 +201,8 @@ impl AddController {
     ) {
         let ticket = self.begin(op);
         let discard = importer.discarder();
+        #[cfg(any(test, target_arch = "wasm32"))]
+        let inventory = crate::book_availability::web_inventory();
         self.import_batch
             .replace(Some((ticket.id(), discard.clone())));
         self.picker_notice.set(notice);
@@ -207,6 +217,8 @@ impl AddController {
             let ticket = ticket.clone();
             let weak = ui_weak.clone();
             let discard = discard.clone();
+            #[cfg(any(test, target_arch = "wasm32"))]
+            let inventory = inventory.clone();
             importer.import(
                 upload,
                 policy,
@@ -224,6 +236,8 @@ impl AddController {
                                 }
                                 return;
                             }
+                            #[cfg(any(test, target_arch = "wasm32"))]
+                            inventory.insert(&id);
                             ProbeKind::Imported {
                                 id,
                                 title,
@@ -258,6 +272,7 @@ impl AddController {
         my_epoch: usize,
     ) -> Option<(Vec<ProbeOutcome>, &'static str)> {
         let mut outcomes = self.generation.take(my_epoch)?;
+        self.import_batch.take();
         // Probes complete out of order on parallel workers; restore input order so
         // the apply half adds books and reports skips deterministically.
         outcomes.sort_by_key(|o| o.index);
