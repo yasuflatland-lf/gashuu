@@ -570,9 +570,10 @@ that epoch and upgrades the weak window before converting the image and updating
 Its `ui_done` callbacks also check the epoch for cover and count results. The controller
 fetches the model and builds the `slint::Image` on the UI thread.
 
-The desktop backend resolves the book fingerprint and checks decoded memory and
-`ThumbStore` on a worker. Reading source metadata and loading cached covers inline
-can stall the event loop when a library has hundreds of books.
+Keep cover startup dispatch-only. The desktop backend resolves the book fingerprint
+and checks decoded memory and `ThumbStore` on a worker. Reading source metadata,
+loading cached covers, and decoding them inline can stall the event loop when a
+library has hundreds of books. The backend defers delivery even for a memory hit.
 
 ### Worker → UI ACTION (not just a model write) via a Slint callback on the root window (reject-empty-books)
 

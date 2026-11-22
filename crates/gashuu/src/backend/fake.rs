@@ -1,11 +1,14 @@
 use super::*;
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
+use std::sync::Mutex;
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum Call {
     Open(BookId),
     Close(SessionId),
+    Discard(BookId),
+    Sweep(Vec<BookId>, bool),
     CachedPage(SessionId, usize),
     DecodeSpread(SessionId, usize, Option<usize>),
     Thumbnail(SessionId, usize, u32),
@@ -19,13 +22,14 @@ pub(crate) enum Call {
 }
 
 type OpenResult = Result<OpenedBook, BackendError>;
+type ImportResult = Result<ImportedBook, BackendError>;
 type PendingCover = (u64, Done<ImageResult>, Option<Done<CountResult>>);
 type PendingSession<T> = Vec<(SessionId, Done<T>)>;
 
 /// A UI-thread script of requests. The test decides when each result arrives.
 #[derive(Default)]
 pub(crate) struct FakeBackend {
-    calls: RefCell<Vec<Call>>,
+    calls: Arc<Mutex<Vec<Call>>>,
     cached: RefCell<HashMap<(SessionId, usize), Arc<DecodedImage>>>,
     closed: RefCell<HashSet<SessionId>>,
     cover_generation: Cell<u64>,
@@ -34,6 +38,8 @@ pub(crate) struct FakeBackend {
     thumbnails: RefCell<PendingSession<ImageResult>>,
     covers: RefCell<Vec<PendingCover>>,
     probes: RefCell<Vec<Done<CountResult>>>,
+    imports: RefCell<Vec<Done<ImportResult>>>,
+    sweeps: RefCell<Vec<Done<SweepReport>>>,
 }
 
 impl FakeBackend {
@@ -42,7 +48,17 @@ impl FakeBackend {
     }
 
     pub(crate) fn calls(&self) -> Vec<Call> {
-        self.calls.borrow().clone()
+        self.calls.lock().unwrap().clone()
+    }
+
+    pub(crate) fn complete_import(&self, result: ImportResult) {
+        let done = self.imports.borrow_mut().remove(0);
+        done(result);
+    }
+
+    pub(crate) fn complete_sweep(&self, report: SweepReport) {
+        let done = self.sweeps.borrow_mut().remove(0);
+        done(report);
     }
 
     pub(crate) fn new_session(&self) -> SessionId {
@@ -110,7 +126,7 @@ impl FakeBackend {
     }
 
     fn record(&self, call: Call) {
-        self.calls.borrow_mut().push(call);
+        self.calls.lock().unwrap().push(call);
     }
 }
 
@@ -183,3 +199,20 @@ impl BookBackend for FakeBackend {
 
 #[path = "fake_tests.rs"]
 mod tests;
+
+impl BookImporter for FakeBackend {
+    fn import(&self, _: crate::picker::UploadHandle, _: ArchivePolicy, done: Done<ImportResult>) {
+        self.imports.borrow_mut().push(done);
+    }
+    fn discard(&self, id: &BookId) {
+        self.calls.lock().unwrap().push(Call::Discard(id.clone()));
+    }
+    fn discarder(&self) -> DiscardUpload {
+        let calls = Arc::clone(&self.calls);
+        Arc::new(move |id| calls.lock().unwrap().push(Call::Discard(id.clone())))
+    }
+    fn sweep(&self, keep: Vec<BookId>, clear: bool, done: Done<SweepReport>) {
+        self.calls.lock().unwrap().push(Call::Sweep(keep, clear));
+        self.sweeps.borrow_mut().push(done);
+    }
+}

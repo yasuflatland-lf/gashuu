@@ -189,6 +189,7 @@ export component ViewerWindow inherits Window {
     }
 
     // Carousel navigation seams (Library screen). Forwarded to handlers/library.rs.
+    callback storage-inventory-changed();
     callback carousel-open(int);
     callback carousel-move(int);
     callback carousel-back();

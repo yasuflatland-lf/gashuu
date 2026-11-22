@@ -1,7 +1,7 @@
 //! Bridge worker messages to the portable dispatcher.
 
 use crate::opfs;
-use gashuu_core::{ImageCratePageDecoder, ReadAt};
+use gashuu_core::{ArchivePolicy, ImageCratePageDecoder, ReadAt};
 use gashuu_web_decode::NativePageDecoder;
 use gashuu_worker::{
     dispatcher::{Dispatcher, Lane, Reply},
@@ -9,7 +9,12 @@ use gashuu_worker::{
     wire_error::WireError,
 };
 use js_sys::{Array, Object, Promise, Reflect, Uint8Array};
-use std::{cell::RefCell, collections::VecDeque, rc::Rc, sync::Arc};
+use std::{
+    cell::RefCell,
+    collections::{HashMap, HashSet, VecDeque},
+    rc::Rc,
+    sync::Arc,
+};
 use wasm_bindgen::{closure::Closure, JsCast, JsValue};
 use wasm_bindgen_futures::{spawn_local, JsFuture};
 use web_sys::{DedicatedWorkerGlobalScope, File, MessageEvent};
@@ -46,6 +51,11 @@ impl Inbox {
     }
 }
 
+struct Worker {
+    dispatcher: Dispatcher,
+    content_index: Option<HashMap<String, String>>,
+}
+
 pub fn start() {
     console_error_panic_hook::set_once();
     let scope: DedicatedWorkerGlobalScope = js_sys::global().unchecked_into();
@@ -56,7 +66,10 @@ pub fn start() {
             );
         }));
     let control = dispatcher.control();
-    let dispatcher = Rc::new(RefCell::new(Some(dispatcher)));
+    let dispatcher = Rc::new(RefCell::new(Some(Worker {
+        dispatcher,
+        content_index: None,
+    })));
     let inbox = Rc::new(RefCell::new(Inbox::default()));
     let callback = Closure::<dyn Fn(MessageEvent)>::new({
         let scope = scope.clone();
@@ -100,8 +113,8 @@ pub fn start() {
 
 async fn drain(
     scope: DedicatedWorkerGlobalScope,
-    dispatcher: Rc<RefCell<Option<Dispatcher>>>,
-    mut worker: Dispatcher,
+    dispatcher: Rc<RefCell<Option<Worker>>>,
+    mut worker: Worker,
     inbox: Rc<RefCell<Inbox>>,
 ) {
     loop {
@@ -126,15 +139,44 @@ async fn drain(
                 );
             }
             WorkerRequest::DeleteBook { id } => {
-                if worker.reader_for(&id).is_none() {
-                    opfs::delete_book(&scope, &id).await;
+                if worker.dispatcher.reader_for(&id).is_none()
+                    && opfs::delete_book(&scope, &id).await
+                {
+                    if let Some(index) = &mut worker.content_index {
+                        index.retain(|_, stored| stored != &id);
+                    }
                 }
             }
-            request => serve(&scope, &mut worker, request).await,
+            WorkerRequest::Sweep { req, keep, now_ms } => {
+                let response = sweep(
+                    &scope,
+                    &mut worker,
+                    &inbox,
+                    req,
+                    keep.into_iter().collect(),
+                    now_ms,
+                )
+                .await
+                .unwrap_or_else(|error| WorkerResponse::Rejected {
+                    req: Some(req),
+                    error: opfs::map_error("books", error),
+                });
+                post(&scope, Reply::metadata(response));
+            }
+            request => serve(&scope, &mut worker.dispatcher, request).await,
         }
         if lane == Lane::Background && inbox.borrow().only_background_pending() {
             next_turn(&scope).await;
         }
+    }
+}
+
+async fn open_reader(worker: &Dispatcher, id: &str) -> WireResult<Arc<dyn ReadAt>> {
+    match worker.reader_for(id) {
+        Some(reader) => Ok(reader),
+        None => opfs::open_book(id)
+            .await
+            .map(|reader| Arc::new(reader) as Arc<dyn ReadAt>),
     }
 }
 
@@ -147,12 +189,7 @@ async fn serve(
         return;
     }
     let reader = match Dispatcher::needs_reader(&request) {
-        Some(id) => Some(match worker.reader_for(id) {
-            Some(reader) => Ok(reader),
-            None => opfs::open_book(id)
-                .await
-                .map(|reader| Arc::new(reader) as Arc<dyn ReadAt>),
-        }),
+        Some(id) => Some(open_reader(worker, id).await),
         None => None,
     };
     // handle checks obsolescence again after the asynchronous open.
@@ -163,7 +200,7 @@ async fn serve(
 
 async fn import(
     scope: &DedicatedWorkerGlobalScope,
-    worker: &mut Dispatcher,
+    worker: &mut Worker,
     inbox: &RefCell<Inbox>,
     name: &str,
     size: u64,
@@ -175,25 +212,159 @@ async fn import(
         .ok_or_else(|| WireError::Other {
             detail: "protocol: missing File or incorrect upload size".into(),
         })?;
+    let key = opfs::picked_key(&file, size)?;
+    if worker.content_index.is_none() {
+        let index = build_index(scope, &mut worker.dispatcher, inbox).await?;
+        worker.content_index = Some(index);
+    }
+    let index = worker.content_index.as_mut().expect("initialized above");
+    if let Some(id) = index.get(&key) {
+        let duplicate = open_reader(&worker.dispatcher, id)
+            .await
+            .and_then(|reader| {
+                let path = gashuu_worker::book_path::parse(id)?;
+                gashuu_worker::import::probe_upload(&path.name, reader, ArchivePolicy { allow_rar })
+                    .map(|pages| ImportedMeta {
+                        id: id.clone(),
+                        title: gashuu_worker::import::upload_title(&path.name),
+                        page_count: pages.get() as u32,
+                        duplicate: true,
+                    })
+            });
+        match duplicate {
+            Ok(meta) => return Ok(meta),
+            Err(error) => web_sys::console::warn_1(
+                &format!("could not reuse stored book {id}: {error:?}").into(),
+            ),
+        }
+        index.remove(&key);
+    }
     let mut upload = opfs::begin_import(scope, name, size, file).await?;
     loop {
-        next_turn(scope).await;
-        // Keep the current import on the stack and serve only the interactive lane
-        // between its units. The next background job cannot start until it finishes.
-        loop {
-            let request = inbox.borrow_mut().interactive.pop_front();
-            let Some(request) = request else { break };
-            serve(scope, worker, request).await;
-        }
+        yield_to_readers(scope, &mut worker.dispatcher, inbox).await;
         match upload.write_slice() {
             Ok(true) => {}
-            Ok(false) => return upload.finish(allow_rar).await,
+            Ok(false) => {
+                let meta = upload.finish(allow_rar, &key).await?;
+                index.insert(key, meta.id.clone());
+                return Ok(meta);
+            }
             Err(error) => {
                 upload.abort().await;
                 return Err(error);
             }
         }
     }
+}
+
+async fn yield_to_readers(
+    scope: &DedicatedWorkerGlobalScope,
+    worker: &mut Dispatcher,
+    inbox: &RefCell<Inbox>,
+) {
+    next_turn(scope).await;
+    loop {
+        let request = inbox.borrow_mut().interactive.pop_front();
+        let Some(request) = request else { break };
+        serve(scope, worker, request).await;
+    }
+    // Allow one queued cover per directory or upload slice. Storage mutations
+    // stay in submission order, including imports queued behind a sweep.
+    let cover = {
+        let mut inbox = inbox.borrow_mut();
+        let position = inbox
+            .background
+            .iter()
+            .position(|(req, _)| matches!(req, WorkerRequest::Cover { .. }));
+        position.and_then(|i| inbox.background.remove(i))
+    };
+    if let Some((request, _)) = cover {
+        serve(scope, worker, request).await;
+    }
+}
+
+async fn build_index(
+    scope: &DedicatedWorkerGlobalScope,
+    worker: &mut Dispatcher,
+    inbox: &RefCell<Inbox>,
+) -> WireResult<HashMap<String, String>> {
+    let mut index = HashMap::new();
+    let map_error = |e| opfs::map_error("books", e);
+    if let Some(dirs) = opfs::BookDirs::open(scope).await.map_err(map_error)? {
+        // If the root iterator fails mid-scan, retain the entries already collected.
+        while let Ok(Some(dir)) = dirs.next().await {
+            if let Ok(dir) = dir {
+                if let Some(id) = dir.id() {
+                    let key = dir.stored_key(&id, worker.reader_for(&id)).await;
+                    gashuu_worker::lifecycle::index_stored_key(&mut index, id, key);
+                }
+            }
+            yield_to_readers(scope, worker, inbox).await;
+        }
+    }
+    Ok(index)
+}
+
+async fn sweep(
+    scope: &DedicatedWorkerGlobalScope,
+    worker: &mut Worker,
+    inbox: &RefCell<Inbox>,
+    req: gashuu_worker::protocol::ReqId,
+    keep: HashSet<String>,
+    now_ms: Option<f64>,
+) -> Result<WorkerResponse, JsValue> {
+    let mut inventory = gashuu_worker::lifecycle::SweepInventory::default();
+    let mut removed = 0;
+    if let Some(dirs) = opfs::BookDirs::open(scope).await? {
+        while let Some(dir) = dirs.next().await? {
+            let dir = dir?;
+            yield_to_readers(scope, &mut worker.dispatcher, inbox).await;
+            let id = dir.id();
+            let modified = if now_ms.is_some() && !id.as_ref().is_some_and(|id| keep.contains(id)) {
+                match dir.last_modified().await {
+                    Ok(modified) => modified,
+                    Err(e) if opfs::named(&e, "NotFoundError") => {
+                        inventory.locked(None);
+                        continue;
+                    }
+                    Err(e) if opfs::named(&e, "NoModificationAllowedError") => {
+                        inventory.locked(id);
+                        continue;
+                    }
+                    Err(e) => return Err(e),
+                }
+            } else {
+                None
+            };
+            if !inventory.should_delete(id.as_deref(), modified, &keep, now_ms) {
+                continue;
+            }
+            if id
+                .as_deref()
+                .is_some_and(|id| worker.dispatcher.reader_for(id).is_some())
+            {
+                inventory.locked(id);
+                continue;
+            }
+            match opfs::remove_entry(&dirs.books, &dir.uuid).await {
+                Ok(()) => removed += 1,
+                Err(e) if opfs::named(&e, "NotFoundError") => {}
+                Err(e) if opfs::named(&e, "NoModificationAllowedError") => inventory.locked(id),
+                Err(e) => return Err(e),
+            }
+        }
+    }
+    if let Some(index) = &mut worker.content_index {
+        let present: HashSet<_> = inventory.present.iter().collect();
+        index.retain(|_, id| present.contains(id));
+    }
+    Ok(WorkerResponse::Swept {
+        req,
+        removed,
+        skipped_recent: inventory.skipped_recent,
+        skipped_locked: inventory.skipped_locked,
+        present: inventory.present,
+    })
 }
 
 async fn next_turn(scope: &DedicatedWorkerGlobalScope) {

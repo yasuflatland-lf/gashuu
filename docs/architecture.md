@@ -484,9 +484,10 @@ Each message carries JSON text in `m` to preserve exact 64-bit ids. Responses
 with images carry transferable RGBA8 buffers in `b`, in metadata order.
 
 One request runs at a time. The interactive lane handles opens and spreads
-ahead of background thumbnails, covers, page counts, imports, and deletions.
-Each lane is FIFO. The loop yields to browser message delivery between
-background jobs and between the steps of an import.
+ahead of background thumbnails, covers, page counts, and storage operations.
+Storage operations run in submission order. Between directory visits or upload
+slices, the worker yields to message delivery, serves pending interactive
+requests and handles one queued cover.
 Close and cover cancellation run in the message handler and discard outdated
 queued work and replies. Each session retains its page source. Pages are
 decoded on demand with the browser-native decoder and an image-crate fallback
@@ -505,6 +506,20 @@ from a JavaScript typed array, then flushes and probes through the same handle.
 It returns the relative ID, display title and nonzero page count. A failed
 import closes the handle and removes its directory. `DeleteBook` also removes
 the directory recursively after confirming the reader has been released.
+
+Before copying, the worker hashes the little-endian 64-bit file size followed
+by the first and last MiB with SHA-256. For a file shorter than one MiB it
+hashes the whole file twice. Successful imports store the lowercase hex digest
+in a sibling `.content-key` file. The first import builds an in-memory index,
+backfilling missing sidecars from older archives. A match reuses the stored
+archive after probing it under the current policy. Superseding a batch discards
+only newly written copies.
+
+After the library loads, the worker sweeps one directory per unit. It keeps
+library IDs, files modified within the past hour, and locked directories.
+Clearing reading history after a successful library save also sweeps, with an
+empty keep list and no age guard. Bulk removal discards stored copies after
+saving the library and closing any removed open book.
 
 ## crates/gashuu (Slint presentation layer)
 
@@ -618,8 +633,8 @@ posts it to the worker, retaining it in the outbox if the worker is starting.
 
 At web startup, the app removes demo-era session-only IDs before the first
 carousel refresh and saves the cleaned library once. Imported archives live in
-OPFS and the library stores their IDs in localStorage. Availability checks for
-evicted archives are deferred to #662.
+OPFS and the library stores their IDs in localStorage. The startup sweep reports the IDs still present.
+The carousel greys out missing books and preserves their reading positions.
 
 ### web_pointer
 
@@ -812,7 +827,11 @@ snapshot, the next leave point could write an override pinning the OLD global va
 
 ### book_availability
 
-`book_availability.rs` checks existence through `book_path::exists(&book_path::locate(book.id()))`. Unavailable books remain in the library.
+- **Desktop** checks existence through `book_path::exists(&book_path::locate(book.id()))`.
+- **Web** treats every book as available until the first successful sweep. Each sweep replaces
+  the `WebAvailability` set with `Swept.present`. Imports and removals update the set.
+
+Unavailable books remain in the library.
 
 ### library_model
 
@@ -1221,7 +1240,8 @@ counts, calls `BookBackend::cancel_covers`, and advances the epoch. `prioritize_
 sorts requests by distance from the focused row. The controller dispatches 512 px covers
 and requests a page count only for rows with an unknown total. Callers release their
 library borrow before dispatch so pending counts can be applied. Counts are also flushed
-on shutdown and on web suspend.
+on desktop shutdown and on web suspend. Resolved counts update their rows immediately
+and enter a queue for persistence.
 
 On a worker, the desktop backend checks decoded memory and then reads through
 `ThumbStore` for the current fingerprint and `ThumbSlot::Cover`. On a miss it opens
@@ -1239,7 +1259,7 @@ selected archive policy. A path that cannot form an ID produces an unreadable ou
 Each outcome advances progress in the current generation. The last one invokes `add-finalize`,
 whose handler takes the outcomes in input order and applies the batch. Browser imports
 share the same progress and finalize path and append any picker notice. Superseding a
-batch discards stored imports that never reach the library.
+batch discards newly written imports that never reach the library.
 
 **`open_controller.rs`** passes the raw request ID, policy and next-open cache config to
 the backend. A generation ticket accepts one current result. Dropping a superseded result

@@ -7,11 +7,16 @@ use gashuu_worker::{
         fits_in_quota, probe_upload, sanitise_upload_name, upload_title, STORAGE_FULL,
         UNREADABLE_UPLOAD,
     },
+    lifecycle::{content_key, head_tail_ranges, is_content_key},
     protocol::ImportedMeta,
     wire_error::WireError,
 };
 use js_sys::{Promise, Reflect, Uint8Array};
-use std::{io, sync::Arc};
+use std::{
+    io::{self, Read, Seek, SeekFrom},
+    ops::Range,
+    sync::Arc,
+};
 use wasm_bindgen::{JsCast, JsValue};
 use wasm_bindgen_futures::JsFuture;
 use web_sys::{
@@ -20,6 +25,8 @@ use web_sys::{
     FileSystemReadWriteOptions, FileSystemRemoveOptions, FileSystemSyncAccessHandle,
     StorageManager,
 };
+
+const CONTENT_KEY_FILE: &str = ".content-key";
 
 pub struct OpfsReadAt {
     handle: FileSystemSyncAccessHandle,
@@ -85,7 +92,7 @@ async fn resolve<T: JsCast>(promise: Promise) -> Result<T, JsValue> {
     JsFuture::from(promise).await?.dyn_into()
 }
 
-fn map_error(id: &str, error: JsValue) -> WireError {
+pub fn map_error(id: &str, error: JsValue) -> WireError {
     if let Some(exception) = error.dyn_ref::<DomException>() {
         return match exception.name().as_str() {
             "QuotaExceededError" => storage_full(),
@@ -157,7 +164,7 @@ impl Upload {
         Ok(true)
     }
 
-    pub async fn finish(self, allow_rar: bool) -> Result<ImportedMeta, WireError> {
+    pub async fn finish(self, allow_rar: bool, key: &str) -> Result<ImportedMeta, WireError> {
         let Self {
             id,
             uuid,
@@ -166,18 +173,26 @@ impl Upload {
             reader,
             ..
         } = self;
-        let result = (|| {
+        let result = async {
             reader
                 .handle
                 .flush()
                 .map_err(|error| map_error(&id, error))?;
             let count = probe_upload(&name, Arc::new(reader), ArchivePolicy { allow_rar })?;
+            let directory = resolve(books.get_directory_handle(&uuid))
+                .await
+                .map_err(|e| map_error(&id, e))?;
+            write_key(&directory, key)
+                .await
+                .map_err(|e| map_error(&id, e))?;
             Ok(ImportedMeta {
+                duplicate: false,
                 id,
                 title: upload_title(&name),
                 page_count: count.get() as u32,
             })
-        })();
+        }
+        .await;
         if result.is_err() {
             remove_directory(&books, &uuid).await;
         }
@@ -278,25 +293,216 @@ async fn create_dir(
     resolve(dir.get_directory_handle_with_options(name, &options)).await
 }
 
-pub async fn delete_book(scope: &DedicatedWorkerGlobalScope, id: &str) {
-    if let Ok(path) = book_path::parse(id) {
-        if let Ok(books) = books_directory(&scope.navigator().storage(), false).await {
-            remove_directory(&books, &path.uuid).await;
+pub async fn delete_book(scope: &DedicatedWorkerGlobalScope, id: &str) -> bool {
+    let Ok(path) = book_path::parse(id) else {
+        return false;
+    };
+    let result = async {
+        let books = books_directory(&scope.navigator().storage(), false).await?;
+        remove_entry(&books, &path.uuid).await
+    }
+    .await;
+    match result {
+        Ok(()) => true,
+        Err(e) if named(&e, "NotFoundError") => true,
+        Err(e) => {
+            web_sys::console::warn_2(&"could not delete stored book".into(), &e);
+            false
         }
     }
 }
 
-async fn remove_directory(books: &FileSystemDirectoryHandle, uuid: &str) {
+pub fn named(error: &JsValue, name: &str) -> bool {
+    error
+        .dyn_ref::<DomException>()
+        .is_some_and(|e| e.name() == name)
+}
+
+pub async fn remove_entry(books: &FileSystemDirectoryHandle, uuid: &str) -> Result<(), JsValue> {
     let options = FileSystemRemoveOptions::new();
     options.set_recursive(true);
-    if let Err(error) = JsFuture::from(books.remove_entry_with_options(uuid, &options)).await {
-        if !error
-            .dyn_ref::<DomException>()
-            .is_some_and(|e| e.name() == "NotFoundError")
-        {
-            web_sys::console::warn_2(&"could not clean up browser book storage".into(), &error);
+    JsFuture::from(books.remove_entry_with_options(uuid, &options)).await?;
+    Ok(())
+}
+
+async fn remove_directory(books: &FileSystemDirectoryHandle, uuid: &str) {
+    if let Err(e) = remove_entry(books, uuid).await {
+        if !named(&e, "NotFoundError") {
+            web_sys::console::warn_2(&"could not clean up browser book storage".into(), &e);
         }
     }
+}
+
+pub fn picked_key(file: &File, size: u64) -> Result<String, WireError> {
+    let read = |range: Range<u64>| -> Result<Vec<u8>, JsValue> {
+        let blob = file.slice_with_f64_and_f64(range.start as f64, range.end as f64)?;
+        let buffer = FileReaderSync::new()?.read_as_array_buffer(&blob)?;
+        Ok(Uint8Array::new(&buffer).to_vec())
+    };
+    let (head, tail) = head_tail_ranges(size);
+    let unreadable = |_: JsValue| WireError::Other {
+        detail: UNREADABLE_UPLOAD.into(),
+    };
+    Ok(content_key(
+        size,
+        &read(head).map_err(unreadable)?,
+        &read(tail).map_err(unreadable)?,
+    ))
+}
+
+async fn next_name(iter: &js_sys::AsyncIterator) -> Result<Option<String>, JsValue> {
+    let item: js_sys::IteratorNext = JsFuture::from(iter.next()?).await?.unchecked_into();
+    if item.done() {
+        Ok(None)
+    } else {
+        item.value()
+            .as_string()
+            .map(Some)
+            .ok_or_else(|| "invalid directory entry".into())
+    }
+}
+
+pub struct BookDirs {
+    pub books: FileSystemDirectoryHandle,
+    keys: js_sys::AsyncIterator,
+}
+
+impl BookDirs {
+    pub async fn open(scope: &DedicatedWorkerGlobalScope) -> Result<Option<Self>, JsValue> {
+        match books_directory(&scope.navigator().storage(), false).await {
+            Ok(books) => Ok(Some(Self {
+                keys: books.keys(),
+                books,
+            })),
+            Err(e) if named(&e, "NotFoundError") => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
+    /// Returns root iterator errors separately from errors reading one child directory.
+    pub async fn next(&self) -> Result<Option<Result<BookDir, JsValue>>, JsValue> {
+        while let Some(uuid) = next_name(&self.keys).await? {
+            let dir: FileSystemDirectoryHandle =
+                match resolve(self.books.get_directory_handle(&uuid)).await {
+                    Ok(dir) => dir,
+                    Err(e) if named(&e, "NotFoundError") || named(&e, "TypeMismatchError") => {
+                        continue
+                    }
+                    Err(e) => return Ok(Some(Err(e))),
+                };
+            return Ok(Some(BookDir::read(uuid, dir).await));
+        }
+        Ok(None)
+    }
+}
+
+pub struct BookDir {
+    pub uuid: String,
+    dir: FileSystemDirectoryHandle,
+    file: Option<(String, FileSystemFileHandle)>,
+}
+
+impl BookDir {
+    async fn read(uuid: String, dir: FileSystemDirectoryHandle) -> Result<Self, JsValue> {
+        let keys = dir.keys();
+        let mut file = None;
+        while let Some(name) = next_name(&keys).await? {
+            if name.starts_with('.') {
+                continue;
+            }
+            let handle = match resolve(dir.get_file_handle(&name)).await {
+                Ok(handle) => handle,
+                Err(e) if named(&e, "NotFoundError") => continue,
+                Err(e) => return Err(e),
+            };
+            file = Some((name, handle));
+            break;
+        }
+        Ok(Self { uuid, dir, file })
+    }
+
+    pub async fn last_modified(&self) -> Result<Option<f64>, JsValue> {
+        let handle = match &self.file {
+            Some((_, handle)) => handle.clone(),
+            None => match resolve(self.dir.get_file_handle(CONTENT_KEY_FILE)).await {
+                Ok(handle) => handle,
+                Err(e) if named(&e, "NotFoundError") || named(&e, "TypeMismatchError") => {
+                    return Ok(None)
+                }
+                Err(e) => return Err(e),
+            },
+        };
+        let file: File = resolve(handle.get_file()).await?;
+        Ok(Some(file.last_modified()))
+    }
+
+    pub fn id(&self) -> Option<String> {
+        self.file
+            .as_ref()
+            .map(|(name, _)| format!("books/{}/{name}", self.uuid))
+    }
+
+    pub async fn stored_key(
+        &self,
+        id: &str,
+        shared: Option<Arc<dyn ReadAt>>,
+    ) -> Result<String, WireError> {
+        let sidecar: Result<FileSystemFileHandle, _> =
+            resolve(self.dir.get_file_handle(CONTENT_KEY_FILE)).await;
+        match sidecar {
+            Ok(handle) => {
+                let file: File = resolve(handle.get_file())
+                    .await
+                    .map_err(|e| map_error(id, e))?;
+                if file.size() == 64. {
+                    let key = JsFuture::from(file.text())
+                        .await
+                        .map_err(|e| map_error(id, e))?
+                        .as_string()
+                        .unwrap_or_default();
+                    if is_content_key(&key) {
+                        return Ok(key);
+                    }
+                }
+            }
+            Err(e) if named(&e, "NotFoundError") => {}
+            Err(e) => return Err(map_error(id, e)),
+        }
+        let reader = match shared {
+            Some(reader) => reader,
+            None => Arc::new(open_book(id).await?),
+        };
+        let size = reader.len();
+        let mut cursor = gashuu_core::ReadAtCursor::new(reader);
+        let mut read = |range: Range<u64>| -> Result<Vec<u8>, WireError> {
+            let mut bytes = vec![0; (range.end - range.start) as usize];
+            cursor
+                .seek(SeekFrom::Start(range.start))
+                .and_then(|_| cursor.read_exact(&mut bytes))
+                .map_err(|e| WireError::Other {
+                    detail: e.to_string(),
+                })?;
+            Ok(bytes)
+        };
+        let (head, tail) = head_tail_ranges(size);
+        let key = content_key(size, &read(head)?, &read(tail)?);
+        write_key(&self.dir, &key)
+            .await
+            .map_err(|e| map_error(id, e))?;
+        Ok(key)
+    }
+}
+
+async fn write_key(dir: &FileSystemDirectoryHandle, key: &str) -> Result<(), JsValue> {
+    let handle = create_file(dir, CONTENT_KEY_FILE).await?;
+    let result = (|| {
+        handle.truncate_with_u32(0)?;
+        if handle.write_with_u8_array(key.as_bytes())? != key.len() as f64 {
+            return Err("short content key write".into());
+        }
+        handle.flush()
+    })();
+    handle.close();
+    result
 }
 
 fn storage_full() -> WireError {
