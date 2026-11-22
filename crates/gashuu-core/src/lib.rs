@@ -21,6 +21,7 @@ pub mod image_ops;
 pub mod library;
 pub mod library_store;
 pub(crate) mod ordering;
+pub mod page_decode;
 pub mod page_source;
 pub(crate) mod persist;
 pub mod reading_progress;
@@ -52,6 +53,10 @@ pub use library::{
     canonical_identity, display_title, Book, Library, OpenRegistration, RemovalReport,
 };
 pub use library_store::{LibraryStore, LIBRARY_VERSION};
+pub use page_decode::{
+    decode_with_fallback, decode_with_fallback_if, DecodeFuture, Decoded, ImageCratePageDecoder,
+    PageDecoder,
+};
 #[cfg(not(target_arch = "wasm32"))]
 pub use page_source::FileReadAt;
 #[cfg(feature = "rar")]

@@ -87,6 +87,7 @@ jobs:
       - run: rustup target add wasm32-unknown-unknown
       - run: mise run check-wasm-core
       - run: mise run check-wasm-ui
+      - run: mise run check-wasm-decode
       - run: mise run build-web
       - run: test -f crates/gashuu/dist/index.html && ls crates/gashuu/dist/*.wasm
 

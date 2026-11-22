@@ -1,7 +1,6 @@
 use super::*;
 use crate::book_path::request_id;
-use crate::page_decode::DecodeFuture;
-use gashuu_core::CoreError;
+use gashuu_core::{CoreError, DecodeFuture};
 use std::future::{poll_fn, ready};
 use std::sync::mpsc::TryRecvError;
 use std::task::{Context, Poll, Waker};

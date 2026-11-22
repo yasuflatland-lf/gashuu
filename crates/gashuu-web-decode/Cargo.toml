@@ -1,0 +1,16 @@
+[package]
+name = "gashuu-web-decode"
+version = "1.3.0"
+edition = "2021"
+license = "MIT"
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+gashuu-core = { path = "../gashuu-core", default-features = false }
+js-sys = "0.3"
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+web-sys = { version = "0.3", features = [
+    "Window", "WorkerGlobalScope", "Document", "Blob", "ImageBitmap", "ImageBitmapOptions",
+    "PremultiplyAlpha", "ColorSpaceConversion", "OffscreenCanvas", "OffscreenCanvasRenderingContext2d",
+    "HtmlCanvasElement", "CanvasRenderingContext2d", "ImageData",
+] }

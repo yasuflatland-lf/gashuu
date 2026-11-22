@@ -12,6 +12,14 @@ inventory: what exists, where it lives, and what it does.
 Slint-independent domain + I/O layer. See [ADR-0002](ADRs/0002-layered-two-crate-architecture.md)
 for the rationale behind the two-crate split. Keep the layer boundary strict.
 
+### page_decode
+
+`PageDecoder` takes owned encoded bytes and returns a local `DecodeFuture` that resolves
+to straight-alpha RGBA8 and dimensions. `ImageCratePageDecoder` wraps `image_ops::decode`
+in a ready future. `decode_with_fallback` retries the same bytes after a primary failure.
+A successful retry returns the image and the primary error. If both attempts fail, the
+caller receives the fallback error.
+
 ### PageSource trait
 
 Requires `Send + Sync` so `Arc<dyn PageSource>` can be shared with rayon worker threads during
@@ -462,6 +470,14 @@ re-exported at the crate root. See [ADR-0013](ADRs/0013-auto-update.md).
 
 ---
 
+## crates/gashuu-web-decode (wasm32)
+
+`NativePageDecoder` calls `createImageBitmap` on the current `Window` or
+`WorkerGlobalScope`. It checks the pixel limit before allocating an `OffscreenCanvas`
+and falls back to an HTML canvas on windows without offscreen support. It requests
+straight alpha, no color-space conversion, and original pixel orientation. Canvas
+readback can round partially transparent RGB values.
+
 ## crates/gashuu (Slint presentation layer)
 
 See [ADR-0001](ADRs/0001-gui-framework-slint.md) for the Slint framework decision and
@@ -502,27 +518,14 @@ The controller migrations use these methods:
 
 ### page_decode
 
-`page_decode.rs` defines the port. `PageDecoder::decode` takes owned encoded bytes and returns a local `DecodeFuture` resolving to
-a straight-alpha RGBA8 `DecodedImage` or `CoreError`. `ImageCratePageDecoder` runs
-`gashuu_core::image_ops::decode` synchronously and returns an already-ready future. The port is
-available on all targets. On a cache miss, `decode_page` reads the encoded bytes once and
-awaits the primary decoder. If it fails, the orchestrator warns once per controller and retries
-with the fallback. A page cached during either await takes precedence. Otherwise a successful
-decode populates the cache, or the fallback error reaches the loader.
+`decode_page` returns cached pages immediately. On a miss it reads the encoded page
+once and uses core's fallback orchestration. A page cached during either decode takes
+precedence. A primary failure triggers one warning per controller when a retry is needed.
 
-On wasm32, the composition root supplies `NativePageDecoder` as primary and
-`ImageCratePageDecoder` as fallback. Desktop uses the image crate only. The port
-and its local `!Send` futures live in `gashuu`, keeping browser bindings out of
-core. Web covers use the same pair, then `image_ops::downscale_to_thumbnail`;
-cover requests run sequentially, including across refreshes. The web thumbnail
-strip remains a no-op. See [ADR-0014](ADRs/0014-web-decodes-pages-with-the-browser-native-decoder.md).
-
-### web_decode
-
-`web_decode.rs` implements `NativePageDecoder` on the browser main thread with
-`createImageBitmap` and canvas readback. It checks the pixel limit before canvas
-allocation and requests straight alpha, no color-space conversion, and original
-pixel orientation. Canvas readback can round partially transparent RGB values.
+On wasm32 the composition root supplies `gashuu_web_decode::NativePageDecoder` as
+primary and `ImageCratePageDecoder` as fallback. `decode_cover` uses the same pair on
+page zero, then downscales the result. Covers load sequentially across refreshes.
+Desktop uses the image crate only. See [ADR-0014](ADRs/0014-web-decodes-pages-with-the-browser-native-decoder.md).
 
 ### web_font
 
@@ -822,10 +825,13 @@ applicable position write-back, delegates view-mode routing
 to `stage_view_modes_to_sink`, and saves the library at most once. `stage_view_modes_to_sink`'s
 `match route` selects the sink: `DialogClosedOnLibrary` → global reconcile;
 `DialogClosedOnViewer` / `LeaveViewer` / `OpenDifferentBook` → per-book write-back; `AppExit` →
-per-book write-back FIRST, then a global reconcile ONLY when `open_book().is_none()`. So the GLOBAL
-route sink is invoked only via the Library-dialog close and the no-book-open exit; a Library-scope
-`DialogSession::end` also invokes the same helper before restoring its snapshot. Every leave point
-hits the per-book sink (a no-op when no book is open).
+per-book write-back first, then a global reconcile when `open_book().is_none()`. `Suspend` uses the
+same view-mode sinks when no dialog is open. With an active dialog, suspend writes back the reading
+position and preserves the dialog session and its unconfirmed edits
+([issue #664](https://github.com/yasuflatland-lf/gashuu/issues/664)).
+The global sink runs on Library-dialog close and when no book is open at exit or dialog-free
+suspend. A Library-scope `DialogSession::end` also invokes the same helper before restoring its
+snapshot. The per-book sink writes an override only when a book is open.
 Before a per-book write-back, `stage_view_override_write_back` builds the current `ResolvedView`,
 asks `DialogSession::inherit_pending(current)` whether the reset guard still applies, and consults
 the shared `Settings` handle to stage only fields that differ from global. The private pure helper
@@ -1133,6 +1139,12 @@ the `UpdateError {Http, Io, Verify}` glue error.
 
 See [ADR-0013](ADRs/0013-auto-update.md) and its Amendment, and [patterns.md](patterns.md),
 "Self-update replaces the running binary DIFFERENTLY per packaging".
+
+### web_lifecycle
+
+`web_lifecycle.rs` registers app-lifetime `pagehide` and hidden `visibilitychange` listeners.
+They flush page counts, the suspend leave point, and settings without ending a dialog session.
+Both events may flush consecutively; the writes are idempotent.
 
 ### web_blob_store
 

@@ -47,9 +47,9 @@ EXIF orientation and match the `image` crate's original pixel orientation.
 `web-sys` 0.3.107 lacks the `none` enum variant, so the adapter sets this option
 with `Reflect`. It also requests no color-space conversion.
 
-The adapter currently requires the main thread. Later Worker work (#655 to #659)
-will reuse the port and provide Worker support. Desktop decoding remains on the
-`image` crate. Cache capacity and prefetch behavior remain unchanged.
+The adapter now supports `Window` and `WorkerGlobalScope` (#697). The application
+will use the adapter in a Worker with #658 (ADR-0015). Desktop decoding remains on
+the `image` crate. Cache capacity and prefetch behavior remain unchanged.
 
 ## Consequences
 
@@ -65,3 +65,5 @@ will reuse the port and provide Worker support. Desktop decoding remains on the
 
 After merge, the maintainer will verify cache-miss page turns on the iPad, targeting
 well under 150 ms per turn. Record the results on #651, then close that issue.
+
+For application integration with the Worker, see #658 and ADR-0015.
