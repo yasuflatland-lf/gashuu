@@ -209,7 +209,7 @@ fn load_persisted(
     library_store: Result<LibraryStore, CoreError>,
 ) -> (
     Settings,
-    Library,
+    Option<Library>,
     SettingsStoreHandle,
     LibraryStoreHandle,
     Vec<String>,
@@ -223,7 +223,7 @@ fn load_persisted(
         tracing::warn!("localStorage unavailable; using defaults");
         return (
             Settings::default(),
-            Library::new(),
+            None,
             Rc::new(None),
             Rc::new(None),
             vec!["storage (localStorage unavailable)".to_owned()],
@@ -246,7 +246,7 @@ fn load_persisted(
     let library = load_or_default(
         "library",
         library_store.as_ref(),
-        LibraryStore::load,
+        |store| store.load().map(Some),
         LibraryStore::quarantine,
         &mut load_errs,
     );
@@ -318,9 +318,11 @@ fn main() {
     };
     let (settings, mut library, settings_store, library_store, load_errs) =
         load_persisted(settings_store, library_store);
-    if remove_demo_entries(&mut library) {
-        if let Err(error) = save_library(&library_store, &library) {
-            tracing::warn!(%error, "could not save library after removing session-only books");
+    if let Some(library) = library.as_mut() {
+        if remove_demo_entries(library) {
+            if let Err(error) = save_library(&library_store, library) {
+                tracing::warn!(%error,"could not save library after removing session-only books");
+            }
         }
     }
     if let Err(e) = run_app(settings, library, settings_store, library_store, load_errs) {
@@ -333,7 +335,7 @@ fn main() {
 /// On wasm32 `ui.run()` never returns (winit unwinds out of the start function).
 fn run_app(
     settings: Settings,
-    library: Library,
+    library: Option<Library>,
     settings_store: SettingsStoreHandle,
     library_store: LibraryStoreHandle,
     load_errs: Vec<String>,
@@ -361,7 +363,9 @@ fn run_app(
 
     // The persisted shelf, shared so the carousel model build, the focused-index
     // clamp, and later PR-L's add / PR-R's position write-back can all reach it.
-    let library = Rc::new(RefCell::new(library));
+    #[cfg(target_arch = "wasm32")]
+    let library_loaded = library.is_some();
+    let library = Rc::new(RefCell::new(library.unwrap_or_default()));
 
     #[cfg(not(target_arch = "wasm32"))]
     let thumb_store: Arc<dyn gashuu_core::ThumbStore> = match gashuu_core::FsThumbStore::new() {
@@ -435,6 +439,7 @@ fn run_app(
             move |settings| save_settings(&store, settings)
         }),
         backend.clone(),
+        importer.clone(),
         Arc::clone(&thumb_store),
     ));
 
@@ -448,6 +453,47 @@ fn run_app(
         selection: Rc::clone(&selection),
         localizer: Rc::clone(&localizer),
     };
+    #[cfg(target_arch = "wasm32")]
+    if let Some(importer) = importer.as_ref().filter(|_| library_loaded) {
+        let weak = ui.as_weak();
+        ui.on_storage_inventory_changed({
+            let weak = weak.clone();
+            let carousel = carousel.clone();
+            let inventory = book_availability::web_inventory();
+            move || {
+                if let Some(ui) = weak.upgrade() {
+                    let missing = carousel
+                        .library
+                        .borrow()
+                        .books()
+                        .iter()
+                        .filter(|book| !inventory.contains(book.id()))
+                        .count();
+                    if missing > 0 {
+                        tracing::warn!(missing, "books missing from browser storage");
+                    }
+                    refresh_library_carousel(&ui, &carousel, false);
+                }
+            }
+        });
+        let inventory = book_availability::web_inventory();
+        let ids: Vec<_> = library
+            .borrow()
+            .books()
+            .iter()
+            .map(|book| book.id().clone())
+            .collect();
+        importer.sweep(
+            ids,
+            false,
+            Box::new(move |report| {
+                inventory.replace(report.present);
+                if let Some(ui) = weak.upgrade() {
+                    ui.invoke_storage_inventory_changed();
+                }
+            }),
+        );
+    }
     refresh_library_carousel(&ui, &carousel, true);
     // Continue reading: override the refresh's reset-to-0 with a one-shot snap to the
     // last-read book's visible row (resolved through the empty-query visible set).
@@ -496,7 +542,7 @@ fn run_app(
     handlers::wire_open_handlers(
         &ui,
         &picker,
-        importer,
+        importer.clone(),
         &settings,
         &library,
         &covers,
@@ -535,6 +581,7 @@ fn run_app(
         &localizer,
         &library_store,
         backend,
+        importer.clone(),
         Arc::clone(&thumb_store),
     );
     handlers::wire_viewer_input_handlers(&ui, &state, &viewport, &pages, &localizer);
@@ -553,6 +600,7 @@ fn run_app(
         &localizer,
         &settings_store,
         &library_store,
+        importer,
         thumb_store,
     );
     handlers::wire_view_mode_handlers(

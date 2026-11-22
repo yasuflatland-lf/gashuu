@@ -201,6 +201,8 @@ pub(crate) fn platform_backend(thumbs: Arc<dyn ThumbStore>) -> Rc<dyn BookBacken
     }
 }
 
+#[cfg(any(test, target_arch = "wasm32"))]
+pub(crate) use importer::SweepReport;
 pub(crate) use importer::{BookImporter, DiscardUpload, ImportedBook};
 
 mod importer {
@@ -211,9 +213,18 @@ mod importer {
 
     #[derive(Debug)]
     pub(crate) struct ImportedBook {
+        pub duplicate: bool,
         pub id: BookId,
         pub title: String,
         pub page_count: NonZeroUsize,
+    }
+
+    #[cfg_attr(not(any(test, target_arch = "wasm32")), allow(dead_code))]
+    pub(crate) struct SweepReport {
+        pub removed: u32,
+        pub skipped_recent: u32,
+        pub skipped_locked: u32,
+        pub present: Vec<BookId>,
     }
 
     pub(crate) type DiscardUpload = Arc<dyn Fn(&BookId) + Send + Sync>;
@@ -225,7 +236,7 @@ mod importer {
             policy: ArchivePolicy,
             done: Done<Result<ImportedBook, BackendError>>,
         );
-        #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+        fn sweep(&self, keep: Vec<BookId>, explicit_clear: bool, done: Done<SweepReport>);
         fn discard(&self, id: &BookId);
         /// A cleanup callback that a Send completion can invoke on the UI thread.
         fn discarder(&self) -> DiscardUpload;

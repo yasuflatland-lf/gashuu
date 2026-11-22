@@ -6,6 +6,8 @@ use std::collections::{HashMap, HashSet};
 pub(crate) enum Call {
     Open(BookId),
     Close(SessionId),
+    Discard(BookId),
+    Sweep(Vec<BookId>, bool),
     CachedPage(SessionId, usize),
     DecodeSpread(SessionId, usize, Option<usize>),
     Thumbnail(SessionId, usize, u32),
@@ -183,3 +185,23 @@ impl BookBackend for FakeBackend {
 
 #[path = "fake_tests.rs"]
 mod tests;
+
+impl BookImporter for FakeBackend {
+    fn import(
+        &self,
+        _: crate::picker::UploadHandle,
+        _: ArchivePolicy,
+        _: Done<Result<ImportedBook, BackendError>>,
+    ) {
+        unreachable!()
+    }
+    fn discard(&self, id: &BookId) {
+        self.calls.borrow_mut().push(Call::Discard(id.clone()));
+    }
+    fn discarder(&self) -> DiscardUpload {
+        unreachable!()
+    }
+    fn sweep(&self, keep: Vec<BookId>, clear: bool, _: Done<SweepReport>) {
+        self.calls.borrow_mut().push(Call::Sweep(keep, clear));
+    }
+}

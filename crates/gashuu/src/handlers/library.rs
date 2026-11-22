@@ -581,6 +581,7 @@ pub(crate) fn wire_selection_handlers(
     localizer: &Rc<i18n::Localizer>,
     library_store: &LibraryStoreHandle,
     backend: Rc<dyn BookBackend>,
+    importer: Option<Rc<dyn crate::backend::BookImporter>>,
     thumbs: Arc<dyn ThumbStore>,
 ) {
     // Rebind the `&Rc<_>` params to owned `Rc` locals so each closure's `Rc::clone(&handle)`
@@ -776,6 +777,7 @@ pub(crate) fn wire_selection_handlers(
             Rc::clone(&selection),
             Rc::clone(&library_store),
             backend,
+            importer.clone(),
             Arc::clone(&thumbs),
         );
         ui.on_confirm_delete_accepted(move || {
@@ -801,10 +803,14 @@ pub(crate) fn wire_selection_handlers(
                 let id = BookId::new(id_str.as_str());
                 // The shared transaction (single home in open_book): title capture
                 // BEFORE removal -> Library::remove -> save -> best-effort cover purge.
-                let removal =
-                    open_book::remove_empty_book(&library, &id, None, thumbs.as_ref(), |library| {
-                        save_library(&library_store, library)
-                    });
+                let removal = open_book::remove_empty_book(
+                    &library,
+                    &id,
+                    None,
+                    thumbs.as_ref(),
+                    importer.as_deref(),
+                    |library| save_library(&library_store, library),
+                );
                 finalize_empty_book_rejected(&ui, &carousel, &removal);
             })
         });
@@ -912,6 +918,7 @@ mod tests {
             Box::new(|_| Ok(())),
             Box::new(|_| Ok(())),
             crate::backend::fake::FakeBackend::new(),
+            None,
             Arc::new(gashuu_core::NullThumbStore),
         );
         // The Library-screen dialog seeds the runtime with G, then the in-flight
@@ -1026,6 +1033,7 @@ mod tests {
             Box::new(|_| Ok(())),
             Box::new(|_| Ok(())),
             crate::backend::fake::FakeBackend::new(),
+            None,
             Arc::new(gashuu_core::NullThumbStore),
         );
 

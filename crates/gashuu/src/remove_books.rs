@@ -117,6 +117,7 @@ pub(crate) struct RemoveBooksUseCase {
     search: Rc<RefCell<LibrarySearchState>>,
     selection: Rc<RefCell<LibrarySelectionState>>,
     library_store: LibraryStoreHandle,
+    importer: Option<Rc<dyn crate::backend::BookImporter>>,
     thumbs: Arc<dyn ThumbStore>,
 }
 
@@ -130,6 +131,7 @@ impl RemoveBooksUseCase {
         selection: Rc<RefCell<LibrarySelectionState>>,
         library_store: LibraryStoreHandle,
         backend: Rc<dyn crate::backend::BookBackend>,
+        importer: Option<Rc<dyn crate::backend::BookImporter>>,
         thumbs: Arc<dyn ThumbStore>,
     ) -> Self {
         Self {
@@ -140,6 +142,7 @@ impl RemoveBooksUseCase {
             selection,
             library_store,
             backend,
+            importer,
             thumbs,
         }
     }
@@ -220,6 +223,12 @@ impl RemoveBooksUseCase {
                 false
             }
         };
+
+        if let Some(importer) = &self.importer {
+            for id in &report.removed {
+                importer.discard(id);
+            }
+        }
 
         // 5. Recompute the visible projection against the shrunken library so the
         //    carousel rebuild in `main.rs` reads a fresh, valid index set.
@@ -730,6 +739,7 @@ mod tests {
             selection.insert(id.clone());
         }
         let thumbs = std::sync::Arc::new(RecordingThumbStore::default());
+        let importer = crate::backend::fake::FakeBackend::new();
         let use_case = RemoveBooksUseCase::new(
             Rc::new(RefCell::new(ViewerState::from_settings(
                 &Settings::default(),
@@ -742,6 +752,7 @@ mod tests {
                 dir.path().join("library.json"),
             ))),
             crate::backend::fake::FakeBackend::new(),
+            Some(importer.clone()),
             thumbs.clone(),
         );
 
@@ -751,6 +762,13 @@ mod tests {
                 n: 2,
                 closed_open_book: false
             }
+        );
+        assert_eq!(
+            importer.calls(),
+            [
+                crate::backend::fake::Call::Discard(a.clone()),
+                crate::backend::fake::Call::Discard(b.clone())
+            ]
         );
         let calls = thumbs.take_calls();
         assert_eq!(calls.len(), 4);
@@ -824,7 +842,7 @@ mod tests {
 
         let backend = crate::backend::fake::FakeBackend::new();
         let old = state.borrow().session().unwrap();
-        let use_case = RemoveBooksUseCase::new(
+        let mut use_case = RemoveBooksUseCase::new(
             Rc::clone(&state),
             Rc::clone(&session),
             Rc::clone(&library),
@@ -834,9 +852,17 @@ mod tests {
                 store_dir.path().join("library.json"),
             ))),
             backend.clone(),
+            Some(backend.clone()),
             Arc::new(gashuu_core::NullThumbStore),
         );
 
+        let saved_store = use_case.library_store.clone();
+        use_case.library_store = Rc::new(Some(gashuu_core::LibraryStore::new(
+            store_dir.path().to_path_buf(),
+        )));
+        assert!(matches!(use_case.run(), RemoveOutcome::SaveFailed { .. }));
+        assert!(backend.calls().is_empty());
+        use_case.library_store = saved_store;
         assert_eq!(
             use_case.run(),
             RemoveOutcome::Removed {
@@ -845,7 +871,13 @@ mod tests {
             }
         );
 
-        assert_eq!(backend.calls(), [crate::backend::fake::Call::Close(old)]);
+        assert_eq!(
+            backend.calls(),
+            [
+                crate::backend::fake::Call::Close(old),
+                crate::backend::fake::Call::Discard(open)
+            ]
+        );
         // `close()` leaves the view modes standing, so the recorded view still
         // matches the runtime — the discard has to be explicit.
         assert!(

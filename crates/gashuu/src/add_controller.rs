@@ -23,6 +23,7 @@ pub(crate) enum ProbeKind {
     /// Opened cleanly with `n` image pages — add it and record the count.
     Counted(NonZeroUsize),
     Imported {
+        duplicate: bool,
         id: BookId,
         title: String,
         count: NonZeroUsize,
@@ -131,7 +132,12 @@ impl AddController {
             self.picker_notice.take();
             if let Some((epoch, discard)) = self.import_batch.take() {
                 for outcome in self.generation.take(epoch).unwrap_or_default() {
-                    if let ProbeKind::Imported { id, .. } = outcome.kind {
+                    if let ProbeKind::Imported {
+                        id,
+                        duplicate: false,
+                        ..
+                    } = outcome.kind
+                    {
                         discard(&id);
                     }
                 }
@@ -213,15 +219,19 @@ impl AddController {
                             id,
                             title,
                             page_count,
+                            duplicate,
                         }) => {
                             if !ticket.is_current() || weak.upgrade().is_none() {
-                                discard(&id);
+                                if !duplicate {
+                                    discard(&id);
+                                }
                                 return;
                             }
                             ProbeKind::Imported {
                                 id,
                                 title,
                                 count: page_count,
+                                duplicate,
                             }
                         }
                         Err(error) => ProbeKind::from_probe(Err(error)),

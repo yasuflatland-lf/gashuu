@@ -45,7 +45,8 @@ impl WorkerBackend {
                 if let Some(backend) = weak.upgrade() {
                     match read_envelope(&event.data()) {
                         Ok((text, images)) => {
-                            backend.dispatch(|client| client.on_message(&text, images))
+                            backend.dispatch(|client| client.on_message(&text, images));
+                            backend.dispatch(|client| (client.after_delivery(), vec![]));
                         }
                         Err(detail) => backend.failed(&detail),
                     }
@@ -253,17 +254,36 @@ impl BookImporter for WorkerBackend {
         done: Done<Result<ImportedBook, BackendError>>,
     ) {
         let browser_file = take_file(file.key);
-        self.dispatch(|client| client.import(&file, browser_file, policy, done));
+        let inventory = crate::book_availability::web_inventory();
+        self.dispatch(|client| {
+            client.import(
+                &file,
+                browser_file,
+                policy,
+                Box::new(move |result| {
+                    if let Ok(book) = &result {
+                        inventory.insert(&book.id);
+                    }
+                    done(result);
+                }),
+            )
+        });
+    }
+
+    fn sweep(&self, keep: Vec<BookId>, explicit_clear: bool, done: Done<super::SweepReport>) {
+        self.dispatch(|client| client.sweep(keep, (!explicit_clear).then(js_sys::Date::now), done));
     }
 
     fn discard(&self, id: &BookId) {
+        crate::book_availability::web_inventory().remove(id);
         self.dispatch(|client| (client.discard(id), Vec::new()));
     }
 
     fn discarder(&self) -> DiscardUpload {
         Arc::new(|id| {
             if let Some(backend) = shared() {
-                backend.discard(id);
+                crate::book_availability::web_inventory().remove(id);
+                backend.dispatch(|client| (client.discard_stale(id), Vec::new()));
             }
         })
     }

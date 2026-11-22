@@ -20,11 +20,18 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::Arc;
 
-fn clear_thumbnail_cache_after_library_save(library_save_succeeded: bool, thumbs: &dyn ThumbStore) {
+fn clear_storage_after_library_save(
+    library_save_succeeded: bool,
+    thumbs: &dyn ThumbStore,
+    importer: Option<&dyn crate::backend::BookImporter>,
+) {
     if !library_save_succeeded {
         return;
     }
 
+    if let Some(importer) = importer {
+        importer.sweep(vec![], true, Box::new(|_| {}));
+    }
     let report = thumbs.clear();
     tracing::info!(
         files = report.removed_files,
@@ -55,6 +62,7 @@ pub(crate) fn wire_settings_handlers(
     localizer: &Rc<i18n::Localizer>,
     settings_store: &SettingsStoreHandle,
     library_store: &LibraryStoreHandle,
+    importer: Option<Rc<dyn crate::backend::BookImporter>>,
     thumbs: Arc<dyn ThumbStore>,
 ) {
     let state = Rc::clone(state);
@@ -312,7 +320,7 @@ pub(crate) fn wire_settings_handlers(
                 if let Some(ref e) = set_err {
                     tracing::error!(error = %e, "failed to persist settings while clearing reading history");
                 }
-                clear_thumbnail_cache_after_library_save(lib_err.is_none(), thumbs.as_ref());
+                clear_storage_after_library_save(lib_err.is_none(), thumbs.as_ref(), importer.as_deref());
                 // CoverMemCache is intentionally left alone: the carousel is rebuilt
                 // empty below, and stale decoded entries are harmless and LRU-evicted.
                 // Recompute the (now empty) search projection, drop the selection, and
@@ -591,7 +599,12 @@ mod tests {
 
         let thumbs =
             RecordingThumbStore::with_disk(FsThumbStore::with_dir(dir.path().to_path_buf()));
-        clear_thumbnail_cache_after_library_save(true, &thumbs);
+        let importer = crate::backend::fake::FakeBackend::new();
+        clear_storage_after_library_save(true, &thumbs, Some(importer.as_ref()));
+        assert_eq!(
+            importer.calls(),
+            [crate::backend::fake::Call::Sweep(vec![], true)]
+        );
         assert_eq!(thumbs.take_calls(), [Call::Clear]);
 
         assert!(!cover.exists(), "cover must be purged");
@@ -608,7 +621,9 @@ mod tests {
         let thumbs =
             RecordingThumbStore::with_disk(FsThumbStore::with_dir(dir.path().to_path_buf()));
 
-        clear_thumbnail_cache_after_library_save(false, &thumbs);
+        let importer = crate::backend::fake::FakeBackend::new();
+        clear_storage_after_library_save(false, &thumbs, Some(importer.as_ref()));
+        assert!(importer.calls().is_empty());
 
         assert!(
             thumbs.take_calls().is_empty(),

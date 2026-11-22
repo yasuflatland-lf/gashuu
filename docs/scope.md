@@ -24,9 +24,8 @@ The browser imports CBZ and ZIP files into origin-private storage. The web
 picker supports files only. RAR/CBR and AVIF are unavailable. Browser-native
 image decoding uses a PNG/JPEG fallback.
 
-Known gaps tracked in #662 include removing the OPFS copy when a book is
-deleted from the library, sweeping orphaned directories, detecting duplicate
-imports, and identifying books whose storage the browser evicted.
+Repeated imports reuse a stored copy. Removing a library book releases its
+storage. Startup sweeps reclaim orphans and mark evicted books unavailable.
 
 ### Cache and prefetch
 

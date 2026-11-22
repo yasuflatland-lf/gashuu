@@ -882,6 +882,7 @@ fn import_protocol_round_trips_metadata_without_file_bytes() {
     }
     for result in [
         Ok(ImportedMeta {
+            duplicate: false,
             id,
             title: "本".into(),
             page_count: 42,
@@ -909,4 +910,99 @@ fn import_rejects_a_rar_renamed_as_cbz() {
             format: "rar/cbr".into()
         })
     );
+}
+
+#[test]
+fn upload_fingerprint_and_ranges() {
+    use crate::lifecycle::{content_key, head_tail_ranges};
+    use sha2::{Digest, Sha256};
+    let m = 1u64 << 20;
+    for size in [0, 1, m, m + m / 2, 2 * m, 2 * m + 1, 300 * m] {
+        assert_eq!(
+            head_tail_ranges(size),
+            (0..size.min(m), size.saturating_sub(m)..size)
+        );
+    }
+    let key = content_key(3, b"abc", b"abc");
+    let expected = Sha256::digest([&3u64.to_le_bytes()[..], b"abc", b"abc"].concat());
+    assert_eq!(
+        key,
+        "e136556635f1d57a963ab93138ba92ab824e9f39f3df1705bc2a7f4822364449"
+    );
+    assert_eq!(
+        expected.as_slice(),
+        (0..64)
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&key[i..i + 2], 16).unwrap())
+            .collect::<Vec<_>>()
+    );
+    for other in [
+        content_key(4, b"abc", b"abc"),
+        content_key(3, b"xbc", b"abc"),
+        content_key(3, b"abc", b"abx"),
+    ] {
+        assert_ne!(other, key);
+    }
+}
+
+#[test]
+fn startup_and_clear_sweep() {
+    use crate::lifecycle::{is_recent, plan_sweep};
+    let now = Some(3_600_000.);
+    assert!(!is_recent(0., now));
+    assert!(is_recent(1., now));
+    assert!(!is_recent(1., None));
+    let dirs = [
+        ("a".into(), Some("book".into()), 0.),
+        ("b".into(), Some("book".into()), 0.),
+        ("c".into(), Some("book".into()), 1.),
+        ("d".into(), None, 1.),
+    ];
+    let (plan, recent) = plan_sweep(&dirs, &["books/a/book".into()].into(), now);
+    assert_eq!(recent, 1);
+    assert_eq!(plan.delete, ["b", "d"]);
+    assert_eq!(plan.present, ["books/a/book", "books/c/book"]);
+    let (plan, recent) = plan_sweep(&dirs, &Default::default(), None);
+    assert_eq!(plan.delete, ["a", "b", "c", "d"]);
+    assert!(plan.present.is_empty());
+    assert_eq!(recent, 0);
+    let req = Request::Sweep {
+        req: ReqId(1),
+        keep: vec![],
+        now_ms: None,
+    };
+    assert_eq!(
+        crate::protocol::decode::<Request>(&crate::protocol::encode(&req)).unwrap(),
+        req
+    );
+}
+
+#[test]
+fn sweep_inventory_includes_locked_books_and_counts_empty_locked_directories() {
+    let mut inventory = crate::lifecycle::SweepInventory::default();
+    let keep = ["books/a/book".into()].into();
+    for (uuid, outcome) in [
+        ("a", "keep"),
+        ("b", "recent"),
+        ("c", "locked"),
+        ("d", "deleted"),
+    ] {
+        let id = format!("books/{uuid}/book");
+        let candidate = inventory.should_delete(
+            Some(&id),
+            if outcome == "recent" { 1. } else { 0. },
+            &keep,
+            Some(3_600_000.),
+        );
+        assert_eq!(candidate, matches!(outcome, "locked" | "deleted"));
+        if outcome == "locked" {
+            inventory.locked(Some(id));
+        }
+    }
+    inventory.locked(None);
+    assert_eq!(
+        inventory.present,
+        ["books/a/book", "books/b/book", "books/c/book"]
+    );
+    assert_eq!((inventory.skipped_recent, inventory.skipped_locked), (1, 2));
 }

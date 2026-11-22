@@ -75,7 +75,9 @@ pub(crate) fn apply_outcomes(
                 tracing::warn!(%error, path = %subject, "skipping unreadable source");
                 continue;
             }
-            ProbeKind::Imported { id, title, count } => (id, title, count),
+            ProbeKind::Imported {
+                id, title, count, ..
+            } => (id, title, count),
             ProbeKind::Counted(count) => {
                 let path = match &subject {
                     ProbeSubject::Path(path) => path,
@@ -684,6 +686,7 @@ fn imported_outcomes_preserve_metadata_and_share_batch_accounting() {
         index: 0,
         subject: ProbeSubject::Upload("original.cbz".into()),
         kind: ProbeKind::Imported {
+            duplicate: true,
             id: id.clone(),
             title: "Worker supplied title".into(),
             count: NonZeroUsize::new(5).unwrap(),
