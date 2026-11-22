@@ -289,6 +289,8 @@ notice-adding-progress = Adding… ({ $done }/{ $total })
 notice-web-picker-unavailable = Couldn't open the file picker.
 notice-web-picker-unsupported = Unsupported files ({ $count }). Choose CBZ or ZIP files.
 notice-web-picker-unreadable = Couldn't read selected files ({ $count }).
+notice-web-storage-unavailable = This browser cannot store books.
+notice-web-storage-full = Browser storage is full.
 # An existing library entry was auto-removed because its source has no images.
 notice-empty-book-removed = Removed "{ $title }" — no images found
 

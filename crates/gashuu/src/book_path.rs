@@ -1,71 +1,39 @@
 //! Resolve book locations against the platform's source of bytes.
 //!
-//! Desktop IDs carry canonical filesystem locations. Web IDs carry session
-//! registry locations until OPFS storage arrives in #660. The backend work
-//! in #655–#660 moves location resolution behind the platform backend.
+//! Desktop IDs carry canonical filesystem locations. Web IDs carry OPFS paths
+//! that the Worker resolves asynchronously.
 
-#[cfg(any(test, target_arch = "wasm32"))]
+#[cfg(test)]
 use gashuu_core::{ArchiveLoader, ArchivePolicy, PageSource};
 use gashuu_core::{BookId, CoreError};
-#[cfg(any(test, target_arch = "wasm32"))]
+#[cfg(test)]
 use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
-#[cfg(any(test, target_arch = "wasm32"))]
+#[cfg(test)]
 use std::sync::Arc;
 
-#[cfg(any(test, target_arch = "wasm32"))]
+#[cfg(test)]
 pub(crate) fn open(path: &Path, policy: ArchivePolicy) -> Result<Arc<dyn PageSource>, CoreError> {
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        ArchiveLoader::open_with_policy(path, policy)
-    }
-    #[cfg(target_arch = "wasm32")]
-    {
-        let (name, bytes) = read_at(path)?;
-        ArchiveLoader::open_read_at(name, bytes, policy)
-    }
+    ArchiveLoader::open_with_policy(path, policy)
 }
 
-// The web backend uses this helper on wasm32 and in desktop tests.
-#[cfg(any(test, target_arch = "wasm32"))]
+#[cfg(test)]
 pub(crate) fn probe_page_count(
     path: &Path,
     policy: ArchivePolicy,
 ) -> Result<NonZeroUsize, CoreError> {
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        ArchiveLoader::probe_page_count_with_policy(path, policy)
-    }
-    #[cfg(target_arch = "wasm32")]
-    {
-        let (name, bytes) = read_at(path)?;
-        ArchiveLoader::probe_page_count_read_at(name, bytes, policy)
-    }
+    ArchiveLoader::probe_page_count_with_policy(path, policy)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn exists(path: &Path) -> bool {
+    path.exists()
 }
 
 #[cfg(target_arch = "wasm32")]
-fn read_at(path: &Path) -> Result<(&str, Arc<dyn gashuu_core::ReadAt>), CoreError> {
-    let name = path.to_str().ok_or_else(|| CoreError::NonUtf8Path {
-        path: path.to_string_lossy().into_owned(),
-    })?;
-    let bytes = crate::web_books::get(path).ok_or_else(|| {
-        std::io::Error::new(
-            std::io::ErrorKind::NotFound,
-            "book data is unavailable in this browser session",
-        )
-    })?;
-    Ok((name, Arc::new(bytes)))
-}
-
-pub(crate) fn exists(path: &Path) -> bool {
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        path.exists()
-    }
-    #[cfg(target_arch = "wasm32")]
-    {
-        crate::web_books::contains(path)
-    }
+pub(crate) fn exists(_path: &Path) -> bool {
+    // OPFS availability will be supplied asynchronously by the backend in #662.
+    true
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -89,7 +57,7 @@ fn identity(path: &Path) -> PathBuf {
     }
 }
 
-/// Resolve an ID to a desktop path or a web session registry location.
+/// Resolve an ID to a desktop path or a Worker-relative OPFS path.
 pub(crate) fn locate(id: &BookId) -> PathBuf {
     PathBuf::from(id.as_str())
 }

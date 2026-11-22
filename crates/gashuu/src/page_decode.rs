@@ -37,7 +37,7 @@ pub async fn decode_page(
 }
 
 /// Read the first page of an already-opened book for its carousel cover.
-#[cfg(any(target_arch = "wasm32", test))]
+#[cfg(test)]
 pub(crate) async fn decode_cover(
     source: Arc<dyn gashuu_core::PageSource>,
     primary: &dyn PageDecoder,

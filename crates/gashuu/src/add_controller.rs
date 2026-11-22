@@ -2,12 +2,14 @@
 //! input order. Each UI-thread completion records one outcome and advances
 //! progress. Only the current generation can finalize and update the library.
 
-use crate::backend::{BackendError, BookBackend};
+use crate::backend::{BackendError, BookBackend, BookImporter, DiscardUpload, ImportedBook};
 use crate::book_path as location;
-use crate::ui_marshal::Generation;
+use crate::picker::{forget_uploads, UploadHandle};
+use crate::ui_marshal::{Generation, Ticket};
 use crate::ViewerWindow;
-use gashuu_core::ArchivePolicy;
-use std::cell::RefCell;
+use gashuu_core::{ArchivePolicy, BookId};
+use std::cell::{Cell, RefCell};
+use std::fmt;
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -16,6 +18,12 @@ use std::rc::Rc;
 pub(crate) enum ProbeKind {
     /// Opened cleanly with `n` image pages — add it and record the count.
     Counted(NonZeroUsize),
+    /// Imported into browser storage with the worker-supplied id, title, and page count.
+    Imported {
+        id: BookId,
+        title: String,
+        count: NonZeroUsize,
+    },
     /// Opened cleanly but zero image pages (the empty-book rule) — skip.
     Empty,
     /// A RAR/CBR rejected because `ArchivePolicy::allow_rar` is false — skip.
@@ -26,13 +34,28 @@ pub(crate) enum ProbeKind {
 
 /// One probed source awaiting the UI-thread apply: its INPUT-order `index` (so
 /// the apply half can restore input order regardless of probe completion order),
-/// its selected `path`, and its classified `kind`. All fields `Send`.
+/// its `subject` (a picked path or an uploaded file name), and its classified `kind`. All fields `Send`.
 pub(crate) struct ProbeOutcome {
-    /// Position in the picked-paths input, used to re-sort to input order before
+    /// Position in the picked input, used to re-sort to input order before
     /// applying (probes complete out of order on parallel workers).
     pub index: usize,
-    pub path: PathBuf,
+    pub subject: ProbeSubject,
     pub kind: ProbeKind,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum ProbeSubject {
+    Path(PathBuf),
+    Upload(String),
+}
+
+impl fmt::Display for ProbeSubject {
+    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Path(path) => write!(fmt, "{}", path.display()),
+            Self::Upload(name) => fmt.write_str(name),
+        }
+    }
 }
 
 impl ProbeKind {
@@ -54,7 +77,7 @@ pub(crate) fn probe_path(index: usize, path: PathBuf, policy: ArchivePolicy) -> 
     let result = location::probe_page_count(&path, policy).map_err(|e| BackendError::from_core(&e));
     ProbeOutcome {
         index,
-        path,
+        subject: ProbeSubject::Path(path),
         kind: ProbeKind::from_probe(result),
     }
 }
@@ -79,11 +102,11 @@ pub(crate) struct AddController {
     generation: Generation<Vec<ProbeOutcome>>,
     /// The op tag ("add-books" / "add-folder") of the current generation, used
     /// only in the apply half's save-failure trace. Replaced on every `start`.
-    op: RefCell<&'static str>,
-    #[cfg(target_arch = "wasm32")]
-    picker_notice: RefCell<Option<String>>,
-    #[cfg(target_arch = "wasm32")]
-    picker_epoch: std::cell::Cell<usize>,
+    op: Cell<&'static str>,
+    /// Current upload batch epoch and callback for discarding imported files when superseded.
+    import_batch: RefCell<Option<(usize, DiscardUpload)>>,
+    /// Picker notice shown after the current import batch finalizes.
+    picker_notice: Cell<Option<String>>,
 }
 
 impl AddController {
@@ -92,29 +115,27 @@ impl AddController {
         Self {
             backend,
             generation: Generation::new(),
-            op: RefCell::new("add"),
-            #[cfg(target_arch = "wasm32")]
-            picker_notice: RefCell::new(None),
-            #[cfg(target_arch = "wasm32")]
-            picker_epoch: std::cell::Cell::new(0),
+            op: Cell::new("add"),
+            import_batch: RefCell::new(None),
+            picker_notice: Cell::new(None),
         }
     }
 
-    #[cfg(target_arch = "wasm32")]
-    pub(crate) fn start_from_picker(
-        &self,
-        ui_weak: slint::Weak<ViewerWindow>,
-        paths: Vec<PathBuf>,
-        policy: ArchivePolicy,
-        notice: Option<String>,
-    ) {
-        *self.picker_notice.borrow_mut() = notice;
-        self.start(ui_weak, paths, policy, "add-books");
+    pub(crate) fn take_picker_notice(&self) -> Option<String> {
+        self.picker_notice.take()
     }
 
-    #[cfg(target_arch = "wasm32")]
-    pub(crate) fn take_picker_notice(&self) -> Option<String> {
-        self.picker_notice.borrow_mut().take()
+    fn begin(&self, op: &'static str) -> Ticket<Vec<ProbeOutcome>> {
+        self.picker_notice.take();
+        if let Some((epoch, discard)) = self.import_batch.take() {
+            for outcome in self.generation.take(epoch).unwrap_or_default() {
+                if let ProbeKind::Imported { id, .. } = outcome.kind {
+                    discard(&id);
+                }
+            }
+        }
+        self.op.set(op);
+        self.generation.begin()
     }
 
     /// Begin a fresh batch. An empty pick finalizes immediately.
@@ -125,58 +146,26 @@ impl AddController {
         policy: ArchivePolicy,
         op: &'static str,
     ) {
-        // Completed successes in a superseded web batch never reach the library.
-        #[cfg(target_arch = "wasm32")]
-        if let Some(outcomes) = self.generation.take(self.picker_epoch.get()) {
-            for outcome in outcomes {
-                if matches!(outcome.kind, ProbeKind::Counted(_)) {
-                    crate::web_books::remove(&outcome.path);
-                }
-            }
-        }
-        let ticket = self.generation.begin();
-        #[cfg(target_arch = "wasm32")]
-        self.picker_epoch.set(ticket.id());
-        *self.op.borrow_mut() = op;
+        let ticket = self.begin(op);
         let total = paths.len();
-
-        // We are on the UI thread, so drive the first UI write directly.
-        let Some(ui) = ui_weak.upgrade() else {
-            return;
-        };
-        if total == 0 {
-            // No sources to probe: run the apply half immediately so the
-            // "already in library" notice still fires (parity with add_paths([])).
-            ui.invoke_add_finalize(ticket.id() as i32);
+        if !begin_progress(&ui_weak, &ticket, total) {
             return;
         }
-        ui.invoke_add_progress(0, total as i32);
-
         for (index, path) in paths.into_iter().enumerate() {
             let id = location::request_id(&path);
-
             let ticket = ticket.clone();
             let weak = ui_weak.clone();
             let complete = move |result| {
-                let kind = ProbeKind::from_probe(result);
-                #[cfg(target_arch = "wasm32")]
-                if !ticket.is_current() || !matches!(kind, ProbeKind::Counted(_)) {
-                    crate::web_books::remove(&path);
-                }
-
-                let mut done = 0;
-                if !ticket.deliver(|outcomes| {
-                    outcomes.push(ProbeOutcome { index, path, kind });
-                    done = outcomes.len();
-                }) {
-                    return;
-                }
-                if let Some(ui) = weak.upgrade() {
-                    ui.invoke_add_progress(done as i32, total as i32);
-                    if done == total && ticket.is_current() {
-                        ui.invoke_add_finalize(ticket.id() as i32);
-                    }
-                }
+                complete_source(
+                    &weak,
+                    &ticket,
+                    total,
+                    ProbeOutcome {
+                        index,
+                        subject: ProbeSubject::Path(path),
+                        kind: ProbeKind::from_probe(result),
+                    },
+                );
             };
             match id {
                 Ok(id) => self
@@ -184,6 +173,68 @@ impl AddController {
                     .probe_page_count(&id, policy, Box::new(complete)),
                 Err(error) => complete(Err(error)),
             }
+        }
+    }
+
+    pub(crate) fn start_import(
+        &self,
+        ui_weak: slint::Weak<ViewerWindow>,
+        uploads: Vec<UploadHandle>,
+        policy: ArchivePolicy,
+        op: &'static str,
+        notice: Option<String>,
+        importer: &dyn BookImporter,
+    ) {
+        let ticket = self.begin(op);
+        let discard = importer.discarder();
+        self.import_batch
+            .replace(Some((ticket.id(), discard.clone())));
+        self.picker_notice.set(notice);
+        let total = uploads.len();
+        if !begin_progress(&ui_weak, &ticket, total) {
+            forget_uploads(&uploads);
+            return;
+        }
+
+        for (index, upload) in uploads.into_iter().enumerate() {
+            let subject = ProbeSubject::Upload(upload.name.clone());
+            let ticket = ticket.clone();
+            let weak = ui_weak.clone();
+            let discard = discard.clone();
+            importer.import(
+                upload,
+                policy,
+                Box::new(move |result| {
+                    let kind = match result {
+                        Ok(ImportedBook {
+                            id,
+                            title,
+                            page_count,
+                        }) => {
+                            if !ticket.is_current() || weak.upgrade().is_none() {
+                                discard(&id);
+                                return;
+                            }
+                            ProbeKind::Imported {
+                                id,
+                                title,
+                                count: page_count,
+                            }
+                        }
+                        Err(error) => ProbeKind::from_probe(Err(error)),
+                    };
+                    complete_source(
+                        &weak,
+                        &ticket,
+                        total,
+                        ProbeOutcome {
+                            index,
+                            subject,
+                            kind,
+                        },
+                    );
+                }),
+            );
         }
     }
 
@@ -200,7 +251,44 @@ impl AddController {
         // Probes complete out of order on parallel workers; restore input order so
         // the apply half adds books and reports skips deterministically.
         outcomes.sort_by_key(|o| o.index);
-        Some((outcomes, *self.op.borrow()))
+        Some((outcomes, self.op.get()))
+    }
+}
+
+fn begin_progress(
+    weak: &slint::Weak<ViewerWindow>,
+    ticket: &Ticket<Vec<ProbeOutcome>>,
+    total: usize,
+) -> bool {
+    let Some(ui) = weak.upgrade() else {
+        return false;
+    };
+    if total == 0 {
+        ui.invoke_add_finalize(ticket.id() as i32);
+        return false;
+    }
+    ui.invoke_add_progress(0, total as i32);
+    ticket.is_current()
+}
+
+fn complete_source(
+    weak: &slint::Weak<ViewerWindow>,
+    ticket: &Ticket<Vec<ProbeOutcome>>,
+    total: usize,
+    outcome: ProbeOutcome,
+) {
+    let mut done = 0;
+    if !ticket.deliver(|outcomes| {
+        outcomes.push(outcome);
+        done = outcomes.len();
+    }) {
+        return;
+    }
+    if let Some(ui) = weak.upgrade() {
+        ui.invoke_add_progress(done as i32, total as i32);
+        if done == total && ticket.is_current() {
+            ui.invoke_add_finalize(ticket.id() as i32);
+        }
     }
 }
 
@@ -212,8 +300,8 @@ mod tests {
         fake::{Call, FakeBackend},
         BackendError,
     };
-    use crate::ui_marshal::Ticket;
     use slint::ComponentHandle;
+    use std::cell::RefCell;
 
     #[test]
     fn probe_kind_from_probe_maps_all_four_arms() {
@@ -269,8 +357,8 @@ mod tests {
         assert_eq!(op, "add-books");
         assert!(matches!(outcomes[1].kind, ProbeKind::Empty));
         assert_eq!(
-            outcomes.into_iter().map(|o| o.path).collect::<Vec<_>>(),
-            paths
+            outcomes.into_iter().map(|o| o.subject).collect::<Vec<_>>(),
+            paths.map(ProbeSubject::Path)
         );
     }
 
@@ -315,7 +403,7 @@ mod tests {
         assert_eq!(*finalized.borrow(), [2]);
         let (outcomes, _) = controller.take_outcomes(2).unwrap();
         assert_eq!(outcomes.len(), 1);
-        assert_eq!(outcomes[0].path, current);
+        assert_eq!(outcomes[0].subject, ProbeSubject::Path(current));
     }
 
     #[cfg(unix)]
@@ -334,7 +422,7 @@ mod tests {
         );
         assert!(fake.calls().is_empty());
         let (outcomes, _) = controller.take_outcomes(1).unwrap();
-        assert_eq!(outcomes[0].path, path);
+        assert_eq!(outcomes[0].subject, ProbeSubject::Path(path));
         assert!(matches!(&outcomes[0].kind, ProbeKind::Unreadable {error} if !error.is_empty()));
     }
 
@@ -343,7 +431,7 @@ mod tests {
         assert!(ticket.deliver(|acc| {
             acc.push(ProbeOutcome {
                 index,
-                path: PathBuf::from(format!("/p{index}")),
+                subject: ProbeSubject::Path(PathBuf::from(format!("/p{index}"))),
                 kind: ProbeKind::Empty,
             });
         }));
@@ -401,3 +489,7 @@ mod tests {
         assert_eq!(add_progress_ratio(20, 18), 1.0, "over-count clamps to full");
     }
 }
+
+#[cfg(test)]
+#[path = "add_import_tests.rs"]
+mod import_tests;

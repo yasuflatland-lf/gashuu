@@ -294,6 +294,8 @@ notice-adding-progress = 追加中 ({ $done }/{ $total })…
 notice-web-picker-unavailable = ファイルを選択できませんでした。
 notice-web-picker-unsupported = 対応していないファイル（{ $count } 件）。CBZ または ZIP を選択してください。
 notice-web-picker-unreadable = ファイルを読み込めませんでした（{ $count } 件）。
+notice-web-storage-unavailable = このブラウザーでは本を保存できません。
+notice-web-storage-full = ブラウザーの保存容量がいっぱいです。
 # 既存のライブラリエントリに画像がなくなったため自動削除された場合。
 notice-empty-book-removed = 「{ $title }」を削除しました — 画像が見つかりません
 

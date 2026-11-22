@@ -542,6 +542,22 @@ Controller tests can inject `FakeBackend`, inspect the recorded calls and use
 requests out of order to exercise epoch checks, or complete after closing the
 session or cancelling covers to verify that the callback is dropped.
 
+### Browser picking and streaming imports
+
+Call the HTML input's click method during the Add Books gesture. Start the
+one-time storage persistence request in the same callback. Deliver the picks
+on the later change or cancel event. Keep File objects on the UI thread and
+pass Send metadata through the result slot before invoking `add-picked`.
+The UI handler owns the application handles and can start a batch directly.
+
+Send the File to the dedicated worker by structured clone. Use the worker's
+synchronous OPFS access handle and an 8 MiB JavaScript typed array for each
+write. Release each array before yielding the worker event loop and serving
+interactive requests. One import holds its handle until it flushes and probes.
+On failure, close the handle before removing the directory. On supersession,
+discard both already-completed and late successful imports that the library
+cannot apply.
+
 ### Session lifetime and thumbnail generations
 
 Closing a backend session suppresses pending thumbnail deliveries, including results already
@@ -574,10 +590,12 @@ RACE IDEMPOTENCY via the mutator's bool: open-time removal (`OpenBookUseCase::ru
 
 ### Worker → UI ACTION that carries a COLLECTION: hold the `Send` accumulator in the controller, pass only an epoch token through the callback (issue 206, bulk-add probe)
 
-The add controller holds one `Generation<Vec<ProbeOutcome>>` per batch. It converts each picked
+The add controller holds one `Generation<Vec<ProbeOutcome>>` per batch. It converts each desktop
 path to a request ID and asks the backend to probe it. The completion retains the original path
 and input index. `ProbeKind::from_probe` preserves the count or diagnostic details for the
 apply handler. A path conversion failure uses the same completion step synchronously.
+For a browser upload, the controller uses the imported ID, title and page count returned by
+`BookImporter`.
 
 Each completion pushes its outcome through its generation ticket on the UI thread. The number
 of accumulated outcomes supplies the progress tick. When the batch is full, the controller

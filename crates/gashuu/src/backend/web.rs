@@ -1,20 +1,22 @@
 use super::web_client::{Delivery, Effects, Outgoing, Ready, WebClient};
 use super::{
-    BackendError, BookBackend, CountResult, Done, ImageResult, OpenedBook, SessionId, SpreadPages,
+    BackendError, BookBackend, BookImporter, CountResult, DiscardUpload, Done, ImageResult,
+    ImportedBook, OpenedBook, SessionId, SpreadPages,
 };
+use crate::picker::{web::take_file, UploadHandle};
 use gashuu_core::{ArchivePolicy, BookId, CacheConfig, DecodedImage};
 use js_sys::{Array, Object, Reflect, Uint8Array};
 use std::cell::{OnceCell, RefCell};
 use std::rc::{Rc, Weak};
 use std::sync::Arc;
 use wasm_bindgen::{closure::Closure, JsCast, JsValue};
-use web_sys::{ErrorEvent, MessageEvent, Url, Worker, WorkerOptions};
+use web_sys::{ErrorEvent, File, MessageEvent, Url, Worker, WorkerOptions};
 
 const LOADER: &str = "gashuu-worker_loader.js";
 const STARTUP_TIMEOUT_MS: i32 = 15_000;
 
 pub(super) struct WorkerBackend {
-    client: RefCell<WebClient>,
+    client: RefCell<WebClient<File>>,
     worker: Worker,
     _onmessage: Closure<dyn Fn(MessageEvent)>,
     _onerror: Closure<dyn Fn(ErrorEvent)>,
@@ -23,6 +25,11 @@ pub(super) struct WorkerBackend {
 impl WorkerBackend {
     fn new() -> Result<Rc<Self>, String> {
         let window = web_sys::window().ok_or("window unavailable")?;
+        let storage = window.navigator().storage();
+        if !Reflect::get(&storage, &"getDirectory".into()).is_ok_and(|method| method.is_function())
+        {
+            return Err(super::STORAGE_UNAVAILABLE.into());
+        }
         let document = window.document().ok_or("document unavailable")?;
         let base = document
             .base_uri()
@@ -82,12 +89,15 @@ impl WorkerBackend {
         Ok(backend)
     }
 
-    fn dispatch(&self, f: impl FnOnce(&mut WebClient) -> Effects) {
+    fn dispatch(&self, f: impl FnOnce(&mut WebClient<File>) -> Effects<File>) {
         let (outgoing, deliveries) = f(&mut self.client.borrow_mut());
-        for Outgoing(text) in outgoing {
+        for Outgoing(text, file) in outgoing {
             let envelope = Object::new();
             // A fresh object accepts the field and carries no pixel buffers on requests.
             Reflect::set(&envelope, &"m".into(), &text.into()).expect("set worker metadata");
+            if let Some(file) = file {
+                Reflect::set(&envelope, &"f".into(), &file).expect("set worker upload");
+            }
             if let Err(error) = self.worker.post_message(&envelope) {
                 self.failed(&js_error(error));
                 break;
@@ -232,5 +242,29 @@ impl BookBackend for WorkerBackend {
 
     fn probe_page_count(&self, id: &BookId, policy: ArchivePolicy, done: Done<CountResult>) {
         self.dispatch(|client| client.probe_page_count(id, policy, done));
+    }
+}
+
+impl BookImporter for WorkerBackend {
+    fn import(
+        &self,
+        file: UploadHandle,
+        policy: ArchivePolicy,
+        done: Done<Result<ImportedBook, BackendError>>,
+    ) {
+        let browser_file = take_file(file.key);
+        self.dispatch(|client| client.import(&file, browser_file, policy, done));
+    }
+
+    fn discard(&self, id: &BookId) {
+        self.dispatch(|client| (client.discard(id), Vec::new()));
+    }
+
+    fn discarder(&self) -> DiscardUpload {
+        Arc::new(|id| {
+            if let Some(backend) = shared() {
+                backend.discard(id);
+            }
+        })
     }
 }
