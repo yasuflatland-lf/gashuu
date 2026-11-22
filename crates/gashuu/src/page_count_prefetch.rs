@@ -15,20 +15,19 @@ use crate::carousel::update_carousel_row;
 use crate::library_model::clamp_to_i32;
 use crate::ui_marshal::marshal_to_ui;
 use crate::{save_library, LibraryStoreHandle, ViewerWindow};
-use gashuu_core::Library;
+use gashuu_core::{BookId, Library};
 use std::cell::RefCell;
 use std::num::NonZeroUsize;
-use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
 use std::sync::{Arc, Mutex};
 
 /// One page count a background worker resolved for a book, awaiting UI-thread
-/// persistence into the `Library`. Named (rather than a bare `(PathBuf,
+/// persistence into the `Library`. Named (rather than a bare `(BookId,
 /// NonZeroUsize)` tuple) so the queue's element reads as what it is: a resolved
 /// fact being carried home, not anonymous data.
 pub(crate) struct ResolvedCount {
-    /// The book's canonical path — the `Library::set_page_count` lookup key.
-    path: PathBuf,
+    /// The book's ID — the `Library::set_page_count` lookup key.
+    id: BookId,
     count: NonZeroUsize,
 }
 
@@ -60,7 +59,7 @@ fn marshal_total(
     });
 }
 
-/// Worker-side: record a resolved page `count` for `path`/`row`. Queues `(path,
+/// Worker-side: record a resolved page `count` for `id`/`row`. Queues `(id,
 /// count)` for UI-thread persistence (a zero-page archive yields `count == 0`,
 /// which `NonZeroUsize::new` maps to `None` so nothing is queued or persisted) and
 /// marshals the total to the row for immediate display. Runs on a rayon worker, so
@@ -71,7 +70,7 @@ pub(crate) fn push_and_marshal_count(
     epoch: &Arc<AtomicUsize>,
     my_epoch: usize,
     row: usize,
-    path: PathBuf,
+    id: BookId,
     count: usize,
 ) {
     // Persist only while OUR generation is current: a stale push can't lose a count
@@ -81,7 +80,7 @@ pub(crate) fn push_and_marshal_count(
             pending
                 .lock()
                 .expect("cover pending_counts mutex poisoned")
-                .push(ResolvedCount { path, count: nz });
+                .push(ResolvedCount { id, count: nz });
         }
     }
     marshal_total(weak.clone(), Arc::clone(epoch), my_epoch, row, count);
@@ -129,7 +128,7 @@ impl PageCountPrefetch {
         for resolved in &drained {
             if library
                 .borrow_mut()
-                .set_page_count(&resolved.path, resolved.count)
+                .set_page_count(&resolved.id, resolved.count)
             {
                 changed = true;
             }

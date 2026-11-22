@@ -1,6 +1,6 @@
 //! Library carousel refresh + projection: rebuild/bind the filtered carousel
 //! model, (re)start cover loading for the visible rows, and map between visible
-//! carousel rows and library book paths.
+//! carousel rows and library book IDs.
 //!
 //! Extracted from `main.rs` (mirrors the `view_sync.rs` split): these items form
 //! one cohesive unit — the [`CarouselRefresh`] collaborator bundle and every
@@ -17,47 +17,45 @@ use crate::library_model::{LibrarySearchState, LibrarySelectionState};
 use crate::open_book::EmptyBookOutcome;
 use crate::remove_books::RemoveOutcome;
 use crate::{cover_loader, i18n, save_library, LibraryStoreHandle, ViewerWindow};
+use gashuu_core::BookId;
 use gashuu_core::Library;
 use slint::ComponentHandle;
 use std::cell::RefCell;
 use std::rc::Rc;
 
-/// Resolve a VISIBLE carousel `index` to its underlying library book path,
+/// Resolve a VISIBLE carousel `index` to its underlying book ID,
 /// through the search state's projection — the SAME hop `on_carousel_open` uses
 /// (the carousel row is an index into `visible_indices`, which maps to a library
 /// row). Returns `None` for an out-of-range index or a carousel/library desync.
 /// Borrows `library` and `search` only for the duration of the call.
-pub(crate) fn visible_index_to_path(
+pub(crate) fn visible_index_to_id(
     library: &RefCell<Library>,
     search: &RefCell<LibrarySearchState>,
     index: i32,
-) -> Option<std::path::PathBuf> {
+) -> Option<BookId> {
     if index < 0 {
         return None;
     }
     let search = search.borrow();
     let library_index = search.visible_indices().get(index as usize).copied()?;
     let lib = library.borrow();
-    lib.books()
-        .get(library_index)
-        .map(|book| book.path().to_path_buf())
+    lib.books().get(library_index).map(|book| book.id().clone())
 }
 
-/// Return the 0-based VISIBLE (filtered) carousel row index of `path`, or `None`
-/// if `path` is not among the currently visible rows. `visible_indices` is the
+/// Return the 0-based VISIBLE (filtered) carousel row index of `id`, or `None`
+/// if `id` is not among the currently visible rows. `visible_indices` is the
 /// search state's projection (library rows in natural order that pass the filter
 /// or are forced visible); the returned position is the index INTO that slice,
-/// i.e. the carousel row to focus. `path` must be a canonical path as carried by
-/// `AddReport::added` (produced by `apply_outcomes`).
-pub(crate) fn visible_focus_index_for_path(
+/// i.e. the carousel row to focus.
+pub(crate) fn visible_focus_index_for_id(
     lib: &Library,
     visible_indices: &[usize],
-    path: &std::path::Path,
+    id: &BookId,
 ) -> Option<usize> {
     visible_indices.iter().position(|&library_index| {
         lib.books()
             .get(library_index)
-            .is_some_and(|book| book.path() == path)
+            .is_some_and(|book| book.id() == id)
     })
 }
 
@@ -65,14 +63,14 @@ pub(crate) fn visible_focus_index_for_path(
 /// Library screen ("continue reading"): the VISIBLE row of `last_opened`, or `0`
 /// as the fallback. The fallback covers every unresolvable case — no last-opened
 /// book yet (`None`), the last-opened book filtered out of the current visible
-/// set, an empty library, or a stale path no longer in `books`. Resolved THROUGH
+/// set, an empty library, or a stale ID no longer in `books`. Resolved THROUGH
 /// the visible projection (`visible_indices` from the search state) so the index
 /// is a carousel row, not a full-library index. Pure (library + projection in,
 /// `i32` out) so it is headless-testable; the result is set ONCE at entry — after
 /// that, user navigation owns `focused-index` (never a continuous binding).
 fn entry_focus_index(lib: &Library, visible_indices: &[usize]) -> i32 {
     lib.last_opened()
-        .and_then(|path| visible_focus_index_for_path(lib, visible_indices, path))
+        .and_then(|id| visible_focus_index_for_id(lib, visible_indices, id))
         .map(|index| index as i32)
         .unwrap_or(0)
 }
@@ -224,11 +222,11 @@ pub(crate) fn refresh_library_carousel(
         ui.set_carousel_focused_index(0);
     }
     // Re-apply bulk selection over the freshly built (unselected) rows so a selection
-    // survives a query change / add (keyed by path, not index). Refs drop before covers.start.
+    // survives a query change / add (keyed by ID, not index). Refs drop before covers.start.
     {
         let lib = deps.library.borrow();
         let selection = deps.selection.borrow();
-        apply_selection_flags(ui, &lib, &indices, |path| selection.contains(path));
+        apply_selection_flags(ui, &lib, &indices, |id| selection.contains(id));
     }
     // Refresh the selection-toolbar state: the visible projection just changed (query,
     // add, boot), so the visible/all-selected counts may have moved.
@@ -325,7 +323,7 @@ pub(crate) fn finalize_remove(ui: &ViewerWindow, deps: &CarouselRefresh, outcome
                 &deps.library,
             );
             // Status LAST (status-last ordering): the deleted-books notice. `n`
-            // already excludes stale not_found paths.
+            // already excludes stale IDs.
             ui.set_status_text(crate::i18n::dynamic::deleted_books(loader, n).into());
             ui.invoke_focus_carousel();
         }
@@ -376,10 +374,10 @@ pub(crate) fn apply_add_report(
             save_library(&deps.library_store, library)
         });
     let AddReport {
-        added: added_paths,
+        added: added_ids,
         skipped,
     } = report;
-    if added_paths.is_empty() {
+    if added_ids.is_empty() {
         // Nothing new entered the library: nothing to persist or rebuild. Route
         // through the pure decision fn so every branch is testable without Slint.
         match select_add_notice(0, skipped) {
@@ -402,7 +400,7 @@ pub(crate) fn apply_add_report(
     // `force_visible` recomputes internally, so the visible set is consistent before refresh.
     deps.search
         .borrow_mut()
-        .force_visible(added_paths.clone(), &deps.library.borrow());
+        .force_visible(added_ids.clone(), &deps.library.borrow());
     refresh_library_carousel(ui, deps, false);
     match save_result {
         Err(e) => {
@@ -410,13 +408,13 @@ pub(crate) fn apply_add_report(
             // Save failure is an error the user must see → toast, not the strip.
             set_add_toast(
                 ui,
-                crate::i18n::dynamic::added_books_save_failed(loader, added_paths.len(), &e),
+                crate::i18n::dynamic::added_books_save_failed(loader, added_ids.len(), &e),
             );
         }
         Ok(()) => {
             // Some books were added; route through the pure decision fn so the
             // 4-way mapping is testable without Slint.
-            match select_add_notice(added_paths.len(), skipped) {
+            match select_add_notice(added_ids.len(), skipped) {
                 AddNotice::AddedWithSkips {
                     added: n,
                     skipped: s,
@@ -428,22 +426,22 @@ pub(crate) fn apply_add_report(
                     // Clean success → quiet strip.
                     set_status_strip(ui, crate::i18n::dynamic::added_books(loader, n));
                 }
-                // added_paths is non-empty here, so AlreadyInLibrary and
+                // added_ids is non-empty here, so AlreadyInLibrary and
                 // NoneAddedAllSkipped are unreachable; exhaustive for safety.
                 _ => set_status_strip(
                     ui,
-                    crate::i18n::dynamic::added_books(loader, added_paths.len()),
+                    crate::i18n::dynamic::added_books(loader, added_ids.len()),
                 ),
             }
         }
     }
     // Focus the first newly added book by its VISIBLE row (the carousel renders
     // the filtered slice), not its full-library index.
-    if let Some(first_path) = added_paths.first() {
+    if let Some(first_id) = added_ids.first() {
         let index = {
             let lib = deps.library.borrow();
             let search = deps.search.borrow();
-            visible_focus_index_for_path(&lib, search.visible_indices(), first_path)
+            visible_focus_index_for_id(&lib, search.visible_indices(), first_id)
         };
         if let Some(index) = index {
             ui.set_carousel_focused_index(index as i32);
@@ -453,10 +451,10 @@ pub(crate) fn apply_add_report(
             debug_assert!(
                 false,
                 "add: forced-visible book {} not found in visible rows",
-                first_path.display()
+                first_id
             );
             tracing::warn!(
-                path = %first_path.display(),
+                id = %first_id,
                 "add: forced-visible book not found in visible rows; focus not restored"
             );
         }
@@ -469,23 +467,23 @@ mod tests {
     use super::*;
 
     #[test]
-    fn visible_focus_index_for_path_uses_filtered_rows() {
+    fn visible_focus_index_for_id_uses_filtered_rows() {
         let mut lib = Library::new();
         assert!(lib
-            .add(std::path::PathBuf::from("/manga/alpha.cbz"))
+            .add(BookId::new("/manga/alpha.cbz"), "alpha".into())
             .is_some());
         assert!(lib
-            .add(std::path::PathBuf::from("/manga/beta.cbz"))
+            .add(BookId::new("/manga/beta.cbz"), "beta".into())
             .is_some());
         assert!(lib
-            .add(std::path::PathBuf::from("/manga/gamma.cbz"))
+            .add(BookId::new("/manga/gamma.cbz"), "gamma".into())
             .is_some());
 
-        let path = lib.books()[2].path().to_path_buf();
+        let path = lib.books()[2].id().clone();
         // gamma is the only visible row, so its visible position is 0.
-        assert_eq!(visible_focus_index_for_path(&lib, &[2], &path), Some(0));
+        assert_eq!(visible_focus_index_for_id(&lib, &[2], &path), Some(0));
         // gamma is not among the visible rows, so it has no visible position.
-        assert_eq!(visible_focus_index_for_path(&lib, &[0, 1], &path), None);
+        assert_eq!(visible_focus_index_for_id(&lib, &[0, 1], &path), None);
     }
 
     // ---- entry_focus_index (continue reading) ----------------------------
@@ -497,11 +495,11 @@ mod tests {
         let mut lib = Library::new();
         for leaf in ["alpha", "beta", "gamma"] {
             assert!(lib
-                .add(std::path::PathBuf::from(format!("/manga/{leaf}.cbz")))
+                .add(BookId::new(format!("/manga/{leaf}.cbz")), leaf.into())
                 .is_some());
         }
-        let path = lib.books()[index].path().to_path_buf();
-        lib.register_opened(&path, None);
+        let path = lib.books()[index].id().clone();
+        lib.register_opened(&path, "", None);
         lib
     }
 
@@ -534,7 +532,7 @@ mod tests {
         // A fresh library has never opened a book, so the fallback is row 0.
         let mut lib = Library::new();
         assert!(lib
-            .add(std::path::PathBuf::from("/manga/alpha.cbz"))
+            .add(BookId::new("/manga/alpha.cbz"), "alpha".into())
             .is_some());
         assert_eq!(lib.last_opened(), None, "no book opened yet");
         assert_eq!(entry_focus_index(&lib, &[0]), 0);

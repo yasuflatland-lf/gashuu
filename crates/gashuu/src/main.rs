@@ -6,6 +6,7 @@ slint::include_modules!();
 
 mod add_books;
 mod add_controller;
+mod backend;
 mod book_availability;
 mod book_path;
 mod carousel;
@@ -47,6 +48,8 @@ mod web_font;
 #[cfg(any(target_arch = "wasm32", test))]
 mod web_ios;
 #[cfg(target_arch = "wasm32")]
+mod web_lifecycle;
+#[cfg(target_arch = "wasm32")]
 mod web_picker;
 #[cfg(any(target_arch = "wasm32", test))]
 mod web_pointer;
@@ -58,7 +61,7 @@ mod worker;
 
 pub(crate) use carousel_refresh::{
     apply_add_report, finalize_empty_book_rejected, finalize_remove, push_selection_toolbar_state,
-    refresh_library_carousel, snap_carousel_focus_to_last_opened, visible_index_to_path,
+    refresh_library_carousel, snap_carousel_focus_to_last_opened, visible_index_to_id,
     CarouselRefresh,
 };
 use dialog_session::DialogSession;
@@ -339,6 +342,8 @@ fn run_app(
     // clamp, and later PR-L's add / PR-R's position write-back can all reach it.
     let library = Rc::new(RefCell::new(library));
 
+    let backend = backend::platform_backend();
+
     // Thumbnail-strip controller: owns the backing model + generation bookkeeping
     // (epoch + cancel guard). `Rc` so both open handlers share one controller.
     let thumbs = Rc::new(ThumbnailController::new(&ui));
@@ -346,7 +351,7 @@ fn run_app(
     // Cover controller for the carousel (epoch + cancel guard). `start` runs after the
     // model is (re)built so a refresh supersedes covers still streaming from the prior view.
     #[cfg(not(target_arch = "wasm32"))]
-    let covers = Rc::new(cover_loader::CoverController::new());
+    let covers = Rc::new(cover_loader::CoverController::new(Rc::clone(&backend)));
 
     // Page controller for the viewer body. Owns async page-decode epoch and
     // dispatch dedup for cache-miss spreads.
@@ -358,14 +363,18 @@ fn run_app(
             Rc::new(gashuu_web_decode::NativePageDecoder);
         let fallback: Rc<dyn gashuu_core::PageDecoder> =
             Rc::new(gashuu_core::ImageCratePageDecoder);
-        let covers = cover_loader::CoverController::new(Rc::clone(&primary), Rc::clone(&fallback));
+        let covers = cover_loader::CoverController::new(
+            Rc::clone(&primary),
+            Rc::clone(&fallback),
+            Rc::clone(&backend),
+        );
         let pages = PageController::with_decoders(primary, fallback);
         (Rc::new(covers), Rc::new(pages))
     };
 
     // Bulk-add controller (issue 206): probes each source off the UI thread so a bulk
     // add never freezes the event loop. `start` dispatches; `add-finalize` applies.
-    let adder = Rc::new(add_controller::AddController::new());
+    let adder = Rc::new(add_controller::AddController::new(Rc::clone(&backend)));
 
     // Single-open controller: opens and inspects one source off the UI thread;
     // `open-finalize` applies only the current epoch on the event loop.
@@ -580,6 +589,27 @@ fn run_app(
         window_state::restore_geometry(&ui, &settings.borrow());
     }
 
+    #[cfg(target_arch = "wasm32")]
+    {
+        let covers = Rc::clone(&covers);
+        let library = Rc::clone(&library);
+        let library_store = Rc::clone(&library_store);
+        let leave_point = Rc::clone(&leave_point);
+        let settings = Rc::clone(&settings);
+        let settings_store = Rc::clone(&settings_store);
+        web_lifecycle::wire_suspend_persistence(Rc::new(move || {
+            stage_suspend_state(
+                &covers,
+                &library,
+                &library_store,
+                &leave_point,
+                &settings,
+                |l| save_library(&library_store, l),
+                |s| save_settings(&settings_store, s),
+            );
+        }));
+    }
+
     ui.run()?;
     #[cfg(not(target_arch = "wasm32"))]
     {
@@ -682,6 +712,27 @@ fn stage_exit_state(
         // notice, and the relaunch caller replaces the process moments later — but the
         // failure must not be silently discarded.
         tracing::error!(error = %e, "failed to persist the leave point on exit");
+    }
+}
+
+/// Suspend flush: stages the leave point (Suspend route) and saves library and settings.
+/// Never ends the dialog session, closes a backend session, or modifies viewer/viewport runtime state.
+#[cfg(any(target_arch = "wasm32", test))]
+fn stage_suspend_state(
+    covers: &cover_loader::CoverController,
+    library: &RefCell<Library>,
+    library_store: &LibraryStoreHandle,
+    leave_point: &LeavePointService,
+    settings: &RefCell<Settings>,
+    save_library: impl FnOnce(&Library) -> Result<(), CoreError>,
+    save_settings: impl FnOnce(&Settings) -> Result<(), CoreError>,
+) {
+    covers.flush_counts(library, library_store);
+    if let Err(e) = leave_point.persist_with(ViewModeRoute::Suspend, save_library) {
+        tracing::error!(error = %e, "failed to persist the leave point on suspend");
+    }
+    if let Err(e) = save_settings(&settings.borrow()) {
+        tracing::error!(error = %e, "failed to save settings on suspend");
     }
 }
 
@@ -979,7 +1030,7 @@ fn finalize_open(
                 ui.as_weak(),
                 state.borrow().current_source(),
                 state.borrow().page_count(),
-                state.borrow().open_file().map(std::path::Path::to_path_buf),
+                state.borrow().open_book().map(book_path::locate),
             );
             for detail in crate::i18n::dynamic::format_notices(loader, &notices) {
                 let base = ui.get_status_text().to_string();
@@ -1077,6 +1128,50 @@ mod tests {
     use dialog_session::DialogScope;
     use gashuu_core::{CoverMode, FitMode, ResolvedView, SpreadMode, ViewOverride};
 
+    #[test]
+    fn stage_suspend_state_writes_once_each_and_never_ends_dialog() {
+        let settings = Rc::new(RefCell::new(Settings::default()));
+        let state = Rc::new(RefCell::new(ViewerState::new()));
+        let viewport = Rc::new(RefCell::new(ViewportState::from_settings(
+            &settings.borrow(),
+        )));
+        let session = Rc::new(RefCell::new(DialogSession::new()));
+        let library = Rc::new(RefCell::new(Library::new()));
+        let store = Rc::new(None);
+        let covers = cover_loader::CoverController::new(backend::fake::FakeBackend::new());
+        let leave_point = LeavePointService::new(
+            Rc::clone(&state),
+            Rc::clone(&viewport),
+            Rc::clone(&session),
+            Rc::clone(&settings),
+            Rc::clone(&library),
+            Rc::clone(&store),
+        );
+        session
+            .borrow_mut()
+            .open(DialogScope::Library, &state, &viewport, &settings);
+        let mut library_saves = 0;
+        let mut settings_saves = 0;
+        stage_suspend_state(
+            &covers,
+            &library,
+            &store,
+            &leave_point,
+            &settings,
+            |_| {
+                library_saves += 1;
+                Ok(())
+            },
+            |_| {
+                settings_saves += 1;
+                Ok(())
+            },
+        );
+        assert_eq!(library_saves, 1);
+        assert_eq!(settings_saves, 1);
+        assert_eq!(session.borrow().scope(), Some(DialogScope::Library));
+    }
+
     /// Issue #535, path (a), pinned at the PRODUCTION call site: quitting while a
     /// settings dialog opened on the Library screen is still up must persist the
     /// open book's OWN view modes, not the global-seeded scratchpad the dialog
@@ -1100,9 +1195,9 @@ mod tests {
         state.borrow_mut().open_path(&book).expect("open test book");
         let canonical = state
             .borrow()
-            .open_file()
+            .open_book()
             .expect("open file after successful open")
-            .to_path_buf();
+            .clone();
         let viewport = Rc::new(RefCell::new(ViewportState::from_settings(
             &settings.borrow(),
         )));
@@ -1116,10 +1211,14 @@ mod tests {
             &mut viewport.borrow_mut(),
         );
         let mut library_value = Library::new();
-        assert!(library_value.add(canonical.clone()).is_some());
+        assert!(library_value
+            .add(canonical.clone(), "book".into())
+            .is_some());
         let library = Rc::new(RefCell::new(library_value));
         let dialog_session = Rc::new(RefCell::new(DialogSession::new()));
-        let covers = Rc::new(cover_loader::CoverController::new());
+        let covers = Rc::new(cover_loader::CoverController::new(
+            crate::backend::fake::FakeBackend::new(),
+        ));
         let library_store = Rc::new(Some(LibraryStore::new(root.path().join("library.json"))));
         let leave_point = Rc::new(LeavePointService::new(
             Rc::clone(&state),
@@ -1187,9 +1286,9 @@ mod tests {
         state.borrow_mut().open_path(&book).expect("open test book");
         let canonical = state
             .borrow()
-            .open_file()
+            .open_book()
             .expect("open file after successful open")
-            .to_path_buf();
+            .clone();
         let viewport = Rc::new(RefCell::new(ViewportState::from_settings(
             &settings.borrow(),
         )));
@@ -1203,10 +1302,14 @@ mod tests {
             .borrow_mut()
             .apply_resolved_view(book_view, &mut viewport.borrow_mut());
         let mut library_value = Library::new();
-        assert!(library_value.add(canonical.clone()).is_some());
+        assert!(library_value
+            .add(canonical.clone(), "book".into())
+            .is_some());
         let library = Rc::new(RefCell::new(library_value));
         let dialog_session = Rc::new(RefCell::new(DialogSession::new()));
-        let covers = Rc::new(cover_loader::CoverController::new());
+        let covers = Rc::new(cover_loader::CoverController::new(
+            crate::backend::fake::FakeBackend::new(),
+        ));
         let library_store = Rc::new(Some(LibraryStore::new(root.path().join("library.json"))));
         let leave_point = Rc::new(LeavePointService::new(
             Rc::clone(&state),
@@ -1378,9 +1481,9 @@ mod tests {
         // Add the canonical identity, the form the load path normalizes to (on macOS
         // a tempdir's `/var` resolves to `/private/var`), so the round trip compares
         // like with like.
-        let stored = gashuu_core::canonical_identity(&book);
+        let (stored, title) = book_path::identify(&book, true).unwrap();
         let mut library_value = Library::new();
-        assert!(library_value.add(stored.clone()).is_some());
+        assert!(library_value.add(stored.clone(), title).is_some());
         // `track_recent_sources` is off by default and untouched by `normalize`,
         // so it survives the round trip iff the save actually happened.
         let settings_value = Settings {
@@ -1410,7 +1513,7 @@ mod tests {
             reloaded_library
                 .books()
                 .iter()
-                .map(|b| b.path().to_path_buf())
+                .map(|b| b.id().clone())
                 .collect::<Vec<_>>(),
             vec![stored],
             "the resolved handle must persist the library it was handed"

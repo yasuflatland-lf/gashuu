@@ -11,7 +11,7 @@
 
 use crate::ui_marshal::Generation;
 use crate::{book_path, worker, ViewerWindow};
-use gashuu_core::{ArchivePolicy, PageSource};
+use gashuu_core::{ArchivePolicy, BookId, PageSource};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -21,7 +21,8 @@ pub(crate) struct OpenProbe {
     pub(crate) source: Arc<dyn PageSource>,
     pub(crate) skipped: usize,
     pub(crate) truncated: bool,
-    pub(crate) canonical: PathBuf,
+    pub(crate) id: BookId,
+    pub(crate) title: String,
     pub(crate) is_dir: bool,
 }
 
@@ -36,6 +37,16 @@ pub(crate) enum OpenProbeOutcome {
 pub(crate) fn probe_open(path: &Path, policy: ArchivePolicy) -> OpenProbeOutcome {
     match book_path::open(path, policy) {
         Ok(source) => {
+            let is_dir = book_path::is_dir(path);
+            let (id, title) = match book_path::identify(path, is_dir) {
+                Ok(identified) => identified,
+                Err(error) => {
+                    return OpenProbeOutcome::Failed {
+                        error: error.to_string(),
+                        path_exists: book_path::exists(path),
+                    }
+                }
+            };
             let skipped = source.skipped_count();
             let truncated = source.listing_truncated();
             if skipped > 0 {
@@ -51,10 +62,9 @@ pub(crate) fn probe_open(path: &Path, policy: ArchivePolicy) -> OpenProbeOutcome
                 source,
                 skipped,
                 truncated,
-                // Produce the persistable identity required by `Library::add`, including
-                // the fallback when canonicalization produces a non-UTF-8 path.
-                canonical: book_path::identity(path),
-                is_dir: book_path::is_dir(path),
+                id,
+                title,
+                is_dir,
             })
         }
         Err(error) => OpenProbeOutcome::Failed {
@@ -131,7 +141,7 @@ mod tests {
         assert_eq!(probe.source.list_pages().len(), 3);
         assert_eq!(probe.skipped, 0);
         assert_eq!(
-            probe.canonical,
+            book_path::locate(&probe.id),
             std::fs::canonicalize(&path).expect("canonical fixture")
         );
         assert!(probe.is_dir);
