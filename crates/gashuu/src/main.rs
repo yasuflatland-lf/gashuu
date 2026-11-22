@@ -43,6 +43,9 @@ mod web_blob_store;
 #[cfg(any(target_arch = "wasm32", test))]
 mod web_books;
 #[cfg(target_arch = "wasm32")]
+#[allow(dead_code)] // Unused until #686 wires the browser decoder into the page loader.
+mod web_decode;
+#[cfg(target_arch = "wasm32")]
 mod web_font;
 #[cfg(target_arch = "wasm32")]
 mod web_picker;

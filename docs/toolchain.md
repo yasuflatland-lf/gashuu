@@ -55,6 +55,14 @@ The `[target.'cfg(target_arch = "wasm32")'.dependencies]` table sets
 `default-features = false` on `gashuu-core`. Cargo resolver 2 keeps the
 desktop defaults out of the wasm build.
 
+**Native decode.** The wasm32 page decoder uses `createImageBitmap` and reads
+straight-alpha RGBA8 pixels from an offscreen or detached HTML canvas. It checks
+the bitmap dimensions against the core pixel limit before allocating the canvas.
+It requests the original pixel orientation, ignoring EXIF orientation to match
+the desktop `image` crate. The canvas stores
+premultiplied colors internally, so rounding can reduce RGB precision for partially
+transparent pixels. The adapter is unused until #686 wires it into the web build.
+
 ### Web build (Trunk)
 
 `mise.web.toml` pins Trunk 0.22.2 and is active with `MISE_ENV=web`. Run these
