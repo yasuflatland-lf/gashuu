@@ -84,6 +84,8 @@ Trunk builds the `gashuu` binary for `wasm32-unknown-unknown` using
 binary's `main` at startup. Trunk fetches the matching wasm-bindgen CLI and
 wasm-opt. Slint's winit backend attaches to the element with ID `canvas`, and
 the page sizes `#canvas` to the viewport with CSS.
+The page and canvas set `touch-action: none` and a non-scalable viewport so iPad
+Safari does not consume double-taps or pinch gestures for page zoom and touch reaches the app.
 The Slint window follows the browser viewport on load and resize.
 
 The Pages workflow publishes the Vite landing page at `/gashuu/` and the web
