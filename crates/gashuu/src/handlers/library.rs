@@ -1,4 +1,5 @@
-use crate::book_path::locate;
+use crate::backend::{BackendError, BookBackend, OpenedBook};
+use crate::book_path::{locate, request_id};
 use crate::dialog_session::DialogSession;
 use crate::{
     add_controller,
@@ -13,7 +14,7 @@ use crate::{
 use crate::{
     library_model::{LibrarySearchState, LibrarySelectionState},
     navigation::NavState,
-    open_controller::{OpenController, OpenProbeOutcome},
+    open_controller::OpenController,
     page_loader::PageController,
     selection_projection,
     thumbnail_strip::ThumbnailController,
@@ -177,16 +178,38 @@ fn open_and_enter(
     ui: &ViewerWindow,
     open_ctrl: &OpenController,
     settings: &RefCell<Settings>,
+    state: &RefCell<ViewerState>,
+    localizer: &i18n::Localizer,
     path: std::path::PathBuf,
 ) {
-    let policy = settings.borrow().archive_policy();
-    open_ctrl.start(ui.as_weak(), path, policy);
+    if let Err(error) = start_open(
+        ui.as_weak(),
+        open_ctrl,
+        &path,
+        settings.borrow().archive_policy(),
+        state.borrow().cache_config(),
+    ) {
+        ui.set_status_text(
+            i18n::dynamic::open_error_str(localizer.loader(), &error.to_string()).into(),
+        );
+    }
 }
 
-/// End any in-progress settings-dialog session, then apply the landed probe.
+fn start_open(
+    weak: slint::Weak<ViewerWindow>,
+    ctrl: &OpenController,
+    path: &std::path::Path,
+    policy: gashuu_core::ArchivePolicy,
+    cache: gashuu_core::CacheConfig,
+) -> Result<(), BackendError> {
+    ctrl.start(weak, request_id(path)?, policy, cache);
+    Ok(())
+}
+
+/// End any in-progress settings-dialog session, then apply the backend open result.
 ///
 /// ORDER IS LOAD-BEARING, and this pairing is why the two statements live in one
-/// function: `apply_probed` opens with the `OpenDifferentBook` leave-point transaction,
+/// function: `apply_opened` opens with the `OpenDifferentBook` leave-point transaction,
 /// which writes the CURRENT runtime onto the OUTGOING book. A settings dialog
 /// opened on the Library screen leaves that runtime seeded with the GLOBAL
 /// defaults, so an open that lands while the dialog is up used to overwrite the
@@ -197,17 +220,17 @@ fn open_and_enter(
 ///
 /// Extracted from the `on_open_finalize` closure so the ordering is reachable
 /// without a live window; the borrow stays confined to the one statement.
-fn end_session_and_apply_probed(
+fn end_session_and_apply_opened(
     dialog_session: &RefCell<DialogSession>,
     state: &RefCell<ViewerState>,
     viewport: &RefCell<ViewportState>,
     settings: &RefCell<Settings>,
     open_book: &open_book::OpenBookUseCase,
-    path: &std::path::Path,
-    probe: OpenProbeOutcome,
+    request: &BookId,
+    result: Result<OpenedBook, BackendError>,
 ) -> open_book::OpenOutcome {
     dialog_session.borrow_mut().end(state, viewport, settings);
-    open_book.apply_probed(path, probe)
+    open_book.apply_opened(request, result)
 }
 
 /// Registers the library-search and carousel navigation/open callbacks onto `ui`.
@@ -276,23 +299,19 @@ pub(crate) fn wire_carousel_handlers(
         let carousel = carousel.clone();
         ui.on_open_finalize(move |epoch| {
             with_ui(&ui_weak, |ui| {
-                let Some((path, probe)) = open_ctrl.take_outcome(epoch.max(0) as usize) else {
+                let Some(pending) = open_ctrl.take_outcome(epoch.max(0) as usize) else {
                     return;
                 };
-                // Pure read of the probe before ownership moves; no shared state is
-                // touched, so the session end below still precedes every write.
-                let path_exists = match &probe {
-                    OpenProbeOutcome::Failed { path_exists, .. } => Some(*path_exists),
-                    OpenProbeOutcome::Opened(_) => None,
-                };
-                let outcome = end_session_and_apply_probed(
+                let (request, result) = pending.into_result();
+                let missing = matches!(result, Err(BackendError::Missing { .. }));
+                let outcome = end_session_and_apply_opened(
                     &dialog_session,
                     &state,
                     &viewport,
                     &settings,
                     &open_book,
-                    &path,
-                    probe,
+                    &request,
+                    result,
                 );
                 // Enter the Viewer ONLY on a clean open: an empty source was already
                 // removed, and a failed open must keep the user on the Library screen.
@@ -301,8 +320,8 @@ pub(crate) fn wire_carousel_handlers(
                 finalize_open(&ui, &state, &viewport, &pages, &thumbs, &carousel, outcome);
                 // The worker already performed the existence stat. Missing or
                 // unmounted paths get the same book-named replacement message.
-                if open_failed && path_exists == Some(false) {
-                    let title = open_book::book_display_title(&library.borrow(), &path);
+                if open_failed && missing {
+                    let title = open_book::book_display_title(&library.borrow(), &request);
                     ui.set_status_text(
                         crate::i18n::dynamic::open_inaccessible(localizer.loader(), &title).into(),
                     );
@@ -344,6 +363,8 @@ pub(crate) fn wire_carousel_handlers(
         let search = Rc::clone(&search);
         let settings = Rc::clone(&settings);
         let open_ctrl = Rc::clone(&open_ctrl);
+        let localizer = Rc::clone(&localizer);
+        let state = Rc::clone(&state);
         ui.on_carousel_open(move |index| {
             with_ui(&ui_weak, |ui| {
                 // Resolve the VISIBLE carousel index to a book ID via the search
@@ -361,7 +382,7 @@ pub(crate) fn wire_carousel_handlers(
                     );
                     return;
                 };
-                open_and_enter(&ui, &open_ctrl, &settings, locate(&id));
+                open_and_enter(&ui, &open_ctrl, &settings, &state, &localizer, locate(&id));
             })
         });
     }
@@ -374,6 +395,7 @@ pub(crate) fn wire_carousel_handlers(
         let localizer = Rc::clone(&localizer);
         let settings = Rc::clone(&settings);
         let open_ctrl = Rc::clone(&open_ctrl);
+        let state = Rc::clone(&state);
         ui.on_carousel_continue_reading(move || {
             with_ui(&ui_weak, |ui| {
                 // `Library::bookmark()` returns `last_opened` only when still on the shelf;
@@ -387,7 +409,7 @@ pub(crate) fn wire_carousel_handlers(
                     );
                     return;
                 };
-                open_and_enter(&ui, &open_ctrl, &settings, locate(&id));
+                open_and_enter(&ui, &open_ctrl, &settings, &state, &localizer, locate(&id));
             })
         });
     }
@@ -445,6 +467,7 @@ pub(crate) fn wire_selection_handlers(
     selection: &Rc<RefCell<LibrarySelectionState>>,
     localizer: &Rc<i18n::Localizer>,
     library_store: &LibraryStoreHandle,
+    backend: Rc<dyn BookBackend>,
 ) {
     // Rebind the `&Rc<_>` params to owned `Rc` locals so each closure's `Rc::clone(&handle)`
     // prelude stays byte-identical to its pre-extraction form in `main`.
@@ -638,6 +661,7 @@ pub(crate) fn wire_selection_handlers(
             Rc::clone(&search),
             Rc::clone(&selection),
             Rc::clone(&library_store),
+            backend,
         );
         ui.on_confirm_delete_accepted(move || {
             with_ui(&ui_weak, |ui| {
@@ -662,7 +686,7 @@ pub(crate) fn wire_selection_handlers(
                 let id = BookId::new(id_str.as_str());
                 // The shared transaction (single home in open_book): title capture
                 // BEFORE removal -> Library::remove -> save -> best-effort cover purge.
-                let removal = open_book::remove_empty_book(&library, &id, |library| {
+                let removal = open_book::remove_empty_book(&library, &id, None, |library| {
                     save_library(&library_store, library)
                 });
                 finalize_empty_book_rejected(&ui, &carousel, &removal);
@@ -675,9 +699,9 @@ pub(crate) fn wire_selection_handlers(
 mod tests {
     use super::*;
     use crate::dialog_session::DialogScope;
-    use crate::open_controller::probe_open;
+    use crate::open_book::opened;
     use gashuu_core::{
-        ArchivePolicy, CoverMode, FitMode, ReadingDirection, ResolvedView, SpreadMode, ViewOverride,
+        CoverMode, FitMode, ReadingDirection, ResolvedView, SpreadMode, ViewOverride,
     };
 
     fn make_book_dir(parent: &std::path::Path, name: &str, pages: usize) -> std::path::PathBuf {
@@ -690,10 +714,28 @@ mod tests {
         source
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn open_and_enter_non_utf8_path_does_not_dispatch() {
+        use std::os::unix::ffi::OsStrExt;
+        let backend = crate::backend::fake::FakeBackend::new();
+        let ctrl = OpenController::new(backend.clone());
+        let path = std::path::Path::new(std::ffi::OsStr::from_bytes(b"book\xff"));
+        assert!(start_open(
+            Default::default(),
+            &ctrl,
+            path,
+            Default::default(),
+            Default::default()
+        )
+        .is_err());
+        assert!(backend.calls().is_empty());
+    }
+
     /// Issue #535, path (b), pinned at the PRODUCTION call site: an open that lands
     /// while a settings dialog opened on the Library screen is still up must persist
     /// the OUTGOING book's own view modes, not the global-seeded scratchpad the
-    /// dialog installed. Deleting the `end()` call from `end_session_and_apply_probed`
+    /// dialog installed. Deleting the `end()` call from `end_session_and_apply_opened`
     /// stages the globals onto the outgoing book instead.
     #[test]
     fn open_finalize_with_a_library_dialog_open_persists_the_outgoing_books_own_modes() {
@@ -753,20 +795,21 @@ mod tests {
             leave_point,
             Box::new(|_| Ok(())),
             Box::new(|_| Ok(())),
+            crate::backend::fake::FakeBackend::new(),
         );
         // The Library-screen dialog seeds the runtime with G, then the in-flight
         // open of the SECOND book lands.
         dialog_session
             .borrow_mut()
             .open(DialogScope::Library, &state, &viewport, &settings);
-        let probe = probe_open(&second, ArchivePolicy::default());
-        let outcome = end_session_and_apply_probed(
+        let (request, probe) = opened(&second);
+        let outcome = end_session_and_apply_opened(
             &dialog_session,
             &state,
             &viewport,
             &settings,
             &open_book,
-            &second,
+            &request,
             probe,
         );
 
@@ -865,6 +908,7 @@ mod tests {
             leave_point,
             Box::new(|_| Ok(())),
             Box::new(|_| Ok(())),
+            crate::backend::fake::FakeBackend::new(),
         );
 
         dialog_session
@@ -873,14 +917,14 @@ mod tests {
         state
             .borrow_mut()
             .apply_resolved_view(edited_global, &mut viewport.borrow_mut());
-        let probe = probe_open(&second, ArchivePolicy::default());
-        let outcome = end_session_and_apply_probed(
+        let (request, probe) = opened(&second);
+        let outcome = end_session_and_apply_opened(
             &dialog_session,
             &state,
             &viewport,
             &settings,
             &open_book,
-            &second,
+            &request,
             probe,
         );
 
