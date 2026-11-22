@@ -581,6 +581,105 @@ fn rejected_with_req_resolves_that_request() {
 }
 
 #[test]
+fn thumbnail_for_a_closed_or_unknown_session_is_dropped() {
+    let mut client = ready_client();
+    let session = opened(&mut client, CacheConfig::new(6, 0)).session;
+    client.close(session);
+
+    for session in [session, SessionId::new(u64::MAX)] {
+        let (done, result) = test_callback();
+        let (out, deliveries) = client.thumbnail(session, 0, 128, done);
+        assert!(out.is_empty());
+        assert!(deliveries.is_empty());
+        assert!(result.try_recv().is_err());
+    }
+}
+
+#[test]
+fn close_drops_pending_thumbnail_without_invoking() {
+    let mut client = ready_client();
+    let session = opened(&mut client, CacheConfig::new(6, 0)).session;
+    let (done, result) = test_callback();
+    let (out, deliveries) = client.thumbnail(session, 0, 128, done);
+    assert!(deliveries.is_empty());
+    let WorkerRequest::Thumbnail { req, .. } = request(out) else {
+        panic!("expected Thumbnail");
+    };
+
+    client.close(session);
+    assert!(matches!(
+        result.try_recv(),
+        Err(std::sync::mpsc::TryRecvError::Disconnected)
+    ));
+    let (_, deliveries) = receive(
+        &mut client,
+        WorkerResponse::Thumbnail {
+            req,
+            result: Ok(meta()),
+        },
+        vec![vec![0; 4]],
+    );
+    assert!(deliveries.is_empty());
+    assert!(result.try_recv().is_err());
+}
+
+#[test]
+fn thumbnail_success_delivers_decoded_image() {
+    let mut client = ready_client();
+    let session = opened(&mut client, CacheConfig::new(6, 0)).session;
+    let (done, result) = test_callback();
+    let (out, deliveries) = client.thumbnail(session, 0, 128, done);
+    assert!(deliveries.is_empty());
+    let WorkerRequest::Thumbnail { req, .. } = request(out) else {
+        panic!("expected Thumbnail");
+    };
+
+    let bytes: Vec<u8> = (0..24).collect();
+    let (_, deliveries) = receive(
+        &mut client,
+        WorkerResponse::Thumbnail {
+            req,
+            result: Ok(ImageMeta {
+                width: 2,
+                height: 3,
+            }),
+        },
+        vec![bytes.clone()],
+    );
+    deliver(&client, deliveries, false);
+    let image = result.try_recv().unwrap().unwrap();
+    assert_eq!((image.width(), image.height()), (2, 3));
+    assert_eq!(image.rgba(), bytes.as_slice());
+}
+
+#[test]
+fn thumbnail_image_length_mismatch_becomes_other_error() {
+    let mut client = ready_client();
+    let session = opened(&mut client, CacheConfig::new(6, 0)).session;
+    for images in [vec![vec![0; 3]], vec![vec![]], vec![]] {
+        let (done, result) = test_callback();
+        let (out, deliveries) = client.thumbnail(session, 0, 128, done);
+        assert!(deliveries.is_empty());
+        let WorkerRequest::Thumbnail { req, .. } = request(out) else {
+            panic!("expected Thumbnail");
+        };
+        let (_, deliveries) = receive(
+            &mut client,
+            WorkerResponse::Thumbnail {
+                req,
+                result: Ok(meta()),
+            },
+            images,
+        );
+        deliver(&client, deliveries, false);
+        assert!(matches!(
+            result.try_recv().unwrap(),
+            Err(BackendError::Other { .. })
+        ));
+    }
+}
+
+#[test]
 fn image_length_mismatch_becomes_other_error() {
     let mut client = ready_client();
     let session = opened(&mut client, CacheConfig::new(6, 0)).session;

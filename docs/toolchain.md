@@ -65,9 +65,9 @@ The wasm32 composition root uses `NativePageDecoder` as the primary decoder and
 `createImageBitmap` and canvas readback in either a window or a worker. It checks dimensions
 against the core pixel limit before allocating the canvas. It requests straight
 alpha, no color-space conversion, and the original pixel orientation. Canvas
-readback can round partially transparent RGB values. Covers use the same decoders
-and are downscaled sequentially; the web thumbnail strip remains disabled. No new
-crates or browser bindings in `gashuu-core` are required. See
+readback can round partially transparent RGB values. The Worker uses the same decoders
+for covers and strip thumbnails, then downscales the decoded images in its background
+lane. No new crates or browser bindings in `gashuu-core` are required. See
 [ADR-0014](ADRs/0014-web-decodes-pages-with-the-browser-native-decoder.md).
 
 ### Web build (Trunk)

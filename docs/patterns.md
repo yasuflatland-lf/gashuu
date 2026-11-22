@@ -520,7 +520,7 @@ adding it as a direct dependency pulls in no new third-party code; it just lets 
 
 ### Thumbnails are a "hold ALL N pages" non-LRU set
 
-The desktop strip allocates one loading row per page and keeps completed rows until the next
+The strip allocates one loading row per page and keeps completed rows until the next
 open. It requests the leading window immediately. On scroll or resize, `take_fresh` records
 new indices in the generation's `requested` set before dispatch, so overlapping windows
 request each page at most once.

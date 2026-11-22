@@ -1229,12 +1229,14 @@ vertical-only — over `struct ThumbnailItem { image, page, loaded, failed }`. #
 per-cell markup with the shared `ThumbnailCell` component (border ring / background / radius /
 loaded-loading-failed-highlighted states now live there).
 
-**`thumbnail_strip.rs`** owns the desktop strip model. On open it creates one placeholder per
-page and requests the first 16 pages (or the whole book if shorter) via `BookBackend::thumbnail`.
+**`thumbnail_strip.rs`** owns the strip model on desktop and web. On open it creates one
+placeholder per page and requests the first 16 pages (or the whole book if shorter) via
+`BookBackend::thumbnail`.
 Scrolling or resizing requests fresh pages in the viewport and its three-page margin on either side.
 Each UI-thread completion updates its row to loaded or failed. Closing the session suppresses
 pending deliveries, and the strip epoch guards against updates to a replacement model.
-Starting without a session clears the strip. The web strip remains empty.
+Starting without a session clears the strip. On web, the Worker processes thumbnail requests
+in its background lane.
 
 **`cover_loader.rs`** owns the carousel's cover generation. Each refresh persists pending
  counts, calls `BookBackend::cancel_covers`, and advances the epoch. `prioritize_by_focus`

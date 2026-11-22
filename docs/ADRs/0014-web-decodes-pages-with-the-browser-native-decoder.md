@@ -67,3 +67,8 @@ After merge, the maintainer will verify cache-miss page turns on the iPad, targe
 well under 150 ms per turn. Record the results on #651, then close that issue.
 
 For application integration with the Worker, see #658 and ADR-0015.
+
+## Implementation notes (as-built deltas)
+
+The web thumbnail strip is enabled through `BookBackend::thumbnail`.
+See [ADR-0015, Decision item 8](0015-web-build-architecture.md#decision) and #659.
