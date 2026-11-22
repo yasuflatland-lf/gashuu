@@ -43,8 +43,6 @@ mod web_blob_store;
 #[cfg(any(target_arch = "wasm32", test))]
 mod web_books;
 #[cfg(target_arch = "wasm32")]
-mod web_decode;
-#[cfg(target_arch = "wasm32")]
 mod web_font;
 #[cfg(any(target_arch = "wasm32", test))]
 mod web_ios;
@@ -356,9 +354,10 @@ fn run_app(
     let pages = Rc::new(page_loader::PageController::new());
     #[cfg(target_arch = "wasm32")]
     let (covers, pages) = {
-        let primary: Rc<dyn page_decode::PageDecoder> = Rc::new(web_decode::NativePageDecoder);
-        let fallback: Rc<dyn page_decode::PageDecoder> =
-            Rc::new(page_decode::ImageCratePageDecoder);
+        let primary: Rc<dyn gashuu_core::PageDecoder> =
+            Rc::new(gashuu_web_decode::NativePageDecoder);
+        let fallback: Rc<dyn gashuu_core::PageDecoder> =
+            Rc::new(gashuu_core::ImageCratePageDecoder);
         let covers = cover_loader::CoverController::new(Rc::clone(&primary), Rc::clone(&fallback));
         let pages = PageController::with_decoders(primary, fallback);
         (Rc::new(covers), Rc::new(pages))

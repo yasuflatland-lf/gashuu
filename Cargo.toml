@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/gashuu-core", "crates/gashuu"]
+members = ["crates/gashuu-core", "crates/gashuu", "crates/gashuu-web-decode"]
 
 # Dependency debuginfo trim. Profiles are only honoured in the workspace ROOT manifest, and
 # until this section existed the workspace declared none at all, so every dependency unit cargo
@@ -34,4 +34,7 @@ debug = "line-tables-only"
 debug = 2
 
 [profile.dev.package.gashuu]
+debug = 2
+
+[profile.dev.package.gashuu-web-decode]
 debug = 2

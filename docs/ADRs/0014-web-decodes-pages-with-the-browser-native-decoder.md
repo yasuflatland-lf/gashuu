@@ -65,3 +65,5 @@ will reuse the port and provide Worker support. Desktop decoding remains on the
 
 After merge, the maintainer will verify cache-miss page turns on the iPad, targeting
 well under 150 ms per turn. Record the results on #651, then close that issue.
+
+Worker support: see #658 and ADR-0015.
