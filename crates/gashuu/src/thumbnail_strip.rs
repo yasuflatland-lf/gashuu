@@ -1,4 +1,4 @@
-//! Desktop thumbnail strip. Each open requests the leading window from the backend,
+//! Shared thumbnail strip. Each open requests the leading window from the backend,
 //! then scroll and resize events request newly visible pages and their neighbours.
 //! Closing the book session suppresses pending deliveries. The strip epoch also
 //! guards the model against callbacks from an earlier strip generation.

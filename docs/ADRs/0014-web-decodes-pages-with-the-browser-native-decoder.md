@@ -37,7 +37,8 @@ and `ImageCratePageDecoder` as the fallback. If browser decoding fails, retry
 with the `image` crate. Covers use the same pair to decode page zero, then
 `image_ops::downscale_to_thumbnail` to produce thumbnails. Web cover requests
 run sequentially, with one cover decode in flight, including across refreshes.
-The web thumbnail strip remains a no-op.
+The shared strip controller requests web thumbnails through `BookBackend::thumbnail`.
+The Worker decodes and downscales them in its background lane.
 
 The native adapter uses `createImageBitmap` and canvas readback. It requests
 `premultiplyAlpha: none` for the straight-alpha RGBA contract. Canvas storage
@@ -47,9 +48,10 @@ EXIF orientation and match the `image` crate's original pixel orientation.
 `web-sys` 0.3.107 lacks the `none` enum variant, so the adapter sets this option
 with `Reflect`. It also requests no color-space conversion.
 
-The adapter now supports `Window` and `WorkerGlobalScope` (#697). The application
-will use the adapter in a Worker with #658 (ADR-0015). Desktop decoding remains on
-the `image` crate. Cache capacity and prefetch behavior remain unchanged.
+The adapter supports `Window` and `WorkerGlobalScope` (#697). The web Worker
+uses the adapter as described in [ADR-0015](0015-web-build-architecture.md).
+Desktop decoding remains on the `image` crate. Cache capacity and prefetch
+behavior remain unchanged.
 
 ## Consequences
 

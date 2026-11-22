@@ -41,8 +41,10 @@ Reading those books needs bounded memory and responsive page turns.
    cannot target `wasm32-unknown-unknown`.
 7. Persist settings and library metadata through `BlobStore` backed by
    localStorage (#647 [6/23], #654 [13/23]).
-8. Use a null `ThumbStore` on web until #661 [10/13]. Enable the strip as
-   background-lane work in #659 [8/13] and verify page turns on the iPad.
+8. Use a null `ThumbStore` on web until #661 [10/13]. The shared strip
+   controller requests thumbnails through `BookBackend::thumbnail`, and
+   the web Worker handles them in its background lane (#659 [8/13]).
+   Verify page turns during strip loading on the iPad.
 9. Request `navigator.storage.persist()` and preflight imports with
    `navigator.storage.estimate()` (#660 [9/13], #662 [11/13]). Safari may
    evict script-written storage, including OPFS, for sites unused for a

@@ -33,10 +33,6 @@ mod remove_books;
 mod selection_projection;
 #[cfg(any(test, target_arch = "wasm32"))]
 mod storage_status;
-#[cfg(not(target_arch = "wasm32"))]
-mod thumbnail_strip;
-#[cfg(target_arch = "wasm32")]
-#[path = "thumbnail_strip/web.rs"]
 mod thumbnail_strip;
 mod ui_marshal;
 #[cfg(not(target_arch = "wasm32"))]
