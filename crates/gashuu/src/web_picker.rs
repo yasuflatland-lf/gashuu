@@ -1,6 +1,6 @@
 //! Browser file input for the Library's Add Books action.
 
-use crate::{add_controller::AddController, i18n, web_books, ViewerWindow};
+use crate::{add_controller::AddController, i18n, web_books, web_ios, ViewerWindow};
 use gashuu_core::Settings;
 use slint::ComponentHandle;
 use std::cell::RefCell;
@@ -27,7 +27,18 @@ impl Picker {
             .create_element("input")?
             .dyn_into::<HtmlInputElement>()?;
         input.set_type("file");
-        input.set_accept(".cbz,.zip");
+        let navigator = web_sys::window().map(|window| window.navigator());
+        let user_agent = navigator
+            .as_ref()
+            .and_then(|navigator| navigator.user_agent().ok())
+            .unwrap_or_default();
+        let max_touch_points = navigator
+            .as_ref()
+            .map_or(0, |navigator| navigator.max_touch_points().max(0) as u32);
+        // The iOS picker greys out CBZ files when an accept filter is set.
+        if !web_ios::is_ios_family(&user_agent, max_touch_points) {
+            input.set_accept(".cbz,.zip");
+        }
         input.set_multiple(true);
         input.set_hidden(true);
         body.append_child(&input)?;

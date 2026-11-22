@@ -46,6 +46,8 @@ mod web_books;
 mod web_decode;
 #[cfg(target_arch = "wasm32")]
 mod web_font;
+#[cfg(any(target_arch = "wasm32", test))]
+mod web_ios;
 #[cfg(target_arch = "wasm32")]
 mod web_picker;
 #[cfg(target_arch = "wasm32")]
