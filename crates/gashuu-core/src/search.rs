@@ -9,7 +9,7 @@
 use crate::Book;
 
 /// Case-insensitive substring match of `query` against a book's display title
-/// and its filesystem path. An empty query matches every book (no filter).
+/// and ID. An empty query matches every book (no filter).
 ///
 /// The query is matched verbatim (not trimmed): callers pass the exact debounced
 /// search text, so leading/trailing whitespace is significant by design.
@@ -20,21 +20,23 @@ pub fn book_matches(book: &Book, query: &str) -> bool {
 
     let needle = query.to_lowercase();
     let title = book.title().to_lowercase();
-    let path = book.path().to_string_lossy().to_lowercase();
+    let id = book.id().as_str().to_lowercase();
 
-    title.contains(&needle) || path.contains(&needle)
+    title.contains(&needle) || id.contains(&needle)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::BookId;
     use crate::Library;
-    use std::path::PathBuf;
 
     #[test]
     fn book_matches_title_and_path_case_insensitively() {
         let mut lib = Library::new();
-        assert!(lib.add(PathBuf::from("/manga/Akira/Vol 01.cbz")).is_some());
+        assert!(lib
+            .add(BookId::new("/manga/Akira/Vol 01.cbz"), "Vol 01".into())
+            .is_some());
         let book = &lib.books()[0];
 
         assert!(book_matches(book, "vol 01"));
@@ -47,7 +49,9 @@ mod tests {
     #[test]
     fn book_matches_empty_query_matches_everything() {
         let mut lib = Library::new();
-        assert!(lib.add(PathBuf::from("/manga/One Piece.cbz")).is_some());
+        assert!(lib
+            .add(BookId::new("/manga/One Piece.cbz"), "One Piece".into())
+            .is_some());
         assert!(book_matches(&lib.books()[0], ""));
     }
 }

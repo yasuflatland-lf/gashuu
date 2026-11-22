@@ -54,7 +54,7 @@ impl DialogSession {
     ) {
         self.scope = Some(scope);
         if scope == DialogScope::Library {
-            let has_open_book = state.borrow().open_file().is_some();
+            let has_open_book = state.borrow().open_book().is_some();
             self.snapshot = has_open_book.then(|| RuntimeSnapshot {
                 view: current_runtime_view(state, viewport),
                 pending_inherit: self.pending_inherit,

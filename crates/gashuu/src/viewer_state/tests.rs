@@ -477,42 +477,42 @@ fn current_source_is_none_after_failed_open_path() {
     );
 }
 
-// ---- open_file() (PR-R) --------------------------------------------------
+// ---- open_book() (PR-R) --------------------------------------------------
 
 #[test]
-fn open_file_is_none_before_open() {
+fn open_book_is_none_before_open() {
     let state = ViewerState::new();
     assert!(
-        state.open_file().is_none(),
-        "open_file must be None before any open"
+        state.open_book().is_none(),
+        "open_book must be None before any open"
     );
 }
 
 #[test]
-fn open_file_is_none_after_failed_open_path() {
+fn open_book_is_none_after_failed_open_path() {
     let mut state = ViewerState::new();
-    let _ = state.open_path(std::path::Path::new("/nonexistent_prR_open_file"));
+    let _ = state.open_path(std::path::Path::new("/nonexistent_prR_open_book"));
     assert!(
-        state.open_file().is_none(),
-        "open_file must stay None after a failed open_path"
+        state.open_book().is_none(),
+        "open_book must stay None after a failed open_path"
     );
 }
 
 #[test]
-fn open_file_stays_none_after_direct_set_source() {
-    // set_source has no path; open_file tracks the path given to open_path, so
+fn open_book_stays_none_after_direct_set_source() {
+    // set_source has no path; open_book tracks the path given to open_path, so
     // after a direct set_source it stays None.
     let mut state = ViewerState::new();
     state.set_source(mock_with(3));
     assert!(
-        state.open_file().is_none(),
-        "set_source without a path must leave open_file as None"
+        state.open_book().is_none(),
+        "set_source without a path must leave open_book as None"
     );
 }
 
 #[test]
-fn open_file_is_some_canonical_after_successful_open_path() {
-    // Linchpin of the write-back chain: a SUCCESSFUL open_path sets open_file to
+fn open_book_is_some_canonical_after_successful_open_path() {
+    // Linchpin of the write-back chain: a SUCCESSFUL open_path sets open_book to
     // Some(canonical). Exercised via a real on-disk directory (FolderSource).
     let dir = std::env::temp_dir().join(format!("gashuu_prR_openfile_{}", std::process::id()));
     std::fs::create_dir_all(&dir).expect("create temp dir");
@@ -525,12 +525,12 @@ fn open_file_is_some_canonical_after_successful_open_path() {
         .expect("open_path on a real directory must succeed");
 
     let stored = state
-        .open_file()
-        .expect("open_file must be Some after a successful open_path");
+        .open_book()
+        .expect("open_book must be Some after a successful open_path");
     assert_eq!(
-        stored,
+        crate::book_path::locate(stored),
         dir.canonicalize().expect("canonicalize temp dir"),
-        "open_file must hold the canonical path"
+        "open_book must hold the canonical path"
     );
 
     let _ = std::fs::remove_dir_all(&dir);
@@ -542,15 +542,15 @@ fn open_file_is_some_canonical_after_successful_open_path() {
 
 #[test]
 fn open_read_leave_sequence_state_invariants() {
-    // Pins the borrow-regression invariants stage_position_write_back relies on: open_file()
+    // Pins the borrow-regression invariants stage_position_write_back relies on: open_book()
     // Some after open, index() tracks nav, and both read without a borrow conflict.
 
     let mut state = ViewerState::new();
 
-    // set_source sets the cache but not open_file (open_path does that, tested
+    // set_source sets the cache but not open_book (open_path does that, tested
     // separately); here we assert only the fields we control in tests.
     state.set_source(mock_with(10));
-    // After a direct set_source, open_file is None (no path); the happy path is
+    // After a direct set_source, open_book is None (no path); the happy path is
     // covered elsewhere. Here we verify index tracking and the read-shape.
     assert_eq!(state.index(), 0, "fresh after set_source: index is 0");
 
@@ -566,8 +566,8 @@ fn open_read_leave_sequence_state_invariants() {
     // The reads stage_position_write_back performs must not conflict in sequence
     // (distinct immutable borrows); this test pins the shape of those reads.
     let _page = state.resume_index_to_persist(); // what write-back calls
-                                                 // open_file() is None here (set_source path), but the call must not panic.
-    let _path = state.open_file(); // what stage_position_write_back calls
+                                                 // open_book() is None here (set_source path), but the call must not panic.
+    let _path = state.open_book(); // what stage_position_write_back calls
                                    // No panic reached: the sequence is safe.
 
     // Simulate opening a second book (write_back fires for the first, then
@@ -575,8 +575,8 @@ fn open_read_leave_sequence_state_invariants() {
     state.set_source(mock_with(5));
     assert_eq!(state.index(), 0, "set_source resets index to 0");
     assert!(
-        state.open_file().is_none(),
-        "set_source without path leaves open_file None"
+        state.open_book().is_none(),
+        "set_source without path leaves open_book None"
     );
 }
 
@@ -680,7 +680,7 @@ fn apply_resolved_view_sets_fit_and_resets_zoom() {
 #[test]
 fn close_returns_to_no_book_open_state() {
     // close() drops the source and reports the boot/no-folder shape (no source, zero
-    // pages/index, open_file None, status NoFolder). Used by bulk-removal of the open book.
+    // pages/index, open_book None, status NoFolder). Used by bulk-removal of the open book.
     let mut state = ViewerState::new();
     state.set_source(mock_with(5));
     assert_eq!(state.page_count(), 5);
@@ -690,7 +690,7 @@ fn close_returns_to_no_book_open_state() {
     assert_eq!(state.page_count(), 0, "page count zeroed on close");
     assert_eq!(state.index(), 0, "index reset on close");
     assert!(state.current_source().is_none(), "source dropped on close");
-    assert!(state.open_file().is_none(), "open_file cleared on close");
+    assert!(state.open_book().is_none(), "open_book cleared on close");
     assert!(
         state.decode_current_spread().is_none(),
         "no spread after close"
@@ -724,7 +724,7 @@ fn close_is_idempotent_from_boot_state() {
     let mut state = ViewerState::new();
     state.close();
     assert_eq!(state.page_count(), 0);
-    assert!(state.open_file().is_none());
+    assert!(state.open_book().is_none());
     assert_eq!(state.status_content().kind, StatusKind::NoFolder);
 }
 

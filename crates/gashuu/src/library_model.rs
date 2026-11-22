@@ -15,7 +15,7 @@
 //! saturating, >= 1); `ReadingProgress::fraction()` guards `total == 0` to
 //! `0.0` (no NaN/inf); `ReadingProgress::total()` is the persisted page count.
 
-use gashuu_core::{book_matches, Book, Library};
+use gashuu_core::{book_matches, Book, BookId, Library};
 
 /// One carousel row's display data, derived from a `Book` in the `Library`.
 /// Plain data only (no `slint::Image`) so the derivation is unit-testable
@@ -40,7 +40,7 @@ pub struct CarouselData {
     /// `book_availability::book_path_exists`). Unavailable books stay in the shelf, rendered
     /// grayed with a broken-cover placeholder.
     pub available: bool,
-    /// True when this book is the last-opened book (`book.path() == library.last_opened()`).
+    /// True when this book is the last-opened book (`Some(book.id()) == library.last_opened()`).
     /// Drives the BookmarkRibbon overlay on the cover card. Pure derivation — no I/O.
     pub bookmarked: bool,
 }
@@ -54,7 +54,7 @@ pub struct CarouselData {
 /// `ReadingProgress::total() -> Option<usize>` via `Book::page_count_opt()` —
 /// `None` (unknown) is mapped to `0` when the book has never been opened,
 /// the real persisted count once it has been opened. `bookmarked` is the
-/// caller-supplied flag (`book.path() == library.last_opened()`), derived at
+/// caller-supplied flag (`Some(book.id()) == library.last_opened()`), derived at
 /// the `carousel_data_for_indices` call site where the `Library` is available.
 /// This is the single construction site for a `CarouselData`, shared by both
 /// the full-library and filtered-index mappings.
@@ -89,7 +89,7 @@ fn carousel_data_for_book(book: &Book, bookmarked: bool, available: bool) -> Car
 ///
 /// This is the single place the "which rows are visible?" projection lives for
 /// the common (no forced-visible) case. [`LibrarySearchState::recompute`]
-/// delegates here when no forced paths are active so the logic is exercised
+/// delegates here when no forced IDs are active so the logic is exercised
 /// in production and there is no duplicate filter loop.
 pub(crate) fn matching_indices(library: &Library, query: &str) -> Vec<usize> {
     library
@@ -105,7 +105,7 @@ pub(crate) fn matching_indices(library: &Library, query: &str) -> Vec<usize> {
 /// `Library::books().get(index)` rather than panicking; all production indices
 /// come from the shared [`LibrarySearchState`] projection, so they are valid.
 ///
-/// `bookmarked` for each row is derived here: `book.path() == library.last_opened()`.
+/// `bookmarked` for each row is derived here: `Some(book.id()) == library.last_opened()`.
 /// The `Library` is available at this call site, so the comparison is pure and
 /// avoids threading a per-row flag through `carousel_data_for_book`'s callers.
 /// Availability is derived by the caller-supplied predicate for each book.
@@ -119,7 +119,7 @@ pub fn carousel_data_for_indices(
         .iter()
         .filter_map(|&index| library.books().get(index))
         .map(|book| {
-            let bookmarked = last_opened.is_some_and(|p| p == book.path());
+            let bookmarked = last_opened == Some(book.id());
             let available = is_available(book);
             carousel_data_for_book(book, bookmarked, available)
         })
@@ -138,11 +138,11 @@ pub(crate) fn clamp_to_i32(v: usize) -> i32 {
 /// Shared, crate-visible search state so both the live-query callback and the
 /// add/open backfill paths preserve the same filter.
 ///
-/// `forced_visible_paths` keeps freshly-added books visible even when the active
+/// `forced_visible_ids` keeps freshly-added books visible even when the active
 /// query would not match them; they stay forced until the next user query change
 /// (see [`set_query`](LibrarySearchState::set_query), which clears them).
 ///
-/// `visible_indices` is kept consistent with `(query, forced_visible_paths)`
+/// `visible_indices` is kept consistent with `(query, forced_visible_ids)`
 /// after EVERY mutation: each mutator ([`set_query`](LibrarySearchState::set_query),
 /// [`force_visible`](LibrarySearchState::force_visible)) owns its invariant and
 /// recomputes the projection internally, so callers never see a stale visible
@@ -153,7 +153,7 @@ pub(crate) fn clamp_to_i32(v: usize) -> i32 {
 #[derive(Debug, Default)]
 pub(crate) struct LibrarySearchState {
     query: String,
-    forced_visible_paths: Vec<std::path::PathBuf>,
+    forced_visible_ids: Vec<BookId>,
     visible_indices: Vec<usize>,
 }
 
@@ -164,45 +164,45 @@ impl LibrarySearchState {
         &self.visible_indices
     }
 
-    /// Replace the query and clear any forced-visible paths, then recompute the
+    /// Replace the query and clear any forced-visible IDs, then recompute the
     /// visible set so it stays consistent with the new query. A user-driven query
     /// change supersedes the temporary "keep just-added books visible" override.
     pub(crate) fn set_query(&mut self, query: String, library: &Library) {
         self.query = query;
-        self.forced_visible_paths.clear();
+        self.forced_visible_ids.clear();
         self.recompute(library);
     }
 
-    /// Force the given paths to stay visible regardless of the current query,
+    /// Force the given IDs to stay visible regardless of the current query,
     /// until the next [`set_query`](LibrarySearchState::set_query), then recompute
-    /// the visible set so the forced books appear immediately. Paths already
+    /// the visible set so the forced books appear immediately. IDs already
     /// forced are skipped (dedup), so a repeated add never grows the forced set
     /// with duplicates.
-    pub(crate) fn force_visible<I>(&mut self, paths: I, library: &Library)
+    pub(crate) fn force_visible<I>(&mut self, ids: I, library: &Library)
     where
-        I: IntoIterator<Item = std::path::PathBuf>,
+        I: IntoIterator<Item = BookId>,
     {
-        for path in paths {
-            if !self.forced_visible_paths.contains(&path) {
-                self.forced_visible_paths.push(path);
+        for id in ids {
+            if !self.forced_visible_ids.contains(&id) {
+                self.forced_visible_ids.push(id);
             }
         }
         self.recompute(library);
     }
 
     /// Recompute `visible_indices` from `library`: a book is visible if it
-    /// matches the query or its path is forced visible. Indices are emitted in
+    /// matches the query or its ID is forced visible. Indices are emitted in
     /// natural `Library::books()` order.
     ///
     /// The mutators above recompute internally, so this is the entry point for
     /// the LIBRARY-changed-only cases (startup seed + open-time backfill) where
     /// neither the query nor the forced set moved but the books did.
     ///
-    /// When no paths are forced visible the common fast-path delegates to
+    /// When no IDs are forced visible the common fast-path delegates to
     /// [`matching_indices`] so that function is always exercised in production
     /// (preventing a dead-code warning while keeping a single filter site).
     pub(crate) fn recompute(&mut self, library: &Library) {
-        if self.forced_visible_paths.is_empty() {
+        if self.forced_visible_ids.is_empty() {
             self.visible_indices = matching_indices(library, &self.query);
             return;
         }
@@ -211,10 +211,7 @@ impl LibrarySearchState {
             .iter()
             .enumerate()
             .filter_map(|(index, book)| {
-                let forced = self
-                    .forced_visible_paths
-                    .iter()
-                    .any(|path| path == book.path());
+                let forced = self.forced_visible_ids.contains(book.id());
                 (book_matches(book, &self.query) || forced).then_some(index)
             })
             .collect();
@@ -225,44 +222,35 @@ impl LibrarySearchState {
 /// [`LibrarySearchState`]. Tracks which books the user has selected in selection
 /// mode (`x`) so PR-4 can bulk-delete them.
 ///
-/// Keyed by `PathBuf`, NOT by carousel index: indices shift whenever the
-/// projection recomputes (a query change re-filters; a deletion compacts the
-/// shelf), so an index-keyed set would silently point at the wrong books after
-/// any such change. A path is stable identity. A `BTreeSet` keeps the selection
-/// in a deterministic (sorted-by-path) order, so [`selected`](Self::selected)
-/// yields a stable iteration order for the eventual bulk-removal call.
-///
-/// Selection is ORTHOGONAL to the search query: it lives here, not in
-/// `LibrarySearchState`, so changing the query (which recomputes the visible
-/// projection) never drops a selected book — a book filtered out of view stays
-/// selected and reappears selected when the query clears.
+/// Selection follows book IDs as the visible projection changes. Iteration
+/// uses `BookId` order for the confirmation dialog and removal snapshot.
 #[derive(Debug, Default)]
 pub(crate) struct LibrarySelectionState {
-    selected: std::collections::BTreeSet<std::path::PathBuf>,
+    selected: std::collections::BTreeSet<BookId>,
 }
 
 impl LibrarySelectionState {
-    /// Toggle `path`'s membership: select it if absent, deselect if present.
-    pub(crate) fn toggle(&mut self, path: std::path::PathBuf) {
-        if !self.selected.remove(&path) {
-            self.selected.insert(path);
+    /// Toggle `id`'s membership: select it if absent, deselect if present.
+    pub(crate) fn toggle(&mut self, id: BookId) {
+        if !self.selected.remove(&id) {
+            self.selected.insert(id);
         }
     }
 
-    /// Select `path` (idempotent insert into the path-set).
-    pub(crate) fn insert(&mut self, path: std::path::PathBuf) {
-        self.selected.insert(path);
+    /// Select `id` (idempotent insert into the ID set).
+    pub(crate) fn insert(&mut self, id: BookId) {
+        self.selected.insert(id);
     }
 
-    /// Deselect `path` (idempotent remove from the path-set).
-    pub(crate) fn remove(&mut self, path: &std::path::Path) {
-        self.selected.remove(path);
+    /// Deselect `id` (idempotent remove from the ID set).
+    pub(crate) fn remove(&mut self, id: &BookId) {
+        self.selected.remove(id);
     }
 
-    /// Whether `path` is currently selected. Used by the carousel rebuild path to
+    /// Whether `id` is currently selected. Used by the carousel rebuild id to
     /// set each `CarouselItem.selected` flag (so the accent check badge renders).
-    pub(crate) fn contains(&self, path: &std::path::Path) -> bool {
-        self.selected.contains(path)
+    pub(crate) fn contains(&self, id: &BookId) -> bool {
+        self.selected.contains(id)
     }
 
     /// Drop every selection (e.g. on Esc / leaving selection mode).
@@ -276,11 +264,10 @@ impl LibrarySelectionState {
         self.selected.len()
     }
 
-    /// Iterate the selected paths in deterministic (`BTreeSet`, path-sorted) order.
-    /// Consumed by `RemoveBooksUseCase::run` (the bulk-removal path snapshots these
-    /// paths) and `confirm_delete_content` (the dialog title list) — PR-5 (#129).
-    pub(crate) fn selected(&self) -> impl Iterator<Item = &std::path::Path> {
-        self.selected.iter().map(std::path::PathBuf::as_path)
+    /// Iterate the selected IDs in deterministic (`BTreeSet`, ID) order.
+    /// Consumed by `RemoveBooksUseCase::run` (the bulk removal snapshots these IDs) and `confirm_delete_content` (the dialog title list) — PR-5 (#129).
+    pub(crate) fn selected(&self) -> impl Iterator<Item = &BookId> {
+        self.selected.iter()
     }
 }
 
@@ -290,7 +277,7 @@ mod tests {
     use crate::book_availability::book_path_exists;
     use gashuu_core::Library;
     use std::num::NonZeroUsize;
-    use std::path::{Path, PathBuf};
+    use std::path::PathBuf;
 
     /// Test helper: derive carousel rows for the WHOLE library in natural
     /// `Library::books()` order, exercising `carousel_data_for_book` (the single
@@ -305,11 +292,12 @@ mod tests {
     #[test]
     fn carousel_data_uses_injected_availability_predicate() {
         let mut lib = Library::new();
-        assert!(lib.add(PathBuf::from("/manga/a.cbz")).is_some());
-        assert!(lib.add(PathBuf::from("/manga/b.cbz")).is_some());
+        assert!(lib.add(BookId::new("/manga/a.cbz"), "a".into()).is_some());
+        assert!(lib.add(BookId::new("/manga/b.cbz"), "b".into()).is_some());
 
-        let rows =
-            carousel_data_for_indices(&lib, &[0, 1], &|b: &Book| b.path().ends_with("a.cbz"));
+        let rows = carousel_data_for_indices(&lib, &[0, 1], &|b: &Book| {
+            b.id().as_str().ends_with("a.cbz")
+        });
         assert!(rows[0].available);
         assert!(!rows[1].available);
     }
@@ -326,9 +314,8 @@ mod tests {
         // `resume_page` defaults to 0 — the "unread, total unknown" case (current=1, total=0).
         let dir = tempfile::tempdir().expect("tempdir");
         let mut lib = Library::new();
-        assert!(lib
-            .add(gashuu_core::canonical_identity(dir.path()))
-            .is_some());
+        let (id, title) = crate::book_path::identify(dir.path(), true).unwrap();
+        assert!(lib.add(id, title).is_some());
 
         let rows = carousel_data(&lib);
         assert_eq!(rows.len(), 1);
@@ -354,7 +341,11 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let path: PathBuf = dir.path().to_path_buf();
         let mut lib = Library::new();
-        assert!(lib.add(gashuu_core::canonical_identity(&path)).is_some());
+        assert!({
+            let (id, title) = crate::book_path::identify(&path, true).unwrap();
+            lib.add(id, title)
+        }
+        .is_some());
         drop(dir); // remove the directory from disk
 
         let rows = carousel_data(&lib);
@@ -377,7 +368,11 @@ mod tests {
         for name in ["vol 10", "vol 1", "vol 2"] {
             let dir = root.path().join(name);
             std::fs::create_dir(&dir).expect("create subdir");
-            assert!(lib.add(gashuu_core::canonical_identity(&dir)).is_some());
+            assert!({
+                let (id, title) = crate::book_path::identify(&dir, true).unwrap();
+                lib.add(id, title)
+            }
+            .is_some());
         }
         let rows = carousel_data(&lib);
         assert_eq!(rows.len(), 3);
@@ -394,8 +389,16 @@ mod tests {
         std::fs::create_dir(&keep).expect("create keep");
         std::fs::create_dir(&gone).expect("create gone");
         let mut lib = Library::new();
-        assert!(lib.add(gashuu_core::canonical_identity(&keep)).is_some());
-        assert!(lib.add(gashuu_core::canonical_identity(&gone)).is_some());
+        assert!({
+            let (id, title) = crate::book_path::identify(&keep, true).unwrap();
+            lib.add(id, title)
+        }
+        .is_some());
+        assert!({
+            let (id, title) = crate::book_path::identify(&gone, true).unwrap();
+            lib.add(id, title)
+        }
+        .is_some());
         std::fs::remove_dir_all(&gone).expect("remove gone"); // now unresolvable
         let rows = carousel_data(&lib);
         assert_eq!(
@@ -411,10 +414,9 @@ mod tests {
     fn carousel_data_current_reflects_resume_page() {
         let dir = tempfile::tempdir().expect("tempdir");
         let mut lib = Library::new();
-        assert!(lib
-            .add(gashuu_core::canonical_identity(dir.path()))
-            .is_some());
-        let path = lib.books()[0].path().to_path_buf();
+        let (id, title) = crate::book_path::identify(dir.path(), true).unwrap();
+        assert!(lib.add(id, title).is_some());
+        let path = lib.books()[0].id().clone();
         assert!(lib.set_resume_page(&path, 4));
         let rows = carousel_data(&lib);
         assert_eq!(rows[0].current, 5); // 1-based: resume_page 4 -> display 5
@@ -426,10 +428,9 @@ mod tests {
         // `total` and computes `progress = fraction()` (last_viewed=4, total=10 → 4/9).
         let dir = tempfile::tempdir().expect("tempdir");
         let mut lib = Library::new();
-        assert!(lib
-            .add(gashuu_core::canonical_identity(dir.path()))
-            .is_some());
-        let path = lib.books()[0].path().to_path_buf();
+        let (id, title) = crate::book_path::identify(dir.path(), true).unwrap();
+        assert!(lib.add(id, title).is_some());
+        let path = lib.books()[0].id().clone();
         assert!(lib.set_resume_page(&path, 4));
         assert!(lib.set_page_count(&path, NonZeroUsize::new(10).unwrap()));
         let rows = carousel_data(&lib);
@@ -442,9 +443,13 @@ mod tests {
     #[test]
     fn search_state_keeps_forced_added_paths_visible_until_query_changes() {
         let mut lib = Library::new();
-        assert!(lib.add(PathBuf::from("/manga/alpha.cbz")).is_some());
-        assert!(lib.add(PathBuf::from("/manga/beta.cbz")).is_some());
-        let beta_path = lib.books()[1].path().to_path_buf();
+        assert!(lib
+            .add(BookId::new("/manga/alpha.cbz"), "alpha".into())
+            .is_some());
+        assert!(lib
+            .add(BookId::new("/manga/beta.cbz"), "beta".into())
+            .is_some());
+        let beta_path = lib.books()[1].id().clone();
 
         let mut state = LibrarySearchState::default();
         state.set_query("alpha".to_string(), &lib);
@@ -460,10 +465,16 @@ mod tests {
         // The forced-visible branch keeps the query match (alpha) AND the forced path
         // (beta), but a book matching NEITHER (gamma) must stay hidden.
         let mut lib = Library::new();
-        assert!(lib.add(PathBuf::from("/manga/alpha.cbz")).is_some());
-        assert!(lib.add(PathBuf::from("/manga/beta.cbz")).is_some());
-        assert!(lib.add(PathBuf::from("/manga/gamma.cbz")).is_some());
-        let beta_path = lib.books()[1].path().to_path_buf();
+        assert!(lib
+            .add(BookId::new("/manga/alpha.cbz"), "alpha".into())
+            .is_some());
+        assert!(lib
+            .add(BookId::new("/manga/beta.cbz"), "beta".into())
+            .is_some());
+        assert!(lib
+            .add(BookId::new("/manga/gamma.cbz"), "gamma".into())
+            .is_some());
+        let beta_path = lib.books()[1].id().clone();
 
         let mut state = LibrarySearchState::default();
         state.set_query("alpha".to_string(), &lib);
@@ -477,10 +488,9 @@ mod tests {
         // The known count bounds the stored resume, so the row displays page 5 of 5.
         let dir = tempfile::tempdir().expect("tempdir");
         let mut lib = Library::new();
-        assert!(lib
-            .add(gashuu_core::canonical_identity(dir.path()))
-            .is_some());
-        let path = lib.books()[0].path().to_path_buf();
+        let (id, title) = crate::book_path::identify(dir.path(), true).unwrap();
+        assert!(lib.add(id, title).is_some());
+        let path = lib.books()[0].id().clone();
         assert!(lib.set_page_count(&path, NonZeroUsize::new(5).unwrap()));
         assert!(lib.set_resume_page(&path, 40));
         let rows = carousel_data(&lib);
@@ -498,7 +508,9 @@ mod tests {
         // An out-of-range index is dropped rather than panicking; only the valid
         // row is mapped.
         let mut lib = Library::new();
-        assert!(lib.add(PathBuf::from("/manga/alpha.cbz")).is_some());
+        assert!(lib
+            .add(BookId::new("/manga/alpha.cbz"), "alpha".into())
+            .is_some());
 
         let rows = carousel_data_for_indices(&lib, &[0, 99], &book_path_exists);
         assert_eq!(rows.len(), 1);
@@ -508,9 +520,15 @@ mod tests {
     #[test]
     fn matching_indices_return_library_natural_order_rows() {
         let mut lib = Library::new();
-        assert!(lib.add(PathBuf::from("/manga/vol 10.cbz")).is_some());
-        assert!(lib.add(PathBuf::from("/manga/vol 1.cbz")).is_some());
-        assert!(lib.add(PathBuf::from("/manga/bonus.cbz")).is_some());
+        assert!(lib
+            .add(BookId::new("/manga/vol 10.cbz"), "vol 10".into())
+            .is_some());
+        assert!(lib
+            .add(BookId::new("/manga/vol 1.cbz"), "vol 1".into())
+            .is_some());
+        assert!(lib
+            .add(BookId::new("/manga/bonus.cbz"), "bonus".into())
+            .is_some());
 
         // Natural sort order: "bonus" < "vol 1" < "vol 10"
         // so index 0 = bonus, 1 = vol 1, 2 = vol 10.
@@ -523,7 +541,7 @@ mod tests {
     #[test]
     fn selection_toggle_adds_then_removes() {
         let mut sel = LibrarySelectionState::default();
-        let path = PathBuf::from("/manga/a.cbz");
+        let path = BookId::new("/manga/a.cbz");
         assert!(!sel.contains(&path));
         assert_eq!(sel.count(), 0);
 
@@ -541,7 +559,7 @@ mod tests {
         // Selection is path-keyed, not library-keyed: a path never added to any Library
         // still toggles cleanly — the state owns its set independently of what books exist.
         let mut sel = LibrarySelectionState::default();
-        let path = PathBuf::from("/manga/never-added.cbz");
+        let path = BookId::new("/manga/never-added.cbz");
         assert!(!sel.contains(&path));
 
         sel.toggle(path.clone());
@@ -557,28 +575,28 @@ mod tests {
     #[test]
     fn selection_clear_drops_everything() {
         let mut sel = LibrarySelectionState::default();
-        sel.toggle(PathBuf::from("/manga/a.cbz"));
-        sel.toggle(PathBuf::from("/manga/b.cbz"));
+        sel.toggle(BookId::new("/manga/a.cbz"));
+        sel.toggle(BookId::new("/manga/b.cbz"));
         assert_eq!(sel.count(), 2);
         sel.clear();
         assert_eq!(sel.count(), 0);
-        assert!(!sel.contains(Path::new("/manga/a.cbz")));
+        assert!(!sel.contains(&BookId::new("/manga/a.cbz")));
     }
 
     #[test]
     fn selected_iterates_in_deterministic_path_order() {
         // BTreeSet ⇒ path-sorted iteration regardless of insertion order.
         let mut sel = LibrarySelectionState::default();
-        sel.toggle(PathBuf::from("/manga/c.cbz"));
-        sel.toggle(PathBuf::from("/manga/a.cbz"));
-        sel.toggle(PathBuf::from("/manga/b.cbz"));
-        let paths: Vec<&Path> = sel.selected().collect();
+        sel.toggle(BookId::new("/manga/c.cbz"));
+        sel.toggle(BookId::new("/manga/a.cbz"));
+        sel.toggle(BookId::new("/manga/b.cbz"));
+        let paths: Vec<&BookId> = sel.selected().collect();
         assert_eq!(
             paths,
             vec![
-                Path::new("/manga/a.cbz"),
-                Path::new("/manga/b.cbz"),
-                Path::new("/manga/c.cbz"),
+                &BookId::new("/manga/a.cbz"),
+                &BookId::new("/manga/b.cbz"),
+                &BookId::new("/manga/c.cbz"),
             ]
         );
     }
@@ -588,9 +606,13 @@ mod tests {
         // Selecting a book then narrowing the query so it is filtered OUT must NOT drop
         // the selection: it stays selected and reappears when the query clears.
         let mut lib = Library::new();
-        assert!(lib.add(PathBuf::from("/manga/alpha.cbz")).is_some());
-        assert!(lib.add(PathBuf::from("/manga/beta.cbz")).is_some());
-        let beta_path = lib.books()[1].path().to_path_buf();
+        assert!(lib
+            .add(BookId::new("/manga/alpha.cbz"), "alpha".into())
+            .is_some());
+        assert!(lib
+            .add(BookId::new("/manga/beta.cbz"), "beta".into())
+            .is_some());
+        let beta_path = lib.books()[1].id().clone();
 
         let mut search = LibrarySearchState::default();
         search.set_query(String::new(), &lib); // everything visible
@@ -619,8 +641,8 @@ mod tests {
         // The row for the last-opened book must have bookmarked == true.
         // `register_opened` both adds the book and sets `last_opened`.
         let mut lib = Library::new();
-        let path = PathBuf::from("/manga/alpha.cbz");
-        lib.register_opened(&path, None);
+        let path = BookId::new("/manga/alpha.cbz");
+        lib.register_opened(&path, "alpha", None);
 
         let rows = carousel_data_for_indices(&lib, &[0], &book_path_exists);
         assert_eq!(rows.len(), 1);
@@ -635,10 +657,10 @@ mod tests {
         // Only the last-opened book is bookmarked; all other rows are false.
         // Natural sort: "alpha" < "beta", so alpha is index 0, beta is index 1.
         let mut lib = Library::new();
-        let alpha = PathBuf::from("/manga/alpha.cbz");
-        let beta = PathBuf::from("/manga/beta.cbz");
-        lib.register_opened(&alpha, None); // adds alpha + sets last_opened = alpha
-        lib.add(beta); // adds beta (not last_opened)
+        let alpha = BookId::new("/manga/alpha.cbz");
+        let beta = BookId::new("/manga/beta.cbz");
+        lib.register_opened(&alpha, "alpha", None); // adds alpha + sets last_opened = alpha
+        lib.add(beta, "beta".into()); // adds beta (not last_opened)
 
         let rows = carousel_data_for_indices(&lib, &[0, 1], &book_path_exists);
         assert_eq!(rows.len(), 2);
@@ -651,16 +673,16 @@ mod tests {
         // When the last-opened book (alpha) is excluded from the index slice (as a search
         // filter would), beta's row must be bookmarked == false — the ribbon must not bleed.
         let mut lib = Library::new();
-        let alpha = PathBuf::from("/manga/alpha.cbz");
-        let beta = PathBuf::from("/manga/beta.cbz");
-        lib.register_opened(&alpha, None); // adds alpha + sets last_opened = alpha
-        lib.add(beta); // adds beta (not last_opened)
+        let alpha = BookId::new("/manga/alpha.cbz");
+        let beta = BookId::new("/manga/beta.cbz");
+        lib.register_opened(&alpha, "alpha", None); // adds alpha + sets last_opened = alpha
+        lib.add(beta, "beta".into()); // adds beta (not last_opened)
 
         // Derive beta's index from lib.books() to be safe against sort changes.
         let beta_idx = lib
             .books()
             .iter()
-            .position(|b| b.path().ends_with("beta.cbz"))
+            .position(|b| b.id().as_str().ends_with("beta.cbz"))
             .expect("beta must be in the library");
 
         // Pass only beta's index — alpha (last_opened) is excluded.
@@ -677,8 +699,12 @@ mod tests {
         // When no book has ever been opened (last_opened == None),
         // every row must have bookmarked == false.
         let mut lib = Library::new();
-        assert!(lib.add(PathBuf::from("/manga/alpha.cbz")).is_some());
-        assert!(lib.add(PathBuf::from("/manga/beta.cbz")).is_some());
+        assert!(lib
+            .add(BookId::new("/manga/alpha.cbz"), "alpha".into())
+            .is_some());
+        assert!(lib
+            .add(BookId::new("/manga/beta.cbz"), "beta".into())
+            .is_some());
         assert_eq!(lib.last_opened(), None, "no book opened yet");
 
         let rows = carousel_data_for_indices(&lib, &[0, 1], &book_path_exists);

@@ -10,19 +10,18 @@
 
 use crate::add_controller;
 use crate::book_path;
-use gashuu_core::{CoreError, Library};
+use gashuu_core::{BookId, CoreError, Library};
 use std::collections::HashMap;
 use std::num::NonZeroUsize;
-use std::path::PathBuf;
 
-/// Outcome of an add batch: the canonical paths actually inserted (new books
+/// Outcome of an add batch: the book IDs actually inserted (new books
 /// only, in INPUT order) and the count of paths REJECTED because they could not
 /// be opened as a book — either a source with zero image pages (the empty-book
 /// rule) or an unreadable / unsupported source. Duplicates are NOT counted in
 /// `skipped`: a path already in the library (or repeated within the batch) is
 /// neither added nor rejected, mirroring `Library::add`'s `None`.
 pub(crate) struct AddReport {
-    pub(crate) added: Vec<std::path::PathBuf>,
+    pub(crate) added: Vec<BookId>,
     pub(crate) skipped: usize,
 }
 
@@ -38,7 +37,7 @@ pub(crate) struct AddReport {
 ///   as a book: skip, count in `skipped`, and log (the same level + detail the
 ///   old synchronous `add_paths` logged; logging is deferred to here so the probe
 ///   half stays pure).
-/// - `ProbeKind::Counted(count)` — derive the identity via [`book_path::identity`]
+/// - `ProbeKind::Counted(count)` — derive the identity and title via [`book_path::identify`]
 ///   and add the complete batch via [`Library::add_many`] (deduplicating and
 ///   re-sorting once). Each genuine insert's page count is looked up by identity
 ///   and recorded immediately so a freshly added book shows "1 / N" without
@@ -52,8 +51,8 @@ pub(crate) fn apply_outcomes(
     outcomes: Vec<add_controller::ProbeOutcome>,
 ) -> AddReport {
     use add_controller::ProbeKind;
-    let mut canonicals: Vec<PathBuf> = Vec::new();
-    let mut counts: HashMap<PathBuf, NonZeroUsize> = HashMap::new();
+    let mut books = Vec::new();
+    let mut counts: HashMap<BookId, NonZeroUsize> = HashMap::new();
     let mut skipped = 0usize;
     for add_controller::ProbeOutcome { path, kind, .. } in outcomes {
         match kind {
@@ -74,16 +73,23 @@ pub(crate) fn apply_outcomes(
                 tracing::warn!(%error, path = %path.display(), "skipping unreadable source");
             }
             ProbeKind::Counted(count) => {
-                let canonical = book_path::identity(&path);
+                let (id, title) = match book_path::identify(&path, book_path::is_dir(&path)) {
+                    Ok(book) => book,
+                    Err(error) => {
+                        skipped += 1;
+                        tracing::warn!(%error, path = %path.display(), "skipping unreadable source");
+                        continue;
+                    }
+                };
                 // Record the first probed count for each new identity, matching repeated
                 // `add` behaviour when an input batch contains duplicates.
-                counts.entry(canonical.clone()).or_insert(count);
-                canonicals.push(canonical);
+                counts.entry(id.clone()).or_insert(count);
+                books.push((id, title));
             }
         }
     }
 
-    let added = lib.add_many(canonicals);
+    let added = lib.add_many(books);
     record_page_counts(lib, &added, &counts);
     AddReport { added, skipped }
 }
@@ -92,14 +98,10 @@ pub(crate) fn apply_outcomes(
 /// order in which `Library::add_many` returns newly added books. An identity
 /// without a probed count keeps the library's unknown-count state rather than
 /// turning a recoverable omission into a UI-thread panic.
-fn record_page_counts(
-    lib: &mut Library,
-    added: &[PathBuf],
-    counts: &HashMap<PathBuf, NonZeroUsize>,
-) {
-    for canonical in added {
-        if let Some(count) = counts.get(canonical) {
-            lib.set_page_count(canonical, *count);
+fn record_page_counts(lib: &mut Library, added: &[BookId], counts: &HashMap<BookId, NonZeroUsize>) {
+    for id in added {
+        if let Some(count) = counts.get(id) {
+            lib.set_page_count(id, *count);
         }
     }
 }
@@ -197,8 +199,10 @@ mod tests {
 
     /// Produce the same caller-side identity as the apply half so test expectations
     /// match the stored/returned paths.
-    fn canon(path: &std::path::Path) -> std::path::PathBuf {
-        gashuu_core::canonical_identity(path)
+    fn canon(path: &std::path::Path) -> BookId {
+        book_path::identify(path, book_path::is_dir(path))
+            .unwrap()
+            .0
     }
 
     #[test]
@@ -257,7 +261,10 @@ mod tests {
         let root = tempfile::tempdir().expect("tempdir");
         let vol1 = make_book_dir(root.path(), "vol1", 1);
         let vol2 = make_book_dir(root.path(), "vol2", 1);
-        lib.add(gashuu_core::canonical_identity(&vol1));
+        {
+            let (id, title) = crate::book_path::identify(&vol1, true).unwrap();
+            lib.add(id, title)
+        };
         let report = add_paths(
             &mut lib,
             vec![vol1.clone(), vol2.clone()],
@@ -292,7 +299,7 @@ mod tests {
         assert_eq!(report.added, vec![expected.clone()]);
         assert_eq!(report.skipped, 0);
         assert_eq!(lib.books().len(), 1);
-        assert_eq!(lib.books()[0].path(), expected.as_path());
+        assert_eq!(lib.books()[0].id(), &expected);
     }
 
     #[test]
@@ -301,8 +308,14 @@ mod tests {
         let root = tempfile::tempdir().expect("tempdir");
         let vol1 = make_book_dir(root.path(), "vol1", 1);
         let vol2 = make_book_dir(root.path(), "vol2", 1);
-        lib.add(gashuu_core::canonical_identity(&vol1));
-        lib.add(gashuu_core::canonical_identity(&vol2));
+        {
+            let (id, title) = crate::book_path::identify(&vol1, true).unwrap();
+            lib.add(id, title)
+        };
+        {
+            let (id, title) = crate::book_path::identify(&vol2, true).unwrap();
+            lib.add(id, title)
+        };
         let before = lib.books().len();
         let report = add_paths(
             &mut lib,
@@ -334,7 +347,7 @@ mod tests {
         );
         assert_eq!(report.skipped, 1, "the empty folder is the one skip");
         assert_eq!(lib.books().len(), 1);
-        assert_eq!(lib.books()[0].path(), canon(&valid).as_path());
+        assert_eq!(lib.books()[0].id(), &canon(&valid));
     }
 
     #[test]
@@ -387,7 +400,7 @@ mod tests {
         let book = lib
             .books()
             .iter()
-            .find(|b| b.path() == canon(&three))
+            .find(|b| b.id() == &canon(&three))
             .expect("added book present");
         assert_eq!(
             book.page_count_opt(),
@@ -444,17 +457,16 @@ mod tests {
         let fresh_b = canon(&make_book_dir(root.path(), "b", 1));
         let already_c = canon(&make_book_dir(root.path(), "c", 1));
         let mut lib = Library::new();
-        assert!(lib.add(already_a.clone()).is_some());
-        assert!(lib.add(already_c.clone()).is_some());
+        assert!(lib.add(already_a.clone(), "a".into()).is_some());
+        assert!(lib.add(already_c.clone(), "c".into()).is_some());
 
-        let counted =
-            |index: usize, path: &std::path::Path, pages: usize| add_controller::ProbeOutcome {
-                index,
-                path: path.to_path_buf(),
-                kind: add_controller::ProbeKind::Counted(
-                    std::num::NonZeroUsize::new(pages).expect("nonzero"),
-                ),
-            };
+        let counted = |index: usize, id: &BookId, pages: usize| add_controller::ProbeOutcome {
+            index,
+            path: book_path::locate(id),
+            kind: add_controller::ProbeKind::Counted(
+                std::num::NonZeroUsize::new(pages).expect("nonzero"),
+            ),
+        };
         let report = apply_outcomes(
             &mut lib,
             vec![
@@ -466,13 +478,7 @@ mod tests {
 
         assert_eq!(report.added, vec![fresh_b.clone()], "only b is new");
         assert_eq!(report.skipped, 0, "duplicates are not skips");
-        let page_count = |path: &std::path::Path| {
-            lib.books()
-                .iter()
-                .find(|book| book.path() == path)
-                .expect("book on the shelf")
-                .page_count_opt()
-        };
+        let page_count = |id: &BookId| lib.book(id).expect("book on the shelf").page_count_opt();
         assert_eq!(page_count(&fresh_b), Some(5), "the new book gets its count");
         assert_eq!(
             (page_count(&already_a), page_count(&already_c)),
@@ -487,10 +493,13 @@ mod tests {
         // holds for any permutation of `added`; the old single cross-iteration
         // `Iterator::find` walk consumed the counts in input order and would run
         // off the end here.
-        let first = std::path::PathBuf::from("first.cbz");
-        let second = std::path::PathBuf::from("second.cbz");
+        let first = BookId::new("first.cbz");
+        let second = BookId::new("second.cbz");
         let mut lib = Library::new();
-        lib.add_many(vec![first.clone(), second.clone()]);
+        lib.add_many(vec![
+            (first.clone(), "first".into()),
+            (second.clone(), "second".into()),
+        ]);
         let added = vec![second.clone(), first.clone()];
         let counts = std::collections::HashMap::from([
             (
@@ -505,12 +514,7 @@ mod tests {
 
         record_page_counts(&mut lib, &added, &counts);
 
-        let page_count = |path: &std::path::Path| {
-            lib.books()
-                .iter()
-                .find(|book| book.path() == path)
-                .and_then(|book| book.page_count_opt())
-        };
+        let page_count = |id: &BookId| lib.book(id).and_then(|book| book.page_count_opt());
         assert_eq!(
             (page_count(&first), page_count(&second)),
             (Some(3), Some(7)),
@@ -525,11 +529,15 @@ mod tests {
         // the UI thread; here it must be a silent skip that leaves the book in the
         // pre-existing unknown-count state. The miss sits in the MIDDLE so a panic
         // (or any early exit) also robs the identity after it of its count.
-        let first = std::path::PathBuf::from("first.cbz");
-        let uncounted = std::path::PathBuf::from("uncounted.cbz");
-        let last = std::path::PathBuf::from("last.cbz");
+        let first = BookId::new("first.cbz");
+        let uncounted = BookId::new("uncounted.cbz");
+        let last = BookId::new("last.cbz");
         let mut lib = Library::new();
-        lib.add_many(vec![first.clone(), uncounted.clone(), last.clone()]);
+        lib.add_many(vec![
+            (first.clone(), "first".into()),
+            (uncounted.clone(), "uncounted".into()),
+            (last.clone(), "last".into()),
+        ]);
         let added = vec![first.clone(), uncounted.clone(), last.clone()];
         let counts = std::collections::HashMap::from([
             (
@@ -544,12 +552,7 @@ mod tests {
 
         record_page_counts(&mut lib, &added, &counts);
 
-        let page_count = |path: &std::path::Path| {
-            lib.books()
-                .iter()
-                .find(|book| book.path() == path)
-                .and_then(|book| book.page_count_opt())
-        };
+        let page_count = |id: &BookId| lib.book(id).and_then(|book| book.page_count_opt());
         assert_eq!(
             page_count(&uncounted),
             None,
@@ -599,7 +602,7 @@ mod tests {
         let vol1 = canon(&make_book_dir(root.path(), "vol1", 1));
         let report = add_paths(
             &mut lib,
-            vec![vol10.clone(), vol1.clone()],
+            vec![book_path::locate(&vol10), book_path::locate(&vol1)],
             ArchivePolicy::default(),
         );
 
@@ -608,11 +611,7 @@ mod tests {
         assert_eq!(report.added[1], vol1);
 
         // The library itself is in NATURAL order (vol1 before vol10).
-        let books: Vec<_> = lib
-            .books()
-            .iter()
-            .map(|book| book.path().to_path_buf())
-            .collect();
+        let books: Vec<_> = lib.books().iter().map(|book| book.id().clone()).collect();
         assert_eq!(books, vec![vol1, vol10]);
     }
 

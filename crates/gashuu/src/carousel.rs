@@ -5,9 +5,11 @@
 //! backing `VecModel`, and derives the per-book cover requests. UI-thread only
 //! (it constructs `slint::Image`s and the `Rc` model, both `!Send`).
 
+use crate::book_path::locate;
 use crate::cover_loader;
 use crate::library_model::{carousel_data_for_indices, CarouselData};
 use crate::{CarouselItem, ThumbnailItem, ViewerWindow};
+use gashuu_core::BookId;
 use gashuu_core::{Book, Library};
 use slint::{ModelRc, VecModel};
 use std::rc::Rc;
@@ -110,9 +112,9 @@ pub(crate) fn set_carousel_selected(ui: &ViewerWindow, row: usize, selected: boo
 
 /// Re-apply the bulk-selection flags over the CURRENTLY VISIBLE carousel rows:
 /// for each visible row, set its `selected` flag from whether the underlying
-/// book's path is in `is_selected`. Called after a model rebuild (the rebuilt
+/// book's ID is in `is_selected`. Called after a model rebuild (the rebuilt
 /// model starts unselected) so a selection survives a search-query change — the
-/// projection recomputes, but the selection (keyed by path) is reprojected onto
+/// projection recomputes, but the selection (keyed by ID) is reprojected onto
 /// the new rows. `indices` is the search state's visible projection, in the SAME
 /// order the model was built from, so visible row `r` maps to `indices[r]`.
 pub(crate) fn apply_selection_flags<F>(
@@ -121,11 +123,11 @@ pub(crate) fn apply_selection_flags<F>(
     indices: &[usize],
     is_selected: F,
 ) where
-    F: Fn(&std::path::Path) -> bool,
+    F: Fn(&BookId) -> bool,
 {
     for (row, &library_index) in indices.iter().enumerate() {
         if let Some(book) = library.books().get(library_index) {
-            set_carousel_selected(ui, row, is_selected(book.path()));
+            set_carousel_selected(ui, row, is_selected(book.id()));
         }
     }
 }
@@ -154,7 +156,8 @@ pub(crate) fn cover_requests(
         .enumerate()
         .map(|(row, book)| cover_loader::CoverRequest {
             row,
-            path: book.path().to_path_buf(),
+            id: book.id().clone(),
+            path: locate(book.id()),
             needs_count: book.page_count_opt().is_none(),
         })
         .collect()
@@ -259,23 +262,31 @@ mod tests {
         std::fs::create_dir(&known).expect("create known");
 
         let mut lib = Library::new();
-        assert!(lib.add(gashuu_core::canonical_identity(&unknown)).is_some());
-        assert!(lib.add(gashuu_core::canonical_identity(&known)).is_some());
+        assert!({
+            let (id, title) = crate::book_path::identify(&unknown, true).unwrap();
+            lib.add(id, title)
+        }
+        .is_some());
+        assert!({
+            let (id, title) = crate::book_path::identify(&known, true).unwrap();
+            lib.add(id, title)
+        }
+        .is_some());
         // Give the naturally first-sorted book a persisted page count (as an open would back-fill).
-        let known_path = lib.books()[0].path().to_path_buf();
+        let known_path = lib.books()[0].id().clone();
         assert!(lib.set_page_count(&known_path, NonZeroUsize::new(10).unwrap()));
 
         let reqs = cover_requests(&lib, &[0, 1]);
         assert_eq!(reqs.len(), 2);
         assert_eq!(reqs[0].row, 0);
-        assert_eq!(reqs[0].path, known_path);
+        assert_eq!(reqs[0].path, locate(&known_path));
         assert!(
             !reqs[0].needs_count,
             "book with a known total must not be re-opened just to count"
         );
         assert_eq!(reqs[1].row, 1);
-        let unknown_path = lib.books()[1].path().to_path_buf();
-        assert_eq!(reqs[1].path, unknown_path);
+        let unknown_path = lib.books()[1].id().clone();
+        assert_eq!(reqs[1].path, locate(&unknown_path));
         assert!(
             reqs[1].needs_count,
             "fresh book with no persisted total needs its count resolved"
@@ -291,10 +302,10 @@ mod tests {
 
         let mut lib = Library::new();
         assert!(lib
-            .add(std::path::PathBuf::from("/manga/alpha.cbz"))
+            .add(BookId::new("/manga/alpha.cbz"), "alpha".into())
             .is_some());
         assert!(lib
-            .add(std::path::PathBuf::from("/manga/beta.cbz"))
+            .add(BookId::new("/manga/beta.cbz"), "beta".into())
             .is_some());
 
         let model =
@@ -312,18 +323,18 @@ mod tests {
     fn cover_requests_rebase_rows_to_filtered_model() {
         let mut lib = Library::new();
         assert!(lib
-            .add(std::path::PathBuf::from("/manga/alpha.cbz"))
+            .add(BookId::new("/manga/alpha.cbz"), "alpha".into())
             .is_some());
         assert!(lib
-            .add(std::path::PathBuf::from("/manga/beta.cbz"))
+            .add(BookId::new("/manga/beta.cbz"), "beta".into())
             .is_some());
 
-        let beta_path = lib.books()[1].path().to_path_buf();
+        let beta_path = lib.books()[1].id().clone();
         let reqs = cover_requests(&lib, &[1]);
 
         assert_eq!(reqs.len(), 1);
         assert_eq!(reqs[0].row, 0);
-        assert_eq!(reqs[0].path, beta_path);
+        assert_eq!(reqs[0].path, locate(&beta_path));
     }
 
     /// An out-of-range library index is dropped (via `Library::books().get`)
@@ -333,7 +344,7 @@ mod tests {
     fn cover_requests_skips_out_of_range_index() {
         let mut lib = Library::new();
         assert!(lib
-            .add(std::path::PathBuf::from("/manga/alpha.cbz"))
+            .add(BookId::new("/manga/alpha.cbz"), "alpha".into())
             .is_some());
 
         let reqs = cover_requests(&lib, &[0, 99]);
@@ -349,7 +360,7 @@ mod tests {
 
         let mut lib = Library::new();
         assert!(lib
-            .add(std::path::PathBuf::from("/manga/alpha.cbz"))
+            .add(BookId::new("/manga/alpha.cbz"), "alpha".into())
             .is_some());
 
         let model = build_carousel_model(&lib, &[], &crate::book_availability::book_path_exists);
@@ -364,10 +375,10 @@ mod tests {
         use slint::Model;
 
         let mut lib = Library::new();
-        let alpha = std::path::PathBuf::from("/manga/alpha.cbz");
-        let beta = std::path::PathBuf::from("/manga/beta.cbz");
-        lib.register_opened(&alpha, None); // adds alpha + marks it last_opened
-        lib.add(beta); // adds beta (not last_opened)
+        let alpha = BookId::new("/manga/alpha.cbz");
+        let beta = BookId::new("/manga/beta.cbz");
+        lib.register_opened(&alpha, "alpha", None); // adds alpha + marks it last_opened
+        lib.add(beta, "beta".into()); // adds beta (not last_opened)
 
         let model =
             build_carousel_model(&lib, &[0, 1], &crate::book_availability::book_path_exists);
@@ -387,7 +398,7 @@ mod tests {
     /// `available` (edge case 4 of the design).
     ///
     /// A non-existent path is used intentionally: it is already the result of
-    /// `canonical_identity` because resolution fails, so the book lands in the
+    /// `book_path::identify` because resolution fails, so the book lands in the
     /// shelf as unavailable from the start.
     #[test]
     fn build_carousel_model_unavailable_book_still_bookmarked() {
@@ -395,8 +406,8 @@ mod tests {
 
         let mut lib = Library::new();
         // A path that never existed is its own caller-supplied identity.
-        let path = std::path::PathBuf::from("/manga/gone.cbz");
-        lib.register_opened(&path, None);
+        let path = BookId::new("/manga/gone.cbz");
+        lib.register_opened(&path, "gone", None);
 
         let model = build_carousel_model(&lib, &[0], &crate::book_availability::book_path_exists);
         assert_eq!(model.row_count(), 1);
@@ -420,7 +431,7 @@ mod tests {
 
         let mut lib = Library::new();
         assert!(lib
-            .add(std::path::PathBuf::from("/manga/alpha.cbz"))
+            .add(BookId::new("/manga/alpha.cbz"), "alpha".into())
             .is_some());
 
         let model = build_carousel_model(&lib, &[0], &crate::book_availability::book_path_exists);

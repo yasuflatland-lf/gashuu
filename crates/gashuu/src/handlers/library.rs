@@ -1,3 +1,4 @@
+use crate::book_path::locate;
 use crate::dialog_session::DialogSession;
 use crate::{
     add_controller,
@@ -7,8 +8,7 @@ use crate::{
 use crate::{
     apply_add_report, current_book_name, finalize_empty_book_rejected, finalize_open,
     finalize_remove, go_to_viewer, push_selection_toolbar_state, refresh_library_carousel,
-    save_library, visible_index_to_path, with_ui, CarouselRefresh, LibraryStoreHandle,
-    ViewerWindow,
+    save_library, visible_index_to_id, with_ui, CarouselRefresh, LibraryStoreHandle, ViewerWindow,
 };
 use crate::{
     library_model::{LibrarySearchState, LibrarySelectionState},
@@ -19,6 +19,7 @@ use crate::{
     thumbnail_strip::ThumbnailController,
 };
 use crate::{viewer_state::ViewerState, viewport::ViewportState};
+use gashuu_core::BookId;
 use gashuu_core::{Library, Settings};
 use slint::ComponentHandle;
 use std::cell::RefCell;
@@ -345,9 +346,9 @@ pub(crate) fn wire_carousel_handlers(
         let open_ctrl = Rc::clone(&open_ctrl);
         ui.on_carousel_open(move |index| {
             with_ui(&ui_weak, |ui| {
-                // Resolve the VISIBLE carousel index to a Library path via the search
-                // projection — the same hop others use, single-homed in `visible_index_to_path`.
-                let Some(path) = visible_index_to_path(&library, &search, index) else {
+                // Resolve the VISIBLE carousel index to a book ID via the search
+                // projection — the same hop others use, single-homed in `visible_index_to_id`.
+                let Some(id) = visible_index_to_id(&library, &search, index) else {
                     // Index out of range (carousel and library out of sync) — no-op.
                     // Desync diagnostics (cold path): re-borrow is safe — the helper's borrows dropped.
                     let visible_len = search.borrow().visible_indices().len();
@@ -360,7 +361,7 @@ pub(crate) fn wire_carousel_handlers(
                     );
                     return;
                 };
-                open_and_enter(&ui, &open_ctrl, &settings, path);
+                open_and_enter(&ui, &open_ctrl, &settings, locate(&id));
             })
         });
     }
@@ -377,11 +378,8 @@ pub(crate) fn wire_carousel_handlers(
             with_ui(&ui_weak, |ui| {
                 // `Library::bookmark()` returns `last_opened` only when still on the shelf;
                 // a purged book yields None, counting as no bookmark (notice below).
-                let path = library
-                    .borrow()
-                    .bookmark()
-                    .map(std::path::Path::to_path_buf);
-                let Some(path) = path else {
+                let id = library.borrow().bookmark().cloned();
+                let Some(id) = id else {
                     // No registered bookmark — answer the click with a notice so
                     // the always-enabled capsule still gives feedback.
                     ui.set_status_text(
@@ -389,7 +387,7 @@ pub(crate) fn wire_carousel_handlers(
                     );
                     return;
                 };
-                open_and_enter(&ui, &open_ctrl, &settings, path);
+                open_and_enter(&ui, &open_ctrl, &settings, locate(&id));
             })
         });
     }
@@ -422,7 +420,7 @@ pub(crate) fn wire_carousel_handlers(
         let localizer = Rc::clone(&localizer);
         ui.on_carousel_back(move || {
             with_ui(&ui_weak, |ui| {
-                if state.borrow().open_file().is_none() {
+                if state.borrow().open_book().is_none() {
                     ui.set_status_text(
                         crate::i18n::dynamic::no_open_book(localizer.loader()).into(),
                     );
@@ -478,7 +476,7 @@ pub(crate) fn wire_selection_handlers(
         let localizer = Rc::clone(&localizer);
         ui.on_carousel_toggle_selection(move |index| {
             with_ui(&ui_weak, |ui| {
-                let Some(path) = visible_index_to_path(&library, &search, index) else {
+                let Some(id) = visible_index_to_id(&library, &search, index) else {
                     // Desync diagnostics (cold path): re-borrow is safe — the helper's borrows dropped.
                     let visible_len = search.borrow().visible_indices().len();
                     let library_len = library.borrow().books().len();
@@ -490,8 +488,8 @@ pub(crate) fn wire_selection_handlers(
                     );
                     return;
                 };
-                selection.borrow_mut().toggle(path.clone());
-                let selected = selection.borrow().contains(&path);
+                selection.borrow_mut().toggle(id.clone());
+                let selected = selection.borrow().contains(&id);
                 set_carousel_selected(&ui, index as usize, selected);
                 push_selection_toolbar_state(&ui, &localizer, &selection, &search, &library);
             })
@@ -514,7 +512,7 @@ pub(crate) fn wire_selection_handlers(
                 if !ui.get_carousel_selection_mode() {
                     return; // normal mode: focus only, never open
                 }
-                let Some(path) = visible_index_to_path(&library, &search, index) else {
+                let Some(id) = visible_index_to_id(&library, &search, index) else {
                     // Desync diagnostics (cold path): re-borrow is safe — the helper's borrows dropped.
                     let visible_len = search.borrow().visible_indices().len();
                     let library_len = library.borrow().books().len();
@@ -526,8 +524,8 @@ pub(crate) fn wire_selection_handlers(
                     );
                     return;
                 };
-                selection.borrow_mut().toggle(path.clone());
-                let selected = selection.borrow().contains(&path);
+                selection.borrow_mut().toggle(id.clone());
+                let selected = selection.borrow().contains(&id);
                 set_carousel_selected(&ui, index as usize, selected);
                 push_selection_toolbar_state(&ui, &localizer, &selection, &search, &library);
             })
@@ -610,7 +608,7 @@ pub(crate) fn wire_selection_handlers(
                         &selection.borrow(),
                         &search.borrow(),
                         &library.borrow(),
-                        st.open_file(),
+                        st.open_book(),
                     )
                 };
                 ui.set_confirm_delete_title(content.title.into());
@@ -659,12 +657,12 @@ pub(crate) fn wire_selection_handlers(
         let library = Rc::clone(&library);
         let library_store = Rc::clone(&library_store);
         let carousel = carousel.clone();
-        ui.on_empty_book_detected(move |path_str| {
+        ui.on_empty_book_detected(move |id_str| {
             with_ui(&ui_weak, |ui| {
-                let path = std::path::PathBuf::from(path_str.as_str());
+                let id = BookId::new(id_str.as_str());
                 // The shared transaction (single home in open_book): title capture
                 // BEFORE removal -> Library::remove -> save -> best-effort cover purge.
-                let removal = open_book::remove_empty_book(&library, &path, |library| {
+                let removal = open_book::remove_empty_book(&library, &id, |library| {
                     save_library(&library_store, library)
                 });
                 finalize_empty_book_rejected(&ui, &carousel, &removal);
@@ -715,9 +713,9 @@ mod tests {
         state.borrow_mut().open_path(&first).expect("open first");
         let canonical = state
             .borrow()
-            .open_file()
+            .open_book()
             .expect("open file after successful open")
-            .to_path_buf();
+            .clone();
         let viewport = Rc::new(RefCell::new(ViewportState::from_settings(
             &settings.borrow(),
         )));
@@ -731,7 +729,9 @@ mod tests {
             &mut viewport.borrow_mut(),
         );
         let mut library_value = Library::new();
-        assert!(library_value.add(canonical.clone()).is_some());
+        assert!(library_value
+            .add(canonical.clone(), "book".into())
+            .is_some());
         let library = Rc::new(RefCell::new(library_value));
         let dialog_session = Rc::new(RefCell::new(DialogSession::new()));
         let leave_point = Rc::new(crate::LeavePointService::new(
@@ -792,8 +792,8 @@ mod tests {
         let root = tempfile::tempdir().expect("tempdir");
         let first = make_book_dir(root.path(), "first", 3);
         let second = make_book_dir(root.path(), "second", 3);
-        let first_canonical = first.canonicalize().expect("canonical first book");
-        let second_canonical = second.canonicalize().expect("canonical second book");
+        let (first_canonical, first_title) = crate::book_path::identify(&first, true).unwrap();
+        let (second_canonical, second_title) = crate::book_path::identify(&second, true).unwrap();
 
         // G, G', and B differ wherever the enum cardinality permits; B and G'
         // differ in all four axes so reconcile/restore order cannot pass by chance.
@@ -831,8 +831,12 @@ mod tests {
             .borrow_mut()
             .apply_resolved_view(book_view, &mut viewport.borrow_mut());
         let mut library_value = Library::new();
-        assert!(library_value.add(first_canonical.clone()).is_some());
-        assert!(library_value.add(second_canonical.clone()).is_some());
+        assert!(library_value
+            .add(first_canonical.clone(), first_title)
+            .is_some());
+        assert!(library_value
+            .add(second_canonical.clone(), second_title)
+            .is_some());
         assert!(library_value.set_overrides(
             &second_canonical,
             ViewOverride {
