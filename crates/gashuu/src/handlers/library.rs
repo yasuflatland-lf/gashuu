@@ -1,4 +1,4 @@
-use crate::backend::{BackendError, BookBackend, BookImporter, OpenedBook, STORAGE_UNAVAILABLE};
+use crate::backend::{BackendError, BookBackend, BookImporter, OpenedBook};
 use crate::book_path::{locate, request_id};
 use crate::dialog_session::DialogSession;
 use crate::picker::{forget_uploads, BookPicker, PickedBook, UploadHandle};
@@ -172,7 +172,14 @@ pub(crate) fn wire_open_handlers(
                 }
                 forget_uploads(&uploads);
                 if let Some(ui) = weak.upgrade() {
-                    ui.set_add_toast_text(append_notice(STORAGE_UNAVAILABLE.into(), notice).into());
+                    #[cfg(target_arch = "wasm32")]
+                    ui.set_add_toast_text(
+                        append_notice(
+                            i18n::dynamic::web_storage_unavailable(localizer.loader()),
+                            notice,
+                        )
+                        .into(),
+                    );
                     ui.invoke_focus_carousel();
                 }
             } else if let (Some(ui), Some(notice)) = (weak.upgrade(), notice) {
@@ -250,10 +257,13 @@ fn import_failure_notice(
     outcomes: &[add_controller::ProbeOutcome],
     localizer: &i18n::Localizer,
 ) -> Option<String> {
+    use crate::backend::STORAGE_UNAVAILABLE;
     use add_controller::{ProbeKind, ProbeSubject};
     use gashuu_worker::import::{STORAGE_FULL, UNREADABLE_UPLOAD};
 
     let mut notices = Vec::new();
+    let mut storage_failures = std::collections::HashSet::new();
+    let loader = localizer.loader();
     let mut unreadable = 0;
     for outcome in outcomes {
         if let (ProbeSubject::Upload(_), ProbeKind::Unreadable { error }) =
@@ -261,20 +271,18 @@ fn import_failure_notice(
         {
             match error.as_str() {
                 UNREADABLE_UPLOAD => unreadable += 1,
-                reason @ (STORAGE_UNAVAILABLE | STORAGE_FULL)
-                    if !notices.iter().any(|notice| notice == reason) =>
-                {
-                    notices.push(reason.to_owned())
+                STORAGE_UNAVAILABLE if storage_failures.insert(STORAGE_UNAVAILABLE) => {
+                    notices.push(i18n::dynamic::web_storage_unavailable(loader));
+                }
+                STORAGE_FULL if storage_failures.insert(STORAGE_FULL) => {
+                    notices.push(i18n::dynamic::web_storage_full(loader));
                 }
                 _ => {}
             }
         }
     }
     if unreadable > 0 {
-        notices.push(i18n::dynamic::web_unreadable_files(
-            localizer.loader(),
-            unreadable,
-        ));
+        notices.push(i18n::dynamic::web_unreadable_files(loader, unreadable));
     }
     (!notices.is_empty()).then(|| notices.join("\n"))
 }
