@@ -8,8 +8,6 @@
 //! event-loop closure. `slint::Image` is built inside the UI-thread closure, and
 //! `Rc`, `VecModel`, viewport state, and the localizer are never captured.
 
-#[cfg(target_arch = "wasm32")]
-use crate::page_decode::{ImageCratePageDecoder, PageDecoder};
 #[cfg(not(test))]
 use crate::ui_marshal::marshal_to_ui;
 #[cfg(not(test))]
@@ -18,6 +16,8 @@ use crate::{apply_spread_images, to_slint_image, ViewerWindow};
 use gashuu_core::DecodedImage;
 #[cfg(not(test))]
 use gashuu_core::{cache::CacheDispatch, CoreError};
+#[cfg(target_arch = "wasm32")]
+use gashuu_core::{ImageCratePageDecoder, PageDecoder};
 #[cfg(target_arch = "wasm32")]
 use std::cell::Cell;
 use std::cell::RefCell;
