@@ -162,13 +162,11 @@ See [ADR-0003](ADRs/0003-image-loading-and-caching.md) for image loading decisio
 SYNCHRONOUS single-page thumbnail. With a `PageThumbContext { cache, path }` it reads from / writes to
 the on-disk `ThumbnailCache` under `page_cache_key(path, mtime, max_side, page_index)` (a hit skips
 the full-page read+decode; the `put` result is ignored); failure is returned as `Err` (never panics).
-The desktop backend calls this function for each requested page and checks that the session
-is still open before delivering the result. The strip uses `DEFAULT_THUMB_MAX_SIDE` (160 px).
-The single-page sibling
-`generate_cover(source: Arc<dyn PageSource>, max_side) -> Result<DecodedImage, CoreError>` (a
-downscaled thumbnail of page index 0, the book's cover; `Err(IndexOutOfRange{index:0,len:0})` on a
-0-page source, decode errors propagated); re-exported from the crate root and consumed by the UI's
-`cover_loader.rs`.
+The desktop backend schedules the work and checks that the session is still open
+before delivering the result. The strip uses `DEFAULT_THUMB_MAX_SIDE` (160 px).
+The desktop backend also calls the sibling `generate_cover(source, max_side)` to
+downsize page zero. It propagates read and decode errors and returns
+`IndexOutOfRange { index: 0, len: 0 }` for an empty source.
 
 ### thumbnail_cache
 
@@ -178,8 +176,7 @@ seam. `put(key, &DecodedImage)` QOI-encodes the RGBA at exact dimensions and wri
 (temp-file-then-rename); `get(key) -> Option<DecodedImage>` reads `<dir>/<key>.qoi` and decodes,
 returning `None` on any missing/unreadable/corrupt file (a cache miss, never panics). `cache_key(path,
 mtime_secs, max_side)` derives a stable 16-hex-char filename via FNV-1a (NOT `DefaultHasher`; see
-docs/patterns.md). Headless (no slint/tracing). The cover carousel consumes it via the UI's
-`cover_loader.rs`.
+docs/patterns.md). Headless (no slint/tracing). `DesktopBackend::cover` uses this cache after checking its decoded-cover memory cache.
 
 Issue 143 adds the GC half: `prune(max_bytes) -> PruneReport` sweeps the directory down to
 `max_bytes` of `*.qoi` payload in ascending `(mtime, file name)` order, and reclaims stale
@@ -189,7 +186,7 @@ key-orphaned covers (source mtime drifted past `purge_for`) are never read again
 front, and disappear once the cap bites. Best-effort throughout (missing dir → zero report,
 failed unlink skipped, foreign files never touched); the caller logs the returned `PruneReport`
 (core stays log-free). The cap POLICY is the app layer's: `cover_loader.rs` owns
-`COVER_CACHE_MAX_BYTES` (256 MiB) and `spawn_cache_prune()`, dispatched once at startup on a
+`CoverCachePolicy::DEFAULT.max_bytes` (256 MiB) and `spawn_cache_prune()`, dispatched once at startup on a
 rayon worker right after the initial cover stream.
 
 ### cache::ImageCache
@@ -861,18 +858,11 @@ All four share a private `visible_paths(search, library)` join and are headlessl
 
 ### page_count_prefetch
 
-`page_count_prefetch.rs`. The background page-count prefetch concern for the library carousel. A book
-whose page count is unknown is resolved on a `cover_loader` rayon worker from the SAME archive open
-that produces its cover (no extra `ArchiveLoader::open`). Because a worker cannot touch the `!Send`
-`Rc<RefCell<Library>>`, `push_and_marshal_count` (worker side) does two things: it pushes a
-`ResolvedCount { id, count }` onto a `Send` `Arc<Mutex<Vec<ResolvedCount>>>` queue for later
-UI-thread persistence (zero-page archives map `count == 0` to `None`, so nothing is queued), and it
-`marshal_total`s the count onto the carousel row (`set_carousel_total`) for immediate display, both
-behind the cover-epoch guard so a superseded generation is dropped. `PageCountPrefetch` owns the
-queue: `queue()` hands a `Send` clone to a worker; `apply(&library)` drains it on the UI thread,
-calls `Library::set_page_count` by ID, and saves ONCE if anything changed (called at the next `start`);
-`flush(&library)` re-applies on shutdown. `ResolvedCount` is a named struct (not a bare tuple) so the
-queue element reads as "a resolved fact being carried home".
+`PageCountPrefetch::record_count` displays the resolved total in its carousel row and queues
+the book ID and nonzero count for persistence. The backend completion runs on the UI thread
+after the cover epoch check. It captures the queue through an `Arc<Mutex<_>>` because backend
+callbacks must be `Send`. At the next refresh or shutdown, the controller drains the queue,
+applies each count through `Library::set_page_count`, and saves once if any count changed.
 
 ### enum_adapters
 
@@ -986,7 +976,7 @@ lives in `carousel_refresh.rs`).
 `handlers/drag_drop.rs`. OS file/folder drag-and-drop onto the Library screen. Slint exposes no
 stable file-drop API, so this bridges the winit backend's raw `WindowEvent`s (behind the
 `unstable-winit-030` feature) into the EXISTING bulk-add pipeline — dropped paths are handed straight
-to `add_loader::AddController::start`, reusing dedup, the reject rules, the archive policy, and the
+to `add_controller::AddController::start`, reusing dedup, the reject rules, the archive policy, and the
 add toast (`gashuu-core` untouched; drag-drop is just a new presentation-layer SOURCE of the same
 `paths` the Add buttons produce). `drop_action_for(&WindowEvent) -> DropAction` is the pure, testable
 mapping (`HoveredFile` → `ShowOverlay`, `HoveredFileCancelled` → `HideOverlay`, `DroppedFile(path)`
@@ -1189,53 +1179,28 @@ Each UI-thread completion updates its row to loaded or failed. Closing the sessi
 pending deliveries, and the strip epoch guards against updates to a replacement model.
 Starting without a session clears the strip. The web strip remains empty.
 
-**`cover_loader.rs`** (`CoverController`): Streams each book's real cover into the shared
-`VecModel<CarouselItem>`. `start` is DISPATCH-ONLY on the UI thread: every `CoverRequest` becomes one
-`rayon::spawn` worker (`spawn_load`), and the worker does ALL the per-book I/O — derive
-`cache_key(path, mtime, max_side)` (the mtime `fs::metadata` happens on the worker), try
-`ThumbnailCache::get` (a HIT reads + decodes the cached QOI on the worker), or on a MISS open via
-`ArchiveLoader`, call core `generate_cover`, `ThumbnailCache::put` — then `invoke_from_event_loop` to
-set the row. Hit and miss share this one worker path (a warm 500-book start used to decode 500 QOIs
-inline on the event loop). Requests are
-dispatched focus-first: `prioritize_by_focus(requests, focus_row)` (pure, unit-tested) sorts by
-`abs_diff` from the carousel's focused row so the visible neighbourhood streams in before off-screen
-rows. Covers render at `COVER_MAX_SIDE = 512` px — DECOUPLED from the strip's
-`DEFAULT_THUMB_MAX_SIDE = 160` (a focused cover slot is far larger than a strip cell, so 160 px upscaled
-blurry); `max_side` is in the cache key, so raising it auto-regenerates stale 160 px covers. The
-controller ALSO prefetches each unopened book's REAL page count (fixing the "1 / 0" display): a request
-flagged `needs_count` (`Book::page_count_opt() == None`) resolves the count on the same worker — the
-cover-MISS worker reuses its archive open (`source.list_pages().len()` before `generate_cover`), a
-cover-cache HIT opens the archive once for the count AFTER marshalling the cover (so the count never
-delays the visible image). `marshal_total` streams the count to the row's `total` for immediate display,
-and a `ResolvedCount { id, count }` is queued in `pending_counts` for UI-thread persistence — drained
-via `Library::set_page_count` + `save` at the next `start` and at shutdown (`flush_counts`), so the
-count survives a relaunch (a worker can't touch the `!Send` `Rc<RefCell<Library>>`, hence the queue).
-Callers build the `CoverRequest` list BEFORE `start` so the `library.borrow()` is released before
-`start`'s persistence `borrow_mut`. The reject-empty-books feature added empty-book DETECTION to the
-worker: a worker that opens a book CLEANLY but counts zero pages (the pure `should_signal_empty`
-decision = `open_result.is_ok() && count == 0`) calls `marshal_empty_book`, which fires the root
-`empty-book-detected(string)` Slint callback under the same epoch guard as `marshal_total` (the
-worker passes the raw ID string; the `!Send` removal work runs on the UI thread in
-`handlers/library.rs`'s `on_empty_book_detected`). An open ERROR is unreadable, NOT empty — it keeps the placeholder
-+ log behavior and fires no signal. A dropped stale-epoch signal cannot lose the detection (a zero
-count is never persisted, so the next generation re-detects), and a removed book is absent from the
-next generation's requests (no loop). See [patterns.md](patterns.md), "Worker → UI ACTION via a
-Slint callback", and [ADR-0009](ADRs/0009-reject-empty-books.md).
+**`cover_loader.rs`** owns the carousel's cover generation. Each refresh persists pending
+counts, calls `BookBackend::cancel_covers`, and advances the epoch. `prioritize_by_focus`
+sorts requests by distance from the focused row. The controller dispatches 512 px covers
+and requests a page count only for rows with an unknown total. Callers release their
+library borrow before dispatch so pending counts can be applied. Counts are also flushed
+on shutdown and on web suspend.
 
-**`add_controller.rs`** (`AddController`, issue 206): the SAME async harness applied to the bulk ADD, so opening
-several large/cloud-synced archives in the `+` picker never freezes the event loop (`probe_page_count` reads each
-ZIP's central directory; `File::open` can block on hydration). `start(ui_weak, paths, policy, op)` begins a batch
-with the shared `ui_marshal::Generation<Vec<ProbeOutcome>>`, shows `Adding… (0/N)`, then
-dispatches one `rayon::spawn` per path running the pure, `Send` `probe_path` (classifies into
-`ProbeKind::{Counted(NonZeroUsize), Empty, FormatDisabled, Unreadable}` — touching NO `Library`). Each worker
-pushes its `ProbeOutcome` through a cloned ticket and marshals an epoch-guarded `add-progress(done, total)` tick. The worker
-that drains the `remaining` `AtomicUsize` to zero marshals `add-finalize(epoch)`. The finalize handler
-(`handlers/library.rs`) drains via `AddController::take_outcomes(epoch)` — epoch-guarded, so a second add started
-mid-probe supersedes the first with no stale clobber — re-sorts to INPUT order, then runs the APPLY half on the UI
-thread: `main.rs::apply_outcomes` (the old synchronous `add_paths` body, byte-identical behaviour, logging deferred
-here so the probe stays pure) + `apply_add_report` (save → rebuild → notice → focus). Same Send/!Send discipline as
-the cover loader: only `Send` values cross into the workers and the marshaled closures; every `Library` mutation
-runs on the UI thread. See [patterns.md](patterns.md), "Worker → UI ACTION via a Slint callback".
+The desktop backend reads the on-disk cover cache on a worker. On a miss it opens the
+archive once for the cover and count. On a hit it queues the cover before opening the
+archive for a requested count. Cover size is part of the cache key and is independent
+of the strip's 160 px thumbnail size. The web backend serializes page-zero decodes across
+refreshes and keeps up to 64 MiB of covers in memory until the app reloads.
+
+Each `ui_done` completion checks the epoch and window before updating its row. An empty book
+reported by either callback raises `empty-book-detected` once with its ID. Other cover errors
+mark the row failed, while a count error after a hit only produces a warning.
+
+**`add_controller.rs`** probes each picked ID through `BookBackend::probe_page_count` under the
+selected archive policy. A path that cannot form an ID produces an unreadable outcome immediately.
+Each outcome advances progress in the current generation. The last one invokes `add-finalize`,
+whose handler takes the outcomes in input order and applies the batch. An empty pick finalizes
+inline. The browser picker uses the same probe path and appends its own notice at finalize.
 
 **`open_controller.rs`** passes the raw request ID, policy and next-open cache config to
 the backend. A generation ticket accepts one current result. Dropping a superseded result
@@ -1305,12 +1270,14 @@ panel, `pick_files` elsewhere; the platform split lives in `#[cfg]` blocks insid
 and the matching `combined-add-picker` bool pushed at boot collapses the NavBar's two add capsules
 into one on macOS) and
 `on_add_folder` (`pick_folder`, folder-as-one-book; its capsule is hidden on macOS). The library-add seam is split
-across the UI-thread boundary (issue 206, to keep a bulk add of large/cloud-synced archives from freezing the event
-loop): the PROBE half runs OFF the UI thread — `add_loader::AddController::start` dispatches one rayon
-`add_loader::probe_path` per picked path (`ArchiveLoader::probe_page_count` → a `Send` `ProbeOutcome`, touching no
-`Library`), streams `Adding… (k/N)` progress via the `add-progress` callback, and marshals `add-finalize` when the
-last probe completes (an `AtomicUsize` epoch supersedes a second add started mid-probe). The APPLY half runs on the
-UI thread in the `add-finalize` handler: `main.rs::apply_outcomes` (dedup-aware insert, rejects empty/unreadable
+across the UI-thread boundary to keep bulk adds responsive (issue 206).
+`add_controller::AddController::start` calls `backend.probe_page_count` for each picked path with a
+UI-thread `Done`. Each completion records a `ProbeOutcome` and reports `Adding… (k/N)` through
+`add-progress`. The final completion invokes `add-finalize`. Starting a new batch advances the
+epoch and supersedes older tickets, so late completions from an older batch cannot record outcomes
+or update progress. `add_controller::probe_path` is a test-only fixture helper.
+The apply phase runs on the UI thread in the `add-finalize` handler. It calls
+`main.rs::apply_outcomes` (dedup-aware insert, rejects empty/unreadable
 sources, persists the probed count on each genuine insert, returns `AddReport { added, skipped }` — see ADR-0009),
 `build_carousel_model` (Library → `ModelRc<CarouselItem>`,
 0-based `last_page` → 1-based `current`, real `total`/`progress` from persisted `Book::page_count`,

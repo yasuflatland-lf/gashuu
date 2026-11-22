@@ -1,57 +1,18 @@
-//! Bulk-add controller (issue 206).
-//!
-//! Bulk-adding sources used to freeze the event loop: `add_paths` opened every
-//! picked archive synchronously on the UI thread (`probe_page_count_with_policy`
-//! reads each ZIP's central directory; on cloud-synced volumes `File::open`
-//! blocks on hydration), so the window was unresponsive until the whole batch
-//! was probed, saved, and the carousel rebuilt.
-//!
-//! On desktop, this controller moves the per-source PROBE onto rayon workers — the same
-//! async harness covers (`cover_loader.rs`) and thumbnails (`thumbnail_strip.rs`)
-//! already use — while keeping the strict reject-before-add semantics and the
-//! exact "added N / skipped M" notice. The add still happens as ONE batch once
-//! probing finishes (the confirmed UX: books appear together, not optimistically).
-//! The browser probes and applies each batch inline after its files are read.
-//!
-//! Split:
-//! - the PROBE half ([`probe_path`]) is pure and `Send`: `(index, PathBuf,
-//!   ArchivePolicy)` → [`ProbeOutcome`]. It touches NO `Library`.
-//! - the APPLY half lives on the UI thread (`crate::add_books::apply_outcomes` +
-//!   `crate::carousel_refresh::apply_add_report`): it mutates the `!Send` `Rc<RefCell<Library>>`,
-//!   saves, rebuilds the carousel, and shows the notice — driven by the
-//!   `add-finalize` Slint callback wired in `handlers/library.rs`.
-//!
-//! Thread-boundary rule (identical to the cover loader): only `Send` values
-//! cross into the rayon jobs and the event-loop closures — the `slint::Weak`,
-//! the generation ticket, the `Arc<AtomicUsize>` remaining counter, the
-//! `PathBuf`, the `ArchivePolicy`
-//! (`Copy`), and `usize`s. The `Rc<RefCell<Library>>` / `Settings` / `VecModel`
-//! (all `!Send`) are NEVER moved: every `Library` mutation runs in the
-//! `add-finalize` handler on the UI thread.
-//!
-//! Supersede guard (same shape as the cover loader's epoch): each `start` bumps
-//! an `AtomicUsize` epoch and installs a fresh accumulator. A late `add-progress`
-//! / `add-finalize` whose captured `my_epoch` mismatches the current epoch is
-//! dropped, so a second add started mid-probe cleanly supersedes the first with
-//! no stale clobber.
+//! Probe picked books through the shared backend, then apply the batch in
+//! input order. Each UI-thread completion records one outcome and advances
+//! progress. Only the current generation can finalize and update the library.
 
-use crate::backend::BookBackend;
+use crate::backend::{BackendError, BookBackend};
+use crate::book_path as location;
 use crate::ui_marshal::Generation;
-#[cfg(not(target_arch = "wasm32"))]
-use crate::ui_marshal::Ticket;
-use crate::{book_path, worker, ViewerWindow};
-use gashuu_core::{ArchivePolicy, CoreError};
+use crate::ViewerWindow;
+use gashuu_core::ArchivePolicy;
 use std::cell::RefCell;
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
 use std::rc::Rc;
 
-/// How one probed source classified — the `Send` result of opening it on a
-/// worker, carrying just enough to run the UI-thread apply half. Mirrors the
-/// four arms of the old synchronous `add_paths` match: a real book with its page
-/// count, an empty source, a policy-disabled format, or an unreadable source.
-/// `FormatDisabled`/`Unreadable` keep the log detail (the format tag / error
-/// text) so the apply half logs exactly what the synchronous path did.
+/// Classification and diagnostic details used when applying a bulk add.
 pub(crate) enum ProbeKind {
     /// Opened cleanly with `n` image pages — add it and record the count.
     Counted(NonZeroUsize),
@@ -74,22 +35,28 @@ pub(crate) struct ProbeOutcome {
     pub kind: ProbeKind,
 }
 
-/// Probe ONE source off the UI thread: classify it without touching the
-/// `Library`. Pure and `Send` (the worker payload), so the classification is
-/// unit-testable without a Slint event loop. Mirrors the old `add_paths` probe
-/// arm exactly — `Ok` → `Counted`, `EmptyBook` → `Empty`, `FormatDisabled` →
-/// `FormatDisabled`, any other error → `Unreadable` — but logging is deferred to
-/// the apply half (which owns the same path + kind on the UI thread).
+impl ProbeKind {
+    pub(crate) fn from_probe(result: Result<NonZeroUsize, BackendError>) -> Self {
+        match result {
+            Ok(count) => Self::Counted(count),
+            Err(BackendError::EmptyBook) => Self::Empty,
+            Err(BackendError::FormatDisabled { format }) => Self::FormatDisabled { format },
+            Err(error) => Self::Unreadable {
+                error: error.to_string(),
+            },
+        }
+    }
+}
+
+// The apply-half tests construct outcomes from real filesystem fixtures.
+#[cfg(test)]
 pub(crate) fn probe_path(index: usize, path: PathBuf, policy: ArchivePolicy) -> ProbeOutcome {
-    let kind = match book_path::probe_page_count(&path, policy) {
-        Ok(count) => ProbeKind::Counted(count),
-        Err(CoreError::EmptyBook { .. }) => ProbeKind::Empty,
-        Err(CoreError::FormatDisabled { format }) => ProbeKind::FormatDisabled { format },
-        Err(e) => ProbeKind::Unreadable {
-            error: e.to_string(),
-        },
-    };
-    ProbeOutcome { index, path, kind }
+    let result = location::probe_page_count(&path, policy).map_err(|e| BackendError::from_core(&e));
+    ProbeOutcome {
+        index,
+        path,
+        kind: ProbeKind::from_probe(result),
+    }
 }
 
 /// Completed fraction of a bulk add for the progress bar fill, in `[0.0, 1.0]`.
@@ -108,8 +75,6 @@ pub(crate) fn add_progress_ratio(done: usize, total: usize) -> f32 {
 /// collaborators in the `add-finalize` handler on the UI thread. Held in an `Rc` so the add handlers
 /// (`on_add_books` / `on_add_folder`) and the finalize handler share one.
 pub(crate) struct AddController {
-    #[rustfmt::skip]
-    #[allow(dead_code)] // TODO(wasm-backend): remove when #656 ([6/13]) and #657 ([7/13]) have both merged
     backend: Rc<dyn BookBackend>,
     generation: Generation<Vec<ProbeOutcome>>,
     /// The op tag ("add-books" / "add-folder") of the current generation, used
@@ -117,6 +82,8 @@ pub(crate) struct AddController {
     op: RefCell<&'static str>,
     #[cfg(target_arch = "wasm32")]
     picker_notice: RefCell<Option<String>>,
+    #[cfg(target_arch = "wasm32")]
+    picker_epoch: std::cell::Cell<usize>,
 }
 
 impl AddController {
@@ -128,6 +95,8 @@ impl AddController {
             op: RefCell::new("add"),
             #[cfg(target_arch = "wasm32")]
             picker_notice: RefCell::new(None),
+            #[cfg(target_arch = "wasm32")]
+            picker_epoch: std::cell::Cell::new(0),
         }
     }
 
@@ -148,16 +117,7 @@ impl AddController {
         self.picker_notice.borrow_mut().take()
     }
 
-    /// Start probing `paths` for a bulk add. Bumps the epoch,
-    /// installs a fresh accumulator, shows the initial `Adding… (0/N)` status,
-    /// then on desktop dispatches one rayon probe per path. Each worker pushes its
-    /// [`ProbeOutcome`], marshals an epoch-guarded progress tick, and the worker
-    /// that drains the remaining counter to zero marshals `add-finalize`.
-    ///
-    /// Called on the UI thread from the add handlers. The empty-`paths` case is
-    /// handled inline (no workers): finalize is invoked directly so the apply
-    /// half still runs (yielding the "already in library" notice), matching the
-    /// old synchronous `add_paths(vec![])`.
+    /// Begin a fresh batch. An empty pick finalizes immediately.
     pub(crate) fn start(
         &self,
         ui_weak: slint::Weak<ViewerWindow>,
@@ -165,7 +125,18 @@ impl AddController {
         policy: ArchivePolicy,
         op: &'static str,
     ) {
+        // Completed successes in a superseded web batch never reach the library.
+        #[cfg(target_arch = "wasm32")]
+        if let Some(outcomes) = self.generation.take(self.picker_epoch.get()) {
+            for outcome in outcomes {
+                if matches!(outcome.kind, ProbeKind::Counted(_)) {
+                    crate::web_books::remove(&outcome.path);
+                }
+            }
+        }
         let ticket = self.generation.begin();
+        #[cfg(target_arch = "wasm32")]
+        self.picker_epoch.set(ticket.id());
         *self.op.borrow_mut() = op;
         let total = paths.len();
 
@@ -181,42 +152,37 @@ impl AddController {
         }
         ui.invoke_add_progress(0, total as i32);
 
-        #[cfg(target_arch = "wasm32")]
-        {
-            let id = ticket.id();
-            worker::spawn(move || {
-                for (index, path) in paths.into_iter().enumerate() {
-                    let outcome = probe_path(index, path, policy);
-                    if !matches!(outcome.kind, ProbeKind::Counted(_)) {
-                        crate::web_books::remove(&outcome.path);
-                    }
-                    ticket.deliver(|acc| acc.push(outcome));
-                }
-            });
-            // Apply before a second picker read can complete and supersede this batch.
-            ui.invoke_add_finalize(id as i32);
-        }
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
-            use std::sync::Arc;
+        for (index, path) in paths.into_iter().enumerate() {
+            let id = location::request_id(&path);
 
-            let remaining = Arc::new(AtomicUsize::new(total));
-            for (index, path) in paths.into_iter().enumerate() {
-                let ticket = ticket.clone();
-                let remaining = Arc::clone(&remaining);
-                let weak = ui_weak.clone();
-                worker::spawn(move || {
-                    let outcome = probe_path(index, path, policy);
-                    ticket.deliver(|acc| acc.push(outcome));
-                    // fetch_sub returns the count before the decrement.
-                    let left = remaining.fetch_sub(1, Relaxed) - 1;
-                    let done = total - left;
-                    marshal_progress(weak.clone(), &ticket, done, total);
-                    if left == 0 {
-                        marshal_finalize(weak, &ticket);
+            let ticket = ticket.clone();
+            let weak = ui_weak.clone();
+            let complete = move |result| {
+                let kind = ProbeKind::from_probe(result);
+                #[cfg(target_arch = "wasm32")]
+                if !ticket.is_current() || !matches!(kind, ProbeKind::Counted(_)) {
+                    crate::web_books::remove(&path);
+                }
+
+                let mut done = 0;
+                if !ticket.deliver(|outcomes| {
+                    outcomes.push(ProbeOutcome { index, path, kind });
+                    done = outcomes.len();
+                }) {
+                    return;
+                }
+                if let Some(ui) = weak.upgrade() {
+                    ui.invoke_add_progress(done as i32, total as i32);
+                    if done == total && ticket.is_current() {
+                        ui.invoke_add_finalize(ticket.id() as i32);
                     }
-                });
+                }
+            };
+            match id {
+                Ok(id) => self
+                    .backend
+                    .probe_page_count(&id, policy, Box::new(complete)),
+                Err(error) => complete(Err(error)),
             }
         }
     }
@@ -238,101 +204,138 @@ impl AddController {
     }
 }
 
-/// Marshal an epoch-guarded progress tick onto the UI thread: the `add-progress`
-/// callback fires with `(done, total)` so the handler can show the transient
-/// "Adding… (k/N)" status. A tick from a superseded generation (epoch moved) is
-/// dropped rather than flashing a stale count. Mirrors `cover_loader`'s
-/// `marshal_*` helpers — only `Send` values cross the boundary.
-#[cfg(not(target_arch = "wasm32"))]
-fn marshal_progress(
-    weak: slint::Weak<ViewerWindow>,
-    ticket: &Ticket<Vec<ProbeOutcome>>,
-    done: usize,
-    total: usize,
-) {
-    ticket.marshal(weak, "add-progress", move |ui| {
-        ui.invoke_add_progress(done as i32, total as i32);
-    });
-}
-
-/// Marshal the final `add-finalize` onto the UI thread once the last probe
-/// completes: the handler drains the outcomes (epoch-guarded inside
-/// `take_outcomes`) and runs the apply half. The epoch is carried through so a
-/// superseded batch's finalize is a no-op. Only `Send` values cross.
-#[cfg(not(target_arch = "wasm32"))]
-fn marshal_finalize(weak: slint::Weak<ViewerWindow>, ticket: &Ticket<Vec<ProbeOutcome>>) {
-    let my_epoch = ticket.id();
-    ticket.marshal(weak, "add-finalize", move |ui| {
-        ui.invoke_add_finalize(my_epoch as i32);
-    });
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// Create a temp directory `parent/<name>` holding `pages` zero-byte `*.png`
-    /// files (so it probes to a `pages`-page book; `pages == 0` probes to
-    /// `Empty`). Listing is extension-based, so empty files count as pages.
-    fn make_book_dir(parent: &std::path::Path, name: &str, pages: usize) -> std::path::PathBuf {
-        let dir = parent.join(name);
-        std::fs::create_dir_all(&dir).expect("create book dir");
-        for i in 0..pages {
-            std::fs::write(dir.join(format!("page{i:03}.png")), []).expect("write page");
-        }
-        dir
-    }
+    use crate::backend::{
+        fake::{Call, FakeBackend},
+        BackendError,
+    };
+    use crate::ui_marshal::Ticket;
+    use slint::ComponentHandle;
 
-    /// A folder with image pages probes to `Counted(n)`, carrying the input index
-    /// and the path unchanged (canonicalization happens later, in the apply half).
     #[test]
-    fn probe_path_counts_a_real_book() {
-        let root = tempfile::tempdir().expect("tempdir");
-        let three = make_book_dir(root.path(), "three", 3);
-        let outcome = probe_path(7, three.clone(), ArchivePolicy::default());
-        assert_eq!(outcome.index, 7);
-        assert_eq!(outcome.path, three);
-        match outcome.kind {
-            ProbeKind::Counted(n) => assert_eq!(n.get(), 3),
-            _ => panic!("expected Counted, got a skip"),
-        }
-    }
-
-    /// An empty folder opens cleanly but has zero pages → `Empty` (the
-    /// empty-book rule), never `Unreadable`.
-    #[test]
-    fn probe_path_classifies_empty_source() {
-        let root = tempfile::tempdir().expect("tempdir");
-        let empty = make_book_dir(root.path(), "empty", 0);
-        let outcome = probe_path(0, empty, ArchivePolicy::default());
-        assert!(matches!(outcome.kind, ProbeKind::Empty));
-    }
-
-    /// A nonexistent path cannot be opened → `Unreadable` (distinct from empty),
-    /// carrying a non-empty error string for the apply half's log.
-    #[test]
-    fn probe_path_classifies_unreadable_source() {
-        let outcome = probe_path(
-            0,
-            std::path::PathBuf::from("/nonexistent_gashuu_probe_path_unreadable"),
-            ArchivePolicy::default(),
+    fn probe_kind_from_probe_maps_all_four_arms() {
+        let count = NonZeroUsize::new(3).unwrap();
+        assert!(matches!(ProbeKind::from_probe(Ok(count)), ProbeKind::Counted(n) if n == count));
+        assert!(matches!(
+            ProbeKind::from_probe(Err(BackendError::EmptyBook)),
+            ProbeKind::Empty
+        ));
+        assert!(matches!(
+            ProbeKind::from_probe(Err(BackendError::FormatDisabled { format: "RAR" })),
+            ProbeKind::FormatDisabled { format: "RAR" }
+        ));
+        assert!(
+            matches!(ProbeKind::from_probe(Err(BackendError::Missing { detail: "missing".into() })), ProbeKind::Unreadable {error} if error == "missing")
         );
-        match outcome.kind {
-            ProbeKind::Unreadable { error } => assert!(!error.is_empty()),
-            _ => panic!("a missing path must classify as Unreadable"),
-        }
     }
 
-    /// A `.cbr` is rejected at probe time when `allow_rar` is false →
-    /// `FormatDisabled`, carrying the format tag for the log. The extension check
-    /// fires before any bytes are read, so any file content works.
     #[test]
-    fn probe_path_classifies_format_disabled() {
-        let root = tempfile::tempdir().expect("tempdir");
-        let cbr = root.path().join("manga.cbr");
-        std::fs::write(&cbr, b"dummy").expect("write dummy cbr");
-        let outcome = probe_path(0, cbr, ArchivePolicy { allow_rar: false });
-        assert!(matches!(outcome.kind, ProbeKind::FormatDisabled { .. }));
+    fn add_start_probes_every_path_once_and_finalizes_after_last() {
+        let ui = crate::cover_loader::test_window();
+        let fake = FakeBackend::new();
+        let controller = AddController::new(fake.clone());
+        let ticks = Rc::new(RefCell::new(Vec::new()));
+        let finalized = Rc::new(RefCell::new(Vec::new()));
+        ui.on_add_progress({
+            let ticks = ticks.clone();
+            move |done, total| ticks.borrow_mut().push((done, total))
+        });
+        ui.on_add_finalize({
+            let finalized = finalized.clone();
+            move |epoch| finalized.borrow_mut().push(epoch)
+        });
+        let paths = ["a", "b", "c"].map(PathBuf::from);
+        controller.start(
+            ui.as_weak(),
+            paths.to_vec(),
+            ArchivePolicy::default(),
+            "add-books",
+        );
+        assert_eq!(
+            fake.calls(),
+            ["a", "b", "c"].map(|s| Call::ProbePageCount(gashuu_core::BookId::new(s)))
+        );
+        for index in [2, 0] {
+            fake.complete_probe(index, Ok(NonZeroUsize::MIN));
+            assert!(finalized.borrow().is_empty());
+        }
+        fake.complete_probe(0, Err(BackendError::EmptyBook));
+        assert_eq!(*ticks.borrow(), [(0, 3), (1, 3), (2, 3), (3, 3)]);
+        assert_eq!(*finalized.borrow(), [1]);
+        let (outcomes, op) = controller.take_outcomes(1).unwrap();
+        assert_eq!(op, "add-books");
+        assert!(matches!(outcomes[1].kind, ProbeKind::Empty));
+        assert_eq!(
+            outcomes.into_iter().map(|o| o.path).collect::<Vec<_>>(),
+            paths
+        );
+    }
+
+    #[test]
+    fn add_superseded_batch_probe_completions_are_ignored() {
+        let ui = crate::cover_loader::test_window();
+        let fake = FakeBackend::new();
+        let controller = AddController::new(fake.clone());
+        let ticks = Rc::new(RefCell::new(Vec::new()));
+        let finalized = Rc::new(RefCell::new(Vec::new()));
+        ui.on_add_progress({
+            let ticks = ticks.clone();
+            move |done, total| ticks.borrow_mut().push((done, total))
+        });
+        ui.on_add_finalize({
+            let finalized = finalized.clone();
+            move |epoch| finalized.borrow_mut().push(epoch)
+        });
+
+        controller.start(
+            ui.as_weak(),
+            ["old-a", "old-b"].map(PathBuf::from).to_vec(),
+            ArchivePolicy::default(),
+            "add-books",
+        );
+        let current = PathBuf::from("current");
+        controller.start(
+            ui.as_weak(),
+            vec![current.clone()],
+            ArchivePolicy::default(),
+            "add-books",
+        );
+
+        fake.complete_probe(0, Ok(NonZeroUsize::MIN));
+        fake.complete_probe(0, Ok(NonZeroUsize::MIN));
+        assert_eq!(*ticks.borrow(), [(0, 2), (0, 1)]);
+        assert!(finalized.borrow().is_empty());
+        assert!(controller.take_outcomes(1).is_none());
+
+        fake.complete_probe(0, Ok(NonZeroUsize::MIN));
+        assert_eq!(*ticks.borrow(), [(0, 2), (0, 1), (1, 1)]);
+        assert_eq!(*finalized.borrow(), [2]);
+        let (outcomes, _) = controller.take_outcomes(2).unwrap();
+        assert_eq!(outcomes.len(), 1);
+        assert_eq!(outcomes[0].path, current);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn add_non_utf8_path_is_unreadable_without_dispatch() {
+        use std::os::unix::ffi::OsStrExt;
+        let ui = crate::cover_loader::test_window();
+        let fake = FakeBackend::new();
+        let controller = AddController::new(fake.clone());
+        let path = PathBuf::from(std::ffi::OsStr::from_bytes(&[255]));
+        controller.start(
+            ui.as_weak(),
+            vec![path.clone()],
+            ArchivePolicy::default(),
+            "add-folder",
+        );
+        assert!(fake.calls().is_empty());
+        let (outcomes, _) = controller.take_outcomes(1).unwrap();
+        assert_eq!(outcomes[0].path, path);
+        assert!(matches!(&outcomes[0].kind, ProbeKind::Unreadable {error} if !error.is_empty()));
     }
 
     /// Deliver one worker result without a Slint event loop.

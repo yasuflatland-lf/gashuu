@@ -1,57 +1,29 @@
-//! Book-cover loading controller for the library carousel.
-//!
-//! A book's cover is a thumbnail of page zero. Desktop dispatches each request
-//! to a rayon worker, which checks the memory and disk caches before opening the
-//! book. The browser uses the memory cache and awaits one page decode at a time
-//! on the Slint event loop. Both paths reuse the open source for the page count
-//! and marshal the cover, empty book, or load failure to the carousel.
-//!
-//! Correctness across library refreshes is the SAME epoch + cancel double-guard
-//! as `ThumbnailController` (see `thumbnail_strip.rs`): `start` bumps an
-//! `AtomicUsize` epoch (so a late `invoke_from_event_loop` whose captured
-//! `my_epoch` mismatches the current epoch is dropped) AND flips the previous
-//! generation's `AtomicBool` cancel flag (so a worker that has not yet started
-//! its heavy open+decode stops promptly). Either guard alone is insufficient.
-//!
-//! Thread-boundary rule (identical to the thumbnail strip): only `Send` values
-//! cross into the rayon job and the event-loop closure — `slint::Weak` (Send+Sync),
-//! the epoch and cancel `Arc`s, the row `usize`, `my_epoch`, the cache-key
-//! `String`, the `PathBuf`, and the resulting `DecodedImage`. The `Rc` `VecModel`
-//! and `slint::Image` (both `!Send`) are NEVER moved: the model is re-fetched and
-//! the image built INSIDE the event-loop closure.
+//! Load carousel covers through the shared book backend in focus order.
+//! Each refresh persists resolved counts, cancels older requests and advances
+//! the UI epoch. Backend completions update their row on the UI thread.
+//! Unknown counts arrive with the cover request and are queued for persistence.
+//! Empty books trigger the library removal handler.
 
-use crate::backend::{cover_mem::CoverMemCache, BookBackend};
+use crate::backend::{BackendError, BookBackend};
 use crate::carousel::update_carousel_row;
-use crate::page_count_prefetch::{self, PageCountPrefetch, ResolvedCount};
-#[cfg(target_arch = "wasm32")]
-use crate::page_decode::decode_cover;
-use crate::to_slint_image;
-use crate::ui_marshal::marshal_to_ui;
-#[cfg(not(target_arch = "wasm32"))]
-use crate::worker;
-use crate::{book_path, CarouselItem, LibraryStoreHandle, ViewerWindow};
-#[cfg(target_arch = "wasm32")]
-use gashuu_core::PageDecoder;
-use gashuu_core::{
-    cache_key, ArchivePolicy, BookId, CoreError, DecodedImage, Library, PageSource, ThumbnailCache,
-};
-#[cfg(not(target_arch = "wasm32"))]
-use gashuu_core::{generate_cover, thumbnail_cache::source_mtime_secs};
+use crate::page_count_prefetch::PageCountPrefetch;
+use crate::ui_marshal::ui_done;
+use crate::{to_slint_image, CarouselItem, LibraryStoreHandle, ViewerWindow};
+use gashuu_core::{BookId, DecodedImage, Library, ThumbnailCache};
 use slint::{Model, VecModel};
 use std::cell::RefCell;
-use std::num::NonZeroUsize;
 use std::path::PathBuf;
 use std::rc::Rc;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering::Relaxed};
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
+use std::sync::Arc;
 
 /// Immutable cover-cache retention policy: how big the on-disk cover cache may
 /// grow (`max_bytes`) and the longer-edge size of generated covers (`max_side`).
 /// Both decisions are I/O retention policy, so they live together in one value
-/// object instead of as scattered bare `const`s next to the rayon-dispatch glue
+/// object instead of as scattered bare `const`s next to the dispatch code
 /// — the invariant-owner pattern of core's `CacheConfig`. The single
 /// canonical instance is [`CoverCachePolicy::DEFAULT`]; the dispatch helpers
-/// (`spawn_cache_prune`, `spawn_load`, `purge_cover`) read its fields rather
+/// (`spawn_cache_prune`, `request_cover`, `purge_cover`) read its fields rather
 /// than free-standing constants.
 ///
 /// `max_side` is also a `cache_key` / `purge_cover_for` ingredient, so its value must
@@ -90,7 +62,7 @@ impl CoverCachePolicy {
     };
 }
 
-/// Sweep the cover cache down to the policy's `max_bytes` on a rayon worker.
+/// Sweep the cover cache down to the policy's `max_bytes` on a background worker.
 /// Fire-and-forget, called ONCE at startup right after the initial cover
 /// dispatch — visible covers grab workers first, and the sweep's per-entry
 /// stat/unlink I/O never touches the UI thread. Cap overflow created later in
@@ -103,8 +75,8 @@ impl CoverCachePolicy {
 /// `PruneReport` is logged here.
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn spawn_cache_prune() {
-    worker::spawn(|| {
-        // `start` already warned once about the no-cache-dir degraded state.
+    rayon::spawn(|| {
+        // The backend already warned once about the no-cache-dir degraded state.
         let Ok(cache) = ThumbnailCache::new() else {
             return;
         };
@@ -120,9 +92,7 @@ pub(crate) fn spawn_cache_prune() {
     });
 }
 
-/// One book the controller must load a cover for: its carousel row index and its
-/// book ID and resolved location. The worker uses the ID for library updates
-/// and the location for source and cache access.
+/// One carousel row, its backend request ID and its location for diagnostics.
 pub struct CoverRequest {
     pub row: usize,
     pub id: BookId,
@@ -148,30 +118,11 @@ pub(crate) fn prioritize_by_focus(
     requests
 }
 
-/// Owns the carousel-cover generation bookkeeping (epoch + cancel double-guard).
-/// It does NOT own the `VecModel` — that is built and bound into the UI by
-/// `carousel::build_carousel_model`; this controller re-fetches it through the
-/// `Weak<ViewerWindow>` inside each event-loop closure (the model is `!Send`).
+/// Keeps each carousel refresh's callbacks tied to its own rows.
 pub struct CoverController {
-    #[rustfmt::skip]
-    #[allow(dead_code)] // TODO(wasm-backend): remove when #656 ([6/13]) and #657 ([7/13]) have both merged
     backend: Rc<dyn BookBackend>,
     epoch: Arc<AtomicUsize>,
-    cancel: RefCell<Arc<AtomicBool>>,
-    /// Page-count prefetch concern: the pending queue of counts resolved by
-    /// background workers plus its UI-thread persistence lifecycle. The live
-    /// carousel `total` is updated separately and immediately by `marshal_total`
-    /// (display vs persist are independent — the queue is only the persistence
-    /// bridge). See [`PageCountPrefetch`].
     prefetch: PageCountPrefetch,
-    /// Process-lifetime, thread-shared, byte-budgeted LRU of decoded covers,
-    /// checked before the disk read in `spawn_load` so a cover decoded once this
-    /// session is not re-read + re-PNG-decoded on a later carousel pass. Behind an
-    /// `Arc<Mutex<_>>` because rayon workers share it; the lock is held only around
-    /// `get`/`insert`, never across a decode or any I/O. See [`CoverMemCache`].
-    mem: Arc<Mutex<CoverMemCache>>,
-    #[cfg(target_arch = "wasm32")]
-    web: WebCoverLoader,
 }
 
 /// Best-effort removal of `path`'s persistent cover — the single home of the
@@ -231,355 +182,53 @@ fn set_cover_failed(ui: &ViewerWindow, row: usize) {
     mark_cover_failed(vm, row);
 }
 
-/// Marshal one cover image onto the UI thread for carousel row `row`: the
-/// event-loop closure applies the epoch-guard + upgrade preamble, then writes
-/// the row via `apply_loaded_cover`. The `slint::Image` is built INSIDE this
-/// closure (it is `!Send`); the captured `img` is the Send `Arc<DecodedImage>`
-/// (an `Arc` so a memory-cached cover is shared, not buffer-copied, into the
-/// closure — `to_slint_image` reads it through the `Arc`'s `Deref`).
-fn marshal_cover(
-    weak: slint::Weak<ViewerWindow>,
-    epoch: Arc<AtomicUsize>,
-    my_epoch: usize,
-    row: usize,
-    img: Arc<DecodedImage>,
-) {
-    marshal_to_ui(weak, epoch, my_epoch, "cover", move |ui| {
-        // Build the `!Send` slint::Image here, on the UI thread, then write the row.
-        apply_loaded_cover(ui, row, to_slint_image(&img));
-    });
-}
-
-/// Marshal a FAILED cover load onto the UI thread for carousel row `row`
-/// (issue 144): the event-loop closure applies the same epoch-guard + upgrade
-/// preamble as `marshal_cover`, then flips the row's `cover_failed` flag via
-/// `set_cover_failed`. Fired by a worker whose source open or cover decode
-/// failed permanently, so the card renders the shared failed treatment instead
-/// of an indefinite loading placeholder — the cover counterpart of the strip's
-/// failed cell (docs/patterns.md "Per-page thumbnail failure → distinct FAILED
-/// cell"). A model rebuild resets the flag, so the next generation retries.
-fn marshal_failed(
-    weak: slint::Weak<ViewerWindow>,
-    epoch: Arc<AtomicUsize>,
-    my_epoch: usize,
-    row: usize,
-) {
-    marshal_to_ui(weak, epoch, my_epoch, "cover-failed", move |ui| {
-        set_cover_failed(ui, row);
-    });
-}
-
-/// Marshal an "empty book detected" signal onto the UI thread for the book at
-/// ID. Fired by a worker that opened a book's source CLEANLY but found ZERO
-/// pages (see `should_signal_empty`): the `on_empty_book_detected` handler in
-/// `handlers/library.rs` removes the book, purges its cover cache, rebuilds the
-/// carousel, and shows a notice. The counterpart of `marshal_total`: same epoch-guard + upgrade
-/// preamble, so a signal from a superseded generation (library refreshed since)
-/// is dropped rather than acting on a stale row.
-///
-/// Dropping a stale generation's signal cannot lose the detection: if this
-/// generation is dropped, the still-present empty book is re-detected by the next
-/// generation's worker (the open is re-issued for every book lacking a count);
-/// once the book is removed it is absent from the next generation's requests, so
-/// there is no removal loop. The closure builds the `SharedString` from the ID.
-fn marshal_empty_book(
-    weak: &slint::Weak<ViewerWindow>,
-    epoch: &Arc<AtomicUsize>,
-    my_epoch: usize,
-    id: BookId,
-) {
-    marshal_to_ui(
-        weak.clone(),
-        Arc::clone(epoch),
-        my_epoch,
-        "empty-book",
-        move |ui| {
-            ui.invoke_empty_book_detected(id.as_str().into());
-        },
-    );
-}
-
-/// Worker-side decision: should opening a book's source and counting its pages
-/// raise the "empty book" signal? `true` only when the source opened CLEANLY
-/// (`Ok`) AND counts no pages (`None` — the raw probe count converts to the
-/// emptiness vocabulary at the call-site boundary) — an open ERROR is
-/// unreadable, NOT empty, and keeps the placeholder + log behavior with no
-/// signal. Pure and `Send`-free so the decision is unit-testable without a
-/// Slint/UI event loop. The generic `E` avoids a dependency on
-/// `ArchiveLoader`'s concrete error type in tests.
-fn should_signal_empty<S, E>(open_result: &Result<S, E>, page_count: Option<NonZeroUsize>) -> bool {
-    open_result.is_ok() && page_count.is_none()
-}
-
-/// After a cover HIT (in-memory OR on-disk), resolve a still-unknown page count
-/// with one archive open and stream it to the row. Shared by both hit branches of
-/// `spawn_load`: the cover is already marshalled, so this only fixes the "1 / 0"
-/// display. An opened-but-empty book raises the empty-book signal; a count-open
-/// FAILURE is logged, not fatal — the row keeps the cover already shown (no failed
-/// marking). Runs on the rayon worker, touching only `Send` state; cancel is
-/// re-checked after the open before crossing to the UI thread.
-fn resolve_count_after_hit(
-    pending: &Arc<Mutex<Vec<ResolvedCount>>>,
-    weak: &slint::Weak<ViewerWindow>,
-    epoch: &Arc<AtomicUsize>,
-    my_epoch: usize,
-    cancel: &Arc<AtomicBool>,
-    req: CoverRequest,
-) {
-    let CoverRequest { row, id, path, .. } = req;
-    // TODO(#175-followup): use open_with_policy once ArchivePolicy is threaded
-    // through CoverRequest / CarouselRefresh.
-    let open_result = book_path::open(&path, ArchivePolicy::default());
-    match &open_result {
-        Ok(source) => {
-            let count = source.list_pages().len();
-            // Post-open cancel re-check before crossing to the UI thread.
-            if cancel.load(Relaxed) {
-                return;
-            }
-            // Opened cleanly but zero pages: signal the empty book (count == 0 also means
-            // push_and_marshal_count below queues nothing — NonZeroUsize::new(0) is None).
-            if should_signal_empty(&open_result, NonZeroUsize::new(count)) {
-                marshal_empty_book(weak, epoch, my_epoch, id.clone());
-            }
-            page_count_prefetch::push_and_marshal_count(
-                pending, weak, epoch, my_epoch, row, id, count,
-            );
-        }
-        Err(e) => {
-            // A count-open failure is NOT a cover failure: the cover was already
-            // marshalled, so the row keeps it (no failed marking, log only).
-            tracing::warn!(path = %path.display(), error = %e, "cover: count open failed");
-        }
-    }
-}
-
-/// Handles shared by requests for the same carousel model.
-#[derive(Clone)]
-struct CoverGeneration {
-    weak: slint::Weak<ViewerWindow>,
-    epoch: Arc<AtomicUsize>,
-    my_epoch: usize,
-    cancel: Arc<AtomicBool>,
-    pending: Arc<Mutex<Vec<ResolvedCount>>>,
-    mem: Arc<Mutex<CoverMemCache>>,
-}
-
-/// Everything needed to publish a cover once its page has been decoded.
-struct CoverMiss {
-    req: CoverRequest,
-    key: String,
-    count: Option<NonZeroUsize>,
-    #[cfg(not(target_arch = "wasm32"))]
-    disk_cache: ThumbnailCache,
-}
-
-impl CoverGeneration {
-    fn cache_cover(&self, key: String, decoded: DecodedImage) -> Arc<DecodedImage> {
-        let decoded = Arc::new(decoded);
-        if let Ok(mut mem) = self.mem.lock() {
-            mem.insert(key, Arc::clone(&decoded));
-        }
-        decoded
-    }
-
-    fn mark_failed(&self, row: usize) {
-        if !self.cancel.load(Relaxed) {
-            marshal_failed(
-                self.weak.clone(),
-                Arc::clone(&self.epoch),
-                self.my_epoch,
-                row,
-            );
-        }
-    }
-
-    /// Serve a cached cover immediately. Only a miss on a nonempty book needs a decode.
-    fn prepare(&self, req: CoverRequest) -> Option<(CoverMiss, Arc<dyn PageSource>)> {
-        if self.cancel.load(Relaxed) {
-            return None;
-        }
-        #[cfg(not(target_arch = "wasm32"))]
-        let disk_cache = ThumbnailCache::new().ok()?;
-        #[cfg(not(target_arch = "wasm32"))]
-        let mtime = source_mtime_secs(&req.path);
-        #[cfg(target_arch = "wasm32")]
-        let mtime = 0;
-        let key = cache_key(&req.path, mtime, CoverCachePolicy::DEFAULT.max_side);
-        let cached = self.mem.lock().ok().and_then(|mut mem| mem.get(&key));
-        #[cfg(not(target_arch = "wasm32"))]
-        let cached = cached.or_else(|| {
-            disk_cache
-                .get(&key)
-                .map(|img| self.cache_cover(key.clone(), img))
-        });
-        if let Some(decoded) = cached {
-            marshal_cover(
-                self.weak.clone(),
-                Arc::clone(&self.epoch),
-                self.my_epoch,
-                req.row,
-                decoded,
-            );
-            if req.needs_count && !self.cancel.load(Relaxed) {
-                resolve_count_after_hit(
-                    &self.pending,
-                    &self.weak,
-                    &self.epoch,
-                    self.my_epoch,
-                    &self.cancel,
-                    req,
-                );
-            }
-            return None;
-        }
-
-        // TODO(#175-followup): thread ArchivePolicy through CoverRequest / CarouselRefresh.
-        let source = match book_path::open(&req.path, ArchivePolicy::default()) {
-            Ok(source) => source,
-            Err(e) => {
-                tracing::warn!(path = %req.path.display(), error = %e, "cover: open failed");
-                self.mark_failed(req.row);
-                return None;
-            }
-        };
-        let Some(page_count) = NonZeroUsize::new(source.list_pages().len()) else {
-            if !self.cancel.load(Relaxed) {
-                marshal_empty_book(&self.weak, &self.epoch, self.my_epoch, req.id);
-            }
-            return None;
-        };
-        let miss = CoverMiss {
-            count: req.needs_count.then_some(page_count),
-            req,
-            key,
-            #[cfg(not(target_arch = "wasm32"))]
-            disk_cache,
-        };
-        Some((miss, source))
-    }
-
-    fn finish(&self, miss: CoverMiss, result: Result<DecodedImage, CoreError>) {
-        let req = miss.req;
-        let decoded = match result {
-            Ok(decoded) => decoded,
-            Err(e) => {
-                tracing::warn!(path = %req.path.display(), error = %e, "cover: generate failed");
-                self.mark_failed(req.row);
-                return;
-            }
-        };
-        #[cfg(not(target_arch = "wasm32"))]
-        if let Err(e) = miss.disk_cache.put(&miss.key, &decoded) {
-            tracing::warn!(path = %req.path.display(), error = %e, "cover: cache put failed");
-        }
-        let decoded = self.cache_cover(miss.key, decoded);
-        if self.cancel.load(Relaxed) {
-            return;
-        }
-        if let Some(count) = miss.count {
-            page_count_prefetch::push_and_marshal_count(
-                &self.pending,
-                &self.weak,
-                &self.epoch,
-                self.my_epoch,
-                req.row,
-                req.id,
-                count.get(),
-            );
-        }
-        marshal_cover(
-            self.weak.clone(),
-            Arc::clone(&self.epoch),
-            self.my_epoch,
-            req.row,
-            decoded,
-        );
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    fn spawn_load(&self, req: CoverRequest) {
-        let generation = self.clone();
-        worker::spawn(move || {
-            if let Some((miss, source)) = generation.prepare(req) {
-                let result = generate_cover(source, CoverCachePolicy::DEFAULT.max_side);
-                generation.finish(miss, result);
-            }
-        });
-    }
-}
-
-#[cfg(target_arch = "wasm32")]
-struct WebCoverLoader {
-    primary: Rc<dyn PageDecoder>,
-    fallback: Rc<dyn PageDecoder>,
-    task: RefCell<Option<slint::JoinHandle<()>>>,
-}
-
-#[cfg(target_arch = "wasm32")]
-impl WebCoverLoader {
-    fn start(&self, generation: CoverGeneration, requests: Vec<CoverRequest>) {
-        let primary = Rc::clone(&self.primary);
-        let fallback = Rc::clone(&self.fallback);
-        let previous = self.task.take();
-        let task = slint::spawn_local(async move {
-            // A refresh can arrive while the previous native decode is still pending.
-            if let Some(previous) = previous {
-                previous.await;
-            }
-            for req in requests {
-                if generation.cancel.load(Relaxed) {
-                    break;
-                }
-                if let Some((miss, source)) = generation.prepare(req) {
-                    let result = decode_cover(
-                        source,
-                        primary.as_ref(),
-                        fallback.as_ref(),
-                        CoverCachePolicy::DEFAULT.max_side,
-                    )
-                    .await;
-                    generation.finish(miss, result);
-                }
-            }
-        });
-        match task {
-            Ok(task) => *self.task.borrow_mut() = Some(task),
-            Err(error) => {
-                tracing::warn!(%error, "could not schedule cover loading");
-            }
-        }
-    }
-}
-
 impl CoverController {
-    /// Build the controller. Call once during UI setup.
-    pub fn new(
-        #[cfg(target_arch = "wasm32")] primary: Rc<dyn PageDecoder>,
-        #[cfg(target_arch = "wasm32")] fallback: Rc<dyn PageDecoder>,
-        backend: Rc<dyn BookBackend>,
-    ) -> Self {
+    pub fn new(backend: Rc<dyn BookBackend>) -> Self {
         Self {
             backend,
-            #[cfg(target_arch = "wasm32")]
-            web: WebCoverLoader {
-                primary,
-                fallback,
-                task: RefCell::default(),
-            },
             epoch: Arc::new(AtomicUsize::new(0)),
-            cancel: RefCell::new(Arc::new(AtomicBool::new(false))),
             prefetch: PageCountPrefetch::new(),
-            mem: Arc::new(Mutex::new(CoverMemCache::new())),
         }
     }
 
-    /// Supersede the previous generation's cancel flag and install a fresh one,
-    /// returning a clone of the new flag for the just-started generation. Delegates
-    /// to the shared [`crate::ui_marshal::rotate_cancel`], which single-homes the
-    /// one-borrow-per-statement discipline; shared shape with `ThumbnailController`.
-    fn rotate_cancel(&self) -> Arc<AtomicBool> {
-        crate::ui_marshal::rotate_cancel(&self.cancel)
+    fn request_cover(&self, weak: &slint::Weak<ViewerWindow>, my_epoch: usize, req: CoverRequest) {
+        let row = req.row;
+        let id = req.id.clone();
+        let on_cover = ui_done(
+            weak.clone(),
+            Arc::clone(&self.epoch),
+            my_epoch,
+            move |ui, result: Result<Arc<DecodedImage>, BackendError>| match result {
+                Ok(image) => apply_loaded_cover(ui, row, to_slint_image(&image)),
+                Err(BackendError::EmptyBook) => ui.invoke_empty_book_detected(id.as_str().into()),
+                Err(error) => {
+                    tracing::warn!(book = %id, path = %req.path.display(), %error, "cover: load failed");
+                    set_cover_failed(ui, row);
+                }
+            },
+        );
+        let on_count = req.needs_count.then(|| {
+            let id = req.id.clone();
+            let pending = self.prefetch.queue();
+            ui_done(
+                weak.clone(),
+                Arc::clone(&self.epoch),
+                my_epoch,
+                move |ui, result| match result {
+                    Ok(count) => PageCountPrefetch::record_count(&pending, ui, row, id, count),
+                    Err(BackendError::EmptyBook) => {
+                        ui.invoke_empty_book_detected(id.as_str().into())
+                    }
+                    Err(error) => tracing::warn!(book = %id, %error, "cover: count open failed"),
+                },
+            )
+        });
+        self.backend.cover(
+            &req.id,
+            CoverCachePolicy::DEFAULT.max_side,
+            on_cover,
+            on_count,
+        );
     }
 
     /// Persist any still-pending prefetched page counts. Call on shutdown or on a web suspend event;
@@ -599,46 +248,18 @@ impl CoverController {
         library_store: &LibraryStoreHandle,
         requests: Vec<CoverRequest>,
     ) {
-        // 0. Persist counts the PREVIOUS generation's workers resolved (UI thread).
         self.prefetch.apply(library, library_store);
-
-        // 1. Supersede the previous generation and take this one's fresh cancel flag.
-        let cancel_flag = self.rotate_cancel();
-
-        // 2. Tag this generation so superseded callbacks are dropped.
+        self.backend.cancel_covers();
         let my_epoch = self.epoch.fetch_add(1, Relaxed) + 1;
-
-        // Probe the disk cache once so the no-cache-dir degraded state is logged ONCE here,
-        // not by every worker (workers rebuild their own handle — it only holds a dir path).
-        #[cfg(not(target_arch = "wasm32"))]
-        if let Err(e) = ThumbnailCache::new() {
-            tracing::warn!(error = %e, "no cover cache available; covers stay placeholders");
-            return;
-        }
-
-        // Window already gone (shutdown race): don't queue useless workers.
         if ui_weak.upgrade().is_none() {
             return;
         }
 
-        // 3. Dispatch. The elapsed log pins the UI-thread cost of `start` itself
-        // (dispatch only — all per-book I/O happens on the workers).
         let started = crate::clock::now();
         let dispatched = requests.len();
-        let generation = CoverGeneration {
-            weak: ui_weak,
-            epoch: Arc::clone(&self.epoch),
-            my_epoch,
-            cancel: cancel_flag,
-            pending: self.prefetch.queue(),
-            mem: Arc::clone(&self.mem),
-        };
-        #[cfg(not(target_arch = "wasm32"))]
         for req in requests {
-            generation.spawn_load(req);
+            self.request_cover(&ui_weak, my_epoch, req);
         }
-        #[cfg(target_arch = "wasm32")]
-        self.web.start(generation, requests);
         tracing::debug!(
             dispatched,
             elapsed_us = started.elapsed().as_micros() as u64,
@@ -648,8 +269,27 @@ impl CoverController {
 }
 
 #[cfg(test)]
+pub(crate) fn test_window() -> ViewerWindow {
+    struct Platform;
+    impl slint::platform::Platform for Platform {
+        fn create_window_adapter(
+            &self,
+        ) -> Result<Rc<dyn slint::platform::WindowAdapter>, slint::PlatformError> {
+            use slint::platform::software_renderer::{MinimalSoftwareWindow, RepaintBufferType};
+            Ok(MinimalSoftwareWindow::new(RepaintBufferType::NewBuffer))
+        }
+    }
+    slint::platform::set_platform(Box::new(Platform)).unwrap();
+    ViewerWindow::new().unwrap()
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
+    use crate::backend::fake::{Call, FakeBackend};
+    use gashuu_core::CoreError;
+    use slint::{ComponentHandle, SharedString};
+    use std::num::NonZeroUsize;
 
     /// The cover-cache policy values are load-bearing for on-disk compatibility:
     /// `max_side` (512) is a `cache_key` / `purge_cover_for` ingredient, so the
@@ -731,7 +371,7 @@ mod tests {
         let id = BookId::new(format!("/manga/{row}.cbz"));
         CoverRequest {
             row,
-            path: book_path::locate(&id),
+            path: PathBuf::from(id.as_str()),
             id,
             needs_count: false,
         }
@@ -772,32 +412,206 @@ mod tests {
         assert!(prioritize_by_focus(Vec::new(), 5).is_empty());
     }
 
-    /// A unit type and error stand in for `ArchiveLoader::open`'s `Ok`/`Err`,
-    /// since `should_signal_empty` is generic over the source and error types —
-    /// the decision is "opened cleanly AND no pages (`None`)".
-    type OpenResult = Result<(), &'static str>;
-
-    /// Opened cleanly with zero pages (`None`) IS an empty book: signal.
     #[test]
-    fn signal_empty_on_open_success_zero_pages() {
-        let open: OpenResult = Ok(());
-        assert!(should_signal_empty(&open, None));
+    fn start_cancels_covers_then_requests_each_book_in_focus_order() {
+        let ui = test_window();
+        let fake = FakeBackend::new();
+        let controller = CoverController::new(fake.clone());
+        let mut requests = prioritize_by_focus(vec![req(0), req(1)], 1);
+        requests[0].needs_count = true;
+        controller.start(
+            ui.as_weak(),
+            &RefCell::new(Library::new()),
+            &Rc::new(None),
+            requests,
+        );
+        assert_eq!(
+            fake.calls(),
+            [
+                Call::CancelCovers,
+                Call::Cover {
+                    id: req(1).id,
+                    max_side: 512,
+                    wants_count: true
+                },
+                Call::Cover {
+                    id: req(0).id,
+                    max_side: 512,
+                    wants_count: false
+                },
+            ]
+        );
     }
 
-    /// Opened cleanly with pages is a normal book: no signal.
     #[test]
-    fn no_signal_on_open_success_with_pages() {
-        let open: OpenResult = Ok(());
-        assert!(!should_signal_empty(&open, NonZeroUsize::new(5)));
-        assert!(!should_signal_empty(&open, NonZeroUsize::new(1)));
+    fn start_persists_previously_resolved_counts_before_cancelling() {
+        use gashuu_core::{BlobStore, LibraryStore};
+
+        // The store observes the fake's call log at the instant the library is saved.
+        thread_local! {
+            static BACKEND: Rc<FakeBackend> = FakeBackend::new();
+        }
+        #[derive(Debug, Default)]
+        struct Saves(AtomicUsize);
+        impl BlobStore for Saves {
+            fn write_atomic(&self, _: &str, bytes: &[u8]) -> Result<(), CoreError> {
+                BACKEND.with(|backend| assert!(backend.calls().is_empty()));
+                let saved = Library::from_json(std::str::from_utf8(bytes).unwrap())?;
+                assert_eq!(saved.books()[0].page_count_opt(), Some(1));
+                self.0.fetch_add(1, Relaxed);
+                Ok(())
+            }
+
+            fn read(&self, _: &str) -> Result<Option<Vec<u8>>, CoreError> {
+                unreachable!("refresh only saves")
+            }
+
+            fn quarantine(&self, _: &str, _: u64) -> Result<Option<String>, CoreError> {
+                unreachable!("refresh only saves")
+            }
+        }
+        let ui = test_window();
+        let fake = BACKEND.with(Rc::clone);
+        let controller = CoverController::new(fake.clone());
+        let saves = Arc::new(Saves::default());
+        let store = Rc::new(Some(LibraryStore::with_blob_store(saves.clone())));
+        let library = RefCell::new(Library::new());
+        let id = req(0).id;
+        library.borrow_mut().add(id.clone(), "book".into()).unwrap();
+        PageCountPrefetch::record_count(
+            &controller.prefetch.queue(),
+            &ui,
+            0,
+            id,
+            NonZeroUsize::MIN,
+        );
+        controller.start(slint::Weak::default(), &library, &store, vec![]);
+        assert_eq!(library.borrow().books()[0].page_count_opt(), Some(1));
+        assert_eq!(saves.0.load(Relaxed), 1);
+        assert_eq!(fake.calls(), [Call::CancelCovers]);
     }
 
-    /// An open ERROR is unreadable, NOT empty — even if the (unused) count is
-    /// zero, the error keeps the placeholder + log behavior and raises no signal.
+    fn start_cover(ui: &ViewerWindow) -> (Rc<FakeBackend>, CoverController) {
+        ui.set_carousel_items(Rc::new(VecModel::from(vec![carousel_item("book")])).into());
+        let fake = FakeBackend::new();
+        let controller = CoverController::new(fake.clone());
+        let mut request = req(0);
+        request.needs_count = true;
+        controller.start(
+            ui.as_weak(),
+            &RefCell::new(Library::new()),
+            &Rc::new(None),
+            vec![request],
+        );
+        (fake, controller)
+    }
+
+    fn cover_image() -> Arc<DecodedImage> {
+        Arc::new(DecodedImage::new(vec![255; 8], 2, 1).unwrap())
+    }
+
+    fn io_error() -> BackendError {
+        BackendError::from_core(&CoreError::Io(std::io::Error::other("read failed")))
+    }
+
     #[test]
-    fn no_signal_on_open_error() {
-        let open: OpenResult = Err("unreadable");
-        assert!(!should_signal_empty(&open, None));
-        assert!(!should_signal_empty(&open, NonZeroUsize::new(5)));
+    fn stale_generation_cover_and_count_are_ignored() {
+        let ui = test_window();
+        let (fake, controller) = start_cover(&ui);
+        let (on_cover, on_count) = fake.take_cover(0);
+        let mut replacement = carousel_item("replacement");
+        // Slint treats empty images as unequal, even after cloning.
+        let image = DecodedImage::new(vec![0; 4], 1, 1).unwrap();
+        replacement.cover = to_slint_image(&image);
+        ui.set_carousel_items(Rc::new(VecModel::from(vec![replacement.clone()])).into());
+        controller.start(
+            ui.as_weak(),
+            &RefCell::new(Library::new()),
+            &Rc::new(None),
+            vec![],
+        );
+
+        on_cover(Ok(cover_image()));
+        on_count.expect("requested count")(Ok(NonZeroUsize::MIN));
+
+        let model = ui.get_carousel_items();
+        assert_eq!(model.row_count(), 1);
+        assert_eq!(model.row_data(0).unwrap(), replacement);
+        assert!(controller.prefetch.queue().lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn current_generation_cover_and_count_update_row_and_queue_count() {
+        let ui = test_window();
+        let (fake, controller) = start_cover(&ui);
+        let count = NonZeroUsize::new(7).unwrap();
+        fake.complete_cover(0, Ok(cover_image()), Some(Ok(count)));
+
+        let row = ui.get_carousel_items().row_data(0).unwrap();
+        assert!(row.cover_loaded);
+        assert!(!row.cover_failed);
+        assert_eq!(row.cover.size().width, 2);
+        assert_eq!(row.cover.size().height, 1);
+        assert_eq!(row.total, 7);
+        assert_eq!(controller.prefetch.queue().lock().unwrap().len(), 1);
+
+        let id = req(0).id;
+        let mut library = Library::new();
+        library.add(id, "book".into()).unwrap();
+        let library = RefCell::new(library);
+        controller.flush_counts(&library, &Rc::new(None));
+        assert_eq!(library.borrow().books()[0].page_count_opt(), Some(7));
+    }
+
+    fn assert_empty_book_detected(
+        cover: Result<Arc<DecodedImage>, BackendError>,
+        count: Option<Result<NonZeroUsize, BackendError>>,
+    ) {
+        let ui = test_window();
+        let (fake, controller) = start_cover(&ui);
+        let detected = Rc::new(RefCell::new(Vec::new()));
+        ui.on_empty_book_detected({
+            let detected = detected.clone();
+            move |id| detected.borrow_mut().push(id)
+        });
+
+        fake.complete_cover(0, cover, count);
+
+        assert_eq!(*detected.borrow(), [SharedString::from(req(0).id.as_str())]);
+        assert!(!ui.get_carousel_items().row_data(0).unwrap().cover_failed);
+        assert!(controller.prefetch.queue().lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn empty_cover_completion_signals_empty_book_once() {
+        assert_empty_book_detected(Err(BackendError::EmptyBook), None);
+    }
+
+    #[test]
+    fn empty_count_completion_signals_empty_book_once() {
+        assert_empty_book_detected(Ok(cover_image()), Some(Err(BackendError::EmptyBook)));
+    }
+
+    #[test]
+    fn cover_io_error_marks_cover_failed() {
+        let ui = test_window();
+        let (fake, _controller) = start_cover(&ui);
+        fake.complete_cover(0, Err(io_error()), None);
+
+        let row = ui.get_carousel_items().row_data(0).unwrap();
+        assert!(row.cover_failed);
+        assert!(!row.cover_loaded);
+    }
+
+    #[test]
+    fn count_io_error_leaves_cover_loaded_and_queue_empty() {
+        let ui = test_window();
+        let (fake, controller) = start_cover(&ui);
+        fake.complete_cover(0, Ok(cover_image()), Some(Err(io_error())));
+
+        let row = ui.get_carousel_items().row_data(0).unwrap();
+        assert!(row.cover_loaded);
+        assert!(!row.cover_failed);
+        assert!(controller.prefetch.queue().lock().unwrap().is_empty());
     }
 }
