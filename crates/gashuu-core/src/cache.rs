@@ -23,12 +23,11 @@ pub const DEFAULT_CAPACITY: usize = 50;
 /// Default prefetch radius: pages on each side of the current page to warm.
 pub const DEFAULT_PREFETCH_RADIUS: usize = 3;
 
-/// An LRU of decoded pages paired with a running total of their decoded bytes,
-/// kept together so ordering and byte accounting stay in sync.
-/// Eviction is two-dimensional: the `LruCache` capacity enforces the
-/// count ceiling, and `max_bytes` caps the total decoded-byte footprint. A
-/// single oversized page is retained as the floor (at least one entry always
-/// stays cached so the current page survives).
+/// An LRU of decoded pages paired with a running total of their decoded bytes, kept together so
+/// ordering and byte accounting stay in sync. Eviction is two-dimensional: the `LruCache` capacity
+/// enforces the count ceiling, and `max_bytes` caps the total decoded-byte footprint. A single
+/// oversized page is retained as the floor (at least one entry always stays cached so the current
+/// page survives).
 pub struct DecodedLru<K: Hash + Eq + Clone> {
     lru: LruCache<K, Arc<DecodedImage>>,
     // The sum can briefly exceed the u64 budget before eviction.

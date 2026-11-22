@@ -22,3 +22,9 @@ impl From<&CoreError> for WireError {
         }
     }
 }
+
+impl From<CoreError> for WireError {
+    fn from(error: CoreError) -> Self {
+        Self::from(&error)
+    }
+}

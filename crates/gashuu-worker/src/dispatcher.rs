@@ -206,7 +206,7 @@ impl Dispatcher {
                         ArchivePolicy { allow_rar },
                     )
                     .map(|count| count.get() as u32)
-                    .map_err(|error| WireError::from(&error))
+                    .map_err(WireError::from)
                 });
                 vec![Reply::metadata(WorkerResponse::PageCount { req, result })]
             }
@@ -237,8 +237,8 @@ impl Dispatcher {
         policy: ArchivePolicy,
     ) -> WireResult<OpenedMeta> {
         let (name, reader) = self.archive_input(&id, reader)?;
-        let source = ArchiveLoader::open_read_at(&name, reader.clone(), policy)
-            .map_err(|error| WireError::from(&error))?;
+        let source =
+            ArchiveLoader::open_read_at(&name, reader.clone(), policy).map_err(WireError::from)?;
         let meta = OpenedMeta {
             id,
             page_count: source.list_pages().len() as u32,
@@ -299,7 +299,7 @@ impl Dispatcher {
     ) -> (WireResult<DecodedImage>, u32) {
         let source = self.archive_input(id, reader).and_then(|(name, reader)| {
             ArchiveLoader::open_read_at(&name, reader, ArchivePolicy::default())
-                .map_err(|error| WireError::from(&error))
+                .map_err(WireError::from)
         });
         match source {
             Ok(source) => {
@@ -314,13 +314,11 @@ impl Dispatcher {
     }
 
     async fn decode_page(&self, source: &dyn PageSource, index: u32) -> WireResult<DecodedImage> {
-        let bytes = source
-            .read_bytes(index as usize)
-            .map_err(|error| WireError::from(&error))?;
+        let bytes = source.read_bytes(index as usize).map_err(WireError::from)?;
         decode_with_fallback(bytes, self.primary.as_ref(), self.fallback.as_ref())
             .await
             .map(|decoded| decoded.image)
-            .map_err(|error| WireError::from(&error))
+            .map_err(WireError::from)
     }
 
     async fn thumbnail(
@@ -335,7 +333,7 @@ impl Dispatcher {
             });
         }
         let decoded = self.decode_page(source, index).await?;
-        downscale_to_thumbnail(&decoded, max_side).map_err(|error| WireError::from(&error))
+        downscale_to_thumbnail(&decoded, max_side).map_err(WireError::from)
     }
 }
 
