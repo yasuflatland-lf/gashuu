@@ -24,13 +24,24 @@ fn clear_storage_after_library_save(
     library_save_succeeded: bool,
     thumbs: &dyn ThumbStore,
     importer: Option<&dyn crate::backend::BookImporter>,
+    done: Box<dyn FnOnce() + Send>,
 ) {
     if !library_save_succeeded {
         return;
     }
 
     if let Some(importer) = importer {
-        importer.sweep(vec![], true, Box::new(|_| {}));
+        importer.sweep(
+            vec![],
+            true,
+            Box::new(move |report| {
+                #[cfg(target_arch = "wasm32")]
+                crate::book_availability::web_inventory().replace(report.present);
+                #[cfg(not(target_arch = "wasm32"))]
+                let _ = report;
+                done();
+            }),
+        );
     }
     let report = thumbs.clear();
     tracing::info!(
@@ -320,7 +331,15 @@ pub(crate) fn wire_settings_handlers(
                 if let Some(ref e) = set_err {
                     tracing::error!(error = %e, "failed to persist settings while clearing reading history");
                 }
-                clear_storage_after_library_save(lib_err.is_none(), thumbs.as_ref(), importer.as_deref());
+                let sweep_ui = ui.as_weak();
+                clear_storage_after_library_save(lib_err.is_none(), thumbs.as_ref(), importer.as_deref(), Box::new(move || {
+                    #[cfg(target_arch = "wasm32")]
+                    {
+                        if let Some(ui) = sweep_ui.upgrade() { ui.invoke_storage_inventory_changed(); }
+                    }
+                    #[cfg(not(target_arch = "wasm32"))]
+                    let _ = sweep_ui;
+                }));
                 // CoverMemCache is intentionally left alone: the carousel is rebuilt
                 // empty below, and stale decoded entries are harmless and LRU-evicted.
                 // Recompute the (now empty) search projection, drop the selection, and
@@ -552,6 +571,8 @@ pub(crate) fn wire_view_mode_handlers(
                 // Push the loaded catalog into the Strings global so every Fluent label
                 // flips to the new language before the next paint.
                 localizer.push_strings_to_ui(&ui);
+                #[cfg(target_arch = "wasm32")]
+                ui.invoke_storage_inventory_changed();
                 ui.set_key_bindings_text(
                     crate::i18n::dynamic::shortcuts_help(localizer.loader()).into(),
                 );
@@ -600,7 +621,7 @@ mod tests {
         let thumbs =
             RecordingThumbStore::with_disk(FsThumbStore::with_dir(dir.path().to_path_buf()));
         let importer = crate::backend::fake::FakeBackend::new();
-        clear_storage_after_library_save(true, &thumbs, Some(importer.as_ref()));
+        clear_storage_after_library_save(true, &thumbs, Some(importer.as_ref()), Box::new(|| {}));
         assert_eq!(
             importer.calls(),
             [crate::backend::fake::Call::Sweep(vec![], true)]
@@ -622,7 +643,7 @@ mod tests {
             RecordingThumbStore::with_disk(FsThumbStore::with_dir(dir.path().to_path_buf()));
 
         let importer = crate::backend::fake::FakeBackend::new();
-        clear_storage_after_library_save(false, &thumbs, Some(importer.as_ref()));
+        clear_storage_after_library_save(false, &thumbs, Some(importer.as_ref()), Box::new(|| {}));
         assert!(importer.calls().is_empty());
 
         assert!(

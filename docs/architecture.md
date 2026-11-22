@@ -1330,3 +1330,12 @@ Core stays headless and unit-testable (no display server); the UI is the only pl
 Slint, pixel buffers, and logging.
 
 See [ADR-0002](ADRs/0002-layered-two-crate-architecture.md) for the full rationale.
+
+### Browser storage guidance
+
+`web_storage.rs` reads browser persistence and quota estimates on the main thread.
+`storage_status.rs` chooses the highest-priority notice using those estimates and
+the existing web availability inventory. The Library displays the notice and Settings
+displays estimated usage and protection. Dismissed guidance kinds are stored in
+settings and reset when the active kind changes. Browser storage is refreshed at
+startup and after inventory changes; desktop does not construct this status.
