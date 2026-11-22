@@ -91,6 +91,16 @@ The page and canvas set `touch-action: none` and a non-scalable viewport so iPad
 Safari does not consume double-taps or pinch gestures for page zoom and touch reaches the app.
 The Slint window follows the browser viewport on load and resize.
 
+The worker link in `crates/gashuu/index.html` points Trunk at
+`../gashuu-worker/Cargo.toml` and selects the `gashuu-worker` binary.
+Trunk emits `gashuu-worker.js`, `gashuu-worker_bg.wasm`, and
+`gashuu-worker_loader.js` in `crates/gashuu/dist`. The loader uses
+`importScripts` to load the worker glue and initializes the wasm binary.
+Run `mise run check-wasm-worker` to check the worker crate on its own.
+The OPFS reader uses synchronous `getSize()` and `close()` methods, available
+as synchronous calls starting in Safari and iPadOS 16.4.
+[WebKit release notes](https://webkit.org/blog/13966/webkit-features-in-safari-16-4/).
+
 The Pages workflow publishes the Vite landing page at `/gashuu/` and the web
 app at `/gashuu/app/` in one deployment. Its Trunk build uses
 `--public-url /gashuu/app/` and the deploy job adds the bundle to `site/dist/app`.

@@ -204,6 +204,10 @@ byte limits and returns the shared `Arc`, reusing an existing entry if a concurr
 already populated the slot. The synchronous `decode_and_cache` checks the cache before and after
 the read, decodes on a miss, and starts neighbour prefetch on success.
 
+`DecodedLru<K>` stores the decoded pages and enforces the count and byte limits.
+It supports removing entries by key or predicate and subtracts their decoded
+bytes from the total. `ImageCache` keys it by page index.
+
 See [ADR-0003](ADRs/0003-image-loading-and-caching.md) for the LRU/prefetch decision.
 
 ### CacheConfig
@@ -475,6 +479,30 @@ re-exported at the crate root. See [ADR-0013](ADRs/0013-auto-update.md).
 and falls back to an HTML canvas on windows without offscreen support. It requests
 straight alpha, no color-space conversion, and original pixel orientation. Canvas
 readback can round partially transparent RGB values.
+
+## crates/gashuu-worker (wasm32 worker)
+
+The portable library defines the worker protocol, validates book ids, and
+dispatches requests using injected decoders. The wasm binary installs the
+dedicated worker message handler and posts `Ready` after setup.
+Each message carries JSON text in `m` to preserve exact 64-bit ids. Responses
+with images carry transferable RGBA8 buffers in `b`, in metadata order.
+
+One request runs at a time. The interactive lane handles opens and spreads
+ahead of background thumbnails, covers, and page counts. Each lane is FIFO.
+Between queued background jobs, the loop gives the browser a chance to deliver
+new interactive requests.
+Close and cover cancellation run in the message handler and discard outdated
+queued work and replies. Each session retains its page source. Pages are
+decoded on demand with the browser-native decoder and an image-crate fallback
+(PNG and JPEG for books on web). Covers and thumbnails downscale the decoded
+image. Both slots of a spread arrive in one reply.
+
+An OPFS book id is its relative path, `books/<uuid>/<sanitised file name>`.
+The worker validates it before looking up the file and uses a
+`FileSystemSyncAccessHandle` to read at explicit offsets. A weak reader map
+lets sessions, cover requests, and page count probes share one handle per
+book. Dropping the last reader closes the handle and releases its lock.
 
 ## crates/gashuu (Slint presentation layer)
 
