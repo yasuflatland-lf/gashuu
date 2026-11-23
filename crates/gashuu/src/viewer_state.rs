@@ -76,11 +76,13 @@ pub struct ViewerState {
 // A 1600x2400 RGBA page takes about 15 MB. The #651 Chrome spike reached
 // about 1.5 GB for a 348 MB book with a 50-page cache.
 const WEB_CACHE_CAPACITY: usize = 6;
+// Six typical pages fit under this cap, which also bounds much larger pages.
+const WEB_MAX_CACHE_BYTES: u64 = 128 * 1024 * 1024;
 
 fn platform_cache_config(requested: CacheConfig, is_web: bool) -> CacheConfig {
     if is_web {
         CacheConfig::new(requested.capacity().min(WEB_CACHE_CAPACITY), 0)
-            .with_max_bytes(requested.max_bytes())
+            .with_max_bytes(requested.max_bytes().min(WEB_MAX_CACHE_BYTES))
     } else {
         requested
     }

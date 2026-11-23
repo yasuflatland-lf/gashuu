@@ -73,16 +73,41 @@ fn with_cache_config_stores_values() {
 
 #[test]
 fn platform_cache_config_caps_web_capacity_and_disables_prefetch() {
-    let requested = CacheConfig::new(50, 3).with_max_bytes(128 * 1024 * 1024);
+    let requested = CacheConfig::new(50, 3);
     let web = platform_cache_config(requested, true);
     assert_eq!(web.capacity(), 6);
     assert_eq!(web.radius(), 0);
-    assert_eq!(web.max_bytes(), requested.max_bytes());
+    assert_eq!(web.max_bytes(), WEB_MAX_CACHE_BYTES);
     assert_eq!(
         platform_cache_config(CacheConfig::new(2, 5), true),
-        CacheConfig::new(2, 0)
+        CacheConfig::new(2, 0).with_max_bytes(WEB_MAX_CACHE_BYTES)
     );
     assert_eq!(platform_cache_config(requested, false), requested);
+}
+
+#[test]
+fn platform_cache_config_caps_web_bytes_at_128_mib() {
+    assert_eq!(
+        platform_cache_config(CacheConfig::default(), true).max_bytes(),
+        128 * 1024 * 1024
+    );
+}
+
+#[test]
+fn platform_cache_config_keeps_a_smaller_web_byte_budget() {
+    let requested = CacheConfig::default().with_max_bytes(96 * 1024 * 1024);
+    assert_eq!(
+        platform_cache_config(requested, true).max_bytes(),
+        96 * 1024 * 1024
+    );
+}
+
+#[test]
+fn platform_cache_config_leaves_desktop_bytes_unchanged() {
+    assert_eq!(
+        platform_cache_config(CacheConfig::default(), false).max_bytes(),
+        gashuu_core::cache_config::DEFAULT_MAX_BYTES
+    );
 }
 
 #[test]
