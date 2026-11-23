@@ -5,9 +5,8 @@
 //! intent-named transitions `to_library`/`to_viewer` (mirroring the private
 //! fields + intent-named methods convention used by `ViewportState`). The app
 //! boots to `Library` (the carousel is home, even when empty — see the design
-//! doc DESIGN.md, "Layout / Two screens"). Mapping the enum to/from the Slint
-//! `screen` int property lives in `screen_to_index`/`index_to_screen`, which
-//! stay in lock-step with the
+//! doc DESIGN.md, "Layout / Two screens"). Mapping the enum to the Slint
+//! `screen` int property lives in `screen_to_index`, which stays in lock-step with the
 //! `ViewerWindow.screen` contract (0 = Library, 1 = Viewer).
 
 /// One of the two top-level screens.
@@ -71,20 +70,6 @@ pub fn screen_to_index(s: Screen) -> i32 {
     }
 }
 
-/// Map a raw `screen` int back to a `Screen`, defaulting any out-of-range value
-/// to the FIRST variant (`Library`) — mirroring the `index_to_*` clamp policy in
-/// `enum_adapters.rs`. (Currently the int only flows Rust -> Slint, but the helper keeps
-/// the round-trip symmetric and is unit-tested for the clamp.)
-// Completes the screen<->index contract symmetry (mirrors enum_adapters.rs's index_to_*
-// pattern) and is unit-tested for the clamp; only the tests use it for now.
-#[allow(dead_code)]
-pub fn index_to_screen(i: i32) -> Screen {
-    match i {
-        1 => Screen::Viewer,
-        _ => Screen::Library,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -114,22 +99,8 @@ mod tests {
     }
 
     #[test]
-    fn screen_index_round_trips() {
-        for s in [Screen::Library, Screen::Viewer] {
-            assert_eq!(index_to_screen(screen_to_index(s)), s);
-        }
-    }
-
-    #[test]
     fn screen_to_index_matches_slint_contract() {
         assert_eq!(screen_to_index(Screen::Library), 0);
         assert_eq!(screen_to_index(Screen::Viewer), 1);
-    }
-
-    #[test]
-    fn out_of_range_index_clamps_to_library() {
-        for bad in [-1, 2, 99, i32::MIN, i32::MAX] {
-            assert_eq!(index_to_screen(bad), Screen::Library);
-        }
     }
 }
