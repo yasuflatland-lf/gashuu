@@ -485,18 +485,26 @@ whenever both are held; `get` only ever takes `cache`. Violating this order risk
 
 Use `unwrap_or_else(|e| e.into_inner())` to recover a poisoned lock, or a panic during unwind becomes a double-panic abort. `InFlightGuard` exists so a panic in the decode section cannot permanently leak in-flight markers (which would silently disable prefetch for those pages).
 
-### `get`/`current_image` return `Arc<DecodedImage>`
+### `get_cached`/`current_image` share decoded pages through `Arc<DecodedImage>`
 
-so cache hits never copy the multi-MB RGBA buffer; the UI's `to_slint_image(&DecodedImage)` is unchanged thanks to deref coercion (`&Arc<DecodedImage>` → `&DecodedImage`).
+Cache hits clone an `Arc` without copying the RGBA buffer. Deref coercion lets the UI pass
+`&Arc<DecodedImage>` to `to_slint_image(&DecodedImage)`.
 
-### Carve a `Send` dispatch handle off the `Arc<Inner>` so a third consumer can decode off-thread (issue #207, async page decode)
+### Carve a `Send` dispatch handle off the `Arc<Inner>` for off-thread decode (#207)
 
-The cache exposes its shared state for off-thread decode WITHOUT shipping the whole `ImageCache`: `ImageCache::dispatch_handle()` returns a `#[derive(Clone)]` `CacheDispatch { inner: Arc<Inner>, radius }` — a `Send` handle holding only the `Arc<Inner>`, so a rayon worker can `decode_and_cache(index)` into the same `Mutex`-guarded LRU the UI thread reads. `ImageCache::get` is now just the thin sync façade: `get_cached(index)` then `self.dispatch_handle().decode_and_cache(index)` — the decode logic lives once, on the handle. Two seams a third async consumer must COPY exactly:
+`ImageCache::dispatch_handle()` returns a cloneable `CacheDispatch` that shares the cache's
+`Arc<Inner>`. The UI calls `get_cached(index)` on the event loop. A hit promotes the page,
+returns a shared image, and schedules prefetch. A miss performs no I/O. The worker handles
+misses with `decode_and_cache(index)`, which checks for a cached page before the blocking
+read and again before decoding. If another reader has populated the cache by the time the
+worker inserts its result, `cache_decoded` reuses the existing `Arc`. Each successful path
+schedules neighbour prefetch.
 
-1. **`get_cached` is a pure cache-HIT probe that NEVER reads or decodes** — `self.inner.cached(index)` (LRU `get`, promoting on hit) and, only on a hit, `spawn_prefetch`; a miss returns `None` having touched no `read_bytes`. This is what lets the caller classify HIT vs MISS on the UI thread (cheap `Arc` clone) and dispatch only the MISS to a worker — never blocking the event loop on a decode. The test pins it: `get_cached` on a cold index leaves the `read_bytes` counter at zero.
-2. **`decode_and_cache` double-checks a racing prefetch around the blocking read** — it `cached(index)` BEFORE the `read_bytes` (a concurrent prefetch may have filled it), then `cached(index)` AGAIN after the read but before `decode` (the read window is where a parallel prefetch most likely lands), and finally inserts via `cache_decoded`, which itself re-checks and keeps the EXISTING `Arc` if another thread won — so a racing prefetch and a direct decode never double-cache, and every caller of an index gets the same `Arc`. Each return path also `spawn_prefetch`s, so dispatching the current page still warms its neighbours.
-
-The locking discipline is unchanged (`cache` before `in_flight`; `get` only takes `cache`) — the handle reuses `Inner`'s methods, so it inherits the deadlock-free order for free.
+Prefetch promotes resident pages in its window before reserving uncached work and again
+after inserting decoded neighbours. Each pass promotes the farthest neighbours first,
+using ascending page index within each distance, then promotes the current page last.
+The reservation phase holds `cache` before taking `in_flight`. Reads and decodes run
+outside both locks.
 
 ### Verify trait thread-safety at compile time
 
