@@ -14,6 +14,7 @@ pub(crate) enum Call {
     Thumbnail(SessionId, usize, u32),
     Cover {
         id: BookId,
+        policy: ArchivePolicy,
         max_side: u32,
         wants_count: bool,
     },
@@ -172,12 +173,14 @@ impl BookBackend for FakeBackend {
     fn cover(
         &self,
         id: &BookId,
+        policy: ArchivePolicy,
         max_side: u32,
         on_cover: Done<ImageResult>,
         on_count: Option<Done<CountResult>>,
     ) {
         self.record(Call::Cover {
             id: id.clone(),
+            policy,
             max_side,
             wants_count: on_count.is_some(),
         });

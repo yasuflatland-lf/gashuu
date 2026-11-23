@@ -304,6 +304,7 @@ impl<F> WebClient<F> {
     pub(super) fn cover(
         &mut self,
         id: &BookId,
+        policy: ArchivePolicy,
         max_side: u32,
         on_cover: Done<ImageResult>,
         on_count: Option<Done<CountResult>>,
@@ -314,13 +315,14 @@ impl<F> WebClient<F> {
             if let Some(image) = self.covers.get(&key) {
                 let target = LiveCheck::CoverGen(gen);
                 let (out, mut deliveries) = on_count.map_or_else(Effects::default, |done| {
-                    self.probe(id, ArchivePolicy::default(), target, done)
+                    self.probe(id, policy, target, done)
                 });
                 deliveries.push(Delivery::Deferred(Ready::new(target, on_cover, Ok(image))));
                 return (out, deliveries);
             }
         }
         let want_count = on_count.is_some();
+        // The worker's read-at cover route only opens ZIP archives.
         self.queue(Pending::Cover(gen, key, on_cover, on_count), |req| {
             Request::Cover {
                 req,

@@ -60,7 +60,14 @@ impl BookBackend for UnavailableBackend {
         defer(done, Err(unavailable()));
     }
 
-    fn cover(&self, _: &BookId, _: u32, on_cover: Done<ImageResult>, _: Option<Done<CountResult>>) {
+    fn cover(
+        &self,
+        _: &BookId,
+        _: ArchivePolicy,
+        _: u32,
+        on_cover: Done<ImageResult>,
+        _: Option<Done<CountResult>>,
+    ) {
         let generation = self.cover_generation.clone();
         let current = generation.load(Relaxed);
         defer(

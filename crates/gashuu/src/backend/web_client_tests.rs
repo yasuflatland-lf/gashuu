@@ -385,7 +385,13 @@ fn cover_miss_then_count() {
     let mut client = ready_client();
     let (on_cover, cover) = test_callback();
     let (on_count, count) = test_callback();
-    let (out, deliveries) = client.cover(&book_id(), 128, on_cover, Some(on_count));
+    let (out, deliveries) = client.cover(
+        &book_id(),
+        ArchivePolicy::default(),
+        128,
+        on_cover,
+        Some(on_count),
+    );
     assert!(deliveries.is_empty());
     let req = cover_request(out, 0);
     let (_, deliveries) = receive(
@@ -418,7 +424,13 @@ fn cover_empty_book_has_no_count() {
     let mut client = ready_client();
     let (on_cover, cover) = test_callback();
     let (on_count, count) = test_callback();
-    let (out, _) = client.cover(&book_id(), 128, on_cover, Some(on_count));
+    let (out, _) = client.cover(
+        &book_id(),
+        ArchivePolicy::default(),
+        128,
+        on_cover,
+        Some(on_count),
+    );
     let req = cover_request(out, 0);
     let (_, deliveries) = receive(
         &mut client,
@@ -440,9 +452,36 @@ fn cover_empty_book_has_no_count() {
 }
 
 #[test]
+fn cover_hit_count_probe_carries_the_callers_policy() {
+    let mut client = ready_client();
+    let id = book_id();
+    client.covers.insert(
+        format!("{id}#128"),
+        Arc::new(DecodedImage::new(vec![7; 4], 1, 1).unwrap()),
+    );
+    let (out, _) = client.cover(
+        &id,
+        ArchivePolicy { allow_rar: false },
+        128,
+        Box::new(|_| {}),
+        Some(Box::new(|_| {})),
+    );
+    let WorkerRequest::ProbePageCount { allow_rar, .. } = request(out) else {
+        panic!("expected ProbePageCount");
+    };
+    assert!(!allow_rar);
+}
+
+#[test]
 fn cover_mem_hit_is_deferred_and_probes_count_when_asked() {
     let mut client = ready_client();
-    let (out, _) = client.cover(&book_id(), 128, Box::new(|_| {}), None);
+    let (out, _) = client.cover(
+        &book_id(),
+        ArchivePolicy::default(),
+        128,
+        Box::new(|_| {}),
+        None,
+    );
     let WorkerRequest::Cover {
         req,
         want_count: false,
@@ -462,7 +501,13 @@ fn cover_mem_hit_is_deferred_and_probes_count_when_asked() {
     deliver(&client, deliveries, false);
     let (on_cover, cover) = test_callback();
     let (on_count, count) = test_callback();
-    let (out, deliveries) = client.cover(&book_id(), 128, on_cover, Some(on_count));
+    let (out, deliveries) = client.cover(
+        &book_id(),
+        ArchivePolicy::default(),
+        128,
+        on_cover,
+        Some(on_count),
+    );
     let WorkerRequest::ProbePageCount { req, id, .. } = request(out) else {
         panic!("expected ProbePageCount")
     };
@@ -478,7 +523,7 @@ fn cover_mem_hit_is_deferred_and_probes_count_when_asked() {
     deliver(&client, deliveries, false);
     assert_eq!(count.try_recv().unwrap().unwrap().get(), 5);
     let (on_cover, cover) = test_callback();
-    let (out, deliveries) = client.cover(&book_id(), 128, on_cover, None);
+    let (out, deliveries) = client.cover(&book_id(), ArchivePolicy::default(), 128, on_cover, None);
     assert!(out.is_empty());
     client.cancel_covers();
     deliver(&client, deliveries, true);
@@ -490,13 +535,25 @@ fn cancel_covers_drops_older_pending_and_posts_cancel() {
     let mut client = ready_client();
     let (on_cover, cover) = test_callback();
     let (on_count, count) = test_callback();
-    let (out, _) = client.cover(&book_id(), 128, on_cover, Some(on_count));
+    let (out, _) = client.cover(
+        &book_id(),
+        ArchivePolicy::default(),
+        128,
+        on_cover,
+        Some(on_count),
+    );
     let req = cover_request(out, 0);
     assert_eq!(
         request(client.cancel_covers()),
         WorkerRequest::CancelCovers { below: 1 }
     );
-    let (out, _) = client.cover(&book_id(), 128, Box::new(|_| {}), Some(Box::new(|_| {})));
+    let (out, _) = client.cover(
+        &book_id(),
+        ArchivePolicy::default(),
+        128,
+        Box::new(|_| {}),
+        Some(Box::new(|_| {})),
+    );
     assert_ne!(cover_request(out, 1), req);
     let (_, deliveries) = receive(
         &mut client,

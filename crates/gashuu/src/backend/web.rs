@@ -242,11 +242,12 @@ impl BookBackend for WorkerBackend {
     fn cover(
         &self,
         id: &BookId,
+        policy: ArchivePolicy,
         max_side: u32,
         on_cover: Done<ImageResult>,
         on_count: Option<Done<CountResult>>,
     ) {
-        self.dispatch(|client| client.cover(id, max_side, on_cover, on_count));
+        self.dispatch(|client| client.cover(id, policy, max_side, on_cover, on_count));
     }
 
     fn cancel_covers(&self) {

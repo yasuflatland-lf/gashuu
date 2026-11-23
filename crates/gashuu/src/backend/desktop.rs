@@ -5,8 +5,8 @@ use super::{
 use crate::book_path::locate;
 use gashuu_core::{
     canonical_identity, generate_cover, generate_one_thumbnail, ArchiveLoader, ArchivePolicy,
-    BookFingerprint, BookId, CacheConfig, DecodedImage, ImageCache, PageSource, PageThumbContext,
-    ThumbSlot, ThumbStore,
+    BookFingerprint, BookId, CacheConfig, DecodedImage, ImageCache, OpenedSource, PageSource,
+    PageThumbContext, ThumbSlot, ThumbStore,
 };
 use std::collections::HashMap;
 use std::num::NonZeroUsize;
@@ -85,14 +85,8 @@ pub(crate) fn spawn_thumb_prune(thumbs: Arc<dyn ThumbStore>, max_bytes: u64) {
     });
 }
 
-fn cover_open(path: &Path) -> Result<(Arc<dyn PageSource>, NonZeroUsize), BackendError> {
-    // TODO(#175-followup): thread ArchivePolicy through CoverRequest / CarouselRefresh.
-    let source = ArchiveLoader::open(path).map_err(|error| {
-        tracing::warn!(path = %path.display(), %error, "cover: open failed");
-        BackendError::for_open(path, &error)
-    })?;
-    let count = NonZeroUsize::new(source.list_pages().len()).ok_or(BackendError::EmptyBook)?;
-    Ok((source, count))
+fn cover_open(path: &Path, policy: ArchivePolicy) -> Result<OpenedSource, BackendError> {
+    ArchiveLoader::open_book(path, policy).map_err(|error| BackendError::for_open(path, &error))
 }
 
 #[allow(dead_code)] // TODO(wasm-backend): remove when #656 ([6/13]) and #657 ([7/13]) have both merged
@@ -194,11 +188,12 @@ impl Inner {
     fn generate_cover(
         &self,
         path: &Path,
+        policy: ArchivePolicy,
         fp: BookFingerprint,
         key: String,
         max_side: u32,
     ) -> Result<(Arc<DecodedImage>, NonZeroUsize), BackendError> {
-        let (source, count) = cover_open(path)?;
+        let (source, count) = cover_open(path, policy)?.into_parts();
         let generated = generate_cover(source, max_side).inspect_err(|error| {
             tracing::warn!(path = %path.display(), %error, "cover: generate failed");
         });
@@ -297,6 +292,7 @@ impl BookBackend for DesktopBackend {
     fn cover(
         &self,
         id: &BookId,
+        policy: ArchivePolicy,
         max_side: u32,
         on_cover: Done<ImageResult>,
         on_count: Option<Done<CountResult>>,
@@ -314,12 +310,12 @@ impl BookBackend for DesktopBackend {
             if let Some(image) = inner.cached_cover(fp, max_side, &key) {
                 inner.deliver_cover_result(generation, on_cover, Ok(image));
                 if let Some(on_count) = on_count.filter(|_| inner.cover_is_current(generation)) {
-                    let count = cover_open(&path).map(|(_, count)| count);
+                    let count = cover_open(&path, policy).map(|book| book.page_count());
                     inner.deliver_cover_result(generation, on_count, count);
                 }
                 return;
             }
-            match inner.generate_cover(&path, fp, key, max_side) {
+            match inner.generate_cover(&path, policy, fp, key, max_side) {
                 Ok((image, count)) => {
                     inner.deliver_cover_result(generation, on_cover, Ok(image));
                     if let Some(on_count) = on_count {

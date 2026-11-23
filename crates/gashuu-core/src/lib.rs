@@ -40,7 +40,7 @@ pub mod view_override;
 pub mod viewport;
 pub mod window_geometry;
 
-pub use archive_loader::{ArchiveKind, ArchiveLoader, ArchivePolicy};
+pub use archive_loader::{ArchiveKind, ArchiveLoader, ArchivePolicy, OpenedSource};
 pub use atomic_write::write_atomic;
 #[cfg(not(target_arch = "wasm32"))]
 pub use blob_store::FsBlobStore;

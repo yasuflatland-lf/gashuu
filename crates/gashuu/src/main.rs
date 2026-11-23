@@ -391,7 +391,10 @@ fn run_app(
 
     // Cover controller for the carousel (epoch + cancel guard). `start` runs after the
     // model is (re)built so a refresh supersedes covers still streaming from the prior view.
-    let covers = Rc::new(cover_loader::CoverController::new(Rc::clone(&backend)));
+    let covers = Rc::new(cover_loader::CoverController::new(
+        Rc::clone(&backend),
+        Rc::clone(&settings),
+    ));
 
     // Page controller for the viewer body. Owns async page-decode epoch and
     // dispatch dedup for cache-miss spreads.
@@ -1296,7 +1299,10 @@ mod tests {
         let session = Rc::new(RefCell::new(DialogSession::new()));
         let library = Rc::new(RefCell::new(Library::new()));
         let store = Rc::new(None);
-        let covers = cover_loader::CoverController::new(backend::fake::FakeBackend::new());
+        let covers = cover_loader::CoverController::new(
+            backend::fake::FakeBackend::new(),
+            Rc::clone(&settings),
+        );
         let leave_point = LeavePointService::new(
             Rc::clone(&state),
             Rc::clone(&viewport),
@@ -1376,6 +1382,7 @@ mod tests {
         let dialog_session = Rc::new(RefCell::new(DialogSession::new()));
         let covers = Rc::new(cover_loader::CoverController::new(
             crate::backend::fake::FakeBackend::new(),
+            Rc::clone(&settings),
         ));
         let library_store = Rc::new(Some(LibraryStore::new(root.path().join("library.json"))));
         let leave_point = Rc::new(LeavePointService::new(
@@ -1467,6 +1474,7 @@ mod tests {
         let dialog_session = Rc::new(RefCell::new(DialogSession::new()));
         let covers = Rc::new(cover_loader::CoverController::new(
             crate::backend::fake::FakeBackend::new(),
+            Rc::clone(&settings),
         ));
         let library_store = Rc::new(Some(LibraryStore::new(root.path().join("library.json"))));
         let leave_point = Rc::new(LeavePointService::new(

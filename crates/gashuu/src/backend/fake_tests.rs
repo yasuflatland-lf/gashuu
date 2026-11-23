@@ -27,6 +27,7 @@ fn calls_are_recorded_in_order() {
     assert!(Arc::ptr_eq(&fake.cached_page(session, 3).unwrap(), &image));
     fake.cover(
         &id,
+        ArchivePolicy::default(),
         512,
         Box::new(|_| panic!("cancelled cover delivered")),
         None,
@@ -40,6 +41,7 @@ fn calls_are_recorded_in_order() {
             Call::CachedPage(session, 3),
             Call::Cover {
                 id,
+                policy: ArchivePolicy::default(),
                 max_side: 512,
                 wants_count: false
             },
@@ -69,7 +71,13 @@ fn trait_calls_defer_completion_and_allow_out_of_order_delivery() {
         open_done,
     );
     fake.thumbnail(session, 0, 128, thumb_done);
-    fake.cover(&id, 512, cover_done, Some(count_done));
+    fake.cover(
+        &id,
+        ArchivePolicy::default(),
+        512,
+        cover_done,
+        Some(count_done),
+    );
     fake.probe_page_count(&id, ArchivePolicy::default(), first_done);
     fake.probe_page_count(&id, ArchivePolicy::default(), second_done);
     assert!(open.try_recv().is_err());

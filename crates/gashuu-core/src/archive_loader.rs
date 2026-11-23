@@ -30,7 +30,8 @@ pub enum ArchiveKind {
 
 /// Policy controlling which archive formats `ArchiveLoader` is permitted to open.
 ///
-/// The default (`allow_rar: true`) preserves backward-compatible behavior.
+/// The default allows RAR, matching the default settings. Production callers
+/// that use application settings always pass `Settings::archive_policy()`.
 /// Set `allow_rar: false` to reject RAR/CBR archives and return
 /// [`CoreError::FormatDisabled`]. Without the `rar` feature, both policy settings return that error.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -42,6 +43,34 @@ pub struct ArchivePolicy {
 impl Default for ArchivePolicy {
     fn default() -> Self {
         Self { allow_rar: true }
+    }
+}
+
+/// An opened page source with at least one image page.
+pub struct OpenedSource {
+    source: Arc<dyn PageSource>,
+    page_count: NonZeroUsize,
+}
+
+impl OpenedSource {
+    pub(crate) fn new(source: Arc<dyn PageSource>, label: impl Display) -> Result<Self, CoreError> {
+        let page_count =
+            NonZeroUsize::new(source.list_pages().len()).ok_or_else(|| CoreError::EmptyBook {
+                label: label.to_string(),
+            })?;
+        Ok(Self { source, page_count })
+    }
+
+    pub fn page_count(&self) -> NonZeroUsize {
+        self.page_count
+    }
+
+    pub fn source(&self) -> &Arc<dyn PageSource> {
+        &self.source
+    }
+
+    pub fn into_parts(self) -> (Arc<dyn PageSource>, NonZeroUsize) {
+        (self.source, self.page_count)
     }
 }
 
@@ -61,38 +90,24 @@ impl Default for ArchivePolicy {
 pub struct ArchiveLoader;
 
 impl ArchiveLoader {
-    /// Count the displayable image pages in `path`, enforcing the domain rule that
-    /// a valid book has at least one image page.
+    /// Open a book from `path`, respecting `policy`. Returns
+    /// [`CoreError::EmptyBook`] if the source opens successfully but has no image pages.
     ///
-    /// Returns `Ok(NonZeroUsize)` when one or more image pages are found.
-    /// Returns `Err(CoreError::EmptyBook)` when the source opens successfully but
-    /// contains zero image pages — an empty folder, a zip with only non-image
-    /// entries, etc.
-    ///
-    /// I/O errors and `UnsupportedFormat` propagate unchanged. "Empty" and
-    /// "unreadable" are strictly distinct: an unreadable source (I/O failure,
-    /// corrupt archive header, unsupported file type) is never classified as empty.
-    pub fn probe_page_count(path: impl AsRef<Path>) -> Result<NonZeroUsize, CoreError> {
-        Self::probe_page_count_with_policy(path, ArchivePolicy::default())
+    /// Open errors propagate unchanged.
+    pub fn open_book(
+        path: impl AsRef<Path>,
+        policy: ArchivePolicy,
+    ) -> Result<OpenedSource, CoreError> {
+        let path = path.as_ref();
+        OpenedSource::new(Self::open_with_policy(path, policy)?, path.display())
     }
 
-    /// Like [`probe_page_count`] but respects `policy`.
+    /// Count image pages under the same rules as [`Self::open_book`].
     pub fn probe_page_count_with_policy(
         path: impl AsRef<Path>,
         policy: ArchivePolicy,
     ) -> Result<NonZeroUsize, CoreError> {
-        let path = path.as_ref();
-        let source = Self::open_with_policy(path, policy)?;
-        page_count(source.as_ref(), path.display())
-    }
-
-    /// Open `path` as the most appropriate [`PageSource`].
-    ///
-    /// Returns `Err(CoreError::UnsupportedFormat)` when the path is a file that
-    /// is neither a recognized archive extension nor matches ZIP/RAR magic bytes.
-    /// Equivalent to `open_with_policy(path, ArchivePolicy::default())`.
-    pub fn open(path: impl AsRef<Path>) -> Result<Arc<dyn PageSource>, CoreError> {
-        Self::open_with_policy(path, ArchivePolicy::default())
+        Self::open_book(path, policy).map(|book| book.page_count())
     }
 
     /// Open `path` as the most appropriate [`PageSource`], respecting `policy`.
@@ -106,18 +121,15 @@ impl ArchiveLoader {
         let path = path.as_ref();
         // A path that cannot be serialized as a JSON string must never become a Book:
         // one such path breaks EVERY library save (CORE-S-1). Reject at the door.
-        if path.to_str().is_none() {
+        let Some(name) = path.to_str() else {
             return Err(CoreError::NonUtf8Path {
                 path: path.to_string_lossy().into_owned(),
             });
-        }
+        };
         if path.is_dir() {
             return Ok(Arc::new(FolderSource::open(path)?));
         }
-        let kind = match ext_kind(path) {
-            Some(k) => Some(k),
-            None => magic_kind(path)?,
-        };
+        let kind = detect(name, |head| Ok(std::fs::File::open(path)?.read(head)?))?;
         match kind {
             #[cfg(not(target_arch = "wasm32"))]
             Some(ArchiveKind::Zip) => Ok(Arc::new(ZipSource::open(path)?)),
@@ -148,20 +160,14 @@ impl ArchiveLoader {
 
     /// Open a ZIP page source from positional bytes, using `name` for detection and errors.
     ///
-    /// RAR requires a filesystem path and always returns [`CoreError::FormatDisabled`] here.
+    /// The read-at route supports ZIP only. RAR always returns
+    /// [`CoreError::FormatDisabled`], regardless of policy.
     pub fn open_read_at(
         name: &str,
         src: Arc<dyn ReadAt>,
         _policy: ArchivePolicy,
     ) -> Result<Arc<dyn PageSource>, CoreError> {
-        let kind = match kind_from_name(name) {
-            Some(kind) => Some(kind),
-            None => {
-                let mut head = [0u8; 6];
-                let n = src.read_at(0, &mut head)?;
-                kind_from_magic(&head[..n])
-            }
-        };
+        let kind = detect(name, |head| Ok(src.read_at(0, head)?))?;
         match kind {
             Some(ArchiveKind::Zip) => Ok(Arc::new(ZipSource::from_read_at(src)?)),
             Some(ArchiveKind::Rar) => Err(CoreError::FormatDisabled { format: "rar/cbr" }),
@@ -171,29 +177,38 @@ impl ArchiveLoader {
         }
     }
 
+    /// Open a book from a ZIP byte source, using `name` to label an empty book.
+    pub fn open_book_read_at(
+        name: &str,
+        src: Arc<dyn ReadAt>,
+        policy: ArchivePolicy,
+    ) -> Result<OpenedSource, CoreError> {
+        OpenedSource::new(Self::open_read_at(name, src, policy)?, name)
+    }
+
     /// Count image pages in a ZIP byte source, returning [`CoreError::EmptyBook`]
     /// with `name` if the archive opens successfully and contains no image pages.
+    /// RAR is disabled regardless of policy.
     pub fn probe_page_count_read_at(
         name: &str,
         src: Arc<dyn ReadAt>,
         policy: ArchivePolicy,
     ) -> Result<NonZeroUsize, CoreError> {
-        let source = Self::open_read_at(name, src, policy)?;
-        page_count(source.as_ref(), name)
+        Self::open_book_read_at(name, src, policy).map(|book| book.page_count())
     }
 }
 
-fn page_count(source: &dyn PageSource, label: impl Display) -> Result<NonZeroUsize, CoreError> {
-    NonZeroUsize::new(source.list_pages().len()).ok_or_else(|| CoreError::EmptyBook {
-        label: label.to_string(),
-    })
-}
-
-/// Classify `path` by its file extension alone (no I/O).
-///
-/// Returns `None` when the extension is absent or not a recognised archive type.
-fn ext_kind(path: &Path) -> Option<ArchiveKind> {
-    path.to_str().and_then(kind_from_name)
+/// Prefer a known extension. Otherwise, one bounded read covers both signatures.
+fn detect(
+    name: &str,
+    read_head: impl FnOnce(&mut [u8; 6]) -> Result<usize, CoreError>,
+) -> Result<Option<ArchiveKind>, CoreError> {
+    if let Some(kind) = kind_from_name(name) {
+        return Ok(Some(kind));
+    }
+    let mut head = [0; 6];
+    let n = read_head(&mut head)?;
+    Ok(kind_from_magic(&head[..n]))
 }
 
 fn kind_from_name(name: &str) -> Option<ArchiveKind> {
@@ -205,17 +220,6 @@ fn kind_from_name(name: &str) -> Option<ArchiveKind> {
     } else {
         None
     }
-}
-
-/// Classify `path` by reading its leading magic bytes (fallback when extension is unknown).
-///
-/// A single bounded read covers the 4-byte ZIP and 6-byte RAR signatures.
-/// Short reads match only when they contain a complete signature.
-fn magic_kind(path: &Path) -> Result<Option<ArchiveKind>, CoreError> {
-    let mut head = [0u8; 6];
-    let mut f = std::fs::File::open(path)?;
-    let n = f.read(&mut head)?;
-    Ok(kind_from_magic(&head[..n]))
 }
 
 fn kind_from_magic(head: &[u8]) -> Option<ArchiveKind> {
@@ -235,6 +239,71 @@ mod tests {
     use crate::test_fixtures::{write_cbr_with_suffix, SAMPLE_CBR_B64};
     use image::RgbaImage;
     use std::io::{Cursor, Write};
+
+    fn open(path: impl AsRef<Path>) -> Result<Arc<dyn PageSource>, CoreError> {
+        ArchiveLoader::open_with_policy(path, ArchivePolicy::default())
+    }
+
+    #[test]
+    fn open_book_rejects_zero_page_folder_as_empty_book() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(matches!(
+            ArchiveLoader::open_book(dir.path(), ArchivePolicy::default()),
+            Err(CoreError::EmptyBook { label }) if label == dir.path().to_str().unwrap()
+        ));
+    }
+
+    #[test]
+    fn open_book_counts_image_pages() {
+        let dir = tempfile::tempdir().unwrap();
+        for name in ["a.png", "b.png", "c.png"] {
+            std::fs::write(dir.path().join(name), []).unwrap();
+        }
+        let book = ArchiveLoader::open_book(dir.path(), ArchivePolicy::default())
+            .unwrap_or_else(|error| panic!("expected an opened book: {error}"));
+        assert_eq!(book.page_count().get(), 3);
+    }
+
+    #[test]
+    fn open_book_with_rar_disabled_is_format_disabled() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("x.cbr");
+        std::fs::write(&path, []).unwrap();
+        assert!(matches!(
+            ArchiveLoader::open_book(path, ArchivePolicy { allow_rar: false }),
+            Err(CoreError::FormatDisabled { format: "rar/cbr" })
+        ));
+    }
+
+    #[test]
+    fn open_book_read_at_empty_zip_is_empty_book() {
+        let mut eocd = [0; 22];
+        eocd[..4].copy_from_slice(ZIP_MAGICS[1]);
+        assert!(matches!(
+            ArchiveLoader::open_book_read_at(
+                "empty.cbz",
+                Arc::new(Arc::<[u8]>::from(eocd)),
+                ArchivePolicy::default(),
+            ),
+            Err(CoreError::EmptyBook { label }) if label == "empty.cbz"
+        ));
+    }
+
+    #[test]
+    fn detect_prefers_extension_over_magic_on_both_routes() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("book.cbz");
+        std::fs::write(&path, RAR_MAGIC).unwrap();
+        let policy = ArchivePolicy { allow_rar: false };
+        assert!(matches!(
+            ArchiveLoader::open_with_policy(path, policy),
+            Err(CoreError::Zip(_))
+        ));
+        assert!(matches!(
+            ArchiveLoader::open_read_at("book.cbz", Arc::new(Arc::<[u8]>::from(RAR_MAGIC)), policy),
+            Err(CoreError::Zip(_))
+        ));
+    }
 
     #[cfg(unix)]
     #[test]
@@ -260,7 +329,8 @@ mod tests {
         use std::os::unix::ffi::OsStrExt;
 
         let path = Path::new(OsStr::from_bytes(b"bad\xffname.cbz"));
-        let error = ArchiveLoader::probe_page_count(path).expect_err("expected rejection");
+        let error = ArchiveLoader::probe_page_count_with_policy(path, ArchivePolicy::default())
+            .expect_err("expected rejection");
         assert!(
             matches!(error, CoreError::NonUtf8Path { .. }),
             "unreadable must not be classified as empty or unsupported: {error:?}"
@@ -356,107 +426,51 @@ mod tests {
     }
 
     #[test]
-    fn ext_kind_cbr_lowercase_is_rar() {
-        assert_eq!(ext_kind(Path::new("x.cbr")), Some(Kind::Rar));
+    fn kind_from_name_cbr_lowercase_is_rar() {
+        assert_eq!(kind_from_name("x.cbr"), Some(Kind::Rar));
     }
 
     #[test]
-    fn ext_kind_rar_lowercase_is_rar() {
-        assert_eq!(ext_kind(Path::new("x.rar")), Some(Kind::Rar));
+    fn kind_from_name_rar_lowercase_is_rar() {
+        assert_eq!(kind_from_name("x.rar"), Some(Kind::Rar));
     }
 
     #[test]
-    fn ext_kind_cbr_uppercase_is_rar() {
-        assert_eq!(ext_kind(Path::new("x.CBR")), Some(Kind::Rar));
+    fn kind_from_name_cbr_uppercase_is_rar() {
+        assert_eq!(kind_from_name("x.CBR"), Some(Kind::Rar));
     }
 
     #[test]
-    fn ext_kind_cbz_lowercase_is_zip() {
-        assert_eq!(ext_kind(Path::new("x.cbz")), Some(Kind::Zip));
+    fn kind_from_name_cbz_lowercase_is_zip() {
+        assert_eq!(kind_from_name("x.cbz"), Some(Kind::Zip));
     }
 
     #[test]
-    fn ext_kind_zip_lowercase_is_zip() {
-        assert_eq!(ext_kind(Path::new("x.zip")), Some(Kind::Zip));
+    fn kind_from_name_zip_lowercase_is_zip() {
+        assert_eq!(kind_from_name("x.zip"), Some(Kind::Zip));
     }
 
     #[test]
-    fn ext_kind_txt_is_none() {
-        assert_eq!(ext_kind(Path::new("x.txt")), None);
+    fn kind_from_name_txt_is_none() {
+        assert_eq!(kind_from_name("x.txt"), None);
     }
 
     #[test]
-    fn ext_kind_no_extension_is_none() {
-        assert_eq!(ext_kind(Path::new("noext")), None);
+    fn kind_from_name_no_extension_is_none() {
+        assert_eq!(kind_from_name("noext"), None);
     }
 
     #[test]
-    fn magic_kind_rar_bytes_in_txt_file_resolves_to_rar() {
-        // A file whose content starts with the RAR magic but whose extension is
-        // `.txt` must resolve to `Kind::Rar` through the magic-byte path.
-        let mut f = tempfile::Builder::new()
-            .suffix(".txt")
-            .tempfile()
-            .expect("tempfile");
-        // Write RAR4 magic prefix followed by padding bytes.
-        f.write_all(b"Rar!\x1A\x07\x00\x00\x00\x00")
-            .expect("write rar magic");
-        f.flush().expect("flush");
-
-        assert_eq!(
-            magic_kind(f.path()).expect("magic_kind must not error"),
-            Some(Kind::Rar)
-        );
-    }
-
-    #[test]
-    fn magic_kind_zip_bytes_in_txt_file_resolves_to_zip() {
-        // A file whose content starts with `PK\x03\x04` (ZIP local-file header)
-        // and whose extension is `.txt` must resolve to `Kind::Zip`.
-        let mut f = tempfile::Builder::new()
-            .suffix(".txt")
-            .tempfile()
-            .expect("tempfile");
-        f.write_all(&tiny_zip_bytes()).expect("write zip bytes");
-        f.flush().expect("flush");
-
-        assert_eq!(
-            magic_kind(f.path()).expect("magic_kind must not error"),
-            Some(Kind::Zip)
-        );
-    }
-
-    #[test]
-    fn magic_kind_plaintext_is_none() {
-        let mut f = tempfile::Builder::new()
-            .suffix(".bin")
-            .tempfile()
-            .expect("tempfile");
-        f.write_all(b"RIFF\x00\x00\x00\x00AVI ")
-            .expect("write non-archive bytes");
-        f.flush().expect("flush");
-
-        assert_eq!(
-            magic_kind(f.path()).expect("magic_kind must not error"),
-            None
-        );
-    }
-
-    #[test]
-    fn magic_kind_too_short_file_is_none_not_error() {
-        // A 2-byte file must produce None (UnsupportedFormat at dispatch), not an I/O
-        // error — the "short read → not a match" contract documented in CLAUDE.md.
-        let mut f = tempfile::Builder::new()
-            .suffix(".bin")
-            .tempfile()
-            .expect("tempfile");
-        f.write_all(b"AB").expect("write 2 bytes");
-        f.flush().expect("flush");
-
-        assert_eq!(
-            magic_kind(f.path()).expect("magic_kind must not error on a short file"),
-            None
-        );
+    fn detect_reads_magic_for_unknown_extensions() {
+        for (head, expected) in [
+            (RAR_MAGIC, Some(Kind::Rar)),
+            (ZIP_MAGICS[0], Some(Kind::Zip)),
+            (&b"RIFF\x00\x00\x00\x00AVI "[..], None),
+            (&b"AB"[..], None),
+        ] {
+            let kind = detect("book.txt", |buf| Ok(Cursor::new(head).read(buf)?)).unwrap();
+            assert_eq!(kind, expected);
+        }
     }
 
     #[test]
@@ -465,7 +479,7 @@ mod tests {
         let img_path = dir.path().join("cover.png");
         std::fs::write(&img_path, tiny_png()).expect("write png");
 
-        let source = ArchiveLoader::open(dir.path()).expect("open dir");
+        let source = open(dir.path()).expect("open dir");
         assert!(
             !source.list_pages().is_empty(),
             "FolderSource should list the PNG"
@@ -475,7 +489,7 @@ mod tests {
     #[test]
     fn empty_directory_returns_folder_source_with_no_pages() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let source = ArchiveLoader::open(dir.path()).expect("open empty dir");
+        let source = open(dir.path()).expect("open empty dir");
         assert!(
             source.list_pages().is_empty(),
             "empty dir yields empty page list"
@@ -491,7 +505,7 @@ mod tests {
         f.write_all(&tiny_zip_bytes()).expect("write cbz");
         f.flush().expect("flush");
 
-        let source = ArchiveLoader::open(f.path()).expect("open .cbz");
+        let source = open(f.path()).expect("open .cbz");
         assert!(
             !source.list_pages().is_empty(),
             "ZipSource should list page.png"
@@ -507,7 +521,7 @@ mod tests {
         f.write_all(&tiny_zip_bytes()).expect("write zip");
         f.flush().expect("flush");
 
-        let source = ArchiveLoader::open(f.path()).expect("open .zip");
+        let source = open(f.path()).expect("open .zip");
         assert!(
             !source.list_pages().is_empty(),
             "ZipSource should list page.png"
@@ -523,7 +537,7 @@ mod tests {
         f.write_all(&tiny_zip_bytes()).expect("write CBZ");
         f.flush().expect("flush");
 
-        let source = ArchiveLoader::open(f.path()).expect("open .CBZ");
+        let source = open(f.path()).expect("open .CBZ");
         assert!(!source.list_pages().is_empty());
     }
 
@@ -537,7 +551,7 @@ mod tests {
         f.write_all(&tiny_zip_bytes()).expect("write zip bytes");
         f.flush().expect("flush");
 
-        let source = ArchiveLoader::open(f.path()).expect("open no-ext zip by magic");
+        let source = open(f.path()).expect("open no-ext zip by magic");
         assert!(
             !source.list_pages().is_empty(),
             "magic-byte fallback should yield ZipSource pages"
@@ -554,7 +568,7 @@ mod tests {
         f.write_all(&tiny_zip_bytes()).expect("write zip bytes");
         f.flush().expect("flush");
 
-        let source = ArchiveLoader::open(f.path()).expect("open .txt with zip magic");
+        let source = open(f.path()).expect("open .txt with zip magic");
         assert!(
             !source.list_pages().is_empty(),
             "magic-byte fallback should yield ZipSource pages for .txt with PK header"
@@ -575,7 +589,7 @@ mod tests {
         f.write_all(&eocd).expect("write EOCD");
         f.flush().expect("flush");
 
-        let Ok(src) = ArchiveLoader::open(f.path()) else {
+        let Ok(src) = open(f.path()) else {
             panic!("expected ZipSource for bare EOCD file, got UnsupportedFormat");
         };
         assert!(
@@ -588,7 +602,7 @@ mod tests {
     #[test]
     fn cbr_extension_opens_rar_source() {
         let cbr = write_cbr_with_suffix(SAMPLE_CBR_B64, ".cbr");
-        let source = ArchiveLoader::open(cbr.path()).expect("open .cbr");
+        let source = open(cbr.path()).expect("open .cbr");
         assert_eq!(
             source.list_pages().len(),
             4,
@@ -600,7 +614,7 @@ mod tests {
     #[test]
     fn rar_extension_opens_rar_source() {
         let cbr = write_cbr_with_suffix(SAMPLE_CBR_B64, ".rar");
-        let source = ArchiveLoader::open(cbr.path()).expect("open .rar");
+        let source = open(cbr.path()).expect("open .rar");
         assert_eq!(
             source.list_pages().len(),
             4,
@@ -612,7 +626,7 @@ mod tests {
     #[test]
     fn cbr_extension_uppercase_opens_rar_source() {
         let cbr = write_cbr_with_suffix(SAMPLE_CBR_B64, ".CBR");
-        let source = ArchiveLoader::open(cbr.path()).expect("open .CBR");
+        let source = open(cbr.path()).expect("open .CBR");
         assert_eq!(
             source.list_pages().len(),
             4,
@@ -626,7 +640,7 @@ mod tests {
         // A file named *.txt whose first bytes are the RAR magic must be
         // dispatched to RarSource via the magic-byte fallback.
         let cbr = write_cbr_with_suffix(SAMPLE_CBR_B64, ".txt");
-        let source = ArchiveLoader::open(cbr.path()).expect("open .txt with rar magic");
+        let source = open(cbr.path()).expect("open .txt with rar magic");
         assert_eq!(
             source.list_pages().len(),
             4,
@@ -646,7 +660,7 @@ mod tests {
 
         // `Arc<dyn PageSource>` does not implement `Debug`, so `expect_err` is
         // unavailable; match on the result to extract the error instead.
-        let Err(err) = ArchiveLoader::open(f.path()) else {
+        let Err(err) = open(f.path()) else {
             panic!("expected UnsupportedFormat error");
         };
         assert!(
@@ -667,7 +681,7 @@ mod tests {
 
         // `Arc<dyn PageSource>` does not implement `Debug`, so `expect_err` is
         // unavailable; match on the result to extract the error instead.
-        let Err(err) = ArchiveLoader::open(f.path()) else {
+        let Err(err) = open(f.path()) else {
             panic!("expected UnsupportedFormat error");
         };
         assert!(
@@ -687,7 +701,7 @@ mod tests {
 
         // `Arc<dyn PageSource>` does not implement `Debug`, so `expect_err` is
         // unavailable; match on the result to extract the error instead.
-        let Err(err) = ArchiveLoader::open(f.path()) else {
+        let Err(err) = open(f.path()) else {
             panic!("expected an error for a non-zip file");
         };
         let path_str = f.path().display().to_string();
@@ -700,7 +714,7 @@ mod tests {
     #[test]
     fn too_short_file_unknown_extension_returns_unsupported_format() {
         // A 2-byte file with unknown extension must yield UnsupportedFormat, not an I/O
-        // error — magic_kind's short-file guard treats partial reads as "no match".
+        // error — magic detection treats partial reads as "no match".
         let mut f = tempfile::Builder::new()
             .suffix(".bin")
             .tempfile()
@@ -708,7 +722,7 @@ mod tests {
         f.write_all(b"AB").expect("write 2 bytes");
         f.flush().expect("flush");
 
-        let Err(err) = ArchiveLoader::open(f.path()) else {
+        let Err(err) = open(f.path()) else {
             panic!("expected UnsupportedFormat for a too-short file");
         };
         assert!(
@@ -743,7 +757,8 @@ mod tests {
         std::fs::write(dir.path().join("b.png"), b"").expect("write b.png");
         std::fs::write(dir.path().join("c.jpg"), b"").expect("write c.jpg");
 
-        let n = ArchiveLoader::probe_page_count(dir.path()).expect("probe ok");
+        let n = ArchiveLoader::probe_page_count_with_policy(dir.path(), ArchivePolicy::default())
+            .expect("probe ok");
         assert_eq!(n.get(), 3);
     }
 
@@ -756,7 +771,9 @@ mod tests {
         std::fs::create_dir(&sub).expect("mkdir sub");
         std::fs::write(sub.join("hidden.png"), b"").expect("write hidden.png");
 
-        let Err(err) = ArchiveLoader::probe_page_count(dir.path()) else {
+        let Err(err) =
+            ArchiveLoader::probe_page_count_with_policy(dir.path(), ArchivePolicy::default())
+        else {
             panic!("expected EmptyBook for images-only-in-subfolder");
         };
         assert!(
@@ -771,7 +788,8 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         std::fs::write(dir.path().join("COVER.PNG"), b"").expect("write COVER.PNG");
 
-        let n = ArchiveLoader::probe_page_count(dir.path()).expect("probe ok");
+        let n = ArchiveLoader::probe_page_count_with_policy(dir.path(), ArchivePolicy::default())
+            .expect("probe ok");
         assert_eq!(n.get(), 1);
     }
 
@@ -779,7 +797,9 @@ mod tests {
     fn probe_page_count_empty_folder_returns_empty_book() {
         let dir = tempfile::tempdir().expect("tempdir");
 
-        let Err(err) = ArchiveLoader::probe_page_count(dir.path()) else {
+        let Err(err) =
+            ArchiveLoader::probe_page_count_with_policy(dir.path(), ArchivePolicy::default())
+        else {
             panic!("expected EmptyBook for empty folder");
         };
         assert!(
@@ -797,7 +817,8 @@ mod tests {
         f.write_all(&tiny_zip_bytes()).expect("write zip");
         f.flush().expect("flush");
 
-        let n = ArchiveLoader::probe_page_count(f.path()).expect("probe ok");
+        let n = ArchiveLoader::probe_page_count_with_policy(f.path(), ArchivePolicy::default())
+            .expect("probe ok");
         assert_eq!(n.get(), 1);
     }
 
@@ -812,7 +833,9 @@ mod tests {
             .expect("write text-only zip");
         f.flush().expect("flush");
 
-        let Err(err) = ArchiveLoader::probe_page_count(f.path()) else {
+        let Err(err) =
+            ArchiveLoader::probe_page_count_with_policy(f.path(), ArchivePolicy::default())
+        else {
             panic!("expected EmptyBook for text-only zip");
         };
         assert!(
@@ -823,8 +846,11 @@ mod tests {
 
     #[test]
     fn probe_page_count_nonexistent_path_returns_io_error() {
-        let err = ArchiveLoader::probe_page_count("/nonexistent/path/that/cannot/exist.zip")
-            .expect_err("should fail for nonexistent path");
+        let err = ArchiveLoader::probe_page_count_with_policy(
+            "/nonexistent/path/that/cannot/exist.zip",
+            ArchivePolicy::default(),
+        )
+        .expect_err("should fail for nonexistent path");
         assert!(
             matches!(err, CoreError::Io(_)),
             "expected CoreError::Io, got: {err:?}"
@@ -840,7 +866,9 @@ mod tests {
         f.write_all(b"not an archive").expect("write text");
         f.flush().expect("flush");
 
-        let Err(err) = ArchiveLoader::probe_page_count(f.path()) else {
+        let Err(err) =
+            ArchiveLoader::probe_page_count_with_policy(f.path(), ArchivePolicy::default())
+        else {
             panic!("expected UnsupportedFormat for plain text file");
         };
         assert!(
@@ -854,7 +882,8 @@ mod tests {
     fn probe_page_count_cbr_fixture_returns_real_count() {
         // SAMPLE_CBR_B64 contains 4 image pages (verified by cbr_extension_opens_rar_source).
         let cbr = write_cbr_with_suffix(SAMPLE_CBR_B64, ".cbr");
-        let n = ArchiveLoader::probe_page_count(cbr.path()).expect("probe cbr ok");
+        let n = ArchiveLoader::probe_page_count_with_policy(cbr.path(), ArchivePolicy::default())
+            .expect("probe cbr ok");
         assert_eq!(n.get(), 4);
     }
 
@@ -883,7 +912,7 @@ mod tests {
     fn probe_page_count_cbr_is_format_disabled_without_rar_feature() {
         let cbr = write_cbr_with_suffix(SAMPLE_CBR_B64, ".cbr");
         assert!(matches!(
-            ArchiveLoader::probe_page_count(cbr.path()),
+            ArchiveLoader::probe_page_count_with_policy(cbr.path(), ArchivePolicy::default()),
             Err(CoreError::FormatDisabled { format: "rar/cbr" })
         ));
     }
@@ -954,9 +983,8 @@ mod tests {
     #[cfg(feature = "rar")]
     #[test]
     fn open_still_permits_rar_backward_compat() {
-        // ArchiveLoader::open uses ArchivePolicy::default() (allow_rar=true).
         let cbr = write_cbr_with_suffix(SAMPLE_CBR_B64, ".cbr");
-        let src = ArchiveLoader::open(cbr.path()).expect("open must permit rar by default");
+        let src = open(cbr.path()).expect("open must permit rar by default");
         assert_eq!(src.list_pages().len(), 4);
     }
 }

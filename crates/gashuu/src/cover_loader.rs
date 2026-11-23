@@ -9,7 +9,10 @@ use crate::carousel::update_carousel_row;
 use crate::page_count_prefetch::PageCountPrefetch;
 use crate::ui_marshal::ui_done;
 use crate::{to_slint_image, CarouselItem, LibraryStoreHandle, ViewerWindow};
-use gashuu_core::{BookFingerprint, BookId, DecodedImage, Library, ThumbStore, COVER_MAX_SIDE};
+use gashuu_core::{
+    ArchivePolicy, BookFingerprint, BookId, DecodedImage, Library, Settings, ThumbStore,
+    COVER_MAX_SIDE,
+};
 use slint::{Model, VecModel};
 use std::cell::RefCell;
 use std::path::PathBuf;
@@ -74,6 +77,7 @@ pub(crate) fn prioritize_by_focus(
 /// Keeps each carousel refresh's callbacks tied to its own rows.
 pub struct CoverController {
     backend: Rc<dyn BookBackend>,
+    settings: Rc<RefCell<Settings>>,
     epoch: Arc<AtomicUsize>,
     prefetch: PageCountPrefetch,
 }
@@ -135,15 +139,22 @@ fn set_cover_failed(ui: &ViewerWindow, row: usize) {
 }
 
 impl CoverController {
-    pub fn new(backend: Rc<dyn BookBackend>) -> Self {
+    pub fn new(backend: Rc<dyn BookBackend>, settings: Rc<RefCell<Settings>>) -> Self {
         Self {
             backend,
+            settings,
             epoch: Arc::new(AtomicUsize::new(0)),
             prefetch: PageCountPrefetch::new(),
         }
     }
 
-    fn request_cover(&self, weak: &slint::Weak<ViewerWindow>, my_epoch: usize, req: CoverRequest) {
+    fn request_cover(
+        &self,
+        weak: &slint::Weak<ViewerWindow>,
+        my_epoch: usize,
+        req: CoverRequest,
+        policy: ArchivePolicy,
+    ) {
         let row = req.row;
         let id = req.id.clone();
         let on_cover = ui_done(
@@ -153,6 +164,10 @@ impl CoverController {
             move |ui, result: Result<Arc<DecodedImage>, BackendError>| match result {
                 Ok(image) => apply_loaded_cover(ui, row, to_slint_image(&image)),
                 Err(BackendError::EmptyBook) => ui.invoke_empty_book_detected(id.as_str().into()),
+                Err(error @ BackendError::FormatDisabled { .. }) => {
+                    tracing::debug!(book = %id, path = %req.path.display(), %error, "cover: load failed");
+                    set_cover_failed(ui, row);
+                }
                 Err(error) => {
                     tracing::warn!(book = %id, path = %req.path.display(), %error, "cover: load failed");
                     set_cover_failed(ui, row);
@@ -171,12 +186,16 @@ impl CoverController {
                     Err(BackendError::EmptyBook) => {
                         ui.invoke_empty_book_detected(id.as_str().into())
                     }
+                    Err(error @ BackendError::FormatDisabled { .. }) => {
+                        tracing::debug!(book = %id, %error, "cover: count open failed");
+                    }
                     Err(error) => tracing::warn!(book = %id, %error, "cover: count open failed"),
                 },
             )
         });
         self.backend.cover(
             &req.id,
+            policy,
             CoverCachePolicy::DEFAULT.max_side,
             on_cover,
             on_count,
@@ -209,8 +228,9 @@ impl CoverController {
 
         let started = crate::clock::now();
         let dispatched = requests.len();
+        let policy = self.settings.borrow().archive_policy();
         for req in requests {
-            self.request_cover(&ui_weak, my_epoch, req);
+            self.request_cover(&ui_weak, my_epoch, req, policy);
         }
         tracing::debug!(
             dispatched,
@@ -368,7 +388,8 @@ mod tests {
     fn start_cancels_covers_then_requests_each_book_in_focus_order() {
         let ui = test_window();
         let fake = FakeBackend::new();
-        let controller = CoverController::new(fake.clone());
+        let controller =
+            CoverController::new(fake.clone(), Rc::new(RefCell::new(Settings::default())));
         let mut requests = prioritize_by_focus(vec![req(0), req(1)], 1);
         requests[0].needs_count = true;
         controller.start(
@@ -383,13 +404,48 @@ mod tests {
                 Call::CancelCovers,
                 Call::Cover {
                     id: req(1).id,
+                    policy: ArchivePolicy::default(),
                     max_side: 512,
                     wants_count: true
                 },
                 Call::Cover {
                     id: req(0).id,
+                    policy: ArchivePolicy::default(),
                     max_side: 512,
                     wants_count: false
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn start_passes_the_settings_archive_policy_to_every_cover() {
+        let ui = test_window();
+        let fake = FakeBackend::new();
+        let settings = Rc::new(RefCell::new(Settings::default()));
+        let controller = CoverController::new(fake.clone(), Rc::clone(&settings));
+        settings.borrow_mut().allow_rar_archives = false;
+        controller.start(
+            ui.as_weak(),
+            &RefCell::new(Library::new()),
+            &Rc::new(None),
+            vec![req(0), req(1)],
+        );
+        assert_eq!(
+            fake.calls(),
+            [
+                Call::CancelCovers,
+                Call::Cover {
+                    id: req(0).id,
+                    policy: ArchivePolicy { allow_rar: false },
+                    max_side: 512,
+                    wants_count: false,
+                },
+                Call::Cover {
+                    id: req(1).id,
+                    policy: ArchivePolicy { allow_rar: false },
+                    max_side: 512,
+                    wants_count: false,
                 },
             ]
         );
@@ -424,7 +480,8 @@ mod tests {
         }
         let ui = test_window();
         let fake = BACKEND.with(Rc::clone);
-        let controller = CoverController::new(fake.clone());
+        let controller =
+            CoverController::new(fake.clone(), Rc::new(RefCell::new(Settings::default())));
         let saves = Arc::new(Saves::default());
         let store = Rc::new(Some(LibraryStore::with_blob_store(saves.clone())));
         let library = RefCell::new(Library::new());
@@ -446,7 +503,8 @@ mod tests {
     fn start_cover(ui: &ViewerWindow) -> (Rc<FakeBackend>, CoverController) {
         ui.set_carousel_items(Rc::new(VecModel::from(vec![carousel_item("book")])).into());
         let fake = FakeBackend::new();
-        let controller = CoverController::new(fake.clone());
+        let controller =
+            CoverController::new(fake.clone(), Rc::new(RefCell::new(Settings::default())));
         let mut request = req(0);
         request.needs_count = true;
         controller.start(
@@ -542,6 +600,28 @@ mod tests {
     #[test]
     fn empty_count_completion_signals_empty_book_once() {
         assert_empty_book_detected(Ok(cover_image()), Some(Err(BackendError::EmptyBook)));
+    }
+
+    #[test]
+    fn format_disabled_cover_marks_row_failed_and_keeps_the_book() {
+        let ui = test_window();
+        let (fake, _controller) = start_cover(&ui);
+        let detected = Rc::new(std::cell::Cell::new(false));
+        ui.on_empty_book_detected({
+            let detected = Rc::clone(&detected);
+            move |_| detected.set(true)
+        });
+
+        fake.complete_cover(
+            0,
+            Err(BackendError::FormatDisabled { format: "rar/cbr" }),
+            None,
+        );
+
+        let row = ui.get_carousel_items().row_data(0).unwrap();
+        assert!(row.cover_failed);
+        assert!(!row.cover_loaded);
+        assert!(!detected.get());
     }
 
     #[test]
