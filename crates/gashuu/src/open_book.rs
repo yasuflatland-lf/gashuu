@@ -263,16 +263,16 @@ impl OpenBookUseCase {
     /// → cover purge sequence stays single-homed (#150 added the purge; the old
     /// cover-load-only asymmetry orphaned cached covers).
     ///
-    /// The zero-page source must not stay mounted, so the viewer is closed back to
-    /// the boot state: `open_book()` becomes `None`, which is what clears the
-    /// title, makes carousel-back refuse, and lets `AppExit` reconcile the global
-    /// modes. The OUTGOING book's position/override were already persisted by
-    /// [`Self::persist_outgoing`], so closing here loses nothing.
+    /// Closing the zero-page source clears the title and prevents the Library
+    /// from returning to an empty viewer. Restore the global view so exit and
+    /// suspend reconcile the global defaults. [`Self::persist_outgoing`] already
+    /// saved the outgoing book's position and view override.
     fn reject_empty(&self, id: &BookId) -> OpenOutcome {
         let fallback = self.state.borrow().open_title().map(str::to_owned);
         if let Some(session) = self.state.borrow_mut().close() {
             self.backend.close(session);
         }
+        crate::view_sync::apply_global_view_to_runtime(&self.settings, &self.state, &self.viewport);
         let removal = remove_empty_book(
             &self.library,
             id,
@@ -1494,6 +1494,81 @@ mod tests {
         assert!(state.borrow().open_book().is_none());
         assert!(state.borrow().session().is_none());
         assert!(library.borrow().books().is_empty());
+    }
+
+    #[test]
+    fn empty_book_rejection_resets_runtime_to_global_view() {
+        let parts = reject_empty_book_with_outgoing_view_override();
+        assert_eq!(
+            current_runtime_view(&parts.state, &parts.viewport),
+            parts.settings.borrow().view_defaults()
+        );
+    }
+
+    #[test]
+    fn empty_book_rejection_then_exit_leaves_global_settings_unchanged() {
+        assert_empty_rejection_preserves_global_view(ViewModeRoute::AppExit);
+    }
+
+    #[test]
+    fn empty_book_rejection_then_suspend_leaves_global_settings_unchanged() {
+        assert_empty_rejection_preserves_global_view(ViewModeRoute::Suspend);
+    }
+
+    fn assert_empty_rejection_preserves_global_view(route: ViewModeRoute) {
+        let parts = reject_empty_book_with_outgoing_view_override();
+        let defaults = parts.settings.borrow().view_defaults();
+        assert_eq!(defaults.reading_direction, ReadingDirection::Ltr);
+        parts
+            .use_case
+            .leave_point
+            .persist_with(route, |_| Ok(()))
+            .unwrap();
+        assert_eq!(parts.settings.borrow().view_defaults(), defaults);
+    }
+
+    fn reject_empty_book_with_outgoing_view_override() -> UseCaseParts {
+        let root = tempfile::tempdir().unwrap();
+        let book = make_book_dir(root.path(), 1);
+        let empty = root.path().join("empty");
+        std::fs::create_dir(&empty).unwrap();
+        let defaults = Settings {
+            reading_direction: ReadingDirection::Ltr,
+            spread_mode: SpreadMode::Single,
+            cover_mode: CoverMode::Standalone,
+            fit_mode: FitMode::Whole,
+            ..Settings::default()
+        };
+        let global_view = defaults.view_defaults();
+        let parts = use_case_parts(
+            defaults,
+            Rc::new(RefCell::new(Library::new())),
+            |_| Ok(()),
+            |_| Ok(()),
+        );
+        let (request, probe) = opened(&book);
+        assert!(matches!(
+            parts.use_case.apply_opened(&request, probe),
+            OpenOutcome::Success { .. }
+        ));
+        parts.state.borrow_mut().apply_resolved_view(
+            gashuu_core::ResolvedView {
+                reading_direction: ReadingDirection::Rtl,
+                spread_mode: SpreadMode::Double,
+                cover_mode: CoverMode::Paired,
+                fit_mode: FitMode::Actual,
+            },
+            &mut parts.viewport.borrow_mut(),
+        );
+
+        let (request, probe) = opened(&empty);
+        assert!(matches!(
+            parts.use_case.apply_opened(&request, probe),
+            OpenOutcome::EmptyBookRejected { .. }
+        ));
+        assert!(parts.state.borrow().open_book().is_none());
+        assert_eq!(parts.settings.borrow().view_defaults(), global_view);
+        parts
     }
 
     #[test]
