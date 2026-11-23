@@ -1,17 +1,24 @@
 //! Shared numeric-aware natural-ordering comparator.
 //!
 //! Provides [`natural_cmp`], which sorts strings so embedded numbers are
-//! compared by numeric value (`vol 1 < vol 2 < vol 10`).  Used by both
-//! page-source filename sorting and `Library` book ordering.
+//! compared by numeric value (`vol 1 < vol 2 < vol 10`) and other characters
+//! compare case-insensitively in ASCII. Equal natural keys use the raw strings
+//! as a final tie-break. Used by page-source and `Library` ordering.
 
 use std::cmp::Ordering;
 use std::iter::Peekable;
 use std::str::Chars;
 
 /// Compare two file names in natural order so embedded numbers sort by numeric
-/// value (`2.png` < `10.png`). Non-digit runs compare case-insensitively (ASCII)
-/// with the raw chars as a stable tiebreaker, giving a total order.
+/// value (`2.png` < `10.png`). Other characters compare case-insensitively in
+/// ASCII; non-ASCII characters compare raw. Equal natural keys use the complete
+/// raw strings as a final tie-break, giving a total order.
 pub(crate) fn natural_cmp(a: &str, b: &str) -> Ordering {
+    natural_key_cmp(a, b).then_with(|| a.cmp(b))
+}
+
+/// Compare natural keys without resolving case or padding differences.
+fn natural_key_cmp(a: &str, b: &str) -> Ordering {
     let mut ai = a.chars().peekable();
     let mut bi = b.chars().peekable();
     loop {
@@ -28,12 +35,7 @@ pub(crate) fn natural_cmp(a: &str, b: &str) -> Ordering {
                         ord => return ord,
                     }
                 } else {
-                    // Compare case-insensitively, falling back to the raw chars
-                    // as a stable tiebreaker so the order is total.
-                    let ord = ca
-                        .to_ascii_lowercase()
-                        .cmp(&cb.to_ascii_lowercase())
-                        .then_with(|| ca.cmp(&cb));
+                    let ord = ca.to_ascii_lowercase().cmp(&cb.to_ascii_lowercase());
                     match ord {
                         Ordering::Equal => {
                             ai.next();
@@ -62,23 +64,53 @@ fn take_digits(it: &mut Peekable<Chars<'_>>) -> String {
 }
 
 /// Compare two digit runs by numeric value without integer overflow: strip
-/// leading zeros, compare by length then lexically; equal value falls back to
-/// the raw runs so padding differences stay deterministic.
+/// leading zeros, then compare by length and lexically.
 fn cmp_numeric(a: &str, b: &str) -> Ordering {
     let ta = a.trim_start_matches('0');
     let tb = b.trim_start_matches('0');
-    // Compare by magnitude (fewer significant digits = smaller), then lexically
-    // among equal-length runs, then by the raw runs so padding stays deterministic.
-    ta.len()
-        .cmp(&tb.len())
-        .then_with(|| ta.cmp(tb))
-        .then_with(|| a.cmp(b))
+    ta.len().cmp(&tb.len()).then_with(|| ta.cmp(tb))
 }
 
 #[cfg(test)]
 mod natural_cmp_tests {
     use super::natural_cmp;
     use std::cmp::Ordering;
+
+    #[test]
+    fn case_does_not_decide_before_numbers() {
+        assert_eq!(natural_cmp("vol 2", "Vol 10"), Ordering::Less);
+        assert_eq!(natural_cmp("Vol 10", "vol 2"), Ordering::Greater);
+    }
+
+    #[test]
+    fn mixed_case_volumes_sort_numerically() {
+        let mut names = ["Berserk 10", "berserk 2", "Berserk 1"];
+        names.sort_by(|a, b| natural_cmp(a, b));
+        assert_eq!(names, ["Berserk 1", "berserk 2", "Berserk 10"]);
+    }
+
+    #[test]
+    fn case_insensitive_content_decides_before_raw_case() {
+        assert_eq!(natural_cmp("AA", "a0"), Ordering::Greater);
+    }
+
+    #[test]
+    fn padding_tie_break_runs_after_the_whole_string() {
+        assert_eq!(natural_cmp("01 b", "1 a"), Ordering::Greater);
+        assert_eq!(natural_cmp("001b", "1a"), Ordering::Greater);
+    }
+
+    #[test]
+    fn raw_tie_break_is_total() {
+        for (a, b) in [
+            ("A.png", "a.png"),
+            ("001.png", "1.png"),
+            ("File01", "file1"),
+        ] {
+            assert_eq!(natural_cmp(a, b), natural_cmp(b, a).reverse());
+            assert_ne!(natural_cmp(a, b), Ordering::Equal);
+        }
+    }
 
     #[test]
     fn numbers_sort_by_value_not_lexically() {
