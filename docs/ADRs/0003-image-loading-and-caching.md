@@ -2,11 +2,12 @@
 
 - Status: Accepted
 - Decided: 2026-05-31 (transcribed: 2026-06-01)
+- Amendment (2026-11-23): Set the capacity floor to `2 * radius + 2` to hold the prefetch window and a double spread (F12). Corrected the resident memory bound (F10).
 - Related: [ADR-0001](0001-gui-framework-slint.md) (native memory control), [ADR-0004](0004-archive-abstraction-and-extraction.md) (`PageSource`)
 
 ## Context
 
-The viewer must render 4K-class pages while meeting hard performance and memory targets:
+The viewer must render 4K-class pages while meeting the following performance and memory targets:
 
 | Metric | Target |
 | --- | --- |
@@ -24,8 +25,7 @@ by Slint ([ADR-0001](0001-gui-framework-slint.md)) is what makes a bounded strat
 Use **lazy decode-on-demand plus background prefetch, fronted by a bounded LRU cache**:
 
 - `ImageCache` holds decoded images in an LRU keyed by page index, capacity
-  `DEFAULT_CAPACITY = 50` (via the `lru` crate). This caps resident decoded memory regardless of
-  archive size.
+  `DEFAULT_CAPACITY = 50` (via the `lru` crate). This limits the number of resident pages regardless of archive size.
 - On each navigation, prefetch the current page ± `DEFAULT_PREFETCH_RADIUS = 3` in the background on
   the existing `rayon` pool (fire-and-forget). Cache hits stay instant — they clone an
   `Arc<DecodedImage>` and never block on prefetch.
@@ -42,8 +42,11 @@ Use **lazy decode-on-demand plus background prefetch, fronted by a bounded LRU c
 ## Consequences
 
 ### Positive
-- Resident decoded memory has a hard ceiling (≈ 50 pages + a few in-flight prefetch decodes),
-  meeting the < 500 MB target independent of archive size.
+- The decoded-page cache evicts at the byte budget (`DEFAULT_MAX_BYTES` = 512 MiB, about 537 MB)
+  or the page count ceiling (default 50), whichever binds first. If a single page exceeds the
+  budget, the cache keeps that page alone, up to `MAX_PIXELS` × 4 bytes (512 MiB).
+  In-flight prefetch decodes add up to `radius` pages outside the cache. The < 500 MB target
+  applies to typical pages and is not a hard memory bound.
 - Cache hits return `Arc<DecodedImage>`, so a page turn never copies the multi-MB RGBA buffer.
 - Prefetch parallelism comes for free from `rayon` (already a transitive dep via `image`).
 
@@ -58,8 +61,8 @@ Use **lazy decode-on-demand plus background prefetch, fronted by a bounded LRU c
 
 ## Implementation notes (as-built deltas)
 
-- The values match the design doc: `lru = "0.18"`, `DEFAULT_CAPACITY = 50`,
+- The values match the design doc: `lru = "0.19"`, `DEFAULT_CAPACITY = 50`,
   `DEFAULT_PREFETCH_RADIUS = 3`.
 - The thumbnail strip is the deliberate **inverse** of this policy: it holds **all N pages**
   (non-LRU) but at thumbnail resolution, generated once on `rayon` and streamed to the UI. Peak RAM
-  there ≈ rayon-pool-size full-res pages — the same bound as prefetch.
+  there ≈ rayon-pool-size full-res pages.

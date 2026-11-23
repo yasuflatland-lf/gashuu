@@ -86,17 +86,18 @@ quarantine was added, the startup repair could overwrite a file that failed to l
 
 ### Enforce read-path invariants on load, but only the ones with no valid alternative
 
-`from_json` normalizes after deserialize: `cache_size` is floored to 1 via `Settings::cache_config()`, which constructs a `CacheConfig` whose `new` enforces `capacity >= 1` (the single source of truth for that floor — `ImageCache::new` no longer clamps; it consumes a `CacheConfig` whose capacity is already guaranteed `>= 1`, so the `NonZeroUsize::new(...).unwrap()` inside it is provably safe). `recent_files.truncate(MAX_RECENT_FILES)` prevents an over-long hand-edited list from persisting forever via exit-save. **`preload_pages` is deliberately NOT clamped** — 0 is a valid "prefetch disabled" radius and not coerced downstream, so clamping it would silently override a legitimate user choice. `normalize` also STAMPS the schema `version` with `SETTINGS_VERSION` — that field is the binary's label, not user data, so it is never carried over from the loaded document (see the future-version entry above). Only a version `<= SETTINGS_VERSION` ever reaches here; a higher one is a hard load error before deserialization.
+After deserialization, `Settings::normalize` copies the validated capacity and radius from
+`Settings::cache_config()` into the stored settings. This repairs old or hand-edited
+`cache_size` values below `2 * radius + 2` and caps `preload_pages` at `MAX_PREFETCH_RADIUS`.
+A radius of zero still disables prefetch and allows a two-page spread.
+`recent_files.truncate(MAX_RECENT_FILES)` prevents an over-long hand-edited list from persisting forever via exit-save. `normalize` also STAMPS the schema `version` with `SETTINGS_VERSION` — that field is the binary's label, not user data, so it is never carried over from the loaded document (see the future-version entry above). Only a version `<= SETTINGS_VERSION` ever reaches here; a higher one is a hard load error before deserialization.
 
 ### Value objects own their invariants; pass the whole object, not its fields
 
-When a primitive carries an invariant (e.g. an LRU `capacity` that must be `>= 1`), don't
-re-assert it with scattered `.max(1)` at each layer. Wrap it in a small immutable value object
-that enforces the invariant in its constructor, so an invalid value cannot exist downstream.
-`CacheConfig` (`cache_config.rs`) is the canonical example: `new(capacity, radius)` clamps
-`capacity` to `>= 1` once, exposes read-only `capacity()`/`radius()`, and is `Copy`. Because every
-`CacheConfig` is valid, `ImageCache::new`'s `NonZeroUsize::new(config.capacity()).unwrap()` is
-provably infallible -- the clamp it used to do internally is gone.
+`CacheConfig::new(capacity, radius)` caps the radius before clamping the capacity to
+`[CacheConfig::min_capacity(radius), MAX_CACHE_CAPACITY]`. The floor leaves room for a
+two-page spread and the prefetched pages on both sides. The fields are private, so
+`ImageCache::new` can safely use `NonZeroUsize::new(config.capacity()).unwrap()`.
 
 Three hard-won rules for such a type:
 
@@ -109,8 +110,8 @@ Three hard-won rules for such a type:
    live), so don't over-claim "the single point" in its doc.
 2. **Single-source the floor.** If you also keep a storage-hygiene normalization on the load path,
    route it through the value object instead of repeating the literal:
-   `settings.cache_size = settings.cache_config().capacity();` -- now the `>= 1` floor is defined in
-   exactly one place (`CacheConfig::new`). See the read-path-invariant entry above for why the
+   `settings.cache_capacity = settings.cache_config().capacity();` -- now `CacheConfig::new` enforces the window floor
+   for both persisted and runtime configurations. See the read-path-invariant entry above for why the
    stored field is still normalized at all.
 3. **Pass the whole object to constructors, not its fields.** `ImageCache::new(source, config)`
    beats `ImageCache::new(source, capacity, radius)`: two same-typed `usize` args are a silent
