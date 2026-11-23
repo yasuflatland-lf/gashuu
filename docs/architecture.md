@@ -793,14 +793,14 @@ not name.
 
 - `open(scope, state, viewport, settings)` records `DialogScope::Library` or `Viewer`. Library
   scope captures the open book's
-  `RuntimeSnapshot { view: ResolvedView, pending_inherit: Option<ResolvedView> }`
+  `RuntimeSnapshot { view, divergence, pending_inherit }`
   (`None` when no book is open) and THEN global-seeds the runtime via
   `apply_global_view_to_runtime`; Viewer scope leaves the runtime untouched. Persistence routes by
   this recorded scope, while close-time focus restoration routes by the current screen.
 - `end(state, viewport, settings)` is idempotent. When the recorded scope is `Library`, it first
   reconciles the LIVE global-edit scratchpad into `Settings` via
-  `apply_runtime_view_to_settings`; it then restores any snapshot via `apply_resolved_view`,
-  restores `pending_inherit` after the view (verbatim in both directions), and finally clears the
+  `apply_runtime_view_to_settings`; it then applies `snapshot.divergence.resolve(settings.view_defaults())`,
+  restores the pending intent as described below, and finally clears the
   scope and snapshot. Reconcile-before-restore is load-bearing: reversing those first two steps
   writes the open book's view into the global defaults. Viewer scope and a no-session call leave
   `Settings` untouched. It runs
@@ -817,13 +817,11 @@ not name.
 - `reset_to_global(&mut self, state, viewport, settings)` applies the globals and THEN records the
   installed runtime view in `pending_inherit`.
 
-Consequence to state plainly: **a global edit made from the Library dialog is committed to
-`Settings` but remains invisible to the open book's restored runtime and pending state.** On the
-Library screen the live runtime is a global-seeded scratchpad; `end` commits that scratchpad before
-restoring the BOOK snapshot. The global edit must not touch the BOOK's pending state — without the
-snapshot, the next leave point could write an override pinning the OLD global values onto that book
-("Reset to global" silently undone and frozen stale). See
-[ADR-0007](ADRs/0007-per-book-view-overrides.md)'s Amendment and [patterns.md](patterns.md),
+Library scope captures the fields that differ from the global defaults before seeding the dialog.
+After a global edit, the open book keeps those values and inherits the edited defaults for the
+remaining fields. If the pending reset matched the book's view at open, its target moves to the
+restored view so the reset stays armed. Otherwise the snapshot's pending value is preserved.
+See [ADR-0007](ADRs/0007-per-book-view-overrides.md) and [patterns.md](patterns.md),
 "Per-book view overrides".
 
 ### book_availability

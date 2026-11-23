@@ -151,9 +151,8 @@ Model the four preferences as a PER-BOOK override that falls back to the global 
   pinning the OLD global values onto that book — the reset silently undone AND frozen stale. On the
   Library screen the runtime is only a global-seeded scratchpad, so clearing the BOOK's pending
   state from a GLOBAL edit is a category error.
-- **The flag is restored verbatim in both directions.** Nothing on the library screen can
-  legitimately set it — the reset button exists only on the per-book dialog — so a conditional
-  restore would only add a way to be wrong.
+- Only the per-book dialog can request a reset. The Library dialog preserves the book's reset
+  intent across edits to the shared runtime.
 - **Explicitly rejected:** screen-gating the individual combo handlers so they skip the flag clear
   on the library screen. It scatters the invariant across four handlers and misses every future
   setter; the session owns it in one place instead.
@@ -173,9 +172,8 @@ Model the four preferences as a PER-BOOK override that falls back to the global 
   `pending_inherit == Some(current)`. Any viewer or viewport mode change therefore disables the
   guard by making the live runtime differ, including future setters and fit-mode changes, without
   handler-specific clearing.
-- A Library-scope `RuntimeSnapshot` carries the `Option<ResolvedView>` verbatim. After any global
-  reconcile described below, `end()` applies the saved view first and restores the saved intent
-  after it, so the restored view is the one the derived predicate observes. Replacing or closing
+- A Library-scope snapshot captures the pending target at open. The divergence sub-amendment
+  below specifies how `end()` restores it after reconciling the global defaults. Replacing or closing
   the open book explicitly discards the intent in `OpenBookUseCase::apply_probed` and
   `RemoveBooksUseCase::run`.
 - One behavior changes deliberately: if the user changes modes after reset and later returns the
@@ -200,6 +198,21 @@ Model the four preferences as a PER-BOOK override that falls back to the global 
   and silently discarded the global edit before the eventual close or exit save. The async-open
   path still restores before `apply_probed`, and the exit path still restores before `AppExit`
   write-back, so neither can pin the global scratchpad onto the open book.
+
+### Sub-amendment 2026-11-23: the Library-session snapshot keeps divergence, not resolved values
+
+Before seeding the Library dialog, capture `ViewOverride::differences_from(view, global)` for
+the open book. On end, reconcile the dialog's runtime into Settings first, then resolve the
+captured divergence against those updated defaults. Diverging fields keep the book's value and
+inheriting fields follow the new defaults. With no edit, resolving restores the original view.
+
+Keep the original resolved view for the pending-reset comparison. If the saved pending target
+matched that view, move it to the restored view so the reset stays armed. Otherwise retain the
+saved pending target, including its absence.
+
+As with leave-point write-back, an explicitly selected value equal to the global default counts
+as inherited. It follows a later edit to that default because the value diff carries no record
+of which controls the user touched.
 
 ## Amendment 2026-08-16: the leave-point write-back is a diff against global
 
