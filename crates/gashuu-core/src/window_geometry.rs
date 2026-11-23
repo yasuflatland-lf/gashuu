@@ -104,10 +104,14 @@ impl WindowGeometry {
 /// starts above/left of the monitor origin (a window larger than the monitor
 /// still keeps a grabbable title bar).
 pub fn center_in(monitor: Rect, size: (u32, u32)) -> (i32, i32) {
-    let (w, h) = size;
-    let x = monitor.x + ((monitor.width as i32 - w as i32) / 2).max(0);
-    let y = monitor.y + ((monitor.height as i32 - h as i32) / 2).max(0);
-    (x, y)
+    let center_axis = |origin, extent, window| {
+        let offset = ((i64::from(extent) - i64::from(window)) / 2).max(0);
+        (i64::from(origin) + offset).clamp(i32::MIN.into(), i32::MAX.into()) as i32
+    };
+    (
+        center_axis(monitor.x, monitor.width, size.0),
+        center_axis(monitor.y, monitor.height, size.1),
+    )
 }
 
 #[cfg(test)]
@@ -224,6 +228,24 @@ mod tests {
         };
         // Window wider/taller than the monitor → clamp to the monitor origin.
         assert_eq!(center_in(monitor, (1024, 768)), (10, 20));
+    }
+
+    #[test]
+    fn center_in_never_overflows_on_extreme_rects() {
+        for (origin, extent, window) in [
+            (0, 1 << 31, 1),
+            (i32::MAX, u32::MAX, 0),
+            (i32::MIN, 0, u32::MAX),
+        ] {
+            let monitor = Rect {
+                x: origin,
+                y: origin,
+                width: extent,
+                height: extent,
+            };
+            let (x, y) = center_in(monitor, (window, window));
+            assert!(x >= monitor.x && y >= monitor.y);
+        }
     }
 
     #[test]

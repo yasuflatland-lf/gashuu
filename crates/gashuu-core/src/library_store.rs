@@ -2,13 +2,13 @@
 
 use crate::error::CoreError;
 use crate::library::{Book, Library};
+use crate::persist::{DocumentStore, JsonDocument};
 #[cfg(not(target_arch = "wasm32"))]
 use crate::FsBlobStore;
 use crate::{BlobStore, BookId, LIBRARY_KEY};
 use serde::Serialize;
-use std::io;
 #[cfg(not(target_arch = "wasm32"))]
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 
 /// On-disk library schema version.
@@ -29,16 +29,14 @@ struct LibraryDocument<'a> {
 /// Repository for a library document stored as a JSON blob.
 #[derive(Debug)]
 pub struct LibraryStore {
-    blobs: Arc<dyn BlobStore>,
-    key: String,
+    inner: DocumentStore<Library>,
 }
 
 impl LibraryStore {
     /// Use the library key in the supplied blob store.
     pub fn with_blob_store(blobs: Arc<dyn BlobStore>) -> Self {
         Self {
-            blobs,
-            key: LIBRARY_KEY.to_owned(),
+            inner: DocumentStore::new(blobs, LIBRARY_KEY),
         }
     }
 
@@ -49,15 +47,9 @@ impl LibraryStore {
     /// The path must end in a UTF-8 file name.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn new(path: PathBuf) -> Self {
-        let dir = path.parent().unwrap_or_else(|| Path::new("")).to_path_buf();
-        let key = path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .expect("path must end in a UTF-8 file name")
-            .to_owned();
+        let (blobs, key) = FsBlobStore::for_file(&path);
         Self {
-            blobs: Arc::new(FsBlobStore::new(dir)),
-            key,
+            inner: DocumentStore::new(Arc::new(blobs), key),
         }
     }
 
@@ -69,27 +61,31 @@ impl LibraryStore {
 
     /// Load the library. An absent blob returns an empty library.
     pub fn load(&self) -> Result<Library, CoreError> {
-        let Some(bytes) = self.blobs.read(&self.key)? else {
-            return Ok(Library::new());
-        };
-        let json = String::from_utf8(bytes).map_err(|_| {
-            CoreError::Io(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "stream did not contain valid UTF-8",
-            ))
-        })?;
-        Library::from_json(&json)
+        self.inner.load()
     }
 
     /// Atomically write the library document.
     pub fn save(&self, library: &Library) -> Result<(), CoreError> {
-        self.blobs
-            .write_atomic(&self.key, library.to_json()?.as_bytes())
+        self.inner.save(library)
     }
 
     /// Move the library blob aside and return its destination label if present.
     pub fn quarantine(&self, now_secs: u64) -> Result<Option<String>, CoreError> {
-        self.blobs.quarantine(&self.key, now_secs)
+        self.inner.quarantine(now_secs)
+    }
+}
+
+impl JsonDocument for Library {
+    fn absent() -> Self {
+        Self::new()
+    }
+
+    fn to_json(&self) -> Result<String, CoreError> {
+        Library::to_json(self)
+    }
+
+    fn from_json(json: &str) -> Result<Self, CoreError> {
+        Library::from_json(json)
     }
 }
 
@@ -151,6 +147,7 @@ fn migrate(mut value: serde_json::Value, from: u32) -> serde_json::Value {
 mod tests {
     use super::*;
     use std::num::NonZeroUsize;
+    use std::path::Path;
 
     #[cfg(unix)]
     #[test]
