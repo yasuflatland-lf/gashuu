@@ -181,11 +181,54 @@ pub fn decode_thumbnail(bytes: &[u8], max_side: u32) -> Result<DecodedImage, Cor
     DecodedImage::from_rgba8(thumb.into_rgba8())
 }
 
+/// Encode `img` as lossless QOI at its exact dimensions.
+/// Returns [`CoreError::MalformedImage`] if the RGBA buffer is too short.
+pub fn encode_qoi(img: &DecodedImage) -> Result<Vec<u8>, CoreError> {
+    let raw = image::RgbaImage::from_raw(img.width(), img.height(), img.rgba().to_vec())
+        .ok_or_else(|| CoreError::MalformedImage {
+            expected: (img.width() as usize)
+                .saturating_mul(img.height() as usize)
+                .saturating_mul(4),
+            actual: img.rgba().len(),
+        })?;
+
+    let mut qoi_bytes: Vec<u8> = Vec::new();
+    image::DynamicImage::ImageRgba8(raw).write_to(
+        &mut std::io::Cursor::new(&mut qoi_bytes),
+        image::ImageFormat::Qoi,
+    )?;
+    Ok(qoi_bytes)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::error::CoreError;
     use std::io::Cursor;
+
+    #[test]
+    fn encode_qoi_round_trips_dimensions_and_pixels() {
+        let img = DecodedImage::new(vec![255, 0, 0, 255, 0, 255, 0, 128], 2, 1).unwrap();
+        let bytes = encode_qoi(&img).unwrap();
+        assert_eq!(&bytes[..4], b"qoif");
+        assert_eq!(decode(&bytes).unwrap(), img);
+    }
+
+    #[test]
+    fn encode_qoi_rejects_a_short_rgba_buffer() {
+        let img = DecodedImage {
+            rgba: vec![0; 3],
+            width: 2,
+            height: 2,
+        };
+        assert!(matches!(
+            encode_qoi(&img),
+            Err(CoreError::MalformedImage {
+                expected: 16,
+                actual: 3
+            })
+        ));
+    }
 
     fn png_bytes(w: u32, h: u32) -> Vec<u8> {
         let img = image::RgbaImage::from_pixel(w, h, image::Rgba([1, 2, 3, 255]));

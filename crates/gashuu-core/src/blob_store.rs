@@ -3,11 +3,13 @@
 use crate::CoreError;
 #[cfg(not(target_arch = "wasm32"))]
 use directories::ProjectDirs;
+#[cfg(test)]
 use std::collections::HashMap;
 #[cfg(not(target_arch = "wasm32"))]
 use std::io;
 #[cfg(not(target_arch = "wasm32"))]
 use std::path::{Path, PathBuf};
+#[cfg(test)]
 use std::sync::Mutex;
 
 pub const SETTINGS_KEY: &str = "settings.json";
@@ -28,18 +30,21 @@ pub trait BlobStore: Send + Sync + std::fmt::Debug {
     fn quarantine(&self, key: &str, now_secs: u64) -> Result<Option<String>, CoreError>;
 }
 
-/// In-memory adapter available on all targets.
+/// In-memory adapter for core tests.
+#[cfg(test)]
 #[derive(Debug, Default)]
 pub struct MemoryBlobStore {
     blobs: Mutex<HashMap<String, Vec<u8>>>,
 }
 
+#[cfg(test)]
 impl MemoryBlobStore {
     pub fn new() -> Self {
         Self::default()
     }
 }
 
+#[cfg(test)]
 impl BlobStore for MemoryBlobStore {
     fn read(&self, key: &str) -> Result<Option<Vec<u8>>, CoreError> {
         let blobs = self.blobs.lock().expect("blob store mutex poisoned");
@@ -61,6 +66,11 @@ impl BlobStore for MemoryBlobStore {
         blobs.insert(destination.clone(), bytes);
         Ok(Some(destination))
     }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn project_dirs() -> Option<ProjectDirs> {
+    ProjectDirs::from("", "", "gashuu")
 }
 
 /// Filesystem adapter rooted at one directory.
@@ -87,12 +97,12 @@ impl FsBlobStore {
     }
 
     pub fn config_dir() -> Result<Self, CoreError> {
-        let dirs = ProjectDirs::from("", "", "gashuu").ok_or(CoreError::NoConfigDir)?;
+        let dirs = project_dirs().ok_or(CoreError::NoConfigDir)?;
         Ok(Self::new(dirs.config_dir().to_path_buf()))
     }
 
     pub fn data_dir() -> Result<Self, CoreError> {
-        let dirs = ProjectDirs::from("", "", "gashuu").ok_or(CoreError::NoDataDir)?;
+        let dirs = project_dirs().ok_or(CoreError::NoDataDir)?;
         Ok(Self::new(dirs.data_dir().to_path_buf()))
     }
 
@@ -228,6 +238,19 @@ mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     mod fs_tests {
         use super::*;
+
+        #[test]
+        fn project_dirs_is_shared_by_all_adapters() {
+            let dirs = project_dirs().expect("platform project directories");
+            let config = FsBlobStore::config_dir().unwrap();
+            let data = FsBlobStore::data_dir().unwrap();
+            assert_eq!(
+                config.path_of(SETTINGS_KEY),
+                dirs.config_dir().join(SETTINGS_KEY)
+            );
+            assert_eq!(data.path_of(LIBRARY_KEY), dirs.data_dir().join(LIBRARY_KEY));
+            assert!(crate::FsThumbStore::new().is_ok());
+        }
 
         #[test]
         fn fs_blob_store_for_file_splits_directory_and_key() {
