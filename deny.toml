@@ -1,5 +1,14 @@
 [advisories]
 version = 2
+ignore = [
+    { id = "RUSTSEC-2026-0374", reason = "basic-toml is transitive via i18n-embed-fl and has no patched release. Revisit when upstream replaces it." },
+    { id = "RUSTSEC-2026-0543", reason = "chrono is transitive via Slint and has no patched release. Revisit when upstream replaces it." },
+    { id = "RUSTSEC-2026-0441", reason = "pin-utils is transitive via slint-build and spin_on and has no patched release. Revisit when upstream replaces it." },
+    { id = "RUSTSEC-2026-0192", reason = "ttf-parser is transitive via winit and has no patched release. Revisit when upstream replaces it." },
+    { id = "RUSTSEC-2026-0371", reason = "zbus_names is transitive via opener and zbus and has no patched release. Revisit when upstream replaces it." },
+    { id = "RUSTSEC-2026-0370", reason = "zvariant is transitive via opener and zbus and has no patched release. Revisit when upstream replaces it." },
+    { id = "RUSTSEC-2026-0372", reason = "zvariant_derive is transitive via opener, zbus, and zvariant and has no patched release. Revisit when upstream replaces it." },
+]
 
 [sources]
 unknown-registry = "deny"
