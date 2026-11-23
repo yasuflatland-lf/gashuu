@@ -1,6 +1,6 @@
 use crate::backend::{BackendError, BookBackend, BookImporter, OpenedBook};
 use crate::book_path::{locate, request_id};
-use crate::dialog_session::DialogSession;
+use crate::dialog_session::{DialogScope, DialogSession};
 use crate::picker::{forget_uploads, BookPicker, PickedBook, UploadHandle};
 use crate::{
     add_controller,
@@ -327,6 +327,25 @@ fn start_open(
     Ok(())
 }
 
+/// UI-7: a visible dialog with an active session must close before an open is applied.
+fn dialog_must_close_before_open(show_settings: bool, scope: Option<DialogScope>) -> bool {
+    show_settings && scope.is_some()
+}
+
+/// Close an active settings dialog through its registered close handler. Returns whether it closed.
+fn close_settings_dialog_if_active(
+    ui: &ViewerWindow,
+    dialog_session: &RefCell<DialogSession>,
+) -> bool {
+    let show_settings = ui.get_show_settings();
+    let scope = dialog_session.borrow().scope();
+    let should_close = dialog_must_close_before_open(show_settings, scope);
+    if should_close {
+        ui.invoke_close_settings();
+    }
+    should_close
+}
+
 /// End any in-progress settings-dialog session, then apply the backend open result.
 ///
 /// ORDER IS LOAD-BEARING, and this pairing is why the two statements live in one
@@ -423,6 +442,7 @@ pub(crate) fn wire_carousel_handlers(
                 let Some(pending) = open_ctrl.take_outcome(epoch.max(0) as usize) else {
                     return;
                 };
+                close_settings_dialog_if_active(&ui, &dialog_session);
                 let (request, result) = pending.into_result();
                 let missing = matches!(result, Err(BackendError::Missing { .. }));
                 let outcome = end_session_and_apply_opened(
@@ -832,7 +852,6 @@ pub(crate) fn wire_selection_handlers(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dialog_session::DialogScope;
     use crate::open_book::opened;
     use gashuu_core::{
         CoverMode, FitMode, ReadingDirection, ResolvedView, SpreadMode, ViewOverride,
@@ -846,6 +865,165 @@ mod tests {
                 .expect("write fixture page");
         }
         source
+    }
+
+    #[test]
+    fn dialog_must_close_before_open_only_with_an_active_session() {
+        for (show_settings, scope, expected) in [
+            (true, Some(DialogScope::Library), true),
+            (true, Some(DialogScope::Viewer), true),
+            (true, None, false),
+            (false, Some(DialogScope::Library), false),
+            (false, None, false),
+        ] {
+            assert_eq!(
+                dialog_must_close_before_open(show_settings, scope),
+                expected,
+                "show_settings={show_settings}, scope={scope:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn close_settings_dialog_if_active_invokes_the_close_handler_once() {
+        let ui = crate::cover_loader::test_window();
+        ui.set_show_settings(true);
+        let settings = RefCell::new(Settings::default());
+        let state = RefCell::new(ViewerState::new());
+        let viewport = RefCell::new(ViewportState::from_settings(&settings.borrow()));
+        let dialog_session = Rc::new(RefCell::new(DialogSession::new()));
+        dialog_session
+            .borrow_mut()
+            .open(DialogScope::Library, &state, &viewport, &settings);
+        let calls = Rc::new(Cell::new(0));
+        ui.on_close_settings({
+            let calls = Rc::clone(&calls);
+            let dialog_session = Rc::clone(&dialog_session);
+            move || {
+                calls.set(calls.get() + 1);
+                dialog_session
+                    .borrow_mut()
+                    .end(&state, &viewport, &settings);
+            }
+        });
+
+        assert!(close_settings_dialog_if_active(&ui, &dialog_session));
+        assert_eq!(calls.get(), 1);
+        // The stub leaves the dialog visible to exercise the inactive-session guard.
+        assert!(!close_settings_dialog_if_active(&ui, &dialog_session));
+        assert_eq!(calls.get(), 1);
+    }
+
+    #[test]
+    fn closing_a_library_dialog_before_an_open_commits_globals_only() {
+        use crate::view_sync::ViewModeRoute;
+
+        let root = tempfile::tempdir().expect("tempdir");
+        let first = make_book_dir(root.path(), "first", 3);
+        let second = make_book_dir(root.path(), "second", 3);
+        let (first_id, first_title) = crate::book_path::identify(&first, true).unwrap();
+        let (second_id, second_title) = crate::book_path::identify(&second, true).unwrap();
+        let settings = Rc::new(RefCell::new(Settings {
+            reading_direction: ReadingDirection::Rtl,
+            spread_mode: SpreadMode::Double,
+            cover_mode: CoverMode::Paired,
+            fit_mode: FitMode::Actual,
+            ..Settings::default()
+        }));
+        let book_view = ResolvedView {
+            reading_direction: ReadingDirection::Ltr,
+            spread_mode: SpreadMode::Single,
+            cover_mode: CoverMode::Standalone,
+            fit_mode: FitMode::Whole,
+        };
+        let edited_global = ResolvedView {
+            reading_direction: ReadingDirection::Rtl,
+            spread_mode: SpreadMode::Auto,
+            cover_mode: CoverMode::Paired,
+            fit_mode: FitMode::Width,
+        };
+        let incoming_override = ViewOverride {
+            reading_direction: Some(ReadingDirection::Ltr),
+            spread_mode: Some(SpreadMode::Double),
+            cover_mode: Some(CoverMode::Paired),
+            fit_mode: Some(FitMode::Actual),
+        };
+        let incoming_view = incoming_override.resolve(edited_global);
+        let state = Rc::new(RefCell::new(ViewerState::new()));
+        state.borrow_mut().open_path(&first).expect("open first");
+        let viewport = Rc::new(RefCell::new(ViewportState::from_settings(
+            &settings.borrow(),
+        )));
+        state
+            .borrow_mut()
+            .apply_resolved_view(book_view, &mut viewport.borrow_mut());
+        let mut library_value = Library::new();
+        assert!(library_value.add(first_id.clone(), first_title).is_some());
+        assert!(library_value.add(second_id.clone(), second_title).is_some());
+        assert!(library_value.set_overrides(&second_id, incoming_override));
+        let library = Rc::new(RefCell::new(library_value));
+        let dialog_session = Rc::new(RefCell::new(DialogSession::new()));
+        let leave_point = Rc::new(crate::LeavePointService::new(
+            Rc::clone(&state),
+            Rc::clone(&viewport),
+            Rc::clone(&dialog_session),
+            Rc::clone(&settings),
+            Rc::clone(&library),
+            Rc::new(None),
+        ));
+        let open_book = open_book::OpenBookUseCase::new(
+            Rc::clone(&state),
+            Rc::clone(&settings),
+            Rc::clone(&viewport),
+            Rc::clone(&dialog_session),
+            Rc::clone(&library),
+            Rc::clone(&leave_point),
+            Box::new(|_| Ok(())),
+            Box::new(|_| Ok(())),
+            crate::backend::fake::FakeBackend::new(),
+            None,
+            Arc::new(gashuu_core::NullThumbStore),
+        );
+
+        dialog_session
+            .borrow_mut()
+            .open(DialogScope::Library, &state, &viewport, &settings);
+        state
+            .borrow_mut()
+            .apply_resolved_view(edited_global, &mut viewport.borrow_mut());
+        leave_point
+            .persist_with(ViewModeRoute::DialogClosedOnLibrary, |_| Ok(()))
+            .expect("persist Library dialog close");
+        dialog_session
+            .borrow_mut()
+            .end(&state, &viewport, &settings);
+
+        let (request, probe) = opened(&second);
+        let outcome = end_session_and_apply_opened(
+            &dialog_session,
+            &state,
+            &viewport,
+            &settings,
+            &open_book,
+            &request,
+            probe,
+        );
+
+        assert!(matches!(outcome, open_book::OpenOutcome::Success { .. }));
+        assert_eq!(settings.borrow().view_defaults(), edited_global);
+        assert_eq!(
+            library.borrow().overrides_for(&first_id),
+            ViewOverride::differences_from(book_view, edited_global)
+        );
+        assert_eq!(
+            crate::view_sync::current_runtime_view(&state, &viewport),
+            incoming_view
+        );
+        assert_eq!(
+            library.borrow().overrides_for(&second_id),
+            incoming_override
+        );
+        assert_eq!(dialog_session.borrow().scope(), None);
     }
 
     #[cfg(unix)]

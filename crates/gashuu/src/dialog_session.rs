@@ -28,6 +28,8 @@ pub(crate) enum DialogScope {
 
 /// The settings-dialog session over its recorded opening scope: owns the open
 /// book's pre-dialog runtime snapshot (#414) and reset-to-global ordering (#415).
+/// Async open finalization closes a visible, active session through the settings
+/// close handler before applying the open result.
 pub(crate) struct DialogSession {
     scope: Option<DialogScope>,
     snapshot: Option<RuntimeSnapshot>,
@@ -71,6 +73,7 @@ impl DialogSession {
         }
     }
 
+    /// Returns the opening scope exactly while a settings-dialog session is active.
     pub fn scope(&self) -> Option<DialogScope> {
         self.scope
     }
