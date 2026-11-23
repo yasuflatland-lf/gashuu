@@ -129,9 +129,8 @@ mod tests {
 
     #[test]
     fn huge_version_is_treated_as_unknown_and_migrated() {
-        // > u32::MAX: a truncating cast would wrap to a small number and skip/mis-run
-        // migration; the checked conversion treats it as 0 and migrates from there.
-        let huge = u64::from(u32::MAX) + 1;
+        // 2^32 + 2 truncates to the current version (2) and would skip migration.
+        let huge = u64::from(u32::MAX) + 3;
         let VersionedDocument::Ready(value) =
             parse_versioned_object(&format!(r#"{{"version":{huge}}}"#), CURRENT, stamp_migrate)
                 .unwrap()
