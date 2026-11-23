@@ -234,3 +234,11 @@ uses the policy-less `ArchiveLoader::open` (effectively `allow_rar: true`). With
 `true` that matches the default policy, so the inconsistency only persists for a user who has
 explicitly opted OUT (their already-added RAR books' covers still load). Closing it stays a
 follow-up.
+
+## Amendment: cover-loader gap closed
+
+Archive opens for shelf covers and page counts now honor `allow_rar_archives`.
+When the setting is off, a cached RAR/CBR cover can still be displayed because
+serving it requires no archive parser. If the shelf requests a count for that
+book, the count fails with `FormatDisabled`. The browser worker opens only ZIP
+archives for covers and counts.

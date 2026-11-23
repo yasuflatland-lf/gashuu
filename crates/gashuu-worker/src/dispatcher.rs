@@ -345,19 +345,17 @@ impl Dispatcher {
             }
         }
         let source = self.archive_input(id, reader).and_then(|(name, reader)| {
-            ArchiveLoader::open_read_at(&name, reader, ArchivePolicy::default())
+            // The browser build never opens RAR archives.
+            ArchiveLoader::open_book_read_at(&name, reader, ArchivePolicy { allow_rar: false })
                 .map_err(WireError::from)
         });
         match source {
-            Ok(source) => {
-                let count = source.list_pages().len() as u32;
-                if count == 0 {
-                    return (Err(WireError::EmptyBook), 0);
-                }
+            Ok(book) => {
+                let count = book.page_count().get() as u32;
                 if let Some(image) = cached {
                     return (Ok(image), count);
                 }
-                let result = self.thumbnail(source.as_ref(), 0, max_side).await;
+                let result = self.thumbnail(book.source().as_ref(), 0, max_side).await;
                 if let (Ok(image), Some((store, fp))) = (&result, store) {
                     let _ = store.put(fp, ThumbSlot::Cover, max_side, image);
                 }

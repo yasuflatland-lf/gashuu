@@ -80,8 +80,13 @@ impl Harness {
     fn check_cover(&self, path: &Path, expected_count: Option<usize>) -> ImageResult {
         let (on_cover, cover) = super::super::test_callback();
         let (on_count, count) = super::super::test_callback();
-        self.backend
-            .cover(&request_id(path).unwrap(), 512, on_cover, Some(on_count));
+        self.backend.cover(
+            &request_id(path).unwrap(),
+            ArchivePolicy::default(),
+            512,
+            on_cover,
+            Some(on_count),
+        );
         self.pump();
         if let Some(expected) = expected_count {
             match count.try_recv() {
@@ -308,6 +313,58 @@ fn cover_miss_delivers_cover_and_count() {
 }
 
 #[test]
+fn cover_miss_with_rar_disabled_reports_format_disabled_without_count() {
+    let h = Harness::new();
+    let path = h.root.path().join("disabled.cbr");
+    std::fs::write(&path, []).unwrap();
+    let (on_cover, cover) = super::super::test_callback();
+    let (on_count, count) = super::super::test_callback();
+    h.backend.cover(
+        &request_id(&path).unwrap(),
+        ArchivePolicy { allow_rar: false },
+        512,
+        on_cover,
+        Some(on_count),
+    );
+    h.pump();
+    assert_eq!(
+        cover.try_recv().unwrap().unwrap_err(),
+        BackendError::FormatDisabled { format: "rar/cbr" }
+    );
+    assert_eq!(
+        count.recv_timeout(Duration::from_secs(5)),
+        Err(mpsc::RecvTimeoutError::Disconnected)
+    );
+}
+
+#[test]
+fn cover_hit_with_rar_disabled_reports_format_disabled_through_count() {
+    let h = Harness::new();
+    let path = h.root.path().join("disabled.cbr");
+    std::fs::write(&path, []).unwrap();
+    let id = request_id(&path).unwrap();
+    let key = h.backend.inner.thumbs.fingerprint(&id).cover_key(512);
+    let image = DecodedImage::new(vec![0; 4], 1, 1).unwrap();
+    h.backend.inner.cache_cover(key, image.clone());
+    let (on_cover, cover) = super::super::test_callback();
+    let (on_count, count) = super::super::test_callback();
+    h.backend.cover(
+        &id,
+        ArchivePolicy { allow_rar: false },
+        512,
+        on_cover,
+        Some(on_count),
+    );
+    h.pump();
+    assert_eq!(*cover.try_recv().unwrap().unwrap(), image);
+    h.pump();
+    assert_eq!(
+        count.try_recv().unwrap(),
+        Err(BackendError::FormatDisabled { format: "rar/cbr" })
+    );
+}
+
+#[test]
 fn cover_empty_drops_count() {
     let h = Harness::new();
     assert!(matches!(
@@ -347,8 +404,13 @@ fn cover_hit_reports_empty_only_through_count() {
         .cache_cover(key, DecodedImage::new(vec![0; 4], 1, 1).unwrap());
     let (on_cover, cover) = super::super::test_callback();
     let (on_count, count) = super::super::test_callback();
-    h.backend
-        .cover(&request_id(&path).unwrap(), 512, on_cover, Some(on_count));
+    h.backend.cover(
+        &request_id(&path).unwrap(),
+        ArchivePolicy::default(),
+        512,
+        on_cover,
+        Some(on_count),
+    );
     h.pump();
     assert!(cover.try_recv().unwrap().is_ok());
     assert!(matches!(count.try_recv(), Err(mpsc::TryRecvError::Empty)));
@@ -363,6 +425,7 @@ fn cancel_covers_before_pump_drops_both_callbacks() {
     let (on_count, count) = super::super::test_callback();
     h.backend.cover(
         &request_id(&h.book(2)).unwrap(),
+        ArchivePolicy::default(),
         512,
         on_cover,
         Some(on_count),

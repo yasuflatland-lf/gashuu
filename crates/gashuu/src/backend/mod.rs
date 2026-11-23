@@ -155,9 +155,11 @@ pub(crate) trait BookBackend {
     /// is delivered only on cover success. A hit needs an extra open for the
     /// count and reports an empty book through the count callback. A miss
     /// reports an empty book through the cover callback. Order is unspecified.
+    /// `policy` gates every archive open made by this call.
     fn cover(
         &self,
         id: &BookId,
+        policy: ArchivePolicy,
         max_side: u32,
         on_cover: Done<ImageResult>,
         on_count: Option<Done<CountResult>>,
