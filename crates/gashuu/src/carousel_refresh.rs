@@ -482,6 +482,7 @@ mod tests {
             library_store: Rc::new(None),
             covers: Rc::new(cover_loader::CoverController::new(
                 crate::backend::fake::FakeBackend::new(),
+                Rc::new(RefCell::new(gashuu_core::Settings::default())),
             )),
             search: Rc::new(RefCell::new(search)),
             selection: Rc::new(RefCell::new(LibrarySelectionState::default())),
