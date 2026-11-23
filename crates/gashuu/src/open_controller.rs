@@ -65,6 +65,21 @@ impl OpenController {
         cache: CacheConfig,
     ) {
         self.close_orphans();
+        let notify = move |epoch| {
+            if let Some(ui) = weak.upgrade() {
+                ui.invoke_open_finalize(epoch as i32);
+            }
+        };
+        self.start_with(request, policy, cache, notify);
+    }
+
+    fn start_with(
+        &self,
+        request: BookId,
+        policy: ArchivePolicy,
+        cache: CacheConfig,
+        notify: impl FnOnce(usize) + Send + 'static,
+    ) {
         let ticket = self.generation.begin();
         let orphans = self.orphans.clone();
         let id = request.clone();
@@ -82,11 +97,8 @@ impl OpenController {
                     result,
                     guard,
                 };
-                if ticket.deliver(|slot| *slot = Some(pending)) {
-                    if let Some(ui) = weak.upgrade() {
-                        ui.invoke_open_finalize(ticket.id() as i32);
-                    }
-                }
+                let _ = ticket.deliver(|slot| *slot = Some(pending));
+                notify(ticket.id());
             }),
         );
     }
@@ -101,6 +113,153 @@ impl OpenController {
 mod tests {
     use super::*;
     use crate::backend::fake::{Call, FakeBackend};
+
+    #[test]
+    fn superseded_completion_notifies_with_its_own_epoch() {
+        let backend = FakeBackend::new();
+        let ctrl = OpenController::new(backend.clone());
+        let notifications = Arc::new(Mutex::new(Vec::new()));
+        let a = BookId::new("a");
+        for id in [a.clone(), BookId::new("b")] {
+            let notifications = Arc::clone(&notifications);
+            ctrl.start_with(id, Default::default(), Default::default(), move |epoch| {
+                notifications.lock().unwrap().push(epoch);
+            });
+        }
+        backend.complete_open(
+            0,
+            Ok(OpenedBook {
+                session: backend.new_session(),
+                id: a,
+                page_count: 3,
+                skipped: 0,
+                listing_truncated: false,
+                is_dir: true,
+            }),
+        );
+        assert_eq!(*notifications.lock().unwrap(), [1]);
+    }
+
+    #[test]
+    fn superseded_session_is_closed_on_its_own_notification() {
+        let backend = FakeBackend::new();
+        let ctrl = OpenController::new(backend.clone());
+        let notifications = Arc::new(Mutex::new(Vec::new()));
+        let a = BookId::new("a");
+        let b = BookId::new("b");
+        for id in [a.clone(), b.clone()] {
+            let notifications = Arc::clone(&notifications);
+            ctrl.start_with(id, Default::default(), Default::default(), move |epoch| {
+                notifications.lock().unwrap().push(epoch);
+            });
+        }
+        let current = backend.new_session();
+        backend.complete_open(
+            1,
+            Ok(OpenedBook {
+                session: current,
+                id: b.clone(),
+                page_count: 5,
+                skipped: 0,
+                listing_truncated: false,
+                is_dir: true,
+            }),
+        );
+        assert_eq!(*notifications.lock().unwrap(), [2]);
+        let (request, result) = ctrl.take_outcome(2).unwrap().into_result();
+        assert_eq!(request, b);
+        assert_eq!(result.unwrap().session, current);
+
+        let old = backend.new_session();
+        backend.complete_open(
+            0,
+            Ok(OpenedBook {
+                session: old,
+                id: a,
+                page_count: 3,
+                skipped: 0,
+                listing_truncated: false,
+                is_dir: true,
+            }),
+        );
+        assert_eq!(*notifications.lock().unwrap(), [2, 1]);
+        let epoch = notifications.lock().unwrap()[1];
+        assert!(ctrl.take_outcome(epoch).is_none());
+        assert_eq!(
+            backend
+                .calls()
+                .into_iter()
+                .filter(|call| matches!(call, Call::Close(_)))
+                .collect::<Vec<_>>(),
+            [Call::Close(old)]
+        );
+        assert!(ctrl.take_outcome(2).is_none());
+    }
+
+    #[test]
+    fn current_completion_still_delivers_once() {
+        let backend = FakeBackend::new();
+        let ctrl = OpenController::new(backend.clone());
+        let notifications = Arc::new(Mutex::new(Vec::new()));
+        let recorder = Arc::clone(&notifications);
+        let id = BookId::new("current");
+        ctrl.start_with(
+            id.clone(),
+            Default::default(),
+            Default::default(),
+            move |epoch| recorder.lock().unwrap().push(epoch),
+        );
+        let session = backend.new_session();
+        backend.complete_open(
+            0,
+            Ok(OpenedBook {
+                session,
+                id: id.clone(),
+                page_count: 5,
+                skipped: 0,
+                listing_truncated: false,
+                is_dir: true,
+            }),
+        );
+        assert_eq!(*notifications.lock().unwrap(), [1]);
+        let epoch = notifications.lock().unwrap()[0];
+        let (request, result) = ctrl.take_outcome(epoch).unwrap().into_result();
+        assert_eq!(request, id);
+        assert_eq!(result.unwrap().session, session);
+        assert!(ctrl.take_outcome(epoch).is_none());
+        assert_eq!(*notifications.lock().unwrap(), [1]);
+        assert!(!backend
+            .calls()
+            .iter()
+            .any(|call| matches!(call, Call::Close(_))));
+    }
+
+    #[test]
+    fn failed_superseded_open_notifies_without_closing() {
+        let backend = FakeBackend::new();
+        let ctrl = OpenController::new(backend.clone());
+        let notifications = Arc::new(Mutex::new(Vec::new()));
+        for id in [BookId::new("a"), BookId::new("b")] {
+            let notifications = Arc::clone(&notifications);
+            ctrl.start_with(id, Default::default(), Default::default(), move |epoch| {
+                notifications.lock().unwrap().push(epoch);
+            });
+        }
+        backend.complete_open(
+            0,
+            Err(BackendError::Missing {
+                detail: "gone".into(),
+            }),
+        );
+        assert_eq!(*notifications.lock().unwrap(), [1]);
+        assert!(ctrl.orphans.lock().unwrap().is_empty());
+        let epoch = notifications.lock().unwrap()[0];
+        assert!(ctrl.take_outcome(epoch).is_none());
+        assert!(!backend
+            .calls()
+            .iter()
+            .any(|call| matches!(call, Call::Close(_))));
+    }
 
     #[test]
     fn superseded_open_session_is_closed() {
