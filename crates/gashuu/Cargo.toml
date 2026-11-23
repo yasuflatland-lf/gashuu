@@ -5,7 +5,7 @@ edition = "2021"
 license = "MIT"
 
 [dependencies]
-slint = { version = "=1.18.1" }
+slint = { version = "=1.19.0" }
 rayon = "1"
 # Bounded in-memory decoded-cover LRU in `cover_loader.rs` (kept off the disk
 # cache read path). Same version core already resolves, so no new lockfile entry.
@@ -26,9 +26,9 @@ gashuu-core = { path = "../gashuu-core" }
 # `WindowEvent` filter), used by `handlers/drag_drop.rs` to receive OS file-drop
 # events Slint has no stable API for. That module is feature-gated and "may be
 # removed or changed in future minor releases", so slint/slint-build are pinned
-# to an exact version (=1.18.1) rather than `1` — a slint minor bump must be a
+# to an exact version (=1.19.0) rather than `1` — a slint minor bump must be a
 # deliberate, tested step. See docs/toolchain.md.
-slint = { version = "=1.18.1", features = ["unstable-winit-030"] }
+slint = { version = "=1.19.0", features = ["unstable-winit-030"] }
 rfd = "0.18"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 color-eyre = "0.6"
@@ -56,7 +56,7 @@ gashuu-core = { path = "../gashuu-core", default-features = false }
 gashuu-worker = { path = "../gashuu-worker" }
 console_error_panic_hook = "0.1"
 tracing-wasm = "0.2"
-slint = { version = "=1.18.1", features = ["unstable-fontique-011"] }
+slint = { version = "=1.19.0", features = ["unstable-fontique-012"] }
 web-sys = { version = "0.3", features = [
     "Window", "EventTarget", "VisibilityState", "MediaQueryList", "Navigator", "Storage", "Request", "RequestInit", "Response", "Document", "HtmlInputElement", "File", "FileList",
     "Blob", "StorageManager", "Worker", "WorkerOptions", "MessageEvent", "ErrorEvent", "Url",
@@ -67,7 +67,7 @@ wasm-bindgen-futures = "0.4"
 
 [build-dependencies]
 # Pinned to match the exact `slint` version above (they must stay in lockstep).
-slint-build = "=1.18.1"
+slint-build = "=1.19.0"
 
 # Windows-only: embeds app-icon.ico into gashuu.exe (see build.rs). Gated on
 # `cfg(windows)` so it is never fetched or compiled on macOS/Linux builds.

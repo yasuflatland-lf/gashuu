@@ -1,6 +1,6 @@
 use crate::ViewerWindow;
 use js_sys::Uint8Array;
-use slint::fontique_011::{fontique, shared_collection};
+use slint::fontique_012::{fontique, shared_collection};
 use std::{fmt::Display, sync::Arc};
 use wasm_bindgen_futures::JsFuture;
 use web_sys::{wasm_bindgen::JsCast, Response};
@@ -57,9 +57,9 @@ fn register_ja_fallback(bytes: Vec<u8>) -> Result<(), String> {
     if fonts.is_empty() {
         return Err("font data did not register a family".to_owned());
     }
-    for script in ["Hira", "Kana", "Hani"] {
+    for script in [*b"Hira", *b"Kana", *b"Hani"] {
         collection.append_fallbacks(
-            fontique::FallbackKey::new(fontique::Script::from_str_unchecked(script), None),
+            fontique::FallbackKey::new(fontique::Script::from_bytes(script), None),
             fonts.iter().map(|(family, _)| *family),
         );
     }

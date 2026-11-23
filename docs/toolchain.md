@@ -47,10 +47,10 @@ used by drag-and-drop and window geometry.
 
 ```toml
 [dependencies]
-slint = { version = "=1.18.1" }
+slint = { version = "=1.19.0" }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-slint = { version = "=1.18.1", features = ["unstable-winit-030"] }
+slint = { version = "=1.19.0", features = ["unstable-winit-030"] }
 ```
 
 The desktop table uses the default `gashuu-core` features for RAR and AVIF.
@@ -205,9 +205,9 @@ build. The action's cache key now includes `ImageOS` + `ImageVersion` (no `resto
 image update forces a cold build in CI first, and the AVIF decode tests run on the Windows leg
 against that static library.
 
-### slint pinned to `=1.18.1` for the `unstable-winit-030` feature (drag-and-drop)
+### slint pinned to `=1.19.0` for the `unstable-winit-030` feature (drag-and-drop)
 
-**`slint` and `slint-build` are pinned to an EXACT version (`=1.18.1`), not `1`, because the UI crate enables the desktop-only `unstable-winit-030` feature.** Slint has no stable file-drop API, so OS file/folder drag-and-drop (`handlers/drag_drop.rs`) reaches the winit backend's raw `WindowEvent` filter (`slint::winit_030::WinitWindowAccessor::on_winit_window_event`) to receive `HoveredFile`/`DroppedFile`. That module is gated behind `unstable-winit-030` and is documented as "may be removed or changed in future minor releases", so a slint minor bump must be a deliberate, tested step rather than an automatic `cargo update`. The two versions MUST stay in lockstep (the proc-macro and the runtime are one release). To upgrade slint: bump both pins together, re-verify drag-and-drop builds and the `winit_030` API still resolves, then run the three gates.
+**`slint` and `slint-build` are pinned to an EXACT version (`=1.19.0`), not `1`, because the UI crate enables the desktop-only `unstable-winit-030` feature.** Slint has no stable file-drop API, so OS file/folder drag-and-drop (`handlers/drag_drop.rs`) reaches the winit backend's raw `WindowEvent` filter (`slint::winit_030::WinitWindowAccessor::on_winit_window_event`) to receive `HoveredFile`/`DroppedFile`. That module is gated behind `unstable-winit-030` and is documented as "may be removed or changed in future minor releases", so a slint minor bump must be a deliberate, tested step rather than an automatic `cargo update`. The two versions MUST stay in lockstep (the proc-macro and the runtime are one release). To upgrade slint: bump both pins together, re-verify drag-and-drop builds and the `winit_030` API still resolves, then run the three gates.
 
 ### Thumbnail strip added no new dependencies
 
