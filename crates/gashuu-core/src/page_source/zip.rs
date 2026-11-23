@@ -303,6 +303,19 @@ mod tests {
     }
 
     #[test]
+    fn mixed_case_page_names_list_in_numeric_order() {
+        let png = tiny_png();
+        let cbz = write_cbz(&[
+            ("page2.png", png.clone()),
+            ("Page10.png", png.clone()),
+            ("PAGE1.png", png),
+        ]);
+        let src = ZipSource::open(cbz.path()).unwrap();
+
+        assert_eq!(names(&src), vec!["PAGE1.png", "page2.png", "Page10.png"]);
+    }
+
+    #[test]
     fn listing_is_not_truncated_for_a_complete_zip() {
         let cbz = write_cbz(&[("1.png", tiny_png())]);
         let src = ZipSource::open(cbz.path()).unwrap();
