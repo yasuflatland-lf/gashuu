@@ -15,13 +15,14 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::Arc;
 
-use gashuu_core::{Book, BookId, CoreError, Library, RemovalReport, ThumbStore};
+use gashuu_core::{Book, BookId, CoreError, Library, RemovalReport, Settings, ThumbStore};
 use i18n_embed::fluent::FluentLanguageLoader;
 
 use crate::cover_loader::purge_cover;
 use crate::dialog_session::DialogSession;
 use crate::library_model::{LibrarySearchState, LibrarySelectionState};
 use crate::viewer_state::ViewerState;
+use crate::viewport::ViewportState;
 use crate::{save_library, LibraryStoreHandle};
 
 /// Maximum number of book titles listed verbatim in the delete-confirmation
@@ -104,15 +105,16 @@ pub(crate) fn removed_contains_open(open_book: Option<&BookId>, removed: &[BookI
 /// [`OpenBookUseCase`](crate::open_book::OpenBookUseCase): the shared
 /// collaborators it threads are fields, so the (single) delete-confirm site calls
 /// [`run`](RemoveBooksUseCase::run) with no arguments. It stays lean and headless
-/// — it touches no Slint at all (only the in-memory `state` / `library` / `search`
-/// / `selection`) and returns a [`RemoveOutcome`]. The carousel rebuild / status /
+/// — it touches no Slint and returns a [`RemoveOutcome`]. The carousel rebuild / status /
 /// focus restoration / viewer title-blank all happen in
 /// [`finalize_remove`](crate::carousel_refresh::finalize_remove) from that
 /// outcome.
 pub(crate) struct RemoveBooksUseCase {
     backend: Rc<dyn crate::backend::BookBackend>,
     state: Rc<RefCell<ViewerState>>,
+    viewport: Rc<RefCell<ViewportState>>,
     dialog_session: Rc<RefCell<DialogSession>>,
+    settings: Rc<RefCell<Settings>>,
     library: Rc<RefCell<Library>>,
     search: Rc<RefCell<LibrarySearchState>>,
     selection: Rc<RefCell<LibrarySelectionState>>,
@@ -125,7 +127,9 @@ impl RemoveBooksUseCase {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         state: Rc<RefCell<ViewerState>>,
+        viewport: Rc<RefCell<ViewportState>>,
         dialog_session: Rc<RefCell<DialogSession>>,
+        settings: Rc<RefCell<Settings>>,
         library: Rc<RefCell<Library>>,
         search: Rc<RefCell<LibrarySearchState>>,
         selection: Rc<RefCell<LibrarySelectionState>>,
@@ -136,7 +140,9 @@ impl RemoveBooksUseCase {
     ) -> Self {
         Self {
             state,
+            viewport,
             dialog_session,
+            settings,
             library,
             search,
             selection,
@@ -209,7 +215,7 @@ impl RemoveBooksUseCase {
             }
         }
 
-        // 4. If the open book was deleted, close it (no previous book to fall back to).
+        // 4. If the open book was deleted, close it and restore the global view.
         //    Headless only; `closed_open_book` tells `finalize_remove` to blank the title.
         let closed_open_book = {
             let open_book = self.state.borrow().open_book().cloned();
@@ -217,6 +223,11 @@ impl RemoveBooksUseCase {
                 if let Some(session) = self.state.borrow_mut().close() {
                     self.backend.close(session);
                 }
+                crate::view_sync::apply_global_view_to_runtime(
+                    &self.settings,
+                    &self.state,
+                    &self.viewport,
+                );
                 self.dialog_session.borrow_mut().clear_pending_inherit();
                 true
             } else {
@@ -336,9 +347,8 @@ pub(crate) fn confirm_delete_content(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::view_sync::current_runtime_view;
-    use crate::viewport::ViewportState;
-    use gashuu_core::{CoverMode, FitMode, ReadingDirection, Settings, SpreadMode};
+    use crate::view_sync::{current_runtime_view, LeavePointService, ViewModeRoute};
+    use gashuu_core::{CoverMode, FitMode, ReadingDirection, ResolvedView, SpreadMode};
     use std::num::NonZeroUsize;
 
     /// Build a real failing `CoreError` for the save-result arguments. Uses the
@@ -740,11 +750,12 @@ mod tests {
         }
         let thumbs = std::sync::Arc::new(RecordingThumbStore::default());
         let importer = crate::backend::fake::FakeBackend::new();
+        let settings = Settings::default();
         let use_case = RemoveBooksUseCase::new(
-            Rc::new(RefCell::new(ViewerState::from_settings(
-                &Settings::default(),
-            ))),
+            Rc::new(RefCell::new(ViewerState::from_settings(&settings))),
+            Rc::new(RefCell::new(ViewportState::from_settings(&settings))),
             Rc::new(RefCell::new(DialogSession::new())),
+            Rc::new(RefCell::new(settings)),
             Rc::new(RefCell::new(library)),
             Rc::new(RefCell::new(LibrarySearchState::default())),
             Rc::new(RefCell::new(selection)),
@@ -779,14 +790,118 @@ mod tests {
         }
     }
 
+    struct RemovedOpenBook {
+        state: Rc<RefCell<ViewerState>>,
+        viewport: Rc<RefCell<ViewportState>>,
+        settings: Rc<RefCell<Settings>>,
+        leave_point: LeavePointService,
+    }
+
+    fn remove_open_book_with_view_override() -> RemovedOpenBook {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("page.png"), []).unwrap();
+        let defaults = Settings {
+            reading_direction: ReadingDirection::Ltr,
+            spread_mode: SpreadMode::Single,
+            cover_mode: CoverMode::Standalone,
+            fit_mode: FitMode::Whole,
+            ..Settings::default()
+        };
+        let state = Rc::new(RefCell::new(ViewerState::from_settings(&defaults)));
+        let viewport = Rc::new(RefCell::new(ViewportState::from_settings(&defaults)));
+        let global_view = defaults.view_defaults();
+        let settings = Rc::new(RefCell::new(defaults));
+        state.borrow_mut().open_path(dir.path()).unwrap();
+        state.borrow_mut().apply_resolved_view(
+            ResolvedView {
+                reading_direction: ReadingDirection::Rtl,
+                spread_mode: SpreadMode::Double,
+                cover_mode: CoverMode::Paired,
+                fit_mode: FitMode::Actual,
+            },
+            &mut viewport.borrow_mut(),
+        );
+        let id = state.borrow().open_book().cloned().unwrap();
+        let mut library = Library::new();
+        assert!(library.add(id.clone(), "Book".into()).is_some());
+        let library = Rc::new(RefCell::new(library));
+        let mut selection = LibrarySelectionState::default();
+        selection.insert(id);
+        let dialog_session = Rc::new(RefCell::new(DialogSession::new()));
+        let library_store = Rc::new(Some(gashuu_core::LibraryStore::new(
+            dir.path().join("library.json"),
+        )));
+        let leave_point = LeavePointService::new(
+            Rc::clone(&state),
+            Rc::clone(&viewport),
+            Rc::clone(&dialog_session),
+            Rc::clone(&settings),
+            Rc::clone(&library),
+            Rc::clone(&library_store),
+        );
+        let use_case = RemoveBooksUseCase::new(
+            Rc::clone(&state),
+            Rc::clone(&viewport),
+            dialog_session,
+            Rc::clone(&settings),
+            library,
+            Rc::new(RefCell::new(LibrarySearchState::default())),
+            Rc::new(RefCell::new(selection)),
+            library_store,
+            crate::backend::fake::FakeBackend::new(),
+            None,
+            Arc::new(gashuu_core::NullThumbStore),
+        );
+        assert_eq!(
+            use_case.run(),
+            RemoveOutcome::Removed {
+                n: 1,
+                closed_open_book: true,
+            }
+        );
+        assert!(state.borrow().open_book().is_none());
+        assert_eq!(settings.borrow().view_defaults(), global_view);
+        RemovedOpenBook {
+            state,
+            viewport,
+            settings,
+            leave_point,
+        }
+    }
+
+    #[test]
+    fn removing_the_open_book_resets_runtime_to_global_view() {
+        let fixture = remove_open_book_with_view_override();
+        assert_eq!(
+            current_runtime_view(&fixture.state, &fixture.viewport),
+            fixture.settings.borrow().view_defaults()
+        );
+    }
+
+    #[test]
+    fn removing_the_open_book_then_exit_leaves_global_settings_unchanged() {
+        assert_removal_preserves_global_view(ViewModeRoute::AppExit);
+    }
+
+    #[test]
+    fn removing_the_open_book_then_suspend_leaves_global_settings_unchanged() {
+        assert_removal_preserves_global_view(ViewModeRoute::Suspend);
+    }
+
+    fn assert_removal_preserves_global_view(route: ViewModeRoute) {
+        let fixture = remove_open_book_with_view_override();
+        let defaults = fixture.settings.borrow().view_defaults();
+        assert_eq!(defaults.reading_direction, ReadingDirection::Ltr);
+        fixture.leave_point.persist_with(route, |_| Ok(())).unwrap();
+        assert_eq!(fixture.settings.borrow().view_defaults(), defaults);
+    }
+
     // ---- the pending-inherit discard on remove (#540, scope item 6) --------
 
     /// Deleting the OPEN book must discard that book's pending "reset to global"
-    /// intent along with the book itself. `ViewerState::close` clears the source,
-    /// not the runtime view modes, so the intent recorded for the deleted book
-    /// still equals the live runtime afterwards — the equality predicate cannot
-    /// retire it, only the explicit `clear_pending_inherit()` can, and anything
-    /// opened next would otherwise start out believing it had just been reset.
+    /// intent along with the book itself. The closed viewer uses the global view,
+    /// which still matches the recorded intent, so `clear_pending_inherit()` must
+    /// explicitly discard it.
     #[test]
     fn removing_open_book_closes_its_session_and_discards_pending_inherit() {
         let book_dir = tempfile::tempdir().expect("create book directory");
@@ -844,7 +959,9 @@ mod tests {
         let old = state.borrow().session().unwrap();
         let mut use_case = RemoveBooksUseCase::new(
             Rc::clone(&state),
+            Rc::clone(&viewport),
             Rc::clone(&session),
+            Rc::clone(&settings),
             Rc::clone(&library),
             Rc::new(RefCell::new(search)),
             Rc::new(RefCell::new(selection)),
@@ -878,8 +995,8 @@ mod tests {
                 crate::backend::fake::Call::Discard(open)
             ]
         );
-        // `close()` leaves the view modes standing, so the recorded view still
-        // matches the runtime — the discard has to be explicit.
+        // Removal restores the global runtime view. The recorded view still
+        // matches it, so the discard has to be explicit.
         assert!(
             !session
                 .borrow()
