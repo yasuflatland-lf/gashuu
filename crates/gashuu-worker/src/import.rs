@@ -3,6 +3,7 @@
 use std::path::Path;
 
 pub const STORAGE_FULL: &str = "browser storage is full";
+pub const STORAGE_UNAVAILABLE: &str = "this browser cannot store books";
 pub const UNREADABLE_UPLOAD: &str = "could not read selected file";
 
 pub fn fits_in_quota(size: u64, usage: Option<u64>, quota: Option<u64>) -> bool {
@@ -21,21 +22,21 @@ pub fn sanitise_upload_name(name: &str) -> String {
     if clean.is_empty() {
         return "book.cbz".into();
     }
-    if clean.len() <= MAX_BYTES {
-        return clean.into();
-    }
-
     // Retain the extension when it fits alongside at least one stem character.
-    if let Some((stem, extension)) = clean.rsplit_once('.') {
-        let suffix_len = extension.len() + 1;
-        if suffix_len < MAX_BYTES {
-            let end = stem.floor_char_boundary(MAX_BYTES - suffix_len);
-            if end > 0 {
-                return format!("{}.{extension}", &stem[..end]);
-            }
+    let parts = clean.rsplit_once('.').and_then(|(stem, extension)| {
+        let stem_budget = MAX_BYTES.checked_sub(extension.len() + 1)?;
+        let end = stem.floor_char_boundary(stem_budget);
+        (end > 0).then_some((&stem[..end], extension))
+    });
+    let truncated = clean[..clean.floor_char_boundary(MAX_BYTES)].trim_end();
+    if let Some((stem, extension)) = parts.or_else(|| truncated.rsplit_once('.')) {
+        let stem = stem.trim_end();
+        if stem.is_empty() {
+            return "book.cbz".into();
         }
+        return format!("{stem}.{extension}");
     }
-    clean[..clean.floor_char_boundary(MAX_BYTES)].into()
+    truncated.into()
 }
 
 pub fn upload_title(sanitised: &str) -> String {

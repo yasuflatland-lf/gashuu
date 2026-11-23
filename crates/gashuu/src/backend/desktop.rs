@@ -21,7 +21,6 @@ pub(crate) struct DesktopBackend {
     inner: Arc<Inner>,
 }
 
-#[allow(dead_code)] // TODO(wasm-backend): remove when #656 ([6/13]) and #657 ([7/13]) have both merged
 struct Inner {
     post: Poster,
     sessions: Mutex<HashMap<SessionId, Arc<Session>>>,
@@ -30,7 +29,6 @@ struct Inner {
     thumbs: Arc<dyn ThumbStore>,
 }
 
-#[allow(dead_code)] // TODO(wasm-backend): remove when #656 ([6/13]) and #657 ([7/13]) have both merged
 struct Session {
     id: BookId,
     source: Arc<dyn PageSource>,
@@ -89,7 +87,6 @@ fn cover_open(path: &Path, policy: ArchivePolicy) -> Result<OpenedSource, Backen
     ArchiveLoader::open_book(path, policy).map_err(|error| BackendError::for_open(path, &error))
 }
 
-#[allow(dead_code)] // TODO(wasm-backend): remove when #656 ([6/13]) and #657 ([7/13]) have both merged
 impl Inner {
     fn session(&self, id: SessionId) -> Option<Arc<Session>> {
         self.sessions

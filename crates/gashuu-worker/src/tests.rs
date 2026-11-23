@@ -825,23 +825,76 @@ fn cancelling_during_cover_decode_discards_pixels_and_count() {
     assert!(matches!(pending.poll(&mut context), Poll::Ready(replies) if replies.is_empty()));
 }
 
+fn upload_name_cases() -> [(String, String); 8] {
+    [
+        ("a/b/../c.cbz".into(), "c.cbz".into()),
+        (r"C:\x\y.zip".into(), "y.zip".into()),
+        (" . .\u{7}book.cbz ".into(), "book.cbz".into()),
+        ("".into(), "book.cbz".into()),
+        (" ... ".into(), "book.cbz".into()),
+        (
+            format!("{}.cbz", "本".repeat(100)),
+            format!("{}.cbz", "本".repeat(38)),
+        ),
+        ("book .cbz".into(), "book.cbz".into()),
+        (
+            format!("book .{}", "x".repeat(120)),
+            format!("book.{}", "x".repeat(114)),
+        ),
+    ]
+}
+
 #[test]
 fn import_names_are_safe_and_keep_the_archive_extension() {
     use crate::import::sanitise_upload_name;
-    for (raw, expected) in [
-        ("a/b/../c.cbz", "c.cbz"),
-        (r"C:\x\y.zip", "y.zip"),
-        (" . .\u{7}book.cbz ", "book.cbz"),
-        ("", "book.cbz"),
-        (" ... ", "book.cbz"),
-    ] {
-        assert_eq!(sanitise_upload_name(raw), expected);
+
+    for (raw, expected) in upload_name_cases() {
+        assert_eq!(sanitise_upload_name(&raw), expected, "{raw:?}");
     }
-    let long = format!("{}.cbz", "本".repeat(100));
-    assert_eq!(
-        sanitise_upload_name(&long),
-        format!("{}.cbz", "本".repeat(38))
-    );
+}
+
+#[test]
+fn sanitise_truncated_name_without_extension_has_no_trailing_whitespace() {
+    use crate::import::sanitise_upload_name;
+
+    let out = sanitise_upload_name(&"a ".repeat(65));
+    assert!(out.len() <= 120);
+    assert!(!out.ends_with(char::is_whitespace));
+    assert_eq!(sanitise_upload_name(&out), out);
+}
+
+#[test]
+fn sanitise_truncated_stem_with_extension_has_no_trailing_whitespace() {
+    use crate::import::sanitise_upload_name;
+
+    let out = sanitise_upload_name(&format!("{}.cbz", "a ".repeat(100)));
+    let stem = out.strip_suffix(".cbz").unwrap();
+    assert!(out.len() <= 120);
+    assert!(!stem.ends_with(char::is_whitespace));
+    assert_eq!(sanitise_upload_name(&out), out);
+}
+
+#[test]
+fn sanitise_upload_name_is_idempotent_on_existing_cases() {
+    use crate::import::sanitise_upload_name;
+
+    for (raw, _) in upload_name_cases() {
+        let out = sanitise_upload_name(&raw);
+        assert_eq!(sanitise_upload_name(&out), out, "{raw:?}");
+    }
+}
+
+#[test]
+fn sanitised_name_parses_as_a_stored_book_id() {
+    use crate::import::sanitise_upload_name;
+
+    let uuid = "6b7463ec-32e1-4ba7-99e0-88df6ac5f568";
+    let cases = upload_name_cases().into_iter().map(|(raw, _)| raw);
+    for raw in cases.chain(["a ".repeat(65), format!("{}.cbz", "a ".repeat(100))]) {
+        let out = sanitise_upload_name(&raw);
+        let id = format!("books/{uuid}/{out}");
+        assert!(parse(&id).is_ok(), "{id:?}");
+    }
 }
 
 #[test]

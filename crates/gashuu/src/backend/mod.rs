@@ -40,7 +40,6 @@ type CountResult = Result<NonZeroUsize, BackendError>;
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub(crate) struct SessionId(u64);
 
-#[allow(dead_code)] // TODO(wasm-backend): remove when #656 ([6/13]) and #657 ([7/13]) have both merged
 impl SessionId {
     pub(super) fn new(raw: u64) -> Self {
         Self(raw)
@@ -109,7 +108,6 @@ impl fmt::Display for BackendError {
 
 /// A successful open, including a source with zero pages. The open use case
 /// owns the rejection of empty books (ADR-0009).
-#[allow(dead_code)] // TODO(wasm-backend): remove when #656 ([6/13]) and #657 ([7/13]) have both merged
 pub(crate) struct OpenedBook {
     pub(crate) session: SessionId,
     /// Canonical identity resolved by the backend.
@@ -121,13 +119,11 @@ pub(crate) struct OpenedBook {
     pub(crate) is_dir: bool,
 }
 
-#[allow(dead_code)] // TODO(wasm-backend): remove when #656 ([6/13]) and #657 ([7/13]) have both merged
 pub(crate) struct SpreadPages {
     pub(crate) leading: (usize, ImageResult),
     pub(crate) trailing: Option<(usize, ImageResult)>,
 }
 
-#[allow(dead_code)] // TODO(wasm-backend): remove when #656 ([6/13]) and #657 ([7/13]) have both merged
 pub(crate) trait BookBackend {
     /// Open an ID and create a session using the given cache configuration.
     fn open(
@@ -168,25 +164,6 @@ pub(crate) trait BookBackend {
     fn cancel_covers(&self);
     /// Resolve the page count without creating a session.
     fn probe_page_count(&self, id: &BookId, policy: ArchivePolicy, done: Done<CountResult>);
-}
-
-/// Deliver both results of a cover operation, checking cancellation before
-/// each callback because the cover callback can itself refresh the library.
-#[allow(dead_code)] // TODO(wasm-backend): remove when #656 ([6/13]) and #657 ([7/13]) have both merged
-fn deliver_cover(
-    is_current: impl Fn() -> bool,
-    on_cover: Done<ImageResult>,
-    on_count: Option<Done<CountResult>>,
-    cover: ImageResult,
-    count: Option<CountResult>,
-) {
-    if is_current() {
-        let succeeded = cover.is_ok();
-        on_cover(cover);
-        if let Some(on_count) = on_count.filter(|_| succeeded && is_current()) {
-            on_count(count.expect("successful cover with a count callback has a count result"));
-        }
-    }
 }
 
 pub(crate) fn platform_backend(thumbs: Arc<dyn ThumbStore>) -> Rc<dyn BookBackend> {
@@ -253,7 +230,7 @@ pub(crate) fn platform_importer() -> Option<Rc<dyn BookImporter>> {
 }
 
 #[cfg(any(test, target_arch = "wasm32"))]
-pub(crate) const STORAGE_UNAVAILABLE: &str = "this browser cannot store books";
+pub(crate) use gashuu_worker::import::STORAGE_UNAVAILABLE;
 
 #[cfg(test)]
 #[path = "port_tests.rs"]
