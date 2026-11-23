@@ -80,6 +80,20 @@ impl WindowGeometry {
         self.width <= MAX_WINDOW_WIDTH && self.height <= MAX_WINDOW_HEIGHT
     }
 
+    /// Discard a geometry above the maximum size. Otherwise floor the size to
+    /// the legible minimum and keep the position.
+    pub fn sanitized(self) -> Option<Self> {
+        if !self.is_size_within_max() {
+            return None;
+        }
+        let (width, height) = self.floored_size();
+        Some(Self {
+            width,
+            height,
+            ..self
+        })
+    }
+
     /// Top-center grab point a little below the window's top edge. Uses
     /// saturating/u32-first arithmetic so absurd hand-edited values cannot
     /// overflow (and panic in debug).
@@ -125,6 +139,17 @@ mod tests {
             x,
             y,
         }
+    }
+
+    #[test]
+    fn sanitized_discards_corrupt_size_and_floors_small_size() {
+        assert_eq!(geom(20_000, 768, 0, 0).sanitized(), None);
+        assert_eq!(
+            geom(100, 100, 5, -7).sanitized(),
+            Some(geom(MIN_WINDOW_WIDTH, MIN_WINDOW_HEIGHT, 5, -7))
+        );
+        let sane = geom(1024, 768, 50, -70);
+        assert_eq!(sane.sanitized(), Some(sane));
     }
 
     #[test]

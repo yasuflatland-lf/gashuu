@@ -472,6 +472,7 @@ pub(crate) fn apply_add_report(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use gashuu_core::Settings;
     use slint::Model;
 
     fn refresh_deps(library: Library, query: &str) -> CarouselRefresh {
@@ -482,6 +483,7 @@ mod tests {
             library_store: Rc::new(None),
             covers: Rc::new(cover_loader::CoverController::new(
                 crate::backend::fake::FakeBackend::new(),
+                Rc::new(RefCell::new(Settings::default())),
             )),
             search: Rc::new(RefCell::new(search)),
             selection: Rc::new(RefCell::new(LibrarySelectionState::default())),
