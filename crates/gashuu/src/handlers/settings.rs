@@ -180,6 +180,7 @@ pub(crate) fn wire_settings_handlers(
                             report_save_error(
                                 &ui,
                                 localizer.loader(),
+                                super::SaveTarget::Library,
                                 &e,
                                 "failed to save library from dialog",
                             );
@@ -188,6 +189,7 @@ pub(crate) fn wire_settings_handlers(
                             report_save_error(
                                 &ui,
                                 localizer.loader(),
+                                super::SaveTarget::Settings,
                                 &e,
                                 "failed to save settings from dialog",
                             );
@@ -206,6 +208,7 @@ pub(crate) fn wire_settings_handlers(
                             report_save_error(
                                 &ui,
                                 localizer.loader(),
+                                super::SaveTarget::Library,
                                 &e,
                                 "failed to save library from dialog",
                             );
@@ -214,6 +217,7 @@ pub(crate) fn wire_settings_handlers(
                             report_save_error(
                                 &ui,
                                 localizer.loader(),
+                                super::SaveTarget::Settings,
                                 &e,
                                 "failed to save settings from dialog",
                             );
@@ -281,6 +285,7 @@ pub(crate) fn wire_settings_handlers(
                         report_save_error(
                             &ui,
                             localizer.loader(),
+                            super::SaveTarget::Library,
                             &e,
                             "failed to save library on override reset",
                         );

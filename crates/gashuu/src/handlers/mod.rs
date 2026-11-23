@@ -25,15 +25,79 @@ pub(crate) use settings::{wire_settings_handlers, wire_view_mode_handlers};
 pub(crate) use update::{start_update_check, wire_update_handlers};
 pub(crate) use viewer::{wire_nav_handlers, wire_viewer_input_handlers, wire_viewport_handlers};
 
+/// Which persisted store a failed save belongs to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SaveTarget {
+    Library,
+    Settings,
+}
+
+/// The localized status text for a failed save of `target`.
+fn save_error_text(
+    loader: &i18n_embed::fluent::FluentLanguageLoader,
+    target: SaveTarget,
+    e: &CoreError,
+) -> String {
+    match target {
+        SaveTarget::Library => crate::i18n::dynamic::failed_save_library(loader, e),
+        SaveTarget::Settings => crate::i18n::dynamic::could_not_save_settings(loader, e),
+    }
+}
+
 /// Log a failed persistence save and surface it on the status line — the single
 /// home of the direct log+status save-failure shape shared by callback handlers.
 /// Aggregated notices and headless/exit paths keep their own handling.
 fn report_save_error(
     ui: &ViewerWindow,
     loader: &i18n_embed::fluent::FluentLanguageLoader,
+    target: SaveTarget,
     e: &CoreError,
     context: &'static str,
 ) {
     tracing::error!(error = %e, "{context}");
-    ui.set_status_text(crate::i18n::dynamic::could_not_save_settings(loader, e).into());
+    ui.set_status_text(save_error_text(loader, target, e).into());
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::i18n::{dynamic, Localizer};
+    use gashuu_core::Language;
+
+    #[test]
+    fn library_save_error_names_the_library() {
+        let err = CoreError::from(std::io::Error::other("disk full"));
+        for language in [Language::En, Language::Ja] {
+            let localizer = Localizer::new(language);
+            let loader = localizer.loader();
+            let text = save_error_text(loader, SaveTarget::Library, &err);
+            assert_eq!(text, dynamic::failed_save_library(loader, &err));
+            assert_ne!(text, dynamic::could_not_save_settings(loader, &err));
+        }
+    }
+
+    #[test]
+    fn settings_save_error_names_the_settings() {
+        let err = CoreError::from(std::io::Error::other("disk full"));
+        for language in [Language::En, Language::Ja] {
+            let localizer = Localizer::new(language);
+            let loader = localizer.loader();
+            assert_eq!(
+                save_error_text(loader, SaveTarget::Settings, &err),
+                dynamic::could_not_save_settings(loader, &err)
+            );
+        }
+    }
+
+    #[test]
+    fn save_error_text_embeds_the_error_detail() {
+        let err = CoreError::from(std::io::Error::other("disk full"));
+        for language in [Language::En, Language::Ja] {
+            let localizer = Localizer::new(language);
+            for target in [SaveTarget::Library, SaveTarget::Settings] {
+                let text = save_error_text(localizer.loader(), target, &err);
+                assert!(text.contains(&err.to_string()));
+            }
+        }
+    }
 }
