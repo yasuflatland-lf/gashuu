@@ -493,6 +493,7 @@ pub(crate) fn wire_nav_handlers(
                             report_save_error(
                                 &ui,
                                 localizer.loader(),
+                                super::SaveTarget::Library,
                                 &e,
                                 "failed to save library on viewer leave",
                             );
