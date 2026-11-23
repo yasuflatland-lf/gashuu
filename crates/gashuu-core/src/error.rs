@@ -56,6 +56,10 @@ pub enum CoreError {
     #[error("no data directory available for library")]
     NoDataDir,
 
+    /// The OS did not provide a cache directory for thumbnail storage.
+    #[error("no cache directory available for thumbnails")]
+    NoCacheDir,
+
     /// The archive backend failed to open the container or read an entry.
     #[error("archive error: {0}")]
     Zip(#[from] ::zip::result::ZipError),
@@ -182,5 +186,13 @@ mod tests {
     fn no_data_dir_displays_message() {
         let err = CoreError::NoDataDir;
         assert_eq!(err.to_string(), "no data directory available for library");
+    }
+
+    #[test]
+    fn no_cache_dir_display_names_thumbnails() {
+        assert_eq!(
+            CoreError::NoCacheDir.to_string(),
+            "no cache directory available for thumbnails"
+        );
     }
 }
