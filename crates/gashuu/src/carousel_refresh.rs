@@ -182,12 +182,13 @@ pub(crate) struct CarouselRefresh {
 /// rebuild + bind the filtered carousel model, optionally reset carousel focus
 /// to row 0, and (re)start cover loading for the visible rows. The SINGLE place
 /// the carousel + cover stream are refreshed from the shared search state, shared
-/// by the initial boot build, the debounced query callback, and the add path.
+/// by the initial boot build, the debounced query callback, and book additions
+/// and removals.
 ///
 /// This function only READS `visible_indices()`; it does NOT recompute. Every
 /// caller mutates the search state through a recomputing entry point first —
-/// `set_query` (startup seed + search-changed) or `force_visible` (add) — so the
-/// visible set is already consistent here, avoiding a redundant double-recompute.
+/// `set_query` (startup seed and query changes), `force_visible` (add), or
+/// `recompute` (empty-book removal and bulk delete).
 ///
 /// Borrow discipline: all reads share ONE `library.borrow()` scope that drops
 /// before the UI bind and `covers.start` (which takes a `borrow_mut` to persist
@@ -250,7 +251,8 @@ pub(crate) fn refresh_library_carousel(
 
 /// The shared UI tail of an empty-book auto-removal, called by both the open-time
 /// `finalize_open` arm and the cover-time `on_empty_book_detected` handler so the
-/// two cannot drift. Rebuilds the carousel through the chokepoint (removed book
+/// two cannot drift. Recomputes the projection because row indices shift after
+/// removal, then rebuilds the carousel through the chokepoint (removed book
 /// disappears; the cover-epoch bump drops any sibling cover still streaming for
 /// it; active filter preserved; no focus reset), then — only when THIS path
 /// performed the removal (`removed == true`) — surfaces the auto-removal notice
@@ -262,6 +264,7 @@ pub(crate) fn finalize_empty_book_rejected(
     deps: &CarouselRefresh,
     removal: &EmptyBookOutcome,
 ) {
+    deps.search.borrow_mut().recompute(&deps.library.borrow());
     refresh_library_carousel(ui, deps, false);
     if removal.removed {
         let status = crate::empty_book_removed_status(
@@ -469,6 +472,75 @@ pub(crate) fn apply_add_report(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use slint::Model;
+
+    fn refresh_deps(library: Library, query: &str) -> CarouselRefresh {
+        let mut search = LibrarySearchState::default();
+        search.set_query(query.into(), &library);
+        CarouselRefresh {
+            library: Rc::new(RefCell::new(library)),
+            library_store: Rc::new(None),
+            covers: Rc::new(cover_loader::CoverController::new(
+                crate::backend::fake::FakeBackend::new(),
+            )),
+            search: Rc::new(RefCell::new(search)),
+            selection: Rc::new(RefCell::new(LibrarySelectionState::default())),
+            localizer: Rc::new(i18n::Localizer::new(gashuu_core::Language::En)),
+        }
+    }
+
+    fn removal_library() -> Library {
+        let mut library = Library::new();
+        for title in ["four-x", "one-x", "three-x", "two"] {
+            assert!(library.add(BookId::new(title), title.into()).is_some());
+        }
+        library
+    }
+
+    fn titles_after_empty_book_removal(deps: &CarouselRefresh) -> Vec<String> {
+        let ui = cover_loader::test_window();
+        assert!(deps.library.borrow_mut().remove(&BookId::new("four-x")));
+        finalize_empty_book_rejected(
+            &ui,
+            deps,
+            &EmptyBookOutcome {
+                title: "four-x".into(),
+                removed: true,
+                save_error: None,
+            },
+        );
+        ui.get_carousel_items()
+            .iter()
+            .map(|item| item.title.to_string())
+            .collect()
+    }
+
+    #[test]
+    fn empty_book_removal_under_a_filter_shows_only_matching_books() {
+        let deps = refresh_deps(removal_library(), "x");
+        assert_eq!(titles_after_empty_book_removal(&deps), ["one-x", "three-x"]);
+    }
+
+    #[test]
+    fn empty_book_removal_keeps_forced_visible_books() {
+        let deps = refresh_deps(removal_library(), "x");
+        deps.search
+            .borrow_mut()
+            .force_visible([BookId::new("two")], &deps.library.borrow());
+        assert_eq!(
+            titles_after_empty_book_removal(&deps),
+            ["one-x", "three-x", "two"]
+        );
+    }
+
+    #[test]
+    fn empty_book_removal_without_a_filter_lists_every_remaining_book() {
+        let deps = refresh_deps(removal_library(), "");
+        assert_eq!(
+            titles_after_empty_book_removal(&deps),
+            ["one-x", "three-x", "two"]
+        );
+    }
 
     #[test]
     fn visible_focus_index_for_id_uses_filtered_rows() {
