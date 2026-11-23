@@ -540,7 +540,7 @@ mod tests {
     }
 
     #[test]
-    fn snapshot_restore_preserves_pending_intent() {
+    fn library_session_end_restores_pending_intent_cleared_during_the_session() {
         let settings = global_settings();
         let state = Rc::new(RefCell::new(ViewerState::new()));
         let viewport = Rc::new(RefCell::new(ViewportState::from_settings(
@@ -551,6 +551,7 @@ mod tests {
         session.reset_to_global(&state, &viewport, &settings);
 
         session.open(DialogScope::Library, &state, &viewport, &settings);
+        session.clear_pending_inherit();
         state.borrow_mut().set_spread_mode(SpreadMode::Single);
         session.end(&state, &viewport, &settings);
         let current = current_runtime_view(&state, &viewport);
@@ -559,7 +560,7 @@ mod tests {
     }
 
     #[test]
-    fn snapshot_restore_preserves_absence() {
+    fn library_session_end_restores_absence_set_during_the_session() {
         let settings = global_settings();
         let state = Rc::new(RefCell::new(ViewerState::new()));
         let viewport = Rc::new(RefCell::new(ViewportState::from_settings(
@@ -570,11 +571,10 @@ mod tests {
         let mut session = DialogSession::new();
 
         session.open(DialogScope::Library, &state, &viewport, &settings);
-        state.borrow_mut().set_spread_mode(SpreadMode::Single);
+        session.reset_to_global(&state, &viewport, &settings);
         session.end(&state, &viewport, &settings);
-        let current = current_runtime_view(&state, &viewport);
 
-        assert!(!session.inherit_pending(current));
+        assert!(session.pending_inherit.is_none());
     }
 
     #[test]
@@ -595,7 +595,7 @@ mod tests {
     }
 
     #[test]
-    fn open_with_book_then_close_restores_books_runtime() {
+    fn library_session_end_restores_the_books_runtime_and_clears_scope() {
         let settings = global_settings();
         let state = Rc::new(RefCell::new(ViewerState::new()));
         let viewport = Rc::new(RefCell::new(ViewportState::from_settings(
@@ -613,6 +613,8 @@ mod tests {
 
         session.end(&state, &viewport, &settings);
         assert_eq!(current_runtime_view(&state, &viewport), book_view());
+        assert_eq!(session.scope(), None);
+        assert!(session.snapshot.is_none());
     }
 
     #[test]
@@ -665,28 +667,6 @@ mod tests {
     }
 
     #[test]
-    fn library_session_ended_by_exit_restores_the_books_runtime() {
-        let settings = global_settings();
-        let state = Rc::new(RefCell::new(ViewerState::new()));
-        let viewport = Rc::new(RefCell::new(ViewportState::from_settings(
-            &settings.borrow(),
-        )));
-        let _book = open_book(&state);
-        apply_runtime_view(&state, &viewport, book_view());
-        let mut session = DialogSession::new();
-
-        session.open(DialogScope::Library, &state, &viewport, &settings);
-        assert_eq!(
-            current_runtime_view(&state, &viewport),
-            global_view(&settings)
-        );
-
-        session.end(&state, &viewport, &settings);
-        assert_eq!(current_runtime_view(&state, &viewport), book_view());
-        assert_eq!(session.scope(), None);
-    }
-
-    #[test]
     fn library_session_ended_twice_is_a_no_op() {
         let settings = global_settings();
         let state = Rc::new(RefCell::new(ViewerState::new()));
@@ -724,28 +704,5 @@ mod tests {
         session.end(&state, &viewport, &settings);
         assert_eq!(current_runtime_view(&state, &viewport), book_view());
         assert_eq!(session.scope(), None);
-    }
-
-    #[test]
-    fn session_opened_on_library_and_ended_from_viewer_restores_the_book() {
-        let settings = global_settings();
-        let state = Rc::new(RefCell::new(ViewerState::new()));
-        let viewport = Rc::new(RefCell::new(ViewportState::from_settings(
-            &settings.borrow(),
-        )));
-        let _book = open_book(&state);
-        apply_runtime_view(&state, &viewport, book_view());
-        let mut session = DialogSession::new();
-
-        session.open(DialogScope::Library, &state, &viewport, &settings);
-        assert_eq!(
-            current_runtime_view(&state, &viewport),
-            global_view(&settings)
-        );
-
-        session.end(&state, &viewport, &settings);
-        assert_eq!(current_runtime_view(&state, &viewport), book_view());
-        assert_eq!(session.scope(), None);
-        assert!(session.snapshot.is_none());
     }
 }

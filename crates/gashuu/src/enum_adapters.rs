@@ -3,7 +3,8 @@
 //! `*_to_index` use exhaustive matches so a new enum variant becomes a compile
 //! error; `index_to_*` default to the first variant for any out-of-range index
 //! Slint may send (the index is a raw i32). The ordering is authoritative and
-//! MUST match the ComboBox model order in SettingsDialog.slint:
+//! MUST match the ComboBox model order in the `ui/settings/*.slint` files; the
+//! `combo_models_match_rust_index_order_*` tests read those models and guard it:
 //!   ReadingDirection: Ltr=0, Rtl=1
 //!   SpreadMode:       Single=0, Double=1, Auto=2
 //!   CoverMode:        Standalone=0, Paired=1
@@ -89,6 +90,109 @@ pub(crate) fn index_to_language(i: i32) -> Language {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const READING_SETTINGS: &str = include_str!("../ui/settings/ReadingSettings.slint");
+    const DISPLAY_SETTINGS: &str = include_str!("../ui/settings/DisplaySettings.slint");
+    const GENERAL_SETTINGS: &str = include_str!("../ui/settings/GeneralSettings.slint");
+
+    fn combo_models(src: &str) -> Vec<Vec<String>> {
+        src.lines()
+            .filter_map(|line| line.split_once("model: ["))
+            .map(|(_, model)| {
+                let (items, _) = model
+                    .split_once(']')
+                    .expect("settings combo model must close on the same line");
+                items
+                    .split(',')
+                    .map(|item| item.trim().to_owned())
+                    .collect()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn combo_models_parser_finds_every_settings_combo() {
+        assert_eq!(combo_models(READING_SETTINGS).len(), 2);
+        assert_eq!(combo_models(DISPLAY_SETTINGS).len(), 2);
+        assert_eq!(combo_models(GENERAL_SETTINGS).len(), 1);
+    }
+
+    #[test]
+    fn combo_models_match_rust_index_order_for_reading_direction() {
+        let models = combo_models(READING_SETTINGS);
+        let model = &models[0];
+        let expected = [
+            (ReadingDirection::Ltr, "Strings.settings-direction-ltr"),
+            (ReadingDirection::Rtl, "Strings.settings-direction-rtl"),
+        ];
+
+        assert_eq!(model.len(), expected.len());
+        for (direction, label) in expected {
+            assert_eq!(model[reading_direction_to_index(direction) as usize], label);
+        }
+    }
+
+    #[test]
+    fn combo_models_match_rust_index_order_for_spread_mode() {
+        let models = combo_models(READING_SETTINGS);
+        let model = &models[1];
+        let expected = [
+            (SpreadMode::Single, "Strings.settings-spread-single"),
+            (SpreadMode::Double, "Strings.settings-spread-double"),
+            (SpreadMode::Auto, "Strings.settings-spread-auto"),
+        ];
+
+        assert_eq!(model.len(), expected.len());
+        for (mode, label) in expected {
+            assert_eq!(model[spread_mode_to_index(mode) as usize], label);
+        }
+    }
+
+    #[test]
+    fn combo_models_match_rust_index_order_for_cover_mode() {
+        let models = combo_models(DISPLAY_SETTINGS);
+        let model = &models[0];
+        let expected = [
+            (CoverMode::Standalone, "Strings.settings-cover-standalone"),
+            (CoverMode::Paired, "Strings.settings-cover-paired"),
+        ];
+
+        assert_eq!(model.len(), expected.len());
+        for (mode, label) in expected {
+            assert_eq!(model[cover_mode_to_index(mode) as usize], label);
+        }
+    }
+
+    #[test]
+    fn combo_models_match_rust_index_order_for_fit_mode() {
+        let models = combo_models(DISPLAY_SETTINGS);
+        let model = &models[1];
+        let expected = [
+            (FitMode::Whole, "Strings.settings-fit-whole"),
+            (FitMode::Width, "Strings.settings-fit-width"),
+            (FitMode::Actual, "Strings.settings-fit-actual"),
+        ];
+
+        assert_eq!(model.len(), expected.len());
+        for (mode, label) in expected {
+            assert_eq!(model[fit_mode_to_index(mode) as usize], label);
+        }
+    }
+
+    #[test]
+    fn combo_models_match_rust_index_order_for_language() {
+        let models = combo_models(GENERAL_SETTINGS);
+        let model = &models[0];
+        let expected = [
+            (Language::En, r#""English""#),
+            (Language::Ja, r#""日本語""#),
+        ];
+
+        assert_eq!(model.len(), expected.len());
+        for (language, label) in expected {
+            assert_eq!(model[language_to_index(language) as usize], label);
+        }
+    }
 
     #[test]
     fn reading_direction_index_round_trips() {
