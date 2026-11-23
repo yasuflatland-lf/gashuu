@@ -2,6 +2,8 @@
 
 /// Parse a 1-based page-jump string into a 0-based page index.
 ///
+/// ASCII and full-width digits are accepted, including mixed-width input.
+///
 /// Returns `None` when:
 /// - `input` is empty
 /// - `input` is not numeric
@@ -17,10 +19,21 @@ pub fn parse_page_jump(input: &str, total: usize) -> Option<usize> {
     if total == 0 {
         return None;
     }
-    let n: usize = input.trim().parse().ok()?;
+    let normalized = to_ascii_digits(input);
+    let n: usize = normalized.trim().parse().ok()?;
     // Treat page 0 as page 1 (clamp minimum to 1).
     let clamped = n.max(1).min(total);
     Some(clamped - 1)
+}
+
+fn to_ascii_digits(input: &str) -> String {
+    input
+        .chars()
+        .map(|c| match c {
+            '\u{FF10}'..='\u{FF19}' => char::from(b'0' + (c as u32 - 0xFF10) as u8),
+            _ => c,
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -85,5 +98,33 @@ mod tests {
     #[test]
     fn whitespace_only_returns_none() {
         assert_eq!(parse_page_jump("   ", 10), None);
+    }
+
+    #[test]
+    fn full_width_digits_are_accepted() {
+        assert_eq!(parse_page_jump("１", 1), Some(0));
+        assert_eq!(parse_page_jump("１２", 20), Some(11));
+    }
+
+    #[test]
+    fn mixed_width_digits_are_accepted() {
+        assert_eq!(parse_page_jump("1２", 20), Some(11));
+    }
+
+    #[test]
+    fn full_width_input_is_clamped_like_ascii() {
+        assert_eq!(parse_page_jump("９９", 10), Some(9));
+        assert_eq!(parse_page_jump("０", 10), Some(0));
+    }
+
+    #[test]
+    fn ideographic_space_is_trimmed() {
+        assert_eq!(parse_page_jump("\u{3000}３\u{3000}", 10), Some(2));
+    }
+
+    #[test]
+    fn full_width_non_digits_are_rejected() {
+        assert_eq!(parse_page_jump("ａｂ", 10), None);
+        assert_eq!(parse_page_jump("－１", 10), None);
     }
 }
