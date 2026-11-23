@@ -1,6 +1,7 @@
 use crate::{
     book_path::{parse, BookPath},
     dispatcher::{Dispatcher, Lane, Reply},
+    import::fits_in_quota,
     protocol::{
         decode, encode, ImageMeta, OpenedMeta, ReqId, WireResult, WorkerRequest as Request,
         WorkerResponse as Response,
@@ -911,13 +912,33 @@ fn upload_titles_follow_the_desktop_file_rule() {
 
 #[test]
 fn quota_preflight_accounts_for_usage_and_unknown_estimates() {
-    use crate::import::fits_in_quota;
     assert!(fits_in_quota(7, Some(1), Some(10)));
     assert!(fits_in_quota(9, Some(1), Some(10)));
     assert!(!fits_in_quota(10, Some(1), Some(10)));
     assert!(!fits_in_quota(1, Some(11), Some(10)));
     assert!(fits_in_quota(10, None, Some(1)));
     assert!(fits_in_quota(10, Some(1), None));
+}
+
+mod props {
+    use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        /// Quota checks always return, and if an upload fits, any smaller upload fits under the same estimates.
+        #[test]
+        fn prop_fits_in_quota_is_monotone_in_size(
+            (size, smaller) in (any::<u64>(), any::<u64>())
+                .prop_map(|(a, b)| (a.max(b), a.min(b))),
+            usage in any::<Option<u64>>(),
+            quota in any::<Option<u64>>(),
+        ) {
+            let fits = fits_in_quota(size, usage, quota);
+            let smaller_fits = fits_in_quota(smaller, usage, quota);
+
+            prop_assert!(!fits || smaller_fits);
+        }
+    }
 }
 
 #[test]

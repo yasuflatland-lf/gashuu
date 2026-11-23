@@ -39,6 +39,7 @@ getrandom = { version = "0.4", features = ["wasm_js"] }
 [dev-dependencies]
 insta = "1.47.2"
 base64 = "0.23"
+proptest = "1"
 
 [features]
 default = ["rar", "avif"]

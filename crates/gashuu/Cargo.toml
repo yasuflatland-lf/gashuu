@@ -76,6 +76,7 @@ winresource = "0.1"
 
 [dev-dependencies]
 gashuu-worker = { path = "../gashuu-worker" }
+proptest = "1"
 # `testing` feature exposes MockPageSource for ViewerState unit tests;
 # image is used to synthesize tiny PNG bytes in tests (no committed binary fixtures).
 # `default-features = false` + `png` keeps the `ravif`/`rav1e` AVIF encoder (and

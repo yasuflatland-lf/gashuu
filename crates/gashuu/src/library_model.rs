@@ -361,6 +361,23 @@ mod tests {
         assert_eq!(clamp_to_i32(usize::MAX), i32::MAX);
     }
 
+    mod props {
+        use super::*;
+        use proptest::prelude::*;
+
+        proptest! {
+            /// Page counts stay nonnegative and saturate at the largest value the UI can display.
+            #[test]
+            fn prop_clamp_to_i32_saturates(v in prop_oneof![any::<usize>(), 0..=i32::MAX as usize]) {
+                let clamped = clamp_to_i32(v);
+                let expected = (v as u128).min(i32::MAX as u128) as i64;
+
+                prop_assert_eq!(i64::from(clamped), expected);
+                prop_assert!(clamped >= 0);
+            }
+        }
+    }
+
     #[test]
     fn carousel_data_uses_library_natural_order() {
         let root = tempfile::tempdir().expect("tempdir");
