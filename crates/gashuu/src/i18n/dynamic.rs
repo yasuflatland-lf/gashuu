@@ -56,17 +56,6 @@ pub(crate) fn direction_label(loader: &FluentLanguageLoader, dir: ReadingDirecti
 
 // ---- Parameterized error / status messages --------------------------------
 
-/// Status line for a failed open (the path did not open as a source).
-///
-/// Production composes failed opens from a pre-captured error string via
-/// [`open_error_str`] (the `OpenOutcome::Error` payload), so this `&dyn Display`
-/// flavor has only test callers and is gated to `#[cfg(test)]`.
-#[cfg(test)]
-pub(crate) fn open_error(loader: &FluentLanguageLoader, e: &dyn Display) -> String {
-    let error = e.to_string();
-    fl!(loader, "viewer-open-error", error = error.as_str())
-}
-
 /// Status line for a failed open when the error is already a pre-formatted
 /// string (e.g. from `OpenOutcome::Error`).
 pub(crate) fn open_error_str(loader: &FluentLanguageLoader, e_str: &str) -> String {
@@ -119,10 +108,10 @@ pub(crate) fn page_unavailable(loader: &FluentLanguageLoader, page: usize) -> St
     fl!(loader, "viewer-page-unavailable", page = page)
 }
 
-/// Status line when the leading page of the current spread failed to decode.
-pub(crate) fn decode_error(loader: &FluentLanguageLoader, e: &dyn Display) -> String {
-    let error = e.to_string();
-    fl!(loader, "viewer-decode-error", error = error.as_str())
+/// Status line when page `page_index` (0-based) of the current spread failed to decode.
+pub(crate) fn page_decode_error(loader: &FluentLanguageLoader, page_index: usize) -> String {
+    let page = page_index.saturating_add(1);
+    fl!(loader, "viewer-decode-error", page = page)
 }
 
 // ---- Notice messages -------------------------------------------------------
@@ -358,22 +347,21 @@ pub(crate) fn selection_delete_label(loader: &FluentLanguageLoader, n: usize) ->
 
 // ---- Settings data-clearing messages (issue #178) -------------------------
 
-/// Format a byte count as a compact human-readable size (B / KB / MB).
-///
-/// The unit symbol is intentionally NOT localized — "KB"/"MB" are
-/// language-neutral and the surrounding Fluent template owns any translated
-/// wording. Uses 1024-based units and one decimal place for KB/MB so e.g.
-/// 1536 bytes reads "1.5 KB" instead of collapsing to "1 KB".
+/// Format a byte count with binary units and language-neutral symbols.
 fn human_size(bytes: u64) -> String {
-    const KB: u64 = 1024;
-    const MB: u64 = 1024 * 1024;
-    if bytes < KB {
-        format!("{bytes} B")
-    } else if bytes < MB {
-        format!("{:.1} KB", bytes as f64 / KB as f64)
-    } else {
-        format!("{:.1} MB", bytes as f64 / MB as f64)
+    if bytes < 1024 {
+        return format!("{bytes} B");
     }
+
+    // Promote a unit when rounding to one decimal would display 1024.0.
+    let mut value = bytes as f64 / 1024.0;
+    for unit in ["KB", "MB"] {
+        if value < 1023.95 {
+            return format!("{value:.1} {unit}");
+        }
+        value /= 1024.0;
+    }
+    format!("{value:.1} GB")
 }
 
 /// Status line after the user clears the reading history (library + recents).
@@ -403,12 +391,6 @@ pub(crate) fn cover_cache_cleared(
         n = n,
         size = size.as_str()
     )
-}
-
-/// Covers the legacy failure-status translation in the locale tests.
-#[cfg(test)]
-pub(crate) fn cover_cache_clear_failed(loader: &FluentLanguageLoader) -> String {
-    fl!(loader, "settings-cache-clear-failed")
 }
 
 // ---- Shortcuts help -------------------------------------------------------
@@ -842,13 +824,25 @@ mod tests {
     }
 
     #[test]
+    fn page_decode_error_shows_one_based_page_in_both_locales() {
+        assert_eq!(
+            page_decode_error(en().loader(), 4),
+            "Could not display page 5."
+        );
+        assert_eq!(
+            page_decode_error(ja().loader(), 4),
+            "ページ 5 を表示できませんでした。"
+        );
+    }
+
+    #[test]
     fn parameterized_fns_embed_their_args() {
         for loc in [en(), ja()] {
             let l = loc.loader();
-            assert!(open_error(l, &"boom").contains("boom"));
+            assert!(open_error_str(l, "boom").contains("boom"));
             assert!(open_inaccessible(l, "銃夢火星戦記 03巻").contains("銃夢火星戦記 03巻"));
             assert!(page_unavailable(l, 7).contains('7'));
-            assert!(decode_error(l, &"bad").contains("bad"));
+            assert!(page_decode_error(l, 4).contains('5'));
             assert!(failed_save_settings(l, &"io").contains("io"));
             assert!(failed_save_library(l, &"io").contains("io"));
             assert!(could_not_save_settings(l, &"io").contains("io"));
@@ -1012,6 +1006,16 @@ mod tests {
     }
 
     #[test]
+    fn human_size_rolls_over_at_rounding_edges() {
+        assert_eq!(human_size(1_048_524), "1023.9 KB");
+        assert_eq!(human_size(1_048_525), "1.0 MB");
+        assert_eq!(human_size(1_073_689_396), "1.0 GB");
+        assert_eq!(human_size(1 << 30), "1.0 GB");
+        assert_eq!(human_size(3 << 29), "1.5 GB");
+        assert_eq!(human_size(5 << 40), "5120.0 GB");
+    }
+
+    #[test]
     fn human_size_picks_unit_by_magnitude() {
         // Sub-KB stays in bytes; >=KB and >=MB switch units with one decimal.
         assert_eq!(human_size(0), "0 B");
@@ -1066,20 +1070,11 @@ mod tests {
                 result.contains("1.5 MB"),
                 "cover_cache_cleared must contain the human size, got: {result:?}"
             );
-            assert!(
-                !cover_cache_clear_failed(l).is_empty(),
-                "cover_cache_clear_failed must not be empty"
-            );
         }
         assert_ne!(
             cover_cache_cleared(en().loader(), report),
             cover_cache_cleared(ja().loader(), report),
             "cover_cache_cleared must differ between En and Ja"
-        );
-        assert_ne!(
-            cover_cache_clear_failed(en().loader()),
-            cover_cache_clear_failed(ja().loader()),
-            "cover_cache_clear_failed must differ between En and Ja"
         );
     }
 

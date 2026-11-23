@@ -930,8 +930,8 @@ Selection:
 
         assert_eq!(crate::i18n::dynamic::added_books(l, 2), "Added 2 book(s)");
         assert_eq!(
-            crate::i18n::dynamic::decode_error(l, &"x"),
-            "Decode error: x"
+            crate::i18n::dynamic::page_decode_error(l, 0),
+            "Could not display page 1."
         );
 
         let n_settings_err = NoticesContent {

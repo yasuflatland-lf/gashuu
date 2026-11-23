@@ -78,9 +78,8 @@ pub(crate) fn wire_viewer_input_handlers(
             with_ui(&ui_weak, |ui| {
                 let page = page_index.max(0) as usize;
                 pages.clear_dispatched(page);
-                let detail = format!("page {}", page + 1);
                 ui.set_status_text(
-                    crate::i18n::dynamic::decode_error(localizer.loader(), &detail).into(),
+                    crate::i18n::dynamic::page_decode_error(localizer.loader(), page).into(),
                 );
                 clear_page_view(&ui, &viewport);
                 // clear_page_view unmounts the LoadingSlot, perturbing PageView's TouchArea

@@ -73,7 +73,6 @@ settings-cache-cleared =
        *[other] Removed { $n } cached files ({ $size }).
     }
 settings-cache-cleared-without-count = Cover cache cleared.
-settings-cache-clear-failed = Could not clear cover cache.
 
 # General section — Language row
 settings-language-label = Language
@@ -255,7 +254,7 @@ viewer-open-error = Error: { $error }
 viewer-open-inaccessible = Couldn't open "{ $title }". The file is missing or its volume isn't connected.
 viewer-open-inaccessible-web = Couldn't open "{ $title }". Add its file again in this browser session.
 viewer-page-unavailable = (page { $page } unavailable)
-viewer-decode-error = Decode error: { $error }
+viewer-decode-error = Could not display page { $page }.
 
 # ---- bookmark-ribbon ----
 

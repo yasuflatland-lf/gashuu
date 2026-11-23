@@ -75,7 +75,6 @@ settings-cache-cleared =
        *[other] キャッシュした { $n } 件のファイル（{ $size }）を削除しました。
     }
 settings-cache-cleared-without-count = カバーキャッシュをクリアしました。
-settings-cache-clear-failed = カバーキャッシュをクリアできませんでした。
 
 # General section — Language row
 settings-language-label = 言語
@@ -259,7 +258,7 @@ viewer-open-error = エラー: { $error }
 viewer-open-inaccessible = 『{ $title }』を開けませんでした。ファイルが見つからないか、保存先のボリュームに接続できません。
 viewer-open-inaccessible-web = 『{ $title }』を開けませんでした。このセッションでファイルを追加してください。
 viewer-page-unavailable = （ページ { $page } は表示できません）
-viewer-decode-error = デコードエラー: { $error }
+viewer-decode-error = ページ { $page } を表示できませんでした。
 
 # ---- bookmark-ribbon ----
 
