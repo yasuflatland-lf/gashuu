@@ -74,7 +74,7 @@ fn deliver_cover_drops_both_callbacks_when_not_current() {
     let (on_cover, cover) = test_callback();
     let (on_count, count) = test_callback();
     let image = Arc::new(DecodedImage::new(vec![0; 4], 1, 1).unwrap());
-    deliver_cover(
+    super::fake::deliver_cover(
         || false,
         on_cover,
         Some(on_count),
@@ -92,7 +92,7 @@ fn deliver_cover_rechecks_current_after_on_cover() {
     let (on_cover, cover) = test_callback();
     let (on_count, count) = test_callback();
     let image = Arc::new(DecodedImage::new(vec![0; 4], 1, 1).unwrap());
-    deliver_cover(
+    super::fake::deliver_cover(
         || current.load(Relaxed),
         Box::new(move |result| {
             current_on_cover.store(false, Relaxed);
@@ -110,7 +110,7 @@ fn deliver_cover_rechecks_current_after_on_cover() {
 fn deliver_cover_drops_count_callback_on_cover_error() {
     let (on_cover, cover) = test_callback();
     let (on_count, count) = test_callback();
-    deliver_cover(
+    super::fake::deliver_cover(
         || true,
         on_cover,
         Some(on_count),

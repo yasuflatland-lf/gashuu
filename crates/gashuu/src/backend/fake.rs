@@ -27,6 +27,24 @@ type ImportResult = Result<ImportedBook, BackendError>;
 type PendingCover = (u64, Done<ImageResult>, Option<Done<CountResult>>);
 type PendingSession<T> = Vec<(SessionId, Done<T>)>;
 
+/// Deliver both results of a cover operation, checking cancellation before
+/// each callback because the cover callback can itself refresh the library.
+pub(super) fn deliver_cover(
+    is_current: impl Fn() -> bool,
+    on_cover: Done<ImageResult>,
+    on_count: Option<Done<CountResult>>,
+    cover: ImageResult,
+    count: Option<CountResult>,
+) {
+    if is_current() {
+        let succeeded = cover.is_ok();
+        on_cover(cover);
+        if let Some(on_count) = on_count.filter(|_| succeeded && is_current()) {
+            on_count(count.expect("successful cover with a count callback has a count result"));
+        }
+    }
+}
+
 /// A UI-thread script of requests. The test decides when each result arrives.
 #[derive(Default)]
 pub(crate) struct FakeBackend {

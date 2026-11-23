@@ -5,7 +5,7 @@ use gashuu_worker::{
     book_path,
     import::{
         fits_in_quota, probe_upload, sanitise_upload_name, upload_title, STORAGE_FULL,
-        UNREADABLE_UPLOAD,
+        STORAGE_UNAVAILABLE, UNREADABLE_UPLOAD,
     },
     lifecycle::{content_key, head_tail_ranges, is_content_key},
     protocol::ImportedMeta,
@@ -97,7 +97,7 @@ pub fn map_error(id: &str, error: JsValue) -> WireError {
         return match exception.name().as_str() {
             "QuotaExceededError" => storage_full(),
             "SecurityError" | "NotSupportedError" => WireError::Other {
-                detail: "this browser cannot store books".into(),
+                detail: STORAGE_UNAVAILABLE.into(),
             },
             "NotFoundError" => WireError::Missing {
                 detail: format!("{id} not found in browser storage"),
@@ -267,7 +267,7 @@ async fn create_file(
     let file: FileSystemFileHandle =
         resolve(dir.get_file_handle_with_options(name, &options)).await?;
     if !Reflect::get(&file, &"createSyncAccessHandle".into())?.is_function() {
-        return Err("this browser cannot store books".into());
+        return Err(STORAGE_UNAVAILABLE.into());
     }
     resolve(file.create_sync_access_handle()).await
 }
