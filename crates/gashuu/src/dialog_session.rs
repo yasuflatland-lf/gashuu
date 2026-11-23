@@ -2,12 +2,13 @@ use crate::view_sync::{
     apply_global_view_to_runtime, apply_runtime_view_to_settings, current_runtime_view,
 };
 use crate::{viewer_state::ViewerState, viewport::ViewportState};
-use gashuu_core::{ResolvedView, Settings};
+use gashuu_core::{ResolvedView, Settings, ViewOverride};
 use std::cell::RefCell;
 
 /// The open book's pre-dialog runtime, captured at library-screen dialog open.
 struct RuntimeSnapshot {
     view: ResolvedView,
+    divergence: ViewOverride,
     pending_inherit: Option<ResolvedView>,
 }
 
@@ -55,9 +56,16 @@ impl DialogSession {
         self.scope = Some(scope);
         if scope == DialogScope::Library {
             let has_open_book = state.borrow().open_book().is_some();
-            self.snapshot = has_open_book.then(|| RuntimeSnapshot {
-                view: current_runtime_view(state, viewport),
-                pending_inherit: self.pending_inherit,
+            self.snapshot = has_open_book.then(|| {
+                let view = current_runtime_view(state, viewport);
+                RuntimeSnapshot {
+                    view,
+                    divergence: ViewOverride::differences_from(
+                        view,
+                        settings.borrow().view_defaults(),
+                    ),
+                    pending_inherit: self.pending_inherit,
+                }
             });
             apply_global_view_to_runtime(settings, state, viewport);
         }
@@ -85,10 +93,17 @@ impl DialogSession {
             apply_runtime_view_to_settings(&state, &viewport, &mut settings.borrow_mut());
         }
         if let Some(snapshot) = &self.snapshot {
+            let restored = snapshot
+                .divergence
+                .resolve(settings.borrow().view_defaults());
             state
                 .borrow_mut()
-                .apply_resolved_view(snapshot.view, &mut viewport.borrow_mut());
-            self.pending_inherit = snapshot.pending_inherit;
+                .apply_resolved_view(restored, &mut viewport.borrow_mut());
+            self.pending_inherit = if snapshot.pending_inherit == Some(snapshot.view) {
+                Some(restored)
+            } else {
+                snapshot.pending_inherit
+            };
         }
         self.scope = None;
         self.snapshot = None;
@@ -121,7 +136,8 @@ impl DialogSession {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gashuu_core::{CoverMode, FitMode, ReadingDirection, SpreadMode};
+    use crate::view_sync::{LeavePointService, ViewModeRoute};
+    use gashuu_core::{BookId, CoverMode, FitMode, Library, ReadingDirection, SpreadMode};
     use std::rc::Rc;
 
     fn global_settings() -> Rc<RefCell<Settings>> {
@@ -182,6 +198,147 @@ mod tests {
             .open_path(dir.path())
             .expect("open book directory");
         dir
+    }
+
+    struct LibrarySessionFixture {
+        _dir: tempfile::TempDir,
+        book: BookId,
+        state: Rc<RefCell<ViewerState>>,
+        viewport: Rc<RefCell<ViewportState>>,
+        settings: Rc<RefCell<Settings>>,
+        session: Rc<RefCell<DialogSession>>,
+        library: Rc<RefCell<Library>>,
+        leave_point: LeavePointService,
+    }
+
+    impl LibrarySessionFixture {
+        fn new() -> Self {
+            let settings = global_settings();
+            let state = Rc::new(RefCell::new(ViewerState::from_settings(&settings.borrow())));
+            let viewport = Rc::new(RefCell::new(ViewportState::from_settings(
+                &settings.borrow(),
+            )));
+            let dir = open_book(&state);
+            let book = state.borrow().open_book().unwrap().clone();
+            let library = Rc::new(RefCell::new(Library::new()));
+            assert!(library
+                .borrow_mut()
+                .add(book.clone(), "book".into())
+                .is_some());
+            let session = Rc::new(RefCell::new(DialogSession::new()));
+            let leave_point = LeavePointService::new(
+                state.clone(),
+                viewport.clone(),
+                session.clone(),
+                settings.clone(),
+                library.clone(),
+                Rc::new(None),
+            );
+            Self {
+                _dir: dir,
+                book,
+                state,
+                viewport,
+                settings,
+                session,
+                library,
+                leave_point,
+            }
+        }
+
+        fn persist(&self, route: ViewModeRoute) {
+            self.leave_point.persist_with(route, |_| Ok(())).unwrap();
+        }
+
+        fn edit_global(&self, edit: impl FnOnce(&mut ViewerState)) {
+            self.persist(ViewModeRoute::LeaveViewer);
+            self.session.borrow_mut().open(
+                DialogScope::Library,
+                &self.state,
+                &self.viewport,
+                &self.settings,
+            );
+            edit(&mut self.state.borrow_mut());
+            self.persist(ViewModeRoute::DialogClosedOnLibrary);
+            self.session
+                .borrow_mut()
+                .end(&self.state, &self.viewport, &self.settings);
+        }
+
+        fn overrides(&self) -> ViewOverride {
+            self.library.borrow().overrides_for(&self.book)
+        }
+    }
+
+    fn untouched_book_after_leave(route: ViewModeRoute) -> ResolvedView {
+        let fixture = LibrarySessionFixture::new();
+        fixture.edit_global(|state| {
+            state.set_reading_direction(ReadingDirection::Ltr);
+        });
+        let restored = current_runtime_view(&fixture.state, &fixture.viewport);
+        fixture.persist(route);
+        assert_eq!(fixture.overrides(), ViewOverride::none());
+        restored
+    }
+
+    #[test]
+    fn untouched_book_follows_a_library_global_edit_on_app_exit() {
+        untouched_book_after_leave(ViewModeRoute::AppExit);
+    }
+
+    #[test]
+    fn untouched_book_follows_a_library_global_edit_on_open_different_book() {
+        untouched_book_after_leave(ViewModeRoute::OpenDifferentBook);
+    }
+
+    #[test]
+    fn untouched_book_follows_a_library_global_edit_on_leave_viewer() {
+        let restored = untouched_book_after_leave(ViewModeRoute::LeaveViewer);
+        assert_eq!(restored.reading_direction, ReadingDirection::Ltr);
+    }
+
+    #[test]
+    fn untouched_book_follows_a_library_global_edit_on_suspend() {
+        untouched_book_after_leave(ViewModeRoute::Suspend);
+    }
+
+    #[test]
+    fn diverging_book_field_survives_a_library_global_edit() {
+        let fixture = LibrarySessionFixture::new();
+        fixture
+            .state
+            .borrow_mut()
+            .set_spread_mode(SpreadMode::Single);
+        fixture.edit_global(|state| {
+            state.set_spread_mode(SpreadMode::Auto);
+            state.set_reading_direction(ReadingDirection::Ltr);
+        });
+        let restored = current_runtime_view(&fixture.state, &fixture.viewport);
+        assert_eq!(restored.spread_mode, SpreadMode::Single);
+        fixture.persist(ViewModeRoute::LeaveViewer);
+        assert_eq!(
+            fixture.overrides(),
+            ViewOverride {
+                spread_mode: Some(SpreadMode::Single),
+                ..ViewOverride::none()
+            }
+        );
+    }
+
+    #[test]
+    fn pending_reset_follows_the_new_global() {
+        let fixture = LibrarySessionFixture::new();
+        fixture.session.borrow_mut().reset_to_global(
+            &fixture.state,
+            &fixture.viewport,
+            &fixture.settings,
+        );
+        fixture.edit_global(|state| {
+            state.set_reading_direction(ReadingDirection::Ltr);
+        });
+        let restored = current_runtime_view(&fixture.state, &fixture.viewport);
+        assert_eq!(restored, global_view(&fixture.settings));
+        assert!(fixture.session.borrow().inherit_pending(restored));
     }
 
     #[test]
