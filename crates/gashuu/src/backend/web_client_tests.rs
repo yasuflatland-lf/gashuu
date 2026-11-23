@@ -841,6 +841,115 @@ fn imports_route_success_failure_and_discard() {
 }
 
 #[test]
+fn queued_delete_downgrades_a_duplicate_import_of_the_same_book() {
+    assert_queued_delete_downgrades_import(true);
+}
+
+#[test]
+fn queued_delete_downgrades_a_fresh_import_with_the_same_id() {
+    assert_queued_delete_downgrades_import(false);
+}
+
+fn assert_queued_delete_downgrades_import(duplicate: bool) {
+    let mut client = ready_client();
+    let id = book_id();
+    let (req, received) = start_import(&mut client);
+    assert!(client.discard(&id).is_empty());
+    complete_import(&mut client, req, &id, duplicate);
+
+    assert_eq!(
+        received.try_recv().unwrap().unwrap_err(),
+        BackendError::Other {
+            detail: "book was deleted while it was being imported".into(),
+        }
+    );
+    assert_eq!(
+        request(client.after_delivery()),
+        WorkerRequest::DeleteBook { id: id.to_string() }
+    );
+}
+
+#[test]
+fn import_result_for_another_id_is_unaffected_by_a_queued_delete() {
+    let mut client = ready_client();
+    let id = BookId::new("books/another.cbz");
+    let (req, received) = start_import(&mut client);
+    assert!(client.discard(&book_id()).is_empty());
+    complete_import(&mut client, req, &id, false);
+
+    assert_eq!(received.try_recv().unwrap().unwrap().id, id);
+}
+
+#[test]
+fn sent_delete_does_not_affect_a_later_import() {
+    let mut client = ready_client();
+    let id = book_id();
+    let (req, received) = start_import(&mut client);
+    assert!(client.discard(&id).is_empty());
+    complete_import(&mut client, req, &BookId::new("books/another.cbz"), false);
+    assert!(received.try_recv().unwrap().is_ok());
+    assert_eq!(
+        request(client.after_delivery()),
+        WorkerRequest::DeleteBook { id: id.to_string() }
+    );
+
+    let (req, received) = start_import(&mut client);
+    complete_import(&mut client, req, &id, false);
+    assert_eq!(received.try_recv().unwrap().unwrap().id, id);
+}
+
+#[test]
+fn worker_failure_clears_queued_deletes() {
+    let mut client = ready_client();
+    let id = book_id();
+    let (_req, _received) = start_import(&mut client);
+    assert!(client.discard(&id).is_empty());
+    assert!(client.queued_deletes.contains(&id));
+
+    client.on_worker_failed("x");
+
+    assert!(client.queued_deletes.is_empty());
+}
+
+fn start_import(
+    client: &mut WebClient,
+) -> (
+    ReqId,
+    std::sync::mpsc::Receiver<Result<ImportedBook, BackendError>>,
+) {
+    let handle = crate::picker::UploadHandle {
+        key: 7,
+        name: "book.cbz".into(),
+        size: 20,
+    };
+    let (done, received) = test_callback();
+    let (out, deliveries) = client.import(&handle, Some(()), ArchivePolicy::default(), done);
+    assert!(deliveries.is_empty());
+    let WorkerRequest::Import { req, .. } = request(out) else {
+        panic!("expected Import");
+    };
+    (req, received)
+}
+
+fn complete_import(client: &mut WebClient, req: ReqId, id: &BookId, duplicate: bool) {
+    let (out, deliveries) = receive(
+        client,
+        WorkerResponse::Imported {
+            req,
+            result: Ok(gashuu_worker::protocol::ImportedMeta {
+                duplicate,
+                id: id.to_string(),
+                title: "Book".into(),
+                page_count: 2,
+            }),
+        },
+        vec![],
+    );
+    assert!(out.is_empty());
+    deliver(client, deliveries, false);
+}
+
+#[test]
 fn missing_upload_is_reported_as_a_deferred_error() {
     let mut client = ready_client();
     let handle = crate::picker::UploadHandle {

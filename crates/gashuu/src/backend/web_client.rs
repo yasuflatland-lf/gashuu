@@ -15,6 +15,8 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 
+const DELETED_DURING_IMPORT: &str = "book was deleted while it was being imported";
+
 pub(super) struct Outgoing<F = ()>(pub String, pub Option<F>);
 pub(super) type Effects<F = ()> = (Vec<Outgoing<F>>, Vec<Delivery>);
 
@@ -121,6 +123,7 @@ pub(super) struct WebClient<F = ()> {
     // before a later import can re-adopt the same bytes.
     active_import: Option<ReqId>,
     waiting_storage: VecDeque<(Request, Option<F>)>,
+    queued_deletes: HashSet<BookId>,
     outbox: Vec<Outgoing<F>>,
     pending: HashMap<u32, Pending>,
     sessions: HashSet<SessionId>,
@@ -136,6 +139,7 @@ impl<F> WebClient<F> {
             next_req: 0,
             active_import: None,
             waiting_storage: VecDeque::new(),
+            queued_deletes: HashSet::new(),
             outbox: Vec::new(),
             pending: HashMap::new(),
             sessions: HashSet::new(),
@@ -160,6 +164,9 @@ impl<F> WebClient<F> {
                 Request::Import { .. } | Request::Sweep { .. } | Request::DeleteBook { .. }
             )
         {
+            if let Request::DeleteBook { id } = &request {
+                self.queued_deletes.insert(BookId::new(id));
+            }
             self.waiting_storage.push_back((request, file));
             return vec![];
         }
@@ -420,11 +427,26 @@ impl<F> WebClient<F> {
             return vec![];
         }
         self.active_import = None;
+        // A delete for the same id can still be queued behind the next import.
+        let remaining_deletes: HashSet<_> = self
+            .waiting_storage
+            .iter()
+            .skip_while(|(request, _)| !matches!(request, Request::Import { .. }))
+            .filter_map(|(request, _)| match request {
+                Request::DeleteBook { id } => Some(id.clone()),
+                _ => None,
+            })
+            .collect();
         let mut outgoing = vec![];
         while self.active_import.is_none() {
             let Some((request, file)) = self.waiting_storage.pop_front() else {
                 break;
             };
+            if let Request::DeleteBook { id } = &request {
+                if !remaining_deletes.contains(id) {
+                    self.queued_deletes.remove(&BookId::new(id));
+                }
+            }
             outgoing.extend(self.post_with_file(request, file));
         }
         outgoing
@@ -574,6 +596,14 @@ impl<F> WebClient<F> {
                         page_count,
                     })
                 });
+                let result = match result {
+                    Ok(book) if self.queued_deletes.contains(&book.id) => {
+                        Err(BackendError::Other {
+                            detail: DELETED_DURING_IMPORT.into(),
+                        })
+                    }
+                    result => result,
+                };
                 Ready::new(target, done, result)
             }
             (
@@ -605,6 +635,7 @@ impl<F> WebClient<F> {
         self.connection = Connection::Failed;
         self.outbox.clear();
         self.waiting_storage.clear();
+        self.queued_deletes.clear();
         self.active_import = None;
         self.pending
             .drain()
