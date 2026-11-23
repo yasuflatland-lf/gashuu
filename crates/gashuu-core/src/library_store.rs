@@ -126,8 +126,7 @@ impl Library {
             }
         };
         let mut library: Library = serde_json::from_value(value).map_err(CoreError::Library)?;
-        // Re-canonicalize + merge duplicate identities (filesystem I/O) BEFORE the pure
-        // sort/orphan-clear in `normalize`, so each load self-heals pre-canonical paths.
+        // Repair legacy desktop paths before target-independent shelf normalization.
         #[cfg(not(target_arch = "wasm32"))]
         library.recanonicalize_and_merge();
         library.normalize();
@@ -292,14 +291,18 @@ mod tests {
 
     #[test]
     fn from_json_huge_version_is_treated_as_unknown_and_migrates() {
+        // 2^32 + 2 truncates to 2, which would be rejected as a future version.
         let json = serde_json::json!({
-            "version": u64::from(u32::MAX) + 1,
+            "version": u64::from(u32::MAX) + 3,
         })
         .to_string();
 
-        let lib = Library::from_json(&json).unwrap();
+        let result = Library::from_json(&json);
 
-        assert!(lib.books().is_empty());
+        assert!(
+            matches!(&result, Ok(lib) if lib.books().is_empty()),
+            "{result:?}"
+        );
     }
 
     #[test]

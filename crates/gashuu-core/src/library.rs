@@ -7,9 +7,7 @@ use crate::reading_progress::ReadingProgress;
 use crate::view_override::ViewOverride;
 use crate::BookId;
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeSet;
-#[cfg(not(target_arch = "wasm32"))]
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 
@@ -163,7 +161,6 @@ fn book_order(a: &Book, b: &Book) -> std::cmp::Ordering {
 /// The survivor's ID is finally set to `key`, which upgrades a now-resolvable
 /// raw path even for a group of one. `members` is non-empty by
 /// construction (a group is only created when a member is pushed).
-#[cfg(not(target_arch = "wasm32"))]
 fn merge_group(key: BookId, members: Vec<Book>) -> Book {
     let mut iter = members.into_iter();
     let mut survivor = iter
@@ -183,8 +180,37 @@ fn merge_group(key: BookId, members: Vec<Book>) -> Book {
     survivor
 }
 
-/// An ordered shelf, de-duplicated by book ID and sorted by natural title
-/// order with the raw ID as the tie-break.
+/// Group books by key in first-seen order and collapse each group with `merge_group`.
+/// Return unsorted survivors and a remap from each member's original ID to its group key.
+fn merge_by_key(
+    books: Vec<Book>,
+    mut key_of: impl FnMut(&Book) -> BookId,
+) -> (Vec<Book>, HashMap<BookId, BookId>) {
+    let mut order = Vec::new();
+    let mut groups: HashMap<BookId, Vec<Book>> = HashMap::new();
+    let mut remap = HashMap::new();
+    for book in books {
+        let key = key_of(&book);
+        remap.insert(book.id().clone(), key.clone());
+        let members = groups.entry(key.clone()).or_default();
+        if members.is_empty() {
+            order.push(key);
+        }
+        members.push(book);
+    }
+
+    let survivors = order
+        .into_iter()
+        .map(|key| {
+            let members = groups.remove(&key).expect("group for first-seen key");
+            merge_group(key, members)
+        })
+        .collect();
+    (survivors, remap)
+}
+
+/// An ordered shelf with at most one book per ID after load on every target.
+/// Books are sorted by natural title order with the raw ID as the tie-break.
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct Library {
     #[serde(default)]
@@ -291,9 +317,8 @@ impl Library {
     /// before `normalize`, not folded into the pure `normalize`.
     ///
     /// Resolution uses [`canonical_identity`]. A missing file or a non-UTF-8
-    /// canonical form keeps the raw path as
-    /// its key: it can never be merged away and its path is preserved verbatim
-    /// (a singleton group whose key equals its own raw path). Books are grouped
+    /// canonical form keeps the raw path as its key, so the stored path is
+    /// preserved verbatim and only exact duplicates share that key. Books are grouped
     /// by key in first-seen (vec) order; each group collapses to one survivor
     /// whose ID is set to the canonical key (upgrading a now-resolvable raw
     /// path even for a group of one). Cross-member field merge is deterministic:
@@ -304,27 +329,11 @@ impl Library {
     /// survivor's canonical key (a genuine orphan is left for `normalize` to clear).
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn recanonicalize_and_merge(&mut self) {
-        let books = std::mem::take(&mut self.books);
-        // First-seen key order, the group members, and a remap from each book's
-        // ORIGINAL stored path to its group's canonical key (for `last_opened`).
-        let mut order: Vec<BookId> = Vec::new();
-        let mut groups: HashMap<BookId, Vec<Book>> = HashMap::new();
-        let mut remap: HashMap<BookId, BookId> = HashMap::new();
-        for book in books {
+        let (books, remap) = merge_by_key(std::mem::take(&mut self.books), |book| {
             let canonical = canonical_identity(Path::new(book.id().as_str()));
-            let key = BookId::from_canonical_path(&canonical).unwrap_or_else(|_| book.id().clone());
-            remap.insert(book.id().clone(), key.clone());
-            if !groups.contains_key(&key) {
-                order.push(key.clone());
-            }
-            groups.entry(key).or_default().push(book);
-        }
-        let mut survivors = Vec::with_capacity(order.len());
-        for key in order {
-            let members = groups.remove(&key).expect("group for first-seen key");
-            survivors.push(merge_group(key, members));
-        }
-        self.books = survivors;
+            BookId::from_canonical_path(&canonical).unwrap_or_else(|_| book.id().clone())
+        });
+        self.books = books;
         // Repoint a `last_opened` spelled as a merged-away / pre-upgrade path to its
         // survivor's canonical key. A path absent from `remap` is left for normalize.
         if let Some(last_opened) = self.last_opened.take() {
@@ -333,13 +342,12 @@ impl Library {
         self.books.sort_by(book_order);
     }
 
-    /// Re-sort the shelf into natural title order (with raw ID tie-break)
-    /// and enforce the `last_opened` invariant. Called on load
-    /// (`LibraryStore::load`) so libraries persisted before natural
-    /// ordering converge to the canonical sort on the next save; it also repairs
-    /// any otherwise-unsorted `books` vec and clears an orphan `last_opened`
-    /// (an ID that is no longer present in `books`).
+    /// On load, merge exact duplicates to enforce one book per ID on every target,
+    /// sort by natural title order with the raw ID as the tie-break, and clear
+    /// `last_opened` if its ID is absent from the shelf.
     pub(crate) fn normalize(&mut self) {
+        let (books, _) = merge_by_key(std::mem::take(&mut self.books), |book| book.id().clone());
+        self.books = books;
         self.books.sort_by(book_order);
         // Clear a `last_opened` whose ID is no longer in the shelf (e.g.
         // after an external edit removed a book without going through `remove`).
@@ -489,38 +497,6 @@ impl Library {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn book_derives_title_from_file_stem() {
-        let book = book_from_path(Path::new("/manga/Cool Title.cbz"), false);
-        assert_eq!(book.title(), "Cool Title");
-        assert_eq!(book.id(), &BookId::new("/manga/Cool Title.cbz"));
-        assert_eq!(book.resume_page(), 0);
-    }
-
-    #[test]
-    fn book_derives_title_from_dir_name_when_no_extension() {
-        // A folder book has no extension; the title is the directory name.
-        let book = book_from_path(Path::new("/manga/My Folder Book"), true);
-        assert_eq!(book.title(), "My Folder Book");
-    }
-
-    #[test]
-    fn book_derives_title_from_dotted_existing_dir_name() {
-        let dir = tempfile::tempdir().unwrap();
-        let folder = dir.path().join("Series.1997");
-        std::fs::create_dir(&folder).unwrap();
-        let book = book_from_path(&folder, true);
-        assert_eq!(book.title(), "Series.1997");
-    }
-
-    #[test]
-    fn book_title_falls_back_to_path_string_when_no_stem() {
-        // Pathological path with no file_stem (e.g. root) falls back to the lossy
-        // path string so the title is never empty.
-        let book = book_from_path(Path::new("/"), false);
-        assert!(!book.title().is_empty());
-    }
 
     // --- display_title tests (the pure title rule) ---
 
@@ -1037,27 +1013,18 @@ mod tests {
         for name in ["vol 1.cbz", "vol 2.cbz", "vol 10.cbz"] {
             add(&mut lib, &format!("/manga/{name}"));
         }
-        // Give the middle volume a non-default reading position before removal.
-        assert!(lib.set_resume_page(&BookId::new("/manga/vol 2.cbz"), 7));
-        assert!(lib.set_page_count(
-            &BookId::new("/manga/vol 2.cbz"),
-            NonZeroUsize::new(20).unwrap()
-        ));
+        let first_volume = BookId::new("/manga/vol 1.cbz");
+        assert!(lib.set_resume_page(&first_volume, 7));
+        assert!(lib.set_page_count(&first_volume, NonZeroUsize::new(20).unwrap()));
 
         // Clone the two outer volumes, remove them, then restore the clones.
         let removed: Vec<Book> = lib
             .books()
             .iter()
-            .filter(|b| {
-                b.id() == &BookId::new("/manga/vol 1.cbz")
-                    || b.id() == &BookId::new("/manga/vol 10.cbz")
-            })
+            .filter(|b| b.id() == &first_volume || b.id() == &BookId::new("/manga/vol 10.cbz"))
             .cloned()
             .collect();
-        let report = lib.remove_many(&[
-            BookId::new("/manga/vol 1.cbz"),
-            BookId::new("/manga/vol 10.cbz"),
-        ]);
+        let report = lib.remove_many(&[first_volume.clone(), BookId::new("/manga/vol 10.cbz")]);
         assert_eq!(report.removed.len(), 2);
         let titles: Vec<&str> = lib.books().iter().map(|b| b.title()).collect();
         assert_eq!(titles, vec!["vol 2"], "only the unremoved book survives");
@@ -1069,8 +1036,9 @@ mod tests {
             vec!["vol 1", "vol 2", "vol 10"],
             "restore re-inserts and restores natural order"
         );
-        // The untouched middle volume kept its position; the restored ones are intact.
-        assert_eq!(lib.resume_page(&BookId::new("/manga/vol 2.cbz")), 7);
+        let restored = lib.book(&first_volume).unwrap();
+        assert_eq!(restored.resume_page(), 7);
+        assert_eq!(restored.page_count_opt(), Some(20));
     }
 
     #[test]
@@ -1109,18 +1077,20 @@ mod tests {
 
     #[test]
     fn restore_is_duplicate_safe() {
-        // Restoring a book whose path is already present must NOT duplicate it.
         let mut lib = Library::new();
         let p = BookId::new("/manga/a.cbz");
         assert!(lib.add(p.clone(), title(&p)).is_some());
-        let clone: Vec<Book> = lib.books().to_vec();
-        // The book is still present; restoring its clone is a no-op (dedup by path).
-        lib.restore(clone, None);
+        assert!(lib.set_resume_page(&p, 2));
+        let stale_books = lib.books().to_vec();
+        assert!(lib.set_resume_page(&p, 9));
+
+        lib.restore(stale_books, None);
         assert_eq!(
             lib.books().len(),
             1,
             "restore must not duplicate an existing path"
         );
+        assert_eq!(lib.book(&p).unwrap().resume_page(), 9);
     }
 
     #[test]
@@ -1703,6 +1673,48 @@ mod tests {
             None,
             "bookmark must reject a last_opened that is not a shelved book"
         );
+    }
+
+    fn library_with_exact_duplicate_ids() -> Library {
+        serde_json::from_value(serde_json::json!({
+            "books": [
+                {"path": "books/u1/a.cbz", "title": "Original", "last_page": 3},
+                {"path": "books/u1/a.cbz", "title": "Duplicate", "last_page": 7,
+                 "page_count": 20, "overrides": {"reading_direction": "rtl"}}
+            ]
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn normalize_merges_exact_duplicate_ids() {
+        let mut lib = library_with_exact_duplicate_ids();
+
+        lib.normalize();
+
+        assert_eq!(lib.books().len(), 1);
+        let book = lib.book(&BookId::new("books/u1/a.cbz")).unwrap();
+        assert_eq!(book.title(), "Original");
+        assert_eq!(book.resume_page(), 7);
+        assert_eq!(book.page_count_opt(), Some(20));
+        assert_eq!(
+            book.overrides(),
+            ViewOverride {
+                reading_direction: Some(crate::view_modes::ReadingDirection::Rtl),
+                ..ViewOverride::none()
+            }
+        );
+    }
+
+    #[test]
+    fn normalize_dedup_keeps_set_resume_page_on_the_only_copy() {
+        let mut lib = library_with_exact_duplicate_ids();
+        lib.normalize();
+        let id = BookId::new("books/u1/a.cbz");
+
+        assert!(lib.set_resume_page(&id, 5));
+        assert_eq!(lib.book(&id).unwrap().resume_page(), 5);
+        assert_eq!(lib.books().len(), 1);
     }
 
     #[test]

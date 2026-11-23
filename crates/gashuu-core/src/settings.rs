@@ -308,7 +308,7 @@ mod tests {
             reading_direction: ReadingDirection::Ltr,
             spread_mode: SpreadMode::Double,
             cover_mode: CoverMode::Paired,
-            fit_mode: FitMode::Whole,
+            fit_mode: FitMode::Width,
             cache_capacity: 99,
             prefetch_radius: 4,
             key_bindings: KeyBindings {
@@ -332,6 +332,22 @@ mod tests {
             skipped_version: Some("v9.9.9".to_string()),
             last_update_check: Some(1_700_000_000),
             web_guidance_dismissed: ["evicted".to_owned()].into_iter().collect(),
+        }
+    }
+
+    #[test]
+    fn non_default_settings_differs_from_default_in_every_field() {
+        let fixture = serde_json::to_value(non_default_settings()).unwrap();
+        let defaults = serde_json::to_value(Settings::default()).unwrap();
+
+        for (key, value) in fixture.as_object().unwrap() {
+            if key != "version" {
+                assert_ne!(
+                    defaults.get(key),
+                    Some(value),
+                    "field {key} matches its default"
+                );
+            }
         }
     }
 
@@ -394,10 +410,8 @@ mod tests {
 
     #[test]
     fn migrate_noop_for_current_version() {
-        let original = non_default_settings();
-        let json = original.to_json().unwrap();
-        let parsed = Settings::from_json(&json).unwrap();
-        assert_eq!(original, parsed);
+        let value = serde_json::to_value(non_default_settings()).unwrap();
+        assert_eq!(migrate(value.clone(), SETTINGS_VERSION), value);
     }
 
     #[test]
