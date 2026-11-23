@@ -37,7 +37,7 @@ pub async fn decode_with_fallback(
 }
 
 /// Consult the caller before retrying. A declined retry returns the primary error.
-pub async fn decode_with_fallback_if(
+async fn decode_with_fallback_if(
     bytes: Vec<u8>,
     primary: &dyn PageDecoder,
     fallback: &dyn PageDecoder,
