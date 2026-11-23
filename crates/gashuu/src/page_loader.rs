@@ -127,12 +127,6 @@ impl PageController {
         }
     }
 
-    /// Query helper for handlers/tests that need to inspect dedup state.
-    #[allow(dead_code)]
-    pub fn is_dispatched(&self, index: usize) -> bool {
-        self.dispatched.borrow().contains(&index)
-    }
-
     /// Reserve each missing spread slot independently.
     ///
     /// `blocked_by_in_flight` is true only when there was MISS work requested
@@ -307,7 +301,7 @@ mod tests {
     use crate::backend::fake::{Call, FakeBackend};
     use crate::backend::BackendError;
     use slint::ComponentHandle;
-    use std::cell::Cell;
+    use std::cell::{Cell, RefCell};
 
     fn headless_window() -> ViewerWindow {
         struct HeadlessPlatform;
@@ -331,17 +325,17 @@ mod tests {
 
         assert!(controller.reserve_dispatch(4));
         assert!(!controller.reserve_dispatch(4));
-        assert!(controller.is_dispatched(4));
+        assert!(controller.dispatched.borrow().contains(&4));
 
         controller.clear_dispatched(4);
-        assert!(!controller.is_dispatched(4));
+        assert!(!controller.dispatched.borrow().contains(&4));
         assert!(controller.reserve_dispatch(4));
 
         let epoch = controller.current_epoch();
         let next_epoch = controller.reset_for_source();
 
         assert!(next_epoch > epoch);
-        assert!(!controller.is_dispatched(4));
+        assert!(!controller.dispatched.borrow().contains(&4));
         assert!(controller.reserve_dispatch(4));
     }
 
@@ -352,8 +346,8 @@ mod tests {
         assert!(controller.reserve_dispatch(4));
         assert!(!controller.reserve_dispatch(4));
         assert!(controller.reserve_dispatch(5));
-        assert!(controller.is_dispatched(4));
-        assert!(controller.is_dispatched(5));
+        assert!(controller.dispatched.borrow().contains(&4));
+        assert!(controller.dispatched.borrow().contains(&5));
     }
 
     #[test]
@@ -366,8 +360,8 @@ mod tests {
         assert!(!status.leading_reserved);
         assert!(status.trailing_reserved);
         assert!(!status.blocked_by_in_flight);
-        assert!(controller.is_dispatched(4));
-        assert!(controller.is_dispatched(5));
+        assert!(controller.dispatched.borrow().contains(&4));
+        assert!(controller.dispatched.borrow().contains(&5));
     }
 
     #[test]
@@ -383,7 +377,7 @@ mod tests {
         let second = controller.set_target(2, Some(3), false);
 
         assert!(second > first);
-        assert!(!controller.is_dispatched(1));
+        assert!(!controller.dispatched.borrow().contains(&1));
     }
 
     #[test]
@@ -452,8 +446,8 @@ mod tests {
         );
         assert_eq!(decode_errors.get(), 0);
         assert_eq!(anchored_spreads.get(), 0);
-        assert!(pages.is_dispatched(1));
-        assert!(!pages.is_dispatched(0));
+        assert!(pages.dispatched.borrow().contains(&1));
+        assert!(!pages.dispatched.borrow().contains(&0));
     }
 
     #[test]
@@ -487,14 +481,45 @@ mod tests {
         assert_eq!(failed_page.get(), Some(3));
     }
 
-    #[test]
-    fn current_spread_leading_image_anchors_spread() {
-        let ui = headless_window();
-        let anchored_spreads = Rc::new(Cell::new(0));
+    type Anchor = (f32, f32, bool, i32, i32, i32);
+
+    fn capture_anchor(ui: &ViewerWindow) -> Rc<RefCell<Option<Anchor>>> {
+        let anchor = Rc::new(RefCell::new(None));
         ui.on_spread_anchored({
-            let anchored_spreads = Rc::clone(&anchored_spreads);
-            move |_, _, _, _, _, _| anchored_spreads.set(anchored_spreads.get() + 1)
+            let anchor = Rc::clone(&anchor);
+            move |w, h, single, failed, leading, trailing| {
+                *anchor.borrow_mut() = Some((w, h, single, failed, leading, trailing));
+            }
         });
+        anchor
+    }
+
+    fn image(w: u32, h: u32) -> Arc<DecodedImage> {
+        Arc::new(DecodedImage::new(vec![0; (w * h * 4) as usize], w, h).unwrap())
+    }
+
+    fn dispatch_double(ui: &ViewerWindow, backend: &FakeBackend, pages: &PageController) {
+        pages.set_target(4, Some(5), false);
+        pages.dispatch_spread(
+            ui.as_weak(),
+            backend.new_session(),
+            SpreadDecodeRequest::double(
+                PageSlot {
+                    index: 4,
+                    missing: true,
+                },
+                PageSlot {
+                    index: 5,
+                    missing: true,
+                },
+            ),
+        );
+    }
+
+    #[test]
+    fn single_page_anchor_reports_its_own_size() {
+        let ui = headless_window();
+        let anchor = capture_anchor(&ui);
 
         let backend = FakeBackend::new();
         let pages = PageController::new(backend.clone());
@@ -507,15 +532,56 @@ mod tests {
                 missing: true,
             }),
         );
-        let image = Arc::new(DecodedImage::new(vec![0, 0, 0, 255], 1, 1).unwrap());
         backend.complete_spread(
             0,
             SpreadPages {
-                leading: (0, Ok(image)),
+                leading: (0, Ok(image(3, 5))),
                 trailing: None,
             },
         );
 
-        assert_eq!(anchored_spreads.get(), 1);
+        assert_eq!(*anchor.borrow(), Some((3.0, 5.0, true, -1, 0, -1)));
+    }
+
+    #[test]
+    fn double_spread_anchor_sums_widths_and_takes_max_height() {
+        let ui = headless_window();
+        let anchor = capture_anchor(&ui);
+        let backend = FakeBackend::new();
+        let pages = PageController::new(backend.clone());
+        dispatch_double(&ui, &backend, &pages);
+        backend.complete_spread(
+            0,
+            SpreadPages {
+                leading: (4, Ok(image(3, 5))),
+                trailing: Some((5, Ok(image(2, 7)))),
+            },
+        );
+
+        assert_eq!(*anchor.borrow(), Some((5.0, 7.0, false, -1, 4, 5)));
+    }
+
+    #[test]
+    fn failed_trailing_page_degrades_to_single_and_names_the_page() {
+        let ui = headless_window();
+        let anchor = capture_anchor(&ui);
+        let decode_errors = Rc::new(Cell::new(0));
+        ui.on_page_decode_error({
+            let decode_errors = Rc::clone(&decode_errors);
+            move |_| decode_errors.set(decode_errors.get() + 1)
+        });
+        let backend = FakeBackend::new();
+        let pages = PageController::new(backend.clone());
+        dispatch_double(&ui, &backend, &pages);
+        backend.complete_spread(
+            0,
+            SpreadPages {
+                leading: (4, Ok(image(3, 5))),
+                trailing: Some((5, Err(BackendError::EmptyBook))),
+            },
+        );
+
+        assert_eq!(*anchor.borrow(), Some((3.0, 5.0, true, 5, 4, 5)));
+        assert_eq!(decode_errors.get(), 0);
     }
 }
