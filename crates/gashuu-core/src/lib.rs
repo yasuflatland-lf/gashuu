@@ -11,6 +11,7 @@
 extern "system" {}
 
 pub mod archive_loader;
+#[cfg(any(test, not(target_arch = "wasm32")))]
 pub(crate) mod atomic_write;
 pub mod blob_store;
 pub mod book_id;
@@ -33,6 +34,7 @@ pub mod spread;
 mod test_fixtures;
 pub mod thumb_store;
 pub mod thumbnail;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod thumbnail_cache;
 pub mod update;
 pub mod view_modes;
@@ -41,15 +43,18 @@ pub mod viewport;
 pub mod window_geometry;
 
 pub use archive_loader::{ArchiveKind, ArchiveLoader, ArchivePolicy, OpenedSource};
-pub use atomic_write::write_atomic;
 #[cfg(not(target_arch = "wasm32"))]
 pub use blob_store::FsBlobStore;
-pub use blob_store::{BlobStore, MemoryBlobStore, LIBRARY_KEY, SETTINGS_KEY};
+#[cfg(test)]
+pub use blob_store::MemoryBlobStore;
+pub use blob_store::{BlobStore, LIBRARY_KEY, SETTINGS_KEY};
 pub use book_id::BookId;
 pub use cache::{DecodedLru, ImageCache, DEFAULT_CAPACITY, DEFAULT_PREFETCH_RADIUS};
 pub use cache_config::{CacheConfig, MAX_CACHE_CAPACITY, MAX_PREFETCH_RADIUS};
 pub use error::CoreError;
-pub use image_ops::{check_pixel_limit, decode, decode_thumbnail, DecodedImage, MAX_PIXELS};
+pub use image_ops::{
+    check_pixel_limit, decode, decode_thumbnail, encode_qoi, DecodedImage, MAX_PIXELS,
+};
 pub use library::{
     canonical_identity, display_title, Book, Library, OpenRegistration, RemovalReport,
 };
@@ -70,14 +75,15 @@ pub use spread::{
     next_leading, normalize_leading, prev_leading, scrub_fraction_to_page, spread_at, Spread,
     SpreadContext, SpreadNavigation,
 };
-pub use thumb_store::{BookFingerprint, NullThumbStore, ThumbSlot, ThumbStore};
+pub use thumb_store::{
+    BookFingerprint, ClearCacheReport, NullThumbStore, PruneReport, ThumbSlot, ThumbStore,
+};
 pub use thumbnail::{
     generate_cover, generate_one_thumbnail, PageThumbContext, COVER_MAX_SIDE,
     DEFAULT_THUMB_MAX_SIDE,
 };
-pub use thumbnail_cache::{
-    cache_key, encode_qoi, page_cache_key, ClearCacheReport, FsThumbStore, PruneReport,
-};
+#[cfg(not(target_arch = "wasm32"))]
+pub use thumbnail_cache::FsThumbStore;
 pub use update::asset::select_asset;
 pub use update::check::{should_check, CHECK_INTERVAL_SECS};
 pub use update::dialog::{

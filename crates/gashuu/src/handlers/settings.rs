@@ -15,7 +15,7 @@ use crate::{
     save_library, save_settings, with_ui, CarouselRefresh, LeavePointService, LibraryStoreHandle,
     SettingsStoreHandle, ViewModeRoute, ViewerWindow,
 };
-use gashuu_core::{CacheConfig, Library, Settings, ThumbStore, ViewOverride};
+use gashuu_core::{Library, Settings, ThumbStore, ViewOverride};
 use slint::ComponentHandle;
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -366,6 +366,7 @@ pub(crate) fn wire_settings_handlers(
                 search
                     .borrow_mut()
                     .set_query(String::new(), &library.borrow());
+                ui.set_library_search_query("".into());
                 selection.borrow_mut().clear();
                 refresh_library_carousel(
                     &ui,
@@ -533,24 +534,23 @@ pub(crate) fn wire_view_mode_handlers(
         let settings = Rc::clone(&settings);
         // Cache size applies to newly opened books; no refresh of the current view.
         ui.on_set_cache_size(move |v| {
-            // Mirror cache_capacity + prefetch radius into ViewerState for newly opened books.
-            // `max(1)` guards the cast; reading `capacity()` back keeps the persisted field exact.
-            let radius = settings.borrow().prefetch_radius;
-            let cfg = CacheConfig::new(v.max(1) as usize, radius);
-            settings.borrow_mut().cache_capacity = cfg.capacity();
+            let cfg = settings
+                .borrow_mut()
+                .set_cache_capacity(usize::try_from(v).unwrap_or(0));
             state.borrow_mut().set_cache_config(cfg);
         });
     }
     {
+        let ui_weak = ui.as_weak();
         let state = Rc::clone(&state);
         let settings = Rc::clone(&settings);
-        // Prefetch radius for newly opened books; 0 = prefetch disabled. `max(0)` guards
-        // the cast; reading `radius()` back keeps the persisted field exact.
+        // Prefetch radius applies to newly opened books and may raise the cache size.
         ui.on_set_preload_pages(move |v| {
-            let cache_capacity = settings.borrow().cache_capacity;
-            let cfg = CacheConfig::new(cache_capacity, v.max(0) as usize);
-            settings.borrow_mut().prefetch_radius = cfg.radius();
+            let cfg = settings
+                .borrow_mut()
+                .set_prefetch_radius(usize::try_from(v).unwrap_or(0));
             state.borrow_mut().set_cache_config(cfg);
+            with_ui(&ui_weak, |ui| ui.set_cache_size(cfg.capacity() as i32));
         });
     }
     {
@@ -578,9 +578,8 @@ pub(crate) fn wire_view_mode_handlers(
         ui.on_set_language(move |i| {
             with_ui(&ui_weak, |ui| {
                 let lang = index_to_language(i);
-                // Mirror into the runtime state; the idempotent setter absorbs the dropdown's
-                // self-fire. Persisting happens at the dialog's close path, like other globals.
-                if !state.borrow_mut().set_language(lang) {
+                // Ignore the dropdown's callback for the current language.
+                if settings.borrow().language == lang {
                     return;
                 }
                 settings.borrow_mut().language = lang;

@@ -1,9 +1,6 @@
 use super::*;
 use crate::book_path::request_id;
-use gashuu_core::{
-    cache_key, thumbnail_cache::source_mtime_secs, FsThumbStore, MockPageSource, NullThumbStore,
-    PageEntry,
-};
+use gashuu_core::{FsThumbStore, MockPageSource, NullThumbStore, PageEntry};
 use std::path::PathBuf;
 use std::sync::atomic::AtomicUsize;
 use std::sync::mpsc::{self, Receiver};
@@ -398,7 +395,12 @@ fn cover_disk_hit_resolves_count() {
 fn cover_hit_reports_empty_only_through_count() {
     let h = Harness::new();
     let path = h.book(0);
-    let key = cache_key(&path, source_mtime_secs(&path), 512);
+    let key = h
+        .backend
+        .inner
+        .thumbs
+        .fingerprint(&request_id(&path).unwrap())
+        .cover_key(512);
     h.backend
         .inner
         .cache_cover(key, DecodedImage::new(vec![0; 4], 1, 1).unwrap());

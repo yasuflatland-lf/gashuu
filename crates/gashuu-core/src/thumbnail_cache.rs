@@ -1,15 +1,13 @@
 //! Thumbnail cache helpers for persistent on-disk thumbnails.
 
-use crate::error::CoreError;
-use crate::image_ops::DecodedImage;
-use crate::{BookFingerprint, BookId, ThumbSlot, ThumbStore};
-use directories::ProjectDirs;
+use crate::blob_store::project_dirs;
+use crate::image_ops::{encode_qoi, DecodedImage};
+use crate::thumb_store::{BookFingerprint, ClearCacheReport, PruneReport, ThumbSlot, ThumbStore};
+use crate::{BookId, CoreError};
 use std::path::{Path, PathBuf};
 
 /// Wall clock for filesystem mtimes, which `std::fs` reads and writes as
-/// `std::time::SystemTime`. Callers have already opened a file or constructed a
-/// `FsThumbStore`. On wasm32-unknown-unknown, `FsThumbStore::new()` returns
-/// `NoDataDir` before the unsupported standard clock can be read.
+/// `std::time::SystemTime`.
 #[allow(clippy::disallowed_methods)]
 fn fs_clock_now() -> std::time::SystemTime {
     std::time::SystemTime::now()
@@ -18,35 +16,13 @@ fn fs_clock_now() -> std::time::SystemTime {
 /// Filesystem mtime of `path` as whole seconds since the Unix epoch, or `0`
 /// when the file is missing / has no readable mtime. The ONLY implementation
 /// of the key-ingredient recipe — generation and purge must both use it.
-pub fn source_mtime_secs(path: &Path) -> i64 {
+pub(crate) fn source_mtime_secs(path: &Path) -> i64 {
     std::fs::metadata(path)
         .and_then(|m| m.modified())
         .ok()
         .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0)
-}
-
-/// Build a stable cache key from the source path and thumbnail parameters.
-///
-/// Uses FNV-1a (a fixed algorithm) instead of `std::hash::DefaultHasher`, whose
-/// hash output is not guaranteed stable across Rust versions. A stable key keeps
-/// thumbnails cached by a prior build reachable after a toolchain upgrade rather
-/// than being silently orphaned. The path is hashed via its platform-native
-/// `OsStr` bytes, which is deterministic on a given platform (the cache is local).
-pub fn cache_key(path: &Path, mtime_secs: i64, max_side: u32) -> String {
-    BookFingerprint::of_path_and_mtime(path, mtime_secs).cover_key(max_side)
-}
-
-/// Build a stable cache key for a single thumbnail-strip page.
-///
-/// Identical FNV-1a construction to [`cache_key`] PLUS the `page_index` folded in
-/// after `max_side`. Folding the page index keeps strip keys disjoint from cover
-/// keys (covers never fold a page index), so a strip thumbnail and a cover at the
-/// same `(path, mtime_secs, max_side)` never collide on disk — even at page 0,
-/// which still folds a native-width zero through the hash.
-pub fn page_cache_key(path: &Path, mtime_secs: i64, max_side: u32, page_index: usize) -> String {
-    BookFingerprint::of_path_and_mtime(path, mtime_secs).page_key(max_side, page_index)
 }
 
 /// Age past which a `write_atomic` temp file (`.tmpXXXXXX`) is a crash leftover,
@@ -71,13 +47,14 @@ pub struct FsThumbStore {
 impl FsThumbStore {
     /// Build a cache using the platform cache directory.
     pub fn new() -> Result<Self, CoreError> {
-        let dirs = ProjectDirs::from("", "", "gashuu").ok_or(CoreError::NoDataDir)?;
+        let dirs = project_dirs().ok_or(CoreError::NoCacheDir)?;
         Ok(Self {
             dir: dirs.cache_dir().join("thumbnails"),
         })
     }
 
     /// Build a cache rooted at `dir`.
+    #[cfg(any(test, feature = "testing"))]
     pub fn with_dir(dir: PathBuf) -> Self {
         Self { dir }
     }
@@ -313,108 +290,18 @@ fn for_each_cache_file(dir: &Path, mut visit: impl FnMut(&std::fs::DirEntry, &st
     }
 }
 
-/// The write-side codec: QOI-encode `img` at its exact dimensions. QOI is a fast
-/// lossless codec — these are regenerable throwaway caches where portability is
-/// irrelevant, so the slow PNG encode/decode is traded for QOI's speed. Split from
-/// the atomic-write/path concern in [`FsThumbStore::put`] so the encode is
-/// testable in isolation. Errors with `MalformedImage` if the RGBA buffer length
-/// does not match `width * height * 4`, or propagates an `image` encode failure.
-pub fn encode_qoi(img: &DecodedImage) -> Result<Vec<u8>, CoreError> {
-    let raw = image::RgbaImage::from_raw(img.width(), img.height(), img.rgba().to_vec())
-        .ok_or_else(|| CoreError::MalformedImage {
-            expected: (img.width() as usize)
-                .saturating_mul(img.height() as usize)
-                .saturating_mul(4),
-            actual: img.rgba().len(),
-        })?;
-
-    let mut qoi_bytes: Vec<u8> = Vec::new();
-    image::DynamicImage::ImageRgba8(raw).write_to(
-        &mut std::io::Cursor::new(&mut qoi_bytes),
-        image::ImageFormat::Qoi,
-    )?;
-    Ok(qoi_bytes)
-}
-
-/// Result of one [`FsThumbStore::clear`] sweep. The cache is best-effort:
-/// these counts describe entries actually unlinked, not merely discovered.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct ClearCacheReport {
-    /// Cache-owned files actually unlinked by the clear operation.
-    pub removed_files: usize,
-    /// Sum of the unlinked files' sizes, in bytes.
-    pub removed_bytes: u64,
-}
-
-/// Result of one [`FsThumbStore::prune`] sweep. A named struct (not a tuple)
-/// so call sites read; the caller (UI) logs these — core stays log-free.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct PruneReport {
-    /// Files actually unlinked by the sweep.
-    pub removed_files: usize,
-    /// Sum of the unlinked files' sizes, in bytes.
-    pub removed_bytes: u64,
-    /// Post-sweep total of the surviving `*.qoi` payload, in bytes — lets the
-    /// caller log "under the cap" without re-scanning the directory.
-    pub retained_bytes: u64,
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{cache_key, page_cache_key, source_mtime_secs, ClearCacheReport, PruneReport};
+    #[cfg(target_pointer_width = "64")]
+    use super::encode_qoi;
+    use super::{source_mtime_secs, ClearCacheReport, PruneReport};
     use crate::{
         BookFingerprint, BookId, DecodedImage, FsThumbStore, NullThumbStore, ThumbSlot, ThumbStore,
     };
     use std::path::Path;
     use tempfile::tempdir;
 
-    #[cfg(unix)]
-    #[test]
-    fn cache_keys_are_bit_identical_to_v1_3_0() {
-        let path = std::path::Path::new("/books/a.cbz");
-        assert_eq!(cache_key(path, 1_700_000_000, 512), "8888a774ce848046");
-        assert_eq!(
-            page_cache_key(path, 1_700_000_000, 160, 3),
-            "6c298ddf8718b0b3"
-        );
-    }
-
-    // Keep the pre-port byte recipe as an independent oracle for the public
-    // key functions, which now delegate to BookFingerprint.
-    fn legacy_key(path: &Path, mtime: i64, side: u32, page: Option<usize>) -> String {
-        let bytes = path
-            .as_os_str()
-            .as_encoded_bytes()
-            .iter()
-            .copied()
-            .chain(mtime.to_le_bytes())
-            .chain(side.to_le_bytes())
-            .chain(page.into_iter().flat_map(usize::to_le_bytes));
-        let hash = bytes.fold(0xcbf2_9ce4_8422_2325_u64, |hash, byte| {
-            (hash ^ u64::from(byte)).wrapping_mul(0x0000_0100_0000_01b3)
-        });
-        format!("{hash:016x}")
-    }
-
-    #[test]
-    fn fingerprint_keys_match_legacy_keys() {
-        for path in ["book.cbz", "/本/本.cbz", "/books/with spaces.cbz"].map(Path::new) {
-            for mtime in [0, -19, i64::MAX] {
-                let fp = BookFingerprint::of_path_and_mtime(path, mtime);
-                for side in [160, 512] {
-                    let cover = cache_key(path, mtime, side);
-                    assert_eq!(fp.cover_key(side), cover);
-                    assert_eq!(cover, legacy_key(path, mtime, side, None));
-                    for index in [0, 1, usize::MAX] {
-                        let page = page_cache_key(path, mtime, side, index);
-                        assert_eq!(fp.page_key(side, index), page);
-                        assert_eq!(page, legacy_key(path, mtime, side, Some(index)));
-                    }
-                }
-            }
-        }
-    }
-
+    #[cfg(target_pointer_width = "64")]
     #[test]
     fn fs_store_writes_the_legacy_file_name() {
         let dir = tempdir().unwrap();
@@ -425,18 +312,14 @@ mod tests {
         let image = tiny_decoded_image();
         store.put(fp, ThumbSlot::Cover, 512, &image).unwrap();
         store.put(fp, ThumbSlot::Page(3), 160, &image).unwrap();
-        for key in [
-            cache_key(path, mtime, 512),
-            page_cache_key(path, mtime, 160, 3),
-        ] {
+        for key in ["8888a774ce848046", "6c298ddf8718b0b3"] {
             assert!(dir.path().join(format!("{key}.qoi")).is_file());
         }
         assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 2);
 
-        let key = page_cache_key(path, mtime, 160, 4);
         std::fs::write(
-            dir.path().join(format!("{key}.qoi")),
-            super::encode_qoi(&image).unwrap(),
+            dir.path().join("8b2454e89207fad4.qoi"),
+            encode_qoi(&image).unwrap(),
         )
         .unwrap();
         let hit = store.get(fp, ThumbSlot::Page(4), 160).unwrap();
@@ -505,44 +388,6 @@ mod tests {
     }
 
     #[test]
-    fn cache_key_is_stable_for_same_inputs() {
-        let path = Path::new("/tmp/book/page-001.png");
-        let key1 = cache_key(path, 1234, 160);
-        let key2 = cache_key(path, 1234, 160);
-
-        assert_eq!(key1, key2);
-        assert_eq!(key1.len(), 16);
-    }
-
-    #[test]
-    fn cache_key_differs_on_mtime() {
-        let path = Path::new("/tmp/book/page-001.png");
-
-        let key1 = cache_key(path, 1234, 160);
-        let key2 = cache_key(path, 1235, 160);
-
-        assert_ne!(key1, key2);
-    }
-
-    #[test]
-    fn cache_key_differs_on_max_side() {
-        let path = Path::new("/tmp/book/page-001.png");
-
-        let key1 = cache_key(path, 1234, 160);
-        let key2 = cache_key(path, 1234, 161);
-
-        assert_ne!(key1, key2);
-    }
-
-    #[test]
-    fn cache_key_differs_on_path() {
-        let key1 = cache_key(Path::new("/tmp/book/page-001.png"), 1234, 160);
-        let key2 = cache_key(Path::new("/tmp/book/page-002.png"), 1234, 160);
-
-        assert_ne!(key1, key2);
-    }
-
-    #[test]
     fn source_mtime_secs_reads_real_file_mtime() {
         let file = tempfile::NamedTempFile::new().expect("create source file");
 
@@ -559,36 +404,6 @@ mod tests {
         let missing = dir.path().join("missing.cbz");
 
         assert_eq!(source_mtime_secs(&missing), 0);
-    }
-
-    #[test]
-    fn page_cache_key_is_stable_for_same_inputs() {
-        let path = Path::new("/manga/book.cbz");
-        let key1 = page_cache_key(path, 1234, 160, 7);
-        let key2 = page_cache_key(path, 1234, 160, 7);
-
-        assert_eq!(key1, key2);
-        assert_eq!(key1.len(), 16);
-    }
-
-    #[test]
-    fn page_cache_key_differs_on_page_index() {
-        let path = Path::new("/manga/book.cbz");
-        let key0 = page_cache_key(path, 1234, 160, 0);
-        let key1 = page_cache_key(path, 1234, 160, 1);
-
-        assert_ne!(key0, key1, "different pages must not share a strip key");
-    }
-
-    #[test]
-    fn page_cache_key_is_disjoint_from_cover_key() {
-        // A strip thumbnail folds the page index even at page 0, so it never
-        // collides with the cover key at the same (path, mtime, max_side).
-        let path = Path::new("/manga/book.cbz");
-        let cover = cache_key(path, 1234, 160);
-        let page0 = page_cache_key(path, 1234, 160, 0);
-
-        assert_ne!(cover, page0, "strip keys must be disjoint from cover keys");
     }
 
     /// Synthesize a tiny 2x3 solid-red RGBA DecodedImage in memory (no files).
@@ -734,9 +549,9 @@ mod tests {
         let cache = FsThumbStore::with_dir(dir.path().join("cache"));
         let path = dir.path().join("book.cbz");
         std::fs::write(&path, b"source book").expect("create source book");
-        let mtime = source_mtime_secs(&path);
+        let generated = BookFingerprint::of_path_and_mtime(&path, source_mtime_secs(&path));
         let max_side = 320;
-        let key = cache_key(&path, mtime, max_side);
+        let key = generated.cover_key(max_side);
         cache
             .put_by_key(&key, &tiny_decoded_image())
             .expect("seed cover");
@@ -760,7 +575,8 @@ mod tests {
         std::fs::write(&path, b"source book").expect("create source book");
         let max_side = 320;
         let generated_mtime = source_mtime_secs(&path);
-        let stored_key = cache_key(&path, generated_mtime, max_side);
+        let stored_key =
+            BookFingerprint::of_path_and_mtime(&path, generated_mtime).cover_key(max_side);
         cache
             .put_by_key(&stored_key, &tiny_decoded_image())
             .expect("seed cover");
@@ -786,10 +602,10 @@ mod tests {
         let cache = FsThumbStore::with_dir(dir.path().join("cache"));
         let path = dir.path().join("book.cbz");
         std::fs::write(&path, b"source book").expect("create source book");
-        let mtime = source_mtime_secs(&path);
+        let generated = BookFingerprint::of_path_and_mtime(&path, source_mtime_secs(&path));
         // Seed two of the three requested sides; the third (480) is absent.
         for side in [160, 320] {
-            let key = cache_key(&path, mtime, side);
+            let key = generated.cover_key(side);
             cache
                 .put_by_key(&key, &tiny_decoded_image())
                 .expect("seed cover");
@@ -798,8 +614,8 @@ mod tests {
         let fp = cache.fingerprint(&BookId::from_canonical_path(&path).unwrap());
         let removed = cache.purge_cover(fp, &[160, 320, 480]);
         assert_eq!(removed, 2, "only the two present sides are removed/counted");
-        assert!(cache.get_by_key(&cache_key(&path, mtime, 160)).is_none());
-        assert!(cache.get_by_key(&cache_key(&path, mtime, 320)).is_none());
+        assert!(cache.get_by_key(&generated.cover_key(160)).is_none());
+        assert!(cache.get_by_key(&generated.cover_key(320)).is_none());
     }
 
     #[test]
@@ -810,9 +626,9 @@ mod tests {
         let cache = FsThumbStore::with_dir(dir.path().join("cache"));
         let path = dir.path().join("book.cbz");
         std::fs::write(&path, b"source book").expect("create source book");
-        let mtime = source_mtime_secs(&path);
+        let generated = BookFingerprint::of_path_and_mtime(&path, source_mtime_secs(&path));
         let max_side = 320;
-        let key = cache_key(&path, mtime, max_side);
+        let key = generated.cover_key(max_side);
         cache
             .put_by_key(&key, &tiny_decoded_image())
             .expect("seed cover");
@@ -828,25 +644,24 @@ mod tests {
 
     #[test]
     fn purge_pages_removes_all_strip_thumbnails_for_a_book() {
-        // A book's per-page strip thumbnails live under page_cache_key; purge_pages
-        // reclaims all 0..page_count, while the cover (plain cache_key) survives the purge.
+        // Purge every strip thumbnail for the book while preserving its cover.
         let dir = tempdir().unwrap();
         let cache = FsThumbStore::with_dir(dir.path().join("cache"));
         let path = dir.path().join("book.cbz");
         std::fs::write(&path, b"source book").expect("create source book");
-        let mtime = source_mtime_secs(&path);
+        let generated = BookFingerprint::of_path_and_mtime(&path, source_mtime_secs(&path));
         let max_side = 160;
         let page_count = 5;
 
         // Seed one strip thumbnail per page under the exact key purge_pages derives.
         for i in 0..page_count {
-            let key = page_cache_key(&path, mtime, max_side, i);
+            let key = generated.page_key(max_side, i);
             cache
                 .put_by_key(&key, &tiny_decoded_image())
                 .expect("seed strip");
         }
         // Seed the cover too (disjoint key — it must NOT be swept by the strip purge).
-        let cover_key = cache_key(&path, mtime, max_side);
+        let cover_key = generated.cover_key(max_side);
         cache
             .put_by_key(&cover_key, &tiny_decoded_image())
             .expect("seed cover");
@@ -858,7 +673,7 @@ mod tests {
             "every strip page is removed and counted"
         );
         for i in 0..page_count {
-            let key = page_cache_key(&path, mtime, max_side, i);
+            let key = generated.page_key(max_side, i);
             assert!(
                 cache.get_by_key(&key).is_none(),
                 "strip page {i} is gone after the strip purge"
@@ -886,12 +701,12 @@ mod tests {
         let cache = FsThumbStore::with_dir(dir.path().join("cache"));
         let path = dir.path().join("book.cbz");
         std::fs::write(&path, b"source book").expect("create source book");
-        let mtime = source_mtime_secs(&path);
+        let generated = BookFingerprint::of_path_and_mtime(&path, source_mtime_secs(&path));
         let max_side = 160;
         let present = 3;
 
         for i in 0..present {
-            let key = page_cache_key(&path, mtime, max_side, i);
+            let key = generated.page_key(max_side, i);
             cache
                 .put_by_key(&key, &tiny_decoded_image())
                 .expect("seed strip");
@@ -905,7 +720,7 @@ mod tests {
             "only the present strips are removed/counted; the missing keys are skipped"
         );
         for i in 0..present {
-            let key = page_cache_key(&path, mtime, max_side, i);
+            let key = generated.page_key(max_side, i);
             assert!(
                 cache.get_by_key(&key).is_none(),
                 "present strip {i} was removed by the overshooting purge"

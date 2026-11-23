@@ -249,10 +249,32 @@ pub(crate) fn refresh_library_carousel(
     );
 }
 
+fn prune_selection_to_shelf(
+    selection: &RefCell<LibrarySelectionState>,
+    library: &RefCell<Library>,
+) -> usize {
+    let removed_ids: Vec<BookId> = {
+        let library = library.borrow();
+        let selection = selection.borrow();
+        selection
+            .selected()
+            .filter(|id| library.book(id).is_none())
+            .cloned()
+            .collect()
+    };
+    let removed_count = removed_ids.len();
+    for id in removed_ids {
+        selection.borrow_mut().remove(&id);
+    }
+    removed_count
+}
+
 /// The shared UI tail of an empty-book auto-removal, called by both the open-time
 /// `finalize_open` arm and the cover-time `on_empty_book_detected` handler so the
-/// two cannot drift. Recomputes the projection because row indices shift after
-/// removal, then rebuilds the carousel through the chokepoint (removed book
+/// two cannot drift. After a successful removal, prunes the selection before
+/// the refresh so bulk selection is always a subset of books on the shelf.
+/// Recomputes the projection because row indices shift after removal, then
+/// rebuilds the carousel through the chokepoint (removed book
 /// disappears; the cover-epoch bump drops any sibling cover still streaming for
 /// it; active filter preserved; no focus reset), then — only when THIS path
 /// performed the removal (`removed == true`) — surfaces the auto-removal notice
@@ -264,6 +286,9 @@ pub(crate) fn finalize_empty_book_rejected(
     deps: &CarouselRefresh,
     removal: &EmptyBookOutcome,
 ) {
+    if removal.removed {
+        prune_selection_to_shelf(&deps.selection, &deps.library);
+    }
     deps.search.borrow_mut().recompute(&deps.library.borrow());
     refresh_library_carousel(ui, deps, false);
     if removal.removed {
@@ -482,6 +507,7 @@ mod tests {
             library_store: Rc::new(None),
             covers: Rc::new(cover_loader::CoverController::new(
                 crate::backend::fake::FakeBackend::new(),
+                Rc::new(RefCell::new(gashuu_core::Settings::default())),
             )),
             search: Rc::new(RefCell::new(search)),
             selection: Rc::new(RefCell::new(LibrarySelectionState::default())),
@@ -513,6 +539,94 @@ mod tests {
             .iter()
             .map(|item| item.title.to_string())
             .collect()
+    }
+
+    #[test]
+    fn prune_selection_to_shelf_drops_only_removed_books() {
+        let [a, b, c] = ["A", "B", "C"].map(BookId::new);
+        let mut library = Library::new();
+        assert!(library.add(a.clone(), "A".into()).is_some());
+        assert!(library.add(b.clone(), "B".into()).is_some());
+        let library = RefCell::new(library);
+        let mut selection = LibrarySelectionState::default();
+        selection.insert(a.clone());
+        selection.insert(b.clone());
+        selection.insert(c);
+        let selection = RefCell::new(selection);
+
+        assert_eq!(prune_selection_to_shelf(&selection, &library), 1);
+        assert_eq!(selection.borrow().selected().collect::<Vec<_>>(), [&a, &b]);
+    }
+
+    #[test]
+    fn prune_selection_to_shelf_is_a_no_op_when_consistent() {
+        let [a, b] = ["A", "B"].map(BookId::new);
+        let mut library = Library::new();
+        assert!(library.add(a, "A".into()).is_some());
+        assert!(library.add(b.clone(), "B".into()).is_some());
+        let library = RefCell::new(library);
+        let mut selection = LibrarySelectionState::default();
+        selection.insert(b.clone());
+        let selection = RefCell::new(selection);
+
+        assert_eq!(prune_selection_to_shelf(&selection, &library), 0);
+        assert_eq!(selection.borrow().selected().collect::<Vec<_>>(), [&b]);
+    }
+
+    #[test]
+    fn empty_book_removal_prunes_the_selection_before_the_toolbar_refresh() {
+        let ui = cover_loader::test_window();
+        let empty = BookId::new("E");
+        let mut library = Library::new();
+        assert!(library.add(empty.clone(), "E".into()).is_some());
+        assert!(library.add(BookId::new("X"), "X".into()).is_some());
+        let deps = refresh_deps(library, "");
+        deps.selection.borrow_mut().insert(empty.clone());
+        ui.set_carousel_selection_mode(true);
+        ui.set_carousel_has_selection(true);
+
+        assert!(deps.library.borrow_mut().remove(&empty));
+        finalize_empty_book_rejected(
+            &ui,
+            &deps,
+            &EmptyBookOutcome {
+                title: "E".into(),
+                removed: true,
+                save_error: None,
+            },
+        );
+
+        assert_eq!(deps.selection.borrow().count(), 0);
+        assert!(!ui.get_carousel_has_selection());
+        assert!(ui.get_carousel_selection_mode());
+    }
+
+    #[test]
+    fn stale_removal_leaves_the_selection_untouched() {
+        let ui = cover_loader::test_window();
+        let stale = BookId::new("E");
+        let remaining = BookId::new("X");
+        let mut library = Library::new();
+        assert!(library.add(remaining.clone(), "X".into()).is_some());
+        let deps = refresh_deps(library, "");
+        deps.selection.borrow_mut().insert(stale.clone());
+        deps.selection.borrow_mut().insert(remaining.clone());
+
+        finalize_empty_book_rejected(
+            &ui,
+            &deps,
+            &EmptyBookOutcome {
+                title: "E".into(),
+                removed: false,
+                save_error: None,
+            },
+        );
+
+        let selection = deps.selection.borrow();
+        assert_eq!(
+            selection.selected().collect::<Vec<_>>(),
+            [&stale, &remaining]
+        );
     }
 
     #[test]

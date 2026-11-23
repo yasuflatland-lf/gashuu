@@ -128,6 +128,14 @@ impl Settings {
         }
     }
 
+    /// Replace all four global view defaults with a resolved view.
+    pub fn set_view_defaults(&mut self, view: ResolvedView) {
+        self.reading_direction = view.reading_direction;
+        self.spread_mode = view.spread_mode;
+        self.cover_mode = view.cover_mode;
+        self.fit_mode = view.fit_mode;
+    }
+
     /// Derive the archive-open policy from these settings.
     pub fn archive_policy(&self) -> ArchivePolicy {
         ArchivePolicy {
@@ -164,12 +172,8 @@ impl Settings {
     /// (a hand-edited file, a future loader, an in-memory value) still obeys
     /// the same bounds. Mirrors `Library::normalize`. Idempotent.
     ///
-    /// Route the cache fields through `CacheConfig::new` (via `cache_config()`),
-    /// which owns the `[1, MAX_CACHE_CAPACITY]` / `[0, MAX_PREFETCH_RADIUS]` clamps.
-    /// This keeps the persisted values equal to the values actually used and
-    /// keeps the bounds defined in exactly one place. (`prefetch_radius = 0`
-    /// remains valid as a "prefetch disabled" sentinel; values above
-    /// `MAX_PREFETCH_RADIUS` are clamped.)
+    /// Persist the cache capacity and radius after applying the bounds defined
+    /// by [`CacheConfig::new`].
     pub fn normalize(&mut self) {
         // The `version` field is a SCHEMA LABEL owned by the binary, not user data: a value
         // loaded from disk is never echoed back on save (F-C6 / CORE-S-16). Loads can only
@@ -177,23 +181,11 @@ impl Settings {
         // and migrate already stamps the older ones, so this is the belt-and-braces guard
         // for in-memory values built outside the load path. Idempotent.
         self.version = SETTINGS_VERSION;
-        let cfg = self.cache_config();
-        self.cache_capacity = cfg.capacity();
-        self.prefetch_radius = cfg.radius();
+        self.store_cache_config(self.cache_config());
         // push_recent caps recent_sources on write, but a hand-edited file could exceed
         // MAX_RECENT_SOURCES and persist forever (exit-save writes in-memory state); cap here.
         self.recent_sources.truncate(MAX_RECENT_SOURCES);
-        // Normalize a stored window geometry: a corrupt (inflated) size is discarded (boot
-        // at default, not off-screen); an otherwise-sane size is floored to the minimum.
-        match self.window {
-            Some(g) if !g.is_size_within_max() => self.window = None,
-            Some(ref mut g) => {
-                let (w, h) = g.floored_size();
-                g.width = w;
-                g.height = h;
-            }
-            None => {}
-        }
+        self.window = self.window.and_then(WindowGeometry::sanitized);
     }
 
     /// Record `path` as most-recently-opened when tracking is enabled. Dedups
@@ -208,14 +200,27 @@ impl Settings {
         self.recent_sources.truncate(MAX_RECENT_SOURCES);
     }
 
-    /// Validated cache configuration derived from the persisted `cache_capacity` /
-    /// `prefetch_radius` fields. This is the canonical way to obtain a `CacheConfig`
-    /// from a loaded `Settings`; the `capacity >= 1` floor is guaranteed by
-    /// `CacheConfig::new` regardless of the construction site. (The settings-dialog
-    /// the settings handlers in the UI crate edit the raw fields live and rebuild
-    /// a `CacheConfig` directly for the in-session update.)
+    /// The canonical conversion from persisted cache settings to a validated
+    /// configuration. [`CacheConfig::new`] defines the bounds and capacity floor.
     pub fn cache_config(&self) -> CacheConfig {
         CacheConfig::new(self.cache_capacity, self.prefetch_radius)
+    }
+
+    /// Validate the requested capacity with the stored radius and persist both values.
+    pub fn set_cache_capacity(&mut self, capacity: usize) -> CacheConfig {
+        self.store_cache_config(CacheConfig::new(capacity, self.prefetch_radius))
+    }
+
+    /// Validate the requested radius and persist both values, raising the stored
+    /// capacity when needed to fit the prefetch window.
+    pub fn set_prefetch_radius(&mut self, radius: usize) -> CacheConfig {
+        self.store_cache_config(CacheConfig::new(self.cache_capacity, radius))
+    }
+
+    fn store_cache_config(&mut self, cfg: CacheConfig) -> CacheConfig {
+        self.cache_capacity = cfg.capacity();
+        self.prefetch_radius = cfg.radius();
+        cfg
     }
 }
 
@@ -271,6 +276,25 @@ mod tests {
                 fit_mode: FitMode::Actual,
             }
         );
+    }
+
+    #[test]
+    fn set_view_defaults_is_the_inverse_of_view_defaults() {
+        let mut settings = Settings::default();
+        let view = ResolvedView {
+            reading_direction: ReadingDirection::Ltr,
+            spread_mode: SpreadMode::Double,
+            cover_mode: CoverMode::Paired,
+            fit_mode: FitMode::Actual,
+        };
+
+        settings.set_view_defaults(view);
+
+        let actual = settings.view_defaults();
+        assert_eq!(actual.reading_direction, view.reading_direction);
+        assert_eq!(actual.spread_mode, view.spread_mode);
+        assert_eq!(actual.cover_mode, view.cover_mode);
+        assert_eq!(actual.fit_mode, view.fit_mode);
     }
 
     #[test]
@@ -687,6 +711,42 @@ mod tests {
         };
         assert_eq!(s.cache_config().capacity(), 8);
         assert_eq!(s.cache_config().radius(), s.prefetch_radius);
+    }
+
+    #[test]
+    fn set_prefetch_radius_raises_capacity_to_the_window_floor() {
+        let mut settings = Settings {
+            cache_capacity: 2,
+            prefetch_radius: 0,
+            ..Settings::default()
+        };
+
+        let cfg = settings.set_prefetch_radius(3);
+
+        assert_eq!(cfg.capacity(), 8);
+        assert_eq!(cfg.radius(), 3);
+        assert_eq!(settings.cache_capacity, 8);
+        assert_eq!(settings.prefetch_radius, 3);
+        assert_eq!(settings.cache_config(), cfg);
+    }
+
+    #[test]
+    fn set_cache_capacity_clamps_and_persists() {
+        use crate::cache_config::{MAX_CACHE_CAPACITY, MAX_PREFETCH_RADIUS};
+
+        let mut settings = Settings {
+            prefetch_radius: MAX_PREFETCH_RADIUS + 1,
+            ..Settings::default()
+        };
+
+        for (requested, expected) in [(0, 12), (MAX_CACHE_CAPACITY + 1, MAX_CACHE_CAPACITY)] {
+            let cfg = settings.set_cache_capacity(requested);
+
+            assert_eq!(cfg.capacity(), expected);
+            assert_eq!(cfg.radius(), MAX_PREFETCH_RADIUS);
+            assert_eq!(settings.cache_capacity, cfg.capacity());
+            assert_eq!(settings.prefetch_radius, cfg.radius());
+        }
     }
 
     #[test]

@@ -192,21 +192,15 @@ fn stage_exit_view_modes(
 }
 
 /// Copy the runtime-owned display settings into the persisted `Settings` just
-/// before saving. This is the SINGLE place `reading_direction`, `spread_mode`,
-/// `cover_mode`, and `fit_mode` are written back to `Settings`, so a new
-/// mode-mutation site can never "forget to mirror" — it only changes runtime
-/// state, and the next save reconciles automatically. Reached via the routing
-/// chokepoint and by `DialogSession::end`, so both Library-session end paths use
-/// the same definition of runtime-to-global reconciliation.
+/// before saving. Reached via the ADR-0007 routing chokepoint and by
+/// `DialogSession::end`, so both Library-session end paths use the same
+/// runtime-to-global reconciliation.
 pub(crate) fn apply_runtime_view_to_settings(
     state: &ViewerState,
     viewport: &ViewportState,
     settings: &mut Settings,
 ) {
-    settings.reading_direction = state.reading_direction();
-    settings.spread_mode = state.spread_mode();
-    settings.cover_mode = state.cover_mode();
-    settings.fit_mode = viewport.fit_mode();
+    settings.set_view_defaults(runtime_view(state, viewport));
 }
 
 /// Snapshot the current runtime view modes as a `ResolvedView`.
@@ -225,12 +219,16 @@ pub(crate) fn current_runtime_view(
     state: &RefCell<ViewerState>,
     viewport: &RefCell<ViewportState>,
 ) -> ResolvedView {
-    let s = state.borrow();
+    runtime_view(&state.borrow(), &viewport.borrow())
+}
+
+/// Read the view modes from their runtime owners.
+pub(crate) fn runtime_view(state: &ViewerState, viewport: &ViewportState) -> ResolvedView {
     ResolvedView {
-        reading_direction: s.reading_direction(),
-        spread_mode: s.spread_mode(),
-        cover_mode: s.cover_mode(),
-        fit_mode: viewport.borrow().fit_mode(),
+        reading_direction: state.reading_direction(),
+        spread_mode: state.spread_mode(),
+        cover_mode: state.cover_mode(),
+        fit_mode: viewport.fit_mode(),
     }
 }
 
@@ -238,25 +236,18 @@ pub(crate) fn current_runtime_view(
 /// direction/spread/cover, `ViewportState` for fit) — the inverse of
 /// `apply_runtime_view_to_settings`. Used when the dialog edits the global defaults
 /// (opening Library settings) and when resetting an open book to global.
-/// This starts from `Settings`, not a `ResolvedView`, so the individual setters
-/// remain intentional rather than routing through `apply_resolved_view`.
 ///
-/// Borrow discipline: the shared `settings.borrow()` (`s`) is held while each
-/// `borrow_mut()` runs, which is safe because `settings`, `state`, and
-/// `viewport` are distinct `RefCell`s; one `borrow_mut()` per statement so no
-/// two mutable borrows of the same cell overlap.
+/// The settings borrow drops before the runtime state and viewport are
+/// borrowed mutably.
 pub(crate) fn apply_global_view_to_runtime(
     settings: &RefCell<Settings>,
     state: &RefCell<ViewerState>,
     viewport: &RefCell<ViewportState>,
 ) {
-    let s = settings.borrow();
+    let view = settings.borrow().view_defaults();
     state
         .borrow_mut()
-        .set_reading_direction(s.reading_direction);
-    state.borrow_mut().set_spread_mode(s.spread_mode);
-    state.borrow_mut().set_cover_mode(s.cover_mode);
-    viewport.borrow_mut().set_fit(s.fit_mode);
+        .apply_resolved_view(view, &mut viewport.borrow_mut());
 }
 
 /// The title captured by the open probe for the active book.
@@ -369,6 +360,43 @@ mod tests {
     use crate::dialog_session::{DialogScope, DialogSession};
     use gashuu_core::{CoverMode, FitMode, ReadingDirection, SpreadMode};
     use std::path::Path;
+
+    #[test]
+    fn apply_global_view_to_runtime_installs_view_defaults() {
+        let initial = Settings::default();
+        let state = RefCell::new(ViewerState::from_settings(&initial));
+        let viewport = RefCell::new(ViewportState::from_settings(&initial));
+        let globals = Settings {
+            reading_direction: ReadingDirection::Ltr,
+            spread_mode: SpreadMode::Double,
+            cover_mode: CoverMode::Paired,
+            fit_mode: FitMode::Actual,
+            ..Settings::default()
+        };
+        let expected = globals.view_defaults();
+
+        apply_global_view_to_runtime(&RefCell::new(globals), &state, &viewport);
+
+        assert_eq!(current_runtime_view(&state, &viewport), expected);
+    }
+
+    #[test]
+    fn apply_runtime_view_to_settings_writes_all_four_fields() {
+        let mut settings = Settings::default();
+        let mut state = ViewerState::from_settings(&settings);
+        let mut viewport = ViewportState::from_settings(&settings);
+        let runtime = ResolvedView {
+            reading_direction: ReadingDirection::Ltr,
+            spread_mode: SpreadMode::Double,
+            cover_mode: CoverMode::Paired,
+            fit_mode: FitMode::Actual,
+        };
+        state.apply_resolved_view(runtime, &mut viewport);
+
+        apply_runtime_view_to_settings(&state, &viewport, &mut settings);
+
+        assert_eq!(settings.view_defaults(), runtime);
+    }
 
     fn leave_point_service(
         state: &Rc<RefCell<ViewerState>>,

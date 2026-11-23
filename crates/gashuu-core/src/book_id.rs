@@ -100,6 +100,25 @@ mod tests {
         assert_ne!(first.cmp(&second), Ordering::Equal);
     }
 
+    mod props {
+        use super::*;
+        use proptest::prelude::*;
+
+        proptest! {
+            /// Book IDs compare equal exactly when their raw strings match, and swapping IDs reverses the ordering.
+            #[test]
+            fn prop_book_id_order_agrees_with_equality(a in ".{0,40}", b in ".{0,40}") {
+                let first = BookId::new(&a);
+                let second = BookId::new(&b);
+                let order = first.cmp(&second);
+
+                prop_assert_eq!(order == Ordering::Equal, a == b);
+                prop_assert_eq!(order, second.cmp(&first).reverse());
+                prop_assert_eq!(first.cmp(&BookId::new(&a)), Ordering::Equal);
+            }
+        }
+    }
+
     #[test]
     fn display_is_raw_string() {
         assert_eq!(

@@ -36,3 +36,4 @@ web-sys = { version = "0.3", features = [
 [dev-dependencies]
 zip = { version = "9", default-features = false, features = ["deflate"] }
 image = { version = "0.25", default-features = false, features = ["png"] }
+proptest = "1"
