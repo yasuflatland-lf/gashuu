@@ -494,6 +494,11 @@ decoded on demand with the browser-native decoder and an image-crate fallback
 (PNG and JPEG for books on web). Covers and thumbnails downscale the decoded
 image. Both slots of a spread arrive in one reply.
 
+The dedicated Worker uses `gashuu_web_decode::NativePageDecoder` as primary and
+`ImageCratePageDecoder` as fallback. It downscales page zero for covers and
+runs thumbnail requests in the background lane. Desktop uses the image crate. See
+[ADR-0014](ADRs/0014-web-decodes-pages-with-the-browser-native-decoder.md).
+
 An OPFS book id is its relative path, `books/<uuid>/<sanitised file name>`.
 The worker validates it before looking up the file and uses a
 `FileSystemSyncAccessHandle` to read at explicit offsets. A weak reader map
@@ -597,17 +602,6 @@ before invocation. After a Worker failure, pending and future requests receive
 | `FormatDisabled` with another format | `Other` with the format and disabled-support detail |
 | `Missing` | `Missing` with the Worker detail |
 | `Other` | `Other` with the Worker detail |
-
-### page_decode
-
-`decode_page` returns cached pages immediately. On a miss it reads the encoded page
-once and uses core's fallback orchestration. A page cached during either decode takes
-precedence. A primary failure triggers one warning per controller when a retry is needed.
-
-The dedicated Worker uses `gashuu_web_decode::NativePageDecoder` as primary and
-`ImageCratePageDecoder` as fallback. It downscales page zero for covers and
-runs thumbnail requests in the background lane. Desktop uses the image crate. See
-[ADR-0014](ADRs/0014-web-decodes-pages-with-the-browser-native-decoder.md).
 
 ### web_font
 

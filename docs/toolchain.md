@@ -21,9 +21,9 @@ On this target, core enables the `wasm_js` feature of getrandom 0.4, which is al
 
 #### UI crate on wasm32
 
-`mise run check-wasm-ui` compile-checks the UI crate in `target/wasm`. The UI's
-wasm32 dependencies include `gashuu-web-decode`, which implements browser-native
-decoding for windows and workers and uses `gashuu-core` with default features disabled.
+`mise run check-wasm-ui` compile-checks the UI crate in `target/wasm`. The Worker depends on
+`gashuu-web-decode`, which implements browser-native decoding for windows and workers
+and uses `gashuu-core` with default features disabled.
 `mise run check-wasm-decode` checks the adapter independently in the same target directory.
 The CI `wasm` job runs all three wasm checks, then builds the browser bundle and
 checks for `index.html` and a `.wasm` file in `crates/gashuu/dist`.
