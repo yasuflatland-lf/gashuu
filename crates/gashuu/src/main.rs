@@ -548,7 +548,9 @@ fn run_app(
     handlers::wire_selection_handlers(
         &ui,
         &state,
+        &viewport,
         &dialog_session,
+        &settings,
         &library,
         &covers,
         &search,

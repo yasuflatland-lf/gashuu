@@ -581,7 +581,9 @@ pub(crate) fn wire_carousel_handlers(
 pub(crate) fn wire_selection_handlers(
     ui: &ViewerWindow,
     state: &Rc<RefCell<ViewerState>>,
+    viewport: &Rc<RefCell<ViewportState>>,
     dialog_session: &Rc<RefCell<DialogSession>>,
+    settings: &Rc<RefCell<Settings>>,
     library: &Rc<RefCell<Library>>,
     covers: &Rc<cover_loader::CoverController>,
     search: &Rc<RefCell<LibrarySearchState>>,
@@ -779,7 +781,9 @@ pub(crate) fn wire_selection_handlers(
         let carousel = carousel.clone();
         let remove_books = remove_books::RemoveBooksUseCase::new(
             Rc::clone(&state),
+            Rc::clone(viewport),
             Rc::clone(&dialog_session),
+            Rc::clone(settings),
             Rc::clone(&library),
             Rc::clone(&search),
             Rc::clone(&selection),

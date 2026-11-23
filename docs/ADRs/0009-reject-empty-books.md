@@ -121,21 +121,19 @@ remove + notify".
 
 ## Amendment 2026-07-25: the rejected open closes the viewer; probing is off-thread at BOTH boundaries
 
-- **Decision 3's open hook gains a step.** After `remove_empty_book` and BEFORE returning
-  `OpenOutcome::EmptyBookRejected`, `OpenBookUseCase::run` (in its apply half) calls
-  `ViewerState::close()`. The post-rejection state is `open_file() == None`, `page_count() == 0`,
-  no source mounted.
-- **Why.** `open_path_with_policy` SUCCEEDS on an empty folder/archive, so the previous behavior
-  left the zero-page source mounted with `open_file = Some(<the just-removed book>)`. That showed
-  the removed book in the title bar; let the Library's Down key pass its only guard
-  (`open_file().is_none()`) and enter a 0-page Viewer, violating this ADR's own "the Viewer never
-  shows a 0-page book" consequence; silently closed whatever book WAS open; and made the `AppExit`
-  route see a phantom open book and skip reconciling runtime view modes into global `Settings`.
+- **Decision 3's open hook gains a step.** In the apply half of `OpenBookUseCase`, empty-book
+  rejection calls `ViewerState::close()` before `remove_empty_book` and returns
+  `OpenOutcome::EmptyBookRejected`. The post-rejection state has `open_book() == None`,
+  `page_count() == 0`, and no mounted source.
+- **Why.** Opening an empty folder or archive succeeds at the source level. The previous behavior
+  replaced the outgoing book with the zero-page source and left it mounted after removing the
+  book from the Library. The removed book stayed in the title bar, and the Library's Down key
+  could enter a zero-page Viewer, violating this ADR's guarantee.
 - **The viewer is CLOSED, not restored to the previously open book.** The outgoing book's position
   and per-book override were already persisted by the leave-point write at the top of the apply
   half, so nothing is lost; this mirrors the bulk-remove use case's close-don't-restore precedent.
-  `close()` needs no companion viewport reset — it zeroes the cache/source/count/index while
-  deliberately preserving display modes and `cache_config`. `OpenBookUseCase::apply_probed`
+  `close()` clears the cache, source, page count, and index while preserving display modes and
+  `cache_config`. `OpenBookUseCase::apply_opened`
   separately clears the `DialogSession` pending-inherit intent when it replaces the open source.
 - **The Costs bullet is resolved.** Add probing moved off the UI thread with issue 206 (Decision 3
   has said so since; the Costs bullet has contradicted it ever since). The single-book OPEN path is
@@ -147,3 +145,15 @@ remove + notify".
   nothing).
 - Decisions 1, 2, 4 and 5 are unaffected; `probe_page_count` semantics and the missing-path rule are
   unchanged. See [architecture.md](../architecture.md), "open_controller" and "open_book".
+
+### Amendment 2026-11-23 — a closed viewer uses the global view
+
+`OpenBookUseCase::reject_empty` closes the viewer and reloads the runtime view from global
+`Settings`. The outgoing book's position and override have already been persisted. Bulk deletion
+follows the same rule when it removes the open book. In both paths, `ViewerState` receives the
+global reading direction, spread, and cover modes, and `ViewportState` receives the global fit mode.
+
+`AppExit` and dialog-free `Suspend` reconcile runtime view modes into `Settings` when no book is
+open. Closing alone left the outgoing book's view in the runtime, so that reconciliation copied
+per-book preferences into the global defaults. With the runtime restored to the global view, the
+reconciliation is a no-op.
