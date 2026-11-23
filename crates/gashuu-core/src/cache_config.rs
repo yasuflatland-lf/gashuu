@@ -1,10 +1,7 @@
 //! Validated cache configuration value object.
 //!
-//! `CacheConfig` wraps the LRU `capacity` (always >= 1 and <= MAX_CACHE_CAPACITY)
-//! and the prefetch `radius` (0 means prefetch is disabled, a valid setting;
-//! clamped to MAX_PREFETCH_RADIUS). `CacheConfig::new` is the single place both
-//! bounds are enforced, so an invalid configuration cannot exist downstream.
-//! The type is an immutable value object.
+//! `CacheConfig` bounds the prefetch radius and reserves enough cache slots for
+//! the prefetch window and both pages of a spread. A radius of zero disables prefetch.
 
 use crate::cache::{DEFAULT_CAPACITY, DEFAULT_PREFETCH_RADIUS};
 
@@ -14,6 +11,8 @@ pub const MAX_CACHE_CAPACITY: usize = 100;
 /// Hard upper bound for prefetch radius accepted by `CacheConfig::new`.
 /// `0` remains a valid "prefetch disabled" value.
 pub const MAX_PREFETCH_RADIUS: usize = 5;
+
+const _: () = assert!(CacheConfig::min_capacity(MAX_PREFETCH_RADIUS) <= MAX_CACHE_CAPACITY);
 
 /// Default total decoded-page byte budget (512 MiB). Used by `CacheConfig::new`
 /// when no explicit budget is supplied via `with_max_bytes`.
@@ -26,10 +25,8 @@ pub const MIN_MAX_BYTES: u64 = 64 * 1024 * 1024;
 
 /// Validated, immutable cache configuration.
 ///
-/// Holds the LRU `capacity` (clamped to `[1, MAX_CACHE_CAPACITY]` at construction)
-/// and the prefetch `radius` (clamped to `[0, MAX_PREFETCH_RADIUS]`; `0`
-/// disables prefetch). Constructing a `CacheConfig` is the only way to obtain
-/// these values, so downstream consumers can rely on the bounds being upheld.
+/// The prefetch radius ranges from zero to `MAX_PREFETCH_RADIUS`. The LRU capacity
+/// ranges from `2 * radius + 2` to `MAX_CACHE_CAPACITY`.
 ///
 /// Intentionally NOT `Deserialize`: deserializing would populate the private
 /// fields directly and bypass `new`'s clamps. Persistence goes through
@@ -47,13 +44,20 @@ pub struct CacheConfig {
 }
 
 impl CacheConfig {
-    /// Build a config. `capacity` is clamped to `[1, MAX_CACHE_CAPACITY]`.
+    /// Smallest capacity that holds the prefetch window plus a double spread.
+    /// The supplied radius should be in `0..=MAX_PREFETCH_RADIUS`.
+    pub const fn min_capacity(radius: usize) -> usize {
+        2 * radius + 2
+    }
+
+    /// Clamp the capacity between the window floor and `MAX_CACHE_CAPACITY`.
     /// `radius` is clamped to `[0, MAX_PREFETCH_RADIUS]` (`0` disables prefetch).
     /// `max_bytes` defaults to `DEFAULT_MAX_BYTES`; use `with_max_bytes` to change it.
     pub fn new(capacity: usize, radius: usize) -> Self {
+        let radius = radius.min(MAX_PREFETCH_RADIUS);
         Self {
-            capacity: capacity.clamp(1, MAX_CACHE_CAPACITY),
-            radius: radius.min(MAX_PREFETCH_RADIUS),
+            capacity: capacity.clamp(Self::min_capacity(radius), MAX_CACHE_CAPACITY),
+            radius,
             max_bytes: DEFAULT_MAX_BYTES,
         }
     }
@@ -67,7 +71,7 @@ impl CacheConfig {
         }
     }
 
-    /// LRU capacity; always `>= 1`.
+    /// LRU capacity in pages, at least `2 * radius + 2`.
     pub fn capacity(&self) -> usize {
         self.capacity
     }
@@ -95,9 +99,36 @@ mod tests {
     use super::*;
 
     #[test]
-    fn new_clamps_zero_capacity_to_one() {
+    fn new_clamps_zero_capacity_to_the_radius_zero_floor() {
         let cfg = CacheConfig::new(0, 0);
-        assert_eq!(cfg.capacity(), 1, "capacity 0 must clamp to 1");
+        assert_eq!(cfg.capacity(), 2);
+    }
+
+    #[test]
+    fn new_raises_capacity_to_hold_the_prefetch_window() {
+        for (capacity, radius, expected) in [
+            (0, 0, 2),
+            (1, 0, 2),
+            (1, 1, 4),
+            (1, 3, 8),
+            (1, 5, 12),
+            (7, 1, 7),
+            (MAX_CACHE_CAPACITY + 1, 5, MAX_CACHE_CAPACITY),
+            (1, MAX_PREFETCH_RADIUS + 9, 12),
+        ] {
+            assert_eq!(
+                CacheConfig::new(capacity, radius).capacity(),
+                expected,
+                "capacity={capacity}, radius={radius}"
+            );
+        }
+    }
+
+    #[test]
+    fn min_capacity_is_two_per_radius_plus_two() {
+        for (radius, expected) in (0..=MAX_PREFETCH_RADIUS).zip([2, 4, 6, 8, 10, 12]) {
+            assert_eq!(CacheConfig::min_capacity(radius), expected);
+        }
     }
 
     #[test]

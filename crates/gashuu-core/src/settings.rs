@@ -665,13 +665,13 @@ mod tests {
     }
 
     #[test]
-    fn cache_config_capacity_is_at_least_one() {
+    fn cache_config_capacity_is_at_least_the_window_floor() {
         // The value object clamps capacity even if the raw field somehow held 0.
         let s = Settings {
             cache_capacity: 0,
             ..Default::default()
         };
-        assert_eq!(s.cache_config().capacity(), 1);
+        assert_eq!(s.cache_config().capacity(), 8);
         assert_eq!(s.cache_config().radius(), s.prefetch_radius);
     }
 

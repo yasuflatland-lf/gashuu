@@ -7,7 +7,7 @@ import { Stepper } from "../components/Stepper.slint";
 import { Toggle } from "../components/Toggle.slint";
 
 export component PerformanceSettings inherits VerticalLayout {
-    // LRU cache size in pages (>=1).
+    // LRU cache size in pages (>= 2 * preload-pages + 2).
     in-out property <int> cache-size;
     // Background prefetch radius in pages (0 = disabled).
     in-out property <int> preload-pages;
@@ -40,7 +40,7 @@ export component PerformanceSettings inherits VerticalLayout {
         trailing: true;
         cache-control := Stepper {
             value <=> root.cache-size;
-            minimum: 1;
+            minimum: 2 * root.preload-pages + 2;
             maximum: 100;
             a11y-label: Strings.settings-cache-a11y;
             a11y-decrease-label: Strings.stepper-decrease-cache;
@@ -61,6 +61,10 @@ export component PerformanceSettings inherits VerticalLayout {
             a11y-decrease-label: Strings.stepper-decrease-preload;
             a11y-increase-label: Strings.stepper-increase-preload;
             edited(v) => {
+                if (root.cache-size < 2 * v + 2) {
+                    root.cache-size = 2 * v + 2;
+                    root.set-cache-size(root.cache-size);
+                }
                 root.set-preload-pages(v);
             }
         }

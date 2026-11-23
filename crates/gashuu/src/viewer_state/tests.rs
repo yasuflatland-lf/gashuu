@@ -80,7 +80,7 @@ fn platform_cache_config_caps_web_capacity_and_disables_prefetch() {
     assert_eq!(web.max_bytes(), WEB_MAX_CACHE_BYTES);
     assert_eq!(
         platform_cache_config(CacheConfig::new(2, 5), true),
-        CacheConfig::new(2, 0).with_max_bytes(WEB_MAX_CACHE_BYTES)
+        CacheConfig::new(6, 0).with_max_bytes(WEB_MAX_CACHE_BYTES)
     );
     assert_eq!(platform_cache_config(requested, false), requested);
 }

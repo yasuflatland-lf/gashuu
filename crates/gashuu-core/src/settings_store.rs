@@ -188,7 +188,7 @@ mod tests {
     }
 
     #[test]
-    fn load_normalizes_zero_cache_size_to_one() {
+    fn load_normalizes_zero_cache_size_to_the_floor() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("settings.json");
         let json = serde_json::json!({
@@ -201,7 +201,7 @@ mod tests {
 
         let s = SettingsStore::new(path).load().unwrap();
 
-        assert_eq!(s.cache_capacity, 1, "cache_size=0 must be normalized to 1");
+        assert_eq!(s.cache_capacity, 2);
         assert_eq!(s.prefetch_radius, 0, "preload_pages=0 must NOT be clamped");
     }
 }
