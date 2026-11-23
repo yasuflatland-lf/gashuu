@@ -676,37 +676,68 @@ mod tests {
     // ---- synchronous open-time library save (issue #360) ------------------
 
     #[test]
-    fn synchronous_open_save_is_visible_on_disk_before_returning() {
-        // Regression guard for #360: the open-time save was a detached `thread::spawn`,
-        // so a slow write could land after a later save and revert position/drop a book.
+    fn apply_opened_persists_the_registered_book_before_returning() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let store = LibraryStore::new(dir.path().join("library.json"));
+        let store_path = dir.path().join("library.json");
+        let save_store = LibraryStore::new(store_path.clone());
+        let threads = Rc::new(RefCell::new(Vec::new()));
+        let save_threads = Rc::clone(&threads);
+        let (uc, _) = use_case_with_saves(
+            Settings::default(),
+            Rc::new(RefCell::new(Library::new())),
+            move |library| {
+                save_threads.borrow_mut().push(std::thread::current().id());
+                save_store.save(library)
+            },
+            |_| Ok(()),
+        );
+        let (id, result) = opened(&make_book_dir(&dir.path().canonicalize().unwrap(), 3));
 
-        let mut lib = Library::new();
-        let book = BookId::new("/manga/Just Opened Vol.cbz");
-        // Mirror the open path: register with a known page count, then save synchronously
-        // (production saves the borrowed library through `LibraryStore`).
-        lib.register_opened(&book, "Just Opened Vol", std::num::NonZeroUsize::new(42));
-        store.save(&lib).expect("synchronous save must succeed");
+        assert!(matches!(
+            uc.apply_opened(&id, result),
+            OpenOutcome::Success { .. }
+        ));
 
-        // The write completed before control returned here (no background thread
-        // to await): reloading immediately reflects the just-opened book.
-        let reloaded = store.load().expect("reload must succeed");
+        let reloaded = LibraryStore::new(store_path)
+            .load()
+            .expect("reload library");
         let stored = reloaded
             .books()
             .iter()
-            .find(|b| b.id() == &book)
-            .expect("the just-opened book must be persisted synchronously");
-        assert_eq!(
-            stored.page_count_opt(),
-            Some(42),
-            "the back-filled page count must be on disk after the synchronous save"
+            .find(|book| book.id() == &id)
+            .expect("opened book must be persisted before returning");
+        assert_eq!(stored.page_count_opt(), Some(3));
+        assert_eq!(reloaded.last_opened(), Some(&id));
+        let threads = threads.borrow();
+        assert_eq!(threads.len(), 2);
+        assert!(threads.iter().all(|id| *id == std::thread::current().id()));
+    }
+
+    #[test]
+    fn apply_opened_reports_a_failed_synchronous_save_in_the_success_notices() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = LibraryStore::new(dir.path().join("library.json"));
+        let saves = Rc::new(Cell::new(0));
+        let save_count = Rc::clone(&saves);
+        let (uc, _) = use_case_with_saves(
+            Settings::default(),
+            Rc::new(RefCell::new(Library::new())),
+            move |library| {
+                save_count.set(save_count.get() + 1);
+                if save_count.get() == 2 {
+                    Err(err())
+                } else {
+                    store.save(library)
+                }
+            },
+            |_| Ok(()),
         );
-        assert_eq!(
-            reloaded.last_opened(),
-            Some(&book),
-            "last_opened must point at the just-opened book on disk"
-        );
+        let (id, result) = opened(&make_book_dir(&dir.path().canonicalize().unwrap(), 3));
+
+        match uc.apply_opened(&id, result) {
+            OpenOutcome::Success { notices, .. } => assert!(notices.library_save_err.is_some()),
+            other => panic!("expected Success, got {other:?}"),
+        }
     }
 
     // ---- remove_empty_book_with (the empty-book removal transaction) -------
