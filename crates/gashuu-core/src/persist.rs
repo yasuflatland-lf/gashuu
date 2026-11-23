@@ -1,4 +1,4 @@
-//! Shared parse/migrate guard for versioned-object JSON documents.
+//! Versioned JSON document persistence through the `BlobStore` port.
 //!
 //! `Settings::from_json` and `Library::from_json` both load a `{ "version": N, … }`
 //! document: reject a non-object root, resolve the schema `version`, and run a
@@ -10,17 +10,68 @@
 //! here once rather than in two aggregates that can drift. Each caller keeps its
 //! own `from_value` mapping, error variant, and post-deserialize step; only the
 //! shared prefix is single-homed.
-//!
-//! It also owns `quarantine_file`: the shared "rename aside a file this build
-//! must not overwrite" recovery step both documents take after a failed load.
-//!
-//! Headless: this module uses only `serde_json` and `std::fs` (no `slint`, no
-//! `tracing`).
 
-#[cfg(not(target_arch = "wasm32"))]
-use crate::error::CoreError;
-#[cfg(not(target_arch = "wasm32"))]
-use std::path::{Path, PathBuf};
+use crate::{BlobStore, CoreError};
+use std::{fmt, io, marker::PhantomData, sync::Arc};
+
+pub(crate) trait JsonDocument: Sized {
+    fn absent() -> Self;
+    fn to_json(&self) -> Result<String, CoreError>;
+    fn from_json(json: &str) -> Result<Self, CoreError>;
+}
+
+pub(crate) struct DocumentStore<D> {
+    blobs: Arc<dyn BlobStore>,
+    key: String,
+    _doc: PhantomData<fn() -> D>,
+}
+
+impl<D> fmt::Debug for DocumentStore<D> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("DocumentStore")
+            .field("key", &self.key)
+            .finish()
+    }
+}
+
+impl<D: JsonDocument> DocumentStore<D> {
+    pub(crate) fn new(blobs: Arc<dyn BlobStore>, key: impl Into<String>) -> Self {
+        Self {
+            blobs,
+            key: key.into(),
+            _doc: PhantomData,
+        }
+    }
+
+    pub(crate) fn read_text(&self) -> Result<Option<String>, CoreError> {
+        let Some(bytes) = self.blobs.read(&self.key)? else {
+            return Ok(None);
+        };
+        let text = String::from_utf8(bytes).map_err(|_| {
+            CoreError::Io(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "stream did not contain valid UTF-8",
+            ))
+        })?;
+        Ok(Some(text))
+    }
+
+    pub(crate) fn load(&self) -> Result<D, CoreError> {
+        match self.read_text()? {
+            Some(json) => D::from_json(&json),
+            None => Ok(D::absent()),
+        }
+    }
+
+    pub(crate) fn save(&self, doc: &D) -> Result<(), CoreError> {
+        self.blobs
+            .write_atomic(&self.key, doc.to_json()?.as_bytes())
+    }
+
+    pub(crate) fn quarantine(&self, now_secs: u64) -> Result<Option<String>, CoreError> {
+        self.blobs.quarantine(&self.key, now_secs)
+    }
+}
 
 /// Outcome of parsing a versioned-object document.
 pub(crate) enum VersionedDocument {
@@ -64,24 +115,37 @@ pub(crate) fn parse_versioned_object(
     })
 }
 
-/// Rename a file that this build must not overwrite aside as
-/// `<name>.corrupt-<now_secs>` (same directory — the rename is atomic on one
-/// filesystem) so a later save cannot destroy recoverable data. Never reads or
-/// parses the file. The caller injects `now_secs` (core takes no clock).
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn quarantine_file(path: &Path, now_secs: u64) -> Result<PathBuf, CoreError> {
-    let mut destination_name = path.file_name().unwrap_or_default().to_os_string();
-    destination_name.push(format!(".corrupt-{now_secs}"));
-    let destination = path.with_file_name(destination_name);
-    std::fs::rename(path, &destination).map_err(CoreError::from)?;
-    Ok(destination)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{Library, MemoryBlobStore, Settings, LIBRARY_KEY, SETTINGS_KEY};
 
     const CURRENT: u32 = 2;
+
+    #[test]
+    fn document_store_absent_blob_loads_the_absent_document() {
+        let blobs = Arc::new(MemoryBlobStore::new());
+        let library = DocumentStore::<Library>::new(blobs.clone(), LIBRARY_KEY);
+        let settings = DocumentStore::<Settings>::new(blobs, SETTINGS_KEY);
+
+        assert_eq!(
+            library.load().unwrap().to_json().unwrap(),
+            Library::absent().to_json().unwrap(),
+        );
+        assert_eq!(settings.load().unwrap(), Settings::absent());
+    }
+
+    #[test]
+    fn document_store_invalid_utf8_is_invalid_data() {
+        let blobs = Arc::new(MemoryBlobStore::new());
+        blobs.write_atomic(SETTINGS_KEY, &[0xff]).unwrap();
+        let store = DocumentStore::<Settings>::new(blobs, SETTINGS_KEY);
+
+        assert!(matches!(
+            store.load(),
+            Err(CoreError::Io(error)) if error.kind() == std::io::ErrorKind::InvalidData
+        ));
+    }
 
     /// A migrate stamp that records it ran by writing `migrated_from` into the doc
     /// and bumping `version` to CURRENT. Lets a test assert whether migration fired.
@@ -166,31 +230,5 @@ mod tests {
 
         assert!(matches!(result, VersionedDocument::FromFuture { found: 3 }));
         assert!(!migrated.get(), "future documents must not be migrated");
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    #[test]
-    fn quarantine_file_preserves_original_bytes_under_timestamped_name() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("settings.json");
-        std::fs::write(&path, b"future bytes").unwrap();
-        let expected = dir.path().join("settings.json.corrupt-1700000000");
-
-        let destination = quarantine_file(&path, 1_700_000_000).unwrap();
-
-        assert_eq!(destination, expected);
-        assert!(!path.exists());
-        assert_eq!(std::fs::read(&destination).unwrap(), b"future bytes");
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    #[test]
-    fn quarantine_file_errors_for_missing_source_without_creating_destination() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("settings.json");
-        let destination = dir.path().join("settings.json.corrupt-1700000000");
-
-        assert!(quarantine_file(&path, 1_700_000_000).is_err());
-        assert!(!destination.exists());
     }
 }

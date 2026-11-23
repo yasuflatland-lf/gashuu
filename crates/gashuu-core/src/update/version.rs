@@ -1,20 +1,43 @@
 //! Version comparison for the update checker.
 
 use semver::Version;
+use std::cmp::Ordering;
 
-/// Parse a release tag or a bare version string as semver, tolerating a leading
-/// `v`/`V` and surrounding whitespace. Unparseable input yields `None`. The
-/// parameter is `input` (not `tag`) because callers pass either form.
-fn parse(input: &str) -> Option<Version> {
-    let trimmed = input.trim().trim_start_matches(['v', 'V']);
-    Version::parse(trimmed).ok()
+/// Trim surrounding whitespace, then remove leading `v` or `V` characters.
+pub(crate) fn strip_tag_prefix(input: &str) -> &str {
+    input.trim().trim_start_matches(['v', 'V'])
 }
+
+/// A release version compared by SemVer precedence, ignoring build metadata.
+#[derive(Debug, Clone)]
+pub(crate) struct ReleaseVersion(Version);
+
+impl ReleaseVersion {
+    pub(crate) fn parse(input: &str) -> Option<Self> {
+        Version::parse(strip_tag_prefix(input)).ok().map(Self)
+    }
+
+    pub(crate) fn is_newer_than(&self, other: &Self) -> bool {
+        self.0.cmp_precedence(&other.0) == Ordering::Greater
+    }
+}
+
+impl PartialEq for ReleaseVersion {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.cmp_precedence(&other.0) == Ordering::Equal
+    }
+}
+
+impl Eq for ReleaseVersion {}
 
 /// True iff `latest` is a strictly newer semver than `current`. Any unparseable
 /// input returns `false` so a malformed tag never nags the user.
 pub fn is_update_available(current: &str, latest: &str) -> bool {
-    match (parse(current), parse(latest)) {
-        (Some(c), Some(l)) => l > c,
+    match (
+        ReleaseVersion::parse(current),
+        ReleaseVersion::parse(latest),
+    ) {
+        (Some(current), Some(latest)) => latest.is_newer_than(&current),
         _ => false,
     }
 }
@@ -22,22 +45,34 @@ pub fn is_update_available(current: &str, latest: &str) -> bool {
 /// True iff an update should be surfaced to the user: newer than `current` AND
 /// not the version the user chose to skip.
 pub fn should_notify(current: &str, latest_version: &str, skipped: Option<&str>) -> bool {
-    if !is_update_available(current, latest_version) {
+    let (Some(current), Some(latest)) = (
+        ReleaseVersion::parse(current),
+        ReleaseVersion::parse(latest_version),
+    ) else {
+        return false;
+    };
+    if !latest.is_newer_than(&current) {
         return false;
     }
     let Some(skipped) = skipped else {
         return true;
     };
-    match (parse(skipped), parse(latest_version)) {
-        (Some(s), Some(l)) => s != l,
+    match ReleaseVersion::parse(skipped) {
+        Some(skipped) => skipped != latest,
         // Unparseable input: fall back to the raw comparison.
-        _ => skipped != latest_version,
+        None => skipped != latest_version,
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn strip_tag_prefix_trims_whitespace_then_v() {
+        assert_eq!(strip_tag_prefix(" v1.2.3 "), "1.2.3");
+        assert_eq!(strip_tag_prefix("V2.0.0"), "2.0.0");
+    }
 
     #[test]
     fn newer_patch_is_available() {
@@ -47,6 +82,17 @@ mod tests {
     #[test]
     fn equal_is_not_available() {
         assert!(!is_update_available("0.11.0", "0.11.0"));
+    }
+
+    #[test]
+    fn build_metadata_is_not_an_update() {
+        assert!(!is_update_available("0.0.0+0", "0.0.0+a"));
+        assert!(!is_update_available("1.2.3", "1.2.3+build"));
+    }
+
+    #[test]
+    fn skipped_version_ignores_build_metadata() {
+        assert!(!should_notify("1.0.0", "1.1.0+b", Some("1.1.0+a")));
     }
 
     #[test]

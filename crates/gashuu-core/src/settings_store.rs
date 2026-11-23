@@ -1,26 +1,24 @@
 //! Persistent settings storage.
 
+use crate::persist::{DocumentStore, JsonDocument};
 #[cfg(not(target_arch = "wasm32"))]
 use crate::FsBlobStore;
 use crate::{BlobStore, CoreError, Settings, SETTINGS_KEY};
-use std::io;
 #[cfg(not(target_arch = "wasm32"))]
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 
 /// Repository for a settings document stored as a JSON blob.
 #[derive(Debug)]
 pub struct SettingsStore {
-    blobs: Arc<dyn BlobStore>,
-    key: String,
+    inner: DocumentStore<Settings>,
 }
 
 impl SettingsStore {
     /// Use the settings key in the supplied blob store.
     pub fn with_blob_store(blobs: Arc<dyn BlobStore>) -> Self {
         Self {
-            blobs,
-            key: SETTINGS_KEY.to_owned(),
+            inner: DocumentStore::new(blobs, SETTINGS_KEY),
         }
     }
 
@@ -31,15 +29,9 @@ impl SettingsStore {
     /// The path must end in a UTF-8 file name.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn new(path: PathBuf) -> Self {
-        let dir = path.parent().unwrap_or_else(|| Path::new("")).to_path_buf();
-        let key = path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .expect("path must end in a UTF-8 file name")
-            .to_owned();
+        let (blobs, key) = FsBlobStore::for_file(&path);
         Self {
-            blobs: Arc::new(FsBlobStore::new(dir)),
-            key,
+            inner: DocumentStore::new(Arc::new(blobs), key),
         }
     }
 
@@ -51,36 +43,37 @@ impl SettingsStore {
 
     /// Load settings. An absent blob returns defaults.
     pub fn load(&self) -> Result<Settings, CoreError> {
-        match self.stored_text()? {
-            Some(json) => Settings::from_json(&json),
-            None => Ok(Settings::default()),
-        }
+        self.inner.load()
     }
 
     /// Atomically write the settings document.
     pub fn save(&self, settings: &Settings) -> Result<(), CoreError> {
-        self.blobs
-            .write_atomic(&self.key, settings.to_json()?.as_bytes())
+        self.inner.save(settings)
     }
 
     /// Move the settings blob aside and return its destination label if present.
     pub fn quarantine(&self, now_secs: u64) -> Result<Option<String>, CoreError> {
-        self.blobs.quarantine(&self.key, now_secs)
+        self.inner.quarantine(now_secs)
     }
 
     /// Raw stored text for startup repair. An absent blob returns `Ok(None)`.
     /// Invalid UTF-8 returns an I/O error of kind `InvalidData`.
     pub fn stored_text(&self) -> Result<Option<String>, CoreError> {
-        let Some(bytes) = self.blobs.read(&self.key)? else {
-            return Ok(None);
-        };
-        let text = String::from_utf8(bytes).map_err(|_| {
-            CoreError::Io(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "stream did not contain valid UTF-8",
-            ))
-        })?;
-        Ok(Some(text))
+        self.inner.read_text()
+    }
+}
+
+impl JsonDocument for Settings {
+    fn absent() -> Self {
+        Self::default()
+    }
+
+    fn to_json(&self) -> Result<String, CoreError> {
+        Settings::to_json(self)
+    }
+
+    fn from_json(json: &str) -> Result<Self, CoreError> {
+        Settings::from_json(json)
     }
 }
 

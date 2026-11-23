@@ -1,5 +1,6 @@
 //! Parse the GitHub `releases/latest` JSON payload into a small domain type.
 
+use super::version::strip_tag_prefix;
 use serde::Deserialize;
 
 /// A downloadable release asset (one file attached to the GitHub release).
@@ -14,7 +15,7 @@ pub struct Asset {
 pub struct ReleaseInfo {
     /// Raw tag, e.g. "v0.11.0".
     pub tag: String,
-    /// Tag with a leading `v` stripped, e.g. "0.11.0" (compared against CARGO_PKG_VERSION).
+    /// Tag with whitespace and the version prefix removed, e.g. "0.11.0".
     pub version: String,
     /// Human-facing release page URL.
     pub release_page_url: String,
@@ -43,7 +44,7 @@ struct RawAsset {
 /// empty; a missing `tag_name`/`html_url` is a hard error (malformed payload).
 pub fn parse_latest_release(json: &str) -> Result<ReleaseInfo, serde_json::Error> {
     let raw: RawRelease = serde_json::from_str(json)?;
-    let version = raw.tag_name.trim_start_matches(['v', 'V']).to_string();
+    let version = strip_tag_prefix(&raw.tag_name).to_owned();
     Ok(ReleaseInfo {
         tag: raw.tag_name,
         version,

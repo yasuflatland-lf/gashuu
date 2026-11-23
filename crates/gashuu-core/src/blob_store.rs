@@ -7,7 +7,7 @@ use std::collections::HashMap;
 #[cfg(not(target_arch = "wasm32"))]
 use std::io;
 #[cfg(not(target_arch = "wasm32"))]
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 pub const SETTINGS_KEY: &str = "settings.json";
@@ -76,6 +76,16 @@ impl FsBlobStore {
         Self { dir }
     }
 
+    pub(crate) fn for_file(path: &Path) -> (Self, String) {
+        let dir = path.parent().unwrap_or_else(|| Path::new("")).to_path_buf();
+        let key = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .expect("path must end in a UTF-8 file name")
+            .to_owned();
+        (Self::new(dir), key)
+    }
+
     pub fn config_dir() -> Result<Self, CoreError> {
         let dirs = ProjectDirs::from("", "", "gashuu").ok_or(CoreError::NoConfigDir)?;
         Ok(Self::new(dirs.config_dir().to_path_buf()))
@@ -106,7 +116,7 @@ impl BlobStore for FsBlobStore {
     }
 
     fn quarantine(&self, key: &str, now_secs: u64) -> Result<Option<String>, CoreError> {
-        match crate::persist::quarantine_file(&self.path_of(key), now_secs) {
+        match quarantine_file(&self.path_of(key), now_secs) {
             Ok(destination) => Ok(Some(
                 destination
                     .file_name()
@@ -120,11 +130,23 @@ impl BlobStore for FsBlobStore {
     }
 }
 
+/// Rename a file that this build must not overwrite aside as
+/// `<name>.corrupt-<now_secs>` (same directory — the rename is atomic on one
+/// filesystem) so a later save cannot destroy recoverable data. Never reads or
+/// parses the file. The caller injects `now_secs` (core takes no clock).
+#[cfg(not(target_arch = "wasm32"))]
+fn quarantine_file(path: &Path, now_secs: u64) -> Result<PathBuf, CoreError> {
+    let mut destination_name = path.file_name().unwrap_or_default().to_os_string();
+    destination_name.push(format!(".corrupt-{now_secs}"));
+    let destination = path.with_file_name(destination_name);
+    std::fs::rename(path, &destination).map_err(CoreError::from)?;
+    Ok(destination)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::{Library, LibraryStore, Settings, SettingsStore};
-    use std::path::PathBuf;
     use std::sync::Arc;
 
     fn contract(store: &dyn BlobStore) {
@@ -203,30 +225,50 @@ mod tests {
         assert_eq!(loaded.books()[0].resume_page(), 2);
     }
 
-    #[test]
-    fn non_utf8_blob_errors_with_invalid_data() {
-        let blobs = Arc::new(MemoryBlobStore::new());
-        blobs.write_atomic(SETTINGS_KEY, b"\xff").unwrap();
-        blobs.write_atomic(LIBRARY_KEY, b"\xff").unwrap();
-        let settings_store = SettingsStore::with_blob_store(blobs.clone());
-        let library_store = LibraryStore::with_blob_store(blobs);
-
-        for error in [
-            settings_store.load().unwrap_err(),
-            settings_store.stored_text().unwrap_err(),
-            library_store.load().unwrap_err(),
-        ] {
-            let CoreError::Io(error) = error else {
-                panic!("expected I/O error, got {error:?}");
-            };
-            assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
-            assert_eq!(error.to_string(), "stream did not contain valid UTF-8");
-        }
-    }
-
     #[cfg(not(target_arch = "wasm32"))]
     mod fs_tests {
         use super::*;
+
+        #[test]
+        fn fs_blob_store_for_file_splits_directory_and_key() {
+            let (store, key) = FsBlobStore::for_file(Path::new("/a/b/library.json"));
+
+            assert_eq!(store.dir, Path::new("/a/b"));
+            assert_eq!(key, "library.json");
+        }
+
+        #[cfg(unix)]
+        #[test]
+        #[should_panic(expected = "path must end in a UTF-8 file name")]
+        fn fs_blob_store_for_file_panics_on_non_utf8_name() {
+            use std::{ffi::OsStr, os::unix::ffi::OsStrExt};
+
+            FsBlobStore::for_file(Path::new(OsStr::from_bytes(b"library\xff.json")));
+        }
+
+        #[test]
+        fn quarantine_file_preserves_original_bytes_under_timestamped_name() {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("settings.json");
+            std::fs::write(&path, b"future bytes").unwrap();
+            let expected = dir.path().join("settings.json.corrupt-1700000000");
+
+            let destination = quarantine_file(&path, 1_700_000_000).unwrap();
+
+            assert_eq!(destination, expected);
+            assert!(!path.exists());
+            assert_eq!(std::fs::read(&destination).unwrap(), b"future bytes");
+        }
+
+        #[test]
+        fn quarantine_file_errors_for_missing_source_without_creating_destination() {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("settings.json");
+            let destination = dir.path().join("settings.json.corrupt-1700000000");
+
+            assert!(quarantine_file(&path, 1_700_000_000).is_err());
+            assert!(!destination.exists());
+        }
 
         #[test]
         fn fs_blob_store_contract() {
