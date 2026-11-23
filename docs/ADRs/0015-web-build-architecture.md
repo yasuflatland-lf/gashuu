@@ -41,7 +41,9 @@ Reading those books needs bounded memory and responsive page turns.
    cannot target `wasm32-unknown-unknown`.
 7. Persist settings and library metadata through `BlobStore` backed by
    localStorage (#647 [6/23], #654 [13/23]).
-8. Use a null `ThumbStore` on web until #661 [10/13]. The shared strip
+8. The UI uses a `NullThumbStore` on web; #661 introduced the `ThumbStore`
+   port. Covers reach the UI through `BookBackend::cover` and persist in the
+   Worker's OPFS cover store (#699). The shared strip
    controller requests thumbnails through `BookBackend::thumbnail`, and
    the web Worker handles them in its background lane (#659 [8/13]).
    Verify page turns during strip loading on the iPad.
@@ -72,9 +74,10 @@ Reading those books needs bounded memory and responsive page turns.
   cover pruning retain their separate desktop jobs.
 - The web `ReadAt` adapter (#659) may need `unsafe impl Send + Sync`; that is
   sound only without the `atomics` target feature.
-- The web decoded-page cache holds at most six pages, about 15 MB each for
-  1600 × 2400 RGBA. The Worker retains decoded pages only for the request in flight.
-  Web page prefetch stays disabled pending a separate measured change.
+- The web decoded-page cache holds at most six pages and has a budget of at
+  most 128 MiB of decoded RGBA (`WEB_MAX_CACHE_BYTES`), whichever is reached
+  first. The cache retains one page even if it exceeds that budget. Prefetch
+  stays disabled. The Worker retains decoded pages only for the request in flight.
 
 ## Alternatives considered
 
