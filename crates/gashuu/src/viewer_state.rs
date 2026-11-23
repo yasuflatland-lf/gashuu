@@ -5,8 +5,8 @@ use crate::backend::{BookBackend, OpenedBook, SessionId};
 use crate::keymap::NavAction;
 use crate::viewport::ViewportState;
 use gashuu_core::{
-    BookId, CacheConfig, CoverMode, DecodedImage, Language, ReadingDirection, ResolvedView,
-    Settings, Spread, SpreadMode, SpreadNavigation,
+    BookId, CacheConfig, CoverMode, DecodedImage, ReadingDirection, ResolvedView, Settings, Spread,
+    SpreadMode, SpreadNavigation,
 };
 use std::num::NonZeroUsize;
 use std::path::Path;
@@ -54,11 +54,6 @@ pub struct ViewerState {
     nav: SpreadNavigation,
     cache_config: CacheConfig,
     reading_direction: ReadingDirection,
-    /// UI display language, mirrored from the global `Settings` (the same
-    /// dual-write `cache_config` uses: the settings handler updates both).
-    /// Retained for the language getter; the status line itself is now language-free
-    /// (`status_content`) and localized by `i18n::dynamic::format_status`.
-    language: Language,
     /// Entries skipped by the most recent book installed via `install_opened`.
     /// Zero until a book is installed or when the last listing skipped nothing.
     /// A failed open never reaches installation, so the previous value is retained.
@@ -102,7 +97,6 @@ impl ViewerState {
             nav: SpreadNavigation::new(SpreadMode::Single, CoverMode::Standalone),
             cache_config: platform_cache_config(cache_config, cfg!(target_arch = "wasm32")),
             reading_direction: ReadingDirection::Ltr,
-            language: Language::default(),
             last_open_skipped: 0,
             last_open_truncated: false,
             open_book: None,
@@ -121,7 +115,6 @@ impl ViewerState {
                 cfg!(target_arch = "wasm32"),
             ),
             reading_direction: settings.reading_direction,
-            language: settings.language,
             last_open_skipped: 0,
             last_open_truncated: false,
             open_book: None,
@@ -386,33 +379,6 @@ impl ViewerState {
         }
         self.reading_direction = dir;
         true
-    }
-
-    /// Mirror the UI display language from the global `Settings` (set by the
-    /// settings-dialog language handler, never per-book). The status line is now
-    /// localized externally via `i18n::dynamic`, so this only keeps the getter in
-    /// step. Idempotent: returns `false` when already set — the dropdown's
-    /// selection self-fire is absorbed by this guard.
-    pub fn set_language(&mut self, lang: Language) -> bool {
-        if self.language == lang {
-            return false;
-        }
-        self.language = lang;
-        true
-    }
-
-    /// The UI display language currently mirrored into this state.
-    ///
-    /// The status line and Rust-composed strings are now localized externally
-    /// via `i18n::dynamic` (driven by the `Localizer`'s `FluentLanguageLoader`),
-    /// so this getter has no production caller after the Fluent migration. It is
-    /// retained as the read side of the mirrored `language` field — written by
-    /// `set_language` whose "changed" return still gates the language dropdown's
-    /// self-fire in `handlers/settings.rs`. `#[allow(dead_code)]` follows the same convention
-    /// as the other currently-unwired accessors in this module.
-    #[allow(dead_code)]
-    pub fn language(&self) -> Language {
-        self.language
     }
 
     /// Apply a fully resolved per-book view to the runtime: the three
