@@ -37,7 +37,7 @@ export component ThumbnailStrip inherits Rectangle {
     // Resizing can widen the window; re-evaluate so newly-uncovered cells backfill.
     // (The initial bind does not fire `changed`; Rust requests a leading window at open.)
     changed width => {
-        root.visible-range-changed(-fl.viewport-x, root.width, root.cell-width + root.cell-spacing);
+        root.visible-range-changed(-fl.content-x, root.width, root.cell-width + root.cell-spacing);
     }
 
     // ── Colors ─────────────────────────────────────────────────────────────────
@@ -55,13 +55,13 @@ export component ThumbnailStrip inherits Rectangle {
         height: root.height;
         // Allow horizontal-only scrolling; viewport width is computed from
         // the number of cells so Slint knows the scrollable extent.
-        viewport-width: (root.cell-width + root.cell-spacing) * root.thumbnails.length + root.cell-spacing;
-        viewport-height: root.height;
+        content-width: (root.cell-width + root.cell-spacing) * root.thumbnails.length + root.cell-spacing;
+        content-height: root.height;
 
         // Each scroll surfaces pixel geometry so Rust backfills newly-visible pages.
-        // viewport-x is <= 0 as the user scrolls right, so the first pixel is -viewport-x.
-        changed viewport-x => {
-            root.visible-range-changed(-self.viewport-x, root.width, root.cell-width + root.cell-spacing);
+        // content-x is <= 0 as the user scrolls right, so the first pixel is -content-x.
+        changed content-x => {
+            root.visible-range-changed(-self.content-x, root.width, root.cell-width + root.cell-spacing);
         }
 
         HorizontalLayout {
