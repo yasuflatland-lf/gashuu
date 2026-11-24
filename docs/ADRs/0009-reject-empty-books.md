@@ -18,6 +18,8 @@ merely UNREADABLE (I/O error, unsupported format, corrupt archive) or temporaril
 unmounted drive) must NOT be treated as empty: an unreadable source is a different failure, and a
 missing-path book must keep its existing gray-out rather than being silently deleted.
 
+**Amendment ([43/43]), 2026-11-24.** `IMAGE_EXTS` in `page_source/entry_policy.rs` admits png, jpg, jpeg, and avif. The core image decoder requires the `avif` feature for AVIF.
+
 The constraint is the layered architecture (ADR-0002): `gashuu-core` is headless and the collection
 layer (`Library`) is a pure in-memory aggregate that performs no I/O. The emptiness check requires
 opening the source — I/O — so where it lives is the design question.
@@ -34,6 +36,8 @@ remove + notify".
    The `NonZeroUsize` makes "a valid book with zero pages" unrepresentable (the same lift-into-the-type
    discipline as the `page_count` boundary, ADR-0006 / patterns.md). `CoreError::EmptyBook` is a new
    `#[non_exhaustive]` variant, so the addition is non-breaking.
+
+   **Amendment ([43/43]), 2026-11-24.** The error now carries `CoreError::EmptyBook { label }`.
 2. **"Empty" and "unreadable" are strictly distinct.** `EmptyBook` is raised ONLY on a CLEAN open
    that counts zero pages. I/O errors and `UnsupportedFormat` propagate UNCHANGED — an unreadable
    source is never reclassified as empty. At the cover worker this is the pure

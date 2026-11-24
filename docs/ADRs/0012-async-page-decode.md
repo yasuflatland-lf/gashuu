@@ -69,6 +69,8 @@ thread; the UI side builds the `slint::Image` and applies it.
    discarded. A UI-thread-only `dispatched: RefCell<HashSet<usize>>` dedups in-flight
    dispatches per page (`reserve_dispatch` / `clear_dispatched`).
 
+   **Amendment ([43/43]), 2026-11-24.** Reservations belong to one target and epoch. In `page_loader.rs`, `begin_generation` clears them on each target change. Navigating from A to C and back to A can therefore dispatch A again without leaving a placeholder waiting for the stale result.
+
 ## Alternatives considered
 
 - **(A) Carry-result (chosen).** The worker decodes, caches in the shared LRU, and

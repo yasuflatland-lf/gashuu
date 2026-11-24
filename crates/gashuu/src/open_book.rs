@@ -294,9 +294,8 @@ impl OpenBookUseCase {
 
     /// Step 4 — the settings write, gated on recent-source tracking. `None` means
     /// no save was ATTEMPTED (tracking off), which the notices treat differently
-    /// from an attempted save that failed. Pushes the raw `path` the user picked,
-    /// not the canonical identity, because the recents menu re-opens what was
-    /// picked. Deliberately does NOT reconcile runtime view modes into `Settings`:
+    /// from an attempted save that failed. Keeps the raw path the user picked for a future
+    /// recents menu. No UI reads `recent_sources` yet. Deliberately does NOT reconcile runtime view modes into `Settings`:
     /// they are per-book here, and reconciling would clobber the globals
     /// (the ADR-0007 write-direction trap).
     fn record_recent(&self, path: &Path) -> Option<Result<(), CoreError>> {

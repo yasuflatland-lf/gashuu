@@ -58,7 +58,7 @@ pub enum KeyCommand {
     /// Cycle fit mode: Whole -> Width -> Actual -> Whole.
     CycleFit,
     /// Return to the Library screen. Only meaningful in the Viewer screen
-    /// (the screen gate lives in `main.rs`); direction-independent like the
+    /// (the screen gate lives in `handlers/viewer.rs`); direction-independent like the
     /// zoom/fit keys (Up and Escape have no reading-order meaning).
     GoToLibrary,
 }

@@ -7,7 +7,8 @@ use std::pin::Pin;
 pub type DecodeFuture = Pin<Box<dyn Future<Output = Result<DecodedImage, CoreError>>>>;
 
 pub trait PageDecoder {
-    /// Decode one encoded page (JPEG/PNG/WebP/AVIF/GIF) to straight-alpha RGBA8 and dimensions.
+    /// Decode one encoded page to straight-alpha RGBA8 and dimensions. Book sources admit only
+    /// `IMAGE_EXTS` entries. The core image decoder supports PNG, JPEG, and feature-gated AVIF.
     fn decode(&self, bytes: Vec<u8>) -> DecodeFuture;
 }
 

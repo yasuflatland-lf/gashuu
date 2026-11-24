@@ -40,7 +40,7 @@ The original measurement on an idle machine recorded 12 s / 10 s / 7 s for the s
 
 **Usable as a pre-commit gate.** A single failing dependency fails `mise run gates` with a non-zero exit code and the aggregate's own body never runs (verified by rigging `check-docs` to fail via its `CHECK_DOCS_ROOT` fixture seam: aggregate exit 1).
 
-**No `mise exec --` prefix inside a task body.** mise runs task bodies in the activated tool environment — it exports `RUSTUP_TOOLCHAIN=1.97.1` and prepends the `cargo-nextest` install directory to `PATH` — so the bare `cargo` in these tasks *is* the pinned toolchain. Commands you type by hand are a different case and still need `mise exec --` (see CLAUDE.md).
+**No `mise exec --` prefix inside a task body.** mise runs task bodies in the activated tool environment — it exports `RUSTUP_TOOLCHAIN=1.100.0` and prepends the `cargo-nextest` install directory to `PATH` — so the bare `cargo` in these tasks *is* the pinned toolchain. Commands you type by hand are a different case and still need `mise exec --` (see CLAUDE.md).
 
 ### Token-drift guard (blocking)
 

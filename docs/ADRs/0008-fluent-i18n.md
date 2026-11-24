@@ -127,6 +127,8 @@ push", "Word-order-safe composed a11y labels", "The gettext bundler is keyed by 
   English-literal defaults; `Localizer::apply(&ui)` resolves them all via `fl!()` and pushes them at
   boot and after each `switch()`. The global is re-exported from `ViewerWindow.slint` (the build
   entry) or Slint generates no `ui.global::<Strings>()` accessor.
+
+  **Amendment ([43/43]), 2026-11-24.** The method is now named `Localizer::push_strings_to_ui` in `i18n/mod.rs`.
 - **`in`-property verdict (open question resolved):** plain `in property <string>` (NOT `in-out`)
   suffices for Rust-side `set_*` on Slint 1.16.1 — verified empirically.
 - **Canary half-retired (decision point 3 interaction).** Removing all `@tr()` leaves the gettext

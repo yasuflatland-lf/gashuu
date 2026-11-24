@@ -126,6 +126,8 @@ whole Update (#65) type-system lift, are unaffected.
   spread EXCEPT on the final-page spread, which stores the final page index. Both values normalize
   (`jump_to` -> `SpreadContext::normalize`) onto the SAME spread on reopen.
 
+  **Amendment ([43/43]), 2026-11-24.** `SpreadNavigation::resume_index_to_persist()` in `crates/gashuu-core/src/spread.rs` owns the write-back rule. `ViewerState` delegates to it. Reopening restores the same spread only while the effective layout is unchanged. Auto depends on window aspect and inherited fields follow current global defaults, so the stored page selects the spread that contains it under the current layout.
+
 ### Accepted side effects
 
 - A one-page book and an unknown total both yield `fraction() == 0.0` and

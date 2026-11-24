@@ -32,6 +32,8 @@ Model the four preferences as a PER-BOOK override that falls back to the global 
    produced ONLY by `ViewOverride::resolve(&Settings)`, the single definition of the per-field
    `unwrap_or(global)` merge. This makes "an unresolved view reaches the renderer" unrepresentable.
    See [patterns.md](../patterns.md), "Partial/total override pair".
+
+   **Amendment ([43/43]), 2026-11-24.** `ViewOverride::resolve(&self, global: ResolvedView)` takes the global modes supplied by `Settings::view_defaults()`.
 3. **Persist on `Book`, backward-compatible.** `Book.overrides: ViewOverride` is
    `#[serde(default, skip_serializing_if = "ViewOverride::is_empty")]`, with per-field
    `skip_serializing_if = "Option::is_none"`, so an all-`None` override emits NO key and an old

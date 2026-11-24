@@ -71,7 +71,7 @@ When a module file grows too large, relocate its `#[cfg(test)] mod tests { … }
 mod tests;
 ```
 
-Key facts: `#[path]` resolves relative to the **parent file's directory** (`src/`), not the crate root; `use super::*;` in the moved file still resolves to the parent module; no `mod.rs` is needed. Mechanics: extract the brace-body, write the 3-line stub, then run `cargo fmt` — rustfmt de-indents the moved block automatically. This is the preferred file-shrinking technique for the ongoing refactor set. (`viewer_state` is the first module to use it; previously every module kept tests inline.)
+Key facts: `#[path]` resolves relative to the **parent file's directory** (`src/`), not the crate root; `use super::*;` in the moved file still resolves to the parent module; no `mod.rs` is needed. Mechanics: extract the brace-body, write the 3-line stub, then run `cargo fmt` — rustfmt de-indents the moved block automatically. This is the preferred file-shrinking technique for the ongoing refactor set. The `viewer_state` and `picker` modules use this layout.
 
 ### Extracting a collaborator-threading fn — field-alias verbatim move + `pub(crate)` bridge
 
@@ -103,7 +103,7 @@ for verb-final Japanese; see [patterns.md](patterns.md) ("Fluent catalog authori
 
 WHERE a string is SERVED depends on whether it has runtime args, NOT on whether it "feels" like a label.
 A STATIC string (no `{ $arg }`) that Slint renders directly is a property on the `Strings` global
-(`ui/Strings.slint`), pushed once per locale change via `Localizer::apply` (the `cover-failed-label`
+(`ui/Strings.slint`), pushed once per locale change via `Localizer::push_strings_to_ui` (the `cover-failed-label`
 precedent). A PARAMETERIZED string (`{ $done }/{ $total }`, an error detail, a count) is composed in
 Rust on demand by a `crate::i18n::dynamic::*` fn and pushed through a Rust-set property
 (`set_status_text`, the `notice-*` family) — it CANNOT live on the `Strings` global, because that global
