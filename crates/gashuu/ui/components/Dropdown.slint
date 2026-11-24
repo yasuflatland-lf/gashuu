@@ -140,14 +140,16 @@ export component Dropdown inherits Rectangle {
                         // the row is selected. Same 1px optical nudge as the button face.
                         Text {
                             width: Theme.font-label;
-                            y: 1px;
+                            y: 2px;
+                            height: parent.height - 2px;
                             text: idx == root.current-index ? "\u{2713}" : "";
                             color: ta.has-hover ? Theme.text : Theme.accent;
                             font-size: Theme.font-label;
                             vertical-alignment: center;
                         }
                         Text {
-                            y: 1px;
+                            y: 2px;
+                            height: parent.height - 2px;
                             text: item;
                             color: ta.has-hover ? Theme.text : Theme.text-high;
                             font-size: Theme.font-label;

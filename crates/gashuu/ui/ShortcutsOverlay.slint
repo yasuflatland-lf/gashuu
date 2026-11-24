@@ -50,19 +50,19 @@ export component ShortcutsOverlay inherits GlassModal {
             // Optional scroll keys, handled BEFORE the catch-all so the
             // read-only body can be paged from the keyboard.
             if (event.text == Key.UpArrow) {
-                body.viewport-y = min(0px, body.viewport-y + Theme.space-xl);
+                body.content-y = min(0px, body.content-y + Theme.space-xl);
                 return accept;
             }
             if (event.text == Key.DownArrow) {
-                body.viewport-y = max(min(0px, body.height - body.viewport-height), body.viewport-y - Theme.space-xl);
+                body.content-y = max(min(0px, body.height - body.content-height), body.content-y - Theme.space-xl);
                 return accept;
             }
             if (event.text == Key.PageUp) {
-                body.viewport-y = min(0px, body.viewport-y + body.height);
+                body.content-y = min(0px, body.content-y + body.height);
                 return accept;
             }
             if (event.text == Key.PageDown) {
-                body.viewport-y = max(min(0px, body.height - body.viewport-height), body.viewport-y - body.height);
+                body.content-y = max(min(0px, body.height - body.content-height), body.content-y - body.height);
                 return accept;
             }
             // Catch-all: CONSUME every other key (incl. Tab) so focus can
@@ -99,8 +99,8 @@ export component ShortcutsOverlay inherits GlassModal {
             // light palette that breaks the glass). Scrolls only when content overflows (short window).
             body := Flickable {
                 vertical-stretch: 1;
-                viewport-width: self.width;
-                viewport-height: shortcuts-text.preferred-height;
+                content-width: self.width;
+                content-height: shortcuts-text.preferred-height;
 
                 content := VerticalLayout {
                     padding-left: Theme.space-xl;
@@ -159,8 +159,8 @@ export component ShortcutsOverlay inherits GlassModal {
             x: parent.width - Theme.settings-scroll-indicator-w - Theme.space-xxs;
             y: body-col.y + body.y;
             height: body.height;
-            content-height: body.viewport-height;
-            viewport-y: body.viewport-y;
+            content-height: body.content-height;
+            viewport-y: body.content-y;
         }
     }
 }

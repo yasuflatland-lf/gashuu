@@ -96,7 +96,8 @@ export component Segmented inherits Rectangle {
                 Text {
                     // Optical centering: Slint centers the full line box, but descender-less
                     // labels sit ~1px high, so nudge down (y:1px) to center the GLYPHS.
-                    y: 1px;
+                    y: 2px;
+                    height: parent.height - 2px;
                     text: item;
                     horizontal-alignment: center;
                     vertical-alignment: center;

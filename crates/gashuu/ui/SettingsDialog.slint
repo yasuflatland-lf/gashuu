@@ -274,8 +274,8 @@ export component SettingsDialog inherits GlassModal {
             // light palette that breaks the glass, design §6.3). Scrolls only when content overflows.
             body := Flickable {
                 vertical-stretch: 1;
-                viewport-width: self.width;
-                viewport-height: content.preferred-height;
+                content-width: self.width;
+                content-height: content.preferred-height;
 
                 content := VerticalLayout {
                     padding-left: Theme.space-xl;
@@ -629,8 +629,8 @@ export component SettingsDialog inherits GlassModal {
             x: parent.width - Theme.settings-scroll-indicator-w - Theme.space-xxs;
             y: body-col.y + body.y;
             height: body.height;
-            content-height: body.viewport-height;
-            viewport-y: body.viewport-y;
+            content-height: body.content-height;
+            viewport-y: body.content-y;
         }
 
         // Tab-containment sentinel (last focusable in the dialog subtree): window
