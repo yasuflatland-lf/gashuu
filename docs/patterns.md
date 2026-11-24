@@ -125,8 +125,8 @@ Three hard-won rules for such a type:
 A second, distinct value-object flavor — different from the invariant-owning kind above. Use it
 when several same-typed arguments are always passed together to a cluster of pure free functions,
 and the positional ordering is a silent transposition footgun (the compiler cannot distinguish them).
-`SpreadContext` (`spread.rs`) is the canonical example: it bundles
-`(total: Option<usize>, layout: SpreadLayout, cover: CoverMode)` into a `Copy` struct and exposes
+`SpreadContext` in `spread.rs` is the canonical example (crate-private since [27/43]). It bundles
+`(total: usize, layout: SpreadLayout, cover: CoverMode)` into a `Copy` struct and exposes
 `.spread_at(i)`, `.next(i)`, `.prev(i)`, `.normalize(i)` — each delegating directly to the
 corresponding free fn (`spread_at`, `next_leading`, `prev_leading`, `normalize_leading`).
 `SpreadNavigation::context()` assembles it from the stored total, the resolved layout and the cover
@@ -318,7 +318,7 @@ a `settings.json` written by this build (`spread_mode:"auto"`) cannot be read by
 
 ### `spread_mode`/`reading_direction`, `SpreadMode::Auto`, and `fit_mode` are ACTIVE; only `key_bindings` stays persisted-but-inactive
 
-The spread settings are active: `keymap::map_key` takes a `dir: ReadingDirection` and emits a `KeyCommand` (arrows resolve against the active direction). `SpreadMode::Auto` is resolved via `SpreadMode::resolve(window aspect)` inside `SpreadNavigation` (`gashuu-core`'s `spread.rs`), which turns its stored viewport aspect into a `SpreadLayout` on every `context()` call, i.e. before every pairing call; pairing functions take `SpreadLayout` so `Auto` is unreachable in pairing by type. `fit_mode` is wired to real behavior (persisted, forward-compat like `cover_mode`). `key_bindings` is still saved for forward-compat only: `KeyBindings`'s default tokens match what `map_key` hard-codes, but `map_key` does NOT read the struct — user-remappable keys remain deferred.
+The spread settings are active: `keymap::map_key` takes a `dir: ReadingDirection` and emits a `KeyCommand` (arrows resolve against the active direction). `SpreadMode::Auto` is resolved via the crate-private `SpreadMode::resolve(window aspect)` inside `SpreadNavigation` (`gashuu-core`'s `spread.rs`), which turns its stored viewport aspect into a `SpreadLayout` on every `context()` call, i.e. before every pairing call; pairing functions take `SpreadLayout` so `Auto` is unreachable in pairing by type. `fit_mode` is wired to real behavior (persisted, forward-compat like `cover_mode`). `key_bindings` is still saved for forward-compat only: `KeyBindings`'s default tokens match what `map_key` hard-codes, but `map_key` does NOT read the struct — user-remappable keys remain deferred.
 
 ### A new/changed key binding must be updated in BOTH places that describe keys
 
@@ -326,11 +326,11 @@ The spread settings are active: `keymap::map_key` takes a `dir: ReadingDirection
 
 ### Separate pairing / placement / input
 
-`spread.rs` decides WHICH pages pair (reading order) and holds NO `reading_direction` and NO `NavAction` (no core→UI type leak) — so the decision table doesn't double over direction. Pairing functions receive an already-resolved `SpreadLayout` (never `SpreadMode`/`Auto`); the only `SpreadMode → SpreadLayout` conversion is `SpreadMode::resolve`. Placement (RTL = `HorizontalLayout` slot reversal in `PageView.slint`) and input (which arrow advances, resolved by `reading_direction` in `keymap::map_key`) live in the UI. `NavAction {Next,Prev}` stays reading-order as the single source of truth.
+The crate-private pairing functions decide which pages form a spread in reading order. They take a resolved `SpreadLayout` and work independently of reading direction. `scrub_fraction_to_page` uses `ReadingDirection` to map the knob position to a raw page before pairing. Placement (RTL = `HorizontalLayout` slot reversal in `PageView.slint`) and input (which arrow advances, resolved by `reading_direction` in `keymap::map_key`) live in the UI. `NavAction {Next,Prev}` stays reading-order as the single source of truth.
 
 ### Spread is a derived value, not stored state
 
-`SpreadNavigation` (`gashuu-core`'s `spread.rs`) keeps `index` (= current spread's leading page) + the total + the modes + the viewport aspect; the spread is recomputed each call via `spread_at` (avoids dual-source drift). `ViewerState` holds ONE `nav: SpreadNavigation` field and delegates — it stores no index and no spread of its own. Invariant: `index` is ALWAYS a valid spread-start — reset to 0 on `set_total` (which `set_source`/`close` call), mutated only via `next_/prev_leading`, and re-anchored by `normalize_leading` at the END of every mutator that can affect pairing (`jump_to`, `set_spread_mode`, `set_cover_mode`, `set_viewport_size`), so no caller can observe an un-normalised index and the mode-change-then-jump ordering bug is unwritable by construction. `reading_direction` stays on `ViewerState` and its toggles do NOT normalize (pairing is direction-agnostic). Internally `SpreadNavigation::context()` assembles the `(total, layout, cover)` triple (a `SpreadContext`) and calls `.next()`/`.prev()`/`.normalize()` on it; the free functions remain the source of truth.
+`SpreadNavigation` (`gashuu-core`'s `spread.rs`) keeps `index` (= current spread's leading page) + the total + the modes + the viewport aspect; the spread is recomputed each call via `spread_at` (avoids dual-source drift). `ViewerState` holds ONE `nav: SpreadNavigation` field and delegates — it stores no index and no spread of its own. Invariant: `index` is ALWAYS a valid spread-start — reset to 0 on `set_total` (which `set_source`/`close` call), mutated only via `next_/prev_leading`, and re-anchored by `normalize_leading` at the END of every mutator that can affect pairing (`jump_to`, `set_spread_mode`, `set_cover_mode`, `set_viewport_size`), so no caller can observe an un-normalised index and the mode-change-then-jump ordering bug is unwritable by construction. `reading_direction` stays on `ViewerState` and its toggles do NOT normalize (pairing is direction-agnostic). The `pub(crate)` method `SpreadNavigation::context()` assembles the `(total, layout, cover)` triple (a `SpreadContext`) and calls `.next()`/`.prev()`/`.normalize()` on it; the free functions remain the source of truth.
 
 ### `ViewerState::set_viewport_size(width, height) -> bool`
 
