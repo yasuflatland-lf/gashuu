@@ -356,6 +356,30 @@ mod tests {
 
     // ---- take_fresh: de-dup gate ----
 
+    proptest::proptest! {
+        #[test]
+        fn take_fresh_returns_every_previously_unrequested_in_range_page(
+            page_count in 0usize..50,
+            batches in proptest::collection::vec(
+                proptest::collection::vec(0usize..80, 0..=12), 0..=40,
+            ),
+        ) {
+            let mut requested = HashSet::new();
+            let mut seen = HashSet::new();
+            for batch in batches {
+                let in_range: HashSet<_> = batch.iter().copied()
+                    .filter(|&page| page < page_count).collect();
+                let expected: HashSet<_> = in_range.difference(&seen).copied().collect();
+                let fresh = take_fresh(&mut requested, page_count, batch);
+                let distinct: HashSet<_> = fresh.iter().copied().collect();
+                proptest::prop_assert_eq!(fresh.len(), distinct.len());
+                proptest::prop_assert_eq!(distinct, expected);
+                seen.extend(in_range);
+                proptest::prop_assert_eq!(&requested, &seen);
+            }
+        }
+    }
+
     #[test]
     fn take_fresh_dedups_repeated_requests() {
         let mut req = HashSet::new();

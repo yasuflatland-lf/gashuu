@@ -1089,6 +1089,35 @@ mod tests {
         assert_eq!(human_size(5 << 40), "5120.0 GB");
     }
 
+    proptest::proptest! {
+        #[test]
+        fn human_size_promotes_rounded_units(
+            bytes in proptest::prop_oneof![
+                0u64..1024,
+                1024u64..(1 << 20),
+                ((1u64 << 20) - 64)..=((1u64 << 20) + 64),
+                ((1u64 << 30) - 60_000)..=((1u64 << 30) + 60_000),
+                0u64..(4 << 30),
+                proptest::strategy::Just(u64::MAX),
+            ],
+        ) {
+            let display = human_size(bytes);
+            let (number, unit) = display.split_once(' ').unwrap();
+            let number: f64 = number.parse().unwrap();
+            proptest::prop_assert_eq!(unit == "B", bytes < 1024);
+            match unit {
+                "B" => proptest::prop_assert_eq!(number, bytes as f64),
+                "KB" | "MB" => proptest::prop_assert!((1.0..1024.0).contains(&number), "{}", display),
+                // GB is the last supported unit even at u64::MAX.
+                "GB" => {
+                    let gibibytes = bytes as f64 / (1u64 << 30) as f64;
+                    proptest::prop_assert!((number - gibibytes).abs() <= 0.051, "{}", display);
+                }
+                _ => proptest::prop_assert!(false, "unexpected unit in {}", display),
+            }
+        }
+    }
+
     #[test]
     fn human_size_picks_unit_by_magnitude() {
         // Sub-KB stays in bytes; >=KB and >=MB switch units with one decimal.

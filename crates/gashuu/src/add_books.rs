@@ -496,82 +496,45 @@ mod tests {
         );
     }
 
-    #[test]
-    fn apply_outcomes_ignores_add_many_return_order() {
-        // The regression barrier. The count mapping is keyed by IDENTITY, so it
-        // holds for any permutation of `added`; the old single cross-iteration
-        // `Iterator::find` walk consumed the counts in input order and would run
-        // off the end here.
-        let first = BookId::new("first.cbz");
-        let second = BookId::new("second.cbz");
-        let mut lib = Library::new();
-        lib.add_many(vec![
-            (first.clone(), "first".into()),
-            (second.clone(), "second".into()),
-        ]);
-        let added = vec![second.clone(), first.clone()];
-        let counts = std::collections::HashMap::from([
-            (
-                first.clone(),
-                std::num::NonZeroUsize::new(3).expect("nonzero"),
-            ),
-            (
-                second.clone(),
-                std::num::NonZeroUsize::new(7).expect("nonzero"),
-            ),
-        ]);
+    proptest::proptest! {
+        #[test]
+        fn record_page_counts_updates_only_added_ids_with_probed_counts(
+            books in proptest::collection::vec((
+                proptest::num::u32::ANY,
+                proptest::bool::ANY,
+                proptest::option::of(1usize..10),
+                proptest::option::of(10usize..50),
+            ), 0..=12),
+        ) {
+            let mut library = Library::new();
+            let mut added = Vec::new();
+            let mut counts = HashMap::new();
+            let mut expected = Vec::new();
+            for (index, (order, is_added, previous, probed)) in books.into_iter().enumerate() {
+                let id = BookId::new(format!("/manga/{index}.cbz"));
+                assert!(library.add(id.clone(), format!("Book {index}")).is_some());
+                let previous = previous.and_then(NonZeroUsize::new);
+                let probed = probed.and_then(NonZeroUsize::new);
+                if let Some(count) = previous {
+                    assert!(library.set_page_count(&id, count));
+                }
+                if is_added {
+                    added.push((order, id.clone()));
+                }
+                if let Some(count) = probed {
+                    counts.insert(id.clone(), count);
+                }
+                expected.push((id, if is_added { probed.or(previous) } else { previous }));
+            }
+            added.sort_unstable_by_key(|(order, _)| *order);
+            let added: Vec<_> = added.into_iter().map(|(_, id)| id).collect();
 
-        record_page_counts(&mut lib, &added, &counts);
+            record_page_counts(&mut library, &added, &counts);
 
-        let page_count = |id: &BookId| lib.book(id).and_then(|book| book.page_count_opt());
-        assert_eq!(
-            (page_count(&first), page_count(&second)),
-            (Some(3), Some(7)),
-            "counts must be matched by identity even when added paths are reordered"
-        );
-    }
-
-    #[test]
-    fn record_page_counts_skips_an_added_identity_with_no_probed_count() {
-        // The panic removal itself. An `added` identity with NO entry in the count
-        // map is the exact shape that made the old `find(..).expect(..)` blow up on
-        // the UI thread; here it must be a silent skip that leaves the book in the
-        // pre-existing unknown-count state. The miss sits in the MIDDLE so a panic
-        // (or any early exit) also robs the identity after it of its count.
-        let first = BookId::new("first.cbz");
-        let uncounted = BookId::new("uncounted.cbz");
-        let last = BookId::new("last.cbz");
-        let mut lib = Library::new();
-        lib.add_many(vec![
-            (first.clone(), "first".into()),
-            (uncounted.clone(), "uncounted".into()),
-            (last.clone(), "last".into()),
-        ]);
-        let added = vec![first.clone(), uncounted.clone(), last.clone()];
-        let counts = std::collections::HashMap::from([
-            (
-                first.clone(),
-                std::num::NonZeroUsize::new(3).expect("nonzero"),
-            ),
-            (
-                last.clone(),
-                std::num::NonZeroUsize::new(7).expect("nonzero"),
-            ),
-        ]);
-
-        record_page_counts(&mut lib, &added, &counts);
-
-        let page_count = |id: &BookId| lib.book(id).and_then(|book| book.page_count_opt());
-        assert_eq!(
-            page_count(&uncounted),
-            None,
-            "an identity without a probed count keeps the unknown-count state"
-        );
-        assert_eq!(
-            (page_count(&first), page_count(&last)),
-            (Some(3), Some(7)),
-            "a miss is skipped without disturbing the identities around it"
-        );
+            for (id, count) in expected {
+                proptest::prop_assert_eq!(library.book(&id).unwrap().page_count_opt(), count.map(NonZeroUsize::get), "{}", id);
+            }
+        }
     }
 
     #[test]

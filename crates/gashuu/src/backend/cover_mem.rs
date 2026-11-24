@@ -76,6 +76,8 @@ impl CoverMemCache {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
+    use std::collections::VecDeque;
 
     /// Build an `Arc<DecodedImage>` whose RGBA buffer is exactly `bytes` long, so
     /// `CoverMemCache`'s byte accounting can be driven with tiny, predictable
@@ -90,76 +92,58 @@ mod tests {
         )
     }
 
-    /// Inserting past the budget evicts least-recently-used entries so the running
-    /// total never exceeds the budget. Budget = 12 bytes; three 8-byte covers can
-    /// hold at most one (8 ≤ 12 < 16), so each insert evicts the prior one.
-    #[test]
-    fn insert_past_budget_evicts_lru_and_caps_total() {
-        let mut c = CoverMemCache::with_budget(12);
-        c.insert("a".into(), cover_of(8));
-        c.insert("b".into(), cover_of(8));
-        c.insert("c".into(), cover_of(8));
-        assert!(
-            c.total_bytes <= 12,
-            "running total {} must stay within the budget",
-            c.total_bytes
-        );
-        assert_eq!(c.lru.len(), 1, "only the most-recent cover survives");
-        assert!(c.get("c").is_some(), "the most-recently inserted survives");
-        assert!(c.get("a").is_none(), "the oldest was evicted");
-        assert!(c.get("b").is_none(), "the middle was evicted");
+    proptest::proptest! {
+        #[test]
+        fn cover_cache_matches_byte_budget_lru(
+            budget in proptest::prop_oneof![0u64..=64, proptest::strategy::Just(u64::MAX)],
+            ops in proptest::collection::vec(
+                proptest::prop_oneof![
+                    (0usize..8, 1usize..=16).prop_map(|(key, pixels)| CacheOp::Insert(key, pixels * 4)),
+                    (0usize..8).prop_map(CacheOp::Get),
+                ],
+                0..=40,
+            ),
+        ) {
+            let mut cache = CoverMemCache::with_budget(budget);
+            let mut expected = VecDeque::<(usize, usize)>::new();
+            for op in ops {
+                match op {
+                    CacheOp::Insert(key, bytes) => {
+                        cache.insert(key.to_string(), cover_of(bytes));
+                        expected.retain(|&(old_key, _)| old_key != key);
+                        expected.push_front((key, bytes));
+                        while expected.len() > 1
+                            && expected.iter().map(|&(_, n)| n as u64).sum::<u64>() > budget
+                        {
+                            expected.pop_back();
+                        }
+                    }
+                    CacheOp::Get(key) => {
+                        let hit = expected.iter().position(|&(old_key, _)| old_key == key)
+                            .map(|index| {
+                                let entry = expected.remove(index).unwrap();
+                                expected.push_front(entry);
+                                entry.1
+                            });
+                        prop_assert_eq!(cache.get(&key.to_string()).map(|img| img.rgba().len()), hit);
+                    }
+                }
+                let actual: Vec<_> = cache.lru.iter()
+                    .map(|(key, image)| (key.parse::<usize>().unwrap(), image.rgba().len()))
+                    .collect();
+                prop_assert_eq!(actual.as_slice(), &*expected.make_contiguous());
+                prop_assert_eq!(
+                    cache.total_bytes,
+                    expected.iter().map(|&(_, n)| n as u64).sum::<u64>()
+                );
+            }
+        }
     }
 
-    /// `get` promotes an entry to most-recently-used, so a promoted entry survives
-    /// a later eviction while the now-oldest untouched entry is dropped. Budget 16
-    /// holds two 8-byte covers; touching "a" then inserting "c" must evict "b".
-    #[test]
-    fn get_promotes_mru_so_touched_entry_survives_eviction() {
-        let mut c = CoverMemCache::with_budget(16);
-        c.insert("a".into(), cover_of(8));
-        c.insert("b".into(), cover_of(8));
-        assert!(c.get("a").is_some(), "promote a to MRU (b is now the LRU)");
-        c.insert("c".into(), cover_of(8));
-        assert!(c.get("a").is_some(), "promoted entry survived eviction");
-        assert!(c.get("c").is_some(), "newly inserted entry is present");
-        assert!(
-            c.get("b").is_none(),
-            "the un-promoted LRU entry was evicted"
-        );
-        assert!(c.total_bytes <= 16, "total stays within the budget");
-    }
-
-    /// A single entry larger than the whole budget is retained (floor = 1): the
-    /// eviction loop stops at one entry rather than dropping the only cover, so an
-    /// oversized cover is still served from memory instead of thrashing.
-    #[test]
-    fn single_oversized_entry_is_retained_as_floor() {
-        let mut c = CoverMemCache::with_budget(8);
-        c.insert("big".into(), cover_of(64));
-        assert_eq!(c.lru.len(), 1, "the oversized entry is kept as the floor");
-        assert!(c.get("big").is_some(), "oversized cover is still served");
-        // A second oversized insert still leaves exactly one (the newest) entry.
-        c.insert("big2".into(), cover_of(64));
-        assert_eq!(c.lru.len(), 1, "floor stays at one even when over budget");
-        assert!(c.get("big2").is_some(), "the newest oversized cover wins");
-        assert!(
-            c.get("big").is_none(),
-            "the prior oversized cover was evicted"
-        );
-    }
-
-    /// Re-inserting an existing key replaces its value and adjusts the running
-    /// total by the byte delta (old subtracted, new added) rather than
-    /// double-counting — so a replace never inflates `total_bytes`.
-    #[test]
-    fn reinsert_same_key_replaces_without_double_counting() {
-        let mut c = CoverMemCache::with_budget(64);
-        c.insert("k".into(), cover_of(8));
-        c.insert("k".into(), cover_of(16));
-        assert_eq!(c.lru.len(), 1, "same key replaces, not appends");
-        assert_eq!(c.total_bytes, 16, "total reflects only the new buffer");
-        let got = c.get("k").expect("key present");
-        assert_eq!(got.rgba().len(), 16, "the replacement value is served");
+    #[derive(Debug)]
+    enum CacheOp {
+        Insert(usize, usize),
+        Get(usize),
     }
 
     /// The default constructor uses the documented 64 MiB budget tunable.

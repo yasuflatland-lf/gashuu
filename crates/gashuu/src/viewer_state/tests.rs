@@ -1,4 +1,5 @@
 use super::*;
+use proptest::prelude::*;
 
 /// Build a Double-mode state (Standalone cover, Ltr) via `from_settings`,
 /// since the mode fields are private.
@@ -189,21 +190,44 @@ fn preview_is_double_delegates_to_the_navigation_value_object() {
 
 // ---- Toggles -----------------------------------------------------------
 
-#[test]
-fn toggle_reading_direction_flips_and_leaves_index() {
-    let mut state = double_state();
-    state.install_test_book(6);
-    state.apply(NavAction::Next);
-    assert_eq!(state.index(), 1);
-    assert_eq!(state.reading_direction(), ReadingDirection::Ltr);
+proptest::proptest! {
+    #[test]
+    fn changing_reading_direction_preserves_the_viewer_index(total in 1usize..40) {
+        for spread_mode in [SpreadMode::Single, SpreadMode::Double, SpreadMode::Auto] {
+            for cover_mode in [CoverMode::Standalone, CoverMode::Paired] {
+                for (direction, opposite) in [
+                    (ReadingDirection::Ltr, ReadingDirection::Rtl),
+                    (ReadingDirection::Rtl, ReadingDirection::Ltr),
+                ] {
+                    let mut viewer = ViewerState::from_settings(&Settings {
+                        spread_mode,
+                        cover_mode,
+                        reading_direction: direction,
+                        ..Settings::default()
+                    });
+                    if spread_mode == SpreadMode::Auto {
+                        viewer.set_viewport_size(1.0, 2.0);
+                    }
+                    viewer.install_test_book(total);
+                    for page in 0..total {
+                        viewer.jump_to(page);
+                        let index = viewer.index();
+                        proptest::prop_assert!(viewer.toggle_reading_direction());
+                        proptest::prop_assert_eq!(viewer.reading_direction(), opposite);
+                        proptest::prop_assert_eq!(viewer.index(), index);
 
-    assert!(state.toggle_reading_direction());
-    assert_eq!(state.reading_direction(), ReadingDirection::Rtl);
-    assert_eq!(state.index(), 1); // pairing unaffected
+                        proptest::prop_assert!(!viewer.set_reading_direction(opposite));
+                        proptest::prop_assert_eq!(viewer.reading_direction(), opposite);
+                        proptest::prop_assert_eq!(viewer.index(), index);
 
-    assert!(state.toggle_reading_direction());
-    assert_eq!(state.reading_direction(), ReadingDirection::Ltr);
-    assert_eq!(state.index(), 1);
+                        proptest::prop_assert!(viewer.set_reading_direction(direction));
+                        proptest::prop_assert_eq!(viewer.reading_direction(), direction);
+                        proptest::prop_assert_eq!(viewer.index(), index);
+                    }
+                }
+            }
+        }
+    }
 }
 
 #[test]
@@ -399,17 +423,6 @@ fn session_is_some_after_install_test_book() {
     );
 }
 
-#[test]
-fn session_is_none_after_failed_open_path() {
-    // A failed open_path must NOT install a source; session stays None.
-    let mut state = ViewerState::new();
-    let _ = state.open_path(std::path::Path::new("/nonexistent_pr8a_source"));
-    assert!(
-        state.session().is_none(),
-        "session must remain None after a failed open_path"
-    );
-}
-
 // ---- open_book() (PR-R) --------------------------------------------------
 
 #[test]
@@ -422,13 +435,34 @@ fn open_book_is_none_before_open() {
 }
 
 #[test]
-fn open_book_is_none_after_failed_open_path() {
-    let mut state = ViewerState::new();
-    let _ = state.open_path(std::path::Path::new("/nonexistent_prR_open_book"));
-    assert!(
-        state.open_book().is_none(),
-        "open_book must stay None after a failed open_path"
-    );
+fn failed_open_keeps_the_previously_displayed_book() {
+    let root = tempfile::tempdir().unwrap();
+    let missing = root.path().join("missing.cbz");
+    let mut viewer = ViewerState::new();
+    let opened = OpenedBook {
+        session: SessionId::for_test(1),
+        id: BookId::new("/manga/already-open.cbz"),
+        page_count: 6,
+        skipped: 2,
+        listing_truncated: true,
+        is_dir: false,
+    };
+    assert_eq!(viewer.install_opened(&opened), None);
+    assert!(viewer.jump_to(3));
+    let spread = viewer
+        .current_spread()
+        .expect("an open book has a visible spread");
+    let index = viewer.index();
+
+    assert!(viewer.open_path(&missing).is_err());
+
+    assert_eq!(viewer.session(), Some(opened.session));
+    assert_eq!(viewer.open_book(), Some(&opened.id));
+    assert_eq!(viewer.page_count(), opened.page_count);
+    assert_eq!(viewer.index(), index);
+    assert_eq!(viewer.current_spread(), Some(spread));
+    assert_eq!(viewer.last_open_skipped(), opened.skipped);
+    assert!(viewer.last_open_truncated());
 }
 
 #[test]
@@ -515,42 +549,6 @@ fn open_read_leave_sequence_state_invariants() {
         state.open_book().is_none(),
         "install_test_book without path leaves open_book None"
     );
-}
-
-// ---- set_reading_direction (PR8b) ----------------------------------------
-
-#[test]
-fn set_reading_direction_flips_and_leaves_index() {
-    // Double / Standalone, Ltr. Switching to Rtl returns true; pairing is
-    // direction-agnostic so index must remain unchanged.
-    let mut state = double_state();
-    state.install_test_book(6);
-    state.apply(NavAction::Next);
-    assert_eq!(state.index(), 1);
-    assert_eq!(state.reading_direction(), ReadingDirection::Ltr);
-
-    assert!(state.set_reading_direction(ReadingDirection::Rtl));
-    assert_eq!(state.reading_direction(), ReadingDirection::Rtl);
-    assert_eq!(state.index(), 1);
-
-    assert!(state.set_reading_direction(ReadingDirection::Ltr));
-    assert_eq!(state.reading_direction(), ReadingDirection::Ltr);
-    assert_eq!(state.index(), 1);
-}
-
-#[test]
-fn set_reading_direction_same_value_is_noop() {
-    // Calling set_reading_direction with the already-active direction must
-    // return false and leave index unchanged.
-    let mut state = double_state();
-    state.install_test_book(6);
-    state.apply(NavAction::Next);
-    assert_eq!(state.index(), 1);
-    assert_eq!(state.reading_direction(), ReadingDirection::Ltr);
-
-    assert!(!state.set_reading_direction(ReadingDirection::Ltr));
-    assert_eq!(state.reading_direction(), ReadingDirection::Ltr);
-    assert_eq!(state.index(), 1);
 }
 
 #[test]
@@ -667,28 +665,49 @@ fn close_is_idempotent_from_boot_state() {
 
 // ---- page_count_opt() (DDD Wave 1) --------------------------------------
 
-#[test]
-fn page_count_opt_is_none_when_empty() {
-    // No source open: the 0 sentinel maps to None (mirrors Book::page_count_opt).
-    let state = ViewerState::new();
-    assert_eq!(state.page_count(), 0);
-    assert!(state.page_count_opt().is_none());
-
-    // An open source with zero displayable pages is also "empty" -> None.
-    let mut state = ViewerState::new();
-    state.install_test_book(0);
-    assert_eq!(state.page_count(), 0);
-    assert!(state.page_count_opt().is_none());
+#[derive(Clone, Debug)]
+enum ViewerOp {
+    Open(usize),
+    Close,
+    Jump(usize),
+    Navigate(NavAction),
+    ToggleSpread,
+    ToggleCover,
+    ToggleDirection,
 }
 
-#[test]
-fn page_count_opt_is_some_with_real_count() {
-    // A positive page count surfaces as Some(NonZeroUsize) with the exact value,
-    // while the raw page_count() accessor stays in lockstep.
-    let mut state = ViewerState::new();
-    state.install_test_book(5);
-    assert_eq!(state.page_count(), 5);
-    assert_eq!(state.page_count_opt().map(NonZeroUsize::get), Some(5));
+proptest! {
+    #[test]
+    fn optional_page_count_tracks_the_raw_count_through_viewer_operations(
+        ops in proptest::collection::vec(
+            prop_oneof![
+                (0usize..40).prop_map(ViewerOp::Open),
+                Just(ViewerOp::Close),
+                (0usize..60).prop_map(ViewerOp::Jump),
+                Just(ViewerOp::Navigate(NavAction::Next)),
+                Just(ViewerOp::Navigate(NavAction::Prev)),
+                Just(ViewerOp::ToggleSpread),
+                Just(ViewerOp::ToggleCover),
+                Just(ViewerOp::ToggleDirection),
+            ],
+            0..=40,
+        ),
+    ) {
+        let mut viewer = ViewerState::new();
+        prop_assert_eq!(viewer.page_count_opt(), NonZeroUsize::new(viewer.page_count()));
+        for op in ops {
+            match op {
+                ViewerOp::Open(count) => { viewer.install_test_book(count); }
+                ViewerOp::Close => { let _ = viewer.close(); }
+                ViewerOp::Jump(page) => { viewer.jump_to(page); }
+                ViewerOp::Navigate(action) => { viewer.apply(action); }
+                ViewerOp::ToggleSpread => { viewer.toggle_spread(); }
+                ViewerOp::ToggleCover => { viewer.toggle_cover(); }
+                ViewerOp::ToggleDirection => { viewer.toggle_reading_direction(); }
+            }
+            prop_assert_eq!(viewer.page_count_opt(), NonZeroUsize::new(viewer.page_count()));
+        }
+    }
 }
 
 #[test]

@@ -353,49 +353,38 @@ mod tests {
         );
     }
 
-    /// A fresh book (never opened, no persisted total) is flagged `needs_count`,
-    /// so the cover controller resolves its real page count in the background; a
-    /// book with a known count is NOT (it would only re-open the archive to learn
-    /// what is already stored). Row index is the enumerated position in the
-    /// supplied visible-indices slice (0, 1, ...), not the full-library position.
-    #[test]
-    fn cover_requests_flags_only_books_with_unknown_count() {
-        let root = tempfile::tempdir().expect("tempdir");
-        let unknown = root.path().join("unknown");
-        let known = root.path().join("known");
-        std::fs::create_dir(&unknown).expect("create unknown");
-        std::fs::create_dir(&known).expect("create known");
+    proptest::proptest! {
+        #[test]
+        fn cover_requests_compact_valid_indices_in_input_order(
+            known_counts in proptest::collection::vec(proptest::bool::ANY, 1..=8),
+            indices in proptest::collection::vec(0usize..16, 0..=20),
+            endpoints in (0usize..8, 0usize..8),
+        ) {
+            let mut library = Library::new();
+            let n = known_counts.len();
+            for (index, known) in known_counts.into_iter().enumerate() {
+                let id = BookId::new(format!("/manga/{index}.cbz"));
+                assert!(library.add(id.clone(), format!("Book {index}")).is_some());
+                if known {
+                    assert!(library.set_page_count(&id, NonZeroUsize::new(10).unwrap()));
+                }
+            }
+            // A guaranteed invalid index between two valid ones catches gaps in rebased rows.
+            let indices: Vec<_> = [endpoints.0 % n, n].into_iter()
+                .chain(indices).chain([endpoints.1 % n]).collect();
+            let expected: Vec<_> = indices.iter().copied()
+                .filter(|&index| index < n).collect();
 
-        let mut lib = Library::new();
-        assert!({
-            let (id, title) = crate::book_path::identify(&unknown, true).unwrap();
-            lib.add(id, title)
+            let actual = cover_requests(&library, &indices);
+            proptest::prop_assert_eq!(actual.len(), expected.len());
+            for (row, (request, index)) in actual.iter().zip(expected).enumerate() {
+                let book = &library.books()[index];
+                proptest::prop_assert_eq!(request.row, row);
+                proptest::prop_assert_eq!(&request.id, book.id());
+                proptest::prop_assert_eq!(&request.path, &locate(book.id()));
+                proptest::prop_assert_eq!(request.needs_count, book.page_count_opt().is_none());
+            }
         }
-        .is_some());
-        assert!({
-            let (id, title) = crate::book_path::identify(&known, true).unwrap();
-            lib.add(id, title)
-        }
-        .is_some());
-        // Give the naturally first-sorted book a persisted page count (as an open would back-fill).
-        let known_path = lib.books()[0].id().clone();
-        assert!(lib.set_page_count(&known_path, NonZeroUsize::new(10).unwrap()));
-
-        let reqs = cover_requests(&lib, &[0, 1]);
-        assert_eq!(reqs.len(), 2);
-        assert_eq!(reqs[0].row, 0);
-        assert_eq!(reqs[0].path, locate(&known_path));
-        assert!(
-            !reqs[0].needs_count,
-            "book with a known total must not be re-opened just to count"
-        );
-        assert_eq!(reqs[1].row, 1);
-        let unknown_path = lib.books()[1].id().clone();
-        assert_eq!(reqs[1].path, locate(&unknown_path));
-        assert!(
-            reqs[1].needs_count,
-            "fresh book with no persisted total needs its count resolved"
-        );
     }
 
     /// The model is built strictly in the order of the supplied visible indices,
@@ -419,42 +408,6 @@ mod tests {
         assert_eq!(model.row_count(), 2);
         assert_eq!(model.row_data(0).unwrap().title, "beta");
         assert_eq!(model.row_data(1).unwrap().title, "alpha");
-    }
-
-    /// `cover_requests` re-bases each request's `row` to its enumerated position
-    /// in the filtered slice, so a single-element filter on library index 1 emits
-    /// `row == 0` (the only row in the filtered model) carrying beta's path.
-    #[test]
-    fn cover_requests_rebase_rows_to_filtered_model() {
-        let mut lib = Library::new();
-        assert!(lib
-            .add(BookId::new("/manga/alpha.cbz"), "alpha".into())
-            .is_some());
-        assert!(lib
-            .add(BookId::new("/manga/beta.cbz"), "beta".into())
-            .is_some());
-
-        let beta_path = lib.books()[1].id().clone();
-        let reqs = cover_requests(&lib, &[1]);
-
-        assert_eq!(reqs.len(), 1);
-        assert_eq!(reqs[0].row, 0);
-        assert_eq!(reqs[0].path, locate(&beta_path));
-    }
-
-    /// An out-of-range library index is dropped (via `Library::books().get`)
-    /// rather than panicking; the surviving request keeps row 0 from the
-    /// enumerated position.
-    #[test]
-    fn cover_requests_skips_out_of_range_index() {
-        let mut lib = Library::new();
-        assert!(lib
-            .add(BookId::new("/manga/alpha.cbz"), "alpha".into())
-            .is_some());
-
-        let reqs = cover_requests(&lib, &[0, 99]);
-        assert_eq!(reqs.len(), 1);
-        assert_eq!(reqs[0].row, 0);
     }
 
     /// An empty visible-indices slice yields a model with no rows even when the
@@ -553,39 +506,21 @@ mod tests {
     }
 
     #[test]
-    fn loaded_page_reports_loaded_not_failed() {
-        let s = thumb_state_at(&model(vec![item(0, true, false)]), 0);
-        assert!(s.loaded);
-        assert!(!s.failed);
-    }
-
-    #[test]
-    fn still_loading_page_reports_neither() {
-        let s = thumb_state_at(&model(vec![item(0, false, false)]), 0);
-        assert!(!s.loaded);
-        assert!(!s.failed);
-    }
-
-    #[test]
-    fn failed_page_reports_failed() {
-        let s = thumb_state_at(&model(vec![item(0, false, true)]), 0);
-        assert!(!s.loaded);
-        assert!(s.failed);
-    }
-
-    #[test]
-    fn loaded_page_overrides_failed_flag() {
-        // A (loaded && failed) item can't occur by construction, but the loaded arm must
-        // still report failed=false so a regression can't surface a loaded-yet-failed preview.
-        let s = thumb_state_at(&model(vec![item(0, true, true)]), 0);
-        assert!(s.loaded);
-        assert!(!s.failed);
-    }
-
-    #[test]
-    fn out_of_range_page_reports_blank() {
-        let s = thumb_state_at(&model(vec![item(0, true, false)]), 5);
-        assert!(!s.loaded);
-        assert!(!s.failed);
+    fn thumb_state_at_covers_all_flag_combinations_and_missing_rows() {
+        let pixels = slint::SharedPixelBuffer::<slint::Rgba8Pixel>::new(1, 1);
+        let image = slint::Image::from_rgba8(pixels);
+        let blank = slint::Image::default();
+        for (page, loaded, failed, expected) in [
+            (0, false, false, (false, false, &blank)),
+            (0, false, true, (false, true, &blank)),
+            (0, true, false, (true, false, &image)),
+            (0, true, true, (true, false, &image)),
+            (5, true, false, (false, false, &blank)),
+        ] {
+            let mut thumbnail = item(0, loaded, failed);
+            thumbnail.image = image.clone();
+            let state = thumb_state_at(&model(vec![thumbnail]), page);
+            assert_eq!((state.loaded, state.failed, &state.image), expected);
+        }
     }
 }
