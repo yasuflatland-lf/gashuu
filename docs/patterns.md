@@ -354,7 +354,9 @@ so later PRs can add variants without breaking matches (`ImageTooLarge` and the 
 
 ### Zoom/pan geometry split mirrors `spread.rs`
 
-Pure fit-scale / pan-clamp / cursor-anchored-zoom live in `gashuu-core/src/viewport.rs` (stateless, table-tested, NO Slint/tracing); the live zoom/pan/fit + viewport size live in UI `gashuu/src/viewport.rs` `ViewportState`, which delegates ALL clamping to the core fns. WHY: keeps clamp math unit-testable and out of Slint expressions.
+Core viewport functions take `ViewSize` for dimensions and `ViewPoint` for positions.
+`ViewportState` stores those values, delegates fit, clamping, and cursor anchoring to core,
+and converts between named fields and Slint's scalar coordinates at the UI boundary.
 
 ### Effective scale = `clamp_zoom(zoom) * fit_scale(...)` is composed by the UI caller, not core
 
@@ -372,9 +374,11 @@ Mutate via `borrow_mut()` in ONE statement (the temp borrow drops at the `;`), T
 
 Encode a tiny valid PNG, patch the IHDR width/height bytes to oversized dims, and RECOMPUTE the IHDR CRC-32 (poly 0xEDB88320 over chunk-type+data); `into_dimensions()` reads IHDR only. Assert the `ImageTooLarge` variant (NOT `Decode(Limits)`) — that proves the EARLY `check_pixel_limit` line rejects it, which the pure-function unit test alone cannot guard.
 
-### `fit_scale` returns 1.0 on non-positive inputs (intentional zero-div guard)
+### `fit_scale` returns 1.0 on non-positive or non-finite inputs
 
-and `refresh` legitimately calls `set_content(0.0, 0.0)` on the decode-error / empty-folder paths (view-matches-status). Do NOT add non-negative `debug_assert`s to `fit_scale`/`set_content`/`resize`: they would panic on this legitimate zero path.
+`refresh` calls `set_content(0.0, 0.0)` for decode errors and empty folders, so zero sizes are valid inputs.
+Geometry stays finite for NaN or infinity. In particular, a non-finite viewport dimension gives
+a zero offset on that axis while the other axis still centers or clamps normally.
 
 ### Zoom inputs: keyboard step (sign-only) + native pinch (continuous)
 

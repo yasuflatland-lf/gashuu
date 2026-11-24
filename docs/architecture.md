@@ -230,9 +230,11 @@ scrub position to a raw page index. It reverses the fraction for right-to-left r
 
 ### viewport
 
-`viewport.rs`. Pure, Slint/tracing-free, STATELESS zoom/pan geometry — fit-scale (`fit_scale`),
-pan clamping (`clamp_offset`/`centered_offset`), cursor-anchored zoom (`anchored_zoom`),
-`clamp_zoom`, with `ZOOM_MIN`=1.0/`ZOOM_MAX`=8.0, table-tested like `spread`.
+`viewport.rs` computes stateless zoom/pan geometry in logical pixels. `ViewSize` carries
+content and viewport dimensions, and `ViewPoint` carries offsets and zoom anchors.
+`fit_scale` selects the fit baseline, `centered_offset` and `clamp_offset` position the page,
+and `anchored_zoom` keeps the point under the cursor fixed during zoom.
+`clamp_zoom` bounds the zoom factor between `ZOOM_MIN` (1.0) and `ZOOM_MAX` (8.0).
 
 ### Settings
 

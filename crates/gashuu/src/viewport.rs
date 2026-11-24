@@ -12,7 +12,7 @@
 //! offset is the content's top-left position within the viewport (may be negative
 //! when zoomed in).
 
-use gashuu_core::{viewport as vp, FitMode, Settings};
+use gashuu_core::{viewport as vp, FitMode, Settings, ViewPoint, ViewSize};
 
 /// Per-step zoom multiplier for keyboard +/- and one wheel notch.
 const ZOOM_STEP: f32 = 1.1;
@@ -24,13 +24,13 @@ pub struct ViewportState {
     /// Zoom factor in `[ZOOM_MIN, ZOOM_MAX]`, multiplied onto the fit baseline.
     zoom: f32,
     /// Content top-left position within the viewport.
-    offset: (f32, f32),
+    offset: ViewPoint,
     /// Latest viewport size pushed from Slint.
-    vp_size: (f32, f32),
+    vp_size: ViewSize,
     /// Current content intrinsic px (from the spread).
-    content_size: (f32, f32),
+    content_size: ViewSize,
     /// Offset snapshot captured at drag start (absolute-delta panning).
-    pan_origin: (f32, f32),
+    pan_origin: ViewPoint,
     /// Zoom factor snapshot captured at pinch-gesture start (the gesture's
     /// cumulative `scale` multiplies this, never the live zoom — non-cumulative).
     pinch_origin_zoom: f32,
@@ -43,10 +43,10 @@ impl ViewportState {
         Self {
             fit_mode: settings.fit_mode,
             zoom: vp::ZOOM_MIN,
-            offset: (0.0, 0.0),
-            vp_size: (0.0, 0.0),
-            content_size: (0.0, 0.0),
-            pan_origin: (0.0, 0.0),
+            offset: ViewPoint::default(),
+            vp_size: ViewSize::default(),
+            content_size: ViewSize::default(),
+            pan_origin: ViewPoint::default(),
             pinch_origin_zoom: vp::ZOOM_MIN,
         }
     }
@@ -54,13 +54,7 @@ impl ViewportState {
     /// Fit baseline scale for the current content/viewport/fit mode (the zoom
     /// factor 1.0 scale). The effective scale multiplies this by the zoom factor.
     fn fit(&self) -> f32 {
-        vp::fit_scale(
-            self.content_size.0,
-            self.content_size.1,
-            self.vp_size.0,
-            self.vp_size.1,
-            self.fit_mode,
-        )
+        vp::fit_scale(self.content_size, self.vp_size, self.fit_mode)
     }
 
     /// Effective scale = clamped zoom factor times the fit baseline.
@@ -69,42 +63,33 @@ impl ViewportState {
     }
 
     /// Displayed content box `(content * scale)` for the current scale.
-    fn displayed(&self) -> (f32, f32) {
-        let s = self.scale();
-        (self.content_size.0 * s, self.content_size.1 * s)
+    fn displayed(&self) -> ViewSize {
+        self.content_size.scaled(self.scale())
     }
 
     /// Re-center the offset for the current displayed box, then clamp.
     fn center_and_clamp(&mut self) {
-        let (dw, dh) = self.displayed();
-        let (cx, cy) = vp::centered_offset(dw, dh, self.vp_size.0, self.vp_size.1);
-        self.offset = vp::clamp_offset(dw, dh, self.vp_size.0, self.vp_size.1, cx, cy);
+        let displayed = self.displayed();
+        let center = vp::centered_offset(displayed, self.vp_size);
+        self.offset = vp::clamp_offset(displayed, self.vp_size, center);
     }
 
     /// Re-clamp the current offset for the current displayed box.
     fn reclamp(&mut self) {
-        let (dw, dh) = self.displayed();
-        self.offset = vp::clamp_offset(
-            dw,
-            dh,
-            self.vp_size.0,
-            self.vp_size.1,
-            self.offset.0,
-            self.offset.1,
-        );
+        self.offset = vp::clamp_offset(self.displayed(), self.vp_size, self.offset);
     }
 
     /// Page turn: update the content size, KEEP `fit_mode` and `zoom`, and reset
     /// the offset to centered (then clamped).
     pub fn set_content(&mut self, w: f32, h: f32) {
-        self.content_size = (w, h);
+        self.content_size = ViewSize::new(w, h);
         self.center_and_clamp();
     }
 
     /// Viewport resize: update `vp_size`, then re-clamp the current offset so the
     /// existing pan is preserved where the new size still allows it.
     pub fn resize(&mut self, vp_w: f32, vp_h: f32) {
-        self.vp_size = (vp_w, vp_h);
+        self.vp_size = ViewSize::new(vp_w, vp_h);
         self.reclamp();
     }
 
@@ -124,30 +109,21 @@ impl ViewportState {
         } else {
             1.0
         };
+        self.zoom_to(ViewPoint::new(anchor_x, anchor_y), self.zoom * step);
+    }
+
+    fn zoom_to(&mut self, anchor: ViewPoint, zoom: f32) {
         let old_scale = self.scale();
-        let new_zoom = vp::clamp_zoom(self.zoom * step);
-        // Recompute the effective scale at the new zoom; the fit baseline is
-        // unchanged, so only the (already-clamped) `new_zoom` factor differs.
-        let new_scale = new_zoom * self.fit();
-        let (nx, ny) = vp::anchored_zoom(
-            anchor_x,
-            anchor_y,
-            old_scale,
-            new_scale,
-            self.offset.0,
-            self.offset.1,
-        );
-        self.offset = (nx, ny);
-        self.zoom = new_zoom;
+        self.zoom = vp::clamp_zoom(zoom);
+        self.offset = vp::anchored_zoom(anchor, old_scale, self.scale(), self.offset);
         self.reclamp();
     }
 
     /// Keyboard +/- zoom, anchored at the viewport center. Equivalent to a wheel
     /// step at `(vp_w/2, vp_h/2)`.
     pub fn zoom_step(&mut self, zoom_in: bool) {
-        let center = (self.vp_size.0 / 2.0, self.vp_size.1 / 2.0);
         let delta = if zoom_in { 1.0 } else { -1.0 };
-        self.zoom_at(center.0, center.1, delta);
+        self.zoom_at(self.vp_size.width / 2.0, self.vp_size.height / 2.0, delta);
     }
 
     /// Reset zoom to 1.0 (`ZOOM_MIN`) and re-center the offset.
@@ -188,15 +164,8 @@ impl ViewportState {
     /// Pan by an ABSOLUTE delta from the press point (no cumulative drift): the
     /// new offset is `pan_origin + total`, then clamped.
     pub fn pan_to(&mut self, total_dx: f32, total_dy: f32) {
-        let (dw, dh) = self.displayed();
-        self.offset = vp::clamp_offset(
-            dw,
-            dh,
-            self.vp_size.0,
-            self.vp_size.1,
-            self.pan_origin.0 + total_dx,
-            self.pan_origin.1 + total_dy,
-        );
+        self.offset = self.pan_origin.offset_by(total_dx, total_dy);
+        self.reclamp();
     }
 
     /// Pan by an INCREMENTAL delta (trackpad/wheel scroll): the new offset is
@@ -204,15 +173,8 @@ impl ViewportState {
     /// press point), each call accumulates onto the live offset, so a stream of
     /// scroll events scrolls continuously.
     pub fn pan_by(&mut self, dx: f32, dy: f32) {
-        let (dw, dh) = self.displayed();
-        self.offset = vp::clamp_offset(
-            dw,
-            dh,
-            self.vp_size.0,
-            self.vp_size.1,
-            self.offset.0 + dx,
-            self.offset.1 + dy,
-        );
+        self.offset = self.offset.offset_by(dx, dy);
+        self.reclamp();
     }
 
     /// Snapshot the current zoom factor as the pinch origin (called at gesture
@@ -231,37 +193,19 @@ impl ViewportState {
         if !scale.is_finite() || scale <= 0.0 {
             return;
         }
-        let old_scale = self.scale();
-        let new_zoom = vp::clamp_zoom(self.pinch_origin_zoom * scale);
-        // The fit baseline is unchanged; only the (already-clamped) zoom differs.
-        let new_scale = new_zoom * self.fit();
-        let (nx, ny) = vp::anchored_zoom(
-            anchor_x,
-            anchor_y,
-            old_scale,
-            new_scale,
-            self.offset.0,
-            self.offset.1,
+        self.zoom_to(
+            ViewPoint::new(anchor_x, anchor_y),
+            self.pinch_origin_zoom * scale,
         );
-        self.offset = (nx, ny);
-        self.zoom = new_zoom;
-        self.reclamp();
     }
 
     /// Slint render geometry: `(content_x, content_y, content_w, content_h)`.
     /// The offset is re-clamped here so the returned position is always valid even
     /// if state mutated without an explicit clamp.
     pub fn geometry(&self) -> (f32, f32, f32, f32) {
-        let (dw, dh) = self.displayed();
-        let (ox, oy) = vp::clamp_offset(
-            dw,
-            dh,
-            self.vp_size.0,
-            self.vp_size.1,
-            self.offset.0,
-            self.offset.1,
-        );
-        (ox, oy, dw, dh)
+        let displayed = self.displayed();
+        let offset = vp::clamp_offset(displayed, self.vp_size, self.offset);
+        (offset.x, offset.y, displayed.width, displayed.height)
     }
 }
 
@@ -322,10 +266,10 @@ mod tests {
         });
         assert_eq!(s.fit_mode(), FitMode::Whole);
         assert!(approx(s.zoom, vp::ZOOM_MIN));
-        assert_eq!(s.offset, (0.0, 0.0));
-        assert_eq!(s.vp_size, (0.0, 0.0));
-        assert_eq!(s.content_size, (0.0, 0.0));
-        assert_eq!(s.pan_origin, (0.0, 0.0));
+        assert_eq!(s.offset, ViewPoint::new(0.0, 0.0));
+        assert_eq!(s.vp_size, ViewSize::new(0.0, 0.0));
+        assert_eq!(s.content_size, ViewSize::new(0.0, 0.0));
+        assert_eq!(s.pan_origin, ViewPoint::new(0.0, 0.0));
         assert!(approx(s.pinch_origin_zoom, vp::ZOOM_MIN));
     }
 
@@ -357,6 +301,13 @@ mod tests {
     // ---- resize ------------------------------------------------------------
 
     #[test]
+    fn resize_to_nan_does_not_panic_and_geometry_is_finite() {
+        let mut state = state_with(FitMode::Whole);
+        state.resize(f32::NAN, 200.0);
+        assert_eq!(state.geometry(), (0.0, 0.0, 400.0, 300.0));
+    }
+
+    #[test]
     fn resize_reclamps_offset_into_range() {
         // Square content keeps both axes overflowing as the viewport shrinks; a
         // non-square page could start fitting on one axis and trip the centering branch.
@@ -369,7 +320,10 @@ mod tests {
         s.begin_pan();
         s.pan_to(-9999.0, -9999.0);
         s.resize(100.0, 100.0);
-        let (dw, dh) = s.displayed();
+        let ViewSize {
+            width: dw,
+            height: dh,
+        } = s.displayed();
         assert!(dw > 100.0 && dh > 100.0, "both axes must still overflow");
         let (ox, oy, _, _) = s.geometry();
         // Overflowing axes clamp into [vp - disp, 0].
@@ -385,7 +339,7 @@ mod tests {
     fn zoom_step_in_increases_scale_and_keeps_center_point() {
         let mut s = state_with(FitMode::Whole);
         let scale_before = s.scale();
-        let (cx, cy) = (s.vp_size.0 / 2.0, s.vp_size.1 / 2.0);
+        let (cx, cy) = (s.vp_size.width / 2.0, s.vp_size.height / 2.0);
         let point_before = content_point_under(&s, cx, cy);
         s.zoom_step(true);
         let scale_after = s.scale();
@@ -465,7 +419,7 @@ mod tests {
         s.pan_to(-10.0, -5.0);
         let second = s.offset;
         assert!(
-            approx(first.0, second.0) && approx(first.1, second.1),
+            approx(first.x, second.x) && approx(first.y, second.y),
             "pan_to must be absolute from the press point (no drift): {first:?} vs {second:?}"
         );
     }
@@ -477,7 +431,7 @@ mod tests {
         let mut s = state_with(FitMode::Whole);
         s.begin_pan();
         s.pan_to(500.0, -500.0);
-        let (ox, oy) = s.offset;
+        let ViewPoint { x: ox, y: oy } = s.offset;
         assert!(
             approx(ox, 0.0),
             "x stays centered (200-200)/2 = 0, got {ox}"
@@ -504,10 +458,10 @@ mod tests {
         let offset_before = s.offset;
         // A further zoom-in clamps new_zoom back to ZOOM_MAX (no change), so scale
         // is unchanged, anchored_zoom is identity, and the offset cannot drift.
-        s.zoom_at(s.vp_size.0 / 2.0, s.vp_size.1 / 2.0, 1.0);
+        s.zoom_at(s.vp_size.width / 2.0, s.vp_size.height / 2.0, 1.0);
         assert!(approx(s.zoom, vp::ZOOM_MAX), "zoom stays at ZOOM_MAX");
         assert!(
-            approx(s.offset.0, offset_before.0) && approx(s.offset.1, offset_before.1),
+            approx(s.offset.x, offset_before.x) && approx(s.offset.y, offset_before.y),
             "offset must not drift after a no-op zoom-in: {offset_before:?} vs {:?}",
             s.offset
         );
@@ -527,18 +481,21 @@ mod tests {
         let mut s = square_state();
         s.zoom_step(true);
         s.zoom_step(true);
-        let (dw, dh) = s.displayed();
+        let ViewSize {
+            width: dw,
+            height: dh,
+        } = s.displayed();
         assert!(
-            dw > s.vp_size.0 && dh > s.vp_size.1,
+            dw > s.vp_size.width && dh > s.vp_size.height,
             "both axes must overflow"
         );
         s.begin_pan();
         // Drag far past the left/top edge: offset clamps to the low bound
         // (vp - disp) on each overflowing axis.
         s.pan_to(-100000.0, -100000.0);
-        let (ox, oy) = s.offset;
-        let lo_x = s.vp_size.0 - dw;
-        let lo_y = s.vp_size.1 - dh;
+        let ViewPoint { x: ox, y: oy } = s.offset;
+        let lo_x = s.vp_size.width - dw;
+        let lo_y = s.vp_size.height - dh;
         assert!(
             approx(ox, lo_x),
             "x must clamp to low bound {lo_x}, got {ox}"
@@ -551,7 +508,7 @@ mod tests {
         // And the opposite edge clamps to the high bound 0 on both axes.
         s.begin_pan();
         s.pan_to(100000.0, 100000.0);
-        let (ox2, oy2) = s.offset;
+        let ViewPoint { x: ox2, y: oy2 } = s.offset;
         assert!(approx(ox2, 0.0), "x must clamp to high bound 0, got {ox2}");
         assert!(approx(oy2, 0.0), "y must clamp to high bound 0, got {oy2}");
     }
@@ -569,13 +526,13 @@ mod tests {
         s.pan_by(-10.0, -10.0);
         let first = s.offset;
         assert!(
-            approx(first.0, start.0 - 10.0) && approx(first.1, start.1 - 10.0),
+            approx(first.x, start.x - 10.0) && approx(first.y, start.y - 10.0),
             "first pan_by must move offset by (-10,-10): {start:?} -> {first:?}"
         );
         s.pan_by(-10.0, -10.0);
         let second = s.offset;
         assert!(
-            approx(second.0, first.0 - 10.0) && approx(second.1, first.1 - 10.0),
+            approx(second.x, first.x - 10.0) && approx(second.y, first.y - 10.0),
             "pan_by must accumulate onto the live offset (not absolute): {first:?} -> {second:?}"
         );
     }
@@ -585,11 +542,14 @@ mod tests {
         let mut s = square_state();
         s.zoom_step(true);
         s.zoom_step(true);
-        let (dw, dh) = s.displayed();
+        let ViewSize {
+            width: dw,
+            height: dh,
+        } = s.displayed();
         s.pan_by(-100000.0, -100000.0);
-        let (ox, oy) = s.offset;
-        let lo_x = s.vp_size.0 - dw;
-        let lo_y = s.vp_size.1 - dh;
+        let ViewPoint { x: ox, y: oy } = s.offset;
+        let lo_x = s.vp_size.width - dw;
+        let lo_y = s.vp_size.height - dh;
         assert!(approx(ox, lo_x), "x clamps to low bound {lo_x}, got {ox}");
         assert!(approx(oy, lo_y), "y clamps to low bound {lo_y}, got {oy}");
     }
@@ -600,7 +560,7 @@ mod tests {
         // clamp_offset takes the centering branch and overrides any pan delta.
         let mut s = state_with(FitMode::Whole);
         s.pan_by(500.0, -500.0);
-        let (ox, oy) = s.offset;
+        let ViewPoint { x: ox, y: oy } = s.offset;
         assert!(approx(ox, 0.0), "x stays centered 0, got {ox}");
         assert!(approx(oy, 25.0), "y stays centered 25, got {oy}");
     }
@@ -794,7 +754,7 @@ mod tests {
                 "scale {bad} must be a no-op (zoom)"
             );
             assert!(
-                approx(s.offset.0, offset_before.0) && approx(s.offset.1, offset_before.1),
+                approx(s.offset.x, offset_before.x) && approx(s.offset.y, offset_before.y),
                 "scale {bad} must be a no-op (offset)"
             );
         }
