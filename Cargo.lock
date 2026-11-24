@@ -1782,7 +1782,7 @@ dependencies = [
 
 [[package]]
 name = "gashuu"
-version = "1.3.0"
+version = "1.4.0"
 dependencies = [
  "color-eyre",
  "console_error_panic_hook",
@@ -1819,7 +1819,7 @@ dependencies = [
 
 [[package]]
 name = "gashuu-core"
-version = "1.3.0"
+version = "1.4.0"
 dependencies = [
  "base64",
  "directories",
@@ -1843,7 +1843,7 @@ dependencies = [
 
 [[package]]
 name = "gashuu-web-decode"
-version = "1.3.0"
+version = "1.4.0"
 dependencies = [
  "gashuu-core",
  "js-sys",
@@ -1854,7 +1854,7 @@ dependencies = [
 
 [[package]]
 name = "gashuu-worker"
-version = "1.3.0"
+version = "1.4.0"
 dependencies = [
  "console_error_panic_hook",
  "gashuu-core",
