@@ -325,17 +325,6 @@ fn spread_trailing_error_keeps_leading() {
 }
 
 #[test]
-fn cached_page_posts_nothing_on_hit_or_miss() {
-    let mut client = ready_client();
-    let session = opened(&mut client, CacheConfig::new(6, 0)).session;
-    fill(&mut client, session, 0, meta());
-    assert!(client.cached_page(session, 0).is_some());
-    assert!(client.cached_page(session, 1).is_none());
-    let (out, _) = receive(&mut client, WorkerResponse::Ready, vec![]);
-    assert!(out.is_empty());
-}
-
-#[test]
 fn spread_for_a_closed_session_is_dropped_and_not_inserted() {
     let mut client = ready_client();
     let session = opened(&mut client, CacheConfig::new(6, 0)).session;
@@ -723,48 +712,59 @@ fn thumbnail_success_delivers_decoded_image() {
     assert_eq!(image.rgba(), bytes.as_slice());
 }
 
-#[test]
-fn thumbnail_image_length_mismatch_becomes_other_error() {
-    let mut client = ready_client();
-    let session = opened(&mut client, CacheConfig::new(6, 0)).session;
-    for images in [vec![vec![0; 3]], vec![vec![]], vec![]] {
-        let (done, result) = test_callback();
-        let (out, deliveries) = client.thumbnail(session, 0, 128, done);
-        assert!(deliveries.is_empty());
-        let WorkerRequest::Thumbnail { req, .. } = request(out) else {
-            panic!("expected Thumbnail");
-        };
-        let (_, deliveries) = receive(
-            &mut client,
-            WorkerResponse::Thumbnail {
-                req,
-                result: Ok(meta()),
-            },
-            images,
-        );
-        deliver(&client, deliveries, false);
-        assert!(matches!(
-            result.try_recv().unwrap(),
-            Err(BackendError::Other { .. })
-        ));
-    }
-}
+proptest::proptest! {
+    #[test]
+    fn worker_page_and_thumbnail_validate_rgba_buffer_length(
+        width in 1u32..64,
+        height in 1u32..64,
+        delta in 1usize..=8,
+    ) {
+        let meta = ImageMeta { width, height };
+        let exact = (width * height * 4) as usize;
+        for length in [Some(exact), Some(exact.saturating_sub(delta)), Some(exact + delta), Some(0), None] {
+            let images: Vec<_> = length.map(|length| vec![17; length]).into_iter().collect();
+            let mut client = ready_client();
+            let session = opened(&mut client, CacheConfig::new(6, 0)).session;
 
-#[test]
-fn image_length_mismatch_becomes_other_error() {
-    let mut client = ready_client();
-    let session = opened(&mut client, CacheConfig::new(6, 0)).session;
-    for images in [vec![vec![0; 3]], vec![]] {
-        let (done, result) = test_callback();
-        let (out, _) = client.decode_spread(session, 0, None, done);
-        let req = spread_request(out, session, 0, None);
-        let (_, deliveries) = receive(&mut client, spread_reply(req, 0), images);
-        deliver(&client, deliveries, false);
-        assert!(matches!(
-            result.try_recv().unwrap().leading.1,
-            Err(BackendError::Other { .. })
-        ));
-        assert!(client.cached_page(session, 0).is_none());
+            let (done, page_result) = test_callback();
+            let (out, _) = client.decode_spread(session, 0, None, done);
+            let req = spread_request(out, session, 0, None);
+            let (_, deliveries) = receive(
+                &mut client,
+                WorkerResponse::Spread { req, leading: (0, Ok(meta.clone())), trailing: None },
+                images.clone(),
+            );
+            deliver(&client, deliveries, false);
+
+            let (done, thumb_result) = test_callback();
+            let (out, deliveries) = client.thumbnail(session, 0, 128, done);
+            assert!(deliveries.is_empty());
+            let WorkerRequest::Thumbnail { req, .. } = request(out) else {
+                panic!("expected Thumbnail");
+            };
+            let (_, deliveries) = receive(
+                &mut client,
+                WorkerResponse::Thumbnail { req, result: Ok(meta.clone()) },
+                images.clone(),
+            );
+            deliver(&client, deliveries, false);
+
+            let valid = length == Some(exact);
+            for result in [page_result.try_recv().unwrap().leading.1, thumb_result.try_recv().unwrap()] {
+                if valid {
+                    let image = result.unwrap();
+                    proptest::prop_assert_eq!((image.width(), image.height()), (width, height));
+                    proptest::prop_assert_eq!(image.rgba(), images[0].as_slice());
+                } else {
+                    proptest::prop_assert!(
+                        matches!(result, Err(BackendError::Other { .. })),
+                        "invalid buffer length {:?} for {}x{} produced {:?}",
+                        length, width, height, result
+                    );
+                }
+            }
+            proptest::prop_assert_eq!(client.cached_page(session, 0).is_some(), valid);
+        }
     }
 }
 

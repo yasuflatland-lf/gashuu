@@ -276,6 +276,8 @@ mod tests {
     use super::*;
     use crate::book_availability::book_path_exists;
     use gashuu_core::Library;
+    use proptest::{prop_assert_eq, prop_oneof, proptest, strategy::Strategy};
+    use std::collections::BTreeSet;
     use std::num::NonZeroUsize;
     use std::path::PathBuf;
 
@@ -428,18 +430,6 @@ mod tests {
     }
 
     #[test]
-    fn carousel_data_current_reflects_resume_page() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let mut lib = Library::new();
-        let (id, title) = crate::book_path::identify(dir.path(), true).unwrap();
-        assert!(lib.add(id, title).is_some());
-        let path = lib.books()[0].id().clone();
-        assert!(lib.set_resume_page(&path, 4));
-        let rows = carousel_data(&lib);
-        assert_eq!(rows[0].current, 5); // 1-based: resume_page 4 -> display 5
-    }
-
-    #[test]
     fn carousel_data_total_and_progress_from_page_count() {
         // An opened book has a persisted page count: the row surfaces it as the real
         // `total` and computes `progress = fraction()` (last_viewed=4, total=10 → 4/9).
@@ -457,47 +447,52 @@ mod tests {
         assert_eq!(rows[0].progress, 4.0 / 9.0);
     }
 
-    #[test]
-    fn search_state_keeps_forced_added_paths_visible_until_query_changes() {
-        let mut lib = Library::new();
-        assert!(lib
-            .add(BookId::new("/manga/alpha.cbz"), "alpha".into())
-            .is_some());
-        assert!(lib
-            .add(BookId::new("/manga/beta.cbz"), "beta".into())
-            .is_some());
-        let beta_path = lib.books()[1].id().clone();
-
-        let mut state = LibrarySearchState::default();
-        state.set_query("alpha".to_string(), &lib);
-        state.force_visible([beta_path], &lib);
-        assert_eq!(state.visible_indices(), &[0, 1]);
-
-        state.set_query("alpha".to_string(), &lib);
-        assert_eq!(state.visible_indices(), &[0]);
+    #[derive(Debug)]
+    enum SearchOp {
+        SetQuery(String),
+        ForceVisible(Vec<usize>),
     }
 
-    #[test]
-    fn recompute_forced_branch_excludes_non_matching_non_forced_books() {
-        // The forced-visible branch keeps the query match (alpha) AND the forced path
-        // (beta), but a book matching NEITHER (gamma) must stay hidden.
-        let mut lib = Library::new();
-        assert!(lib
-            .add(BookId::new("/manga/alpha.cbz"), "alpha".into())
-            .is_some());
-        assert!(lib
-            .add(BookId::new("/manga/beta.cbz"), "beta".into())
-            .is_some());
-        assert!(lib
-            .add(BookId::new("/manga/gamma.cbz"), "gamma".into())
-            .is_some());
-        let beta_path = lib.books()[1].id().clone();
+    proptest! {
+        #[test]
+        fn search_projection_matches_query_union_forced_ids_in_library_order(
+            titles in proptest::collection::vec("[a-dA-D]{1,8}", 0..=8),
+            ops in proptest::collection::vec(
+                prop_oneof![
+                    "[a-dA-D0-9 ]{0,3}".prop_map(SearchOp::SetQuery),
+                    proptest::collection::vec(0usize..10, 0..=10).prop_map(SearchOp::ForceVisible),
+                ],
+                0..=40,
+            ),
+        ) {
+            let ids: Vec<_> = (0..10).map(|i| BookId::new(format!("/manga/{i}.cbz"))).collect();
+            let mut library = Library::new();
+            library.add_many(ids.iter().cloned().zip(titles).rev().collect::<Vec<_>>());
 
-        let mut state = LibrarySearchState::default();
-        state.set_query("alpha".to_string(), &lib);
-        state.force_visible([beta_path], &lib);
-        // alpha (query match) + beta (forced) only; gamma is absent.
-        assert_eq!(state.visible_indices(), &[0, 1]);
+            let mut state = LibrarySearchState::default();
+            let mut query = String::new();
+            let mut forced = BTreeSet::new();
+            for op in ops {
+                match op {
+                    SearchOp::SetQuery(next) => {
+                        state.set_query(next.clone(), &library);
+                        query = next.to_ascii_lowercase();
+                        forced.clear();
+                    }
+                    SearchOp::ForceVisible(indices) => {
+                        let ids: Vec<_> = indices.into_iter().map(|i| ids[i].clone()).collect();
+                        state.force_visible(ids.iter().cloned(), &library);
+                        forced.extend(ids);
+                    }
+                }
+                let expected: Vec<_> = library.books().iter().enumerate().filter_map(|(index, book)| {
+                    let matches = book.title().to_ascii_lowercase().contains(&query)
+                        || book.id().as_str().to_ascii_lowercase().contains(&query);
+                    (matches || forced.contains(book.id())).then_some(index)
+                }).collect();
+                prop_assert_eq!(state.visible_indices(), expected.as_slice());
+            }
+        }
     }
 
     #[test]

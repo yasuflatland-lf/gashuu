@@ -651,30 +651,16 @@ mod tests {
     // ---- position_to_write_back (PR-R) ------------------------------------
 
     #[test]
-    fn position_to_write_back_none_when_no_open_book() {
-        assert!(
-            position_to_write_back(None, 5).is_none(),
-            "no open file => no write-back"
-        );
-    }
-
-    #[test]
-    fn position_to_write_back_some_when_file_open() {
-        let path = BookId::new("/some/book.cbz");
-        let result = position_to_write_back(Some(&path), 7);
-        assert!(result.is_some(), "open file => write-back tuple");
-        let (p, pg) = result.unwrap();
-        assert_eq!(p, path);
-        assert_eq!(pg, 7);
-    }
-
-    #[test]
-    fn position_to_write_back_zero_page() {
-        let path = BookId::new("/some/book.cbz");
-        let result = position_to_write_back(Some(&path), 0);
-        assert!(result.is_some());
-        let (_, pg) = result.unwrap();
-        assert_eq!(pg, 0, "page 0 is a valid write-back (start of book)");
+    fn position_write_back_preserves_the_book_and_page() {
+        let book = BookId::new("/manga/book.cbz");
+        for open in [None, Some(&book)] {
+            for page in [0, 7, usize::MAX] {
+                assert_eq!(
+                    position_to_write_back(open, page),
+                    open.cloned().map(|id| (id, page))
+                );
+            }
+        }
     }
 
     #[test]
@@ -887,86 +873,53 @@ mod tests {
     }
 
     #[test]
-    fn view_override_to_write_back_none_when_no_open_book() {
-        let global = Settings::default();
-        assert!(
-            view_override_to_write_back(
-                None,
-                ResolvedView {
-                    reading_direction: ReadingDirection::Ltr,
-                    spread_mode: SpreadMode::Double,
-                    cover_mode: CoverMode::Paired,
-                    fit_mode: FitMode::Actual,
-                },
-                global.view_defaults(),
-                false,
-            )
-            .is_none(),
-            "no open file => no write-back"
-        );
-    }
-
-    #[test]
-    fn view_override_to_write_back_some_carries_all_four_modes() {
-        let path = BookId::new("/manga/book.cbz");
-        let global = Settings {
-            reading_direction: ReadingDirection::Ltr,
-            spread_mode: SpreadMode::Single,
-            cover_mode: CoverMode::Standalone,
-            fit_mode: FitMode::Whole,
-            ..Settings::default()
-        };
-        let result = view_override_to_write_back(
-            Some(&path),
-            ResolvedView {
-                reading_direction: ReadingDirection::Rtl,
-                spread_mode: SpreadMode::Double,
-                cover_mode: CoverMode::Paired,
-                fit_mode: FitMode::Actual,
-            },
-            global.view_defaults(),
-            false,
-        );
-        let (p, ov) = result.expect("open file => write-back tuple");
-        assert_eq!(p, path);
-        assert_eq!(ov.reading_direction, Some(ReadingDirection::Rtl));
-        assert_eq!(ov.spread_mode, Some(gashuu_core::SpreadMode::Double));
-        assert_eq!(ov.cover_mode, Some(gashuu_core::CoverMode::Paired));
-        assert_eq!(ov.fit_mode, Some(FitMode::Actual));
-    }
-
-    #[test]
-    fn write_back_emits_only_fields_that_differ_from_global() {
-        let path = BookId::new("/manga/book.cbz");
-        let global = Settings {
-            reading_direction: ReadingDirection::Rtl,
-            spread_mode: SpreadMode::Double,
-            cover_mode: CoverMode::Standalone,
-            fit_mode: FitMode::Actual,
-            ..Settings::default()
-        };
-        let (_, overrides) = view_override_to_write_back(
-            Some(&path),
-            ResolvedView {
-                reading_direction: ReadingDirection::Ltr,
-                spread_mode: SpreadMode::Double,
-                cover_mode: CoverMode::Paired,
-                fit_mode: FitMode::Actual,
-            },
-            global.view_defaults(),
-            false,
-        )
-        .expect("open file => write-back tuple");
-
-        assert_eq!(
-            overrides,
-            ViewOverride {
-                reading_direction: Some(ReadingDirection::Ltr),
-                spread_mode: None,
-                cover_mode: Some(CoverMode::Paired),
-                fit_mode: None,
+    fn view_write_back_sets_exactly_the_non_inherited_fields() {
+        let mut views = Vec::new();
+        for reading_direction in [ReadingDirection::Ltr, ReadingDirection::Rtl] {
+            for spread_mode in [SpreadMode::Single, SpreadMode::Double, SpreadMode::Auto] {
+                for cover_mode in [CoverMode::Standalone, CoverMode::Paired] {
+                    for fit_mode in [FitMode::Whole, FitMode::Width, FitMode::Actual] {
+                        views.push(ResolvedView {
+                            reading_direction,
+                            spread_mode,
+                            cover_mode,
+                            fit_mode,
+                        });
+                    }
+                }
             }
-        );
+        }
+
+        let book = BookId::new("/manga/book.cbz");
+        for &view in &views {
+            for &global in &views {
+                for inherit in [false, true] {
+                    assert_eq!(
+                        view_override_to_write_back(None, view, global, inherit),
+                        None
+                    );
+                    let (id, actual) =
+                        view_override_to_write_back(Some(&book), view, global, inherit).unwrap();
+                    let expected = ViewOverride {
+                        reading_direction: (!inherit
+                            && view.reading_direction != global.reading_direction)
+                            .then_some(view.reading_direction),
+                        spread_mode: (!inherit && view.spread_mode != global.spread_mode)
+                            .then_some(view.spread_mode),
+                        cover_mode: (!inherit && view.cover_mode != global.cover_mode)
+                            .then_some(view.cover_mode),
+                        fit_mode: (!inherit && view.fit_mode != global.fit_mode)
+                            .then_some(view.fit_mode),
+                    };
+                    assert_eq!(id, book);
+                    assert_eq!(
+                        actual, expected,
+                        "view={view:?}, global={global:?}, inherit={inherit}"
+                    );
+                    assert_eq!(actual.resolve(global), if inherit { global } else { view });
+                }
+            }
+        }
     }
 
     // ---- inherit-pending guard (#415: reset-to-global undone on close) -----

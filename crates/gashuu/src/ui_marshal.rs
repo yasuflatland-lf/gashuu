@@ -96,51 +96,64 @@ impl<T> Ticket<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
 
-    #[test]
-    fn take_returns_current_value_once() {
-        let generation = Generation::new();
-        let ticket = generation.begin();
-        assert!(ticket.deliver(|slot| *slot = Some(42)));
-        assert_eq!(generation.take(ticket.id()), Some(Some(42)));
-        assert_eq!(generation.take(ticket.id()), Some(None));
+    #[derive(Clone, Debug)]
+    enum GenerationOp {
+        Begin,
+        Deliver(usize, u32),
+        Take(usize),
     }
 
-    #[test]
-    fn take_drains_accumulator_and_leaves_it_empty() {
-        let generation = Generation::<Vec<u32>>::new();
-        let ticket = generation.begin();
-        for value in 1..=3 {
-            assert!(ticket.deliver(|values| values.push(value)));
+    proptest! {
+        #[test]
+        fn generation_tickets_match_the_current_slot(
+            ops in proptest::collection::vec(
+                prop_oneof![
+                    Just(GenerationOp::Begin),
+                    (0usize..40, any::<u32>()).prop_map(|(index, value)| GenerationOp::Deliver(index, value)),
+                    (0usize..40).prop_map(GenerationOp::Take),
+                ],
+                0..=39,
+            ),
+        ) {
+            let generation = Generation::<Option<u32>>::new();
+            let mut tickets = Vec::new();
+            let mut latest = None;
+            for op in std::iter::once(GenerationOp::Begin).chain(ops) {
+                match op {
+                    GenerationOp::Begin => {
+                        tickets.push(generation.begin());
+                        prop_assert_eq!(tickets.last().unwrap().id(), tickets.len());
+                        latest = None;
+                    }
+                    GenerationOp::Deliver(index, value) => {
+                        let index = tickets.len() - 1 - index % tickets.len();
+                        let current = index + 1 == tickets.len();
+                        let mut called = false;
+                        let delivered = tickets[index].deliver(|slot| {
+                            called = true;
+                            *slot = Some(value);
+                        });
+                        prop_assert_eq!(delivered, current);
+                        prop_assert_eq!(called, current);
+                        if current {
+                            latest = Some(value);
+                        }
+                    }
+                    GenerationOp::Take(index) => {
+                        let id = tickets.len() - index % tickets.len();
+                        // The current generation still exists after a take, with an empty slot.
+                        let expected = if id == tickets.len() { Some(latest.take()) } else { None };
+                        prop_assert_eq!(generation.take(id), expected);
+                        if id == tickets.len() {
+                            prop_assert_eq!(generation.take(id), Some(None));
+                        }
+                    }
+                }
+            }
+            prop_assert_eq!(generation.take(tickets.len()), Some(latest));
         }
-        assert_eq!(generation.take(ticket.id()), Some(vec![1, 2, 3]));
-        assert_eq!(generation.take(ticket.id()), Some(vec![]));
-    }
-
-    #[test]
-    fn stale_ticket_does_not_deliver() {
-        let generation = Generation::new();
-        let first = generation.begin();
-        let second = generation.begin();
-        assert!(!first.deliver(|_| panic!("stale delivery ran")));
-        assert!(second.deliver(|slot| *slot = Some(2)));
-    }
-
-    #[test]
-    fn take_with_superseded_id_is_none() {
-        let generation = Generation::new();
-        let first = generation.begin();
-        let second = generation.begin();
-        assert!(second.deliver(|slot| *slot = Some(2)));
-        assert_eq!(generation.take(first.id()), None);
-        assert_eq!(generation.take(second.id()), Some(Some(2)));
-    }
-
-    #[test]
-    fn ids_increase_by_one_from_one() {
-        let generation = Generation::<()>::new();
-        assert_eq!(generation.begin().id(), 1);
-        assert_eq!(generation.begin().id(), 2);
     }
 
     #[test]

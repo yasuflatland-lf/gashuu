@@ -349,39 +349,42 @@ mod tests {
         }
     }
 
-    fn rows(requests: &[CoverRequest]) -> Vec<usize> {
-        requests.iter().map(|r| r.row).collect()
-    }
+    proptest::proptest! {
+        #[test]
+        fn prioritize_is_a_stable_distance_order(
+            input in proptest::collection::vec(0usize..40, 0..=40),
+            focus in 0usize..60,
+        ) {
+            let requests = input.iter().enumerate().map(|(index, &row)| {
+                let mut request = req(row);
+                request.id = BookId::new(format!("/request/{index}"));
+                request.needs_count = index % 2 == 0;
+                request
+            }).collect();
+            let ordered = prioritize_by_focus(requests, focus);
+            let mut actual = Vec::new();
+            for request in ordered {
+                let index = request.id.as_str().strip_prefix("/request/").unwrap()
+                    .parse::<usize>().unwrap();
+                proptest::prop_assert_eq!(&request.path, &req(request.row).path);
+                proptest::prop_assert_eq!(request.needs_count, index % 2 == 0);
+                actual.push((request.row, index));
+            }
 
-    /// Rows closest to the focused row come first, expanding outward; the
-    /// distance tie (focus−d vs focus+d) keeps the input's ascending order
-    /// (stable sort), so the lower row precedes the higher one.
-    #[test]
-    fn prioritize_orders_by_distance_from_focus() {
-        let ordered = prioritize_by_focus((0..5).map(req).collect(), 2);
-        assert_eq!(rows(&ordered), vec![2, 1, 3, 0, 4]);
-    }
+            let mut permutation = actual.clone();
+            permutation.sort_unstable_by_key(|&(_, index)| index);
+            let expected: Vec<_> = input.into_iter().enumerate()
+                .map(|(index, row)| (row, index)).collect();
+            proptest::prop_assert_eq!(permutation, expected);
 
-    /// Focus on row 0 (the reset-focus case) keeps the natural ascending order —
-    /// distance from 0 IS the row index.
-    #[test]
-    fn prioritize_focus_zero_is_identity() {
-        let ordered = prioritize_by_focus((0..4).map(req).collect(), 0);
-        assert_eq!(rows(&ordered), vec![0, 1, 2, 3]);
-    }
-
-    /// A focus beyond the last row (stale index after the model shrank) must not
-    /// panic; the nearest (= highest) rows simply come first.
-    #[test]
-    fn prioritize_focus_beyond_last_row_orders_descending() {
-        let ordered = prioritize_by_focus((0..3).map(req).collect(), 10);
-        assert_eq!(rows(&ordered), vec![2, 1, 0]);
-    }
-
-    /// An empty request list stays empty (no panic on the degenerate input).
-    #[test]
-    fn prioritize_empty_is_empty() {
-        assert!(prioritize_by_focus(Vec::new(), 5).is_empty());
+            for pair in actual.windows(2) {
+                let [(left, left_index), (right, right_index)] = pair else { unreachable!() };
+                proptest::prop_assert!(
+                    (left.abs_diff(focus), left_index) < (right.abs_diff(focus), right_index),
+                    "out of order at focus {}: {:?}", focus, pair
+                );
+            }
+        }
     }
 
     #[test]

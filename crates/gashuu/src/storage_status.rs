@@ -115,6 +115,41 @@ mod tests {
         }
     }
 
+    proptest::proptest! {
+        #[test]
+        fn usage_formats_bounded_percent_and_promotes_rounded_units(
+            bytes in proptest::prop_oneof![
+                0u64..(4 << 30),
+                ((1u64 << 30) - 60_000)..=((1u64 << 30) + 60_000),
+                proptest::strategy::Just(u64::MAX),
+            ],
+            quota in proptest::prop_oneof![
+                proptest::strategy::Just(None),
+                proptest::strategy::Just(Some(0)),
+                proptest::option::of(proptest::num::u64::ANY),
+                proptest::option::of(1u64..(4 << 30)),
+            ],
+        ) {
+            let (display, percent) = format_usage(bytes, quota);
+            proptest::prop_assert_eq!(&display, &format_bytes(bytes));
+            let (number, unit) = display.split_once(' ').unwrap();
+            let number: f64 = number.parse().unwrap();
+            match unit {
+                "MB" => proptest::prop_assert!((0.0..1024.0).contains(&number), "{}", display),
+                // GB is the largest supported unit, including for u64::MAX.
+                "GB" => {
+                    let gibibytes = bytes as f64 / (1u64 << 30) as f64;
+                    proptest::prop_assert!((number - gibibytes).abs() <= 0.051, "{}", display);
+                }
+                _ => proptest::prop_assert!(false, "unexpected unit in {}", display),
+            }
+            proptest::prop_assert_eq!(percent.is_some(), quota.is_some_and(|q| q > 0));
+            if let Some(percent) = percent {
+                proptest::prop_assert!(percent <= 100);
+            }
+        }
+    }
+
     #[test]
     fn usage_formats_binary_units() {
         assert_eq!(format_usage(0, None), ("0.0 MB".into(), None));

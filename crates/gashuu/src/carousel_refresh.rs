@@ -712,78 +712,40 @@ mod tests {
 
     // ---- entry_focus_index (continue reading) ----------------------------
 
-    /// Build a 3-book library (alpha/beta/gamma, natural order) and mark `index`
-    /// as last-opened via `register_opened`. Returns the library; the natural
-    /// order is alpha(0), beta(1), gamma(2) since the paths sort lexically.
-    fn library_with_last_opened(index: usize) -> Library {
-        let mut lib = Library::new();
-        for leaf in ["alpha", "beta", "gamma"] {
-            assert!(lib
-                .add(BookId::new(format!("/manga/{leaf}.cbz")), leaf.into())
-                .is_some());
+    proptest::proptest! {
+        #[test]
+        fn entry_focus_is_the_bookmark_position_in_the_projection(
+            n in 0usize..=6,
+            bookmark in proptest::option::of(0usize..6),
+            visible in proptest::collection::vec(0usize..8, 0..=8),
+        ) {
+            let mut library = Library::new();
+            for index in 0..n {
+                let id = BookId::new(format!("/manga/{index}.cbz"));
+                assert!(library.add(id, format!("Book {index}")).is_some());
+            }
+            let bookmark = bookmark.filter(|&index| index < n);
+            if let Some(index) = bookmark {
+                let id = library.books()[index].id().clone();
+                library.register_opened(&id, "", None);
+            }
+            let expected = visible.iter().position(|&index| Some(index) == bookmark).unwrap_or(0);
+            proptest::prop_assert_eq!(entry_focus_index(&library, &visible), expected as i32);
         }
-        let path = lib.books()[index].id().clone();
-        lib.register_opened(&path, "", None);
-        lib
-    }
 
-    #[test]
-    fn entry_focus_index_resolves_last_opened_with_no_filter() {
-        // beta is last-opened and all three rows are visible (natural-order
-        // identity projection), so the snap lands on beta's row (1).
-        let lib = library_with_last_opened(1);
-        assert_eq!(entry_focus_index(&lib, &[0, 1, 2]), 1);
-    }
-
-    #[test]
-    fn entry_focus_index_uses_filtered_position() {
-        // gamma is last-opened and the visible set is the filtered slice
-        // [beta, gamma]; gamma's VISIBLE row is 1, not its library index 2.
-        let lib = library_with_last_opened(2);
-        assert_eq!(entry_focus_index(&lib, &[1, 2]), 1);
-    }
-
-    #[test]
-    fn entry_focus_index_falls_back_when_last_opened_filtered_out() {
-        // alpha is last-opened but the filter hides it (visible set is gamma
-        // only), so the snap falls back to row 0.
-        let lib = library_with_last_opened(0);
-        assert_eq!(entry_focus_index(&lib, &[2]), 0);
-    }
-
-    #[test]
-    fn entry_focus_index_falls_back_when_no_last_opened() {
-        // A fresh library has never opened a book, so the fallback is row 0.
-        let mut lib = Library::new();
-        assert!(lib
-            .add(BookId::new("/manga/alpha.cbz"), "alpha".into())
-            .is_some());
-        assert_eq!(lib.last_opened(), None, "no book opened yet");
-        assert_eq!(entry_focus_index(&lib, &[0]), 0);
-    }
-
-    #[test]
-    fn entry_focus_index_falls_back_for_empty_library() {
-        // No books and no visible rows: the fallback is row 0 (never panics on
-        // the empty slice).
-        let lib = Library::new();
-        assert_eq!(entry_focus_index(&lib, &[]), 0);
-    }
-
-    // ---- clamp_focused_index (bulk-delete focus safety) -------------------
-
-    #[test]
-    fn clamp_focused_index_pins_into_shrunken_projection() {
-        // The crash guard: after a bulk delete shrinks the projection, a focused
-        // index past the new last row must clamp DOWN to the last valid row.
-        assert_eq!(clamp_focused_index(7, 3), 2, "past-end clamps to last row");
-        // An empty projection (everything deleted) floors to 0.
-        assert_eq!(clamp_focused_index(7, 0), 0, "empty projection floors to 0");
-        assert_eq!(clamp_focused_index(0, 0), 0, "0 on empty stays 0");
-        // An in-range index is preserved unchanged.
-        assert_eq!(clamp_focused_index(1, 4), 1, "in-range index unchanged");
-        assert_eq!(clamp_focused_index(0, 1), 0, "single row keeps focus at 0");
-        // A negative index (defensive; not produced by the live carousel) floors.
-        assert_eq!(clamp_focused_index(-1, 4), 0, "negative floors to 0");
+        #[test]
+        fn clamp_focus_pins_to_projection_boundaries(
+            old in proptest::prop_oneof![proptest::num::i32::ANY, -80i32..80],
+            count in 0usize..=40,
+        ) {
+            let expected = if old < 0 || count == 0 {
+                0
+            } else if old as usize >= count {
+                (count - 1) as i32
+            } else {
+                old
+            };
+            proptest::prop_assert_eq!(clamp_focused_index(old, count), expected);
+        }
     }
 }

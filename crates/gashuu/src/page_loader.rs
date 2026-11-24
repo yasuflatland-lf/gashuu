@@ -300,6 +300,7 @@ mod tests {
     use super::*;
     use crate::backend::fake::{Call, FakeBackend};
     use crate::backend::BackendError;
+    use proptest::prelude::*;
     use slint::ComponentHandle;
     use std::cell::{Cell, RefCell};
 
@@ -319,35 +320,62 @@ mod tests {
         ViewerWindow::new().unwrap()
     }
 
-    #[test]
-    fn dispatched_pages_are_deduplicated_cleared_and_reset_with_source() {
-        let controller = PageController::new(FakeBackend::new());
-
-        assert!(controller.reserve_dispatch(4));
-        assert!(!controller.reserve_dispatch(4));
-        assert!(controller.dispatched.borrow().contains(&4));
-
-        controller.clear_dispatched(4);
-        assert!(!controller.dispatched.borrow().contains(&4));
-        assert!(controller.reserve_dispatch(4));
-
-        let epoch = controller.current_epoch();
-        let next_epoch = controller.reset_for_source();
-
-        assert!(next_epoch > epoch);
-        assert!(!controller.dispatched.borrow().contains(&4));
-        assert!(controller.reserve_dispatch(4));
+    #[derive(Clone, Debug)]
+    enum DispatchOp {
+        Reserve(usize),
+        Clear(usize),
+        SetTarget(usize, Option<usize>),
+        ResetSource,
     }
 
-    #[test]
-    fn reserve_dispatch_is_per_page_not_per_spread() {
-        let controller = PageController::new(FakeBackend::new());
-
-        assert!(controller.reserve_dispatch(4));
-        assert!(!controller.reserve_dispatch(4));
-        assert!(controller.reserve_dispatch(5));
-        assert!(controller.dispatched.borrow().contains(&4));
-        assert!(controller.dispatched.borrow().contains(&5));
+    proptest! {
+        #[test]
+        fn dispatch_reservations_match_the_active_target_epoch(
+            ops in proptest::collection::vec(
+                prop_oneof![
+                    (0usize..6).prop_map(DispatchOp::Reserve),
+                    (0usize..6).prop_map(DispatchOp::Clear),
+                    (0usize..3, proptest::option::of(0usize..3))
+                        .prop_map(|(leading, trailing)| DispatchOp::SetTarget(leading, trailing)),
+                    Just(DispatchOp::ResetSource),
+                ],
+                0..=40,
+            ),
+        ) {
+            let controller = PageController::new(FakeBackend::new());
+            let mut reserved = HashSet::new();
+            let mut target = None;
+            let mut epoch = 0;
+            prop_assert_eq!(controller.current_epoch(), epoch);
+            for op in ops {
+                match op {
+                    DispatchOp::Reserve(page) => {
+                        prop_assert_eq!(controller.reserve_dispatch(page), reserved.insert(page));
+                    }
+                    DispatchOp::Clear(page) => {
+                        controller.clear_dispatched(page);
+                        reserved.remove(&page);
+                    }
+                    DispatchOp::SetTarget(leading, trailing) => {
+                        let next = Some((leading, trailing));
+                        if target != next {
+                            epoch += 1;
+                            reserved.clear();
+                            target = next;
+                        }
+                        prop_assert_eq!(controller.set_target(leading, trailing, trailing.is_none()), epoch);
+                    }
+                    DispatchOp::ResetSource => {
+                        epoch += 1;
+                        target = None;
+                        reserved.clear();
+                        prop_assert_eq!(controller.reset_for_source(), epoch);
+                    }
+                }
+                prop_assert_eq!(controller.current_epoch(), epoch);
+                prop_assert_eq!(&*controller.dispatched.borrow(), &reserved);
+            }
+        }
     }
 
     #[test]
