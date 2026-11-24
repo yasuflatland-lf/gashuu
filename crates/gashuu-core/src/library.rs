@@ -147,6 +147,7 @@ impl Book {
     }
 }
 
+/// Shelf ties deliberately compare the raw ID strings, which can differ from `BookId` path order.
 fn book_order(a: &Book, b: &Book) -> std::cmp::Ordering {
     crate::ordering::natural_cmp(a.title(), b.title())
         .then_with(|| a.id().as_str().cmp(b.id().as_str()))

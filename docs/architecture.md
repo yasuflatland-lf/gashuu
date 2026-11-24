@@ -205,10 +205,10 @@ See [ADR-0003](ADRs/0003-image-loading-and-caching.md) for the LRU/prefetch deci
 
 ### CacheConfig
 
-`cache_config.rs`. Immutable value object holding the LRU `capacity` (clamped to `>= 1` in
-`new`) and the prefetch `radius` (`0` = prefetch disabled). It owns the capacity invariant in its
+`cache_config.rs`. Immutable value object holding the LRU `capacity` (clamped in `new` to at least
+`2 × radius + 2`, see ADR-0003) and the prefetch `radius` (`0` = prefetch disabled). It owns the capacity invariant in its
 constructor, so an invalid cache size is unrepresentable downstream. `Settings` keeps the raw
-`cache_size`/`preload_pages` integers (serde-flat, JSON unchanged) and exposes
+`cache_capacity` and `prefetch_radius` integers (on-disk keys `cache_size` and `preload_pages`) and exposes
 `cache_config() -> CacheConfig`; `ImageCache::new` and `ViewerState` consume the `CacheConfig`,
 which is why `ImageCache::new`'s `NonZeroUsize::new(config.capacity()).unwrap()` is provably safe.
 Intentionally not `Deserialize` (that would bypass the clamp). See
@@ -347,8 +347,9 @@ slint/tracing). `lib.rs` re-exports the public view modes from `view_modes`.
 `reading_progress.rs` defines the immutable, `Copy` value that each `Book` stores as
 `ReadingProgress { last_viewed, total: Option<NonZeroUsize> }`. The resume index is
 normally the displayed spread's leading, but the final page INDEX when the
-displayed spread contains the final page. Both values reopen onto the same spread because
-`ViewerState::jump_to` normalizes them.
+displayed spread contains the final page. On reopen, the stored page selects the spread containing it under
+the current layout. A different window aspect in Auto mode or a change to inherited view
+settings can change that spread.
 
 Construction clamps `last_viewed` to `total - 1` when the total is known and leaves it verbatim
 when the total is unknown (nothing bounds an unknown book). Its derivations are `current()`
@@ -427,7 +428,7 @@ Each `Book` also carries a `ViewOverride overrides` field (the per-book view-pre
 no key and `library.json` stays byte-compatible with files written before this feature — see
 [conventions.md](conventions.md), "Add an optional nested config"). The aggregate owns the mutation:
 `Library::set_overrides(id, ViewOverride) -> bool` (idempotent-changed bool, same `false`==no-op
-convention as `set_last_page`/`set_page_count`) and `Library::overrides_for(id) -> ViewOverride`
+convention as `set_resume_page`/`set_page_count`) and `Library::overrides_for(id) -> ViewOverride`
 (returns `ViewOverride::none()` for an unknown ID, so the caller can `resolve` unconditionally).
 There is NO `Book` setter — `Book::overrides()` is read-only.
 
@@ -518,12 +519,15 @@ hashes the whole file twice. Successful imports store the lowercase hex digest
 in a sibling `.content-key` file. The first import builds an in-memory index,
 backfilling missing sidecars from older archives. A match reuses the stored
 archive after probing it under the current policy. Superseding a batch discards
-only newly written copies.
+only newly written copies. Superseding or cancelling a batch first drops unsent imports through
+`BookImporter::pending_canceller`. Only the single in-flight import can still complete, and its result is discarded.
 
 After the library loads, the worker sweeps one directory per unit. It keeps
 library IDs, files modified within the past hour, and locked directories.
 Clearing reading history after a successful library save also sweeps, with an
-empty keep list and no age guard. Bulk removal discards stored copies after
+empty keep list and no age guard. A unit directory with no files has no modification time
+and holds zero bytes of file data. The startup sweep counts it as recent, so only the sweep
+after Clear reading history removes it. Bulk removal discards stored copies after
 saving the library and closing any removed open book.
 
 ## crates/gashuu (Slint presentation layer)
@@ -800,14 +804,14 @@ not name.
   writes the open book's view into the global defaults. Viewer scope and a no-session call leave
   `Settings` untouched. It runs
   from both close-handler branches, exit persistence before `AppExit`, and `on_open_finalize`
-  before `apply_probed`. The latter two live inside window-bound code, so each is paired with its
+  before `apply_opened`. The latter two live inside window-bound code, so each is paired with its
   leave point in one window-free function — `main.rs::stage_exit_state` and
-  `handlers/library.rs::end_session_and_apply_probed` — which is what the regression tests call.
+  `handlers/library.rs::end_session_and_apply_opened` — which is what the regression tests call.
 - `inherit_pending(current) -> bool` is
   `pending_inherit == Some(current)`, so any runtime mode change disables the guard without a
   setter-side clear; returning to the exact reset view deliberately re-arms it.
 - `clear_pending_inherit()` discards the current book's pending intent.
-  `OpenBookUseCase::apply_probed` calls it after replacing the open source, and
+  `OpenBookUseCase::apply_opened` calls it after replacing the open source, and
   `RemoveBooksUseCase::run` calls it when deleting and closing the open book.
 - `reset_to_global(&mut self, state, viewport, settings)` applies the globals and THEN records the
   installed runtime view in `pending_inherit`.
@@ -821,7 +825,7 @@ See [ADR-0007](ADRs/0007-per-book-view-overrides.md) and [patterns.md](patterns.
 
 ### book_availability
 
-- **Desktop** checks existence through `book_path::exists(&book_path::locate(book.id()))`.
+- **Desktop** reads a UI-thread cache that treats unknown books as available. After each carousel rebuild, a background `AvailabilityProber` checks the visible books. The UI patches changed rows only if the results match the current generation.
 - **Web** treats every book as available until the first successful sweep. Each sweep replaces
   the `WebAvailability` set with `Swept.present`. Imports and removals update the set.
 
@@ -934,7 +938,7 @@ holds the `#[derive(RustEmbed)] struct Localizations` (embeds `i18n/`) and the e
 former `messages.rs` exhaustive match). The completeness/parity/byte-oracle integration tests live
 in `mod.rs`'s `#[cfg(test)]`. The `Language` enum stays in headless `gashuu-core`; ALL Fluent
 machinery is UI-crate-only, per [ADR-0002](ADRs/0002-layered-two-crate-architecture.md).
-`Localizer::apply(&self, ui: &ViewerWindow)` (#113) in `mod.rs` is the single chokepoint that resolves
+`Localizer::push_strings_to_ui(&self, ui: &ViewerWindow)` (#113) in `mod.rs` is the single chokepoint that resolves
 every Fluent-served static string via `fl!()` and pushes it into the `Strings` global (next entry);
 `main.rs` calls it at boot; after each `switch()` (language change) the call is in
 `handlers/settings.rs`'s `wire_view_mode_handlers` — see [patterns.md](patterns.md), "The
@@ -1173,7 +1177,7 @@ them with `@image-url(...)` paths relative to the consuming `.slint` file. `buil
 
 **`ui/Strings.slint`** (Fluent i18n, #113, NEW): `export global Strings` — the Fluent-served
 static-string surface, 67 `in property <string>` slots (property name == Fluent message ID) with
-English-literal defaults. Written exclusively from Rust by `Localizer::apply()`; `.slint` bindings
+English-literal defaults. Written exclusively from Rust by `Localizer::push_strings_to_ui()`; `.slint` bindings
 read `Strings.<prop>` in place of the removed `@tr()` calls. `ViewerWindow.slint` re-exports it
 (`import` + `export { Strings }`) so Slint generates the `ui.global::<Strings>()` accessor. See
 [docs/patterns.md](patterns.md), "The `Strings`-global push".

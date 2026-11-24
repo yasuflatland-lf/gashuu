@@ -51,6 +51,8 @@ The adapter now supports `Window` and `WorkerGlobalScope` (#697). The applicatio
 will use the adapter in a Worker with #658 (ADR-0015). Desktop decoding remains on
 the `image` crate. Cache capacity and prefetch behavior remain unchanged.
 
+**Amendment ([43/43]), 2026-11-24.** The Worker uses the browser decoder adapter (#658). The web viewer caches up to six pages with a 128 MiB budget and disables prefetch (ADR-0015).
+
 ## Consequences
 
 - Browser-native decoding substantially reduces the measured iPad decode time;

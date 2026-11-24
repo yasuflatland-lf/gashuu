@@ -31,8 +31,8 @@ guidance about eviction, quota and adding the app to the Home Screen.
 
 ### Cache and prefetch
 
-- LRU page cache (up to `DEFAULT_CAPACITY`=50 decoded images).
-- Background ±`DEFAULT_PREFETCH_RADIUS`=3 prefetch.
+- Desktop caches up to `DEFAULT_CAPACITY` = 50 decoded pages by default, within a 512 MiB budget (`DEFAULT_MAX_BYTES`). Capacity is at least `2 × radius + 2`. Background prefetch defaults to ±3 pages (`DEFAULT_PREFETCH_RADIUS`).
+- Web caches up to 6 pages within 128 MiB (`WEB_MAX_CACHE_BYTES`), with prefetch off (ADR-0015).
 
 ### Two-page spread, cover mode, and reading direction
 
@@ -40,7 +40,7 @@ guidance about eviction, quota and adding the app to the Home Screen.
 - Space = next / Backspace = prev (reading order, direction-independent); arrows are direction-aware (LTR → = next, RTL ← = next).
 - **Pointer / gesture page-turn**: a single click/tap (left half → `nav("left")`, right half → `nav("right")`) and a two-finger trackpad horizontal swipe (≥100 px, with a release-latch that swallows the macOS momentum tail until it is spent so ONE flick turns exactly one page yet a deliberate re-flick turns the next — CONSECUTIVE turns without double-firing) both route through the SAME `nav()` seam as the arrow keys, so reading direction is resolved once (RTL: left = next). The swipe lights an **edge-glow affordance** on the side the fingers push toward (opacity tracks accumulation toward the threshold, peaking then easing out on the turn as a confirmation; absent when zoomed in, since the turn branch is not taken). The horizontal swipe turns pages whenever the page fits HORIZONTALLY (dominant-axis gate + `content-w <= width`), so a tall Width-fit page still turns on a flick; only when the content overflows horizontally (zoomed in / wider than the viewport) does two-finger scroll pan instead, and vertical scroll always pans a fit page that overflows vertically. Both page-turn paths are suppressed under any open modal.
 - `Auto` picks single vs double from the window aspect ratio (landscape/square → single, portrait → double) and follows resizes live; composes with RTL/LTR and cover mode.
-- Runtime toggles: **D** = spread mode (3-cycle: single → double → auto), **R** = reading direction, **C** = cover mode — each mutates RUNTIME state only (`ViewerState`); `apply_runtime_view_to_settings` mirrors the modes into `Settings` at the next save (issue #32), still persisted via save-on-exit (not per-key).
+- Runtime toggles: **D** = spread mode (3-cycle: single → double → auto), **R** = reading direction, **C** = cover mode — each changes runtime state only. At the next viewer leave point the open book’s modes are written to its per-book override (ADR-0007). On exit with no book open, runtime modes are reconciled into global `Settings`.
 
 ### Zoom, pan, and fit modes
 
@@ -53,12 +53,12 @@ guidance about eviction, quota and adding the app to the Home Screen.
 
 - Loaded on startup / saved on exit and on folder-open.
 - **`cache_size`, `preload_pages`, `spread_mode` (Single/Double/Auto), `cover_mode`, `reading_direction`, and `fit_mode` are wired to real behavior.**
-- `recent_files` recorded only when `track_recent_files` is enabled (off by default for privacy).
+- `recent_sources` records opens only when `track_recent_sources` is enabled (off by default). The on-disk keys remain `recent_files` and `track_recent_files`. No UI reads the list yet.
 - `key_bindings` is persisted but inactive (forward-compat only).
 
 ### Parallel thumbnail strip
 
-- rayon-generated thumbnails, streamed to the UI as each completes. Generation is **lazy** (later evolution, not the original eager slice): `start` paints `N` `Loading` placeholders but decodes only the first `INITIAL_VISIBLE_PAGES` (16); the rest backfill on demand as the strip scrolls/resizes (`visible-range-changed`, `VISIBLE_MARGIN`=3), each batch streamed in. Reuses the per-page disk cache (`PageThumbCache`) across opens; an epoch + cancel double-guard stops a superseded book's batches.
+- The strip requests thumbnails through `BookBackend::thumbnail` and displays each result as it arrives. Desktop uses rayon workers and the `ThumbStore` disk cache. Web uses the Worker’s background lane (#659). Generation is **lazy** (later evolution, not the original eager slice): `start` paints `N` `Loading` placeholders but decodes only the first `INITIAL_VISIBLE_PAGES` (16); the rest backfill on demand as the strip scrolls/resizes (`visible-range-changed`, `VISIBLE_MARGIN`=3), each batch streamed in. An epoch + cancel double-guard stops a superseded book's batches.
 - Click a thumb or press `T` to jump to any page (via `ViewerState::jump_to`).
 - `T` also toggles the strip.
 - Failed thumbs render distinctly (red ✕).
@@ -91,7 +91,7 @@ guidance about eviction, quota and adding the app to the Home Screen.
 
 ### Library carousel covers
 
-- The Library carousel shows each book's REAL cover (the thumbnail of its page 0), streamed in row-by-row rather than placeholders. Core gained `generate_cover(source, max_side) -> Result<DecodedImage, CoreError>` (page-0 thumbnail; errors on a 0-page source); the UI's `cover_loader.rs` (`CoverController`, a twin of the `thumbnail_strip.rs` controller) tries the `ThumbnailCache` first, else fires a `rayon::spawn` worker that opens via `ArchiveLoader`, calls `generate_cover`, caches the result, and marshals it into the shared `VecModel<CarouselItem>` via `invoke_from_event_loop` — under the same epoch + cancel double-guard as the thumbnail strip (see docs/patterns.md). (Originally the cache HIT was served synchronously on the UI thread; the async-cover-loading rework below moved the hit path onto the worker too — `start` is now dispatch-only.)
+- The Library carousel requests each book’s page-zero cover through `BookBackend::cover` and displays results row by row. On desktop a rayon worker checks `ThumbStore` and decodes a cache miss under the active `ArchivePolicy`. On web the Worker handles the request.
 - `rayon` became a direct dep of the `gashuu` UI crate (no new lockfile entry — see docs/toolchain.md).
 - No new lockfile dependencies. Core `generate_cover` is unit-tested (page-0 selection, empty-source error, decode-error propagation); the UI streaming path in `cover_loader.rs` is coverage-exempt like the thumbnail strip (see docs/quality-gates.md).
 
@@ -138,7 +138,7 @@ guidance about eviction, quota and adding the app to the Home Screen.
 ### UI language switch — English / 日本語 (i18n)
 
 - The UI is bilingual with **immediate, no-restart switching** from a new "General → Language" pull-down in the settings dialog (the Apple-HIG-style `Dropdown` atom — the repo's first `PopupWindow`). The preference persists as `Settings.language` (`"en"`/`"ja"` serde tags doubling as the Slint locale names; `#[serde(default)]`; global-only — never per-book).
-- `.slint` strings live in an `export global Strings` (ui/Strings.slint) with English defaults and are pushed from the Fluent catalog by `Localizer::apply()` (i18n/{en,ja}/gashuu.ftl). Rust-composed strings (status line, open/save notices, decode errors, and the ShortcutsOverlay key-bindings reference) are resolved via `src/i18n/dynamic.rs` using the `fl!()` macro against the same catalog.
+- `.slint` strings live in an `export global Strings` (ui/Strings.slint) with English defaults and are pushed from the Fluent catalog by `Localizer::push_strings_to_ui()` (i18n/{en,ja}/gashuu.ftl). Rust-composed strings (status line, open/save notices, decode errors, and the ShortcutsOverlay key-bindings reference) are resolved via `src/i18n/dynamic.rs` using the `fl!()` macro against the same catalog.
 - **Fluent is the sole i18n system (ADR-0008, Accepted).** The migration (#112-#115) is complete: gettext, `.po` files, build flags, and `src/messages.rs` were fully excised (#115).
 
 ### Continue-reading bookmark and entry focus snap
@@ -189,15 +189,11 @@ guidance about eviction, quota and adding the app to the Home Screen.
 - **Any-MISS path (async).** On any MISS, `refresh` sets `leading-loading` / `trailing-loading` to
   show the per-slot loading placeholders, clears the image properties, and calls
   `PageController::dispatch_spread`. `dispatch_spread` reserves each missing slot independently
-  (dedup prevents duplicate in-flight decodes for the same page), spawns one rayon job, and uses
-  `rayon::join` when both slots are MISS so they decode in parallel. The job marshals back via
-  `slint::invoke_from_event_loop`, epoch-guarded: on success it calls
-  `ui.invoke_spread_anchored(content_w, content_h, single, trailing_failed, leading_idx,
-  trailing_idx)`; on decode failure it calls `ui.invoke_page_decode_error(index)`.
-- **Epoch + dedup.** `PageController::set_target` advances the epoch on a real spread change; stale
-  marshal closures arriving after a navigation detect the superseded epoch via `is_current` and
-  return without touching UI state. `reserve_dispatch` deduplicates: if a slot is already in-flight
-  from a prior dispatch it is not re-dispatched, and the earlier worker's marshal completes it.
+  and calls `BookBackend::decode_spread` when it obtains a new reservation. The UI applies the
+  result only if the epoch still matches.
+- **Epoch and deduplication.** `reserve_dispatch` deduplicates within one target and epoch.
+  On each target change, `PageController::begin_generation` clears all reservations. Returning
+  to a page can dispatch it again and cost extra decoding work. The stale result cannot update the UI.
 - **`current_spread()` retained for tests only** (`#[cfg(test)]`). It decodes synchronously and is
   never called on the UI thread in production.
 - No new dependencies.
@@ -206,7 +202,7 @@ guidance about eviction, quota and adding the app to the Home Screen.
 
 A source with no image pages (an empty folder, an archive with only non-image entries, a folder whose images live only in subfolders since the walk is `max_depth(1)`) is no longer treatable as a book. The domain rule "a valid book has >= 1 image page" lives once in core; three UI hook points enforce it. See [ADR-0009](ADRs/0009-reject-empty-books.md) for the decision and [docs/patterns.md](patterns.md) for the harnesses.
 
-- **The rule lives in core.** `ArchiveLoader::probe_page_count(path) -> Result<NonZeroUsize, CoreError>` opens the source and counts pages; `0` → `Err(CoreError::EmptyBook { path })` (a new `#[non_exhaustive]` variant), `1+` → `Ok(NonZeroUsize)`. I/O / `UnsupportedFormat` errors propagate UNCHANGED — "empty" and "unreadable" are strictly distinct. `Library::add` / `register_opened` are unchanged (no I/O enters the collection layer).
+- **The rule lives in core.** `ArchiveLoader::probe_page_count_with_policy(path, policy) -> Result<NonZeroUsize, CoreError>` opens the source and counts pages; `0` → `Err(CoreError::EmptyBook { label })` (a new `#[non_exhaustive]` variant), `1+` → `Ok(NonZeroUsize)`. I/O / `UnsupportedFormat` errors propagate UNCHANGED — "empty" and "unreadable" are strictly distinct. `Library::add` / `register_opened` are unchanged (no I/O enters the collection layer).
 - **Add time.** The probe (`add_loader::probe_path`, off the UI thread) classifies each path and `apply_outcomes` rejects empty OR unreadable sources before they enter the library (the notice says how many were skipped; mixed batches still add the valid books). On a genuine insert it persists the probed count via `set_page_count`, so a fresh add shows "1 / N" immediately. Return type is `AddReport { added, skipped }`.
 - **Open time.** `OpenBookUseCase::run` returns `OpenOutcome::EmptyBookRejected { title, removed, save_error }` for a clean open that counts zero pages: it removes the book (if present), re-saves, purges its cover (Wave-2 #150 closed the old open-path purge gap), and the recents push / settings save / `register_opened` are all bypassed; `main.rs` stays on the Library, rebuilds the carousel, and shows a notice (never enters the viewer). It ALSO closes the viewer, so `open_file()` is `None` after a rejection — no phantom book in the title bar, and the Library's Down key refuses to re-enter the viewer.
 - **Cover-load time.** A cover worker that opens a book cleanly with zero pages fires the `empty-book-detected(string)` Slint callback; `main.rs::on_empty_book_detected` runs the shared `app::remove_empty_book` transaction (remove → save → cover purge), rebuilds the carousel, and notifies. Idempotent with the open-time path via `Library::remove`'s bool (a race loser stays silent).
@@ -227,7 +223,7 @@ dispatched at startup after the initial cover stream (no UI-thread I/O). `purge_
 unchanged. Deferred: re-pruning inside a session (overflow waits for the next launch), a Settings
 field / UI for the cap.
 
-### Data-clearing cleanup controls; Private Mode dropped (issue #178, branch `refactor/add_private_mode`, 2026-06-08)
+### Data-clearing cleanup controls; Private Mode dropped (issue #178, 2026-06-08)
 
 - Two confirmation-free cleanup buttons on the Settings dialog's General tab. **Clear reading
   history** empties the whole library — `Library::clear` clears `books` + `last_opened` and the
@@ -241,7 +237,7 @@ field / UI for the cap.
 - **Private Mode was explored and fully prototyped, then DROPPED by user decision.** A book add in
   gashuu is explicit curation, not a passive reading trace, so the privacy model did not fit; only
   the two cleanup controls above survived. No new dependencies.
-- **Implemented on branch `refactor/add_private_mode`, pending merge** (not yet shipped on `main`).
+- Shipped on `main` (`handlers/settings.rs`).
 
 ### Auto-update checker — GitHub Releases, hybrid packaging-aware (see [ADR-0013](ADRs/0013-auto-update.md))
 

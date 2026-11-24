@@ -75,7 +75,7 @@ run = "trunk serve"
 # tool-install concurrency and is a contributor's machine-local call.
 #
 # No `mise exec --` prefix inside these bodies: mise runs task bodies in the
-# activated tool environment (it exports RUSTUP_TOOLCHAIN=1.97.1 and prepends
+# activated tool environment (it exports RUSTUP_TOOLCHAIN=1.100.0 and prepends
 # the cargo-nextest install dir to PATH), so a bare `cargo` here IS the pinned
 # toolchain. Commands typed by hand still need the prefix — see CLAUDE.md.
 # ---------------------------------------------------------------------------

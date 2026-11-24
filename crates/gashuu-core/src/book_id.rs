@@ -25,6 +25,7 @@ impl BookId {
     }
 }
 
+/// Path-component order used by the `BTreeSet` in `Library::remove_many`.
 impl Ord for BookId {
     fn cmp(&self, other: &Self) -> Ordering {
         // Preserve desktop path order, breaking component ties to agree with string equality.

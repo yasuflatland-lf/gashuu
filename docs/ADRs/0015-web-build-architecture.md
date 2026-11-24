@@ -37,6 +37,8 @@ Reading those books needs bounded memory and responsive page turns.
    preserves the in-memory demo during controller migration. Once #660
    removes the session registry, an unavailable Worker or OPFS uses
    `UnavailableBackend` and shows “cannot save in this browser”.
+
+   **Amendment ([43/43]), 2026-11-24.** The interim backend was removed in #660. If the Worker or OPFS is unavailable at startup, the web viewer uses `UnavailableBackend`.
 6. Exclude RAR/CBR and AVIF on web. Their unrar and dav1d C/C++ integrations
    cannot target `wasm32-unknown-unknown`.
 7. Persist settings and library metadata through `BlobStore` backed by
