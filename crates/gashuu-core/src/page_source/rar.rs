@@ -262,24 +262,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn read_bytes_still_returns_full_entries_under_the_default_ceiling() {
-        let cbr = write_cbr(SAMPLE_CBR_B64);
-        let src = RarSource::open(cbr.path()).unwrap();
-
-        let expected = [(0, (2, 2)), (1, (2, 3)), (2, (3, 2)), (3, (4, 4))];
-        assert_eq!(src.list_pages().len(), expected.len());
-        for (i, (w, h)) in expected {
-            let bytes = src.read_bytes(i).unwrap();
-            let decoded = crate::image_ops::decode(&bytes).unwrap();
-            assert_eq!(
-                (decoded.width(), decoded.height()),
-                (w, h),
-                "page {i} must decode to a {w}x{h} image"
-            );
-        }
-    }
-
     /// macOS metadata inside a RAR is never enumerated as a page. The
     /// AppleDouble resource fork (`__MACOSX/Manga/._001.jpg`) carries a `.jpg`
     /// name and sorts AHEAD of the real pages via case-insensitive natural

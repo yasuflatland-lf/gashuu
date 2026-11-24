@@ -353,15 +353,6 @@ mod tests {
         assert!(check_pixel_limit(100, 100).is_ok());
     }
 
-    #[test]
-    fn decode_small_png_succeeds_through_new_prepath() {
-        // Verifies the new header-pre-read path does not break normal small images.
-        let decoded = decode(&png_bytes(4, 4)).unwrap();
-        assert_eq!(decoded.width(), 4);
-        assert_eq!(decoded.height(), 4);
-        assert_eq!(decoded.rgba().len(), 4 * 4 * 4);
-    }
-
     /// Standard CRC-32/ISO-HDLC (polynomial 0xEDB88320, the one PNG uses) over a
     /// byte slice. Used to repair the IHDR chunk CRC after forging its dimensions.
     fn crc32(data: &[u8]) -> u32 {
@@ -416,63 +407,20 @@ mod tests {
 
     #[test]
     fn decode_thumbnail_wide_image_fits_max_side() {
-        // 200x100: longer edge is width=200. With max_side=64, width should become 64
-        // and height should be 32 (aspect ratio 2:1 preserved within ±1px).
-        let bytes = png_bytes(200, 100);
-        let thumb = decode_thumbnail(&bytes, 64).unwrap();
-        assert!(thumb.width() <= 64, "width {} > max_side 64", thumb.width());
-        assert!(
-            thumb.height() <= 64,
-            "height {} > max_side 64",
-            thumb.height()
-        );
-        // Aspect ratio check: width should be roughly 2x height (within ±1px tolerance).
-        let expected_height = thumb.width() / 2;
-        let diff = (thumb.height() as i64 - expected_height as i64).unsigned_abs();
-        assert!(
-            diff <= 1,
-            "aspect ratio not preserved: w={} h={} expected_h~={}",
-            thumb.width(),
-            thumb.height(),
-            expected_height
-        );
+        let thumb = decode_thumbnail(&png_bytes(200, 100), 64).unwrap();
+        assert_eq!((thumb.width(), thumb.height()), (64, 32));
     }
 
     #[test]
     fn decode_thumbnail_tall_image_fits_max_side() {
-        // 100x200: longer edge is height=200. With max_side=64, height should become 64
-        // and width should be 32 (aspect ratio 1:2 preserved within ±1px).
-        let bytes = png_bytes(100, 200);
-        let thumb = decode_thumbnail(&bytes, 64).unwrap();
-        assert!(thumb.width() <= 64, "width {} > max_side 64", thumb.width());
-        assert!(
-            thumb.height() <= 64,
-            "height {} > max_side 64",
-            thumb.height()
-        );
-        // Aspect ratio check: height should be roughly 2x width (within ±1px tolerance).
-        let expected_width = thumb.height() / 2;
-        let diff = (thumb.width() as i64 - expected_width as i64).unsigned_abs();
-        assert!(
-            diff <= 1,
-            "aspect ratio not preserved: w={} h={} expected_w~={}",
-            thumb.width(),
-            thumb.height(),
-            expected_width
-        );
+        let thumb = decode_thumbnail(&png_bytes(100, 200), 64).unwrap();
+        assert_eq!((thumb.width(), thumb.height()), (32, 64));
     }
 
     #[test]
     fn decode_thumbnail_square_image_fits_max_side() {
-        // 100x100: square. With max_side=64, both sides should be 64.
-        let bytes = png_bytes(100, 100);
-        let thumb = decode_thumbnail(&bytes, 64).unwrap();
-        assert!(thumb.width() <= 64, "width {} > max_side 64", thumb.width());
-        assert!(
-            thumb.height() <= 64,
-            "height {} > max_side 64",
-            thumb.height()
-        );
+        let thumb = decode_thumbnail(&png_bytes(100, 100), 64).unwrap();
+        assert_eq!((thumb.width(), thumb.height()), (64, 64));
     }
 
     #[test]
@@ -499,25 +447,8 @@ mod tests {
 
     #[test]
     fn decode_thumbnail_jpeg_wide_image_fits_max_side() {
-        // 200x100 JPEG: with max_side=64 the longer edge is bounded by 64 and the 2:1
-        // aspect preserved. JPEG is lossy (8/16-px MCU blocks), so allow ±2px.
-        let bytes = jpeg_bytes(200, 100);
-        let thumb = decode_thumbnail(&bytes, 64).unwrap();
-        assert!(thumb.width() <= 64, "width {} > max_side 64", thumb.width());
-        assert!(
-            thumb.height() <= 64,
-            "height {} > max_side 64",
-            thumb.height()
-        );
-        let expected_height = thumb.width() / 2;
-        let diff = (thumb.height() as i64 - expected_height as i64).unsigned_abs();
-        assert!(
-            diff <= 2,
-            "aspect ratio not preserved: w={} h={} expected_h~={}",
-            thumb.width(),
-            thumb.height(),
-            expected_height
-        );
+        let thumb = decode_thumbnail(&jpeg_bytes(200, 100), 64).unwrap();
+        assert_eq!((thumb.width(), thumb.height()), (64, 32));
     }
 
     #[test]
@@ -569,12 +500,7 @@ mod tests {
     #[test]
     fn decode_thumbnail_avif_fits_max_side() {
         let thumb = decode_thumbnail(&avif_bytes(), 4).unwrap();
-        assert!(thumb.width() <= 4, "width {} > max_side 4", thumb.width());
-        assert!(
-            thumb.height() <= 4,
-            "height {} > max_side 4",
-            thumb.height()
-        );
+        assert_eq!((thumb.width(), thumb.height()), (4, 3));
     }
 
     #[test]

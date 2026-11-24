@@ -120,8 +120,6 @@ mod tests {
     use super::*;
     use crate::{Library, MemoryBlobStore, Settings, LIBRARY_KEY, SETTINGS_KEY};
 
-    const CURRENT: u32 = 2;
-
     #[test]
     fn document_store_absent_blob_loads_the_absent_document() {
         let blobs = Arc::new(MemoryBlobStore::new());
@@ -147,88 +145,85 @@ mod tests {
         ));
     }
 
-    /// A migrate stamp that records it ran by writing `migrated_from` into the doc
-    /// and bumping `version` to CURRENT. Lets a test assert whether migration fired.
-    fn stamp_migrate(mut value: serde_json::Value, from: u32) -> serde_json::Value {
-        value["migrated_from"] = serde_json::json!(from);
-        value["version"] = serde_json::json!(CURRENT);
-        value
-    }
+    mod props {
+        use super::*;
+        use proptest::prelude::*;
+        use serde_json::{json, Value};
+        use std::cell::Cell;
 
-    #[test]
-    fn non_object_root_errors_without_panicking() {
-        for src in ["5", "[]", "\"x\"", "true", "null"] {
-            assert!(
-                parse_versioned_object(src, CURRENT, stamp_migrate).is_err(),
-                "expected Err for non-object root {src:?}"
-            );
+        fn version_input() -> impl Strategy<Value = (u32, Option<Value>)> {
+            (1u32..=5).prop_flat_map(|current| {
+                let u32_max = u64::from(u32::MAX);
+                let unsigned = prop_oneof![
+                    0..=u64::from(current) + 3,
+                    u32_max - 1..=u32_max + 1,
+                    Just(u32_max + 3),
+                    Just(u64::MAX),
+                    any::<u64>(),
+                ];
+                let version = prop_oneof![
+                    Just(None),
+                    prop::sample::select(vec![json!(-1), json!(1.5), json!("2"), json!(null)])
+                        .prop_map(Some),
+                    unsigned.prop_map(|version| Some(json!(version))),
+                ];
+                (Just(current), version)
+            })
+        }
+
+        proptest! {
+            /// C2-27: Versioned objects migrate only when their effective version is older.
+            /// Replaces `non_object_root_errors_without_panicking`, `older_version_is_migrated`,
+            /// `missing_version_is_treated_as_zero_and_migrated`,
+            /// `huge_version_is_treated_as_unknown_and_migrated`,
+            /// `current_version_is_returned_untouched`, and
+            /// `future_version_is_reported_and_not_migrated`.
+            #[test]
+            fn prop_versioned_object_routes_by_effective_version(
+                (current, version) in version_input(),
+                payload in any::<u32>(),
+            ) {
+                let mut original = json!({"payload": payload});
+                let effective = version.as_ref()
+                    .and_then(Value::as_u64)
+                    .map_or(0, |version| u32::try_from(version).unwrap_or(0));
+                if let Some(version) = version {
+                    original["version"] = version;
+                }
+
+                let calls = Cell::new(0);
+                let parsed = parse_versioned_object(&original.to_string(), current, |mut value, from| {
+                    calls.set(calls.get() + 1);
+                    value["migrated_from"] = json!(from);
+                    value["version"] = json!(current);
+                    value
+                }).unwrap();
+                let actual = match parsed {
+                    VersionedDocument::Ready(value) => Ok(value),
+                    VersionedDocument::FromFuture { found } => Err(found),
+                };
+
+                let mut expected = original;
+                if effective < current {
+                    expected["migrated_from"] = json!(effective);
+                    expected["version"] = json!(current);
+                }
+                let expected = if effective > current { Err(effective) } else { Ok(expected) };
+                prop_assert_eq!(actual, expected);
+                prop_assert_eq!(calls.get(), u32::from(effective < current));
+
+                for root in [json!(payload), json!([payload]), json!(payload.to_string()), json!(true), Value::Null] {
+                    let result = parse_versioned_object(&root.to_string(), current, |_, _| {
+                        panic!("a non-object must never reach migration");
+                    });
+                    prop_assert!(result.is_err(), "expected a parse error for {root}");
+                }
+            }
         }
     }
 
     #[test]
     fn invalid_json_propagates_the_parse_error() {
-        assert!(parse_versioned_object("{ not json", CURRENT, stamp_migrate).is_err());
-    }
-
-    #[test]
-    fn older_version_is_migrated() {
-        let VersionedDocument::Ready(value) =
-            parse_versioned_object(r#"{"version":0}"#, CURRENT, stamp_migrate).unwrap()
-        else {
-            panic!("older version must be ready after migration");
-        };
-        assert_eq!(value["migrated_from"], serde_json::json!(0));
-        assert_eq!(value["version"], serde_json::json!(CURRENT));
-    }
-
-    #[test]
-    fn missing_version_is_treated_as_zero_and_migrated() {
-        let VersionedDocument::Ready(value) =
-            parse_versioned_object(r#"{"books":[]}"#, CURRENT, stamp_migrate).unwrap()
-        else {
-            panic!("missing version must be ready after migration");
-        };
-        assert_eq!(value["migrated_from"], serde_json::json!(0));
-    }
-
-    #[test]
-    fn huge_version_is_treated_as_unknown_and_migrated() {
-        // 2^32 + 2 truncates to the current version (2) and would skip migration.
-        let huge = u64::from(u32::MAX) + 3;
-        let VersionedDocument::Ready(value) =
-            parse_versioned_object(&format!(r#"{{"version":{huge}}}"#), CURRENT, stamp_migrate)
-                .unwrap()
-        else {
-            panic!("huge version must be treated as unknown and migrated");
-        };
-        assert_eq!(value["migrated_from"], serde_json::json!(0));
-    }
-
-    #[test]
-    fn current_version_is_returned_untouched() {
-        let src = format!(r#"{{"version":{CURRENT},"keep":"me"}}"#);
-        let VersionedDocument::Ready(value) =
-            parse_versioned_object(&src, CURRENT, stamp_migrate).unwrap()
-        else {
-            panic!("current version must be ready");
-        };
-        // migrate must NOT have run: no stamp, original fields intact.
-        assert!(value.get("migrated_from").is_none());
-        assert_eq!(value["keep"], serde_json::json!("me"));
-        assert_eq!(value["version"], serde_json::json!(CURRENT));
-    }
-
-    #[test]
-    fn future_version_is_reported_and_not_migrated() {
-        let migrated = std::cell::Cell::new(false);
-        let result =
-            parse_versioned_object(r#"{"version":3,"keep":"me"}"#, CURRENT, |value, from| {
-                migrated.set(true);
-                stamp_migrate(value, from)
-            })
-            .unwrap();
-
-        assert!(matches!(result, VersionedDocument::FromFuture { found: 3 }));
-        assert!(!migrated.get(), "future documents must not be migrated");
+        assert!(parse_versioned_object("{ not json", 2, |value, _| value).is_err());
     }
 }
