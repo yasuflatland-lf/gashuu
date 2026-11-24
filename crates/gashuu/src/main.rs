@@ -811,6 +811,7 @@ fn wire_startup_sweep(
 /// `slint::Timer` dispatch — a top-level event-loop callback with no other
 /// handler on the stack, so no `RefCell` borrow is live. Never call this from
 /// inside another handler that holds a `borrow_mut()`.
+#[cfg(not(target_arch = "wasm32"))]
 #[allow(clippy::too_many_arguments)]
 fn run_exit_persistence(
     ui: &ViewerWindow,
@@ -857,6 +858,7 @@ fn run_exit_persistence(
 /// `end` first commits any Library-scope global edit, then restores the book
 /// runtime, so the existing exit settings save persists that edit without letting
 /// `AppExit` pin the global scratchpad onto the book (issue #556).
+#[cfg(not(target_arch = "wasm32"))]
 #[allow(clippy::too_many_arguments)]
 fn stage_exit_state(
     dialog_session: &RefCell<DialogSession>,
@@ -908,6 +910,7 @@ fn stage_suspend_state(
 /// Wire the self-update relaunch's persistence bridge. Lives here, not in
 /// `handlers/update.rs`, because it is the only place all five state cells are in
 /// scope — and the relaunch closure itself is `Send` and cannot hold them.
+#[cfg(not(target_arch = "wasm32"))]
 #[allow(clippy::too_many_arguments)]
 fn wire_relaunch_persistence(
     ui: &ViewerWindow,
