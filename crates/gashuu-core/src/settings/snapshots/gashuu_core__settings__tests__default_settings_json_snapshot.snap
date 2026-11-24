@@ -1,5 +1,5 @@
 ---
-source: crates/gashuu-core/src/settings.rs
+source: crates/gashuu-core/src/settings/tests.rs
 expression: "Settings::default().to_json().unwrap()"
 ---
 {
