@@ -147,119 +147,156 @@ pub fn anchored_zoom(
 mod tests {
     use super::*;
     use crate::view_modes::FitMode;
+    use proptest::prelude::*;
 
-    /// Float comparison tolerance for geometry assertions.
-    fn approx(a: f32, b: f32) -> bool {
-        (a - b).abs() < 1e-4
+    fn pan_dimension() -> impl Strategy<Value = f32> {
+        prop_oneof![9 => 0.0f32..1e5, 1 => Just(0.0)]
     }
 
-    // ---- clamp_zoom --------------------------------------------------------
-
-    #[test]
-    fn clamp_zoom_below_min_pins_to_min() {
-        assert!(approx(clamp_zoom(0.0), ZOOM_MIN));
-        assert!(approx(clamp_zoom(0.5), ZOOM_MIN));
-        assert!(approx(clamp_zoom(-3.0), ZOOM_MIN));
+    fn fit_dimension() -> impl Strategy<Value = f32> {
+        prop_oneof![8 => 0.0f32..1e4, 1 => -1e4f32..0.0, 1 => Just(0.0)]
     }
 
-    #[test]
-    fn clamp_zoom_above_max_pins_to_max() {
-        assert!(approx(clamp_zoom(100.0), ZOOM_MAX));
-        assert!(approx(clamp_zoom(8.0001), ZOOM_MAX));
+    fn relative_tolerance(a: f64, b: f64) -> f64 {
+        1e-4 * a.abs().max(b.abs()).max(1.0)
     }
 
-    #[test]
-    fn clamp_zoom_in_range_unchanged() {
-        assert!(approx(clamp_zoom(1.0), 1.0));
-        assert!(approx(clamp_zoom(3.5), 3.5));
-        assert!(approx(clamp_zoom(8.0), 8.0));
+    proptest! {
+        #[test]
+        fn pan_clamps_or_centers_each_axis(
+            disp in (pan_dimension(), pan_dimension()),
+            vp in (pan_dimension(), pan_dimension()),
+            offset in (-2e5f32..2e5, -2e5f32..2e5),
+        ) {
+            let displayed = ViewSize::new(disp.0, disp.1);
+            let viewport = ViewSize::new(vp.0, vp.1);
+            let centered = centered_offset(displayed, viewport);
+            let clamped = clamp_offset(displayed, viewport, ViewPoint::new(offset.0, offset.1));
+
+            for (disp, vp, input, center, output) in [
+                (disp.0, vp.0, offset.0, centered.x, clamped.x),
+                (disp.1, vp.1, offset.1, centered.y, clamped.y),
+            ] {
+                let gap = vp - disp;
+                prop_assert_eq!(center, gap / 2.0);
+                prop_assert_eq!(center.signum(), gap.signum());
+                if disp <= vp {
+                    prop_assert_eq!(output, gap / 2.0);
+                } else {
+                    prop_assert!((gap..=0.0).contains(&output));
+                    prop_assert!(output + disp >= vp - 1e-3 * disp.max(1.0));
+                    let expected = if input < gap {
+                        gap
+                    } else if input > 0.0 {
+                        0.0
+                    } else {
+                        input
+                    };
+                    prop_assert_eq!(output, expected);
+                }
+            }
+
+            prop_assert_eq!(clamp_offset(displayed, viewport, clamped), clamped);
+        }
+
+        #[test]
+        fn anchored_zoom_preserves_content_coordinates(
+            old_scale in 0.01f32..100.0,
+            new_scale in 0.01f32..100.0,
+            anchor in (-1e4f32..1e4, -1e4f32..1e4),
+            offset in (-1e4f32..1e4, -1e4f32..1e4),
+        ) {
+            let next = anchored_zoom(
+                ViewPoint::new(anchor.0, anchor.1),
+                old_scale,
+                new_scale,
+                ViewPoint::new(offset.0, offset.1),
+            );
+            for (anchor, offset, next) in [(anchor.0, offset.0, next.x), (anchor.1, offset.1, next.y)] {
+                let before = (f64::from(anchor) - f64::from(offset)) / f64::from(old_scale);
+                let after = (f64::from(anchor) - f64::from(next)) / f64::from(new_scale);
+                // One rounded viewport offset can span several distinguishable content points.
+                let rounding = f64::from((next.next_up() - next).max(next - next.next_down()))
+                    / (2.0 * f64::from(new_scale));
+                prop_assert!(
+                    (before - after).abs() <= relative_tolerance(before, after) + rounding,
+                    "content coordinate changed from {before} to {after} (rounding {rounding})",
+                );
+            }
+        }
+
+        #[test]
+        fn anchored_zoom_with_non_positive_old_scale_keeps_offset(
+            negative_scale in -100.0f32..0.0,
+            new_scale in 0.01f32..100.0,
+            anchor in (-1e4f32..1e4, -1e4f32..1e4),
+            offset in (-1e4f32..1e4, -1e4f32..1e4),
+        ) {
+            let anchor = ViewPoint::new(anchor.0, anchor.1);
+            let offset = ViewPoint::new(offset.0, offset.1);
+            for old_scale in [0.0, -0.0, negative_scale] {
+                prop_assert_eq!(anchored_zoom(anchor, old_scale, new_scale, offset), offset);
+            }
+        }
+
+        #[test]
+        fn clamp_zoom_pins_outside_values_and_preserves_inside_values(
+            zoom in prop_oneof![
+                any::<u32>().prop_map(f32::from_bits).prop_filter("non-NaN zoom", |z| !z.is_nan()),
+                ZOOM_MIN..=ZOOM_MAX,
+                Just(ZOOM_MAX.next_up()),
+                Just(f32::INFINITY),
+                Just(f32::NEG_INFINITY),
+            ],
+        ) {
+            let clamped = clamp_zoom(zoom);
+            prop_assert!((ZOOM_MIN..=ZOOM_MAX).contains(&clamped));
+            let expected = if zoom.is_infinite() || zoom < ZOOM_MIN {
+                ZOOM_MIN
+            } else if zoom > ZOOM_MAX {
+                ZOOM_MAX
+            } else {
+                zoom
+            };
+            prop_assert_eq!(clamped, expected);
+        }
+
+        #[test]
+        fn fit_scale_follows_each_mode(
+            content in (fit_dimension(), fit_dimension()),
+            viewport in (fit_dimension(), fit_dimension()),
+        ) {
+            let content = ViewSize::new(content.0, content.1);
+            let viewport = ViewSize::new(viewport.0, viewport.1);
+            let actual = fit_scale(content, viewport, FitMode::Actual);
+            let width = fit_scale(content, viewport, FitMode::Width);
+            let whole = fit_scale(content, viewport, FitMode::Whole);
+            prop_assert_eq!(actual, 1.0);
+
+            if [content.width, content.height, viewport.width, viewport.height]
+                .iter()
+                .any(|&dimension| dimension <= 0.0)
+            {
+                prop_assert_eq!(width, 1.0);
+                prop_assert_eq!(whole, 1.0);
+            } else {
+                prop_assert_eq!(width, viewport.width / content.width);
+                prop_assert!(whole.is_finite() && whole > 0.0);
+                let width_gap = f64::from(viewport.width) - f64::from(content.width) * f64::from(whole);
+                let height_gap = f64::from(viewport.height) - f64::from(content.height) * f64::from(whole);
+                let width_tolerance = relative_tolerance(f64::from(viewport.width), 0.0);
+                let height_tolerance = relative_tolerance(f64::from(viewport.height), 0.0);
+                prop_assert!(width_gap >= -width_tolerance);
+                prop_assert!(height_gap >= -height_tolerance);
+                prop_assert!(width_gap.abs() <= width_tolerance || height_gap.abs() <= height_tolerance);
+            }
+        }
     }
 
     #[test]
     fn clamp_zoom_nan_is_zoom_min() {
         for zoom in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
             assert_eq!(clamp_zoom(zoom), ZOOM_MIN);
-        }
-    }
-
-    // ---- fit_scale ---------------------------------------------------------
-
-    #[test]
-    fn fit_scale_whole_wide_content_limited_by_width() {
-        // Wide content (400x100) into a wide viewport (200x200):
-        // width ratio 0.5 < height ratio 2.0 -> min = 0.5 (width-dominated).
-        assert!(approx(
-            fit_scale(
-                ViewSize::new(400.0, 100.0),
-                ViewSize::new(200.0, 200.0),
-                FitMode::Whole
-            ),
-            0.5
-        ));
-    }
-
-    #[test]
-    fn fit_scale_whole_tall_content_limited_by_height() {
-        // Tall content (100x400) into a tall viewport (200x200):
-        // height ratio 0.5 < width ratio 2.0 -> min = 0.5 (height-dominated).
-        assert!(approx(
-            fit_scale(
-                ViewSize::new(100.0, 400.0),
-                ViewSize::new(200.0, 200.0),
-                FitMode::Whole
-            ),
-            0.5
-        ));
-    }
-
-    #[test]
-    fn fit_scale_width_uses_width_ratio_only() {
-        // Width = vp_w/c_w = 600/300 = 2.0, regardless of height overflow.
-        assert!(approx(
-            fit_scale(
-                ViewSize::new(300.0, 100.0),
-                ViewSize::new(600.0, 200.0),
-                FitMode::Width
-            ),
-            2.0
-        ));
-    }
-
-    #[test]
-    fn fit_scale_actual_is_always_one() {
-        assert!(approx(
-            fit_scale(
-                ViewSize::new(300.0, 100.0),
-                ViewSize::new(600.0, 200.0),
-                FitMode::Actual
-            ),
-            1.0
-        ));
-        assert!(approx(
-            fit_scale(
-                ViewSize::new(10.0, 10.0),
-                ViewSize::new(1000.0, 1000.0),
-                FitMode::Actual
-            ),
-            1.0
-        ));
-    }
-
-    #[test]
-    fn fit_scale_non_positive_inputs_return_one() {
-        // Each non-positive input independently forces the 1.0 fallback.
-        let content = ViewSize::new(100.0, 100.0);
-        let viewport = ViewSize::new(200.0, 200.0);
-        for (content, viewport) in [
-            (ViewSize::new(0.0, 100.0), viewport),
-            (ViewSize::new(100.0, 0.0), viewport),
-            (content, ViewSize::new(0.0, 200.0)),
-            (content, ViewSize::new(200.0, 0.0)),
-            (ViewSize::new(-1.0, 100.0), viewport),
-        ] {
-            for mode in [FitMode::Whole, FitMode::Width, FitMode::Actual] {
-                assert_eq!(fit_scale(content, viewport, mode), 1.0);
-            }
         }
     }
 
@@ -294,86 +331,6 @@ mod tests {
         assert_eq!(fit_scale(wide, landscape, FitMode::Whole), 1.0);
     }
 
-    // ---- centered_offset ---------------------------------------------------
-
-    #[test]
-    fn centered_offset_shrunk_content_is_positive() {
-        // Content smaller than viewport: positive margins on both axes.
-        let offset = centered_offset(ViewSize::new(100.0, 50.0), ViewSize::new(300.0, 200.0));
-        assert!(approx(offset.x, 100.0)); // (300-100)/2
-        assert!(approx(offset.y, 75.0)); // (200-50)/2
-    }
-
-    #[test]
-    fn centered_offset_enlarged_content_is_negative() {
-        // Content larger than viewport: negative offset (middle is shown).
-        let offset = centered_offset(ViewSize::new(500.0, 400.0), ViewSize::new(300.0, 200.0));
-        assert!(approx(offset.x, -100.0)); // (300-500)/2
-        assert!(approx(offset.y, -100.0)); // (200-400)/2
-    }
-
-    // ---- clamp_offset ------------------------------------------------------
-
-    #[test]
-    fn clamp_offset_disp_fits_centers_both_axes() {
-        // disp <= vp on both axes -> centered, ignoring the requested offset.
-        let offset = clamp_offset(
-            ViewSize::new(100.0, 50.0),
-            ViewSize::new(300.0, 200.0),
-            ViewPoint::new(999.0, -999.0),
-        );
-        assert!(approx(offset.x, 100.0)); // (300-100)/2
-        assert!(approx(offset.y, 75.0)); // (200-50)/2
-    }
-
-    #[test]
-    fn clamp_offset_overflow_left_edge_stays() {
-        // disp > vp; o = 0 is the right-most valid edge (content top-left at vp
-        // top-left), within [vp-disp, 0] -> unchanged.
-        let offset = clamp_offset(
-            ViewSize::new(500.0, 400.0),
-            ViewSize::new(300.0, 200.0),
-            ViewPoint::new(0.0, -50.0),
-        );
-        assert!(approx(offset.x, 0.0));
-    }
-
-    #[test]
-    fn clamp_offset_overflow_right_edge_stays() {
-        // o = vp - disp = 300 - 500 = -200 is the left-most valid edge -> unchanged.
-        let offset = clamp_offset(
-            ViewSize::new(500.0, 400.0),
-            ViewSize::new(300.0, 200.0),
-            ViewPoint::new(-200.0, -50.0),
-        );
-        assert!(approx(offset.x, -200.0));
-    }
-
-    #[test]
-    fn clamp_offset_overflow_middle_value_pinned_into_range() {
-        // Requested ox = 50 (> 0) is pinned to the high bound 0; oy = -500
-        // (< vp-disp = -200) is pinned to the low bound -200.
-        let offset = clamp_offset(
-            ViewSize::new(500.0, 400.0),
-            ViewSize::new(300.0, 200.0),
-            ViewPoint::new(50.0, -500.0),
-        );
-        assert!(approx(offset.x, 0.0));
-        assert!(approx(offset.y, -200.0));
-    }
-
-    #[test]
-    fn clamp_offset_single_axis_overflow_mixes_center_and_clamp() {
-        // Width overflows (500 > 300) -> clamp; height fits (50 <= 200) -> center.
-        let offset = clamp_offset(
-            ViewSize::new(500.0, 50.0),
-            ViewSize::new(300.0, 200.0),
-            ViewPoint::new(999.0, 999.0),
-        );
-        assert!(approx(offset.x, 0.0)); // clamped to high bound
-        assert!(approx(offset.y, 75.0)); // centered (200-50)/2
-    }
-
     #[test]
     fn clamp_offset_never_panics_on_nan_or_inf() {
         let values = [f32::NAN, f32::INFINITY, f32::NEG_INFINITY, 0.0, 100.0];
@@ -401,69 +358,6 @@ mod tests {
                 }
             }
         }
-    }
-
-    // ---- anchored_zoom -----------------------------------------------------
-
-    /// The content point under the cursor must be invariant across a scale
-    /// change: `(anchor - new_o)/new_scale == (anchor - old_o)/old_scale`.
-    fn assert_anchor_invariant(
-        anchor: f32,
-        old_scale: f32,
-        new_scale: f32,
-        old_o: f32,
-        new_o: f32,
-    ) {
-        let before = (anchor - old_o) / old_scale;
-        let after = (anchor - new_o) / new_scale;
-        assert!(
-            approx(before, after),
-            "content point not preserved: before={before}, after={after}"
-        );
-    }
-
-    #[test]
-    fn anchored_zoom_in_preserves_point_at_center() {
-        let anchor = ViewPoint::new(150.0, 100.0);
-        let (old_scale, new_scale) = (1.0, 2.0);
-        let offset = ViewPoint::new(10.0, 20.0);
-        let next = anchored_zoom(anchor, old_scale, new_scale, offset);
-        assert_anchor_invariant(anchor.x, old_scale, new_scale, offset.x, next.x);
-        assert_anchor_invariant(anchor.y, old_scale, new_scale, offset.y, next.y);
-    }
-
-    #[test]
-    fn anchored_zoom_out_preserves_point_at_center() {
-        let anchor = ViewPoint::new(150.0, 100.0);
-        let (old_scale, new_scale) = (4.0, 2.0);
-        let offset = ViewPoint::new(-30.0, -40.0);
-        let next = anchored_zoom(anchor, old_scale, new_scale, offset);
-        assert_anchor_invariant(anchor.x, old_scale, new_scale, offset.x, next.x);
-        assert_anchor_invariant(anchor.y, old_scale, new_scale, offset.y, next.y);
-    }
-
-    #[test]
-    fn anchored_zoom_preserves_point_at_edge() {
-        // Anchor at the viewport origin (top-left edge).
-        let anchor = ViewPoint::new(0.0, 0.0);
-        let (old_scale, new_scale) = (1.0, 3.0);
-        let offset = ViewPoint::new(25.0, -10.0);
-        let next = anchored_zoom(anchor, old_scale, new_scale, offset);
-        assert_anchor_invariant(anchor.x, old_scale, new_scale, offset.x, next.x);
-        assert_anchor_invariant(anchor.y, old_scale, new_scale, offset.y, next.y);
-    }
-
-    #[test]
-    fn anchored_zoom_old_scale_non_positive_is_identity() {
-        let offset = ViewPoint::new(12.0, -34.0);
-        assert_eq!(
-            anchored_zoom(ViewPoint::new(50.0, 60.0), 0.0, 2.0, offset),
-            offset
-        );
-        assert_eq!(
-            anchored_zoom(ViewPoint::new(50.0, 60.0), -1.0, 2.0, offset),
-            offset
-        );
     }
 
     #[test]

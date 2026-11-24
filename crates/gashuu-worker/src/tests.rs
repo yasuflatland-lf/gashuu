@@ -920,7 +920,17 @@ fn quota_preflight_accounts_for_usage_and_unknown_estimates() {
 
 mod props {
     use super::*;
+    use crate::cover_store::plan_cover_prune;
     use proptest::prelude::*;
+
+    fn cover_mtime() -> impl Strategy<Value = f64> {
+        prop_oneof![
+            prop::sample::select(&[-0.0, 0.0, 1.0, 2.0, f64::NAN][..]),
+            any::<u64>()
+                .prop_map(f64::from_bits)
+                .prop_filter("finite mtime", |t| t.is_finite()),
+        ]
+    }
 
     proptest! {
         /// Quota checks always return, and if an upload fits, any smaller upload fits under the same estimates.
@@ -935,6 +945,38 @@ mod props {
             let smaller_fits = fits_in_quota(smaller, usage, quota);
 
             prop_assert!(!fits || smaller_fits);
+        }
+
+        #[test]
+        fn cover_prune_removes_minimal_oldest_first_prefix(
+            entries in prop::collection::vec(
+                (prop_oneof![4 => 0u64..100, 1 => Just(u64::MAX)], cover_mtime()),
+                0..=12,
+            ),
+            max_bytes in prop_oneof![0u64..400, Just(0), Just(u64::MAX)],
+        ) {
+            // Descending names make equal mtimes exercise the name tiebreaker.
+            let files: Vec<_> = entries.into_iter().zip((0..12).rev())
+                .map(|((size, mtime), index)| (format!("cover-{index:02}"), size, mtime))
+                .collect();
+            let removed = plan_cover_prune(&files, max_bytes);
+
+            let mut oldest_first: Vec<_> = files.iter().collect();
+            oldest_first.sort_by(|(name_a, _, time_a), (name_b, _, time_b)| {
+                time_a.total_cmp(time_b).then_with(|| name_a.cmp(name_b))
+            });
+            let names: Vec<_> = oldest_first.iter().map(|(name, _, _)| name.clone()).collect();
+            prop_assert!(names.starts_with(&removed), "expected a prefix of {names:?}, got {removed:?}");
+
+            let remaining: u128 = oldest_first[removed.len()..].iter()
+                .map(|(_, size, _)| u128::from(*size))
+                .sum();
+            let budget = u128::from(max_bytes);
+            prop_assert!(remaining <= budget);
+            if !removed.is_empty() {
+                let last_removed_size = u128::from(oldest_first[removed.len() - 1].1);
+                prop_assert!(remaining + last_removed_size > budget);
+            }
         }
     }
 }
@@ -985,19 +1027,11 @@ fn import_rejects_a_rar_renamed_as_cbz() {
 
 #[test]
 fn cover_prune_and_staged_store_contract() {
-    use crate::cover_store::{cover_file_name, plan_cover_prune, StagedCoverStore};
+    use crate::cover_store::{cover_file_name, StagedCoverStore};
     use gashuu_core::{BookFingerprint, BookId, ThumbSlot, ThumbStore};
     let fp = BookFingerprint::of_id(&BookId::new(ID));
     let name = cover_file_name(fp, 512);
     assert_eq!(name, format!("{}.qoi", fp.cover_key(512)));
-    let files = vec![
-        ("b".into(), 5, 1.0),
-        ("a".into(), 5, 1.0),
-        ("c".into(), 4, 2.0),
-    ];
-    assert!(plan_cover_prune(&files, 15).is_empty());
-    assert!(plan_cover_prune(&files, 14).is_empty());
-    assert_eq!(plan_cover_prune(&files, 4), vec!["a", "b"]);
     let store = StagedCoverStore::default();
     let image = DecodedImage::new(vec![1, 2, 3, 255], 1, 1).unwrap();
     assert!(store.get(fp, ThumbSlot::Cover, 512).is_none());
@@ -1049,8 +1083,6 @@ fn staged_purge_only_removes_selected_book_and_bad_data_misses() {
     assert_eq!(writes[0].0, cover_file_name(second, 512));
     store.preload(cover_file_name(first, 512), vec![0, 1, 2]);
     assert!(store.get(first, ThumbSlot::Cover, 512).is_none());
-    assert_eq!(store.purge_pages(first, &[512], 1), 0);
-    let _ = store.prune(0);
 }
 
 #[test]

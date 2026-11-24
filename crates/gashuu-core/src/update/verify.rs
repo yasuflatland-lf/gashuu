@@ -40,6 +40,34 @@ pub fn is_verified(bytes: &[u8], expected_hex: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
+
+    fn checksum_padding() -> impl Strategy<Value = &'static str> {
+        prop::sample::select(&["", "\n", " \t\r\n", "\n \t\n"][..])
+    }
+
+    proptest! {
+        #[test]
+        fn parse_sha256sums_round_trips_entries(
+            entries in prop::collection::btree_map(
+                "[A-Za-z0-9._-]{1,24}",
+                ("[0-9a-fA-F]{64}", any::<bool>(), checksum_padding()),
+                0..=12,
+            ),
+            trailing_padding in checksum_padding(),
+        ) {
+            let mut text = String::new();
+            let mut expected = HashMap::new();
+            for (name, (hex, binary, padding)) in entries {
+                let separator = if binary { " *" } else { "  " };
+                writeln!(text, "{padding}{hex}{separator}{name}").unwrap();
+                expected.insert(name, hex.to_ascii_lowercase());
+            }
+            text.push_str(trailing_padding);
+
+            prop_assert_eq!(parse_sha256sums(&text), expected);
+        }
+    }
 
     // Known vector: SHA-256("abc").
     const ABC_HASH: &str = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
@@ -54,20 +82,5 @@ mod tests {
         assert!(is_verified(b"abc", ABC_HASH));
         assert!(is_verified(b"abc", &ABC_HASH.to_uppercase()));
         assert!(!is_verified(b"abcd", ABC_HASH));
-    }
-
-    #[test]
-    fn parse_sums_both_formats() {
-        let text = format!(
-            "{ABC_HASH}  gashuu-v1.0.0-x86_64.AppImage\n{ABC_HASH} *gashuu-v1.0.0-windows-x64.zip\n"
-        );
-        let map = parse_sha256sums(&text);
-        assert_eq!(map.get("gashuu-v1.0.0-x86_64.AppImage").unwrap(), ABC_HASH);
-        assert_eq!(map.get("gashuu-v1.0.0-windows-x64.zip").unwrap(), ABC_HASH);
-    }
-
-    #[test]
-    fn parse_sums_skips_blank_lines() {
-        assert!(parse_sha256sums("\n\n   \n").is_empty());
     }
 }

@@ -83,113 +83,75 @@ mod tests {
     };
 
     #[test]
-    fn all_actions_allowed_when_idle() {
-        for action in [
-            UpdateDialogAction::Accept,
-            UpdateDialogAction::Later,
-            UpdateDialogAction::Skip,
-            UpdateDialogAction::Notes,
+    fn update_dialog_action_gating_table() {
+        use UpdateDialogAction::{Accept, Later, Notes, Skip};
+
+        for (action, in_progress, expected) in [
+            (Accept, false, true),
+            (Accept, true, false),
+            (Later, false, true),
+            (Later, true, false),
+            (Skip, false, true),
+            (Skip, true, false),
+            (Notes, false, true),
+            (Notes, true, true),
         ] {
-            assert!(is_action_allowed(action, false));
+            assert_eq!(
+                is_action_allowed(action, in_progress),
+                expected,
+                "{action:?}, in_progress={in_progress}",
+            );
         }
     }
 
     #[test]
-    fn accept_blocked_while_in_progress() {
-        assert!(!is_action_allowed(UpdateDialogAction::Accept, true));
-    }
+    fn update_dialog_focus_target_table() {
+        use FocusTarget::{Carousel, ConfirmDialog, Pages, SettingsDialog, ShortcutsOverlay};
 
-    #[test]
-    fn later_and_skip_blocked_while_in_progress() {
-        assert!(!is_action_allowed(UpdateDialogAction::Later, true));
-        assert!(!is_action_allowed(UpdateDialogAction::Skip, true));
-    }
-
-    #[test]
-    fn notes_allowed_while_in_progress() {
-        assert!(is_action_allowed(UpdateDialogAction::Notes, true));
-    }
-
-    #[test]
-    fn confirm_wins_over_every_other_surface() {
-        let stack = ModalStack {
-            settings: true,
-            shortcuts: true,
-            confirm_delete: true,
-        };
-
-        assert_eq!(
-            focus_target_after_dialog(stack, 0),
-            FocusTarget::ConfirmDialog
-        );
-        assert_eq!(
-            focus_target_after_dialog(stack, 1),
-            FocusTarget::ConfirmDialog
-        );
-    }
-
-    #[test]
-    fn shortcuts_wins_over_settings() {
-        let stack = ModalStack {
-            settings: true,
-            shortcuts: true,
-            confirm_delete: false,
-        };
-
-        assert_eq!(
-            focus_target_after_dialog(stack, 0),
-            FocusTarget::ShortcutsOverlay
-        );
-    }
-
-    #[test]
-    fn settings_alone_returns_settings() {
-        let stack = ModalStack {
-            settings: true,
-            ..ModalStack::default()
-        };
-
-        assert_eq!(
-            focus_target_after_dialog(stack, 0),
-            FocusTarget::SettingsDialog
-        );
-        assert_eq!(
-            focus_target_after_dialog(stack, 1),
-            FocusTarget::SettingsDialog
-        );
-    }
-
-    #[test]
-    fn empty_stack_falls_back_to_the_screen_surface() {
-        let stack = ModalStack::default();
-
-        assert_eq!(focus_target_after_dialog(stack, 0), FocusTarget::Carousel);
-        assert_eq!(focus_target_after_dialog(stack, 1), FocusTarget::Pages);
-        assert_eq!(focus_target_after_dialog(stack, 7), FocusTarget::Pages);
-    }
-
-    #[test]
-    fn never_focuses_a_screen_surface_while_a_modal_is_open() {
-        for settings in [false, true] {
-            for shortcuts in [false, true] {
-                for confirm_delete in [false, true] {
-                    let stack = ModalStack {
-                        settings,
-                        shortcuts,
-                        confirm_delete,
-                    };
-                    if !settings && !shortcuts && !confirm_delete {
-                        continue;
-                    }
-
-                    for screen in [0, 1] {
-                        assert!(!matches!(
-                            focus_target_after_dialog(stack, screen),
-                            FocusTarget::Carousel | FocusTarget::Pages
-                        ));
-                    }
-                }
-            }
+        for (settings, shortcuts, confirm_delete, screen, expected) in [
+            (false, false, false, 0, Carousel),
+            (false, false, false, 1, Pages),
+            (false, false, false, 7, Pages),
+            (false, false, false, -1, Pages),
+            (false, false, true, 0, ConfirmDialog),
+            (false, false, true, 1, ConfirmDialog),
+            (false, false, true, 7, ConfirmDialog),
+            (false, false, true, -1, ConfirmDialog),
+            (false, true, false, 0, ShortcutsOverlay),
+            (false, true, false, 1, ShortcutsOverlay),
+            (false, true, false, 7, ShortcutsOverlay),
+            (false, true, false, -1, ShortcutsOverlay),
+            (false, true, true, 0, ConfirmDialog),
+            (false, true, true, 1, ConfirmDialog),
+            (false, true, true, 7, ConfirmDialog),
+            (false, true, true, -1, ConfirmDialog),
+            (true, false, false, 0, SettingsDialog),
+            (true, false, false, 1, SettingsDialog),
+            (true, false, false, 7, SettingsDialog),
+            (true, false, false, -1, SettingsDialog),
+            (true, false, true, 0, ConfirmDialog),
+            (true, false, true, 1, ConfirmDialog),
+            (true, false, true, 7, ConfirmDialog),
+            (true, false, true, -1, ConfirmDialog),
+            (true, true, false, 0, ShortcutsOverlay),
+            (true, true, false, 1, ShortcutsOverlay),
+            (true, true, false, 7, ShortcutsOverlay),
+            (true, true, false, -1, ShortcutsOverlay),
+            (true, true, true, 0, ConfirmDialog),
+            (true, true, true, 1, ConfirmDialog),
+            (true, true, true, 7, ConfirmDialog),
+            (true, true, true, -1, ConfirmDialog),
+        ] {
+            let stack = ModalStack {
+                settings,
+                shortcuts,
+                confirm_delete,
+            };
+            assert_eq!(
+                focus_target_after_dialog(stack, screen),
+                expected,
+                "{stack:?}, screen={screen}",
+            );
         }
     }
 }
