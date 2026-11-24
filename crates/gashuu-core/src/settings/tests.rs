@@ -1,15 +1,102 @@
 use super::*;
 use crate::window_geometry::{WindowGeometry, MIN_WINDOW_HEIGHT, MIN_WINDOW_WIDTH};
+use crate::{MAX_CACHE_CAPACITY, MAX_PREFETCH_RADIUS};
+use proptest::prelude::*;
 
-#[test]
-fn web_guidance_dismissals_round_trip_and_default() {
-    let mut settings = Settings::from_json("{}").unwrap();
-    assert!(settings.web_guidance_dismissed.is_empty());
-    settings.web_guidance_dismissed.insert("evicted".into());
-    assert_eq!(
-        Settings::from_json(&settings.to_json().unwrap()).unwrap(),
-        settings
+fn settings() -> impl Strategy<Value = Settings> {
+    let view = (
+        prop::sample::select(vec![ReadingDirection::Ltr, ReadingDirection::Rtl]),
+        prop::sample::select(vec![
+            SpreadMode::Auto,
+            SpreadMode::Single,
+            SpreadMode::Double,
+        ]),
+        prop::sample::select(vec![CoverMode::Standalone, CoverMode::Paired]),
+        prop::sample::select(vec![FitMode::Whole, FitMode::Width, FitMode::Actual]),
     );
+    let window = prop::option::of(
+        (0u32..40_000, 0u32..40_000, any::<i32>(), any::<i32>()).prop_map(
+            |(width, height, x, y)| WindowGeometry {
+                width,
+                height,
+                x,
+                y,
+            },
+        ),
+    );
+    let key_bindings = (
+        prop::collection::vec("[a-z]{1,8}", 0..4),
+        prop::collection::vec("[a-z]{1,8}", 0..4),
+    )
+        .prop_map(|(next, prev)| KeyBindings { next, prev });
+    let reading = (
+        key_bindings,
+        any::<bool>(),
+        // Unique recents keep the generated value at the normalization fixpoint.
+        prop::collection::vec("[a-z]{1,8}", 0..=MAX_RECENT_SOURCES + 2),
+        prop::sample::select(vec![Language::En, Language::Ja]),
+        any::<bool>(),
+    );
+    let updates = (
+        any::<bool>(),
+        prop::option::of("v[0-9]\\.[0-9]\\.[0-9]"),
+        prop::option::of(any::<i64>()),
+    );
+    (
+        any::<u32>(),
+        view,
+        (
+            0usize..MAX_CACHE_CAPACITY * 2,
+            0usize..MAX_PREFETCH_RADIUS * 2,
+        ),
+        reading,
+        window,
+        updates,
+        prop::collection::btree_set("[a-z]{1,8}", 0..4),
+    )
+        .prop_map(
+            |(
+                version,
+                (reading_direction, spread_mode, cover_mode, fit_mode),
+                (cache_capacity, prefetch_radius),
+                (key_bindings, track_recent_sources, recent_sources, language, allow_rar_archives),
+                window,
+                (auto_update_check, skipped_version, last_update_check),
+                web_guidance_dismissed,
+            )| Settings {
+                version,
+                reading_direction,
+                spread_mode,
+                cover_mode,
+                fit_mode,
+                cache_capacity,
+                prefetch_radius,
+                key_bindings,
+                track_recent_sources,
+                recent_sources: recent_sources
+                    .into_iter()
+                    .enumerate()
+                    .map(|(index, name)| PathBuf::from(format!("/{name}/{index}")))
+                    .collect(),
+                language,
+                allow_rar_archives,
+                window,
+                auto_update_check,
+                skipped_version,
+                last_update_check,
+                web_guidance_dismissed,
+            },
+        )
+}
+
+proptest! {
+    #[test]
+    fn normalized_settings_round_trip_through_json(mut settings in settings()) {
+        settings.normalize();
+        let json = settings.to_json().unwrap();
+
+        prop_assert_eq!(Settings::from_json(&json).unwrap(), settings);
+    }
 }
 
 #[test]
@@ -79,8 +166,6 @@ fn default_settings_have_expected_values() {
 }
 
 fn non_default_settings() -> Settings {
-    // Every field must DIFFER from `Settings::default()`, or the round-trip tests pass
-    // even when save/load drops a field (the default would re-supply the value).
     Settings {
         version: SETTINGS_VERSION,
         reading_direction: ReadingDirection::Ltr,
@@ -96,8 +181,6 @@ fn non_default_settings() -> Settings {
         track_recent_sources: true,
         recent_sources: vec![PathBuf::from("/a"), PathBuf::from("/b")],
         language: Language::Ja,
-        // Differs from the new default (`true`) so the round-trip tests below
-        // would catch save/load dropping this field.
         allow_rar_archives: false,
         window: Some(WindowGeometry {
             width: 1024,
@@ -105,7 +188,6 @@ fn non_default_settings() -> Settings {
             x: 120,
             y: -40,
         }),
-        // Differ from defaults (true / None / None) so round-trip tests are not vacuous.
         auto_update_check: false,
         skipped_version: Some("v9.9.9".to_string()),
         last_update_check: Some(1_700_000_000),
@@ -127,14 +209,6 @@ fn non_default_settings_differs_from_default_in_every_field() {
             );
         }
     }
-}
-
-#[test]
-fn round_trip_preserves_all_fields() {
-    let original = non_default_settings();
-    let json = original.to_json().unwrap();
-    let parsed = Settings::from_json(&json).unwrap();
-    assert_eq!(original, parsed);
 }
 
 #[test]
@@ -212,27 +286,6 @@ fn from_json_empty_document_uses_serde_defaults() {
 fn fit_mode_defaults_to_whole() {
     assert_eq!(FitMode::default(), FitMode::Whole);
     assert_eq!(Settings::default().fit_mode, FitMode::Whole);
-}
-
-#[test]
-fn fit_mode_round_trip() {
-    // Both legs use NON-default variants (default is Whole) so the round trip
-    // cannot pass by the parser merely re-defaulting a dropped field.
-    let s = Settings {
-        fit_mode: FitMode::Width,
-        ..Default::default()
-    };
-    let json = s.to_json().unwrap();
-    let parsed = Settings::from_json(&json).unwrap();
-    assert_eq!(parsed.fit_mode, FitMode::Width);
-
-    let s = Settings {
-        fit_mode: FitMode::Actual,
-        ..Default::default()
-    };
-    let json = s.to_json().unwrap();
-    let parsed = Settings::from_json(&json).unwrap();
-    assert_eq!(parsed.fit_mode, FitMode::Actual);
 }
 
 #[test]
@@ -394,19 +447,6 @@ fn language_defaults_to_en() {
 }
 
 #[test]
-fn language_round_trips() {
-    for lang in [Language::En, Language::Ja] {
-        let s = Settings {
-            language: lang,
-            ..Default::default()
-        };
-        let json = s.to_json().unwrap();
-        let parsed = Settings::from_json(&json).unwrap();
-        assert_eq!(parsed.language, lang);
-    }
-}
-
-#[test]
 fn language_serializes_as_ietf_tag() {
     // The snake_case serde tags must stay "en"/"ja" — the presentation layer's
     // Fluent localizer (`langid_for`) consumes them as locale identifiers.
@@ -560,21 +600,6 @@ fn window_omitted_from_default_json() {
 }
 
 #[test]
-fn window_round_trips() {
-    let s = Settings {
-        window: Some(WindowGeometry {
-            width: 1024,
-            height: 768,
-            x: 120,
-            y: -40,
-        }),
-        ..Default::default()
-    };
-    let parsed = Settings::from_json(&s.to_json().unwrap()).unwrap();
-    assert_eq!(parsed.window, s.window);
-}
-
-#[test]
 fn from_json_missing_window_defaults_to_none() {
     let s = Settings::from_json(r#"{"version":1}"#).unwrap();
     assert_eq!(s.window, None);
@@ -678,50 +703,6 @@ fn allow_rar_archives_missing_field_loads_as_true() {
         s.allow_rar_archives,
         "missing allow_rar_archives must load as true (new default)"
     );
-}
-
-#[test]
-fn allow_rar_archives_true_round_trips() {
-    let json = serde_json::json!({
-        "version": SETTINGS_VERSION,
-        "allow_rar_archives": true,
-    })
-    .to_string();
-    let s = Settings::from_json(&json).unwrap();
-    assert!(s.allow_rar_archives);
-    let json2 = s.to_json().unwrap();
-    let s2 = Settings::from_json(&json2).unwrap();
-    assert!(s2.allow_rar_archives);
-}
-
-#[test]
-fn allow_rar_archives_explicit_false_round_trips() {
-    // Now that the default is `true`, a user's explicit opt-out (`false`) must
-    // survive load/save rather than being re-defaulted back to `true`.
-    let json = serde_json::json!({
-        "version": SETTINGS_VERSION,
-        "allow_rar_archives": false,
-    })
-    .to_string();
-    let s = Settings::from_json(&json).unwrap();
-    assert!(!s.allow_rar_archives);
-    let json2 = s.to_json().unwrap();
-    let s2 = Settings::from_json(&json2).unwrap();
-    assert!(!s2.allow_rar_archives);
-}
-
-#[test]
-fn update_fields_round_trip() {
-    let s = Settings {
-        auto_update_check: false,
-        skipped_version: Some("0.12.0".to_string()),
-        last_update_check: Some(1_712_345_678),
-        ..Default::default()
-    };
-    let parsed = Settings::from_json(&s.to_json().unwrap()).unwrap();
-    assert!(!parsed.auto_update_check);
-    assert_eq!(parsed.skipped_version.as_deref(), Some("0.12.0"));
-    assert_eq!(parsed.last_update_check, Some(1_712_345_678));
 }
 
 #[test]

@@ -49,7 +49,6 @@ impl fmt::Display for BookId {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
 
     #[test]
     fn serde_is_a_bare_string() {
@@ -79,27 +78,6 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn ord_matches_path_component_order() {
-        let names = ["/m/A/1.cbz", "/m/A 2.cbz", "/m/A-3.cbz", "/m/a.cbz"];
-        let mut paths = names.map(PathBuf::from);
-        paths.sort();
-        let mut ids = names.map(BookId::new);
-        ids.sort();
-        assert_eq!(
-            ids,
-            paths.map(|path| BookId::from_canonical_path(&path).unwrap())
-        );
-    }
-
-    #[test]
-    fn ord_is_consistent_with_eq() {
-        let first = BookId::new("/m//a");
-        let second = BookId::new("/m/a");
-        assert_ne!(first, second);
-        assert_ne!(first.cmp(&second), Ordering::Equal);
-    }
-
     mod props {
         use super::*;
         use proptest::prelude::*;
@@ -115,6 +93,27 @@ mod tests {
                 prop_assert_eq!(order == Ordering::Equal, a == b);
                 prop_assert_eq!(order, second.cmp(&first).reverse());
                 prop_assert_eq!(first.cmp(&BookId::new(&a)), Ordering::Equal);
+            }
+
+            #[test]
+            fn book_id_order_refines_path_component_order(
+                (a, b) in prop_oneof![
+                    4 => ("[a-c/ -]{0,8}", "[a-c/ -]{0,8}"),
+                    1 => "[a-c/ -]{0,8}".prop_map(|a| (a.clone(), a)),
+                    1 => "[a-c -]{1,3}".prop_map(|part| (format!("a//{part}"), format!("a/{part}"))),
+                    1 => Just(("a/b".to_owned(), "a -/b".to_owned())),
+                ],
+            ) {
+                let first = BookId::new(&a);
+                let second = BookId::new(&b);
+                let order = first.cmp(&second);
+                let path_order = Path::new(&a).cmp(Path::new(&b));
+
+                prop_assert_eq!(order == Ordering::Equal, first == second);
+                prop_assert_eq!(order, second.cmp(&first).reverse());
+                if path_order != Ordering::Equal {
+                    prop_assert_eq!(order, path_order);
+                }
             }
         }
     }
