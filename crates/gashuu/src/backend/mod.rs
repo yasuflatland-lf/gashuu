@@ -26,9 +26,10 @@ mod web_client;
 /// - invoked **on the UI thread** (the Slint event-loop thread);
 /// - **never invoked synchronously inside the call that received it**, even for an in-memory hit;
 /// - **dropped without being invoked** if its session was closed (`close`) or its cover
-///   generation was cancelled (`cancel_covers`) before delivery.
+///   generation was cancelled (`cancel_covers`) before delivery, or its import was
+///   cancelled through `pending_canceller` before being posted.
 ///
-/// The last guarantee is checked again on the UI thread just before invocation.
+/// Session and cover generation liveness are checked again on the UI thread just before invocation.
 /// So after `close(s)` returns, no `Done` for `s` ever runs. Callers keep their own
 /// epoch guards: the backend does not know about UI generations.
 pub(crate) type Done<T> = Box<dyn FnOnce(T) + Send + 'static>;
@@ -182,13 +183,13 @@ pub(crate) fn platform_backend(thumbs: Arc<dyn ThumbStore>) -> Rc<dyn BookBacken
 
 #[cfg(any(test, target_arch = "wasm32"))]
 pub(crate) use importer::SweepReport;
-pub(crate) use importer::{BookImporter, DiscardUpload, ImportedBook};
+pub(crate) use importer::{BookImporter, CancelPending, DiscardUpload, ImportedBook};
 
 mod importer {
     use super::{BackendError, Done};
     use crate::picker::UploadHandle;
     use gashuu_core::{ArchivePolicy, BookId};
-    use std::{num::NonZeroUsize, sync::Arc};
+    use std::{num::NonZeroUsize, rc::Rc, sync::Arc};
 
     #[derive(Debug)]
     pub(crate) struct ImportedBook {
@@ -207,6 +208,7 @@ mod importer {
     }
 
     pub(crate) type DiscardUpload = Arc<dyn Fn(&BookId) + Send + Sync>;
+    pub(crate) type CancelPending = Rc<dyn Fn()>;
 
     pub(crate) trait BookImporter {
         fn import(
@@ -219,6 +221,10 @@ mod importer {
         fn discard(&self, id: &BookId);
         /// A cleanup callback that a Send completion can invoke on the UI thread.
         fn discarder(&self) -> DiscardUpload;
+        /// Returns a UI-thread hook that drops queued imports and their files and
+        /// callbacks without invoking the callbacks. Sweeps and deletes keep
+        /// their order, and the in-flight import is unaffected.
+        fn pending_canceller(&self) -> CancelPending;
     }
 }
 
