@@ -74,6 +74,29 @@ pub(crate) fn bind_carousel_model(
     model
 }
 
+/// Apply availability changes to the corresponding rows of the current model.
+#[cfg(any(test, not(target_arch = "wasm32")))]
+pub(crate) fn patch_availability(
+    model: &VecModel<CarouselItem>,
+    row_ids: &[BookId],
+    changed: &[(BookId, bool)],
+) {
+    use slint::Model;
+    use std::collections::HashMap;
+
+    let changed: HashMap<_, _> = changed
+        .iter()
+        .map(|(id, available)| (id, *available))
+        .collect();
+    for (row, id) in row_ids.iter().take(model.row_count()).enumerate() {
+        if let Some(&available) = changed.get(id) {
+            let mut item = model.row_data(row).expect("row < row_count checked above");
+            item.available = available;
+            model.set_row_data(row, item);
+        }
+    }
+}
+
 /// Read-modify-write a single carousel row on the UI thread: re-fetch the `!Send`
 /// `VecModel` through `ui` (never moved across threads), bounds-check `row`
 /// against the CURRENT row count (tolerating a model that shrank since the
@@ -246,6 +269,88 @@ mod tests {
 
     fn model(items: Vec<ThumbnailItem>) -> ModelRc<ThumbnailItem> {
         ModelRc::new(VecModel::from(items))
+    }
+
+    #[test]
+    fn patch_availability_updates_only_changed_rows() {
+        use slint::Model;
+
+        let row_ids = [BookId::new("a"), BookId::new("b"), BookId::new("c")];
+        let model = VecModel::from(vec![
+            CarouselItem {
+                available: true,
+                ..Default::default()
+            },
+            CarouselItem::default(),
+            CarouselItem {
+                available: true,
+                ..Default::default()
+            },
+        ]);
+        let changed = [
+            (row_ids[1].clone(), true),
+            (BookId::new("other"), false),
+            (row_ids[0].clone(), false),
+        ];
+
+        patch_availability(&model, &row_ids, &changed);
+
+        assert!(!model.row_data(0).unwrap().available);
+        assert!(model.row_data(1).unwrap().available);
+        assert!(model.row_data(2).unwrap().available);
+    }
+
+    #[test]
+    fn patch_availability_tolerates_a_shrunk_model() {
+        use slint::Model;
+
+        let row_ids = [BookId::new("a"), BookId::new("b")];
+        let model = VecModel::from(vec![CarouselItem::default(); 2]);
+        model.remove(1);
+        let changed = [(row_ids[0].clone(), true), (row_ids[1].clone(), true)];
+
+        patch_availability(&model, &row_ids, &changed);
+
+        assert_eq!(model.row_count(), 1);
+        assert!(model.row_data(0).unwrap().available);
+    }
+
+    #[test]
+    fn patch_availability_preserves_cover_and_selection_fields() {
+        use slint::Model;
+
+        let row_ids = [BookId::new("a"), BookId::new("b")];
+        let loaded = CarouselItem {
+            cover: slint::Image::from_rgba8(slint::SharedPixelBuffer::new(2, 3)),
+            cover_loaded: true,
+            selected: true,
+            bookmarked: true,
+            ..Default::default()
+        };
+        let failed = CarouselItem {
+            cover_failed: true,
+            selected: true,
+            ..Default::default()
+        };
+        let model = VecModel::from(vec![loaded.clone(), failed.clone()]);
+        let changed = [(row_ids[0].clone(), true), (row_ids[1].clone(), true)];
+
+        patch_availability(&model, &row_ids, &changed);
+
+        assert_eq!(
+            model.row_data(0).unwrap(),
+            CarouselItem {
+                available: true,
+                ..loaded
+            }
+        );
+        assert_eq!(
+            model.row_data(1).unwrap(),
+            CarouselItem {
+                available: true,
+                ..failed
+            }
+        );
     }
 
     /// A fresh book (never opened, no persisted total) is flagged `needs_count`,
