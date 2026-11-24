@@ -71,10 +71,7 @@ pub use reading_progress::ReadingProgress;
 pub use search::book_matches;
 pub use settings::{Settings, MAX_RECENT_SOURCES, SETTINGS_VERSION};
 pub use settings_store::SettingsStore;
-pub use spread::{
-    next_leading, normalize_leading, prev_leading, scrub_fraction_to_page, spread_at, Spread,
-    SpreadContext, SpreadNavigation,
-};
+pub use spread::{scrub_fraction_to_page, Spread, SpreadNavigation};
 pub use thumb_store::{
     BookFingerprint, ClearCacheReport, NullThumbStore, PruneReport, ThumbSlot, ThumbStore,
 };
@@ -93,9 +90,7 @@ pub use update::packaging::{detect_packaging, Packaging, UpdateStrategy};
 pub use update::release::{parse_latest_release, Asset, ReleaseInfo};
 pub use update::verify::{is_verified, parse_sha256sums, sha256_hex};
 pub use update::version::{is_update_available, should_notify};
-pub use view_modes::{
-    CoverMode, FitMode, KeyBindings, Language, ReadingDirection, SpreadLayout, SpreadMode,
-};
+pub use view_modes::{CoverMode, FitMode, KeyBindings, Language, ReadingDirection, SpreadMode};
 pub use view_override::{ResolvedView, ViewOverride};
 pub use viewport::{
     anchored_zoom, centered_offset, clamp_offset, clamp_zoom, fit_scale, ZOOM_MAX, ZOOM_MIN,

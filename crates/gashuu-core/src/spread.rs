@@ -7,13 +7,10 @@
 //! `SpreadNavigation` owns `SpreadMode::Auto` resolution from the viewport
 //! aspect ratio and supplies that resolved layout to the pairing functions.
 //!
-//! The one direction-aware item here is the free fn `scrub_fraction_to_page`,
-//! which takes `rtl` as an explicit parameter to invert a knob fraction. It maps
-//! a scrub position to a RAW page index and carries no layout awareness, so the
-//! pairing/placement separation above still holds: direction never reaches the
-//! pairing functions or `SpreadNavigation`.
+//! `scrub_fraction_to_page` uses `ReadingDirection` to map a knob position to a
+//! raw page index. Pairing and `SpreadNavigation` are independent of direction.
 
-use crate::view_modes::{CoverMode, SpreadLayout, SpreadMode};
+use crate::view_modes::{CoverMode, ReadingDirection, SpreadLayout, SpreadMode};
 use std::num::NonZeroUsize;
 
 /// One displayed unit: 1–2 page indices in reading order (`leading` first).
@@ -68,7 +65,12 @@ fn last_start_standalone(total: usize) -> usize {
 /// `leading` is clamped into `[0, total - 1]` defensively; callers guarantee
 /// `total > 0`. The returned `trailing` is present only when a partner page
 /// actually exists within `total`.
-pub fn spread_at(total: usize, layout: SpreadLayout, cover: CoverMode, leading: usize) -> Spread {
+pub(crate) fn spread_at(
+    total: usize,
+    layout: SpreadLayout,
+    cover: CoverMode,
+    leading: usize,
+) -> Spread {
     let lead = clamp_index(total, leading);
 
     match layout {
@@ -112,7 +114,12 @@ fn pair_trailing(total: usize, leading: usize) -> Option<usize> {
 
 /// Leading index of the next spread in reading order, clamped at the final
 /// spread so repeated "next" at the end is a no-op.
-pub fn next_leading(total: usize, layout: SpreadLayout, cover: CoverMode, leading: usize) -> usize {
+pub(crate) fn next_leading(
+    total: usize,
+    layout: SpreadLayout,
+    cover: CoverMode,
+    leading: usize,
+) -> usize {
     let lead = clamp_index(total, leading);
 
     match layout {
@@ -150,7 +157,12 @@ pub fn next_leading(total: usize, layout: SpreadLayout, cover: CoverMode, leadin
 
 /// Leading index of the previous spread in reading order, clamped at 0 so
 /// repeated "prev" at the start is a no-op.
-pub fn prev_leading(total: usize, layout: SpreadLayout, cover: CoverMode, leading: usize) -> usize {
+pub(crate) fn prev_leading(
+    total: usize,
+    layout: SpreadLayout,
+    cover: CoverMode,
+    leading: usize,
+) -> usize {
     let lead = clamp_index(total, leading);
 
     match layout {
@@ -186,7 +198,7 @@ pub fn prev_leading(total: usize, layout: SpreadLayout, cover: CoverMode, leadin
 /// Leading index of the spread that CONTAINS page `index`. Used after a
 /// mode/cover toggle so the visible page stays on screen. `index` is clamped
 /// into `[0, total - 1]`; callers guarantee `total > 0`.
-pub fn normalize_leading(
+pub(crate) fn normalize_leading(
     total: usize,
     layout: SpreadLayout,
     cover: CoverMode,
@@ -220,18 +232,17 @@ pub fn normalize_leading(
 /// total page count, resolved layout, and cover mode — and owns the pairing
 /// queries so call sites read as intent rather than positional-arg plumbing.
 ///
-/// Holds an already-resolved `SpreadLayout` (no `Auto` resolution here; that
-/// stays in the UI layer). This is an additive cohesive wrapper over the pure
-/// free functions, which remain the single source of truth.
+/// `SpreadNavigation` resolves the layout before constructing this context.
+/// The free functions implement the pairing rules.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct SpreadContext {
+pub(crate) struct SpreadContext {
     total: usize,
     layout: SpreadLayout,
     cover: CoverMode,
 }
 
 impl SpreadContext {
-    pub fn new(total: usize, layout: SpreadLayout, cover: CoverMode) -> Self {
+    pub(crate) fn new(total: usize, layout: SpreadLayout, cover: CoverMode) -> Self {
         Self {
             total,
             layout,
@@ -239,19 +250,19 @@ impl SpreadContext {
         }
     }
 
-    pub fn spread_at(&self, leading: usize) -> Spread {
+    pub(crate) fn spread_at(&self, leading: usize) -> Spread {
         spread_at(self.total, self.layout, self.cover, leading)
     }
 
-    pub fn normalize(&self, index: usize) -> usize {
+    pub(crate) fn normalize(&self, index: usize) -> usize {
         normalize_leading(self.total, self.layout, self.cover, index)
     }
 
-    pub fn next(&self, index: usize) -> usize {
+    pub(crate) fn next(&self, index: usize) -> usize {
         next_leading(self.total, self.layout, self.cover, index)
     }
 
-    pub fn prev(&self, index: usize) -> usize {
+    pub(crate) fn prev(&self, index: usize) -> usize {
         prev_leading(self.total, self.layout, self.cover, index)
     }
 }
@@ -301,7 +312,7 @@ impl SpreadNavigation {
     }
 
     /// Return the current resolved pairing context.
-    pub fn context(&self) -> SpreadContext {
+    pub(crate) fn context(&self) -> SpreadContext {
         SpreadContext::new(
             self.total,
             self.spread_mode.resolve(self.viewport_aspect),
@@ -440,15 +451,17 @@ impl SpreadNavigation {
 /// `page_count == 0` (returns 0), and rounds to the nearest page using the last
 /// index (`page_count - 1`) as the span so BOTH ends are reachable.
 ///
-/// `rtl` inverts the fraction: in right-to-left (manga) reading, dragging the
-/// knob LEFT advances the page, so the screen-left edge maps to the LAST page
-/// and the screen-right edge to the FIRST (spec §5 / decision 11). The returned
-/// index is RAW; the caller normalizes it to a valid spread leading via
-/// `ViewerState::jump_to` (which respects single/double + cover mode), so this
-/// helper carries NO layout awareness — only direction and clamping.
+/// With `ReadingDirection::Rtl`, the screen-left edge maps to the last page
+/// and the screen-right edge to the first. With `ReadingDirection::Ltr`, the
+/// screen-left edge maps to the first page. The caller passes the raw index
+/// to `SpreadNavigation` to select the spread containing that page.
 // Single source of rounding (#71 Part D): the Slint scrubber passes the RAW clamped
 // fraction via preview/commit; `handlers/viewer.rs` resolves the page through this helper.
-pub fn scrub_fraction_to_page(fraction: f32, page_count: usize, rtl: bool) -> usize {
+pub fn scrub_fraction_to_page(
+    fraction: f32,
+    page_count: usize,
+    direction: ReadingDirection,
+) -> usize {
     if page_count == 0 {
         return 0;
     }
@@ -458,7 +471,10 @@ pub fn scrub_fraction_to_page(fraction: f32, page_count: usize, rtl: bool) -> us
     } else {
         0.0
     };
-    let f = if rtl { 1.0 - f } else { f };
+    let f = match direction {
+        ReadingDirection::Ltr => f,
+        ReadingDirection::Rtl => 1.0 - f,
+    };
     let last = page_count - 1;
     // Round half-up: +0.5 then floor (via `as usize` truncation on a non-negative
     // value). `last` fits f32 exactly for any realistic page count.
@@ -469,6 +485,7 @@ pub fn scrub_fraction_to_page(fraction: f32, page_count: usize, rtl: bool) -> us
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::view_modes::ReadingDirection::{Ltr, Rtl};
     use crate::view_modes::{CoverMode, SpreadLayout, SpreadMode};
 
     // ---- helpers -----------------------------------------------------------
@@ -1431,78 +1448,92 @@ mod tests {
 
     #[test]
     fn scrub_fraction_zero_count_is_zero_guard() {
-        assert_eq!(scrub_fraction_to_page(0.0, 0, false), 0);
-        assert_eq!(scrub_fraction_to_page(0.5, 0, false), 0);
-        assert_eq!(scrub_fraction_to_page(1.0, 0, true), 0);
+        assert_eq!(scrub_fraction_to_page(0.0, 0, Ltr), 0);
+        assert_eq!(scrub_fraction_to_page(0.5, 0, Ltr), 0);
+        assert_eq!(scrub_fraction_to_page(1.0, 0, Rtl), 0);
     }
 
     #[test]
     fn scrub_fraction_ltr_maps_ends_and_midpoint() {
-        assert_eq!(scrub_fraction_to_page(0.0, 10, false), 0);
-        assert_eq!(scrub_fraction_to_page(1.0, 10, false), 9);
-        assert_eq!(scrub_fraction_to_page(0.5, 10, false), 5);
+        assert_eq!(scrub_fraction_to_page(0.0, 10, Ltr), 0);
+        assert_eq!(scrub_fraction_to_page(1.0, 10, Ltr), 9);
+        assert_eq!(scrub_fraction_to_page(0.5, 10, Ltr), 5);
     }
 
     #[test]
     fn scrub_fraction_rtl_inverts_fraction() {
-        assert_eq!(scrub_fraction_to_page(0.0, 10, true), 9);
-        assert_eq!(scrub_fraction_to_page(1.0, 10, true), 0);
-        assert_eq!(scrub_fraction_to_page(0.5, 10, true), 5);
+        assert_eq!(scrub_fraction_to_page(0.0, 10, Rtl), 9);
+        assert_eq!(scrub_fraction_to_page(1.0, 10, Rtl), 0);
+        assert_eq!(scrub_fraction_to_page(0.5, 10, Rtl), 5);
+    }
+
+    #[test]
+    fn scrub_rtl_is_the_mirror_of_ltr_at_the_ends() {
+        for count in [1, 2, 10] {
+            assert_eq!(
+                scrub_fraction_to_page(0.0, count, Rtl),
+                scrub_fraction_to_page(1.0, count, Ltr)
+            );
+            assert_eq!(
+                scrub_fraction_to_page(1.0, count, Rtl),
+                scrub_fraction_to_page(0.0, count, Ltr)
+            );
+        }
     }
 
     #[test]
     fn scrub_fraction_clamps_out_of_range_input() {
-        assert_eq!(scrub_fraction_to_page(-0.4, 5, false), 0);
-        assert_eq!(scrub_fraction_to_page(1.7, 5, false), 4);
-        assert_eq!(scrub_fraction_to_page(-0.4, 5, true), 4);
-        assert_eq!(scrub_fraction_to_page(1.7, 5, true), 0);
+        assert_eq!(scrub_fraction_to_page(-0.4, 5, Ltr), 0);
+        assert_eq!(scrub_fraction_to_page(1.7, 5, Ltr), 4);
+        assert_eq!(scrub_fraction_to_page(-0.4, 5, Rtl), 4);
+        assert_eq!(scrub_fraction_to_page(1.7, 5, Rtl), 0);
     }
 
     #[test]
     fn scrub_fraction_rounds_half_up_at_exact_half_step() {
-        assert_eq!(scrub_fraction_to_page(0.125, 5, false), 1);
-        assert_eq!(scrub_fraction_to_page(0.375, 5, false), 2);
-        assert_eq!(scrub_fraction_to_page(0.124, 5, false), 0);
-        assert_eq!(scrub_fraction_to_page(0.875, 5, true), 1);
-        assert_eq!(scrub_fraction_to_page(0.625, 5, true), 2);
+        assert_eq!(scrub_fraction_to_page(0.125, 5, Ltr), 1);
+        assert_eq!(scrub_fraction_to_page(0.375, 5, Ltr), 2);
+        assert_eq!(scrub_fraction_to_page(0.124, 5, Ltr), 0);
+        assert_eq!(scrub_fraction_to_page(0.875, 5, Rtl), 1);
+        assert_eq!(scrub_fraction_to_page(0.625, 5, Rtl), 2);
     }
 
     #[test]
     fn scrub_fraction_non_finite_single_page_is_zero() {
-        assert_eq!(scrub_fraction_to_page(f32::NAN, 1, true), 0);
-        assert_eq!(scrub_fraction_to_page(f32::INFINITY, 1, false), 0);
+        assert_eq!(scrub_fraction_to_page(f32::NAN, 1, Rtl), 0);
+        assert_eq!(scrub_fraction_to_page(f32::INFINITY, 1, Ltr), 0);
     }
 
     #[test]
     fn scrub_fraction_odd_span_rtl_half_step_rounds_half_up() {
-        assert_eq!(scrub_fraction_to_page(0.5, 4, true), 2);
+        assert_eq!(scrub_fraction_to_page(0.5, 4, Rtl), 2);
     }
 
     #[test]
     fn scrub_fraction_single_page_is_always_zero() {
-        assert_eq!(scrub_fraction_to_page(0.0, 1, false), 0);
-        assert_eq!(scrub_fraction_to_page(1.0, 1, false), 0);
-        assert_eq!(scrub_fraction_to_page(0.3, 1, true), 0);
+        assert_eq!(scrub_fraction_to_page(0.0, 1, Ltr), 0);
+        assert_eq!(scrub_fraction_to_page(1.0, 1, Ltr), 0);
+        assert_eq!(scrub_fraction_to_page(0.3, 1, Rtl), 0);
     }
 
     #[test]
     fn scrub_fraction_is_total_function_no_nan_panic() {
-        let page = scrub_fraction_to_page(f32::NAN, 8, false);
+        let page = scrub_fraction_to_page(f32::NAN, 8, Ltr);
         assert_eq!(page, 0);
-        let rtl_page = scrub_fraction_to_page(f32::INFINITY, 8, true);
+        let rtl_page = scrub_fraction_to_page(f32::INFINITY, 8, Rtl);
         assert_eq!(rtl_page, 7);
     }
 
     #[test]
     fn scrub_commit_path_jumps_via_jump_to() {
         let mut nav = navigation_with(8, SpreadMode::Single, CoverMode::Standalone);
-        let page = scrub_fraction_to_page(1.0, nav.total(), false);
+        let page = scrub_fraction_to_page(1.0, nav.total(), Ltr);
         assert_eq!(page, 7);
         assert!(nav.jump_to(page));
         assert_eq!(nav.index(), 7);
 
         let mut rtl_nav = navigation_with(8, SpreadMode::Single, CoverMode::Standalone);
-        let page = scrub_fraction_to_page(0.0, rtl_nav.total(), true);
+        let page = scrub_fraction_to_page(0.0, rtl_nav.total(), Rtl);
         assert_eq!(page, 7);
         assert!(rtl_nav.jump_to(page));
         assert_eq!(rtl_nav.index(), 7);

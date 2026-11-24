@@ -216,17 +216,17 @@ Intentionally not `Deserialize` (that would bypass the clamp). See
 
 ### spread
 
-`spread.rs`. Pure, Slint/tracing-free, reading-direction-agnostic page-pairing
-(`spread_at`/`next_leading`/`prev_leading`/`normalize_leading` over
-`Spread {leading, trailing: Option<usize>}`); pairing functions take `SpreadLayout` (never
-`SpreadMode`/`Auto` — `Auto` is unreachable at the type level in pairing). `SpreadContext` is an
-immutable cohesion wrapper bundling `(total, layout, cover)` that delegates to those free fns.
-`SpreadNavigation` is the mutable value object above that proved pairing layer: it owns
-`(total, spread_mode, cover_mode, viewport_aspect, index)`, resolves `Auto`, and guarantees after
-every mutation that `index` is a valid leading for its resolved context. It also owns jump,
-next/previous, preview, and resume-persistence derivations. The pure
-`scrub_fraction_to_page(fraction, page_count, rtl)` helper lives here as well; direction affects
-the raw scrub mapping but remains separate from pairing and page placement.
+`SpreadNavigation` is the public entry point for spread navigation. It owns
+`(total, spread_mode, cover_mode, viewport_aspect, index)` and keeps `index` at a valid leading
+page after every mutation. Jumps, next/previous, previews, and resume positions all use the
+same crate-private pairing functions (`spread_at`, `next_leading`, `prev_leading`, and
+`normalize_leading`). The crate-private `SpreadContext` bundles the page count, resolved layout,
+and cover mode for those calls. A `Spread` contains a leading page index and an optional trailing
+index in reading order. Pairing is independent of reading direction and page placement.
+
+`scrub_fraction_to_page(fraction, page_count, direction: ReadingDirection)` maps the on-screen
+scrub position to a raw page index. It reverses the fraction for right-to-left reading before
+`SpreadNavigation` resolves the page to a spread.
 
 ### viewport
 
@@ -332,15 +332,13 @@ See [ADR-0005](ADRs/0005-settings-persistence.md)'s 2026-08-15 Amendment.
 
 ### view-mode vocabulary (`view_modes.rs`)
 
-`view_modes.rs` (extracted from `settings.rs`). The ubiquitous-language enums for how pages are
-displayed: `ReadingDirection`, `SpreadMode` + the resolved `SpreadLayout {Single, Double}` (with
-`SpreadMode::resolve(aspect: f32) -> SpreadLayout`, which the UI layer calls so the pure `spread::*`
-functions never see `Auto`; `SpreadLayout` is NOT persisted), `CoverMode`, `FitMode`, `Language`,
-and the `KeyBindings` value object. This is the actual vocabulary; `Settings` (in `settings.rs`) is
-one consumer, and the pure modules `spread`/`viewport`/`view_override` import it from here instead of
-through the serde-persistence aggregate. Headless (serde only, no slint/tracing). External public
-paths (`gashuu_core::ReadingDirection`, …) are unchanged — `lib.rs` re-exports these from
-`view_modes` rather than `settings`.
+`view_modes.rs` (extracted from `settings.rs`) defines `ReadingDirection`, `SpreadMode`,
+`CoverMode`, `FitMode`, `Language`, and the `KeyBindings` value object.
+`SpreadNavigation` calls the crate-private `SpreadMode::resolve(aspect: f32) -> SpreadLayout`.
+The crate-private `SpreadLayout` has only `Single` and `Double` variants and is never persisted.
+`Settings` (in `settings.rs`) is one consumer, and the pure modules
+`spread`/`viewport`/`view_override` import the vocabulary directly. Headless (serde only, no
+slint/tracing). `lib.rs` re-exports the public view modes from `view_modes`.
 
 ### reading_progress
 

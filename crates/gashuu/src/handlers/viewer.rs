@@ -12,7 +12,7 @@ use crate::{
     refresh, with_ui, CarouselRefresh, LeavePointService, ViewModeRoute, ViewerWindow,
 };
 use crate::{cover_loader, i18n};
-use gashuu_core::{FitMode, Library, ReadingDirection};
+use gashuu_core::{FitMode, Library};
 use slint::ComponentHandle;
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -193,8 +193,7 @@ pub(crate) fn wire_viewer_input_handlers(
                 }
                 // Single source of rounding: resolve the knob fraction to a 0-based page via
                 // `scrub_fraction_to_page` (clamp, RTL inversion, round-half-up).
-                let rtl = matches!(state.borrow().reading_direction(), ReadingDirection::Rtl);
-                let lead = scrub_fraction_to_page(frac, total, rtl);
+                let lead = scrub_fraction_to_page(frac, total, state.borrow().reading_direction());
                 // Resolve the exact spread the commit path would land on through the same
                 // pairing authority used by the page body.
                 let Some(spread) = state.borrow().preview_spread(lead) else {
@@ -234,8 +233,7 @@ pub(crate) fn wire_viewer_input_handlers(
                 // Single source of rounding: resolve the release fraction to a page via
                 // `scrub_fraction_to_page` (same helper as preview), then jump.
                 let total = state.borrow().page_count();
-                let rtl = matches!(state.borrow().reading_direction(), ReadingDirection::Rtl);
-                let page = scrub_fraction_to_page(frac, total, rtl);
+                let page = scrub_fraction_to_page(frac, total, state.borrow().reading_direction());
                 // Refresh unconditionally: unlike the nav handler, a scrub commit always
                 // re-seeds the scrubber + counter, even when the jump is a no-op.
                 let _moved = state.borrow_mut().jump_to(page);

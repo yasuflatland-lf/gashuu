@@ -24,7 +24,7 @@ pub enum SpreadMode {
     Single,
     Double,
     #[default]
-    Auto, // resolved to Single/Double from window aspect at the UI layer
+    Auto, // SpreadNavigation resolves this from the viewport aspect ratio.
 }
 
 /// A resolved two-page layout decision: exactly Single or Double. `SpreadMode::Auto`
@@ -32,7 +32,7 @@ pub enum SpreadMode {
 /// pure `spread::*` functions never see `Auto`. This type carries that invariant
 /// in the type system rather than in prose.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SpreadLayout {
+pub(crate) enum SpreadLayout {
     Single,
     Double,
 }
@@ -43,7 +43,7 @@ impl SpreadMode {
     /// (`aspect >= 1.0`) and `Double` for a portrait window. A non-finite or
     /// non-positive `aspect` is treated as `1.0` (=> Single) so a degenerate
     /// window size can never panic or pick a surprising layout.
-    pub fn resolve(self, aspect: f32) -> SpreadLayout {
+    pub(crate) fn resolve(self, aspect: f32) -> SpreadLayout {
         match self {
             SpreadMode::Single => SpreadLayout::Single,
             SpreadMode::Double => SpreadLayout::Double,
