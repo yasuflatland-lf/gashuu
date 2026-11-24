@@ -2,7 +2,9 @@
 //! input order. Each UI-thread completion records one outcome and advances
 //! progress. Only the current generation can finalize and update the library.
 
-use crate::backend::{BackendError, BookBackend, BookImporter, DiscardUpload, ImportedBook};
+use crate::backend::{
+    BackendError, BookBackend, BookImporter, CancelPending, DiscardUpload, ImportedBook,
+};
 use crate::book_path as location;
 use crate::picker::{forget_uploads, UploadHandle};
 use crate::ui_marshal::{Generation, Ticket};
@@ -94,6 +96,12 @@ pub(crate) fn add_progress_ratio(done: usize, total: usize) -> f32 {
     (done as f32 / total as f32).clamp(0.0, 1.0)
 }
 
+struct ImportBatch {
+    epoch: usize,
+    discard: DiscardUpload,
+    cancel: CancelPending,
+}
+
 /// Owns the bulk-add async bookkeeping: the supersede `epoch` and the current
 /// generation's probe-outcome accumulator. The apply half re-acquires its
 /// collaborators in the `add-finalize` handler on the UI thread. Held in an `Rc` so the add handlers
@@ -104,8 +112,7 @@ pub(crate) struct AddController {
     /// The op tag ("add-books" / "add-folder") of the current generation, used
     /// only in the apply half's save-failure trace. Replaced on every `start`.
     op: Cell<&'static str>,
-    /// Current upload batch epoch and callback for discarding imported files when superseded.
-    import_batch: RefCell<Option<(usize, DiscardUpload)>>,
+    import_batch: RefCell<Option<ImportBatch>>,
     /// Picker notice shown after the current import batch finalizes.
     picker_notice: Cell<Option<String>>,
 }
@@ -135,19 +142,20 @@ impl AddController {
     }
 
     fn begin(&self, op: &'static str) -> Ticket<Vec<ProbeOutcome>> {
-        self.picker_notice.take();
-        if let Some((epoch, discard)) = self.import_batch.take() {
-            for outcome in self.generation.take(epoch).unwrap_or_default() {
+        if let Some(batch) = self.import_batch.take() {
+            (batch.cancel)();
+            for outcome in self.generation.take(batch.epoch).unwrap_or_default() {
                 if let ProbeKind::Imported {
                     id,
                     duplicate: false,
                     ..
                 } = outcome.kind
                 {
-                    discard(&id);
+                    (batch.discard)(&id);
                 }
             }
         }
+        self.picker_notice.take();
         self.op.set(op);
         self.generation.begin()
     }
@@ -203,8 +211,11 @@ impl AddController {
         let discard = importer.discarder();
         #[cfg(any(test, target_arch = "wasm32"))]
         let inventory = crate::book_availability::web_inventory();
-        self.import_batch
-            .replace(Some((ticket.id(), discard.clone())));
+        self.import_batch.replace(Some(ImportBatch {
+            epoch: ticket.id(),
+            discard: discard.clone(),
+            cancel: importer.pending_canceller(),
+        }));
         self.picker_notice.set(notice);
         let total = uploads.len();
         if !begin_progress(&ui_weak, &ticket, total) {

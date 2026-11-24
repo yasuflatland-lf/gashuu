@@ -23,8 +23,9 @@ pub(crate) enum ViewModeRoute {
     /// Opening a different book while one is open (`OpenBookUseCase::apply_probed`):
     /// persist the OUTGOING book's override before the source is replaced.
     OpenDifferentBook,
-    /// App exit: persist the open book's override, then reconcile into the GLOBAL
+    /// Desktop app exit: persist the open book's override, then reconcile into the GLOBAL
     /// defaults ONLY when no book is open.
+    #[cfg(not(target_arch = "wasm32"))]
     AppExit,
     /// Web tab hidden / page hidden: persist without disturbing live UI state.
     /// Same as `AppExit` when no settings dialog is open; position-only otherwise.
@@ -112,9 +113,9 @@ impl LeavePointService {
     ) -> Result<(), CoreError> {
         let writes_position = match route {
             ViewModeRoute::DialogClosedOnLibrary | ViewModeRoute::DialogClosedOnViewer => false,
-            ViewModeRoute::LeaveViewer
-            | ViewModeRoute::OpenDifferentBook
-            | ViewModeRoute::AppExit => true,
+            ViewModeRoute::LeaveViewer | ViewModeRoute::OpenDifferentBook => true,
+            #[cfg(not(target_arch = "wasm32"))]
+            ViewModeRoute::AppExit => true,
             #[cfg(any(target_arch = "wasm32", test))]
             ViewModeRoute::Suspend => true,
         };
@@ -160,6 +161,7 @@ fn stage_view_modes_to_sink(
         | ViewModeRoute::OpenDifferentBook => {
             stage_view_override_write_back(state, viewport, dialog_session, settings, library);
         }
+        #[cfg(not(target_arch = "wasm32"))]
         ViewModeRoute::AppExit => {
             stage_exit_view_modes(state, viewport, dialog_session, settings, library);
         }
@@ -970,7 +972,7 @@ mod tests {
     // ---- inherit-pending guard (#415: reset-to-global undone on close) -----
 
     #[test]
-    fn write_back_with_inherit_pending_ignores_the_diff() {
+    fn view_override_write_back_returns_empty_while_inherit_pending_even_when_view_differs() {
         // CX repro: a book is open AND was just "reset to global" (inherit_pending),
         // so the write-back on dialog close must keep the override EMPTY (inherit),
         // even though every current runtime mode differs from global.
@@ -982,23 +984,28 @@ mod tests {
             fit_mode: FitMode::Whole,
             ..Settings::default()
         };
-        let result = view_override_to_write_back(
-            Some(&path),
-            ResolvedView {
-                reading_direction: ReadingDirection::Rtl,
-                spread_mode: SpreadMode::Double,
-                cover_mode: CoverMode::Paired,
-                fit_mode: FitMode::Actual,
-            },
-            global.view_defaults(),
-            true,
+        let view = ResolvedView {
+            reading_direction: ReadingDirection::Rtl,
+            spread_mode: SpreadMode::Double,
+            cover_mode: CoverMode::Paired,
+            fit_mode: FitMode::Actual,
+        };
+        let global = global.view_defaults();
+        assert_eq!(
+            view_override_to_write_back(Some(&path), view, global, true),
+            Some((path.clone(), ViewOverride::none()))
         );
-        let (p, ov) = result.expect("open file => write-back tuple");
-        assert_eq!(p, path);
-        assert!(
-            ov.is_empty(),
-            "an inherit-pending book must persist an EMPTY override (all None), \
-             so the reset is not undone on close"
+        assert_eq!(
+            view_override_to_write_back(Some(&path), view, global, false),
+            Some((
+                path,
+                ViewOverride {
+                    reading_direction: Some(ReadingDirection::Rtl),
+                    spread_mode: Some(SpreadMode::Double),
+                    cover_mode: Some(CoverMode::Paired),
+                    fit_mode: Some(FitMode::Actual),
+                }
+            ))
         );
     }
 
@@ -1086,7 +1093,7 @@ mod tests {
     }
 
     #[test]
-    fn write_back_after_reset_keeps_the_override_empty() {
+    fn write_back_right_after_reset_is_empty() {
         let root = tempfile::tempdir().expect("tempdir");
         let book = root.path().join("book");
         std::fs::create_dir(&book).expect("create book");
@@ -1122,6 +1129,7 @@ mod tests {
             .persist_with(ViewModeRoute::LeaveViewer, |_| Ok(()))
             .expect("persist leave point");
 
+        // Pins the observable outcome; the helper unit test pins the guard itself.
         assert_eq!(
             library.borrow().overrides_for(&canonical),
             ViewOverride::none()

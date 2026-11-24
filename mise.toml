@@ -32,16 +32,21 @@ run = "bash scripts/check-release-macos-dist.sh"
 description = "Verify every from-source dav1d build uses the one pinned DAV1D_VERSION"
 run = "bash scripts/check-dav1d-pin.sh"
 
+# All four wasm checks share target/wasm and must use the same RUSTFLAGS to
+# avoid invalidating each other's artifacts. Host gates use other target dirs.
 [tasks.check-wasm-ui]
 description = "gashuu (UI) compiles for wasm32-unknown-unknown (desktop-only deps/modules gated)"
+env = { RUSTFLAGS = "-D warnings" }
 run = "cargo check -p gashuu --target wasm32-unknown-unknown --target-dir target/wasm"
 
 [tasks.check-wasm-decode]
 description = "Browser-native decoder compiles for wasm32-unknown-unknown"
+env = { RUSTFLAGS = "-D warnings" }
 run = "cargo check -p gashuu-web-decode --target wasm32-unknown-unknown --target-dir target/wasm"
 
 [tasks.check-wasm-worker]
 description = "Dedicated Web Worker compiles for wasm32-unknown-unknown"
+env = { RUSTFLAGS = "-D warnings" }
 run = "cargo check -p gashuu-worker --target wasm32-unknown-unknown --target-dir target/wasm"
 
 [tasks.build-web]
@@ -93,6 +98,7 @@ description = "Blocking gate: the whole workspace test suite via nextest, ci pro
 run = "cargo nextest run --workspace --profile ci"
 
 [tasks.check-wasm-core]
+env = { RUSTFLAGS = "-D warnings" }
 description = "gashuu-core compiles for wasm32-unknown-unknown with RAR/AVIF off"
 run = "cargo check -p gashuu-core --target wasm32-unknown-unknown --no-default-features --target-dir target/wasm"
 

@@ -57,9 +57,9 @@ fn register_ja_fallback(bytes: Vec<u8>) -> Result<(), String> {
     if fonts.is_empty() {
         return Err("font data did not register a family".to_owned());
     }
-    for script in [*b"Hira", *b"Kana", *b"Hani"] {
+    for script in [b"Hira", b"Kana", b"Hani"] {
         collection.append_fallbacks(
-            fontique::FallbackKey::new(fontique::Script::from_bytes(script), None),
+            fontique::FallbackKey::new(fontique::Script::from_bytes(*script), None),
             fonts.iter().map(|(family, _)| *family),
         );
     }
