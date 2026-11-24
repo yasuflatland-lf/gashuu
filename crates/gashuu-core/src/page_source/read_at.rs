@@ -124,94 +124,84 @@ impl ReadAt for FileReadAt {
 mod tests {
     use super::*;
 
-    fn cursor() -> ReadAtCursor {
-        ReadAtCursor::new(Arc::new(Arc::<[u8]>::from(&b"abcdef"[..])))
-    }
+    mod props {
+        use super::*;
+        use proptest::prelude::*;
+        use std::io::Cursor;
 
-    #[test]
-    fn cursor_reads_sequentially_and_stops_at_eof() {
-        let mut cursor = cursor();
-        let mut head = [0; 2];
-        cursor.read_exact(&mut head).unwrap();
-        assert_eq!(&head, b"ab");
-
-        let mut tail = Vec::new();
-        assert_eq!(cursor.read_to_end(&mut tail).unwrap(), 4);
-        assert_eq!(tail.as_slice(), b"cdef");
-        assert_eq!(cursor.read(&mut head).unwrap(), 0);
-    }
-
-    #[test]
-    fn cursor_seek_start_end_current() {
-        let mut cursor = cursor();
-        let mut byte = [0; 1];
-
-        assert_eq!(cursor.seek(SeekFrom::Start(1)).unwrap(), 1);
-        cursor.read_exact(&mut byte).unwrap();
-        assert_eq!(&byte, b"b");
-
-        assert_eq!(cursor.seek(SeekFrom::Current(1)).unwrap(), 3);
-        cursor.read_exact(&mut byte).unwrap();
-        assert_eq!(&byte, b"d");
-
-        assert_eq!(cursor.seek(SeekFrom::End(-1)).unwrap(), 5);
-        cursor.read_exact(&mut byte).unwrap();
-        assert_eq!(&byte, b"f");
-
-        assert_eq!(cursor.seek(SeekFrom::End(1)).unwrap(), 7);
-        assert_eq!(cursor.read(&mut byte).unwrap(), 0);
-    }
-
-    #[test]
-    fn cursor_seek_before_start_is_invalid_input() {
-        let mut cursor = cursor();
-        for seek in [SeekFrom::Current(-1), SeekFrom::End(-7)] {
-            assert_eq!(
-                cursor.seek(seek).unwrap_err().kind(),
-                io::ErrorKind::InvalidInput
-            );
-            assert_eq!(cursor.stream_position().unwrap(), 0);
+        #[derive(Clone, Debug)]
+        enum CursorOp {
+            Read(usize),
+            Seek(SeekFrom),
+            CloneAndSwitch,
         }
 
-        cursor.seek(SeekFrom::Start(u64::MAX)).unwrap();
-        assert_eq!(
-            cursor.seek(SeekFrom::Current(1)).unwrap_err().kind(),
-            io::ErrorKind::InvalidInput
-        );
-        assert_eq!(cursor.stream_position().unwrap(), u64::MAX);
-    }
+        fn cursor_input() -> impl Strategy<Value = (Vec<u8>, Vec<CursorOp>)> {
+            proptest::collection::vec(any::<u8>(), 0..64).prop_flat_map(|data| {
+                let bound = data.len() as i64 + 2;
+                let delta = prop_oneof![-bound..=2, Just(i64::MIN), Just(i64::MAX)];
+                let start = prop_oneof![0..=bound as u64, Just(u64::MAX)];
+                let op = prop_oneof![
+                    (0usize..80).prop_map(CursorOp::Read),
+                    start.prop_map(|offset| CursorOp::Seek(SeekFrom::Start(offset))),
+                    delta
+                        .clone()
+                        .prop_map(|offset| CursorOp::Seek(SeekFrom::End(offset))),
+                    delta.prop_map(|offset| CursorOp::Seek(SeekFrom::Current(offset))),
+                    Just(CursorOp::CloneAndSwitch),
+                ];
+                (Just(data), proptest::collection::vec(op, 0..=60))
+            })
+        }
 
-    #[test]
-    fn cursor_clone_has_independent_position() {
-        let mut original = cursor();
-        original.seek(SeekFrom::Start(2)).unwrap();
-        let mut clone = original.clone();
+        proptest! {
+            /// C2-9: An arc-backed cursor reads, seeks and clones like an in-memory cursor.
+            /// Replaces `cursor_reads_sequentially_and_stops_at_eof`,
+            /// `cursor_seek_start_end_current`, `cursor_seek_before_start_is_invalid_input`,
+            /// `cursor_clone_has_independent_position`, and
+            /// `arc_slice_read_at_offsets_short_tail_and_past_end`.
+            #[test]
+            fn prop_read_at_cursor_matches_std_cursor((data, operations) in cursor_input()) {
+                let bytes: Arc<[u8]> = Arc::from(data.as_slice());
+                prop_assert_eq!(ReadAt::len(&bytes), data.len() as u64);
+                prop_assert_eq!(ReadAt::is_empty(&bytes), data.is_empty());
+                let mut actual = ReadAtCursor::new(Arc::new(bytes));
+                let mut expected = Cursor::new(data.as_slice());
+                let mut parked = None;
 
-        let mut pair = [0; 2];
-        clone.read_exact(&mut pair).unwrap();
-        assert_eq!(&pair, b"cd");
-        assert_eq!(clone.stream_position().unwrap(), 4);
-        assert_eq!(original.stream_position().unwrap(), 2);
-
-        original.rewind().unwrap();
-        clone.read_exact(&mut pair).unwrap();
-        assert_eq!(&pair, b"ef");
-    }
-
-    #[test]
-    fn arc_slice_read_at_offsets_short_tail_and_past_end() {
-        let bytes = Arc::<[u8]>::from(&b"abcdef"[..]);
-        assert_eq!(ReadAt::len(&bytes), 6);
-        assert!(!ReadAt::is_empty(&bytes));
-
-        let mut buf = [0; 3];
-        assert_eq!(bytes.read_at(2, &mut buf).unwrap(), 3);
-        assert_eq!(&buf, b"cde");
-        assert_eq!(bytes.read_at(4, &mut buf).unwrap(), 2);
-        assert_eq!(&buf[..2], b"ef");
-        assert_eq!(bytes.read_at(6, &mut buf).unwrap(), 0);
-        assert_eq!(bytes.read_at(7, &mut buf).unwrap(), 0);
-        assert_eq!(bytes.read_at(u64::MAX, &mut buf).unwrap(), 0);
+                for operation in operations {
+                    match operation {
+                        CursorOp::Read(len) => {
+                            let mut actual_buf = [0; 80];
+                            let mut expected_buf = [0; 80];
+                            let actual_len = actual.read(&mut actual_buf[..len]).unwrap();
+                            let expected_len = expected.read(&mut expected_buf[..len]).unwrap();
+                            prop_assert_eq!(actual_len, expected_len);
+                            prop_assert_eq!(&actual_buf[..actual_len], &expected_buf[..expected_len]);
+                        }
+                        CursorOp::Seek(seek) => {
+                            let before = actual.stream_position().unwrap();
+                            let result = actual.seek(seek).map_err(|error| error.kind());
+                            let expected_result = expected.seek(seek).map_err(|error| error.kind());
+                            prop_assert_eq!(result, expected_result);
+                            if result.is_err() {
+                                prop_assert_eq!(result, Err(io::ErrorKind::InvalidInput));
+                                prop_assert_eq!(actual.stream_position().unwrap(), before);
+                            }
+                        }
+                        CursorOp::CloneAndSwitch => {
+                            let clone = actual.clone();
+                            parked = Some((std::mem::replace(&mut actual, clone), expected.position()));
+                            expected = expected.clone();
+                        }
+                    }
+                    prop_assert_eq!(actual.stream_position().unwrap(), expected.position());
+                    if let Some((original, position)) = &mut parked {
+                        prop_assert_eq!(original.stream_position().unwrap(), *position);
+                    }
+                }
+            }
+        }
     }
 
     #[cfg(not(target_arch = "wasm32"))]

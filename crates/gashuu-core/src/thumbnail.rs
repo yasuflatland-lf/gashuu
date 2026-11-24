@@ -299,13 +299,13 @@ mod tests {
     /// each time, leaving other pages untouched (the lazy O(visible) contract).
     #[test]
     fn one_thumbnail_no_cache_reads_only_requested_page() {
-        let pages: Vec<Option<Vec<u8>>> = (0..5).map(|_| Some(tiny_png(8, 8))).collect();
+        let pages = (8..13).map(|width| Some(tiny_png(width, 8))).collect();
         let src = Arc::new(CountingSource::new(pages));
         let source: Arc<dyn PageSource> = src.clone();
 
         let img = generate_one_thumbnail(&source, DEFAULT_THUMB_MAX_SIDE, 2, None)
             .expect("page 2 decodes");
-        assert!(img.width() > 0 && img.height() > 0);
+        assert_eq!((img.width(), img.height()), (10, 8));
         assert_eq!(src.reads(), 1, "exactly one page read for one request");
     }
 

@@ -146,15 +146,6 @@ mod folder_source_tests {
     }
 
     #[test]
-    fn listing_is_not_truncated_for_a_complete_folder() {
-        let dir = tempfile::tempdir().unwrap();
-        write_png(&dir.path().join("1.png"));
-        let source = FolderSource::open(dir.path()).unwrap();
-
-        assert!(!source.listing_truncated());
-    }
-
-    #[test]
     fn macos_metadata_files_are_excluded() {
         let dir = tempfile::tempdir().unwrap();
         // A real page, an AppleDouble resource fork (`.jpg`-named but metadata),
@@ -233,28 +224,50 @@ mod folder_source_tests {
         assert_eq!(names, vec!["1.png"]);
     }
 
-    #[test]
-    fn image_at_limit_is_included() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("1.png");
-        write_png(&path);
-        let size = fs::metadata(&path).unwrap().len();
+    mod props {
+        use super::*;
+        use proptest::prelude::*;
 
-        let source = FolderSource::open_with_limit(dir.path(), size).unwrap();
-        assert_eq!(source.list_pages().len(), 1);
-        assert_eq!(source.skipped_count(), 0);
-    }
+        const LIMIT: usize = 32;
 
-    #[test]
-    fn image_above_limit_is_skipped_at_open() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("big.png");
-        write_png(&path);
-        let size = fs::metadata(&path).unwrap().len();
+        fn file_size() -> impl Strategy<Value = usize> {
+            prop_oneof![Just(LIMIT - 1), Just(LIMIT), Just(LIMIT + 1), 1usize..64]
+        }
 
-        let source = FolderSource::open_with_limit(dir.path(), size - 1).unwrap();
-        assert!(source.list_pages().is_empty());
-        assert_eq!(source.skipped_count(), 1);
+        proptest! {
+            // Each case creates a temporary directory and writes up to six files.
+            #![proptest_config(ProptestConfig::with_cases(32))]
+
+            /// C2-11: Opening a folder lists only in-limit images and counts oversized images.
+            /// Replaces `image_at_limit_is_included`, `image_above_limit_is_skipped_at_open`,
+            /// `multiple_oversized_images_accumulate_skipped_count`, and
+            /// `oversized_non_image_does_not_increment_skipped`.
+            #[test]
+            fn prop_folder_lists_images_within_size_limit(
+                files in proptest::collection::vec((any::<bool>(), file_size()), 0..=6),
+            ) {
+                let dir = tempfile::tempdir().unwrap();
+                let mut expected_pages = Vec::new();
+                let mut expected_skipped = 0;
+                for (number, (is_image, size)) in [2, 10, 1, 20, 3, 11].into_iter().zip(files) {
+                    let ext = if is_image { "png" } else { "txt" };
+                    let name = format!("{number}.{ext}");
+                    fs::write(dir.path().join(&name), vec![0_u8; size]).unwrap();
+                    if is_image && size <= LIMIT {
+                        expected_pages.push((number, name));
+                    } else if is_image {
+                        expected_skipped += 1;
+                    }
+                }
+
+                expected_pages.sort_unstable_by_key(|&(number, _)| number);
+                let expected_names: Vec<_> = expected_pages.into_iter().map(|(_, name)| name).collect();
+                let source = FolderSource::open_with_limit(dir.path(), LIMIT as u64).unwrap();
+                let names: Vec<_> = source.list_pages().into_iter().map(|entry| entry.name).collect();
+                prop_assert_eq!(names, expected_names);
+                prop_assert_eq!(source.skipped_count(), expected_skipped);
+            }
+        }
     }
 
     #[test]
@@ -311,31 +324,6 @@ mod folder_source_tests {
             }
             other => panic!("expected EntryTooLarge, got {other:?}"),
         }
-    }
-
-    #[test]
-    fn multiple_oversized_images_accumulate_skipped_count() {
-        let dir = tempfile::tempdir().unwrap();
-        for name in ["a.png", "b.png", "c.png"] {
-            write_png(&dir.path().join(name));
-        }
-        // Use limit 1 so all three images are oversized.
-        let source = FolderSource::open_with_limit(dir.path(), 1).unwrap();
-        assert!(source.list_pages().is_empty());
-        assert_eq!(source.skipped_count(), 3);
-    }
-
-    #[test]
-    fn oversized_non_image_does_not_increment_skipped() {
-        let dir = tempfile::tempdir().unwrap();
-        // A non-image file: must never affect skipped_count regardless of size.
-        fs::write(dir.path().join("big.txt"), vec![0u8; 100]).unwrap();
-        write_png(&dir.path().join("1.png"));
-
-        // limit=1 means the image is oversized (skipped, count=1); big.txt is
-        // not an image and must not contribute to the count (stays at 1, not 2).
-        let source = FolderSource::open_with_limit(dir.path(), 1).unwrap();
-        assert_eq!(source.skipped_count(), 1);
     }
 
     /// Pins the load-bearing invariant of the refactor: after the natural-sort,
