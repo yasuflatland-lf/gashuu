@@ -93,7 +93,8 @@ pub use update::version::{is_update_available, should_notify};
 pub use view_modes::{CoverMode, FitMode, KeyBindings, Language, ReadingDirection, SpreadMode};
 pub use view_override::{ResolvedView, ViewOverride};
 pub use viewport::{
-    anchored_zoom, centered_offset, clamp_offset, clamp_zoom, fit_scale, ZOOM_MAX, ZOOM_MIN,
+    anchored_zoom, centered_offset, clamp_offset, clamp_zoom, fit_scale, ViewPoint, ViewSize,
+    ZOOM_MAX, ZOOM_MIN,
 };
 pub use window_geometry::{center_in, Rect, WindowGeometry, MIN_WINDOW_HEIGHT, MIN_WINDOW_WIDTH};
 
