@@ -18,6 +18,7 @@
 
 A cross-platform manga / comic viewer built with Rust and [Slint](https://slint.dev).
 Visit the [landing page](https://yasuflatland-lf.github.io/gashuu/) for a visual overview.
+Or try the [web (WASM) version](https://yasuflatland-lf.github.io/gashuu/app/) right in your browser — no install needed.
 
 Open a folder of images or a comic archive and read with the keyboard — two-page
 spreads, right-to-left binding, zoom/pan, a thumbnail strip, a cover-flow library,
@@ -61,6 +62,17 @@ Linux releases ship two x86_64 artifacts; pick whichever suits your distro:
 The AppImage is built against an older glibc for broad compatibility. If it
 fails to start on a minimal system, install FUSE (`sudo apt install libfuse2`)
 or run it with `--appimage-extract-and-run`.
+
+### Web (WASM) version
+
+The browser build runs at <https://yasuflatland-lf.github.io/gashuu/app/>. It has these limitations compared with the desktop app:
+
+- **Formats** — only CBZ and ZIP archives. RAR/CBR and AVIF are unavailable, and the browser-native decoder handles PNG/JPEG only.
+- **Import** — the file picker supports files only (no folders). Imported books are copied into the browser's origin-private storage, not read in place.
+- **Storage** — the browser may evict stored books under storage pressure or quota limits; evicted books are marked unavailable. Settings shows estimated usage and protection status.
+- **Performance** — the page cache is smaller (6 pages / 128 MiB) and prefetch is off.
+
+See [docs/scope.md](docs/scope.md) for details.
 
 ## Features
 
