@@ -7,7 +7,7 @@ use crate::persist::{DocumentStore, JsonDocument};
 use crate::FsBlobStore;
 use crate::{BlobStore, BookId, LIBRARY_KEY};
 use serde::Serialize;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(any(test, feature = "testing"), not(target_arch = "wasm32")))]
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -40,12 +40,12 @@ impl LibraryStore {
         }
     }
 
-    /// Construct a store for an explicit path.
+    /// Test-support constructor for a store at an explicit path.
     ///
     /// # Panics
     ///
     /// The path must end in a UTF-8 file name.
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(any(test, feature = "testing"), not(target_arch = "wasm32")))]
     pub fn new(path: PathBuf) -> Self {
         let (blobs, key) = FsBlobStore::for_file(&path);
         Self {

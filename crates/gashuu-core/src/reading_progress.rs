@@ -17,8 +17,6 @@ use std::num::NonZeroUsize;
 /// "the furthest page the reader saw", so it can decrease when the reader turns
 /// back. Construction clamps the position into the book when `total` is known;
 /// an unknown total cannot provide a bound, so it leaves the position verbatim.
-/// For a stale input past the final index, `fraction()` still reports `1.0` and
-/// `is_finished()` still reports `true`, preserving their previous behaviour.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct ReadingProgress {
     last_viewed: usize,
@@ -60,9 +58,7 @@ impl ReadingProgress {
     /// Position-normalized reading fraction in `0.0..=1.0`.
     ///
     /// Uses the last page index (`total - 1`) as the span so the final page reads
-    /// exactly `1.0`. An unknown total or a one-page book yields `0.0`: a
-    /// one-page book has no meaningful progress bar and is never considered
-    /// finished. A stale `last_viewed` past the final index clamps to `1.0`.
+    /// exactly `1.0`. An unknown total or a one-page book yields `0.0`.
     pub fn fraction(&self) -> f32 {
         match self.total {
             Some(t) if t.get() > 1 => {
@@ -70,21 +66,6 @@ impl ReadingProgress {
             }
             _ => 0.0,
         }
-    }
-    /// Whether the resume position is at or past the final page index.
-    ///
-    /// An unknown total and a one-page book are never finished, mirroring
-    /// [`Self::fraction`]'s decision that they have no meaningful progress bar.
-    pub fn is_finished(&self) -> bool {
-        self.total
-            .is_some_and(|t| t.get() > 1 && self.last_viewed >= t.get() - 1)
-    }
-    /// At the start of the book: the last-viewed leading page index is `0`. True
-    /// for a never-opened book AND for a read book left on its first page/cover
-    /// (both record `last_viewed == 0`), so this is a start-position predicate, not a
-    /// "never read" flag.
-    pub fn is_at_start(&self) -> bool {
-        self.last_viewed == 0
     }
 }
 
@@ -173,23 +154,6 @@ mod tests {
         assert_eq!(p.fraction(), 0.0);
     }
 
-    // --- is_finished ---
-
-    #[test]
-    fn is_finished_matrix() {
-        let cases = [
-            ("unread", ReadingProgress::new(0, nz(10)), false),
-            ("mid-book", ReadingProgress::new(5, nz(10)), false),
-            ("last page", ReadingProgress::new(9, nz(10)), true),
-            ("one-page book", ReadingProgress::new(0, nz(1)), false),
-            ("unknown total", ReadingProgress::new(9, None), false),
-        ];
-
-        for (name, progress, expected) in cases {
-            assert_eq!(progress.is_finished(), expected, "{name}");
-        }
-    }
-
     // --- current ---
 
     #[test]
@@ -241,20 +205,6 @@ mod tests {
                 );
             }
         }
-    }
-
-    // --- is_at_start ---
-
-    #[test]
-    fn is_at_start_true_when_last_viewed_zero() {
-        let p = ReadingProgress::new(0, nz(10));
-        assert!(p.is_at_start());
-    }
-
-    #[test]
-    fn is_at_start_false_when_last_viewed_nonzero() {
-        let p = ReadingProgress::new(1, nz(10));
-        assert!(!p.is_at_start());
     }
 
     // --- getters ---

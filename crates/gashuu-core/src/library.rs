@@ -126,11 +126,6 @@ impl Book {
         &self.title
     }
 
-    /// Resume page index (0 when never opened).
-    pub fn resume_page(&self) -> usize {
-        self.progress.last_viewed()
-    }
-
     /// Total page count cached at open time, or `None` when unknown.
     pub fn page_count_opt(&self) -> Option<usize> {
         self.progress.total()
@@ -420,11 +415,6 @@ impl Library {
                 self.last_opened = Some(p);
             }
         }
-    }
-
-    /// The resume page index for `id` (0 when unknown).
-    pub fn resume_page(&self, id: &BookId) -> usize {
-        self.book(id).map(Book::resume_page).unwrap_or(0)
     }
 
     /// Record a resume index, clamped to the final page when the total is known.

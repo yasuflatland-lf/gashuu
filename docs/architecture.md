@@ -354,11 +354,10 @@ settings can change that spread.
 Construction clamps `last_viewed` to `total - 1` when the total is known and leaves it verbatim
 when the total is unknown (nothing bounds an unknown book). Its derivations are `current()`
 (1-based, `last_viewed + 1` saturating, always ≥ 1),
-`fraction()` (position-normalized `last_viewed / (total - 1)`, clamped to `0.0..=1.0`), and
-`is_finished()` (`last_viewed >= total - 1`). An unknown total and a one-page total both yield
-`fraction() == 0.0` and `is_finished() == false`: a one-page book has no meaningful progress bar.
-The non-zero total type makes `Some(0)` unrepresentable. A stale constructor input still produces
-`fraction() == 1.0` and `is_finished() == true`. `is_at_start()` remains `last_viewed == 0`.
+and `fraction()` (position-normalized `last_viewed / (total - 1)`, clamped to `0.0..=1.0`).
+An unknown total and a one-page total both yield `fraction() == 0.0`.
+The non-zero total type makes `Some(0)` unrepresentable.
+For totals greater than one, a stale position past the final page clamps to `fraction() == 1.0`.
 
 This is the single home of the fraction guard and 1-based offset that BOTH the carousel
 (`library_model::carousel_data_for_indices` via `Book::progress()`) and the open-time resume
