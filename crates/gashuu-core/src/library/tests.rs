@@ -136,7 +136,7 @@ proptest! {
         let (mut lib, ids) = populated_library("/m", &books, bookmark);
         let id = &ids[index % ids.len()];
         let stale = lib.book(id).unwrap().clone();
-        prop_assert!(lib.set_resume_page(id, stale.resume_page() - 1));
+        prop_assert!(lib.set_resume_page(id, stale.progress().last_viewed() - 1));
         let updated = lib.to_json().unwrap();
 
         lib.restore(vec![stale], None);
@@ -726,12 +726,6 @@ fn restore_drops_a_stale_bookmark_not_on_the_shelf() {
 }
 
 #[test]
-fn last_page_is_zero_for_unknown_path() {
-    let lib = Library::new();
-    assert_eq!(lib.resume_page(&BookId::new("/manga/missing.cbz")), 0);
-}
-
-#[test]
 fn page_count_opt_is_none_for_fresh_book() {
     let book = book_from_path(Path::new("/manga/a.cbz"), false);
     assert_eq!(book.page_count_opt(), None);
@@ -750,7 +744,9 @@ fn set_page_count_repairs_a_stale_resume_page() {
         "the count write changed something, so the caller must save"
     );
     assert_eq!(
-        lib.resume_page(&path),
+        lib.book(&path)
+            .map(|b| b.progress().last_viewed())
+            .unwrap_or(0),
         4,
         "resume clamped to the last index"
     );
@@ -761,7 +757,7 @@ fn set_page_count_repairs_a_stale_resume_page() {
 fn stale_pair_in_json_is_clamped_on_load() {
     let json = r#"{"path":"a.cbz","title":"a","last_page":40,"page_count":5}"#;
     let book: Book = serde_json::from_str(json).unwrap();
-    assert_eq!(book.resume_page(), 4);
+    assert_eq!(book.progress().last_viewed(), 4);
     assert_eq!(serde_json::to_value(book).unwrap()["last_page"], 4);
 }
 
@@ -799,18 +795,21 @@ fn book_without_page_count_field_deserializes_to_unknown() {
     });
     let book: Book = serde_json::from_value(value).unwrap();
     assert_eq!(book.id(), &BookId::new("/manga/a.cbz"));
-    assert_eq!(book.resume_page(), 5);
+    assert_eq!(book.progress().last_viewed(), 5);
     assert_eq!(book.page_count_opt(), None);
 }
 
 #[test]
-fn progress_is_at_start_for_freshly_added_book() {
+fn progress_starts_at_zero_for_freshly_added_book() {
     let mut lib = Library::new();
     let path = BookId::new("/manga/a.cbz");
     assert!(lib.add(path.clone(), title(&path)).is_some());
     let p = lib.books()[0].progress();
-    assert!(p.is_at_start(), "freshly added book must be at the start");
-    assert_eq!(p.last_viewed(), 0);
+    assert_eq!(
+        p.last_viewed(),
+        0,
+        "freshly added book must be at the start"
+    );
     assert_eq!(p.total(), None);
 }
 
@@ -840,8 +839,11 @@ fn register_opened_adds_fresh_book_and_back_fills_count() {
     let reg = lib.register_opened(&path, &title(&path), NonZeroUsize::new(10));
     assert_eq!(lib.books().len(), 1, "fresh open must add the book");
     assert!(reg.count_changed, "0 -> 10 must report a count change");
-    assert!(reg.resume.is_at_start(), "fresh book resumes at the start");
-    assert_eq!(reg.resume.last_viewed(), 0);
+    assert_eq!(
+        reg.resume.last_viewed(),
+        0,
+        "fresh book resumes at the start"
+    );
     assert_eq!(reg.resume.total(), Some(10));
 }
 
@@ -1161,7 +1163,7 @@ fn normalize_merges_exact_duplicate_ids() {
     assert_eq!(lib.books().len(), 1);
     let book = lib.book(&BookId::new("books/u1/a.cbz")).unwrap();
     assert_eq!(book.title(), "Original");
-    assert_eq!(book.resume_page(), 7);
+    assert_eq!(book.progress().last_viewed(), 7);
     assert_eq!(book.page_count_opt(), Some(20));
     assert_eq!(
         book.overrides(),
@@ -1179,7 +1181,7 @@ fn normalize_dedup_keeps_set_resume_page_on_the_only_copy() {
     let id = BookId::new("books/u1/a.cbz");
 
     assert!(lib.set_resume_page(&id, 5));
-    assert_eq!(lib.book(&id).unwrap().resume_page(), 5);
+    assert_eq!(lib.book(&id).unwrap().progress().last_viewed(), 5);
     assert_eq!(lib.books().len(), 1);
 }
 
@@ -1273,7 +1275,7 @@ fn recanonicalize_merges_two_spellings_of_same_file() {
         "survivor path is the canonical key"
     );
     assert_eq!(
-        book.resume_page(),
+        book.progress().last_viewed(),
         7,
         "resume_page is the max across members"
     );
@@ -1322,7 +1324,7 @@ fn merge_group_clamps_the_survivor_position() {
     let book = &lib.books()[0];
     assert_eq!(book.page_count_opt(), Some(5), "count is the first Some");
     assert_eq!(
-        book.resume_page(),
+        book.progress().last_viewed(),
         4,
         "the max resume is clamped into the surviving page count"
     );
@@ -1356,7 +1358,7 @@ fn recanonicalize_upgrades_single_noncanonical_path() {
         "a resolvable non-canonical path is upgraded to canonical on load"
     );
     assert_eq!(
-        lib.books()[0].resume_page(),
+        lib.books()[0].progress().last_viewed(),
         5,
         "the book's data survives the upgrade"
     );
@@ -1383,7 +1385,7 @@ fn recanonicalize_preserves_missing_path_unchanged() {
         &BookId::new(raw),
         "the raw path is preserved unchanged"
     );
-    assert_eq!(lib.books()[0].resume_page(), 9);
+    assert_eq!(lib.books()[0].progress().last_viewed(), 9);
 }
 
 #[test]

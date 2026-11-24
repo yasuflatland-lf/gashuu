@@ -399,7 +399,9 @@ mod tests {
         );
         assert_eq!(lib.books().len(), 3, "all books restored");
         assert_eq!(
-            lib.resume_page(&BookId::new("/manga/b.cbz")),
+            lib.book(&BookId::new("/manga/b.cbz"))
+                .map(|b| b.progress().last_viewed())
+                .unwrap_or(0),
             17,
             "restored book keeps its resume_page (add() would reset it to 0)"
         );

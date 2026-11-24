@@ -86,6 +86,7 @@ impl FsBlobStore {
         Self { dir }
     }
 
+    #[cfg(all(any(test, feature = "testing"), not(target_arch = "wasm32")))]
     pub(crate) fn for_file(path: &Path) -> (Self, String) {
         let dir = path.parent().unwrap_or_else(|| Path::new("")).to_path_buf();
         let key = path
@@ -232,7 +233,7 @@ mod tests {
         let loaded = library_store.load().unwrap();
         assert_eq!(loaded.books().len(), 1);
         assert_eq!(loaded.books()[0].id(), &book);
-        assert_eq!(loaded.books()[0].resume_page(), 2);
+        assert_eq!(loaded.books()[0].progress().last_viewed(), 2);
     }
 
     #[cfg(not(target_arch = "wasm32"))]

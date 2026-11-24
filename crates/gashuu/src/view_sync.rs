@@ -497,7 +497,14 @@ mod tests {
         *f.library.borrow_mut() = Library::from_json(&before).unwrap();
         assert_eq!(suspend, f.persist(ViewModeRoute::AppExit));
         assert_eq!(settings, f.settings.borrow().view_defaults());
-        assert_eq!(f.library.borrow().resume_page(&f.book_id), 7);
+        assert_eq!(
+            f.library
+                .borrow()
+                .book(&f.book_id)
+                .map(|b| b.progress().last_viewed())
+                .unwrap_or(0),
+            7
+        );
     }
 
     fn assert_suspend_dialog(scope: DialogScope) {
@@ -511,7 +518,13 @@ mod tests {
         let runtime = current_runtime_view(&f.state, &f.viewport);
         let saved = f.persist(ViewModeRoute::Suspend);
         let saved = Library::from_json(&saved).unwrap();
-        assert_eq!(saved.resume_page(&f.book_id), 7);
+        assert_eq!(
+            saved
+                .book(&f.book_id)
+                .map(|b| b.progress().last_viewed())
+                .unwrap_or(0),
+            7
+        );
         assert_eq!(saved.overrides_for(&f.book_id), overrides);
         assert_eq!(f.settings.borrow().view_defaults(), settings);
         assert_eq!(f.session.borrow().scope(), Some(scope));
@@ -543,7 +556,14 @@ mod tests {
         f.persist(ViewModeRoute::DialogClosedOnLibrary);
         let overrides = f.library.borrow().overrides_for(&f.book_id);
         let settings = f.settings.borrow().view_defaults();
-        assert_eq!(f.library.borrow().resume_page(&f.book_id), 7);
+        assert_eq!(
+            f.library
+                .borrow()
+                .book(&f.book_id)
+                .map(|b| b.progress().last_viewed())
+                .unwrap_or(0),
+            7
+        );
         *f.library.borrow_mut() = Library::from_json(&initial).unwrap();
         *f.settings.borrow_mut() = Settings::default();
         f.open_dialog(DialogScope::Library);
@@ -554,7 +574,14 @@ mod tests {
         f.persist(ViewModeRoute::DialogClosedOnLibrary);
         assert_eq!(f.library.borrow().overrides_for(&f.book_id), overrides);
         assert_eq!(f.settings.borrow().view_defaults(), settings);
-        assert_eq!(f.library.borrow().resume_page(&f.book_id), 0);
+        assert_eq!(
+            f.library
+                .borrow()
+                .book(&f.book_id)
+                .map(|b| b.progress().last_viewed())
+                .unwrap_or(0),
+            0
+        );
     }
 
     #[test]
@@ -695,7 +722,14 @@ mod tests {
 
         stage_position_write_back(&state, &library);
 
-        assert_eq!(library.borrow().resume_page(&canonical), 9);
+        assert_eq!(
+            library
+                .borrow()
+                .book(&canonical)
+                .map(|b| b.progress().last_viewed())
+                .unwrap_or(0),
+            9
+        );
     }
 
     // ---- view_override_to_write_back (per-book overrides) ------------------
@@ -1386,7 +1420,10 @@ mod tests {
                             | ViewModeRoute::AppExit
                     );
                     assert_eq!(
-                        library.resume_page(&canonical),
+                        library
+                            .book(&canonical)
+                            .map(|b| b.progress().last_viewed())
+                            .unwrap_or(0),
                         if writes_position { 2 } else { 0 },
                         "{route:?}: position sink"
                     );

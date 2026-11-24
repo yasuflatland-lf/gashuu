@@ -1512,7 +1512,10 @@ mod tests {
             Rc::clone(&library),
             move |value| {
                 observed.borrow_mut().push((
-                    value.resume_page(&observed_a),
+                    value
+                        .book(&observed_a)
+                        .map(|b| b.progress().last_viewed())
+                        .unwrap_or(0),
                     value.books().iter().any(|book| book.id() == &observed_b),
                 ));
                 Ok(())
@@ -1728,7 +1731,7 @@ mod tests {
             Some(4),
             "the injected save must receive the probed page count"
         );
-        assert_eq!(stored.resume_page(), 2);
+        assert_eq!(stored.progress().last_viewed(), 2);
     }
 
     #[test]
