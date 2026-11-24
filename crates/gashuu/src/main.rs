@@ -1172,8 +1172,8 @@ fn finalize_open(
 ) {
     let loader = deps.localizer.loader();
     match outcome {
-        open_book::OpenOutcome::Error(e_str) => {
-            ui.set_status_text(crate::i18n::dynamic::open_error_str(loader, &e_str).into());
+        open_book::OpenOutcome::Error(error) => {
+            ui.set_status_text(crate::i18n::dynamic::open_error(loader, &error).into());
         }
         open_book::OpenOutcome::Success {
             notices,

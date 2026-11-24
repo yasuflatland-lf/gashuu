@@ -255,6 +255,10 @@ viewer-direction-rtl = 右→左
 
 # Parameterized status/error strings
 viewer-open-error = エラー: { $error }
+viewer-error-format-disabled = セーフモードでは { $format } 形式の本を開けません。
+viewer-error-book-locked = この本は別のタブで開いています。そのタブで本を閉じてから、もう一度お試しください。
+viewer-error-not-in-storage = この本はブラウザーのストレージに残っていません。
+viewer-error-worker-unavailable = バックグラウンドワーカーを起動できませんでした。ページを再読み込みしてください。
 viewer-open-inaccessible = 『{ $title }』を開けませんでした。ファイルが見つからないか、保存先のボリュームに接続できません。
 viewer-open-inaccessible-web = 『{ $title }』を開けませんでした。このセッションでファイルを追加してください。
 viewer-page-unavailable = （ページ { $page } は表示できません）

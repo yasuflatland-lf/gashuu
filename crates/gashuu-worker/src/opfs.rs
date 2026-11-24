@@ -1,15 +1,15 @@
 //! Read immutable books through one synchronous OPFS handle per open file.
 
-use gashuu_core::{ArchivePolicy, ReadAt};
+use gashuu_core::ReadAt;
 use gashuu_worker::{
     book_path,
     import::{
         fits_in_quota, probe_upload, sanitise_upload_name, upload_title, STORAGE_FULL,
-        STORAGE_UNAVAILABLE, UNREADABLE_UPLOAD,
+        UNREADABLE_UPLOAD,
     },
     lifecycle::{content_key, head_tail_ranges, is_content_key},
     protocol::ImportedMeta,
-    wire_error::WireError,
+    wire_error::{classify, WireError},
 };
 use js_sys::{Promise, Reflect, Uint8Array};
 use std::{
@@ -94,21 +94,11 @@ async fn resolve<T: JsCast>(promise: Promise) -> Result<T, JsValue> {
 
 pub fn map_error(id: &str, error: JsValue) -> WireError {
     if let Some(exception) = error.dyn_ref::<DomException>() {
-        return match exception.name().as_str() {
-            "QuotaExceededError" => storage_full(),
-            "SecurityError" | "NotSupportedError" => WireError::Other {
-                detail: STORAGE_UNAVAILABLE.into(),
-            },
-            "NotFoundError" => WireError::Missing {
-                detail: format!("{id} not found in browser storage"),
-            },
-            "NoModificationAllowedError" => WireError::Other {
-                detail: "book is open in another tab".into(),
-            },
-            name => WireError::Other {
-                detail: format!("{name}: {}", exception.message()),
-            },
-        };
+        let classified = classify(&exception.name(), id);
+        if matches!(classified, WireError::Other { .. }) {
+            web_sys::console::warn_2(&"OPFS operation failed".into(), &error);
+        }
+        return classified;
     }
     WireError::Other {
         detail: error.as_string().unwrap_or_else(|| format!("{error:?}")),
@@ -164,7 +154,7 @@ impl Upload {
         Ok(true)
     }
 
-    pub async fn finish(self, allow_rar: bool, key: &str) -> Result<ImportedMeta, WireError> {
+    pub async fn finish(self, key: &str) -> Result<ImportedMeta, WireError> {
         let Self {
             id,
             uuid,
@@ -178,7 +168,7 @@ impl Upload {
                 .handle
                 .flush()
                 .map_err(|error| map_error(&id, error))?;
-            let count = probe_upload(&name, Arc::new(reader), ArchivePolicy { allow_rar })?;
+            let count = probe_upload(&name, Arc::new(reader))?;
             let directory = resolve(books.get_directory_handle(&uuid))
                 .await
                 .map_err(|e| map_error(&id, e))?;
@@ -267,7 +257,11 @@ async fn create_file(
     let file: FileSystemFileHandle =
         resolve(dir.get_file_handle_with_options(name, &options)).await?;
     if !Reflect::get(&file, &"createSyncAccessHandle".into())?.is_function() {
-        return Err(STORAGE_UNAVAILABLE.into());
+        return Err(DomException::new_with_message_and_name(
+            "createSyncAccessHandle is unavailable",
+            "NotSupportedError",
+        )?
+        .into());
     }
     resolve(file.create_sync_access_handle()).await
 }

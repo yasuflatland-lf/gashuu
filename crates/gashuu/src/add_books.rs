@@ -61,11 +61,11 @@ pub(crate) fn apply_outcomes(
                 tracing::debug!(path = %subject, "skipping empty source (no image pages)");
                 continue;
             }
-            ProbeKind::FormatDisabled { format } => {
+            ProbeKind::FormatDisabled { kind } => {
                 skipped += 1;
                 tracing::info!(
                     path = %subject,
-                    %format,
+                    %kind,
                     "skipping source: format disabled in safer mode"
                 );
                 continue;

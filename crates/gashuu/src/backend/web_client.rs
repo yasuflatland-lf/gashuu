@@ -9,7 +9,6 @@ use gashuu_core::{ArchivePolicy, BookId, CacheConfig, DecodedImage, DecodedLru};
 use gashuu_worker::protocol::{
     self, ImageMeta, ReqId, WireResult, WorkerRequest as Request, WorkerResponse as Response,
 };
-use gashuu_worker::wire_error::WireError;
 use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::num::NonZeroUsize;
@@ -72,16 +71,6 @@ impl Pending {
             Self::Count(target, _) => target,
             Self::Sweep(_) | Self::Import(_) => LiveCheck::Always,
         }
-    }
-
-    fn fail_unavailable(self) -> Ready {
-        let error = match self {
-            Self::Import(_) => BackendError::Other {
-                detail: super::STORAGE_UNAVAILABLE.into(),
-            },
-            _ => unavailable(),
-        };
-        self.fail(error)
     }
 
     fn fail(self, error: BackendError) -> Ready {
@@ -198,7 +187,7 @@ impl<F> WebClient<F> {
         file: Option<F>,
     ) -> Effects<F> {
         if self.connection == Connection::Failed {
-            return deferred(pending.fail_unavailable());
+            return deferred(pending.fail(BackendError::WorkerUnavailable));
         }
         loop {
             let id = self.next_req;
@@ -477,7 +466,7 @@ impl<F> WebClient<F> {
             Err(error) => {
                 return (
                     Vec::new(),
-                    self.on_worker_failed(&backend_error(error).to_string()),
+                    self.on_worker_failed(&BackendError::from(error).to_string()),
                 )
             }
         };
@@ -602,7 +591,7 @@ impl<F> WebClient<F> {
                 Ready::new(target, done, report)
             }
             (Pending::Import(done), Response::Imported { result, .. }) => {
-                let result = result.map_err(backend_error).and_then(|meta| {
+                let result = result.map_err(BackendError::from).and_then(|meta| {
                     let page_count = NonZeroUsize::new(meta.page_count as usize)
                         .ok_or(BackendError::EmptyBook)?;
                     Ok(ImportedBook {
@@ -631,7 +620,7 @@ impl<F> WebClient<F> {
                 | Response::PageCount {
                     result: Err(error), ..
                 },
-            ) => pending.fail(backend_error(error)),
+            ) => pending.fail(BackendError::from(error)),
             (pending, _) => pending.fail(BackendError::Other {
                 detail: "unexpected web worker response".into(),
             }),
@@ -647,7 +636,7 @@ impl<F> WebClient<F> {
         if self.connection == Connection::Failed {
             return Vec::new();
         }
-        tracing::error!(%detail, "web worker unavailable");
+        tracing::error!(%detail, "lost web worker connection");
         self.connection = Connection::Failed;
         self.outbox.clear();
         self.waiting_storage.clear();
@@ -655,7 +644,7 @@ impl<F> WebClient<F> {
         self.active_import = None;
         self.pending
             .drain()
-            .map(|(_, p)| Delivery::Deferred(p.fail_unavailable()))
+            .map(|(_, p)| Delivery::Deferred(p.fail(BackendError::WorkerUnavailable)))
             .collect()
     }
 
@@ -672,37 +661,17 @@ fn deferred<F>(ready: Ready) -> Effects<F> {
     (Vec::new(), vec![Delivery::Deferred(ready)])
 }
 
-fn unavailable() -> BackendError {
-    BackendError::Other {
-        detail: "web worker unavailable".into(),
-    }
-}
-
 fn unpack(
     result: WireResult<ImageMeta>,
     images: &mut impl Iterator<Item = Vec<u8>>,
 ) -> ImageResult {
-    let ImageMeta { width, height } = result.map_err(backend_error)?;
+    let ImageMeta { width, height } = result.map_err(BackendError::from)?;
     let bytes = images.next().ok_or_else(|| BackendError::Other {
         detail: "missing worker image buffer".into(),
     })?;
     DecodedImage::new(bytes, width, height)
         .map(Arc::new)
         .map_err(|e| BackendError::from_core(&e))
-}
-
-fn backend_error(error: WireError) -> BackendError {
-    match error {
-        WireError::EmptyBook => BackendError::EmptyBook,
-        WireError::FormatDisabled { format } if format == "rar/cbr" => {
-            BackendError::FormatDisabled { format: "rar/cbr" }
-        }
-        WireError::FormatDisabled { format } => BackendError::Other {
-            detail: format!("{format} support is disabled"),
-        },
-        WireError::Missing { detail } => BackendError::Missing { detail },
-        WireError::Other { detail } => BackendError::Other { detail },
-    }
 }
 
 #[cfg(test)]

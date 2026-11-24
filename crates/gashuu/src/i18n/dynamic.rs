@@ -10,6 +10,7 @@
 //! and `crate::open_book` (`NoticesContent`) respectively; the remaining functions format
 //! individual messages from `gashuu_core` types.
 
+use crate::backend::BackendError;
 use crate::open_book::{NoticesContent, SkippedDetail};
 use crate::viewer_state::{StatusContent, StatusKind};
 use gashuu_core::{ClearCacheReport, ReadingDirection, SpreadMode};
@@ -56,24 +57,41 @@ pub(crate) fn direction_label(loader: &FluentLanguageLoader, dir: ReadingDirecti
 
 // ---- Parameterized error / status messages --------------------------------
 
-/// Status line for a failed open when the error is already a pre-formatted
-/// string (e.g. from `OpenOutcome::Error`).
-pub(crate) fn open_error_str(loader: &FluentLanguageLoader, e_str: &str) -> String {
-    fl!(loader, "viewer-open-error", error = e_str)
+pub(crate) use localized_error_text as backend_error_text;
+
+pub(crate) fn localized_error_text(loader: &FluentLanguageLoader, error: &BackendError) -> String {
+    match error {
+        BackendError::EmptyBook => no_images(loader),
+        BackendError::FormatDisabled { kind } => fl!(
+            loader,
+            "viewer-error-format-disabled",
+            format = kind.to_string()
+        ),
+        BackendError::BookLocked => fl!(loader, "viewer-error-book-locked"),
+        BackendError::WorkerUnavailable => fl!(loader, "viewer-error-worker-unavailable"),
+        BackendError::StorageUnavailable => fl!(loader, "notice-web-storage-unavailable"),
+        #[cfg(not(target_arch = "wasm32"))]
+        BackendError::Missing { detail } => open_inaccessible(loader, detail),
+        #[cfg(target_arch = "wasm32")]
+        BackendError::Missing { .. } => fl!(loader, "viewer-error-not-in-storage"),
+        BackendError::Other { detail } => detail.clone(),
+    }
+}
+
+pub(crate) fn open_error(loader: &FluentLanguageLoader, error: &BackendError) -> String {
+    fl!(
+        loader,
+        "viewer-open-error",
+        error = backend_error_text(loader, error)
+    )
 }
 
 /// Status line for a failed open whose source file is unreachable — moved, or on
 /// a volume that isn't mounted. Names the book and explains in plain language;
-/// the raw I/O error is logged in `OpenBookUseCase::apply_probed`, not surfaced here.
-pub(crate) fn open_inaccessible(loader: &FluentLanguageLoader, title: &str) -> String {
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        fl!(loader, "viewer-open-inaccessible", title = title)
-    }
-    #[cfg(target_arch = "wasm32")]
-    {
-        fl!(loader, "viewer-open-inaccessible-web", title = title)
-    }
+/// `OpenBookUseCase::install` logs the underlying I/O error.
+#[cfg(not(target_arch = "wasm32"))]
+fn open_inaccessible(loader: &FluentLanguageLoader, title: &str) -> String {
+    fl!(loader, "viewer-open-inaccessible", title = title)
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -89,11 +107,6 @@ pub(crate) fn web_unsupported_files(loader: &FluentLanguageLoader, count: usize)
 #[cfg(target_arch = "wasm32")]
 pub(crate) fn web_unreadable_files(loader: &FluentLanguageLoader, count: usize) -> String {
     fl!(loader, "notice-web-picker-unreadable", count = count)
-}
-
-#[cfg(target_arch = "wasm32")]
-pub(crate) fn web_storage_unavailable(loader: &FluentLanguageLoader) -> String {
-    fl!(loader, "notice-web-storage-unavailable")
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -836,10 +849,71 @@ mod tests {
     }
 
     #[test]
+    fn every_typed_backend_error_is_localized() {
+        let errors = [
+            (BackendError::EmptyBook, "no images", "画像"),
+            (
+                BackendError::FormatDisabled {
+                    kind: gashuu_core::ArchiveKind::Rar,
+                },
+                "RAR/CBR support",
+                "セーフモードでは RAR/CBR",
+            ),
+            (BackendError::BookLocked, "Close it there", "別のタブ"),
+            (
+                BackendError::WorkerUnavailable,
+                "Reload the page",
+                "再読み込み",
+            ),
+            (
+                BackendError::StorageUnavailable,
+                "cannot store books",
+                "保存できません",
+            ),
+            #[cfg(not(target_arch = "wasm32"))]
+            (
+                BackendError::Missing {
+                    detail: "Book".into(),
+                },
+                "volume",
+                "ボリューム",
+            ),
+            #[cfg(target_arch = "wasm32")]
+            (
+                BackendError::Missing {
+                    detail: "internal id".into(),
+                },
+                "browser storage",
+                "ブラウザー",
+            ),
+        ];
+        let en = en();
+        let ja = ja();
+        for (error, english, japanese) in errors {
+            let en_text = backend_error_text(en.loader(), &error);
+            let ja_text = backend_error_text(ja.loader(), &error);
+            assert!(en_text.contains(english), "{en_text}");
+            assert!(ja_text.contains(japanese), "{ja_text}");
+            assert!(!ja_text.contains(english), "{ja_text}");
+            assert_eq!(
+                open_error(ja.loader(), &error),
+                format!("エラー: {ja_text}")
+            );
+        }
+    }
+
+    #[test]
     fn parameterized_fns_embed_their_args() {
         for loc in [en(), ja()] {
             let l = loc.loader();
-            assert!(open_error_str(l, "boom").contains("boom"));
+            assert!(open_error(
+                l,
+                &BackendError::Other {
+                    detail: "boom".into()
+                }
+            )
+            .contains("boom"));
+            #[cfg(not(target_arch = "wasm32"))]
             assert!(open_inaccessible(l, "銃夢火星戦記 03巻").contains("銃夢火星戦記 03巻"));
             assert!(page_unavailable(l, 7).contains('7'));
             assert!(page_decode_error(l, 4).contains('5'));

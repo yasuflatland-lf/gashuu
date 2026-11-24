@@ -23,6 +23,6 @@ pub fn parse(id: &str) -> Result<BookPath, WireError> {
                 name: name.into(),
             })
         }
-        _ => Err(WireError::Missing { detail: id.into() }),
+        _ => Err(WireError::Missing { id: id.into() }),
     }
 }

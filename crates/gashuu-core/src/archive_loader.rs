@@ -7,7 +7,8 @@ use crate::error::CoreError;
 #[cfg(feature = "rar")]
 use crate::page_source::RarSource;
 use crate::page_source::{FolderSource, PageSource, ReadAt, ZipSource};
-use std::fmt::Display;
+use serde::{Deserialize, Serialize};
+use std::fmt::{self, Display};
 use std::io::Read;
 use std::num::NonZeroUsize;
 use std::path::Path;
@@ -22,10 +23,20 @@ const ZIP_MAGICS: &[&[u8]] = &[b"PK\x03\x04", b"PK\x05\x06", b"PK\x07\x08"];
 const RAR_MAGIC: &[u8] = b"Rar!\x1A\x07";
 
 /// Archive format recognized by an extension or magic-byte probe.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ArchiveKind {
     Zip,
     Rar,
+}
+
+impl Display for ArchiveKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::Zip => "ZIP/CBZ",
+            Self::Rar => "RAR/CBR",
+        })
+    }
 }
 
 /// Policy controlling which archive formats `ArchiveLoader` is permitted to open.
@@ -139,13 +150,15 @@ impl ArchiveLoader {
                 "operation not supported on this platform",
             )
             .into()),
-            Some(ArchiveKind::Rar) if !policy.allow_rar => {
-                Err(CoreError::FormatDisabled { format: "rar/cbr" })
-            }
+            Some(ArchiveKind::Rar) if !policy.allow_rar => Err(CoreError::FormatDisabled {
+                kind: ArchiveKind::Rar,
+            }),
             #[cfg(feature = "rar")]
             Some(ArchiveKind::Rar) => Ok(Arc::new(RarSource::open(path)?)),
             #[cfg(not(feature = "rar"))]
-            Some(ArchiveKind::Rar) => Err(CoreError::FormatDisabled { format: "rar/cbr" }),
+            Some(ArchiveKind::Rar) => Err(CoreError::FormatDisabled {
+                kind: ArchiveKind::Rar,
+            }),
             None => Err(CoreError::UnsupportedFormat {
                 label: path.display().to_string(),
             }),
@@ -165,12 +178,13 @@ impl ArchiveLoader {
     pub fn open_read_at(
         name: &str,
         src: Arc<dyn ReadAt>,
-        _policy: ArchivePolicy,
     ) -> Result<Arc<dyn PageSource>, CoreError> {
         let kind = detect(name, |head| Ok(src.read_at(0, head)?))?;
         match kind {
             Some(ArchiveKind::Zip) => Ok(Arc::new(ZipSource::from_read_at(src)?)),
-            Some(ArchiveKind::Rar) => Err(CoreError::FormatDisabled { format: "rar/cbr" }),
+            Some(ArchiveKind::Rar) => Err(CoreError::FormatDisabled {
+                kind: ArchiveKind::Rar,
+            }),
             None => Err(CoreError::UnsupportedFormat {
                 label: name.to_owned(),
             }),
@@ -178,12 +192,8 @@ impl ArchiveLoader {
     }
 
     /// Open a book from a ZIP byte source, using `name` to label an empty book.
-    pub fn open_book_read_at(
-        name: &str,
-        src: Arc<dyn ReadAt>,
-        policy: ArchivePolicy,
-    ) -> Result<OpenedSource, CoreError> {
-        OpenedSource::new(Self::open_read_at(name, src, policy)?, name)
+    pub fn open_book_read_at(name: &str, src: Arc<dyn ReadAt>) -> Result<OpenedSource, CoreError> {
+        OpenedSource::new(Self::open_read_at(name, src)?, name)
     }
 
     /// Count image pages in a ZIP byte source, returning [`CoreError::EmptyBook`]
@@ -192,9 +202,8 @@ impl ArchiveLoader {
     pub fn probe_page_count_read_at(
         name: &str,
         src: Arc<dyn ReadAt>,
-        policy: ArchivePolicy,
     ) -> Result<NonZeroUsize, CoreError> {
-        Self::open_book_read_at(name, src, policy).map(|book| book.page_count())
+        Self::open_book_read_at(name, src).map(|book| book.page_count())
     }
 }
 
@@ -265,13 +274,15 @@ mod tests {
     }
 
     #[test]
-    fn open_book_with_rar_disabled_is_format_disabled() {
+    fn format_disabled_carries_archive_kind() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("x.cbr");
         std::fs::write(&path, []).unwrap();
         assert!(matches!(
             ArchiveLoader::open_book(path, ArchivePolicy { allow_rar: false }),
-            Err(CoreError::FormatDisabled { format: "rar/cbr" })
+            Err(CoreError::FormatDisabled {
+                kind: ArchiveKind::Rar
+            })
         ));
     }
 
@@ -283,7 +294,6 @@ mod tests {
             ArchiveLoader::open_book_read_at(
                 "empty.cbz",
                 Arc::new(Arc::<[u8]>::from(eocd)),
-                ArchivePolicy::default(),
             ),
             Err(CoreError::EmptyBook { label }) if label == "empty.cbz"
         ));
@@ -300,7 +310,7 @@ mod tests {
             Err(CoreError::Zip(_))
         ));
         assert!(matches!(
-            ArchiveLoader::open_read_at("book.cbz", Arc::new(Arc::<[u8]>::from(RAR_MAGIC)), policy),
+            ArchiveLoader::open_read_at("book.cbz", Arc::new(Arc::<[u8]>::from(RAR_MAGIC))),
             Err(CoreError::Zip(_))
         ));
     }
@@ -365,6 +375,18 @@ mod tests {
     }
 
     #[test]
+    fn archive_kind_wire_round_trip() {
+        for (kind, json, display) in [
+            (ArchiveKind::Zip, r#""zip""#, "ZIP/CBZ"),
+            (ArchiveKind::Rar, r#""rar""#, "RAR/CBR"),
+        ] {
+            assert_eq!(serde_json::to_string(&kind).unwrap(), json);
+            assert_eq!(serde_json::from_str::<ArchiveKind>(json).unwrap(), kind);
+            assert_eq!(kind.to_string(), display);
+        }
+    }
+
+    #[test]
     fn detect_kind_table() {
         let cases: [(&str, &[u8], Option<ArchiveKind>); 7] = [
             ("a.cbz", b"", Some(ArchiveKind::Zip)),
@@ -383,9 +405,8 @@ mod tests {
     #[test]
     fn open_read_at_opens_zip_bytes() {
         let bytes = Arc::<[u8]>::from(tiny_zip_bytes());
-        let policy = ArchivePolicy::default();
-        let source = ArchiveLoader::open_read_at("book.bin", Arc::new(bytes), policy)
-            .expect("open ZIP by magic");
+        let source =
+            ArchiveLoader::open_read_at("book.bin", Arc::new(bytes)).expect("open ZIP by magic");
         let pages = source.list_pages();
         assert_eq!(pages.len(), 1);
         assert_eq!(pages[0].name, "page.png");
@@ -393,11 +414,13 @@ mod tests {
     }
 
     #[test]
-    fn open_read_at_rejects_rar_even_when_allowed() {
+    fn open_read_at_rejects_rar_by_signature() {
         let bytes = Arc::<[u8]>::from(&b"Rar!\x1A\x07\x00"[..]);
         assert!(matches!(
-            ArchiveLoader::open_read_at("book", Arc::new(bytes), ArchivePolicy::default()),
-            Err(CoreError::FormatDisabled { format: "rar/cbr" })
+            ArchiveLoader::open_read_at("book", Arc::new(bytes)),
+            Err(CoreError::FormatDisabled {
+                kind: ArchiveKind::Rar
+            })
         ));
     }
 
@@ -405,7 +428,7 @@ mod tests {
     fn open_read_at_unsupported_carries_name_label() {
         let bytes = Arc::<[u8]>::from(&b"PK"[..]);
         assert!(matches!(
-            ArchiveLoader::open_read_at("notes.txt", Arc::new(bytes), ArchivePolicy::default()),
+            ArchiveLoader::open_read_at("notes.txt", Arc::new(bytes)),
             Err(CoreError::UnsupportedFormat { label }) if label == "notes.txt"
         ));
     }
@@ -418,8 +441,7 @@ mod tests {
         assert!(matches!(
             ArchiveLoader::probe_page_count_read_at(
                 "empty.cbz",
-                Arc::new(bytes),
-                ArchivePolicy::default()
+                Arc::new(bytes)
             ),
             Err(CoreError::EmptyBook { label }) if label == "empty.cbz"
         ));
@@ -893,7 +915,9 @@ mod tests {
         let cbr = write_cbr_with_suffix(SAMPLE_CBR_B64, ".cbr");
         assert!(matches!(
             ArchiveLoader::open_with_policy(cbr.path(), ArchivePolicy { allow_rar: true }),
-            Err(CoreError::FormatDisabled { format: "rar/cbr" })
+            Err(CoreError::FormatDisabled {
+                kind: ArchiveKind::Rar
+            })
         ));
     }
 
@@ -903,7 +927,9 @@ mod tests {
         let cbr = write_cbr_with_suffix(SAMPLE_CBR_B64, ".txt");
         assert!(matches!(
             ArchiveLoader::open_with_policy(cbr.path(), ArchivePolicy { allow_rar: true }),
-            Err(CoreError::FormatDisabled { format: "rar/cbr" })
+            Err(CoreError::FormatDisabled {
+                kind: ArchiveKind::Rar
+            })
         ));
     }
 
@@ -913,7 +939,9 @@ mod tests {
         let cbr = write_cbr_with_suffix(SAMPLE_CBR_B64, ".cbr");
         assert!(matches!(
             ArchiveLoader::probe_page_count_with_policy(cbr.path(), ArchivePolicy::default()),
-            Err(CoreError::FormatDisabled { format: "rar/cbr" })
+            Err(CoreError::FormatDisabled {
+                kind: ArchiveKind::Rar
+            })
         ));
     }
 

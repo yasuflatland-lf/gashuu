@@ -144,9 +144,8 @@ impl RarSource {
             let Some(cursor) = archive.read_header()? else {
                 // End of archive before reaching `seq_index`: the file changed
                 // under us since `open` listed it.
-                return Err(CoreError::IndexOutOfRange {
-                    index,
-                    len: self.entries.len(),
+                return Err(CoreError::SourceChanged {
+                    label: self.path.display().to_string(),
                 });
             };
             if seq == meta.seq_index {
@@ -356,6 +355,18 @@ mod tests {
 
         assert_eq!(src.skipped_count(), 1);
         assert!(!src.listing_truncated());
+    }
+
+    #[test]
+    fn shorter_replacement_reports_source_changed() {
+        let cbr = write_cbr(SAMPLE_CBR_B64);
+        let source = RarSource::open(cbr.path()).unwrap();
+        let shorter = write_cbr(MACOS_METADATA_CBR_B64);
+        std::fs::copy(shorter.path(), cbr.path()).unwrap();
+        assert!(
+            matches!(source.read_bytes(3), Err(CoreError::SourceChanged { label })
+            if label == cbr.path().display().to_string())
+        );
     }
 
     #[test]

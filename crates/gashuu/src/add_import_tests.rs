@@ -104,7 +104,12 @@ fn import_dispatches_a_batch_and_finalizes_in_input_order() {
         }),
     );
     importer.deliver(2, Err(BackendError::EmptyBook));
-    importer.deliver(3, Err(BackendError::FormatDisabled { format: "RAR" }));
+    importer.deliver(
+        3,
+        Err(BackendError::FormatDisabled {
+            kind: gashuu_core::ArchiveKind::Rar,
+        }),
+    );
     assert!(epochs.borrow().is_empty());
     importer.deliver(1, Ok(imported(1)));
     assert_eq!(*ticks.borrow(), [(0, 4), (1, 4), (2, 4), (3, 4), (4, 4)]);
@@ -126,9 +131,13 @@ fn import_dispatches_a_batch_and_finalizes_in_input_order() {
     assert!(matches!(outcomes[1].kind, ProbeKind::Empty));
     assert!(matches!(
         outcomes[2].kind,
-        ProbeKind::FormatDisabled { format: "RAR" }
+        ProbeKind::FormatDisabled {
+            kind: gashuu_core::ArchiveKind::Rar
+        }
     ));
-    assert!(matches!(&outcomes[3].kind, ProbeKind::Unreadable { error } if error == "unreadable"));
+    assert!(
+        matches!(&outcomes[3].kind, ProbeKind::Unreadable { error: BackendError::Other { detail } } if detail == "unreadable")
+    );
 }
 
 #[test]
