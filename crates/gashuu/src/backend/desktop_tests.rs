@@ -326,7 +326,9 @@ fn cover_miss_with_rar_disabled_reports_format_disabled_without_count() {
     h.pump();
     assert_eq!(
         cover.try_recv().unwrap().unwrap_err(),
-        BackendError::FormatDisabled { format: "rar/cbr" }
+        BackendError::FormatDisabled {
+            kind: gashuu_core::ArchiveKind::Rar
+        }
     );
     assert_eq!(
         count.recv_timeout(Duration::from_secs(5)),
@@ -357,7 +359,9 @@ fn cover_hit_with_rar_disabled_reports_format_disabled_through_count() {
     h.pump();
     assert_eq!(
         count.try_recv().unwrap(),
-        Err(BackendError::FormatDisabled { format: "rar/cbr" })
+        Err(BackendError::FormatDisabled {
+            kind: gashuu_core::ArchiveKind::Rar
+        })
     );
 }
 

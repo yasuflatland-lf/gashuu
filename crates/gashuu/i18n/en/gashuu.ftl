@@ -251,6 +251,10 @@ viewer-direction-rtl = RTL
 
 # Parameterized status/error strings
 viewer-open-error = Error: { $error }
+viewer-error-format-disabled = { $format } support is disabled in safer mode.
+viewer-error-book-locked = This book is open in another tab. Close it there and try again.
+viewer-error-not-in-storage = This book is no longer in browser storage.
+viewer-error-worker-unavailable = The background worker could not start. Reload the page.
 viewer-open-inaccessible = Couldn't open "{ $title }". The file is missing or its volume isn't connected.
 viewer-open-inaccessible-web = Couldn't open "{ $title }". Add its file again in this browser session.
 viewer-page-unavailable = (page { $page } unavailable)

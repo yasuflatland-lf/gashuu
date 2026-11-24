@@ -9,7 +9,7 @@ use crate::{
     wire_error::WireError,
 };
 use gashuu_core::{
-    CoreError, DecodeFuture, DecodedImage, ImageCratePageDecoder, PageDecoder, ReadAt,
+    ArchiveKind, CoreError, DecodeFuture, DecodedImage, ImageCratePageDecoder, PageDecoder, ReadAt,
 };
 use image::{ImageFormat, Rgba, RgbaImage};
 use std::{
@@ -125,7 +125,7 @@ fn all_responses_round_trip() {
         Response::Opened {
             req: REQ,
             result: Err(WireError::FormatDisabled {
-                format: "rar/cbr".into(),
+                kind: ArchiveKind::Rar,
             }),
         },
         Response::Spread {
@@ -169,7 +169,7 @@ fn all_responses_round_trip() {
         },
         Response::Rejected {
             req: Some(REQ),
-            error: WireError::Missing { detail: ID.into() },
+            error: WireError::Missing { id: ID.into() },
         },
     ] {
         assert_eq!(decode::<Response>(&encode(&response)).unwrap(), response);
@@ -190,9 +190,11 @@ fn maps_core_errors() {
         WireError::EmptyBook
     );
     assert_eq!(
-        WireError::from(&CoreError::FormatDisabled { format: "rar/cbr" }),
+        WireError::from(&CoreError::FormatDisabled {
+            kind: ArchiveKind::Rar
+        }),
         WireError::FormatDisabled {
-            format: "rar/cbr".into()
+            kind: ArchiveKind::Rar
         }
     );
     for error in [
@@ -231,7 +233,7 @@ fn rejects_invalid_book_paths() {
         "books/a/b.cbz/extra",
         "books/a/",
     ] {
-        assert_eq!(parse(id), Err(WireError::Missing { detail: id.into() }));
+        assert_eq!(parse(id), Err(WireError::Missing { id: id.into() }));
     }
 }
 
@@ -649,11 +651,7 @@ fn assert_archive_failure(id: &str, reader: Option<WireResult<Arc<dyn ReadAt>>>,
 #[test]
 fn archive_requests_reject_invalid_ids() {
     for id in ["../x", "books/a"] {
-        assert_archive_failure(
-            id,
-            Some(Ok(book())),
-            WireError::Missing { detail: id.into() },
-        );
+        assert_archive_failure(id, Some(Ok(book())), WireError::Missing { id: id.into() });
     }
 }
 
@@ -664,7 +662,7 @@ fn archive_requests_require_a_reader() {
 
 #[test]
 fn archive_requests_preserve_a_missing_reader_error() {
-    let missing = WireError::Missing { detail: ID.into() };
+    let missing = WireError::Missing { id: ID.into() };
     assert_archive_failure(ID, Some(Err(missing.clone())), missing);
 }
 
@@ -978,13 +976,9 @@ fn import_protocol_round_trips_metadata_without_file_bytes() {
 fn import_rejects_a_rar_renamed_as_cbz() {
     let rar: Arc<[u8]> = Arc::from(&b"Rar!\x1a\x07\x00"[..]);
     assert_eq!(
-        crate::import::probe_upload(
-            "renamed.cbz",
-            Arc::new(rar),
-            gashuu_core::ArchivePolicy::default()
-        ),
+        crate::import::probe_upload("renamed.cbz", Arc::new(rar),),
         Err(WireError::FormatDisabled {
-            format: "rar/cbr".into()
+            kind: ArchiveKind::Rar
         })
     );
 }
@@ -1162,7 +1156,7 @@ fn content_index_remains_usable_after_a_stored_key_error() {
         (
             "books/c/missing.cbz",
             Err(WireError::Missing {
-                detail: "NotFoundError".into(),
+                id: "books/c/missing.cbz".into(),
             }),
         ),
         ("books/d/last.cbz", Ok("last".into())),
@@ -1282,4 +1276,29 @@ fn sweep_inventory_includes_locked_books_and_counts_empty_locked_directories() {
         ["books/a/book", "books/b/book", "books/c/book"]
     );
     assert_eq!((inventory.skipped_recent, inventory.skipped_locked), (1, 2));
+}
+
+#[test]
+fn classifies_dom_exceptions_by_name() {
+    use crate::wire_error::classify;
+    for (name, expected) in [
+        ("SecurityError", WireError::StorageUnavailable),
+        ("NotSupportedError", WireError::StorageUnavailable),
+        ("NoModificationAllowedError", WireError::BookLocked),
+        ("NotFoundError", WireError::Missing { id: ID.into() }),
+        (
+            "QuotaExceededError",
+            WireError::Other {
+                detail: crate::import::STORAGE_FULL.into(),
+            },
+        ),
+        (
+            "UnexpectedError",
+            WireError::Other {
+                detail: "UnexpectedError".into(),
+            },
+        ),
+    ] {
+        assert_eq!(classify(name, ID), expected);
+    }
 }

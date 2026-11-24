@@ -52,9 +52,8 @@ pub(crate) struct NoticesContent {
 /// `main.rs` to finalize the UI without any i18n logic in this module.
 #[derive(Debug)]
 pub(crate) enum OpenOutcome {
-    /// The open failed with this pre-captured error detail (untranslated).
-    /// `main.rs` wraps it in `i18n::dynamic::open_error_str(loader, &e_str)`.
-    Error(String),
+    /// The presentation layer localizes the failure.
+    Error(BackendError),
     /// The open succeeded. `main.rs`'s `finalize_open` refreshes the viewer,
     /// launches thumbnails, formats `notices` via `i18n::dynamic::format_notices`,
     /// and — when `count_changed` (the open back-filled a page count) — rebuilds
@@ -149,7 +148,7 @@ impl OpenBookUseCase {
     pub(crate) fn run(&self, path: &Path) -> OpenOutcome {
         let id = match book_path::request_id(path) {
             Ok(id) => id,
-            Err(e) => return OpenOutcome::Error(e.to_string()),
+            Err(e) => return OpenOutcome::Error(e),
         };
         let opened = OpenedBook::open_for_test(
             &id,
@@ -181,6 +180,12 @@ impl OpenBookUseCase {
         let leave_save = self.persist_outgoing();
         let is_dir = match self.install(result, path) {
             Ok(is_dir) => is_dir,
+            #[cfg(not(target_arch = "wasm32"))]
+            Err(BackendError::Missing { .. }) => {
+                return OpenOutcome::Error(BackendError::Missing {
+                    detail: book_display_title(&self.library.borrow(), request),
+                });
+            }
             Err(error) => return OpenOutcome::Error(error),
         };
         let id = self.state.borrow().open_book().cloned();
@@ -239,16 +244,15 @@ impl OpenBookUseCase {
 
     /// Step 2 — install the opened session. Returns the
     /// backend's `is_dir` (which decides the skipped-entries detail suffix) or the
-    /// pre-captured failure message. Nothing is persisted here: the recents push
+    /// backend error. Nothing is persisted here: the recents push
     /// and the register save are deliberately deferred past the empty-book check.
     fn install(
         &self,
         result: Result<OpenedBook, BackendError>,
         path: &Path,
-    ) -> Result<bool, String> {
-        let opened = result.map_err(|error| {
+    ) -> Result<bool, BackendError> {
+        let opened = result.inspect_err(|error| {
             tracing::error!(error = %error, "failed to open source");
-            error.to_string()
         })?;
         if let Some(previous) = self.state.borrow_mut().install_opened(&opened) {
             self.backend.close(previous);
@@ -417,7 +421,8 @@ pub(crate) struct EmptyBookOutcome {
 /// The display title to show for `path`: the stored `Book::title` when the book
 /// is in the library, else the core path-derivation (`gashuu_core::display_title`).
 /// Used by the failed-open status message.
-pub(crate) fn book_display_title(lib: &Library, id: &BookId) -> String {
+#[cfg(not(target_arch = "wasm32"))]
+fn book_display_title(lib: &Library, id: &BookId) -> String {
     lib.book(id)
         .map(|book| book.title().to_owned())
         .unwrap_or_else(|| gashuu_core::display_title(Path::new(id.as_str()), false))
@@ -1494,12 +1499,13 @@ mod tests {
 
         let outcome = use_case.apply_opened(
             &book_path::request_id(Path::new("/missing")).unwrap(),
-            Err(BackendError::Other {
-                detail: "unavailable".into(),
-            }),
+            Err(BackendError::WorkerUnavailable),
         );
 
-        assert!(matches!(outcome, OpenOutcome::Error(ref e) if e == "unavailable"));
+        assert!(matches!(
+            outcome,
+            OpenOutcome::Error(BackendError::WorkerUnavailable)
+        ));
         assert!(library.borrow().books().is_empty());
         assert_eq!(state.borrow().open_book(), Some(&canonical));
     }

@@ -1,6 +1,8 @@
 //! Typed errors for gashuu-core. The presentation layer formats these with
 //! color-eyre; this crate never depends on slint or eyre.
 
+use crate::ArchiveKind;
+
 /// Errors produced by gashuu-core I/O and decoding.
 ///
 /// Marked `#[non_exhaustive]` so variants can be added without breaking
@@ -28,16 +30,13 @@ pub enum CoreError {
 
     /// Settings file could not be (de)serialized.
     #[error("settings format error: {0}")]
-    Settings(#[from] serde_json::Error),
+    Settings(#[source] serde_json::Error),
 
     /// The OS did not provide a config directory for settings storage.
     #[error("no config directory available for settings")]
     NoConfigDir,
 
-    /// Library file could not be (de)serialized. NOTE: deliberately NOT
-    /// `#[from] serde_json::Error` - `CoreError::Settings` already owns that
-    /// `From` impl, and a type can have only one. Construct explicitly via
-    /// `.map_err(CoreError::Library)`.
+    /// Library file could not be (de)serialized.
     #[error("library format error: {0}")]
     Library(serde_json::Error),
 
@@ -78,8 +77,12 @@ pub enum CoreError {
     NonUtf8Path { path: String },
 
     /// The archive format is recognized but disabled by the active policy.
-    #[error("{format} support is disabled in safer mode")]
-    FormatDisabled { format: &'static str },
+    #[error("{kind} support is disabled in safer mode")]
+    FormatDisabled { kind: ArchiveKind },
+
+    /// A previously listed archive entry is no longer present.
+    #[error("archive changed since it was opened: {label}")]
+    SourceChanged { label: String },
 
     /// The source contains no displayable image pages.
     #[error("no images found in {label}")]
@@ -143,6 +146,14 @@ mod tests {
             err.to_string(),
             "image too large: 10x20 = 200 px exceeds 100"
         );
+    }
+
+    #[test]
+    fn serde_error_outside_settings_is_not_settings() {
+        assert!(matches!(
+            crate::Library::from_json("{"),
+            Err(CoreError::Library(_))
+        ));
     }
 
     #[test]

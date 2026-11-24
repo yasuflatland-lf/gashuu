@@ -6,9 +6,8 @@ use crate::{
     wire_error::WireError,
 };
 use gashuu_core::{
-    image_ops::downscale_to_thumbnail, page_decode::decode_with_fallback, ArchiveLoader,
-    ArchivePolicy, BookId, CoreError, DecodedImage, PageDecoder, PageSource, ReadAt, ThumbSlot,
-    ThumbStore,
+    image_ops::downscale_to_thumbnail, page_decode::decode_with_fallback, ArchiveLoader, BookId,
+    CoreError, DecodedImage, PageDecoder, PageSource, ReadAt, ThumbSlot, ThumbStore,
 };
 use std::{
     cell::RefCell,
@@ -168,12 +167,9 @@ impl Dispatcher {
         }
         match req {
             WorkerRequest::Open {
-                req,
-                session,
-                id,
-                allow_rar,
+                req, session, id, ..
             } => {
-                let result = self.open(id, session, reader, ArchivePolicy { allow_rar });
+                let result = self.open(id, session, reader);
                 vec![Reply::metadata(WorkerResponse::Opened { req, result })]
             }
             WorkerRequest::DecodeSpread {
@@ -227,15 +223,11 @@ impl Dispatcher {
                 }
                 replies
             }
-            WorkerRequest::ProbePageCount { req, id, allow_rar } => {
+            WorkerRequest::ProbePageCount { req, id, .. } => {
                 let result = self.archive_input(&id, reader).and_then(|(name, reader)| {
-                    ArchiveLoader::probe_page_count_read_at(
-                        &name,
-                        reader,
-                        ArchivePolicy { allow_rar },
-                    )
-                    .map(|count| count.get() as u32)
-                    .map_err(WireError::from)
+                    ArchiveLoader::probe_page_count_read_at(&name, reader)
+                        .map(|count| count.get() as u32)
+                        .map_err(WireError::from)
                 });
                 vec![Reply::metadata(WorkerResponse::PageCount { req, result })]
             }
@@ -270,11 +262,9 @@ impl Dispatcher {
         id: String,
         session: u64,
         reader: Option<WireResult<Arc<dyn ReadAt>>>,
-        policy: ArchivePolicy,
     ) -> WireResult<OpenedMeta> {
         let (name, reader) = self.archive_input(&id, reader)?;
-        let source =
-            ArchiveLoader::open_read_at(&name, reader.clone(), policy).map_err(WireError::from)?;
+        let source = ArchiveLoader::open_read_at(&name, reader.clone()).map_err(WireError::from)?;
         let meta = OpenedMeta {
             id,
             page_count: source.list_pages().len() as u32,
@@ -346,8 +336,7 @@ impl Dispatcher {
         }
         let source = self.archive_input(id, reader).and_then(|(name, reader)| {
             // The browser build never opens RAR archives.
-            ArchiveLoader::open_book_read_at(&name, reader, ArchivePolicy { allow_rar: false })
-                .map_err(WireError::from)
+            ArchiveLoader::open_book_read_at(&name, reader).map_err(WireError::from)
         });
         match source {
             Ok(book) => {

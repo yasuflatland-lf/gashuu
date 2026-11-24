@@ -1,6 +1,5 @@
 use super::{
     BackendError, BookBackend, CountResult, Done, ImageResult, OpenedBook, SessionId, SpreadPages,
-    STORAGE_UNAVAILABLE,
 };
 use gashuu_core::{ArchivePolicy, BookId, CacheConfig, DecodedImage};
 use std::sync::{
@@ -8,14 +7,17 @@ use std::sync::{
     Arc,
 };
 
-#[derive(Default)]
 pub(super) struct UnavailableBackend {
+    error: BackendError,
     cover_generation: Arc<AtomicU64>,
 }
 
-fn unavailable() -> BackendError {
-    BackendError::Other {
-        detail: STORAGE_UNAVAILABLE.into(),
+impl UnavailableBackend {
+    pub(super) fn new(error: BackendError) -> Self {
+        Self {
+            error,
+            cover_generation: Arc::default(),
+        }
     }
 }
 
@@ -31,7 +33,7 @@ impl BookBackend for UnavailableBackend {
         _: CacheConfig,
         done: Done<Result<OpenedBook, BackendError>>,
     ) {
-        defer(done, Err(unavailable()));
+        defer(done, Err(self.error.clone()));
     }
 
     fn close(&self, _: SessionId) {}
@@ -50,14 +52,14 @@ impl BookBackend for UnavailableBackend {
         defer(
             done,
             SpreadPages {
-                leading: (leading, Err(unavailable())),
-                trailing: trailing.map(|index| (index, Err(unavailable()))),
+                leading: (leading, Err(self.error.clone())),
+                trailing: trailing.map(|index| (index, Err(self.error.clone()))),
             },
         );
     }
 
     fn thumbnail(&self, _: SessionId, _: usize, _: u32, done: Done<ImageResult>) {
-        defer(done, Err(unavailable()));
+        defer(done, Err(self.error.clone()));
     }
 
     fn cover(
@@ -76,7 +78,7 @@ impl BookBackend for UnavailableBackend {
                     on_cover(result);
                 }
             }),
-            Err(unavailable()),
+            Err(self.error.clone()),
         );
     }
 
@@ -85,6 +87,6 @@ impl BookBackend for UnavailableBackend {
     }
 
     fn probe_page_count(&self, _: &BookId, _: ArchivePolicy, done: Done<CountResult>) {
-        defer(done, Err(unavailable()));
+        defer(done, Err(self.error.clone()));
     }
 }

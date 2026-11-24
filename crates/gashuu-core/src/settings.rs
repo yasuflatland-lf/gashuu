@@ -145,14 +145,16 @@ impl Settings {
 
     /// Serialize to pretty JSON (also used by the snapshot test).
     pub fn to_json(&self) -> Result<String, CoreError> {
-        Ok(serde_json::to_string_pretty(self)?)
+        serde_json::to_string_pretty(self).map_err(CoreError::Settings)
     }
 
     /// Parse JSON, migrating older schema versions to the current shape.
     pub fn from_json(json: &str) -> Result<Self, CoreError> {
         // Non-object guard + version resolution + migrate dispatch are single-homed in
-        // `persist`. `CoreError::Settings` is `#[from]`, so both `?`s convert automatically.
-        let value = match crate::persist::parse_versioned_object(json, SETTINGS_VERSION, migrate)? {
+        // `persist`.
+        let value = match crate::persist::parse_versioned_object(json, SETTINGS_VERSION, migrate)
+            .map_err(CoreError::Settings)?
+        {
             crate::persist::VersionedDocument::Ready(value) => value,
             crate::persist::VersionedDocument::FromFuture { found } => {
                 return Err(CoreError::FutureSchema {
@@ -162,7 +164,7 @@ impl Settings {
                 });
             }
         };
-        let mut settings: Self = serde_json::from_value(value)?;
+        let mut settings: Self = serde_json::from_value(value).map_err(CoreError::Settings)?;
         settings.normalize();
         Ok(settings)
     }

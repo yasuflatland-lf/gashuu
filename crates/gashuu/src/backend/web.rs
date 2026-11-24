@@ -15,7 +15,7 @@ use web_sys::{ErrorEvent, File, MessageEvent, Url, Worker, WorkerOptions};
 const LOADER: &str = "gashuu-worker_loader.js";
 const STARTUP_TIMEOUT_MS: i32 = 15_000;
 
-pub(super) struct WorkerBackend {
+pub(crate) struct WorkerBackend {
     client: RefCell<WebClient<File>>,
     worker: Worker,
     _onmessage: Closure<dyn Fn(MessageEvent)>,
@@ -23,22 +23,28 @@ pub(super) struct WorkerBackend {
 }
 
 impl WorkerBackend {
-    fn new() -> Result<Rc<Self>, String> {
-        let window = web_sys::window().ok_or("window unavailable")?;
+    fn new() -> Result<Rc<Self>, BackendError> {
+        let startup_error = |detail: String| {
+            tracing::error!(%detail, "could not start web worker");
+            BackendError::WorkerUnavailable
+        };
+        let window = web_sys::window().ok_or_else(|| startup_error("window unavailable".into()))?;
         let storage = window.navigator().storage();
         if !Reflect::get(&storage, &"getDirectory".into()).is_ok_and(|method| method.is_function())
         {
-            return Err(super::STORAGE_UNAVAILABLE.into());
+            return Err(BackendError::StorageUnavailable);
         }
-        let document = window.document().ok_or("document unavailable")?;
+        let document = window
+            .document()
+            .ok_or_else(|| startup_error("document unavailable".into()))?;
         let base = document
             .base_uri()
-            .map_err(js_error)?
-            .ok_or("document base URI unavailable")?;
-        let url = Url::new_with_base(LOADER, &base).map_err(js_error)?;
+            .map_err(|e| startup_error(js_error(e)))?
+            .ok_or_else(|| startup_error("document base URI unavailable".into()))?;
+        let url = Url::new_with_base(LOADER, &base).map_err(|e| startup_error(js_error(e)))?;
         // The Trunk loader uses importScripts and must run as a classic Worker.
-        let worker =
-            Worker::new_with_options(&url.href(), &WorkerOptions::new()).map_err(js_error)?;
+        let worker = Worker::new_with_options(&url.href(), &WorkerOptions::new())
+            .map_err(|e| startup_error(js_error(e)))?;
         let backend = Rc::new_cyclic(|backend: &Weak<Self>| {
             let weak = backend.clone();
             let onmessage = Closure::new(move |event: MessageEvent| {
@@ -85,7 +91,7 @@ impl WorkerBackend {
                 timeout.as_ref().unchecked_ref(),
                 STARTUP_TIMEOUT_MS,
             )
-            .map_err(js_error)?;
+            .map_err(|e| startup_error(js_error(e)))?;
         timeout.forget();
         Ok(backend)
     }
@@ -123,7 +129,7 @@ impl WorkerBackend {
                 Delivery::Now(ready) => self.run(ready),
                 Delivery::Deferred(ready) => {
                     if let Err(error) = slint::invoke_from_event_loop(move || {
-                        if let Some(backend) = shared() {
+                        if let Ok(backend) = shared() {
                             backend.run(ready);
                         }
                     }) {
@@ -174,13 +180,13 @@ fn read_envelope(envelope: &JsValue) -> Result<(String, Vec<Vec<u8>>), String> {
 }
 
 pub(crate) fn clear_covers() {
-    if let Some(backend) = shared() {
+    if let Ok(backend) = shared() {
         backend.dispatch(|client| (client.clear_covers(), Vec::new()));
     }
 }
 
 pub(crate) fn prune_covers(max_bytes: u64) {
-    if let Some(backend) = shared() {
+    if let Ok(backend) = shared() {
         backend.dispatch(|client| (client.prune_covers(max_bytes), Vec::new()));
     }
 }
@@ -189,21 +195,11 @@ fn js_error(error: JsValue) -> String {
     error.as_string().unwrap_or_else(|| format!("{error:?}"))
 }
 
-pub(super) fn shared() -> Option<Rc<WorkerBackend>> {
+pub(crate) fn shared() -> Result<Rc<WorkerBackend>, BackendError> {
     thread_local! {
-        static BACKEND: OnceCell<Option<Rc<WorkerBackend>>> = const { OnceCell::new() };
+        static BACKEND: OnceCell<Result<Rc<WorkerBackend>, BackendError>> = const { OnceCell::new() };
     }
-    BACKEND.with(|backend| {
-        backend
-            .get_or_init(|| {
-                WorkerBackend::new()
-                    .map_err(|detail| {
-                        tracing::error!(%detail, "could not start web worker");
-                    })
-                    .ok()
-            })
-            .clone()
-    })
+    BACKEND.with(|backend| backend.get_or_init(WorkerBackend::new).clone())
 }
 
 impl BookBackend for WorkerBackend {
@@ -281,7 +277,7 @@ impl BookImporter for WorkerBackend {
 
     fn discarder(&self) -> DiscardUpload {
         Arc::new(|id| {
-            if let Some(backend) = shared() {
+            if let Ok(backend) = shared() {
                 crate::book_availability::web_inventory().remove(id);
                 backend.dispatch(|client| (client.discard_stale(id), Vec::new()));
             }
@@ -290,7 +286,7 @@ impl BookImporter for WorkerBackend {
 
     fn pending_canceller(&self) -> CancelPending {
         Rc::new(|| {
-            if let Some(backend) = shared() {
+            if let Ok(backend) = shared() {
                 let cancelled = backend.client.borrow_mut().cancel_queued_imports();
                 tracing::debug!(cancelled, "cancelled queued imports");
             }

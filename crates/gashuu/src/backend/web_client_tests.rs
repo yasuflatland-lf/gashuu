@@ -1,6 +1,7 @@
 use super::super::test_callback;
 use super::*;
 use gashuu_worker::protocol::{self, ImageMeta, OpenedMeta, ReqId, WorkerRequest, WorkerResponse};
+use gashuu_worker::wire_error::WireError;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
 
@@ -186,9 +187,7 @@ fn startup_failure_fails_buffered_requests() {
     for delivery in deliveries {
         deliver(&client, vec![delivery], true);
     }
-    let unavailable = BackendError::Other {
-        detail: "web worker unavailable".into(),
-    };
+    let unavailable = BackendError::WorkerUnavailable;
     assert_eq!(open.try_recv().unwrap().err(), Some(unavailable.clone()));
     assert_eq!(probe.try_recv().unwrap().unwrap_err(), unavailable);
 
@@ -209,7 +208,7 @@ fn open_allocates_session_and_maps_opened() {
         panic!("expected Open")
     };
     let missing = WireError::Missing {
-        detail: "missing book".into(),
+        id: "missing book".into(),
     };
     let (_, deliveries) = receive(
         &mut client,
@@ -222,7 +221,7 @@ fn open_allocates_session_and_maps_opened() {
     deliver(&client, deliveries, false);
     assert_eq!(
         result.try_recv().unwrap().err(),
-        Some(backend_error(missing))
+        Some(BackendError::from(missing))
     );
 }
 
@@ -321,7 +320,7 @@ fn spread_trailing_error_keeps_leading() {
     assert_eq!(spread.leading.1.unwrap().rgba(), &[1; 4]);
     assert_eq!(
         spread.trailing.unwrap().1.unwrap_err(),
-        backend_error(error)
+        BackendError::from(error)
     );
 }
 
@@ -573,27 +572,36 @@ fn cancel_covers_drops_older_pending_and_posts_cancel() {
 }
 
 #[test]
-fn backend_error_table() {
+fn wire_errors_map_to_backend_variants() {
     let other = |detail: &str| BackendError::Other {
         detail: detail.into(),
     };
     for (error, expected) in [
         (WireError::EmptyBook, BackendError::EmptyBook),
+        (WireError::BookLocked, BackendError::BookLocked),
         (
-            WireError::FormatDisabled {
-                format: "rar/cbr".into(),
-            },
-            BackendError::FormatDisabled { format: "rar/cbr" },
+            WireError::StorageUnavailable,
+            BackendError::StorageUnavailable,
         ),
         (
             WireError::FormatDisabled {
-                format: "zip".into(),
+                kind: gashuu_core::ArchiveKind::Rar,
             },
-            other("zip support is disabled"),
+            BackendError::FormatDisabled {
+                kind: gashuu_core::ArchiveKind::Rar,
+            },
+        ),
+        (
+            WireError::FormatDisabled {
+                kind: gashuu_core::ArchiveKind::Zip,
+            },
+            BackendError::FormatDisabled {
+                kind: gashuu_core::ArchiveKind::Zip,
+            },
         ),
         (
             WireError::Missing {
-                detail: "missing".into(),
+                id: "missing".into(),
             },
             BackendError::Missing {
                 detail: "missing".into(),
@@ -606,7 +614,7 @@ fn backend_error_table() {
             other("bad"),
         ),
     ] {
-        assert_eq!(backend_error(error), expected);
+        assert_eq!(BackendError::from(error), expected);
     }
 }
 
@@ -639,7 +647,7 @@ fn rejected_with_req_resolves_that_request() {
     deliver(&client, deliveries, false);
     assert_eq!(
         result.try_recv().unwrap().unwrap_err(),
-        backend_error(error)
+        BackendError::from(error)
     );
 }
 
@@ -770,9 +778,7 @@ fn worker_failure_fails_pending_and_future_requests() {
     let deliveries = client.on_worker_failed("startup failed");
     assert!(pending.try_recv().is_err());
     deliver(&client, deliveries, true);
-    let unavailable = BackendError::Other {
-        detail: "web worker unavailable".into(),
-    };
+    let unavailable = BackendError::WorkerUnavailable;
     assert_eq!(pending.try_recv().unwrap().unwrap_err(), unavailable);
     assert!(client.on_worker_failed("another error").is_empty());
     let (done, future) = test_callback();
@@ -800,9 +806,7 @@ fn malformed_message_fails_pending_and_future_requests() {
     let (out, deliveries) = client.on_message("not json", vec![]);
     assert!(out.is_empty() && pending.try_recv().is_err());
     deliver(&client, deliveries, true);
-    let unavailable = BackendError::Other {
-        detail: "web worker unavailable".into(),
-    };
+    let unavailable = BackendError::WorkerUnavailable;
     assert_eq!(pending.try_recv().unwrap().unwrap_err(), unavailable);
 
     let (done, future) = test_callback();
@@ -1189,9 +1193,7 @@ fn import_payload_survives_startup_and_transport_failure_resolves_the_callback()
     deliver(&client, deliveries, true);
     assert_eq!(
         result.try_recv().unwrap().unwrap_err(),
-        BackendError::Other {
-            detail: crate::backend::STORAGE_UNAVAILABLE.into()
-        }
+        BackendError::WorkerUnavailable
     );
 }
 

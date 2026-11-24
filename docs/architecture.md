@@ -57,7 +57,7 @@ the lifetime of the source. The `Arc<[u8]>` implementation also works on wasm32.
 
 ### RarSource
 
-The default-on `rar` feature provides `RarSource`. Without it, opening a RAR/CBR returns `CoreError::FormatDisabled { format: "rar/cbr" }`.
+The default-on `rar` feature provides `RarSource`. Without it, opening a RAR/CBR returns `CoreError::FormatDisabled { kind: ArchiveKind::Rar }`.
 
 `page_source/rar.rs`. A `PageSource` over a RAR/CBR archive using the SYNCHRONOUS `unrar`
 crate (bundles C++ UnRAR built by `cc`; extraction ONLY — no Rust RAR encoder exists), flattening
@@ -116,15 +116,15 @@ helper in `entry_policy.rs` could not be reused across the crate.
 signatures and the RAR prefix `Rar!\x1A\x07`. Unrecognized files return `UnsupportedFormat`.
 `detect_kind(name, head)` applies the same extension and magic rules to supplied data.
 
-`open_read_at(name, src, policy)` opens ZIP sources through `ReadAt` and returns
-`Arc<dyn PageSource>`. It returns `FormatDisabled { format: "rar/cbr" }` for RAR under either
-policy setting. `probe_page_count_read_at(name, src, policy)` and `probe_page_count(path)` share
+`open_read_at(name, src)` opens ZIP sources through `ReadAt` and returns
+`Arc<dyn PageSource>`. It returns `FormatDisabled { kind: ArchiveKind::Rar }` for RAR.
+`probe_page_count_read_at(name, src)` and `probe_page_count(path)` share
 the check that a successfully opened book contains at least one image page. Both return
 `NonZeroUsize` or `CoreError::EmptyBook { label }`, and propagate open errors unchanged. The label
 in `EmptyBook` or `UnsupportedFormat` is the supplied name or the path's display string. See
 [ADR-0009](ADRs/0009-reject-empty-books.md) and [patterns.md](patterns.md).
 
-Without the `rar` feature, both extension and magic-byte detection still recognize RAR, and opening or probing it returns `CoreError::FormatDisabled { format: "rar/cbr" }` regardless of policy.
+Without the `rar` feature, both extension and magic-byte detection still recognize RAR, and opening or probing it returns `CoreError::FormatDisabled { kind: ArchiveKind::Rar }` regardless of policy.
 
 The path entry points have policy-carrying twins `open_with_policy(path, ArchivePolicy)` and
 `probe_page_count_with_policy(path, ArchivePolicy)`. `open` and `probe_page_count` use
@@ -593,14 +593,15 @@ Worker replies deliver callbacks from the browser message task on the UI
 thread. Cache hits and transport failures defer callbacks through Slint's
 event loop. Both paths check session or cover-generation liveness immediately
 before invocation. After a Worker failure, pending and future requests receive
-`Other { detail: "web worker unavailable" }` and cached pages stay readable.
+`WorkerUnavailable` and cached pages stay readable.
 
 | Worker error | Backend error |
 | --- | --- |
 | `EmptyBook` | `EmptyBook` |
-| `FormatDisabled` with `rar/cbr` | `FormatDisabled { format: "rar/cbr" }` |
-| `FormatDisabled` with another format | `Other` with the format and disabled-support detail |
-| `Missing` | `Missing` with the Worker detail |
+| `FormatDisabled { kind }` | `FormatDisabled { kind }` |
+| `BookLocked` | `BookLocked` |
+| `StorageUnavailable` | `StorageUnavailable` |
+| `Missing { id }` | `Missing` with the book ID as diagnostic detail |
 | `Other` | `Other` with the Worker detail |
 
 ### web_font

@@ -3,7 +3,6 @@
 use std::path::Path;
 
 pub const STORAGE_FULL: &str = "browser storage is full";
-pub const STORAGE_UNAVAILABLE: &str = "this browser cannot store books";
 pub const UNREADABLE_UPLOAD: &str = "could not read selected file";
 
 pub fn fits_in_quota(size: u64, usage: Option<u64>, quota: Option<u64>) -> bool {
@@ -47,13 +46,15 @@ pub fn upload_title(sanitised: &str) -> String {
 pub fn probe_upload(
     name: &str,
     reader: std::sync::Arc<dyn gashuu_core::ReadAt>,
-    policy: gashuu_core::ArchivePolicy,
 ) -> Result<std::num::NonZeroUsize, crate::wire_error::WireError> {
     use gashuu_core::{ArchiveKind, ArchiveLoader, CoreError};
     let mut head = [0; 6];
     let bytes = reader.read_at(0, &mut head).map_err(CoreError::from)?;
     if ArchiveLoader::detect_kind("", &head[..bytes]) == Some(ArchiveKind::Rar) {
-        return Err(CoreError::FormatDisabled { format: "rar/cbr" }.into());
+        return Err(CoreError::FormatDisabled {
+            kind: ArchiveKind::Rar,
+        }
+        .into());
     }
-    ArchiveLoader::probe_page_count_read_at(name, reader, policy).map_err(Into::into)
+    ArchiveLoader::probe_page_count_read_at(name, reader).map_err(Into::into)
 }

@@ -9,7 +9,7 @@ use crate::book_path as location;
 use crate::picker::{forget_uploads, UploadHandle};
 use crate::ui_marshal::{Generation, Ticket};
 use crate::ViewerWindow;
-use gashuu_core::{ArchivePolicy, BookId};
+use gashuu_core::{ArchiveKind, ArchivePolicy, BookId};
 use std::cell::{Cell, RefCell};
 use std::fmt;
 use std::num::NonZeroUsize;
@@ -30,9 +30,9 @@ pub(crate) enum ProbeKind {
     /// Opened cleanly but zero image pages (the empty-book rule) — skip.
     Empty,
     /// A RAR/CBR rejected because `ArchivePolicy::allow_rar` is false — skip.
-    FormatDisabled { format: &'static str },
+    FormatDisabled { kind: ArchiveKind },
     /// Could not be opened at all (I/O error, unsupported format) — skip.
-    Unreadable { error: String },
+    Unreadable { error: BackendError },
 }
 
 /// One probed source awaiting the UI-thread apply: its INPUT-order `index` (so
@@ -66,10 +66,8 @@ impl ProbeKind {
         match result {
             Ok(count) => Self::Counted(count),
             Err(BackendError::EmptyBook) => Self::Empty,
-            Err(BackendError::FormatDisabled { format }) => Self::FormatDisabled { format },
-            Err(error) => Self::Unreadable {
-                error: error.to_string(),
-            },
+            Err(BackendError::FormatDisabled { kind }) => Self::FormatDisabled { kind },
+            Err(error) => Self::Unreadable { error },
         }
     }
 }
@@ -348,12 +346,20 @@ mod tests {
             ProbeKind::Empty
         ));
         assert!(matches!(
-            ProbeKind::from_probe(Err(BackendError::FormatDisabled { format: "RAR" })),
-            ProbeKind::FormatDisabled { format: "RAR" }
+            ProbeKind::from_probe(Err(BackendError::FormatDisabled {
+                kind: ArchiveKind::Rar
+            })),
+            ProbeKind::FormatDisabled {
+                kind: ArchiveKind::Rar
+            }
         ));
-        assert!(
-            matches!(ProbeKind::from_probe(Err(BackendError::Missing { detail: "missing".into() })), ProbeKind::Unreadable {error} if error == "missing")
-        );
+        let missing = BackendError::Missing {
+            detail: "missing".into(),
+        };
+        assert!(matches!(
+            ProbeKind::from_probe(Err(missing.clone())),
+            ProbeKind::Unreadable { error } if error == missing
+        ));
     }
 
     #[test]
@@ -459,7 +465,9 @@ mod tests {
         assert!(fake.calls().is_empty());
         let (outcomes, _) = controller.take_outcomes(1).unwrap();
         assert_eq!(outcomes[0].subject, ProbeSubject::Path(path));
-        assert!(matches!(&outcomes[0].kind, ProbeKind::Unreadable {error} if !error.is_empty()));
+        assert!(
+            matches!(&outcomes[0].kind, ProbeKind::Unreadable { error: BackendError::Other { detail } } if !detail.is_empty())
+        );
     }
 
     /// Deliver one worker result without a Slint event loop.

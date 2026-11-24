@@ -614,7 +614,9 @@ mod tests {
 
         fake.complete_cover(
             0,
-            Err(BackendError::FormatDisabled { format: "rar/cbr" }),
+            Err(BackendError::FormatDisabled {
+                kind: gashuu_core::ArchiveKind::Rar,
+            }),
             None,
         );
 

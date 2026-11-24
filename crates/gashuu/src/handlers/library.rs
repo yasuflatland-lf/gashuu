@@ -173,13 +173,10 @@ pub(crate) fn wire_open_handlers(
                 forget_uploads(&uploads);
                 if let Some(ui) = weak.upgrade() {
                     #[cfg(target_arch = "wasm32")]
-                    ui.set_add_toast_text(
-                        append_notice(
-                            i18n::dynamic::web_storage_unavailable(localizer.loader()),
-                            notice,
-                        )
-                        .into(),
-                    );
+                    if let Err(error) = crate::backend::web::shared() {
+                        let message = i18n::dynamic::backend_error_text(localizer.loader(), &error);
+                        ui.set_add_toast_text(append_notice(message, notice).into());
+                    }
                     ui.invoke_focus_carousel();
                 }
             } else if let (Some(ui), Some(notice)) = (weak.upgrade(), notice) {
@@ -257,27 +254,32 @@ fn import_failure_notice(
     outcomes: &[add_controller::ProbeOutcome],
     localizer: &i18n::Localizer,
 ) -> Option<String> {
-    use crate::backend::STORAGE_UNAVAILABLE;
     use add_controller::{ProbeKind, ProbeSubject};
     use gashuu_worker::import::{STORAGE_FULL, UNREADABLE_UPLOAD};
 
     let mut notices = Vec::new();
-    let mut storage_failures = std::collections::HashSet::new();
     let loader = localizer.loader();
     let mut unreadable = 0;
     for outcome in outcomes {
         if let (ProbeSubject::Upload(_), ProbeKind::Unreadable { error }) =
             (&outcome.subject, &outcome.kind)
         {
-            match error.as_str() {
-                UNREADABLE_UPLOAD => unreadable += 1,
-                STORAGE_UNAVAILABLE if storage_failures.insert(STORAGE_UNAVAILABLE) => {
-                    notices.push(i18n::dynamic::web_storage_unavailable(loader));
+            let notice = match error {
+                BackendError::Other { detail } if detail == UNREADABLE_UPLOAD => {
+                    unreadable += 1;
+                    continue;
                 }
-                STORAGE_FULL if storage_failures.insert(STORAGE_FULL) => {
-                    notices.push(i18n::dynamic::web_storage_full(loader));
+                BackendError::Other { detail } if detail == STORAGE_FULL => {
+                    i18n::dynamic::web_storage_full(loader)
                 }
-                _ => {}
+                BackendError::StorageUnavailable
+                | BackendError::WorkerUnavailable
+                | BackendError::BookLocked
+                | BackendError::Missing { .. } => i18n::dynamic::backend_error_text(loader, error),
+                _ => continue,
+            };
+            if !notices.contains(&notice) {
+                notices.push(notice);
             }
         }
     }
@@ -310,9 +312,7 @@ fn open_and_enter(
         settings.borrow().archive_policy(),
         state.borrow().cache_config(),
     ) {
-        ui.set_status_text(
-            i18n::dynamic::open_error_str(localizer.loader(), &error.to_string()).into(),
-        );
+        ui.set_status_text(i18n::dynamic::open_error(localizer.loader(), &error).into());
     }
 }
 
@@ -434,8 +434,6 @@ pub(crate) fn wire_carousel_handlers(
         let settings = Rc::clone(&settings);
         let pages = Rc::clone(&pages);
         let thumbs = Rc::clone(&thumbs);
-        let library = Rc::clone(&library);
-        let localizer = Rc::clone(&localizer);
         let carousel = carousel.clone();
         ui.on_open_finalize(move |epoch| {
             with_ui(&ui_weak, |ui| {
@@ -444,7 +442,6 @@ pub(crate) fn wire_carousel_handlers(
                 };
                 close_settings_dialog_if_active(&ui, &dialog_session);
                 let (request, result) = pending.into_result();
-                let missing = matches!(result, Err(BackendError::Missing { .. }));
                 let outcome = end_session_and_apply_opened(
                     &dialog_session,
                     &state,
@@ -457,16 +454,7 @@ pub(crate) fn wire_carousel_handlers(
                 // Enter the Viewer ONLY on a clean open: an empty source was already
                 // removed, and a failed open must keep the user on the Library screen.
                 let enter_viewer = matches!(outcome, open_book::OpenOutcome::Success { .. });
-                let open_failed = matches!(outcome, open_book::OpenOutcome::Error(_));
                 finalize_open(&ui, &state, &viewport, &pages, &thumbs, &carousel, outcome);
-                // The worker already performed the existence stat. Missing or
-                // unmounted paths get the same book-named replacement message.
-                if open_failed && missing {
-                    let title = open_book::book_display_title(&library.borrow(), &request);
-                    ui.set_status_text(
-                        crate::i18n::dynamic::open_inaccessible(localizer.loader(), &title).into(),
-                    );
-                }
                 ui.set_current_book_name(current_book_name(&state).into());
                 if enter_viewer {
                     go_to_viewer(&ui, &nav);

@@ -1,6 +1,8 @@
 //! Asynchronous access to books from the UI thread.
 
-use gashuu_core::{ArchivePolicy, BookId, CacheConfig, CoreError, DecodedImage, ThumbStore};
+use gashuu_core::{
+    ArchiveKind, ArchivePolicy, BookId, CacheConfig, CoreError, DecodedImage, ThumbStore,
+};
 use std::fmt;
 use std::num::NonZeroUsize;
 #[cfg(not(target_arch = "wasm32"))]
@@ -65,7 +67,22 @@ pub(crate) enum BackendError {
     /// The book has zero image pages.
     EmptyBook,
     /// Rejected by the archive policy.
-    FormatDisabled { format: &'static str },
+    FormatDisabled { kind: ArchiveKind },
+    #[cfg_attr(
+        not(any(test, target_arch = "wasm32")),
+        allow(dead_code, reason = "reported by the web backend")
+    )]
+    BookLocked,
+    #[cfg_attr(
+        not(any(test, target_arch = "wasm32")),
+        allow(dead_code, reason = "reported by the web backend")
+    )]
+    StorageUnavailable,
+    #[cfg_attr(
+        not(any(test, target_arch = "wasm32")),
+        allow(dead_code, reason = "reported by the web backend")
+    )]
+    WorkerUnavailable,
     /// The book's location no longer exists.
     Missing { detail: String },
     /// The display text of another error.
@@ -87,10 +104,25 @@ impl BackendError {
     pub(crate) fn from_core(error: &CoreError) -> Self {
         match error {
             CoreError::EmptyBook { .. } => Self::EmptyBook,
-            CoreError::FormatDisabled { format } => Self::FormatDisabled { format },
+            CoreError::FormatDisabled { kind } => Self::FormatDisabled { kind: *kind },
             _ => Self::Other {
                 detail: error.to_string(),
             },
+        }
+    }
+}
+
+#[cfg(any(test, target_arch = "wasm32"))]
+impl From<gashuu_worker::wire_error::WireError> for BackendError {
+    fn from(error: gashuu_worker::wire_error::WireError) -> Self {
+        use gashuu_worker::wire_error::WireError;
+        match error {
+            WireError::EmptyBook => Self::EmptyBook,
+            WireError::FormatDisabled { kind } => Self::FormatDisabled { kind },
+            WireError::BookLocked => Self::BookLocked,
+            WireError::StorageUnavailable => Self::StorageUnavailable,
+            WireError::Missing { id } => Self::Missing { detail: id },
+            WireError::Other { detail } => Self::Other { detail },
         }
     }
 }
@@ -99,9 +131,12 @@ impl fmt::Display for BackendError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::EmptyBook => f.write_str("no images found in book"),
-            Self::FormatDisabled { format } => {
-                write!(f, "{format} support is disabled in safer mode")
+            Self::FormatDisabled { kind } => {
+                write!(f, "{kind} support is disabled in safer mode")
             }
+            Self::BookLocked => f.write_str("book is locked"),
+            Self::StorageUnavailable => f.write_str("browser storage unavailable"),
+            Self::WorkerUnavailable => f.write_str("background worker unavailable"),
             Self::Missing { detail } | Self::Other { detail } => f.write_str(detail),
         }
     }
@@ -177,7 +212,7 @@ pub(crate) fn platform_backend(thumbs: Arc<dyn ThumbStore>) -> Rc<dyn BookBacken
         let _ = thumbs;
         web::shared()
             .map(|backend| backend as Rc<dyn BookBackend>)
-            .unwrap_or_else(|| Rc::new(unavailable::UnavailableBackend::default()))
+            .unwrap_or_else(|error| Rc::new(unavailable::UnavailableBackend::new(error)))
     }
 }
 
@@ -230,13 +265,12 @@ mod importer {
 
 pub(crate) fn platform_importer() -> Option<Rc<dyn BookImporter>> {
     #[cfg(target_arch = "wasm32")]
-    return web::shared().map(|backend| backend as Rc<dyn BookImporter>);
+    return web::shared()
+        .ok()
+        .map(|backend| backend as Rc<dyn BookImporter>);
     #[cfg(not(target_arch = "wasm32"))]
     return None;
 }
-
-#[cfg(any(test, target_arch = "wasm32"))]
-pub(crate) use gashuu_worker::import::STORAGE_UNAVAILABLE;
 
 #[cfg(test)]
 #[path = "port_tests.rs"]

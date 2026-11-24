@@ -3,14 +3,21 @@ use std::sync::atomic::AtomicBool;
 use std::sync::mpsc::TryRecvError;
 
 #[test]
-fn backend_error_maps_core_variants_and_preserves_other_detail() {
+fn maps_core_variants_and_preserves_other_detail() {
     let core = CoreError::EmptyBook {
         label: "book".into(),
     };
     assert_eq!(BackendError::from_core(&core), BackendError::EmptyBook);
-    let core = CoreError::FormatDisabled { format: "RAR" };
+    let core = CoreError::FormatDisabled {
+        kind: gashuu_core::ArchiveKind::Rar,
+    };
     let disabled = BackendError::from_core(&core);
-    assert_eq!(disabled, BackendError::FormatDisabled { format: "RAR" });
+    assert_eq!(
+        disabled,
+        BackendError::FormatDisabled {
+            kind: gashuu_core::ArchiveKind::Rar
+        }
+    );
     assert_eq!(disabled.to_string(), core.to_string());
     let core = CoreError::Io(std::io::Error::other("bad read"));
     assert_eq!(
@@ -39,7 +46,7 @@ impl OpenedBook {
 
 #[cfg(not(target_arch = "wasm32"))]
 #[test]
-fn backend_error_for_open_distinguishes_corrupt_and_missing_file() {
+fn for_open_distinguishes_corrupt_and_missing_file() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("bad.cbz");
     std::fs::write(&path, b"invalid archive").unwrap();

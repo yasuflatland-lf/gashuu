@@ -1,9 +1,7 @@
 //! Bridge worker messages to the portable dispatcher.
 
 use crate::opfs;
-use gashuu_core::{
-    ArchivePolicy, BookId, ImageCratePageDecoder, ReadAt, ThumbStore, COVER_MAX_SIDE,
-};
+use gashuu_core::{BookId, ImageCratePageDecoder, ReadAt, ThumbStore, COVER_MAX_SIDE};
 use gashuu_web_decode::NativePageDecoder;
 use gashuu_worker::{
     cover_store::{plan_cover_prune, StagedCoverStore},
@@ -133,13 +131,9 @@ async fn drain(
         let lane = Dispatcher::lane(&request);
         match request {
             WorkerRequest::Import {
-                req,
-                name,
-                size,
-                allow_rar,
+                req, name, size, ..
             } => {
-                let result =
-                    import(&scope, &mut worker, &inbox, &name, size, allow_rar, file).await;
+                let result = import(&scope, &mut worker, &inbox, &name, size, file).await;
                 post(
                     &scope,
                     Reply::metadata(WorkerResponse::Imported { req, result }),
@@ -240,7 +234,6 @@ async fn import(
     inbox: &RefCell<Inbox>,
     name: &str,
     size: u64,
-    allow_rar: bool,
     file: Option<File>,
 ) -> WireResult<ImportedMeta> {
     let file = file
@@ -259,13 +252,12 @@ async fn import(
             .await
             .and_then(|reader| {
                 let path = gashuu_worker::book_path::parse(id)?;
-                gashuu_worker::import::probe_upload(&path.name, reader, ArchivePolicy { allow_rar })
-                    .map(|pages| ImportedMeta {
-                        id: id.clone(),
-                        title: gashuu_worker::import::upload_title(&path.name),
-                        page_count: pages.get() as u32,
-                        duplicate: true,
-                    })
+                gashuu_worker::import::probe_upload(&path.name, reader).map(|pages| ImportedMeta {
+                    id: id.clone(),
+                    title: gashuu_worker::import::upload_title(&path.name),
+                    page_count: pages.get() as u32,
+                    duplicate: true,
+                })
             });
         match duplicate {
             Ok(meta) => return Ok(meta),
@@ -281,7 +273,7 @@ async fn import(
         match upload.write_slice() {
             Ok(true) => {}
             Ok(false) => {
-                let meta = upload.finish(allow_rar, &key).await?;
+                let meta = upload.finish(&key).await?;
                 index.insert(key, meta.id.clone());
                 return Ok(meta);
             }
