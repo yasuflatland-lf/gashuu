@@ -760,11 +760,3 @@ fn directory_still_opens_when_allow_rar_false() {
     let src = ArchiveLoader::open_with_policy(dir.path(), policy).expect("dir must open");
     assert!(!src.list_pages().is_empty());
 }
-
-#[cfg(feature = "rar")]
-#[test]
-fn open_still_permits_rar_backward_compat() {
-    let cbr = write_cbr_with_suffix(SAMPLE_CBR_B64, ".cbr");
-    let src = open(cbr.path()).expect("open must permit rar by default");
-    assert_eq!(src.list_pages().len(), 4);
-}

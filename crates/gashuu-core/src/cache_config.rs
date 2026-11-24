@@ -98,10 +98,40 @@ impl Default for CacheConfig {
 mod tests {
     use super::*;
 
-    #[test]
-    fn new_clamps_zero_capacity_to_the_radius_zero_floor() {
-        let cfg = CacheConfig::new(0, 0);
-        assert_eq!(cfg.capacity(), 2);
+    mod props {
+        use super::*;
+        use proptest::prelude::*;
+
+        proptest! {
+            /// C2-22: Cache configuration clamps each input to its documented bounds.
+            /// Replaces `new_clamps_zero_capacity_to_the_radius_zero_floor`,
+            /// `new_keeps_capacity_within_bounds`, `new_clamps_capacity_above_max`,
+            /// `new_clamps_radius_above_max`, `new_keeps_radius_zero_as_prefetch_disabled`,
+            /// `new_clamps_both_to_max_simultaneously`, `new_defaults_max_bytes`,
+            /// `with_max_bytes_sets_an_in_range_value`, `with_max_bytes_clamps_below_min`,
+            /// and `with_max_bytes_keeps_capacity_and_radius`.
+            #[test]
+            fn prop_cache_config_clamps_inputs(
+                capacity in 0..2 * MAX_CACHE_CAPACITY,
+                radius in 0..2 * MAX_PREFETCH_RADIUS,
+                // The byte ceiling is u64::MAX. Sample around the default and include both extremes.
+                bytes in prop_oneof![0..2 * DEFAULT_MAX_BYTES, Just(0), Just(u64::MAX)],
+            ) {
+                let expected_radius = radius.min(MAX_PREFETCH_RADIUS);
+                // ADR-0003 (2026-11-23 amendment): 2 * radius + 2 holds the
+                // prefetch window and a double spread.
+                let expected_capacity = capacity.max(2 * expected_radius + 2).min(MAX_CACHE_CAPACITY);
+                let config = CacheConfig::new(capacity, radius);
+                prop_assert_eq!(config.radius(), expected_radius);
+                prop_assert_eq!(config.capacity(), expected_capacity);
+                prop_assert_eq!(config.max_bytes(), DEFAULT_MAX_BYTES);
+
+                let configured = config.with_max_bytes(bytes);
+                prop_assert_eq!(configured.max_bytes(), bytes.clamp(MIN_MAX_BYTES, u64::MAX));
+                prop_assert_eq!(configured.capacity(), config.capacity());
+                prop_assert_eq!(configured.radius(), config.radius());
+            }
+        }
     }
 
     #[test]
@@ -132,40 +162,6 @@ mod tests {
     }
 
     #[test]
-    fn new_keeps_capacity_within_bounds() {
-        let cfg = CacheConfig::new(42, 3);
-        assert_eq!(cfg.capacity(), 42);
-    }
-
-    #[test]
-    fn new_clamps_capacity_above_max() {
-        let cfg = CacheConfig::new(MAX_CACHE_CAPACITY + 1, 0);
-        assert_eq!(cfg.capacity(), MAX_CACHE_CAPACITY);
-    }
-
-    #[test]
-    fn new_clamps_radius_above_max() {
-        let cfg = CacheConfig::new(10, MAX_PREFETCH_RADIUS + 1);
-        assert_eq!(cfg.radius(), MAX_PREFETCH_RADIUS);
-    }
-
-    #[test]
-    fn new_keeps_radius_zero_as_prefetch_disabled() {
-        assert_eq!(
-            CacheConfig::new(10, 0).radius(),
-            0,
-            "radius 0 is a valid disabled-prefetch value"
-        );
-    }
-
-    #[test]
-    fn new_clamps_both_to_max_simultaneously() {
-        let cfg = CacheConfig::new(MAX_CACHE_CAPACITY + 99, MAX_PREFETCH_RADIUS + 99);
-        assert_eq!(cfg.capacity(), MAX_CACHE_CAPACITY);
-        assert_eq!(cfg.radius(), MAX_PREFETCH_RADIUS);
-    }
-
-    #[test]
     fn default_uses_crate_constants() {
         let cfg = CacheConfig::default();
         assert_eq!(cfg.capacity(), DEFAULT_CAPACITY);
@@ -177,31 +173,5 @@ mod tests {
         let a = CacheConfig::new(8, 2);
         let b = a; // Copy
         assert_eq!(a, b);
-    }
-
-    #[test]
-    fn new_defaults_max_bytes() {
-        assert_eq!(CacheConfig::new(50, 0).max_bytes(), DEFAULT_MAX_BYTES);
-    }
-
-    #[test]
-    fn with_max_bytes_sets_an_in_range_value() {
-        let bytes = 256 * 1024 * 1024;
-        let cfg = CacheConfig::new(50, 0).with_max_bytes(bytes);
-        assert_eq!(cfg.max_bytes(), bytes);
-    }
-
-    #[test]
-    fn with_max_bytes_clamps_below_min() {
-        let cfg = CacheConfig::new(50, 0).with_max_bytes(0);
-        assert_eq!(cfg.max_bytes(), MIN_MAX_BYTES);
-    }
-
-    #[test]
-    fn with_max_bytes_keeps_capacity_and_radius() {
-        let cfg = CacheConfig::new(8, 2).with_max_bytes(MIN_MAX_BYTES);
-        assert_eq!(cfg.capacity(), 8);
-        assert_eq!(cfg.radius(), 2);
-        assert_eq!(cfg.max_bytes(), MIN_MAX_BYTES);
     }
 }

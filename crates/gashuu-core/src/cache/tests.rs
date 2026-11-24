@@ -58,36 +58,111 @@ fn counting(pages: usize) -> (Arc<dyn PageSource>, Arc<AtomicUsize>) {
     (src, reads)
 }
 
-// ---- prefetch_indices: pure boundary tests ----
+mod props {
+    use super::*;
+    use proptest::prelude::*;
+    use std::collections::VecDeque;
 
-#[test]
-fn prefetch_range_excludes_center_and_clamps_low() {
-    assert_eq!(prefetch_indices(0, 3, 10), vec![1, 2, 3]);
+    #[derive(Clone, Debug)]
+    enum LruOp {
+        Put(usize, usize),
+        Get(usize),
+        Remove(usize),
+        RetainEven,
+    }
+
+    fn lru_op() -> impl Strategy<Value = LruOp> {
+        prop_oneof![
+            (0usize..8, 0usize..30).prop_map(|(key, pixels)| LruOp::Put(key, pixels)),
+            (0usize..8).prop_map(LruOp::Get),
+            (0usize..8).prop_map(LruOp::Remove),
+            Just(LruOp::RetainEven),
+        ]
+    }
+
+    proptest! {
+        /// C2-2: Prefetch visits the in-book neighbours in ascending order.
+        /// Replaces `prefetch_range_excludes_center_and_clamps_low`,
+        /// `prefetch_range_clamps_high_at_last_page`, `prefetch_range_single_page_is_empty`,
+        /// `prefetch_range_empty_source_is_empty`, and `prefetch_range_zero_radius_is_empty`.
+        #[test]
+        fn prop_prefetch_indices_match_neighbourhood(
+            len in 0usize..64,
+            center in 0usize..70,
+            radius in prop_oneof![0usize..16, Just(usize::MAX)],
+        ) {
+            let expected: Vec<_> = (0..len)
+                .filter(|&index| index != center && index.abs_diff(center) <= radius)
+                .collect();
+            prop_assert_eq!(prefetch_indices(center, radius, len), expected);
+        }
+
+        /// C2-3: Decoded pages follow LRU order and respect the count and byte budgets.
+        /// Replaces `retain_drops_matching_keys_and_their_bytes`, `remove_updates_total_bytes`,
+        /// `byte_budget_evicts_lru_and_caps_total`, `count_ceiling_never_exceeded_with_byte_budget_slack`,
+        /// `count_eviction_keeps_byte_total_in_sync`, and `replacing_existing_key_adjusts_total`.
+        #[test]
+        fn prop_decoded_lru_matches_model(
+            capacity in 1usize..6,
+            budget in prop_oneof![0u64..400, Just(u64::MAX)],
+            operations in proptest::collection::vec(lru_op(), 0..=60),
+        ) {
+            let mut cache = store(capacity, budget);
+            let budget = u128::from(budget);
+            let mut model: VecDeque<(usize, usize)> = VecDeque::new();
+            for operation in operations {
+                match operation {
+                    LruOp::Put(key, pixels) => {
+                        let bytes = pixels * 4;
+                        cache.put(key, sized_image(bytes));
+                        model.retain(|&(resident, _)| resident != key);
+                        model.push_front((key, bytes));
+                        model.truncate(capacity);
+                        while model.len() > 1
+                            && model.iter().map(|&(_, bytes)| bytes as u128).sum::<u128>() > budget
+                        {
+                            model.pop_back();
+                        }
+                    }
+                    LruOp::Get(key) => {
+                        let entry = model.iter().position(|&(resident, _)| resident == key)
+                            .and_then(|index| model.remove(index));
+                        let actual = cache.get(&key).map(|image| image.rgba().len());
+                        prop_assert_eq!(actual, entry.map(|(_, bytes)| bytes));
+                        if let Some(entry) = entry {
+                            model.push_front(entry);
+                        }
+                    }
+                    LruOp::Remove(key) => {
+                        let entry = model.iter().position(|&(resident, _)| resident == key)
+                            .and_then(|index| model.remove(index));
+                        let actual = cache.remove(&key).map(|image| image.rgba().len());
+                        prop_assert_eq!(actual, entry.map(|(_, bytes)| bytes));
+                    }
+                    LruOp::RetainEven => {
+                        cache.retain(|key| key % 2 == 0);
+                        model.retain(|&(key, _)| key % 2 == 0);
+                    }
+                }
+
+                let residents: VecDeque<_> = cache.lru.iter()
+                    .map(|(&key, image)| (key, image.rgba().len()))
+                    .collect();
+                let resident_bytes: u128 = residents.iter().map(|&(_, bytes)| bytes as u128).sum();
+                prop_assert_eq!(&residents, &model);
+                prop_assert_eq!(cache.total_bytes, resident_bytes);
+                prop_assert!(residents.len() <= capacity);
+                prop_assert!(cache.total_bytes <= budget || residents.len() == 1);
+            }
+        }
+    }
 }
+
+// ---- prefetch_indices: pure boundary tests ----
 
 #[test]
 fn prefetch_range_in_the_middle() {
     assert_eq!(prefetch_indices(5, 3, 10), vec![2, 3, 4, 6, 7, 8]);
-}
-
-#[test]
-fn prefetch_range_clamps_high_at_last_page() {
-    assert_eq!(prefetch_indices(9, 3, 10), vec![6, 7, 8]);
-}
-
-#[test]
-fn prefetch_range_single_page_is_empty() {
-    assert_eq!(prefetch_indices(0, 3, 1), Vec::<usize>::new());
-}
-
-#[test]
-fn prefetch_range_empty_source_is_empty() {
-    assert_eq!(prefetch_indices(0, 3, 0), Vec::<usize>::new());
-}
-
-#[test]
-fn prefetch_range_zero_radius_is_empty() {
-    assert_eq!(prefetch_indices(5, 0, 10), Vec::<usize>::new());
 }
 
 // ---- cache semantics (radius 0 ⇒ background tasks are inert) ----
@@ -393,48 +468,6 @@ fn decoded_lru_promote_reports_presence() {
 }
 
 #[test]
-fn retain_drops_matching_keys_and_their_bytes() {
-    let mut lru = DecodedLru::new(NonZeroUsize::new(3).unwrap(), 24);
-    lru.put((1, 0), sized_image(4));
-    lru.put((2, 0), sized_image(8));
-    lru.put((1, 1), sized_image(12));
-    lru.retain(|&(session, _)| session != 1);
-    assert_eq!(lru.total_bytes, 8);
-    assert_eq!(lru.lru.len(), 1);
-    assert!(lru.contains(&(2, 0)));
-    lru.put((2, 1), sized_image(16));
-    assert_eq!(lru.lru.len(), 2);
-    assert_eq!(lru.total_bytes, 24);
-}
-
-#[test]
-fn remove_updates_total_bytes() {
-    let mut lru = DecodedLru::new(NonZeroUsize::new(3).unwrap(), 12);
-    lru.put("old", sized_image(4));
-    lru.put("kept", sized_image(8));
-    assert_eq!(lru.remove(&"old").unwrap().rgba().len(), 4);
-    assert!(lru.remove(&"old").is_none());
-    assert_eq!(lru.total_bytes, 8);
-    lru.put("new", sized_image(4));
-    assert!(lru.contains(&"kept"));
-    assert_eq!(lru.total_bytes, 12);
-}
-
-#[test]
-fn byte_budget_evicts_lru_and_caps_total() {
-    // Budget 250, pages of 100 bytes; count ceiling kept high so only the
-    // byte budget can evict.
-    let mut s = store(50, 250);
-    s.put(0, sized_image(100)); // total 100
-    s.put(1, sized_image(100)); // total 200
-    s.put(2, sized_image(100)); // total 300 > 250 -> evict LRU (page 0) -> 200
-    assert!(s.total_bytes as u64 <= 250, "total must stay within budget");
-    assert!(!s.contains(&0), "the oldest page must be evicted");
-    assert!(s.contains(&2), "the most-recent page must be retained");
-    assert!(s.contains(&1));
-}
-
-#[test]
 fn byte_budget_keeps_single_oversized_page_as_floor() {
     // A lone page larger than the budget is still cached (the floor).
     let mut s = store(50, 100);
@@ -442,41 +475,6 @@ fn byte_budget_keeps_single_oversized_page_as_floor() {
     assert_eq!(s.lru.len(), 1, "at least one entry is always retained");
     assert!(s.contains(&0));
     assert_eq!(s.total_bytes, 400);
-}
-
-#[test]
-fn count_ceiling_never_exceeded_with_byte_budget_slack() {
-    // Huge byte budget; many tiny pages must still respect the count ceiling.
-    let mut s = store(3, u64::MAX);
-    for i in 0..10 {
-        s.put(i, sized_image(4));
-    }
-    assert!(s.lru.len() <= 3, "count ceiling must never be exceeded");
-    // The byte total must match exactly what remains (3 pages x 4 bytes).
-    assert_eq!(s.total_bytes, 12);
-}
-
-#[test]
-fn count_eviction_keeps_byte_total_in_sync() {
-    // When the LRU sheds an entry for the count ceiling, its bytes must be
-    // subtracted from the running total.
-    let mut s = store(2, u64::MAX);
-    s.put(0, sized_image(40));
-    s.put(1, sized_image(40));
-    s.put(2, sized_image(40)); // evicts page 0 (count ceiling)
-    assert_eq!(s.lru.len(), 2);
-    assert_eq!(s.total_bytes, 80, "evicted page's bytes must be subtracted");
-    assert!(!s.contains(&0));
-}
-
-#[test]
-fn replacing_existing_key_adjusts_total() {
-    let mut s = store(50, u64::MAX);
-    s.put(0, sized_image(100));
-    assert_eq!(s.total_bytes, 100);
-    s.put(0, sized_image(40)); // same key, smaller buffer
-    assert_eq!(s.lru.len(), 1);
-    assert_eq!(s.total_bytes, 40, "re-put must replace, not accumulate");
 }
 
 // ---- ImageCache: byte budget wired through the real decode path ----
