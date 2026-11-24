@@ -4,8 +4,54 @@ use super::{source_mtime_secs, ClearCacheReport, PruneReport};
 use crate::{
     BookFingerprint, BookId, DecodedImage, FsThumbStore, NullThumbStore, ThumbSlot, ThumbStore,
 };
+use proptest::prelude::*;
 use std::path::Path;
 use tempfile::tempdir;
+
+// FNV-1a over the v1.3.0 key bytes, independent of the fingerprint implementation.
+fn legacy_key(path: &str, mtime: i64, side: u32, page: Option<usize>) -> String {
+    let bytes = path
+        .bytes()
+        .chain(mtime.to_le_bytes())
+        .chain(side.to_le_bytes())
+        .chain(page.into_iter().flat_map(usize::to_le_bytes));
+    let hash = bytes.fold(0xcbf2_9ce4_8422_2325_u64, |hash, byte| {
+        (hash ^ u64::from(byte)).wrapping_mul(0x0000_0100_0000_01b3)
+    });
+    format!("{hash:016x}")
+}
+
+fn thumbnail_path() -> impl Strategy<Value = String> {
+    prop_oneof![
+        4 => prop::collection::vec(any::<char>(), 0..40)
+            .prop_map(|chars| chars.into_iter().collect::<String>()),
+        1 => Just("book.cbz".to_owned()),
+        1 => Just("/本/本.cbz".to_owned()),
+        1 => Just("/books/with spaces.cbz".to_owned()),
+    ]
+}
+
+proptest! {
+    #[test]
+    fn thumbnail_keys_follow_the_legacy_recipe(
+        path in thumbnail_path(),
+        mtime in prop_oneof![4 => any::<i64>(), 1 => Just(i64::MIN), 1 => Just(-19), 1 => Just(0), 1 => Just(i64::MAX)],
+        side in prop_oneof![4 => any::<u32>(), 1 => Just(160), 1 => Just(512)],
+        page in prop_oneof![4 => any::<usize>(), 1 => Just(0), 1 => Just(1), 1 => Just(usize::MAX)],
+    ) {
+        let fingerprint = BookFingerprint::of_path_and_mtime(Path::new(&path), mtime);
+        let cover_key = fingerprint.cover_key(side);
+        let page_key = fingerprint.page_key(side, page);
+
+        prop_assert_eq!(&cover_key, &legacy_key(&path, mtime, side, None));
+        prop_assert_eq!(&page_key, &legacy_key(&path, mtime, side, Some(page)));
+        for key in [&cover_key, &page_key] {
+            prop_assert_eq!(key.len(), 16);
+            prop_assert!(key.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)));
+        }
+        prop_assert_ne!(cover_key, page_key);
+    }
+}
 
 #[cfg(target_pointer_width = "64")]
 #[test]
@@ -97,11 +143,13 @@ fn qoi_size(dir: &Path, key: &str) -> u64 {
 fn source_mtime_secs_reads_real_file_mtime() {
     let file = tempfile::NamedTempFile::new().expect("create source file");
 
-    assert_ne!(
-        source_mtime_secs(file.path()),
-        0,
-        "a real temp file has a readable post-epoch mtime"
+    let seconds = 1_700_000_123;
+    set_mtime(
+        file.path(),
+        std::time::UNIX_EPOCH + std::time::Duration::from_secs(seconds),
     );
+
+    assert_eq!(source_mtime_secs(file.path()), seconds as i64);
 }
 
 #[test]

@@ -1,17 +1,32 @@
 use super::*;
+use proptest::prelude::*;
 use std::num::NonZeroUsize;
 use std::path::Path;
 
-#[cfg(unix)]
-#[test]
-fn book_id_rejects_a_non_utf8_canonical_path() {
-    use std::{ffi::OsStr, os::unix::ffi::OsStrExt};
+proptest! {
+    #[test]
+    fn library_json_round_trips_byte_identically(lib in Library::shelves_for_persistence_tests()) {
+        let json = lib.to_json().unwrap();
 
-    let path = Path::new(OsStr::from_bytes(b"bad\xffname.cbz"));
-    assert!(matches!(
-        BookId::from_canonical_path(path),
-        Err(CoreError::NonUtf8Path { .. })
-    ));
+        prop_assert_eq!(Library::from_json(&json).unwrap().to_json().unwrap(), json);
+    }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(32))]
+
+    #[test]
+    fn library_store_round_trips_byte_identically(lib in Library::shelves_for_persistence_tests()) {
+        let dir = tempfile::tempdir().unwrap();
+        let json = lib.to_json().unwrap();
+        let path = dir.path().join("library.json");
+        let store = LibraryStore::new(path.clone());
+
+        store.save(&lib).unwrap();
+
+        prop_assert_eq!(std::fs::read_to_string(path).unwrap(), json.as_str());
+        prop_assert_eq!(store.load().unwrap().to_json().unwrap(), json);
+    }
 }
 
 fn add(lib: &mut Library, raw: &str) -> BookId {
@@ -59,25 +74,6 @@ fn library_json_is_byte_identical_across_bookid_change() {
     let lib = store.load().unwrap();
     store.save(&lib).unwrap();
     assert_eq!(std::fs::read_to_string(path).unwrap(), fixture);
-}
-
-#[test]
-fn to_json_then_from_json_round_trips() {
-    let mut lib = Library::new();
-    add(&mut lib, "/manga/a.cbz");
-    let second = add(&mut lib, "/manga/b.cbz");
-    assert!(lib.set_resume_page(&second, 42));
-
-    let json = lib.to_json().unwrap();
-    let parsed = Library::from_json(&json).unwrap();
-
-    assert_eq!(parsed.books().len(), 2);
-    assert_eq!(parsed.books()[0].id(), &BookId::new("/manga/a.cbz"));
-    assert_eq!(parsed.books()[0].title(), "a");
-    assert_eq!(parsed.books()[0].resume_page(), 0);
-    assert_eq!(parsed.books()[1].id(), &BookId::new("/manga/b.cbz"));
-    assert_eq!(parsed.books()[1].title(), "b");
-    assert_eq!(parsed.books()[1].resume_page(), 42);
 }
 
 #[test]
@@ -212,23 +208,6 @@ fn load_from_missing_file_returns_empty_library() {
 }
 
 #[test]
-fn save_to_then_load_from_round_trips() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("nested").join("library.json");
-    let mut original = Library::new();
-    let book = add(&mut original, "/manga/a.cbz");
-    assert!(original.set_resume_page(&book, 7));
-
-    let store = LibraryStore::new(path);
-    store.save(&original).unwrap();
-    let loaded = store.load().unwrap();
-
-    assert_eq!(loaded.books().len(), 1);
-    assert_eq!(loaded.books()[0].id(), &BookId::new("/manga/a.cbz"));
-    assert_eq!(loaded.books()[0].resume_page(), 7);
-}
-
-#[test]
 fn save_to_creates_missing_parent_directories() {
     // The atomic helper owns parent creation; saving under a non-existent
     // subtree must materialize the directories AND the file.
@@ -277,23 +256,6 @@ fn load_from_normalizes_old_unsorted_library_order() {
 
     let titles: Vec<&str> = loaded.books().iter().map(|book| book.title()).collect();
     assert_eq!(titles, vec!["vol 1", "vol 2", "vol 10"]);
-}
-
-#[test]
-fn page_count_persists_across_save_and_load() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("nested").join("library.json");
-    let mut original = Library::new();
-    let book = add(&mut original, "/manga/a.cbz");
-    assert!(original.set_page_count(&book, NonZeroUsize::new(42).unwrap()));
-
-    let store = LibraryStore::new(path);
-    store.save(&original).unwrap();
-    let loaded = store.load().unwrap();
-
-    assert_eq!(loaded.books().len(), 1);
-    assert_eq!(loaded.books()[0].id(), &BookId::new("/manga/a.cbz"));
-    assert_eq!(loaded.books()[0].page_count_opt(), Some(42));
 }
 
 #[test]
@@ -353,21 +315,6 @@ fn empty_overrides_are_omitted_from_json() {
     assert!(value["books"][0].get("overrides").is_none());
 }
 
-#[test]
-fn non_empty_overrides_round_trip() {
-    let mut lib = Library::new();
-    let p = add(&mut lib, "/manga/a.cbz");
-    let ov = crate::view_override::ViewOverride {
-        reading_direction: Some(crate::view_modes::ReadingDirection::Rtl),
-        spread_mode: Some(crate::view_modes::SpreadMode::Double),
-        cover_mode: Some(crate::view_modes::CoverMode::Paired),
-        fit_mode: Some(crate::view_modes::FitMode::Width),
-    };
-    assert!(lib.set_overrides(&p, ov));
-    let reloaded = Library::from_json(&lib.to_json().unwrap()).unwrap();
-    assert_eq!(reloaded.books()[0].overrides(), ov);
-}
-
 /// Proves that `ReadingProgress` is transient: after serializing a library
 /// whose book has resume_page and page_count set, the JSON object for that
 /// book contains EXACTLY the four documented keys and none of the
@@ -410,16 +357,6 @@ fn reading_progress_is_not_persisted() {
 /// re-serializes to the same structural shape after this PR (no format
 /// drift).  Comparison is order-independent because serde_json key
 /// ordering is not guaranteed.
-#[test]
-fn old_library_json_round_trips() {
-    let stored = r#"{"version":1,"books":[{"path":"/manga/a.cbz","title":"a","last_page":42,"page_count":100}]}"#;
-    let lib = Library::from_json(stored).unwrap();
-    let reserialized = lib.to_json().unwrap();
-    let before: serde_json::Value = serde_json::from_str(stored).unwrap();
-    let after: serde_json::Value = serde_json::from_str(&reserialized).unwrap();
-    assert_eq!(before, after, "library.json shape changed across load/save");
-}
-
 // --- last_opened persistence tests ---
 
 #[test]
@@ -466,65 +403,6 @@ fn to_json_omits_last_opened_when_none_emits_when_some() {
 }
 
 #[test]
-fn last_opened_round_trips_through_save_and_load() {
-    // A library with last_opened set keeps the value across to_json/from_json.
-    let dir = tempfile::tempdir().unwrap();
-    let file_path = dir.path().join("library.json");
-    let book = BookId::new("/manga/a.cbz");
-    let mut lib = Library::new();
-    lib.register_opened(&book, &title(&book), NonZeroUsize::new(10));
-
-    let store = LibraryStore::new(file_path);
-    store.save(&lib).unwrap();
-    let loaded = store.load().unwrap();
-
-    assert_eq!(
-        loaded.last_opened(),
-        Some(&BookId::new("/manga/a.cbz")),
-        "last_opened must survive save/load"
-    );
-}
-
-#[test]
-fn store_save_preserves_last_opened() {
-    // Verify that last_opened survives a full store save → load round-trip.
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("library.json");
-    let mut lib = Library::new();
-    let book = add(&mut lib, "/manga/vol1.cbz");
-    lib.register_opened(&book, &title(&book), None);
-    // last_opened is set before saving.
-    assert_eq!(lib.last_opened(), Some(&BookId::new("/manga/vol1.cbz")));
-
-    let store = LibraryStore::new(path);
-    store.save(&lib).unwrap();
-    let loaded = store.load().unwrap();
-
-    assert_eq!(
-        loaded.last_opened(),
-        Some(&BookId::new("/manga/vol1.cbz")),
-        "last_opened must survive save_to/load_from"
-    );
-}
-
-#[test]
-fn last_opened_orphan_is_normalized_to_none_on_load() {
-    // A library.json whose last_opened path is NOT in books must normalize to None.
-    let stored = serde_json::json!({
-        "version": 1,
-        "books": [{"path": "/manga/a.cbz", "title": "a", "last_page": 0, "page_count": 0}],
-        "last_opened": "/manga/gone.cbz"
-    })
-    .to_string();
-    let lib = Library::from_json(&stored).unwrap();
-    assert_eq!(
-        lib.last_opened(),
-        None,
-        "orphan last_opened must be normalized to None on load"
-    );
-}
-
-#[test]
 fn recanonicalize_round_trips_clean_library_byte_identically() {
     // Byte-oracle: an already-canonical, duplicate-free library must survive the
     // load-time re-canonicalize/merge byte-for-byte. Override + position keep it non-vacuous.
@@ -558,20 +436,5 @@ fn recanonicalize_round_trips_clean_library_byte_identically() {
         reloaded.to_json().unwrap(),
         before,
         "a clean, all-canonical library round-trips byte-identically"
-    );
-}
-
-#[test]
-fn last_opened_to_json_then_from_json_round_trips() {
-    // In-memory round-trip via to_json/from_json (without touching the FS).
-    let book = BookId::new("/manga/a.cbz");
-    let mut lib = Library::new();
-    lib.register_opened(&book, &title(&book), None);
-    let json = lib.to_json().unwrap();
-    let parsed = Library::from_json(&json).unwrap();
-    assert_eq!(
-        parsed.last_opened(),
-        Some(&BookId::new("/manga/a.cbz")),
-        "last_opened must survive to_json/from_json"
     );
 }

@@ -1,4 +1,203 @@
 use super::*;
+use crate::view_modes::{CoverMode, FitMode, ReadingDirection, SpreadMode};
+use proptest::prelude::*;
+
+#[derive(Debug)]
+struct ShelfBook {
+    dir: &'static str,
+    title: &'static str,
+    resume: usize,
+    remaining: usize,
+    overrides: ViewOverride,
+    remove: bool,
+}
+
+fn shelf_books() -> impl Strategy<Value = Vec<ShelfBook>> {
+    let book = (
+        prop::sample::select(vec!["A", "A 2", "b"]),
+        prop::sample::select(vec!["Vol 1", "Vol 2", "Vol 10"]),
+        1usize..40,
+        1usize..40,
+        prop::option::of(prop::sample::select(vec![
+            ReadingDirection::Ltr,
+            ReadingDirection::Rtl,
+        ])),
+        prop::option::of(prop::sample::select(vec![
+            SpreadMode::Single,
+            SpreadMode::Double,
+            SpreadMode::Auto,
+        ])),
+        prop::option::of(prop::sample::select(vec![
+            CoverMode::Standalone,
+            CoverMode::Paired,
+        ])),
+        prop::sample::select(vec![FitMode::Whole, FitMode::Width, FitMode::Actual]),
+        any::<bool>(),
+    )
+        .prop_map(
+            |(
+                dir,
+                title,
+                resume,
+                remaining,
+                reading_direction,
+                spread_mode,
+                cover_mode,
+                fit_mode,
+                remove,
+            )| {
+                ShelfBook {
+                    dir,
+                    title,
+                    resume,
+                    remaining,
+                    overrides: ViewOverride {
+                        reading_direction,
+                        spread_mode,
+                        cover_mode,
+                        fit_mode: Some(fit_mode),
+                    },
+                    remove,
+                }
+            },
+        );
+    prop::collection::vec(book, 1..=8)
+}
+
+// A bookmark is present in most cases, and can point to any generated book.
+fn bookmark_index() -> impl Strategy<Value = Option<usize>> {
+    prop_oneof![1 => Just(None), 4 => (0usize..8).prop_map(Some)]
+}
+
+fn populated_library(
+    root: &str,
+    books: &[ShelfBook],
+    bookmark: Option<usize>,
+) -> (Library, Vec<BookId>) {
+    let mut lib = Library::new();
+    let mut ids = Vec::new();
+    for (n, book) in books.iter().enumerate() {
+        let id = BookId::new(format!("{root}/{}/{n}.cbz", book.dir));
+        assert!(lib.add(id.clone(), book.title.to_owned()).is_some());
+        assert!(lib.set_page_count(
+            &id,
+            NonZeroUsize::new(book.resume + book.remaining).unwrap()
+        ));
+        assert!(lib.set_resume_page(&id, book.resume));
+        assert!(lib.set_overrides(&id, book.overrides));
+        ids.push(id);
+    }
+    if let Some(index) = bookmark {
+        let index = index % books.len();
+        lib.register_opened(&ids[index], books[index].title, None);
+    }
+    (lib, ids)
+}
+
+#[derive(Clone, Copy, Debug)]
+enum ProgressOp {
+    SetResume(usize, usize),
+    SetCount(usize, usize),
+}
+
+fn progress_ops() -> impl Strategy<Value = Vec<ProgressOp>> {
+    let op = prop_oneof![
+        (0usize..4, 0usize..40).prop_map(|(i, page)| ProgressOp::SetResume(i, page)),
+        (0usize..4, 1usize..40).prop_map(|(i, count)| ProgressOp::SetCount(i, count)),
+    ];
+    prop::collection::vec(op, 1..=40)
+}
+
+proptest! {
+    #[test]
+    fn remove_then_restore_reproduces_library_json(books in shelf_books(), bookmark in bookmark_index()) {
+        let (mut lib, ids) = populated_library("/m", &books, bookmark);
+        let before = lib.to_json().unwrap();
+        let last_opened = lib.last_opened().cloned();
+        let subset: Vec<_> = ids.into_iter().zip(&books)
+            .filter_map(|(id, book)| book.remove.then_some(id))
+            .collect();
+        let removed = subset.iter().map(|id| lib.book(id).unwrap().clone()).collect();
+
+        let report = lib.remove_many(&subset);
+        prop_assert_eq!(report.removed.len(), subset.len());
+        for id in &subset {
+            prop_assert!(lib.book(id).is_none());
+        }
+        lib.restore(removed, last_opened);
+
+        prop_assert_eq!(lib.to_json().unwrap(), before);
+    }
+
+    #[test]
+    fn restore_does_not_overwrite_newer_progress(
+        books in shelf_books(), bookmark in bookmark_index(), index in 0usize..8,
+    ) {
+        let (mut lib, ids) = populated_library("/m", &books, bookmark);
+        let id = &ids[index % ids.len()];
+        let stale = lib.book(id).unwrap().clone();
+        prop_assert!(lib.set_resume_page(id, stale.resume_page() - 1));
+        let updated = lib.to_json().unwrap();
+
+        lib.restore(vec![stale], None);
+
+        prop_assert_eq!(lib.to_json().unwrap(), updated);
+    }
+
+    #[test]
+    fn progress_setters_follow_the_model(ops in progress_ops()) {
+        let mut lib = Library::new();
+        let ids = ["/m/A/0.cbz", "/m/A 2/1.cbz", "/m/b/2.cbz", "/m/absent.cbz"].map(BookId::new);
+        let mut model = [(0, None); 3];
+        for id in &ids[..model.len()] {
+            assert!(lib.add(id.clone(), title(id)).is_some());
+        }
+
+        for op in ops {
+            let i = match op {
+                ProgressOp::SetResume(i, _) | ProgressOp::SetCount(i, _) => i,
+            };
+            let before = (i >= model.len()).then(|| lib.to_json().unwrap());
+            let changed = match op {
+                ProgressOp::SetResume(_, page) => lib.set_resume_page(&ids[i], page),
+                ProgressOp::SetCount(_, count) => lib.set_page_count(&ids[i], NonZeroUsize::new(count).unwrap()),
+            };
+
+            if let Some((resume, total)) = model.get_mut(i) {
+                let old = (*resume, *total);
+                match op {
+                    ProgressOp::SetResume(_, page) => {
+                        *resume = total.map_or(page, |count| page.min(count - 1));
+                    }
+                    ProgressOp::SetCount(_, count) => {
+                        *total = Some(count);
+                        *resume = (*resume).min(count - 1);
+                    }
+                }
+                prop_assert_eq!(changed, old != (*resume, *total), "{:?}", op);
+            } else {
+                prop_assert!(!changed, "{:?}", op);
+                prop_assert_eq!(lib.to_json().unwrap(), before.unwrap());
+            }
+
+            for (id, expected) in ids.iter().zip(model) {
+                let progress = lib.book(id).unwrap().progress();
+                prop_assert_eq!((progress.last_viewed(), progress.total()), expected, "{:?} after {:?}", id, op);
+            }
+        }
+    }
+}
+
+// The store tests share the same generated shelf data as the restore tests.
+#[cfg(not(target_arch = "wasm32"))]
+impl Library {
+    pub(crate) fn shelves_for_persistence_tests() -> impl Strategy<Value = Self> {
+        // Loading recanonicalizes existing paths, so use a nonexistent shelf root.
+        (shelf_books(), bookmark_index()).prop_map(|(books, bookmark)| {
+            populated_library("/gashuu-pbt-absent", &books, bookmark).0
+        })
+    }
+}
 
 // --- display_title tests (the pure title rule) ---
 
@@ -507,165 +706,6 @@ fn remove_many_counts_duplicate_input_once() {
 }
 
 #[test]
-fn restore_reinserts_full_books_and_restores_natural_order() {
-    // remove_many returns only paths; the rollback primitive must put back
-    // WHOLE books (carrying resume_page/page_count/overrides) and re-sort.
-    let mut lib = Library::new();
-    for name in ["vol 1.cbz", "vol 2.cbz", "vol 10.cbz"] {
-        add(&mut lib, &format!("/manga/{name}"));
-    }
-    let first_volume = BookId::new("/manga/vol 1.cbz");
-    assert!(lib.set_resume_page(&first_volume, 7));
-    assert!(lib.set_page_count(&first_volume, NonZeroUsize::new(20).unwrap()));
-
-    // Clone the two outer volumes, remove them, then restore the clones.
-    let removed: Vec<Book> = lib
-        .books()
-        .iter()
-        .filter(|b| b.id() == &first_volume || b.id() == &BookId::new("/manga/vol 10.cbz"))
-        .cloned()
-        .collect();
-    let report = lib.remove_many(&[first_volume.clone(), BookId::new("/manga/vol 10.cbz")]);
-    assert_eq!(report.removed.len(), 2);
-    let titles: Vec<&str> = lib.books().iter().map(|b| b.title()).collect();
-    assert_eq!(titles, vec!["vol 2"], "only the unremoved book survives");
-
-    lib.restore(removed, None);
-    let titles: Vec<&str> = lib.books().iter().map(|b| b.title()).collect();
-    assert_eq!(
-        titles,
-        vec!["vol 1", "vol 2", "vol 10"],
-        "restore re-inserts and restores natural order"
-    );
-    let restored = lib.book(&first_volume).unwrap();
-    assert_eq!(restored.resume_page(), 7);
-    assert_eq!(restored.page_count_opt(), Some(20));
-}
-
-#[test]
-fn restore_preserves_per_book_data_that_add_would_lose() {
-    // The add()-trap: re-adding by path yields a FRESH book (resume_page 0, count None,
-    // overrides all-None); restore must re-insert the WHOLE clone, keeping that data.
-    let mut lib = Library::new();
-    let p = BookId::new("/manga/a.cbz");
-    assert!(lib.add(p.clone(), title(&p)).is_some());
-    assert!(lib.set_resume_page(&p, 42));
-    assert!(lib.set_page_count(&p, NonZeroUsize::new(100).unwrap()));
-    let ov = crate::view_override::ViewOverride {
-        reading_direction: Some(crate::view_modes::ReadingDirection::Rtl),
-        ..crate::view_override::ViewOverride::none()
-    };
-    assert!(lib.set_overrides(&p, ov));
-
-    let clone: Vec<Book> = lib.books().to_vec();
-    assert_eq!(lib.remove_many(std::slice::from_ref(&p)).removed.len(), 1);
-    assert!(lib.books().is_empty());
-
-    lib.restore(clone, None);
-    assert_eq!(lib.books().len(), 1);
-    assert_eq!(
-        lib.resume_page(&p),
-        42,
-        "restore keeps resume_page (add would reset to 0)"
-    );
-    assert_eq!(lib.books()[0].page_count_opt(), Some(100));
-    assert_eq!(
-        lib.overrides_for(&p),
-        ov,
-        "restore keeps overrides (add would reset to all-None)"
-    );
-}
-
-#[test]
-fn restore_is_duplicate_safe() {
-    let mut lib = Library::new();
-    let p = BookId::new("/manga/a.cbz");
-    assert!(lib.add(p.clone(), title(&p)).is_some());
-    assert!(lib.set_resume_page(&p, 2));
-    let stale_books = lib.books().to_vec();
-    assert!(lib.set_resume_page(&p, 9));
-
-    lib.restore(stale_books, None);
-    assert_eq!(
-        lib.books().len(),
-        1,
-        "restore must not duplicate an existing path"
-    );
-    assert_eq!(lib.book(&p).unwrap().resume_page(), 9);
-}
-
-#[test]
-fn restore_empty_input_is_noop() {
-    let mut lib = Library::new();
-    add(&mut lib, "/manga/a.cbz");
-    lib.restore(Vec::new(), None);
-    assert_eq!(lib.books().len(), 1, "empty restore changes nothing");
-}
-
-#[test]
-fn restore_round_trips_to_byte_identical_json() {
-    // The rollback contract: remove + restore must reproduce the EXACT pre-removal
-    // JSON. A non-default override keeps the `overrides` comparison non-vacuous.
-    let mut lib = Library::new();
-    for name in ["a.cbz", "b.cbz", "c.cbz"] {
-        add(&mut lib, &format!("/manga/{name}"));
-    }
-    assert!(lib.set_resume_page(&BookId::new("/manga/b.cbz"), 9));
-    assert!(lib.set_page_count(&BookId::new("/manga/b.cbz"), NonZeroUsize::new(50).unwrap()));
-    let ov = crate::view_override::ViewOverride {
-        reading_direction: Some(crate::view_modes::ReadingDirection::Rtl),
-        ..crate::view_override::ViewOverride::none()
-    };
-    assert!(lib.set_overrides(&BookId::new("/manga/b.cbz"), ov));
-    let before = lib.to_json().unwrap();
-
-    let removed: Vec<Book> = lib
-        .books()
-        .iter()
-        .filter(|b| b.id() != &BookId::new("/manga/a.cbz"))
-        .cloned()
-        .collect();
-    lib.remove_many(&[BookId::new("/manga/b.cbz"), BookId::new("/manga/c.cbz")]);
-    lib.restore(removed, None);
-    assert_eq!(
-        lib.to_json().unwrap(),
-        before,
-        "remove + restore must be byte-identical"
-    );
-}
-
-#[test]
-fn restore_recovers_last_opened_bookmark() {
-    // The Alloy counterexample: read B (last_opened = B), remove B (remove_many
-    // clears the bookmark), then a failed save rolls back via restore — which must
-    // hand the bookmark back so the "continue reading" target is not silently lost.
-    let mut lib = Library::new();
-    for name in ["a.cbz", "b.cbz"] {
-        add(&mut lib, &format!("/manga/{name}"));
-    }
-    let b = BookId::new("/manga/b.cbz");
-    lib.register_opened(&b, &title(&b), None);
-    assert_eq!(lib.last_opened(), Some(&b), "B is the bookmark");
-
-    let removed: Vec<Book> = lib
-        .books()
-        .iter()
-        .filter(|book| book.id() == &b)
-        .cloned()
-        .collect();
-    assert_eq!(lib.remove_many(std::slice::from_ref(&b)).removed.len(), 1);
-    assert_eq!(lib.last_opened(), None, "remove_many clears the bookmark");
-
-    lib.restore(removed, Some(b.clone()));
-    assert_eq!(lib.books().len(), 2, "both books restored");
-    assert_eq!(
-        lib.last_opened(),
-        Some(&b),
-        "restore recovers the last_opened bookmark"
-    );
-}
-
-#[test]
 fn restore_drops_a_stale_bookmark_not_on_the_shelf() {
     // The membership guard (invariant S69): a last_opened that points at no
     // shelved book must be dropped, never re-installed as a dangling bookmark.
@@ -692,60 +732,9 @@ fn last_page_is_zero_for_unknown_path() {
 }
 
 #[test]
-fn set_resume_page_updates_and_round_trips() {
-    let mut lib = Library::new();
-    let path = BookId::new("/manga/a.cbz");
-    assert!(lib.add(path.clone(), title(&path)).is_some());
-    assert!(lib.set_resume_page(&path, 42));
-    assert_eq!(lib.resume_page(&path), 42);
-}
-
-#[test]
-fn set_resume_page_false_when_absent() {
-    let mut lib = Library::new();
-    assert!(!lib.set_resume_page(&BookId::new("/manga/missing.cbz"), 12));
-}
-
-#[test]
-fn set_resume_page_false_when_unchanged() {
-    let mut lib = Library::new();
-    let path = BookId::new("/manga/a.cbz");
-    assert!(lib.add(path.clone(), title(&path)).is_some());
-    assert!(lib.set_resume_page(&path, 3));
-    assert!(!lib.set_resume_page(&path, 3));
-}
-
-#[test]
 fn page_count_opt_is_none_for_fresh_book() {
     let book = book_from_path(Path::new("/manga/a.cbz"), false);
     assert_eq!(book.page_count_opt(), None);
-}
-
-#[test]
-fn set_page_count_updates_and_returns_true() {
-    let mut lib = Library::new();
-    let path = BookId::new("/manga/a.cbz");
-    assert!(lib.add(path.clone(), title(&path)).is_some());
-    assert!(lib.set_page_count(&path, NonZeroUsize::new(42).unwrap()));
-    assert_eq!(lib.books()[0].page_count_opt(), Some(42));
-}
-
-#[test]
-fn set_page_count_false_when_absent() {
-    let mut lib = Library::new();
-    assert!(!lib.set_page_count(
-        &BookId::new("/manga/missing.cbz"),
-        NonZeroUsize::new(12).unwrap()
-    ));
-}
-
-#[test]
-fn set_page_count_false_when_unchanged() {
-    let mut lib = Library::new();
-    let path = BookId::new("/manga/a.cbz");
-    assert!(lib.add(path.clone(), title(&path)).is_some());
-    assert!(lib.set_page_count(&path, NonZeroUsize::new(3).unwrap()));
-    assert!(!lib.set_page_count(&path, NonZeroUsize::new(3).unwrap()));
 }
 
 #[test]
@@ -766,30 +755,6 @@ fn set_page_count_repairs_a_stale_resume_page() {
         "resume clamped to the last index"
     );
     assert_eq!(lib.books()[0].progress().current(), 5);
-}
-
-#[test]
-fn set_page_count_reports_a_resume_only_repair() {
-    let mut lib = Library::new();
-    let path = BookId::new("/manga/a.cbz");
-    let count = NonZeroUsize::new(5).unwrap();
-    assert!(lib.add(path.clone(), title(&path)).is_some());
-    assert!(lib.set_resume_page(&path, 9));
-    assert!(lib.set_page_count(&path, count));
-    assert_eq!(lib.resume_page(&path), 4);
-    assert!(!lib.set_page_count(&path, count));
-}
-
-#[test]
-fn set_resume_page_clamps_into_a_known_total() {
-    let mut lib = Library::new();
-    let path = BookId::new("/manga/a.cbz");
-    assert!(lib.add(path.clone(), title(&path)).is_some());
-    assert!(lib.set_page_count(&path, NonZeroUsize::new(5).unwrap()));
-    assert!(lib.set_resume_page(&path, 9));
-    assert_eq!(lib.resume_page(&path), 4);
-    assert!(!lib.set_resume_page(&path, 4));
-    assert!(!lib.set_resume_page(&path, 9));
 }
 
 #[test]
