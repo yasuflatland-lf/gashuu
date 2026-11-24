@@ -205,7 +205,7 @@ pub(crate) fn refresh_library_carousel(
         let indices = deps.search.borrow().visible_indices().to_vec();
         (
             lib.books().len() as i32,
-            build_carousel_model(&lib, &indices, &crate::book_availability::book_path_exists),
+            build_carousel_model(&lib, &indices, &crate::book_availability::is_available),
             cover_requests(&lib, &indices),
             indices,
         )
@@ -219,6 +219,40 @@ pub(crate) fn refresh_library_carousel(
             .into(),
     );
     bind_carousel_model(ui, model);
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        use crate::book_availability::{desktop_inventory, request_check};
+        use crate::carousel::patch_availability;
+        use crate::CarouselItem;
+        use slint::{Model, VecModel};
+
+        // The cover requests already carry the same IDs in visible row order.
+        let row_ids: Vec<BookId> = cover_reqs
+            .iter()
+            .map(|request| request.id.clone())
+            .collect();
+        let generation = desktop_inventory().begin_check();
+        let weak = ui.as_weak();
+        request_check(generation, row_ids.clone(), move |generation, results| {
+            if let Err(error) = slint::invoke_from_event_loop(move || {
+                let Some(ui) = weak.upgrade() else {
+                    return;
+                };
+                let Some(changed) = desktop_inventory().apply(generation, results) else {
+                    return;
+                };
+                if changed.is_empty() {
+                    return;
+                }
+                let model = ui.get_carousel_items();
+                if let Some(model) = model.as_any().downcast_ref::<VecModel<CarouselItem>>() {
+                    patch_availability(model, &row_ids, &changed);
+                }
+            }) {
+                tracing::debug!(%error, "dropped book availability results");
+            }
+        });
+    }
     if reset_focus {
         ui.set_carousel_focused_index(0);
     }
