@@ -392,6 +392,20 @@ impl<F> WebClient<F> {
         )
     }
 
+    pub(super) fn cancel_queued_imports(&mut self) -> usize {
+        let queued = self.waiting_storage.len();
+        let pending = &mut self.pending;
+        self.waiting_storage.retain(|(request, _)| {
+            let Request::Import { req, .. } = request else {
+                return true;
+            };
+            let removed = pending.remove(&req.0);
+            debug_assert!(matches!(removed, Some(Pending::Import(_))));
+            false
+        });
+        queued - self.waiting_storage.len()
+    }
+
     pub(super) fn clear_covers(&mut self) -> Vec<Outgoing<F>> {
         self.post(Request::ClearCovers)
     }

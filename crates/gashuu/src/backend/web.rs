@@ -1,7 +1,7 @@
 use super::web_client::{Delivery, Effects, Outgoing, Ready, WebClient};
 use super::{
-    BackendError, BookBackend, BookImporter, CountResult, DiscardUpload, Done, ImageResult,
-    ImportedBook, OpenedBook, SessionId, SpreadPages,
+    BackendError, BookBackend, BookImporter, CancelPending, CountResult, DiscardUpload, Done,
+    ImageResult, ImportedBook, OpenedBook, SessionId, SpreadPages,
 };
 use crate::picker::{web::take_file, UploadHandle};
 use gashuu_core::{ArchivePolicy, BookId, CacheConfig, DecodedImage};
@@ -284,6 +284,15 @@ impl BookImporter for WorkerBackend {
             if let Some(backend) = shared() {
                 crate::book_availability::web_inventory().remove(id);
                 backend.dispatch(|client| (client.discard_stale(id), Vec::new()));
+            }
+        })
+    }
+
+    fn pending_canceller(&self) -> CancelPending {
+        Rc::new(|| {
+            if let Some(backend) = shared() {
+                let cancelled = backend.client.borrow_mut().cancel_queued_imports();
+                tracing::debug!(cancelled, "cancelled queued imports");
             }
         })
     }

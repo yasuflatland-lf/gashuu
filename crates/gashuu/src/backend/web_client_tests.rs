@@ -1,17 +1,23 @@
 use super::super::test_callback;
 use super::*;
 use gashuu_worker::protocol::{self, ImageMeta, OpenedMeta, ReqId, WorkerRequest, WorkerResponse};
+use std::rc::Rc;
+use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
 
-fn receive(client: &mut WebClient, response: WorkerResponse, images: Vec<Vec<u8>>) -> Effects {
+fn receive<F>(
+    client: &mut WebClient<F>,
+    response: WorkerResponse,
+    images: Vec<Vec<u8>>,
+) -> Effects<F> {
     client.on_message(&protocol::encode(&response), images)
 }
 
-fn request(out: Vec<Outgoing>) -> WorkerRequest {
+fn request<F>(out: Vec<Outgoing<F>>) -> WorkerRequest {
     let [Outgoing(text, _)] = out.try_into().ok().expect("one outgoing request");
     protocol::decode(&text).unwrap()
 }
 
-fn deliver(client: &WebClient, deliveries: Vec<Delivery>, deferred: bool) {
+fn deliver<F>(client: &WebClient<F>, deliveries: Vec<Delivery>, deferred: bool) {
     let [delivery] = deliveries.try_into().ok().expect("one delivery");
     let ready = match delivery {
         Delivery::Now(ready) if !deferred => ready,
@@ -136,7 +142,7 @@ fn fill(client: &mut WebClient, session: SessionId, index: u32, image: ImageMeta
 
 #[test]
 fn requests_before_ready_are_buffered_and_flushed_in_order() {
-    let mut client = WebClient::new();
+    let mut client = WebClient::<()>::new();
     assert!(!client.is_ready());
     let policy = ArchivePolicy::default();
     let (open, _) = client.open(&book_id(), policy, CacheConfig::new(6, 0), Box::new(|_| {}));
@@ -163,7 +169,7 @@ fn requests_before_ready_are_buffered_and_flushed_in_order() {
 
 #[test]
 fn startup_failure_fails_buffered_requests() {
-    let mut client = WebClient::new();
+    let mut client = WebClient::<()>::new();
     let policy = ArchivePolicy::default();
     let (open_done, open) = test_callback();
     let (probe_done, probe) = test_callback();
@@ -968,27 +974,166 @@ fn worker_failure_clears_queued_deletes() {
     assert!(client.queued_deletes.is_empty());
 }
 
+#[test]
+fn cancel_drops_queued_imports_and_releases_their_files() {
+    let mut client = WebClient::new();
+    let (out, deliveries) = receive(&mut client, WorkerResponse::Ready, vec![]);
+    assert!(out.is_empty() && deliveries.is_empty());
+    let WorkerRequest::Import { req, .. } = request(import_file(
+        &mut client,
+        "active.cbz",
+        Rc::new(()),
+        Box::new(|_| {}),
+    )) else {
+        panic!("expected the active import");
+    };
+    let queued = [Rc::new(()), Rc::new(())];
+    let called = Arc::new(AtomicBool::new(false));
+    for file in &queued {
+        let called = called.clone();
+        assert!(import_file(
+            &mut client,
+            "queued.cbz",
+            file.clone(),
+            Box::new(move |_| called.store(true, Relaxed)),
+        )
+        .is_empty());
+        assert_eq!(Rc::strong_count(file), 2);
+    }
+
+    assert_eq!(client.cancel_queued_imports(), 2);
+
+    assert_eq!(queued.each_ref().map(Rc::strong_count), [1, 1]);
+    complete_import(&mut client, req, &book_id(), false);
+    assert!(client.after_delivery().is_empty());
+    assert!(client.on_worker_failed("test shutdown").is_empty());
+    assert!(!called.load(Relaxed));
+}
+
+#[test]
+fn cancel_keeps_queued_sweep_and_delete_in_order() {
+    let mut client = ready_client();
+    let (req, received) = start_import(&mut client);
+    let queue_import = |client: &mut WebClient| {
+        assert!(import_file(client, "queued.cbz", (), Box::new(|_| {})).is_empty());
+    };
+    let deleted = BookId::new("books/deleted/book.cbz");
+    queue_import(&mut client);
+    assert!(client.discard(&deleted).is_empty());
+    queue_import(&mut client);
+    let (out, deliveries) = client.sweep(vec![book_id()], None, Box::new(|_| {}));
+    assert!(out.is_empty() && deliveries.is_empty());
+
+    assert_eq!(client.cancel_queued_imports(), 2);
+    assert!(client.queued_deletes.contains(&deleted));
+
+    complete_import(&mut client, req, &book_id(), false);
+    assert!(received.try_recv().unwrap().is_ok());
+    let outgoing = client.after_delivery();
+    let [Outgoing(delete, None), Outgoing(sweep, None)] = outgoing.as_slice() else {
+        panic!("expected exactly a delete and a sweep");
+    };
+    assert_eq!(
+        protocol::decode::<WorkerRequest>(delete).unwrap(),
+        WorkerRequest::DeleteBook {
+            id: deleted.to_string()
+        }
+    );
+    assert!(matches!(
+        protocol::decode::<WorkerRequest>(sweep).unwrap(),
+        WorkerRequest::Sweep { keep, now_ms: None, .. } if keep == [book_id().to_string()]
+    ));
+    assert!(!client.queued_deletes.contains(&deleted));
+    assert!(client.after_delivery().is_empty());
+}
+
+#[test]
+fn cancel_leaves_the_in_flight_import_deliverable() {
+    let mut client = ready_client();
+    let (req, received) = start_import(&mut client);
+    assert!(import_file(&mut client, "queued.cbz", (), Box::new(|_| {})).is_empty());
+
+    assert_eq!(client.cancel_queued_imports(), 1);
+    complete_import(&mut client, req, &book_id(), false);
+
+    assert_eq!(received.try_recv().unwrap().unwrap().id, book_id());
+}
+
+#[test]
+fn new_import_after_cancel_is_posted_once_the_active_import_finishes() {
+    let mut client = ready_client();
+    let (req, active_received) = start_import(&mut client);
+    assert!(import_file(&mut client, "queued.cbz", (), Box::new(|_| {})).is_empty());
+    client.cancel_queued_imports();
+
+    let (done, received) = test_callback();
+    assert!(import_file(&mut client, "replacement.cbz", (), done).is_empty());
+    assert!(client.after_delivery().is_empty());
+    complete_import(&mut client, req, &book_id(), false);
+    assert!(active_received.try_recv().unwrap().is_ok());
+
+    let WorkerRequest::Import { req, name, .. } = request(client.after_delivery()) else {
+        panic!("expected the replacement import");
+    };
+    assert_eq!(name, "replacement.cbz");
+    let replacement = BookId::new("books/replacement/book.cbz");
+    complete_import(&mut client, req, &replacement, false);
+    assert_eq!(received.try_recv().unwrap().unwrap().id, replacement);
+    assert!(client.after_delivery().is_empty());
+}
+
+#[test]
+fn cancel_with_nothing_queued_is_a_no_op() {
+    let mut client = WebClient::new();
+    assert_eq!(client.cancel_queued_imports(), 0);
+    assert!(client.after_delivery().is_empty());
+
+    let (done, received) = test_callback();
+    assert!(import_file(&mut client, "startup.cbz", (), done).is_empty());
+    assert_eq!(client.cancel_queued_imports(), 0);
+
+    let (out, deliveries) = receive(&mut client, WorkerResponse::Ready, vec![]);
+    assert!(deliveries.is_empty());
+    let WorkerRequest::Import { req, name, .. } = request(out) else {
+        panic!("expected the import buffered during startup");
+    };
+    assert_eq!(name, "startup.cbz");
+    complete_import(&mut client, req, &book_id(), false);
+    assert_eq!(received.try_recv().unwrap().unwrap().id, book_id());
+    assert!(client.after_delivery().is_empty());
+}
+
+fn import_file<F>(
+    client: &mut WebClient<F>,
+    name: &str,
+    file: F,
+    done: Done<Result<ImportedBook, BackendError>>,
+) -> Vec<Outgoing<F>> {
+    let handle = UploadHandle {
+        key: 7,
+        name: name.into(),
+        size: 20,
+    };
+    let (out, deliveries) = client.import(&handle, Some(file), ArchivePolicy::default(), done);
+    assert!(deliveries.is_empty());
+    out
+}
+
 fn start_import(
     client: &mut WebClient,
 ) -> (
     ReqId,
     std::sync::mpsc::Receiver<Result<ImportedBook, BackendError>>,
 ) {
-    let handle = crate::picker::UploadHandle {
-        key: 7,
-        name: "book.cbz".into(),
-        size: 20,
-    };
     let (done, received) = test_callback();
-    let (out, deliveries) = client.import(&handle, Some(()), ArchivePolicy::default(), done);
-    assert!(deliveries.is_empty());
-    let WorkerRequest::Import { req, .. } = request(out) else {
+    let WorkerRequest::Import { req, .. } = request(import_file(client, "book.cbz", (), done))
+    else {
         panic!("expected Import");
     };
     (req, received)
 }
 
-fn complete_import(client: &mut WebClient, req: ReqId, id: &BookId, duplicate: bool) {
+fn complete_import<F>(client: &mut WebClient<F>, req: ReqId, id: &BookId, duplicate: bool) {
     let (out, deliveries) = receive(
         client,
         WorkerResponse::Imported {

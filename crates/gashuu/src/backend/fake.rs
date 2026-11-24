@@ -8,6 +8,7 @@ pub(crate) enum Call {
     Open(BookId),
     Close(SessionId),
     Discard(BookId),
+    CancelPending,
     Sweep(Vec<BookId>, bool),
     CachedPage(SessionId, usize),
     DecodeSpread(SessionId, usize, Option<usize>),
@@ -67,6 +68,17 @@ impl FakeBackend {
     }
 
     pub(crate) fn calls(&self) -> Vec<Call> {
+        // Existing storage tests use this view to inspect sweeps and deletes.
+        self.calls
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|call| !matches!(call, Call::CancelPending))
+            .cloned()
+            .collect()
+    }
+
+    pub(crate) fn all_calls(&self) -> Vec<Call> {
         self.calls.lock().unwrap().clone()
     }
 
@@ -231,6 +243,10 @@ impl BookImporter for FakeBackend {
     fn discarder(&self) -> DiscardUpload {
         let calls = Arc::clone(&self.calls);
         Arc::new(move |id| calls.lock().unwrap().push(Call::Discard(id.clone())))
+    }
+    fn pending_canceller(&self) -> CancelPending {
+        let calls = Arc::clone(&self.calls);
+        Rc::new(move || calls.lock().unwrap().push(Call::CancelPending))
     }
     fn sweep(&self, keep: Vec<BookId>, clear: bool, done: Done<SweepReport>) {
         self.calls.lock().unwrap().push(Call::Sweep(keep, clear));

@@ -1,5 +1,8 @@
 use super::*;
-use crate::backend::{fake::FakeBackend, DiscardUpload, Done, ImportedBook};
+use crate::backend::{
+    fake::{Call, FakeBackend},
+    CancelPending, DiscardUpload, Done, ImportedBook,
+};
 use slint::ComponentHandle;
 use std::cell::RefCell;
 use std::sync::{Arc, Mutex};
@@ -10,10 +13,15 @@ type Completion = Done<Result<ImportedBook, BackendError>>;
 struct FakeImporter {
     pending: RefCell<Vec<(UploadHandle, Completion)>>,
     discarded: Arc<Mutex<Vec<BookId>>>,
+    cancel_count: Rc<Cell<usize>>,
+    cancel_counts_at_import: RefCell<Vec<usize>>,
 }
 
 impl BookImporter for FakeImporter {
     fn import(&self, file: UploadHandle, _: ArchivePolicy, done: Completion) {
+        self.cancel_counts_at_import
+            .borrow_mut()
+            .push(self.cancel_count.get());
         self.pending.borrow_mut().push((file, done));
     }
 
@@ -27,6 +35,11 @@ impl BookImporter for FakeImporter {
     fn discarder(&self) -> DiscardUpload {
         let discarded = self.discarded.clone();
         Arc::new(move |id| discarded.lock().unwrap().push(id.clone()))
+    }
+
+    fn pending_canceller(&self) -> CancelPending {
+        let cancel_count = self.cancel_count.clone();
+        Rc::new(move || cancel_count.set(cancel_count.get() + 1))
     }
 }
 
@@ -160,4 +173,74 @@ fn superseding_an_import_discards_early_and_late_successes() {
         *importer.discarded.lock().unwrap(),
         [imported(1).id, imported(2).id]
     );
+}
+
+#[test]
+fn superseding_an_import_batch_cancels_its_queued_imports() {
+    let ui = crate::cover_loader::test_window();
+    let controller = AddController::new(FakeBackend::new());
+    let importer = FakeImporter::default();
+    let start = |keys: &[u32]| {
+        controller.start_import(
+            ui.as_weak(),
+            keys.iter().copied().map(upload).collect(),
+            ArchivePolicy::default(),
+            "add-books",
+            None,
+            &importer,
+        );
+    };
+    start(&[1, 2]);
+    start(&[3, 4]);
+
+    assert_eq!(importer.cancel_count.get(), 1);
+    assert_eq!(*importer.cancel_counts_at_import.borrow(), [0, 0, 1, 1]);
+}
+
+#[test]
+fn cancel_import_invokes_the_pending_canceller() {
+    let ui = crate::cover_loader::test_window();
+    let importer = FakeBackend::new();
+    let controller = AddController::new(importer.clone());
+    controller.start_import(
+        ui.as_weak(),
+        vec![upload(1), upload(2)],
+        ArchivePolicy::default(),
+        "add-books",
+        None,
+        importer.as_ref(),
+    );
+    importer.complete_import(Ok(imported(1)));
+
+    assert!(controller.cancel_import());
+    assert!(!controller.cancel_import());
+    assert_eq!(
+        importer.all_calls(),
+        [Call::CancelPending, Call::Discard(imported(1).id)]
+    );
+}
+
+#[test]
+fn finished_batch_is_not_cancelled_by_the_next_batch() {
+    let ui = crate::cover_loader::test_window();
+    let controller = AddController::new(FakeBackend::new());
+    let importer = FakeImporter::default();
+    let start = |key| {
+        controller.start_import(
+            ui.as_weak(),
+            vec![upload(key)],
+            ArchivePolicy::default(),
+            "add-books",
+            None,
+            &importer,
+        );
+    };
+    start(1);
+    importer.deliver(1, Ok(imported(1)));
+    assert_eq!(controller.take_outcomes(1).unwrap().0.len(), 1);
+
+    start(2);
+
+    assert_eq!(importer.cancel_count.get(), 0);
+    assert_eq!(*importer.cancel_counts_at_import.borrow(), [0, 0]);
 }
